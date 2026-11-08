@@ -171,6 +171,12 @@ fn once<'h>(
     body: &[u8],
     (deadline, timeout): (Instant, Duration),
 ) -> Result<Answer, Failure> {
+    if !is_token(method) {
+        return Err(Failure::Other(format!("`{}` can't be a request's method", method.escape_debug())));
+    }
+    if !fits_on_a_line(&url.target) || !fits_on_a_line(&url.host) {
+        return Err(Failure::Other("the URL has a space, line break or control character in it".to_owned()));
+    }
     let tcp = connect(url, deadline, timeout)?;
     let mut stream =
         if url.secure { secured(tcp, &url.host, deadline, timeout)? } else { Stream::Plain(tcp) };
@@ -182,8 +188,9 @@ fn once<'h>(
     let mut head = format!("{method} {} HTTP/1.1\r\nHost: {host}\r\n", url.target);
     let (mut agent, mut accept) = (false, false);
     for (name, value) in headers {
-        if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
-            return Err(Failure::Other(format!("the header `{name}` has a line break or `:` in it")));
+        if !is_token(name) || value.bytes().any(|byte| (byte < 32 && byte != b'\t') || byte == 127) {
+            let shown = name.escape_debug();
+            return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
         }
         agent |= name.eq_ignore_ascii_case("user-agent");
         accept |= name.eq_ignore_ascii_case("accept");
@@ -202,6 +209,18 @@ fn once<'h>(
     stream.write_all_by(head.as_bytes(), deadline, timeout)?;
     stream.write_all_by(body, deadline, timeout)?;
     read_answer(&mut stream, method, deadline, timeout)
+}
+
+/// Whether this is what HTTP calls a token, as a method or a header's name has to be.
+fn is_token(text: &str) -> bool {
+    !text.is_empty()
+        && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+/// Whether this can be written on a request's first line: it has no space or control character,
+/// either of which would end the line or the part of it, and start something a server would read.
+fn fits_on_a_line(text: &str) -> bool {
+    text.bytes().all(|byte| byte > 32 && byte != 127)
 }
 
 fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream, Failure> {
@@ -745,6 +764,28 @@ mod tests {
             Err(Failure::Other(why)) if why.contains("redirects more than 10 times")
         ));
         assert_eq!(done.join().unwrap().len(), 11);
+    }
+
+    /// What would start a line of its own on the wire is refused before anything's connected to:
+    /// port 1 has nothing listening, so getting past the check says `Refused`.
+    #[test]
+    fn a_line_break_never_reaches_the_wire() {
+        let asked = |method: &str, url: &str, headers: Vec<(String, String)>| {
+            send(&Request {
+                method: method.to_owned(),
+                url: url.to_owned(),
+                params: Vec::new(),
+                headers,
+                body: Vec::new(),
+                timeout: Duration::from_secs(5),
+            })
+        };
+        let plain = "http://127.0.0.1:1/";
+        assert!(matches!(asked("GET", plain, Vec::new()), Err(Failure::Refused(..))));
+        let injected = "http://127.0.0.1:1/a\r\nX-Injected: 1";
+        assert!(matches!(asked("GET", injected, Vec::new()), Err(Failure::Other(_))), "the URL");
+        assert!(matches!(asked("GET /x", plain, Vec::new()), Err(Failure::Other(_))), "the method");
+        assert!(matches!(asked("GE\rT", plain, Vec::new()), Err(Failure::Other(_))), "the method");
     }
 
     #[test]

@@ -7144,6 +7144,104 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// What the next test builds: tasks that read an inbox, fail, crash, and are launched in a loop.
+const LAUNCHED: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+enum Sound:
+    Play(name: str, volume: float)
+    StopAll
+
+error Muted:
+    why: str
+
+def audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:
+    for sound in inbox:
+        match sound:
+            case .Play(name, volume):
+                if volume > 1.0: fail Muted(why=f\"{name} too loud\")
+                stdout.print(f\"play {name}\")
+            case .StopAll:
+                stdout.print(\"stop\")
+
+def tick(stdout: Stdout):
+    stdout.print(\"tick\")
+
+def crashes(xs: list[int], stdout: Stdout):
+    stdout.print(xs[5])
+
+def loud(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
+    with launch((inbox) => audio(inbox, stdout), inbox_size=4)? as sounds:
+        sounds.send(.Play(name=\"boom\", volume=3.0))?
+
+def crashing(stdout: Stdout) fails Closed | Crashed | Timeout:
+    xs = [1, 2]
+    with launch(() => crashes(xs, stdout))?:
+        pass
+
+def counts(inbox: Inbox[int], stdout: Stdout):
+    mut sum = 0
+    for n in inbox:
+        sum += n
+    stdout.print(\"sum\", sum)
+
+def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
+    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:
+        sounds.send(.Play(name=\"jump\", volume=0.8))?
+        sounds.send(.StopAll)?
+    with launch(() => tick(stdout))?:
+        pass
+    match loud(stdout):
+        case Ok(_):
+            stdout.print(\"ended\")
+        case Err(problem):
+            stdout.print(\"failed:\", problem)
+    match crashing(stdout):
+        case Ok(_):
+            stdout.print(\"ended\")
+        case Err(problem):
+            stdout.print(\"failed:\", problem)
+    for round in range(200):
+        with launch((inbox) => counts(inbox, stdout), inbox_size=8)? as numbers:
+            for k in range(10):
+                numbers.send(k * round)?
+";
+
+/// A launched task runs beside the block that launched it, on the runtime's threads, with what
+/// it was given copied for it: it reads its inbox until the block ends and closes it, and the
+/// block waits for it. Its failure passes up out of the block as itself, a crash as `Crashed`.
+#[test]
+fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launched")?;
+    let program = dir.join("launched.fen");
+    std::fs::write(&program, LAUNCHED)?;
+    let executable = dir.join("launched");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let printed = String::from_utf8_lossy(&ran.stdout);
+    let sums = (0..200).fold(String::new(), |mut sums, round| {
+        let _ = std::fmt::Write::write_fmt(&mut sums, format_args!("sum {}\n", 45 * round));
+        sums
+    });
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(
+        printed,
+        format!(
+            "play jump\nstop\ntick\nfailed: Muted(why=\"boom too loud\")\nfailed: Crashed(why=\"the task crashed\")\n{sums}"
+        )
+    );
+    Ok(())
+}
+
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
 /// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
 /// timeout fails as `Timeout`.

@@ -509,14 +509,12 @@ impl FnCx<'_> {
         }
     }
 
-    /// An operator between two numbers of one size, which gives that size. `/` between integers of
-    /// a size isn't settled yet.
+    /// An operator between two numbers of one size, which gives that size. `/` always gives a
+    /// float, between integers of any size as between ints, and `//` keeps the size.
     fn sized_arithmetic(&mut self, op: BinOp, ty: &Type, span: Span) -> Type {
         if op == BinOp::Div && !matches!(ty, Type::Sized(num) if num.is_float()) {
-            let message = format!("`/` on {} isn't settled yet", a(ty));
-            let help = "use `//` to divide and keep the size, or convert both sides to float(...)";
-            self.error(Diagnostic::new(message, span).with_help(help));
-            return Type::Unknown;
+            self.int_divisions.insert((span.start, span.end));
+            return Type::Float;
         }
         ty.clone()
     }

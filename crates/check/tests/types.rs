@@ -151,7 +151,7 @@ fn sized_numbers_mix_only_with_their_own_size() {
 
         def mixed(stdout: Stdout, small: i32, wide: i64, byte: u8, single: f32, double: float, count: int):
             stdout.print(small + wide, byte - small, single * double, count + small)
-            stdout.print(small < wide, small & wide, small / small, -byte, small == count)
+            stdout.print(small < wide, small & wide, small / small + 0.5, -byte, small == count)
     ";
     assert_eq!(
         problems(program),
@@ -162,7 +162,6 @@ fn sized_numbers_mix_only_with_their_own_size() {
             "can't mix int and i32 in `+` @ count + small",
             "can't mix i32 and int in `<` @ small < wide",
             "can't mix i32 and int in `&` @ small & wide",
-            "`/` on an i32 isn't settled yet @ small / small",
             "can't negate a u8, which is never below 0 @ -byte",
             "`==` compares an i32 with an int, which are never equal @ small == count",
         ]

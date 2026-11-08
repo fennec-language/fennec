@@ -14,7 +14,7 @@ use std::process::Command;
 use fennec_interp::{PROPERTY_CASES, TestOutcome, property_seed};
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
 
-use crate::test_inputs::{Inputs, PREFIX};
+use crate::test_inputs::{Inputs, PREFIX, written};
 
 /// What running tests through LLVM did.
 #[derive(Default)]
@@ -224,6 +224,13 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     if test.inputs.is_empty() {
         return Some(vec![as_function(name, test)]);
     }
+    // A test whose inputs each have their simpler values here shrinks a failing one itself. One
+    // that passes failures up gives back a result, which a failed attempt hasn't made.
+    let simpler: Option<Vec<String>> =
+        test.inputs.iter().map(|input| inputs.simpler_for(input.ty.as_ref()?)).collect();
+    if let (Some(simpler), false) = (simpler, passes_failures_up(test)) {
+        return shrinking_functions(number, test, inputs, &simpler);
+    }
     let capabilities: Vec<&str> = test.capabilities.iter().map(|param| param.name.as_str()).collect();
     let mut args: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
     let mut made = String::new();
@@ -251,6 +258,93 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     Some(caller)
 }
 
+/// The functions of property test `number` that shrinks a failing input itself, as the
+/// interpreter's `shrink` does: the test, which tries each input in turn; an attempt, which runs the
+/// body on an input and says whether it passed; and the shrinking, which tries each input's simpler
+/// values, in order, keeping the first that still fails, until none does or 200 have been tried.
+/// Then it runs the body on the simplest, which fails as the test's failure, saying what it was
+/// given. `simpler` has each input's function giving its simpler values.
+fn shrinking_functions(
+    number: usize,
+    test: &TestDef,
+    inputs: &mut Inputs<'_>,
+    simpler: &[String],
+) -> Option<Vec<FnDef>> {
+    let typed =
+        |param: &fennec_syntax::Param| Some(format!("{}: {}", param.name, written(param.ty.as_ref()?)));
+    let mut params: Vec<String> = test.capabilities.iter().map(typed).collect::<Option<_>>()?;
+    params.extend(
+        (0..test.inputs.len())
+            .map(|at| Some(format!("input{at}: {}", written(test.inputs.get(at)?.ty.as_ref()?))))
+            .collect::<Option<Vec<_>>>()?,
+    );
+    let params = params.join(", ");
+    let capabilities: Vec<String> = test.capabilities.iter().map(|param| param.name.clone()).collect();
+    let passing =
+        |values: Vec<String>| capabilities.iter().cloned().chain(values).collect::<Vec<_>>().join(", ");
+    let named = |prefix: &str| (0..test.inputs.len()).map(|at| format!("{prefix}{at}")).collect::<Vec<_>>();
+    let world = |indent: &str| {
+        if test.capabilities.is_empty() { String::new() } else { format!("{indent}{PREFIX}{NEW_WORLD}()\n") }
+    };
+    let mut made = String::new();
+    for (at, input) in test.inputs.iter().enumerate() {
+        let function = inputs.function_for(input.ty.as_ref()?)?;
+        let _ = writeln!(made, "        input{at} = {function}(ref state, 0)");
+    }
+    let given = passing(named("input"));
+    let mut source = format!(
+        "def {PREFIX}{number}():\n    mut state = {}\n    for _ in range({PROPERTY_CASES}):\n{}{made}        if not {PREFIX}{number}_attempt({given}):\n            {PREFIX}{number}_shrunk({given})\n            return\n\n",
+        property_seed(&test.name),
+        world("        "),
+    );
+    let _ = write!(
+        source,
+        "def {PREFIX}{number}_attempt({params}) -> bool:\n    {PREFIX}{number}_body({given})\n    {PREFIX}passed()\n\n"
+    );
+    let _ = writeln!(source, "def {PREFIX}{number}_shrunk({params}):");
+    for at in 0..test.inputs.len() {
+        let _ = writeln!(source, "    mut best{at} = input{at}");
+    }
+    source.push_str("    mut attempts = 0\n    mut improving = True\n    while improving and attempts < 200:\n        improving = False\n");
+    for (at, function) in simpler.iter().enumerate() {
+        let mut tried = named("best");
+        if let Some(slot) = tried.get_mut(at) {
+            "candidate".clone_into(slot);
+        }
+        let (indent, guard) = if at == 0 {
+            ("        ", String::new())
+        } else {
+            ("            ", "        if not improving:\n".to_owned())
+        };
+        let _ = write!(
+            source,
+            "{guard}{indent}for candidate in {function}(best{at}):\n{indent}    attempts += 1\n{}{indent}    if not {PREFIX}{number}_attempt({}):\n{indent}        best{at} = candidate\n{indent}        improving = True\n{indent}        break\n",
+            world(&format!("{indent}    ")),
+            passing(tried),
+        );
+    }
+    let mut described = Vec::with_capacity(test.inputs.len());
+    for (at, input) in test.inputs.iter().enumerate() {
+        // A value shown in a list is shown as the interpreter shows one on its own.
+        let _ = writeln!(source, "    shown{at} = str([best{at}])");
+        described.push(format!("\"{} = \" + shown{at}[1:shown{at}.len() - 1]", input.name));
+    }
+    let _ = write!(
+        source,
+        "    {PREFIX}failed_for({})\n{}    {PREFIX}{number}_body({})\n",
+        described.join(" + \", \" + "),
+        world("    "),
+        passing(named("best")),
+    );
+    let mut made = functions_in(&source, test.span.start)?;
+    if let Some(caller) = made.first_mut() {
+        caller.params.clone_from(&test.capabilities);
+        caller.span = test.span;
+    }
+    made.push(as_function(format!("{}_body", function_name(number)), test));
+    Some(made)
+}
+
 /// `module` with only the functions of `tests` and what they reach, or None if there's a test here
 /// LLVM can't be given.
 fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Option<Module> {
@@ -266,9 +360,27 @@ fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Option<Module> {
     if tests.iter().any(|test| !test.inputs.is_empty() && !test.capabilities.is_empty()) {
         made.extend(functions_in(&format!("def {PREFIX}{NEW_WORLD}():\n    pass\n"), 0)?);
     }
+    // What shrinking calls, which native code makes calls to the runtime.
+    if tests.iter().any(|test| !test.inputs.is_empty()) {
+        let shrinking = format!(
+            "def {PREFIX}passed() -> bool:\n    True\n\ndef {PREFIX}failed_for(given: str):\n    pass\n"
+        );
+        made.extend(functions_in(&shrinking, 0)?);
+    }
     trimmed.items.extend(made.into_iter().map(Item::Function));
     fennec_build::keep_what_functions_reach(&mut trimmed, &|name| name.starts_with(TEST_FUNCTION));
     Some(trimmed)
+}
+
+/// Whether a property test shrinks a failing input itself, so its failure says what it would the
+/// other way: each input has its simpler values here, and it doesn't pass failures up.
+fn shrinks_itself(module: &Module, test: &TestDef) -> bool {
+    let mut inputs = Inputs::new(module);
+    !passes_failures_up(test)
+        && test
+            .inputs
+            .iter()
+            .all(|input| input.ty.as_ref().is_some_and(|ty| inputs.simpler_for(ty).is_some()))
 }
 
 /// Whether the tests' functions can be written: a property test takes only inputs this can make.
@@ -444,7 +556,7 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
                 let cases = if test.inputs.is_empty() { 1 } else { PROPERTY_CASES };
                 result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases });
             }
-            Some(failure) if test.inputs.is_empty() => {
+            Some(failure) if test.inputs.is_empty() || shrinks_itself(module, test) => {
                 result.outcomes.push(TestOutcome {
                     name: test.name.clone(),
                     failure: Some(test_failure(failure)),

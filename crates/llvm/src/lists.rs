@@ -723,6 +723,16 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether this is one of several error types, laid out with a case for each, named for it.
+    /// Whether a value is of a union of plain types, like `int | str`: each of its cases holds one
+    /// value.
+    pub(crate) fn is_union(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| {
+            union_at_top(&layout.name)
+                && layout.cases.as_ref().is_some_and(|cases| cases.iter().all(|case| case.fields.len() == 1))
+        })
+    }
+
     pub(crate) fn is_one_of_several(&self, kind: &Kind) -> bool {
         let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
         self.module.layouts.get(*id).is_some_and(|layout| {
@@ -1956,4 +1966,19 @@ impl Emit<'_, '_, '_> {
             _ => Err(format!("it calls `{name}`, which this backend doesn't take yet")),
         }
     }
+}
+
+/// Whether a type's name is a union's, with ` | ` outside any brackets: `list[int] | str` is one,
+/// and `Result[str, TooWeak | NotFound]` isn't.
+fn union_at_top(name: &str) -> bool {
+    let mut depth = 0_i32;
+    for (at, byte) in name.bytes().enumerate() {
+        match byte {
+            b'[' | b'(' => depth += 1,
+            b']' | b')' => depth -= 1,
+            b'|' if depth == 0 && at > 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }

@@ -8978,6 +8978,85 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// A response's headers are a real dict, however many times a header came. Those that can be
+/// joined are, as HTTP says, and `Set-Cookie`, which can't, has all its values in `set_cookies`.
+#[test]
+fn a_header_sent_twice_is_one_entry_and_keeps_every_value() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut asked = [0_u8; 4096];
+        let _ = stream.read(&mut asked)?;
+        stream.write_all(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Tag: one\r\nX-Tag: two\r\nContent-Length: 0\r\n\r\n",
+        )
+    });
+    let source = format!(
+        "def main(net: Net, stdout: Stdout) fails NetError:\n    answer = net.get(\"http://127.0.0.1:{port}/\")?\n    stdout.print(answer.headers.len())\n    stdout.print(answer.headers[\"x-tag\"])\n    stdout.print(answer.set_cookies)\n"
+    )
+    .replace("def main", "from std.net import NetError\n\ndef main");
+    let printed = printed_by("headers_twice", &source)?;
+    server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
+    assert_eq!(printed, "3\none, two\n[\"a=1\", \"b=2\"]\n");
+    Ok(())
+}
+
+/// SQLite turns a NaN into NULL, so a program's value would quietly become no value. It's refused.
+#[test]
+fn sqlite_refuses_a_nan() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
+    let path = place.to_string_lossy().into_owned();
+    let source = format!(
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{path}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+    );
+    let printed = printed_by("sqlite_nan", &source)?;
+    for ending in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{path}{ending}"));
+    }
+    assert_eq!(printed, "NaN can't be stored: SQLite would turn it into NULL\n1\n");
+    Ok(())
+}
+
+/// A URL prints as it was written, and a host can't hold what would make it another host.
+#[test]
+fn a_url_prints_as_written_and_a_host_stays_a_host() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "url_strict",
+        r#"from std import url
+
+def main(stdout: Stdout):
+    for text in ["mailto:a@b", "/a%2Fb", "/%ff", "http://x/a%20b", "file:///x", "https://me@example.com:8/a?b=1#c"]:
+        match url.parse(text):
+            case Ok(found):
+                stdout.print(str(found) == text, str(found))
+            case Err(error):
+                stdout.print("refused", text, error.message)
+    for text in ["http://a@b@c/", "http://good.com%2f.evil.com/", "http://a%40b/"]:
+        match url.parse(text):
+            case Ok(found):
+                stdout.print("host", found.host)
+            case Err(_):
+                stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "True mailto:a@b\nTrue /a%2Fb\nTrue /%ff\nTrue http://x/a%20b\nTrue file:///x\nTrue https://me@example.com:8/a?b=1#c\nrefused\nrefused\nrefused\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: failed asserts and a failing `main`, each holding a secret. The
 /// text is put together on a line of its own, since a diagnostic shows the line it points at.
 const SECRET_SHOWN: &str = r#"from std.crypto import Secret

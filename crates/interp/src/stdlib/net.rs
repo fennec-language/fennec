@@ -941,14 +941,30 @@ fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, St
 
 /// An answer as a `Response`.
 fn answer_value(answer: http::Answer) -> Value {
+    // A dict has each name once: a header sent again adds to the one there, as HTTP says it can.
+    let mut joined: Vec<(String, String)> = Vec::new();
+    let mut cookies = Vec::new();
+    for (name, value) in &answer.headers {
+        if name == "set-cookie" {
+            cookies.push(Value::str(value));
+        }
+        match joined.iter_mut().find(|(seen, _)| seen == name) {
+            Some((_, held)) => {
+                held.push_str(", ");
+                held.push_str(value);
+            }
+            None => joined.push((name.clone(), value.clone())),
+        }
+    }
     let headers: Vec<(Value, Value)> =
-        answer.headers.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
+        joined.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
     Value::made(
         "Response",
         vec![
             ("status", Value::Int(answer.status)),
             ("headers", Value::Dict(Rc::new(headers.into()))),
             ("body", Value::Bytes(Rc::from(answer.body))),
+            ("set_cookies", Value::list(cookies)),
         ],
     )
 }

@@ -113,7 +113,7 @@ uppercased = [copy(person, name=person.name.upper()) for person in people]
 
 ## Sized numbers
 
-Not built yet.
+Partly built: `i8` to `i32` and `u8` to `u32` run natively, and `u64` and `f32` check but don't run yet, as the list below says.
 
 ```fennec
 # the everyday types stay as they are: int is i64, float is f64
@@ -179,7 +179,7 @@ An `Id` is local to its process's `Table`. To name something across servers, sen
 
 ## Sharing, resources and tasks
 
-Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; and server rounds for `parallel(server)`. A `lock` inside another `lock` is refused for now: take them together in one. `with launch`, `Channel`, `Inbox` and `Sender` check, as the lines below say. Not built yet: running them natively, `TaskGroup`, and pools. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
+Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now: take them together in one. Not built yet: `TaskGroup`, and pools. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
 
 Four questions, each with its own words:
 
@@ -299,7 +299,7 @@ def main(speakers: Speakers, input: Input):
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock))?:`.
 - The `?` on its line covers the task: `with launch(...)` fails with the task's errors and `Crashed`, from `std.concurrent`, where the block ends. `inbox_size=` is 16 unless given. Checked, and written in around `std.intrinsics`' `launch` and `launch_end`. Built natively: a task runs on the runtime's threads, with what it captured copied for it. The interpreter refuses them.
 - `TaskGroup`, from `std.concurrent`, holds a number of tasks known only at run time, and stops them all when its block ends.
-- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `with Channel[Job].open(size=64) as jobs:` checks, and so do `send`, `receive` and `for job in jobs`. Not built yet: native code for the intrinsics, and the shorter `Channel[Job](size=64)`.
+- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `with Channel[Job].open(size=64) as jobs:` builds natively, and so do `send`, `receive` and `for job in jobs`, each message copied across as it's sent. The interpreter refuses channels, since they run between tasks. Not built yet: the shorter `Channel[Job](size=64)`.
 - A channel delivers each message to one receiver by default, as a work queue. `to=.Every` gives every listener every message, as in `with Channel[Hit](size=1024, to=.Every) as hits:`, and receiving reads the same either way, `for hit in hits`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. Not built yet.
 - Dev builds stop with a report when tasks are waiting only on each other, since a hang through channels alone can't be ruled out at compile time.
 
@@ -473,7 +473,8 @@ page = html.render(t"<p>Hello, {visitor.name}</p>")
 result = process.run(t"git log --author={author}")?
 ```
 
-- `std.sqlite` takes them: `db.execute(t"...")` and `db.query[T](t"...")`, with each value bound as a parameter and each row read into a `T` by its columns' names. Built, natively.
+- `std.sqlite` takes them: `db.execute(t"...")` and `db.query[T](t"...")`, with each value bound as a parameter and each row read into a `T` by its columns' names. Built, natively. In a test, each path is a real WAL database file of the test's own, so a test reads as a program does.
+- `std.postgres` speaks Postgres's protocol in plain Fennec: its messages, signing in with SCRAM-SHA-256, and a query as the extended protocol's messages, its template's values bound apart and its rows read by column type into `sql.rows_as[T]`. Built, with no network of its own, so the same code runs against a socket or bytes a test wrote. Connecting it through `std.net` is next. It lives in `std` until first-party kits have a home.
 - `t"..."` makes a `std` `Template`, as Python 3.14's t-strings do. It holds the literal pieces and the values separately, and the values' type comes from where it goes, as in `Template[SqlValue]`. A `Template[T]` has `strings`, one more than its `values`, plus each value's `expressions` as written and its `format_specs`, and `interpolations()` gives each value with both.
 - A `str` is never a `Template`, so `db.query`, `html.render` and `process.run` can't be handed text built by joining strings, and SQL, HTML and shell injection can't be written. There are no per-library string prefixes.
 - `LiteralStr` is a string that came from the source code, as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only.
@@ -578,7 +579,10 @@ def main(net: Net, fs: Fs, clock: Clock):
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. Built. The JIT is removed, and the commit before got the tag `before-jit-interpreter-removal`. Built. The interpreter is removed from `fennec` next. Not built yet.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. Built. The JIT is removed, and the commit before got the tag `before-jit-interpreter-removal`. Built.
+- A native program carries no interpreter: `fennec build` links one runtime with no interpreter in it, and the program's syntax isn't in the image, so a hello-world is about 1.1 MB. Built. The interpreter still stands in for `fennec run` and runs `fennec test`, and goes from `fennec` itself next. Not built yet.
+- The launcher runs the toolchain a kit asks for, `fennec = "0.4.2"` in `kit.toml`, pinned by its signed manifest's hash in `kit.lock`. It fetches one only when it's missing, and never with `--offline`, and only `fennec update` moves a pin. Built, as `fennec-launcher` for now. No release keys are made yet, so nothing it fetches verifies today.
+- A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest. CI builds each platform twice and compares them. Built.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
 
 ## Checks

@@ -443,6 +443,7 @@ dependencies = [
  "fennec-check",
  "fennec-kit",
  "fennec-syntax",
+ "libm",
 ]
 
 [[package]]

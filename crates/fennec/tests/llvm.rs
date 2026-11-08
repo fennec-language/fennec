@@ -3168,6 +3168,59 @@ def main(stdout: Stdout):
         stdout.print(line)
 ";
 
+/// Several handles in one `with` open in order and finish innermost first, natively as in the
+/// interpreter. One that fails to open runs the `else:` of each opened before it, a block that
+/// fails runs every one's, and a source that lends a tuple splits it into a name each.
+#[test]
+fn several_handles_in_one_with_finish_innermost_first_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("with_handles", WITH_HANDLES)
+}
+
+const WITH_HANDLES: &str = r#"error Refused:
+    who: str
+
+struct Log:
+    lines = list[str]()
+
+def opened(name: str, ref log: Log) -> with str fails Refused:
+    if name == "bad":
+        fail Refused(who=name)
+    log.lines.append(f"open {name}")
+    lend name else:
+        log.lines.append(f"undo {name}")
+    log.lines.append(f"close {name}")
+
+def pair(ref log: Log) -> with (int, str):
+    log.lines.append("split")
+    lend (7, "w")
+    log.lines.append("joined")
+
+def both(first: str, second: str, ref log: Log) -> int fails Refused:
+    with opened(first, ref log)? as left, opened(second, ref log)? as right:
+        log.lines.append(f"use {left} {right}")
+        if right == "c":
+            fail Refused(who="late")
+    1
+
+def main(stdout: Stdout):
+    mut log = Log()
+    stdout.print(both("a", "b", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    stdout.print(both("a", "bad", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    stdout.print(both("a", "c", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    with pair(ref log) as reader, writer:
+        log.lines.append(f"{reader} {writer}")
+    stdout.print(log.lines)
+"#;
+
 /// What a `with` source lends is the block's to use, `ref self` methods included, with or without
 /// `as ref`: lent by name, the block's changes are what the source's cleanup sees. A `shared`
 /// handle lent the same way takes its methods with no `mut`.
@@ -4005,6 +4058,37 @@ def main(stdout: Stdout):
     n = 7
     stdout.print(joined(small for _ in range(3)), joined(big for _ in range(2)).len())
     stdout.print(joined(repeat("kit", times=2)), sum(n for _ in range(4)), list(n for _ in range(2)))
+"#,
+    )
+}
+
+/// A generator copied into the loop over it holds each argument as its parameter's type: a `str`
+/// given for a `str?` is an optional in the copy. The copy once held it as the argument's type,
+/// so the build left `main` to the JIT, as it read `str` as `str?`.
+#[test]
+fn a_copied_generator_holds_its_arguments_as_its_parameters_types() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "copied_parameter_types",
+        r#"def or_else(word: str?) -> Iterator[str]:
+    yield word else "nothing"
+
+def when_given(word: str?) -> Iterator[str]:
+    if word is not None:
+        yield f"{word}!"
+
+def main(stdout: Stdout):
+    for word in or_else("hi"):
+        stdout.print(word)
+    for word in or_else(None):
+        stdout.print(word)
+    maybe: str? = "kept"
+    for word in when_given(maybe):
+        stdout.print(word)
+    held = or_else("later")
+    stdout.print(list(held), list(when_given("x")))
 "#,
     )
 }
@@ -9311,6 +9395,34 @@ fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io:
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
+}
+
+/// A generic function whose type parameter is only in an `Iterator[T]` it's given works out
+/// what `T` is from the iterator. It once couldn't, so the build left the caller to the JIT.
+#[test]
+fn a_generic_over_an_iterator_takes_its_type_from_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "generic_iterator",
+        r#"def count[T](items: Iterator[T]) -> int:
+    mut n = 0
+    for _ in items:
+        n += 1
+    n
+
+def last_of[T](items: Iterator[T], otherwise: T) -> T:
+    mut last = otherwise
+    for item in items:
+        last = item
+    last
+
+def main(stdout: Stdout):
+    stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
+    stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
+"#,
+    )
 }
 
 const GENERICS_EXPECTED: &str = r#"struct Box[T]:

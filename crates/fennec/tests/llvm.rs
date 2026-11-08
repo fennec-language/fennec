@@ -105,11 +105,17 @@ fn pinned(
 }
 
 /// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
+/// A diagnostic gives a file's path as it was given, which on Windows goes on with `\`, so the
+/// separator after `<dir>` is written as `/` there too.
 pub(crate) fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
     let mut folders = vec![dir.to_string_lossy().into_owned()];
     folders.extend(std::fs::canonicalize(dir).ok().map(|real| real.to_string_lossy().into_owned()));
-    let plain =
-        |text: String| folders.iter().fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"));
+    let plain = |text: String| {
+        folders
+            .iter()
+            .fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"))
+            .replace("<dir>\\", "<dir>/")
+    };
     (plain(out), plain(err), code)
 }
 

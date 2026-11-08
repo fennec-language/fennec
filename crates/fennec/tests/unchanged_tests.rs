@@ -40,11 +40,14 @@ fn pinned(name: &str) -> (String, String) {
     (read("out"), read("err"))
 }
 
-/// Text a run in `dir` wrote, with `dir` written as `<dir>`, as the pins have it.
+/// Text a run in `dir` wrote, with `dir` written as `<dir>`, as the pins have it. A diagnostic
+/// gives a file's path as it was given, which on Windows goes on with `\`, so the separator after
+/// `<dir>` is written as `/` there too.
 fn apart_from(dir: &Path, text: &str) -> String {
     let real = std::fs::canonicalize(dir).map(|real| real.display().to_string()).unwrap_or_default();
     let text = text.replace(&dir.display().to_string(), "<dir>");
-    if real.is_empty() { text } else { text.replace(&real, "<dir>") }
+    let text = if real.is_empty() { text } else { text.replace(&real, "<dir>") };
+    text.replace("<dir>\\", "<dir>/")
 }
 
 fn stdout(output: &Output) -> String {

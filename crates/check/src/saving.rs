@@ -14,6 +14,29 @@ use crate::types::Type;
 /// The modules that save through these methods.
 const SAVING_MODULES: [&str; 5] = ["json", "toml", "pack", "sql", "sqlite"];
 
+/// The standard library's types that are never saved, though their fields could be: a `Secret`,
+/// whose text mustn't leave the program that way, and an `Instant`, which means nothing outside
+/// the run that read it.
+/// Each is named as a message says it, with what to save instead.
+const NEVER_SAVED: [(&str, &str, &str); 2] = [
+    (
+        "Secret",
+        "a `Secret`",
+        "a secret never leaves the program by being saved: save how to get it again, like the name of the variable it's read from",
+    ),
+    (
+        "Instant",
+        "an `Instant`",
+        "an `Instant` means nothing outside this run: save a `Time`, from `clock.time()`",
+    ),
+];
+
+/// How a message names a standard library type that's never saved, if it's one, and what to save
+/// instead.
+pub(crate) fn never_saved(name: &str) -> Option<(&'static str, &'static str)> {
+    NEVER_SAVED.iter().find(|(never, ..)| *never == name).map(|(_, what, instead)| (*what, *instead))
+}
+
 /// The names that show a program uses saving.
 const SAVING_NAMES: [&str; 4] = ["serialize", "deserialize", "Serializable", "Deserializable"];
 
@@ -34,7 +57,7 @@ pub(crate) fn generate(module: &mut Module) {
     let written = written_by_hand(module);
     let mut generated: BTreeSet<String> = types
         .iter()
-        .filter(|def| !written.contains(&def.name) && !has_method(def))
+        .filter(|def| !written.contains(&def.name) && !has_method(def) && never_saved(&def.name).is_none())
         .map(|def| def.name.clone())
         .collect();
     // What can't be saved takes what holds it with it, until nothing more goes.
@@ -169,6 +192,7 @@ fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
         Type::Union(members) => {
             members.iter().all(|member| tested_by_name(member) && saved(checker, member, generated))
         }
+        Type::Named(name) | Type::Generic(name, _) if never_saved(name).is_some() => false,
         Type::Named(name) | Type::Generic(name, _) => {
             let own = generated.contains(name) || has_both(checker, name);
             own && ty.type_args().iter().all(|arg| saved(checker, arg, generated))
@@ -697,6 +721,9 @@ fn field_stops(
             members.iter().find_map(|member| field_stops(checker, member, place, (field, owner), open))
         }
         Type::Named(_) | Type::Generic(..) if checker.program.is_shared(ty) => stop("`shared`".to_owned()),
+        Type::Named(name) | Type::Generic(name, _) if let Some((what, _)) = never_saved(name) => {
+            stop(what.to_owned())
+        }
         Type::Named(name) | Type::Generic(name, _) if checker.program.type_info(name).is_some() => {
             stops_in(checker, name, place, open)
         }

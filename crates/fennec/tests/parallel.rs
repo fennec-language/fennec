@@ -483,6 +483,25 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A dict's values go with it across a lock and into a task, as its strings do: a list held in one
+/// is the thread's own copy, not the address of a block another thread may reuse.
+#[test]
+fn a_dicts_lists_are_copied_across_a_lock_and_into_a_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-dict-lists-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_dict_of_lists.fen");
+    let built = build_on_threads(&dir, source, "shared_dict_of_lists")?;
+    let first = "[100, 101, 102, 103, 104, 105, 106, 107]";
+    let second = "[200, 201, 202, 203, 204, 205, 206, 207]";
+    let wanted = format!("lock {first} {second}\n5000\ntask {first} {second}\n");
+    matches_on_workers(&built, "shared_dict_of_lists", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task's end takes only the blocks it still has: one it freed, whose address another task on its
 /// worker then got for a block of its own, stays with that task.
 #[test]

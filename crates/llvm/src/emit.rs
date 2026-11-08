@@ -2876,7 +2876,8 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def add(x: int) -> int:\n    x + 1\n\ndef f() -> int:\n    (g, n) = (add, 4)\n    g(n)\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+        // `f32` isn't held natively yet.
+        let source = "def f() -> int:\n    speed: f32 = 1.5\n    int(speed > 1.0)\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

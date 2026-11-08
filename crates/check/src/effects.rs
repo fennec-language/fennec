@@ -149,7 +149,7 @@ pub(crate) fn breaks(body: &[Stmt]) -> bool {
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(_, body)| breaks(body)) || otherwise.as_deref().is_some_and(breaks)
         }
-        StmtKind::With { body, .. } => breaks(body),
+        StmtKind::With { body, .. } | StmtKind::OnFailure { body, .. } => breaks(body),
         StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
             arms.iter().any(|arm| breaks(&arm.body))
         }

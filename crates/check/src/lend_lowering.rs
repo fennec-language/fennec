@@ -821,7 +821,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 }
                 None
             }
-            StmtKind::With { body, .. } => {
+            StmtKind::With { body, .. } | StmtKind::OnFailure { body, .. } => {
                 exits(body, caller, in_loop);
                 None
             }
@@ -1164,6 +1164,10 @@ fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
                 declared_in(body, found);
             }
             StmtKind::While { body, .. } => declared_in(body, found),
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                declared_in(cleanup, found);
+                declared_in(body, found);
+            }
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
                     declared_in(body, found);
@@ -1236,6 +1240,10 @@ fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {
                 rename_bound(body, fresh);
             }
             StmtKind::While { body, .. } => rename_bound(body, fresh),
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                rename_bound(cleanup, fresh);
+                rename_bound(body, fresh);
+            }
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
                     rename_bound(body, fresh);

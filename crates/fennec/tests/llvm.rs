@@ -3470,7 +3470,8 @@ fn a_failure_from_inside_what_a_block_calls_runs_its_cleanup() -> std::io::Resul
     let printed = printed_by("failure_inside_a_block", FAILURE_INSIDE_A_BLOCK)?;
     assert_eq!(
         printed,
-        "open\n7\n8\ncleanup ran\nfailed 2 []\n\
+        "open\nopen\nclosed\nclosed\n7\n\
+         open\n7\n8\ncleanup ran\nfailed 2 []\n\
          open\n7\n8\ncleanup ran\nfailed 2 []\n\
          open\ncleanup ran\nfailed 2 []\n\
          open\nopen\n14\n15\ncleanup ran\ncleanup ran\nfailed 2 []\n\
@@ -3556,7 +3557,19 @@ def noted(stdout: Stdout) fails Boom:
     with closing_fails()? as held:
         stdout.print(sum(numbers(5)?) + held)
 
+def inner_returns(stdout: Stdout) -> int fails Boom:
+    with opened(stdout)? as first:
+        with opened(stdout)? as second:
+            if first == second:
+                return first
+    return 0
+
 def main(stdout: Stdout):
+    match inner_returns(stdout):
+        case Ok(value):
+            stdout.print(value)
+        case Err(problem):
+            stdout.print(problem.at)
     for run in [0, 1, 2, 3, 4, 6]:
         ran = match run:
             case 0:

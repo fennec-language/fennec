@@ -3,7 +3,7 @@
 //! is read into a temporary and written back after the call.
 
 use fennec_check::Type;
-use fennec_syntax::{Arg, Expr, ExprKind, Span};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Span};
 
 use super::places::{Place, Step};
 use super::{Lowered, Lowering};
@@ -356,6 +356,9 @@ impl Lowering<'_> {
             // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
             let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
             if self.context.intrinsics.contains(intrinsic) {
+                if intrinsic == "intrinsics.channel_receive" {
+                    return self.channel_receive(dest, values, write_backs, span);
+                }
                 // One given something by `ref`, like `append_text(ref out, text)`, changes it, and
                 // it's put back after, as for any call.
                 let name = intrinsic.to_owned();
@@ -374,6 +377,44 @@ impl Lowering<'_> {
         }
         self.write_back(write_backs, span)?;
         Ok(dest)
+    }
+
+    /// `channel_receive[T](channel, timeout_ns, ref why)`: the message, taken into a `T` by the
+    /// backend with `why` set to how it went, then `Some` of it when `why` is 0, else `None`.
+    fn channel_receive(
+        &mut self,
+        dest: Option<LocalId>,
+        values: Vec<Operand>,
+        write_backs: Vec<WriteBack>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let why = values.get(2).cloned().ok_or("`channel_receive` without its `why`")?;
+        let wanted = dest.map(|dest| self.local_type(dest));
+        let Some(Type::Optional(item)) = wanted else {
+            return Err("it receives from a channel without keeping the message".to_owned());
+        };
+        let taken = self.temporary(*item);
+        let take = InstKind::Builtin {
+            dest: Some(taken),
+            name: "intrinsics.channel_take".to_owned(),
+            args: values,
+            changes: true,
+        };
+        self.emit(take, span);
+        let got = self.temporary(Type::Bool);
+        self.emit(InstKind::Binary { dest: got, op: BinOp::Eq, lhs: why, rhs: Operand::Int(0) }, span);
+        self.write_back(write_backs, span)?;
+        let dest = dest.ok_or("a message no one keeps")?;
+        let (some, none, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(got), then: some, otherwise: none });
+        self.current = some;
+        self.emit(InstKind::MakeSome { dest, value: Operand::Local(taken) }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = none;
+        self.emit(InstKind::Copy { dest, value: Operand::None }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Ok(Some(dest))
     }
 
     /// Writes back what a call changed, saying which of those places can be taken out for it.

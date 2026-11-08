@@ -4660,6 +4660,80 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator's failure passes up however the generator was reached: from a name, and from inside
+/// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
+#[test]
+fn a_generators_failure_passes_up_from_a_name_or_a_with() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def checked(limit: int) -> Iterator[int] fails IoError:
+    for at in range(limit):
+        if at == 2: fail IoError(reason=\"stop\")
+        yield at
+
+def source() -> with int:
+    lend 1 else:
+        pass
+
+def in_a_name(limit: int) -> int fails IoError:
+    mut seen = 0
+    made = checked(limit)?
+    for at in made:
+        seen += at
+    seen
+
+def in_with(limit: int) -> int fails IoError:
+    mut seen = 0
+    with source() as held:
+        for at in checked(limit)?:
+            seen += at + held
+    seen
+
+def nested(limit: int) -> int fails IoError:
+    mut seen = 0
+    with source() as outer:
+        with source() as inner:
+            for at in checked(limit)?:
+                seen += at + outer + inner
+    seen
+
+def listed(limit: int) -> list[int] fails IoError:
+    [at * 2 for at in checked(limit)?]
+
+def main(stdout: Stdout):
+    stdout.print(in_a_name(5), in_a_name(2))
+    stdout.print(in_with(5), in_with(2))
+    stdout.print(nested(5), nested(2))
+    stdout.print(listed(5), listed(2))
+";
+    let stop = "Err(IoError(reason=\"stop\"))";
+    let wanted = format!("{stop} Ok(1)\n{stop} Ok(3)\n{stop} Ok(5)\n{stop} Ok([0, 2])\n");
+    let dir = folder("generator_failure")?;
+    let program = dir.join("failing.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("failing"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {

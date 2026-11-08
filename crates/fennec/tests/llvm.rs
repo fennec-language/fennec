@@ -3729,6 +3729,61 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// `else as name:` gives the block what failed, and it still has to leave: by `return`, `continue`
+/// or `fail`, here with a failure that's counted, after a call that gives nothing and one that
+/// gives a value.
+#[test]
+fn else_as_names_what_failed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "else_as",
+        "error Boom:
+    reason: str
+
+def risky(flag: int) -> str fails Boom:
+    if flag == 0:
+        fail Boom(reason=\"zero \" + str(flag))
+    return \"fine \" + str(flag)
+
+def nothing(flag: int) fails Boom:
+    if flag == 0:
+        fail Boom(reason=\"nothing \" + str(flag))
+
+def run(flag: int, stdout: Stdout) -> str:
+    text = risky(flag) else as problem:
+        stdout.print(\"saw\", problem.reason)
+        return \"left\"
+    nothing(flag) else as trouble:
+        stdout.print(\"also\", trouble.reason)
+        return \"unreached\"
+    return text
+
+def again(stdout: Stdout) fails Boom:
+    for flag in [1, 0, 2]:
+        made = risky(flag) else as problem:
+            stdout.print(\"skip\", problem.reason)
+            continue
+        stdout.print(made)
+    made = risky(0) else as problem:
+        fail problem
+    stdout.print(made)
+
+def main(stdout: Stdout):
+    stdout.print(run(0, stdout))
+    stdout.print(run(1, stdout))
+    match again(stdout):
+        case Ok(_):
+            stdout.print(\"ok\")
+        case Err(problem):
+            stdout.print(\"failed\", problem.reason)
+",
+    )?;
+    assert_eq!(printed, "saw zero 0\nleft\nfine 1\nfine 1\nskip zero 0\nfine 2\nfailed zero 0\n");
+    Ok(())
+}
+
 /// A failure can leave a `with` block from inside what it calls: from a generator, whether it's
 /// read through a name, looped over or summed, or from a round of a `parallel` loop. Each runs the
 /// source's `else:` once, a `ref` case still puts back what it changed, and what a failing

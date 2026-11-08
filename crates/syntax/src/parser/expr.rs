@@ -38,7 +38,16 @@ impl Parser {
         if self.eat_kw(Kw::Else) {
             let default = match self.peek() {
                 Tok::Kw(Kw::Continue | Kw::Break | Kw::Return | Kw::Fail) => self.leaving()?,
-                Tok::P(Punct::Colon) => self.leaving_block()?,
+                Tok::P(Punct::Colon) => self.leaving_block(None)?,
+                Tok::Kw(Kw::As) => {
+                    self.advance();
+                    let failure = self.name("a name for the failure after `else as`")?;
+                    if !self.at(&Tok::P(Punct::Colon)) {
+                        return Err(Diagnostic::new("`else as` needs a block", self.span())
+                            .with_help("write `else as failure:` and the block under it, which leaves"));
+                    }
+                    self.leaving_block(Some(failure))?
+                }
                 _ => self.expr()?,
             };
             let span = value.span.to(default.span);
@@ -69,8 +78,9 @@ impl Parser {
 
     /// An `else:` block, which says something and then leaves, as in
     /// `text = fs.read(path) else:` with `stdout.print(...)` and `return` under it. It's the same
-    /// `match` as `else return`, with more statements in its case.
-    fn leaving_block(&mut self) -> Result<Expr, Diagnostic> {
+    /// `match` as `else return`, with more statements in its case. `else as failure:` names what
+    /// failed in the block.
+    fn leaving_block(&mut self, failure: Option<String>) -> Result<Expr, Diagnostic> {
         let start = self.advance().span;
         let indented = self.at(&Tok::Newline);
         let body = self.block()?;
@@ -79,7 +89,13 @@ impl Parser {
         let last = body.last().map(|last| (&last.kind, last.span));
         match last {
             Some((StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_), _)) => {
-                Ok(leaving_match(start, body, span))
+                let mut leaving = leaving_match(start, body, span);
+                if let (ExprKind::Match { arms, .. }, Some(failure)) = (&mut leaving.kind, failure)
+                    && let Some(arm) = arms.first_mut()
+                {
+                    arm.pattern = Pattern::Bind(failure);
+                }
+                Ok(leaving)
             }
             _ => Err(Diagnostic::new("an `else:` block must leave", last.map_or(start, |(_, at)| at))
                 .with_help("end it with `return`, `fail`, `continue` or `break`, or write a value after `else` instead of a block")),

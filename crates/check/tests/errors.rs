@@ -507,3 +507,15 @@ fn an_arrow_function_or_comprehension_cant_leave_with_else() {
         assert!(found.iter().any(|one| one.starts_with(said)), "{body}: {found:?}");
     }
 }
+
+#[test]
+fn else_as_is_for_what_can_fail_and_its_block_leaves() {
+    let found = problems(
+        "def main(stdout: Stdout):\n    held: int? = None\n    value = held else as failure:\n        stdout.print(failure)\n        return\n    stdout.print(value)\n",
+    );
+    assert_eq!(found, ["this can't fail, so `else as` has no failure to name @ held"]);
+    let parsed = fennec_syntax::parse(
+        "error Oops:\n    pass\n\ndef risky() -> int fails Oops:\n    fail Oops()\n\ndef main(stdout: Stdout):\n    value = risky() else as failure:\n        stdout.print(failure)\n    stdout.print(value)\n",
+    );
+    assert_eq!(parsed.err().map(|problem| problem.message), Some("an `else:` block must leave".to_owned()));
+}

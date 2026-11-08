@@ -8300,6 +8300,38 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A URL prints as it was written, and a host can't hold what would make it another host.
+#[test]
+fn a_url_prints_as_written_and_a_host_stays_a_host() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "url_strict",
+        r#"from std import url
+
+def main(stdout: Stdout):
+    for text in ["mailto:a@b", "/a%2Fb", "/%ff", "http://x/a%20b", "file:///x", "https://me@example.com:8/a?b=1#c"]:
+        match url.parse(text):
+            case Ok(found):
+                stdout.print(str(found) == text, str(found))
+            case Err(error):
+                stdout.print("refused", text, error.message)
+    for text in ["http://a@b@c/", "http://good.com%2f.evil.com/", "http://a%40b/"]:
+        match url.parse(text):
+            case Ok(found):
+                stdout.print("host", found.host)
+            case Err(_):
+                stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "True mailto:a@b\nTrue /a%2Fb\nTrue /%ff\nTrue http://x/a%20b\nTrue file:///x\nTrue https://me@example.com:8/a?b=1#c\nrefused\nrefused\nrefused\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

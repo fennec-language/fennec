@@ -288,8 +288,8 @@ mod real {
         }
         // SQLite stores a NaN as NULL, so the value would quietly be gone.
         if query.values.iter().any(|value| matches!(value, Cell::Real(x) if x.is_nan())) {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "NaN can't be stored: SQLite would turn it into NULL".to_owned(),
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "NaN can't be stored: SQLite would turn it into NULL".into(),
             ));
         }
         for (at, value) in query.values.iter().enumerate() {

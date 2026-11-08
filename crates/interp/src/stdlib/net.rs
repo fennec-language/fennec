@@ -163,7 +163,7 @@ fn connection_method(
     args: Vec<CallArg>,
     span: Span,
 ) -> Result<Value, Diagnostic> {
-    interp.connection_method(connection, method, args, span)
+        crate::replay::value(format_args!("Connection.{method}"), span, || interp.connection_method(connection, method, args, span))
 }
 
 fn server_method(
@@ -173,7 +173,7 @@ fn server_method(
     args: Vec<CallArg>,
     span: Span,
 ) -> Result<Value, Diagnostic> {
-    interp.server_method(server, method, args, span)
+        crate::replay::value(format_args!("Server.{method}"), span, || interp.server_method(server, method, args, span))
 }
 
 #[expect(clippy::needless_pass_by_value, reason = "every method in `MODULE` takes these")]
@@ -198,7 +198,7 @@ fn udp_method(
     args: Vec<CallArg>,
     span: Span,
 ) -> Result<Value, Diagnostic> {
-    interp.udp_method(socket, method, args, span)
+        crate::replay::value(format_args!("UdpSocket.{method}"), span, || interp.udp_method(socket, method, args, span))
 }
 
 /// The arguments, and the `Duration` given as `timeout=`, if it was. `net.udp(port=…)` is the port

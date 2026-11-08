@@ -8,8 +8,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::methods::no_method;
-use crate::value::{Capability, Value};
+use crate::value::Value;
 
 
 /// What `run` was given besides the program and its arguments: what the program reads from its

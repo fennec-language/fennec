@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::Diagnostic;
 
 use crate::stdlib::fs::path_text;
 use crate::value::{Capability, Value};

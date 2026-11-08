@@ -11,10 +11,8 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
 
-use crate::methods::no_method;
-use crate::value::{Instance, Value};
+use crate::value::Value;
 
 
 /// The `Err` holding the case of `SqlError` a failure is.

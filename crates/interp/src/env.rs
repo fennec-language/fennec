@@ -5,11 +5,9 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
 
-use crate::methods::no_method;
 use crate::pairs::Pairs;
-use crate::value::{Capability, Value};
+use crate::value::Value;
 
 /// The environment variable `name`, or `None` when it isn't set. One that isn't UTF-8 is read
 /// with each bad sequence as U+FFFD.

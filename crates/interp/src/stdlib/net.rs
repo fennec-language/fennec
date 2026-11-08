@@ -16,7 +16,7 @@ use fennec_syntax::{Diagnostic, Span};
 
 use super::http;
 use crate::methods::no_method;
-use crate::value::{Capability, Instance, Value};
+use crate::value::{Capability, Value};
 
 
 /// How long connecting waits unless told otherwise.

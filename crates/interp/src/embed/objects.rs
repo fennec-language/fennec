@@ -2,10 +2,8 @@
 //! method calls, and changing a part of a name in place. Each is one call, with no syntax to
 //! build or walk.
 
-use fennec_syntax::{BinOp, UnaryOp};
+use fennec_syntax::BinOp;
 
-use super::{State, attempt, span, with};
-use crate::value::Value;
 
 /// The operators native code passes by number, in order.
 const BINARY: [BinOp; 17] = [

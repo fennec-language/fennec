@@ -844,7 +844,7 @@ pub mod temps {
 
 /// Running the parts of a program that native code hands to the interpreter.
 pub mod eval {
-    use super::{State, Value, attempt, span, with};
+    use super::{State, attempt, span, with};
     use fennec_syntax::Diagnostic;
 
     /// Reports a failure inside the standard library where the program called it.

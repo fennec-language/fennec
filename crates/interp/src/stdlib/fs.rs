@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::methods::no_method;
-use crate::value::{Capability, Instance, Value};
+use crate::value::{Capability, Value};
 
 
 /// A file `fs.create` or `fs.open` has lent, by the handle its `File` holds. One being written

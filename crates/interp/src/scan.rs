@@ -2,5 +2,4 @@
 //! `fail` or `?`) and whether it's a generator (it contains `yield`). Nested functions and
 //! arrow functions are their own bodies, so they aren't searched.
 
-use fennec_syntax::{Expr, ExprKind, FStrPart, Stmt, StmtKind};
 

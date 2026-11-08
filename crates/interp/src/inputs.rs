@@ -2,12 +2,10 @@
 //! as `args: Args`, and its standard input, as `stdin: Stdin`.
 
 use std::io::BufRead;
-use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::methods::no_method;
-use crate::value::{Capability, Value};
+use crate::value::Value;
 
 /// A program's command-line arguments and standard input, for a host to hand over before
 /// running it. By default there are no arguments and no input.

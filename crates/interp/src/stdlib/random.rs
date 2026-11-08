@@ -2,9 +2,7 @@
 //! sequence depends only on the seed and `n`, so it's the same on every machine and can be
 //! drawn without keeping any state.
 
-use fennec_syntax::{Diagnostic, Span};
 
-use crate::value::Value;
 
 
 /// The `n`th 64-bit number of `seed`'s sequence.

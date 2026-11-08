@@ -1,14 +1,12 @@
 //! Methods on built-in values: `stdout`, `fs`, strings, lists, dicts, sets and `Table`.
 
 use std::fmt::Write;
-use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::format;
 use crate::methods::no_method;
-use crate::ops;
-use crate::value::{Capability, Value};
+use crate::value::Value;
 
 fn wrong_args(method: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span)

@@ -1,9 +1,7 @@
 //! Turning values into text: how `stdout.print` shows them, and f-string format specs like
 //! `{coins:,}` and `{health:.1f}`.
 
-use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 

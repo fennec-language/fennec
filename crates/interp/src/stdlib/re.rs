@@ -4,11 +4,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use fennec_re::{Anchor, Captures, Regex};
+use fennec_re::Regex;
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::methods::no_method;
-use crate::value::{Instance, Value};
 
 
 /// Part of a replacement: text as written, or what a group caught.

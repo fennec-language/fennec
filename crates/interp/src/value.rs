@@ -3,7 +3,6 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Expr, FnDef};
 
 #[derive(Clone, Debug)]
 pub(crate) enum Value {
@@ -107,17 +106,6 @@ impl Instance {
         self.fields.iter().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
     }
 
-}
-
-impl std::ops::Deref for Def {
-    type Target = FnDef;
-
-    fn deref(&self) -> &FnDef {
-        match self {
-            Def::Std(def) => def,
-            Def::Own(def) => def,
-        }
-    }
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.

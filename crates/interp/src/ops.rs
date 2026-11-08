@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
+use fennec_syntax::{BinOp, Diagnostic, Span};
 
 use crate::value::Value;
 

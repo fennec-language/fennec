@@ -1,0 +1,62 @@
+# `with fs.create(path)? as file:` lends a file to write, and `with fs.open(path)? as file:` one
+# to read. A written file takes its path's place only when its block ends, on the disk, so a
+# block that fails leaves the old file as it was. Reads come in lines or in chunks, so a file far
+# bigger than memory is fine.
+def save(fs: Fs, path: str, scores: list[int]) fails IoError:
+    with fs.create(path)? as file:
+        for score in scores:
+            if score < 0: fail IoError(reason=f"{score} isn't a score")
+            file.write_line(str(score))?
+
+def load(fs: Fs, path: str) -> list[int] fails IoError:
+    mut found = list[int]()
+    with fs.open(path)? as file:
+        for line in file.lines():
+            found.append(int(line) else 0)
+    found
+
+test "a file written is there to read when its block ends"(fs: Fs):
+    save(fs, "scores.txt", scores=[120, 95, 300])?
+    assert load(fs, "scores.txt")? == [120, 95, 300]
+    assert fs.read_text("scores.txt")? == "120\n95\n300\n"
+
+test "a block that fails leaves the old file as it was"(fs: Fs):
+    save(fs, "scores.txt", scores=[120])?
+    match save(fs, "scores.txt", scores=[7, -1, 9]):
+        case Ok(_):
+            assert False
+        case Err(problem):
+            assert problem.reason == "-1 isn't a score"
+    assert load(fs, "scores.txt")? == [120]
+
+test "a file can be read in chunks"(fs: Fs):
+    fs.write_text("letters.txt", "abcdefg")?
+    mut sizes = list[int]()
+    with fs.open("letters.txt")? as file:
+        for chunk in file.chunks(3):
+            sizes.append(chunk.len())
+    assert sizes == [3, 3, 1]
+
+test "a file is for writing or for reading, not both"(fs: Fs):
+    fs.write_text("notes.txt", "fox")?
+    with fs.open("notes.txt")? as file:
+        match file.write_text("den"):
+            case Ok(_):
+                assert False
+            case Err(problem):
+                assert problem.reason == "this file was opened to read, not to write"
+    with fs.create("other.txt", durable=False)? as file:
+        match file.read_text():
+            case Ok(_):
+                assert False
+            case Err(problem):
+                assert problem.reason == "this file was made to write, not to read"
+
+def main(stdout: Stdout, fs: Fs):
+    # This file doesn't exist, so opening it fails, and nothing is made.
+    match load(fs, "no/such/scores.txt"):
+        case Ok(scores):
+            stdout.print("found", scores)
+        case IoError():
+            # What the system says differs from one to another, so it isn't printed here.
+            stdout.print("there are no scores to load")

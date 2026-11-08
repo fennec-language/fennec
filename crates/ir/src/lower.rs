@@ -243,7 +243,7 @@ struct Loop {
 }
 
 /// The capabilities, whose methods the engines provide.
-const CAPABILITIES: [&str; 9] =
+pub(crate) const CAPABILITIES: [&str; 9] =
     ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Env"];
 
 /// What's known about the whole program.

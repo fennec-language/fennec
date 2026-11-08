@@ -63,6 +63,19 @@ impl Interp<'_> {
         None
     }
 
+    /// A std source written in where it's used, like `fs.create`, can name a std type that
+    /// nothing has imported, like `File`: its module is loaded then.
+    fn load_std_named(&mut self, object: &Expr) -> Result<(), Diagnostic> {
+        if let ExprKind::Name(name) = &object.kind
+            && object.span.in_prelude()
+            && self.frame.get(name).is_none()
+            && self.lookup(name, object.span).is_err()
+        {
+            self.load_std_providing(name)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Result<Value, Diagnostic> {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
@@ -71,6 +84,7 @@ impl Interp<'_> {
                     let args = self.eval_args(args)?;
                     return self.call_value(&function, args, span);
                 }
+                self.load_std_named(object)?;
                 // It passed the checker and is nothing here, so it's a type parameter, and types
                 // don't exist while this runs.
                 if let ExprKind::Name(param) = &object.kind

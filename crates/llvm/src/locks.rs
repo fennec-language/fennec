@@ -191,7 +191,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn unlock(&mut self, handle: &Operand) -> Result<(), String> {
         let (word, cell, plain) = self.lock_word(handle)?;
         // A `lock ... as ref` block ending normally keeps what it changed.
-        if self.saves_changes(handle) {
+        if self.saves_changes(handle) && !self.take_rolled_back(handle) {
             self.rollback_kept(handle);
         }
         self.give_back_word(&word, &cell, &plain.to_string(), false);
@@ -276,7 +276,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn unlock_all(&mut self, handles: &[Operand]) -> Result<(), String> {
         // Each `lock ... as ref` among them ending normally keeps what it changed.
         for handle in handles.iter().rev() {
-            if self.saves_changes(handle) {
+            if self.saves_changes(handle) && !self.take_rolled_back(handle) {
                 self.rollback_kept(handle);
             }
         }

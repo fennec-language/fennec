@@ -100,13 +100,46 @@ impl Emit<'_, '_, '_> {
         self.line("call void @fennec_lock_kept()");
     }
 
+    /// `lock.roll_back(handle)`: a failure is leaving this lock's block, so what the block changed
+    /// is put back, as for a crash, and the unlock just after it keeps nothing. Any other lock has
+    /// saved nothing to put back.
+    pub(crate) fn roll_back_on_failure(&mut self, handle: &Operand) -> Result<(), String> {
+        if !self.saves_changes(handle) {
+            return Ok(());
+        }
+        let Operand::Local(local) = handle else { return Ok(()) };
+        self.undo_changes(handle)?;
+        self.rolled_back.insert(local.0);
+        Ok(())
+    }
+
+    /// Whether `handle`'s block has just had its changes put back, so there's nothing to keep.
+    pub(crate) fn take_rolled_back(&mut self, handle: &Operand) -> bool {
+        matches!(handle, Operand::Local(local) if self.rolled_back.remove(&local.0))
+    }
+
+    /// Puts back what `handle`'s block changed: in the runtime's tables, then its own cell.
+    fn undo_changes(&mut self, handle: &Operand) -> Result<(), String> {
+        self.declare("declare void @fennec_lock_undo() nounwind");
+        self.declare("declare i64 @fennec_lock_undo_word(i64, i64, i64) nounwind");
+        if let Some(flag) = self.held_flag(handle) {
+            self.line(&format!("store i1 false, ptr {flag}"));
+        }
+        self.line("call void @fennec_lock_undo()");
+        let (cell, kind) = self.operand(handle)?;
+        let mut words = Vec::new();
+        self.cell_words(&kind, &mut words)?;
+        for (offset, word) in words {
+            self.undo_word(&cell, offset, word);
+        }
+        Ok(())
+    }
+
     /// Where a crash leaves the function: each `lock ... as ref` block still held, the last taken
     /// first, has what it changed put back, then its lock given back, before the failure goes on.
     /// The runtime puts back the words of blocks in its tables, and native code the words of the
     /// lock's own cell, which it's told one at a time.
     pub(crate) fn roll_back_on_crash(&mut self) -> Result<(), String> {
-        self.declare("declare void @fennec_lock_undo() nounwind");
-        self.declare("declare i64 @fennec_lock_undo_word(i64, i64, i64) nounwind");
         for local in self.saving.clone().into_iter().rev() {
             let handle = Operand::Local(LocalId(local));
             let Some(flag) = self.held_flag(&handle) else { continue };
@@ -114,14 +147,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{held} = load i1, ptr {flag}"));
             self.line(&format!("br i1 {held}, label %{undo}, label %{next}"));
             self.start_block(&undo);
-            self.line(&format!("store i1 false, ptr {flag}"));
-            self.line("call void @fennec_lock_undo()");
-            let (cell, kind) = self.operand(&handle)?;
-            let mut words = Vec::new();
-            self.cell_words(&kind, &mut words)?;
-            for (offset, word) in words {
-                self.undo_word(&cell, offset, word);
-            }
+            self.undo_changes(&handle)?;
             self.give_back_on_crash(&handle)?;
             self.line(&format!("br label %{next}"));
             self.start_block(&next);

@@ -6590,6 +6590,47 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A failure leaving `lock ... as ref`, by `fail` or `?`, puts back everything the block changed,
+/// as a crash does: one value, or all those locked together, and on `parallel`'s threads too. What
+/// the failure says keeps what the block saw. A local changed in the block keeps its change, and
+/// `return` and `break` are ordinary ways out, which keep the block's changes.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("lock_failure_rollback")?;
+    let program = dir.join("rollback.fen");
+    std::fs::write(&program, include_str!("fixtures/lock_failure_rollback.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("rollback"));
+    let output = output.to_string_lossy().into_owned();
+    let after_spending = "Account(balance=7, name=\"ann spent\", log=[\"start\", \"spent\"])";
+    let after_leaving = "Account(balance=109, name=\"ann spent\", log=[\"start\", \"spent\"])";
+    let wanted = format!(
+        "Ok(1)\n{after_spending}\nErr(Nope(why=\"ann spent spent is short\"))\n{after_spending}\n\
+         Err(Nope(why=\"both undone\"))\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
+         107 1\n{after_leaving}\n114\n{after_leaving}\n-16\n{after_leaving}\n"
+    );
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A crash inside `lock ... as ref` puts back everything the block changed, then gives back the
 /// lock: here a handler counts, keeps its path and appends it, then crashes on `/crash`. The server
 /// keeps serving, and the next request sees the value as it was before the crash: no `/crash` in

@@ -346,6 +346,15 @@ impl Lowering<'_> {
                 Ok(())
             }
             Leaving::Unlock { handles } => {
+                // A failure leaving a lock to write puts back what the block changed, as a crash
+                // does: the last taken first.
+                if self.failing_out {
+                    for handle in handles.iter().rev() {
+                        let args = vec![Operand::Local(*handle)];
+                        let name = "lock.roll_back".to_owned();
+                        self.emit(InstKind::Builtin { dest: None, name, args, changes: true }, span);
+                    }
+                }
                 let kind = match handles.as_slice() {
                     [handle] => InstKind::Unlock { handle: Operand::Local(*handle) },
                     _ => {

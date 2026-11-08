@@ -258,7 +258,10 @@ impl Lowering<'_> {
     pub(super) fn return_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let dest = self.temporary(self.returns.clone());
         self.emit(InstKind::MakeErr { dest, error }, span);
-        self.leave(Some(Operand::Local(dest)), span)
+        self.failing_out = true;
+        let left = self.leave(Some(Operand::Local(dest)), span);
+        self.failing_out = false;
+        left
     }
 
     /// `fail error`.

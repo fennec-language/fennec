@@ -376,6 +376,9 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// Whether what's being left is left by a failure, which a `lock ... as ref` block doesn't keep
+    /// the changes of.
+    failing_out: bool,
     /// The `shared` handles the `with` blocks being lowered hold the locks of.
     locked: Vec<LocalId>,
     /// The locals changed so far, for operands read before one of those changes (see `order`).
@@ -423,6 +426,7 @@ impl<'a> Lowering<'a> {
             scopes: vec![HashMap::new()],
             loops: Vec::new(),
             leaving: Vec::new(),
+            failing_out: false,
             locked: Vec::new(),
             changed: Vec::new(),
             lifted: Vec::new(),

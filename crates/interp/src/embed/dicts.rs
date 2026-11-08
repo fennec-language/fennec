@@ -1098,7 +1098,7 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
         if key_block(layout.key, key_of(words)).is_some_and(|held| held != 0) {
             found.push(entry + 1);
         }
-        if layout.value == Word::Str && value_of(words) != 0 {
+        if layout.value.owned() && value_of(words) != 0 {
             found.push(entry + layout.value_at());
         }
     }

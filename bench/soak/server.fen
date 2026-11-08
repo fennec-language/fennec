@@ -1,0 +1,90 @@
+# The soak test's server: a small HTTP API with shared state, SQLite and file writes, run for
+# a long time under steady load by `bench/soak/soak.py`. Some requests crash on purpose, through
+# an overflow, and some fail, so the soak can show each stays inside its own request.
+#
+#   GET  /count?n=N   counts the request in the shared stats and gives the count
+#   POST /note?n=N    keeps the body as note N in SQLite; a note N that's there already fails
+#   POST /file?n=N    writes the body to one of 64 files, reads it back, and gives its length
+#   GET  /crash?n=N   overflows an int when N > 0, crashing its request
+#   GET  /stats       the shared stats, as text
+from std import sqlite
+from std.net import NetError, Request, Response
+from std.sql import SqlError
+from std.sqlite import Database
+
+## What every request has added up, shared by all of them.
+shared Stats:
+    hits = 0
+    notes = 0
+    failed = 0
+
+    def hit(ref self) -> int:
+        self.hits += 1
+        self.hits
+
+    def noted(ref self, kept: bool):
+        if kept:
+            self.notes += 1
+        else:
+            self.failed += 1
+
+## An int that overflows once `n` is above 0: the checked add crashes the request.
+def overflowed(n: int) -> int:
+    big = 9223372036854775000
+    big + n * 1000
+
+## Keeps note `n`, and lets go of notes far older, so the database stays small.
+def keep_note(db: Database, n: int, body: str) -> int fails SqlError:
+    with db.transaction()? as tx:
+        _ = tx.execute(t"insert into notes (id, body) values ({n}, {body})")?
+        _ = tx.execute(t"delete from notes where id < {n - 2000}")?
+    db.query[int](t"select count(*) from notes")?[0]
+
+## Writes `body` to one of the soak's files, reads it back, and gives its length.
+def round_trip(fs: Fs, dir: str, n: int, body: str) -> int fails IoError:
+    path = f"{dir}/file{n % 64}.txt"
+    with fs.create(path, durable=False)? as file:
+        file.write_text(body)?
+    fs.read_text(path)?.len()
+
+def text(status: int, said: str) -> Response:
+    Response(status=status, headers={"content-type": "text/plain"}, body=said.encode())
+
+def respond(stats: Stats, db: Database, fs: Fs, dir: str, request: Request) -> Response:
+    n = int(request.query.get("n") else "0") else 0
+    body = request.body.decode() else ""
+    match request.path:
+        case "/count":
+            text(200, said=f"{stats.hit()}")
+        case "/note":
+            match keep_note(db, n, body):
+                case Ok(count):
+                    stats.noted(True)
+                    text(200, said=f"{count}")
+                case Err(why):
+                    stats.noted(False)
+                    text(500, said=f"{why}")
+        case "/file":
+            match round_trip(fs, dir, n, body):
+                case Ok(length):
+                    text(200, said=f"{length}")
+                case Err(why):
+                    text(500, said=f"{why}")
+        case "/crash":
+            text(200, said=f"{overflowed(n)}")
+        case "/stats":
+            with stats as held:
+                text(200, said=f"hits={held.hits} notes={held.notes} failed={held.failed}")
+        case _:
+            text(404, said="nothing here")
+
+def main(net: Net, fs: Fs, args: Args, stdout: Stdout) fails NetError | SqlError | IoError:
+    dir = args[0] if args.len() > 0 else "soak-data"
+    if not fs.exists(dir):
+        fs.make_dir(dir)?
+    stats = Stats()
+    with sqlite.open(fs, f"{dir}/soak.db")? as db:
+        _ = db.execute(t"create table if not exists notes (id integer primary key, body text)")?
+        with net.listen(0)? as server:
+            stdout.print(server.port)
+            server.serve(request => respond(stats, db, fs, dir, request))

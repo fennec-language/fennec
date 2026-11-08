@@ -714,15 +714,25 @@ impl<'a> Lowering<'a> {
             self.emit(InstKind::Copy { dest, value }, span);
             return Ok(());
         }
+        // What's added to is read first, left to right, if the value can change it by `ref`.
+        let before = match (op, self.lookup(name)) {
+            (Some(_), Some(held)) if places::calls_in(value).1 => {
+                let copy = self.temporary(self.local_type(held));
+                self.emit(InstKind::Copy { dest: copy, value: Operand::Local(held) }, span);
+                Some(Operand::Local(copy))
+            }
+            _ => None,
+        };
         let value = self.expr(value)?;
         let dest = self.named_target(target, name)?;
         if let Some(op) = op {
             let ty = self.local_type(dest);
-            if self.check_operands(op, &Operand::Local(dest), &value).is_ok() {
-                let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
+            let left = before.unwrap_or(Operand::Local(dest));
+            if self.check_operands(op, &left, &value).is_ok() {
+                let kind = InstKind::Binary { dest, op, lhs: left, rhs: value };
                 self.emit(kind, span);
             } else {
-                let value = self.operate(op, (Operand::Local(dest), value), &ty, span)?;
+                let value = self.operate(op, (left, value), &ty, span)?;
                 self.emit(InstKind::Copy { dest, value }, span);
             }
         } else {

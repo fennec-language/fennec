@@ -507,6 +507,10 @@ fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Res
 /// tuple, a dict, a list by `insert`, a closure, a struct, an optional and a comprehension.
 #[test]
 fn a_stored_value_keeps_what_it_held() -> std::io::Result<()> {
+/// An assignment goes left to right: the place written is the one named before the value runs,
+/// and `+=` adds to what was there before it, whatever the value changes by `ref`.
+#[test]
+fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -516,6 +520,56 @@ fn a_stored_value_keeps_what_it_held() -> std::io::Result<()> {
         "([1, 2], 1) [9, 2]\n{\"k\": [1, 2]} [9, 2]\n[[1, 2], [0]] [9, 2]\n3 [9, 2]\n{\"k\": [1, 2]} [9, 2]\n\
          Box(item=[1, 2]) [9, 2]\n[1, 2] [9, 2]\n{\"k\": [1, 2]} [1, 2] [9, 2]\n\
          (\"text that is long enough to live in a block\", 2) 44\n[[1, 2], [1, 2]] [9, 2]\n",
+        "assignment_order",
+        "struct Total:
+    v: int
+
+def inc(ref i: int) -> int:
+    i += 1
+    i * 10
+
+def text(ref k: str) -> int:
+    k = \"b\"
+    5
+
+def bump(ref t: Total) -> int:
+    t.v = 10
+    2
+
+def main(stdout: Stdout):
+    mut xs = [0, 0, 0]
+    mut i = 0
+    xs[i] = inc(ref i)
+    stdout.print(xs, i)
+
+    mut m = {\"a\": 1, \"b\": 2}
+    mut k = \"a\"
+    m[k] = text(ref k)
+    stdout.print(m, k)
+
+    mut a = [[0, 0], [0, 0]]
+    mut r = 0
+    a[r][r] = inc(ref r)
+    stdout.print(a, r)
+
+    mut t = Total(v=0)
+    t.v += bump(ref t)
+    stdout.print(t)
+
+    mut u = Total(v=0)
+    u.v = u.v + bump(ref u)
+    stdout.print(u)
+
+    mut ys = [1, 2]
+    mut j = 0
+    ys[j] += inc(ref j)
+    stdout.print(ys, j)
+
+    mut n = 1
+    n += inc(ref n)
+    stdout.print(n)
+",
+        "[10, 0, 0] 1\n{\"a\": 5, \"b\": 2} b\n[[10, 0], [0, 0]] 1\nTotal(v=2)\nTotal(v=2)\n[11, 2] 1\n21\n",
     )
 }
 

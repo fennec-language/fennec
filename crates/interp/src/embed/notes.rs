@@ -155,7 +155,7 @@ mod tests {
                 panic!("not a list");
             };
             assert_eq!(notes_of(&items[0]), ["while saving", "twice"]);
-            assert!(notes_of(&items[1]).is_empty());
+            assert_eq!(notes_of(&items[1]), Vec::<String>::new());
             assert_eq!(items[0], items[1]);
             assert_eq!(crate::format::repr(&items[0]), "Lost(why=\"no disk\")");
             let words = state.heap.block(u64::try_from(block).unwrap()).unwrap().to_vec();

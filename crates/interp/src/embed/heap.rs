@@ -1307,10 +1307,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
 /// A struct's or a case's fields, read in order. A field the layout keeps for itself is read
 /// past, except an error's notes, which are kept apart from its fields, under `NOTES`, for
 /// `instance` to take out.
-fn read_fields<'w>(
+fn read_fields(
     state: &State,
     fields: &Fields,
-    words: &mut dyn Iterator<Item = &'w u64>,
+    words: &mut dyn Iterator<Item = &u64>,
 ) -> Vec<(Rc<str>, Value)> {
     let mut read_ones = Vec::with_capacity(fields.len());
     for (field, element) in fields {
@@ -1331,12 +1331,12 @@ fn type_name(layout: &str) -> &str {
 fn instance(name: &Rc<str>, case: Option<Rc<str>>, mut fields: Vec<(Rc<str>, Value)>) -> Value {
     let type_name = if name.contains('[') { Rc::from(type_name(name)) } else { Rc::clone(name) };
     // Only an error's layout has notes, so a value with them is an error.
-    let noted = fields.iter().position(|(field, _)| field.as_ref() == crate::packed::NOTES);
-    let notes = noted.and_then(|at| match fields.remove(at).1.unpacked() {
-        Value::List(notes) if !notes.is_empty() => Some(Rc::new(
-            notes
+    let notes_at = fields.iter().position(|(field, _)| field.as_ref() == crate::packed::NOTES);
+    let notes = notes_at.and_then(|at| match fields.remove(at).1.unpacked() {
+        Value::List(items) if !items.is_empty() => Some(Rc::new(
+            items
                 .iter()
-                .filter_map(|note| if let Value::Str(note) = note { Some(Rc::clone(note)) } else { None })
+                .filter_map(|item| if let Value::Str(text) = item { Some(Rc::clone(text)) } else { None })
                 .collect(),
         )),
         _ => None,
@@ -1345,7 +1345,7 @@ fn instance(name: &Rc<str>, case: Option<Rc<str>>, mut fields: Vec<(Rc<str>, Val
         type_name,
         case,
         fields,
-        is_error: noted.is_some(),
+        is_error: notes_at.is_some(),
         cause: None,
         notes,
     }))
@@ -1472,15 +1472,14 @@ fn write_field(
     words: &mut Vec<u64>,
 ) -> Option<()> {
     match field {
-        crate::packed::NOTES => match &instance.notes {
-            Some(notes) => {
+        crate::packed::NOTES => {
+            if let Some(notes) = &instance.notes {
                 write(state, element, &Value::list(notes.iter().cloned().map(Value::Str).collect()), words)
-            }
-            None => {
+            } else {
                 words.push(0);
                 Some(())
             }
-        },
+        }
         crate::packed::LOCK => {
             words.push(0);
             Some(())

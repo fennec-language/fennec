@@ -96,20 +96,17 @@ impl Interp<'_> {
             Value::Instance(instance) => {
                 let function =
                     self.type_info(&instance.type_name).and_then(|info| info.methods.get(method).cloned());
+                let noted = instance.is_error && matches!(method, "notes" | "add_note");
                 return match function {
                     Some(function) => {
                         drop(receiver);
                         self.call_method(object, &function, args, span)
                     }
-                    None if instance.is_error && matches!(method, "notes" | "add_note") => {
+                    None if noted => {
                         drop(receiver);
                         self.note_method(object, method, args, span)
                     }
-                    None if let Some(call) = crate::stdlib::methods_of(&instance.type_name) => {
-                        let args = self.eval_args(args)?;
-                        call(self, instance, method, args, span)
-                    }
-                    None => Err(no_method(&receiver, method, span)),
+                    None => self.std_instance_method(&receiver, method, args, span),
                 };
             }
             Value::Capability(_) | Value::Limited(_) => {
@@ -138,6 +135,23 @@ impl Interp<'_> {
         }
         let args = self.eval_args(args)?;
         self.read_method(&receiver, method, args, span)
+    }
+
+    /// A method std writes in the engines for an instance of one of its types, like `Regex`'s.
+    fn std_instance_method(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        if let Value::Instance(instance) = receiver
+            && let Some(call) = crate::stdlib::methods_of(&instance.type_name)
+        {
+            let args = self.eval_args(args)?;
+            return call(self, instance, method, args, span);
+        }
+        Err(no_method(receiver, method, span))
     }
 
     /// `error.notes()`, the notes added to an error, oldest first, and `error.add_note(text)`,

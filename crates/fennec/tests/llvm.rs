@@ -6924,6 +6924,82 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// On one thread, a round only computing, for far longer than the test waits, still lets another
+/// connection's round answer: its loop's turns tick, and a tick lets the other tasks run. It once
+/// held the thread until it finished, so the second round waited for all of it.
+#[test]
+fn a_round_only_computing_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-rounds")?;
+    let program = dir.join("ticking.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def churn(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        x = (x * 31 + 7) % 1000003
+        n += 1
+    x
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"spin\":
+                conn.write(f\"spun {churn(1_000_000_000_000)}\\n\")?
+            else:
+                conn.write(\"pong\\n\")?
+",
+    )?;
+    let executable = dir.join("ticking");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    // The spinning round has started before the ping comes: its line is read, so it's computing.
+    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    spinning.write_all(b"spin\n")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    ping.set_read_timeout(Some(std::time::Duration::from_secs(15)))?;
+    ping.write_all(b"ping\n")?;
+    let mut back = String::new();
+    let read = std::io::BufReader::new(ping).read_line(&mut back);
+    drop(spinning);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(back, "pong\n", "the ping wasn't answered while the other round computed: {read:?}");
+    Ok(())
+}
+
 /// A round that crashes lets go of everything its functions own on the way out, as a failure
 /// does: 10,000 crashing rounds, each holding a string, a list and a dict, leave the server's
 /// memory where it was. A crash once left them all behind, about 1.8 KB a round.

@@ -44,9 +44,10 @@ pub fn has_yield(body: &[Stmt]) -> bool {
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(_, body)| has_yield(body)) || otherwise.as_deref().is_some_and(has_yield)
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-            has_yield(body)
-        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => has_yield(body),
         StmtKind::Expr(value) | StmtKind::Assign { value, .. } => match &value.kind {
             ExprKind::Match { arms, .. } => arms.iter().any(|arm| has_yield(&arm.body)),
             _ => false,
@@ -531,7 +532,7 @@ fn rename_for_names(body: &mut [Stmt], renamed: &[(String, String)]) {
 /// Whether a function's body is one this can copy, gathering the names it declares.
 fn can_copy(body: &[Stmt], locals: &mut Vec<String>) -> bool {
     body.iter().all(|stmt| match &stmt.kind {
-        StmtKind::With { .. } | StmtKind::Def(_) | StmtKind::Return(_) => false,
+        StmtKind::With { .. } | StmtKind::OnFailure { .. } | StmtKind::Def(_) | StmtKind::Return(_) => false,
         StmtKind::If { branches, otherwise } => {
             branches.iter().all(|(cond, body)| plain(cond) && can_copy(body, locals))
                 && can_copy(otherwise.as_deref().unwrap_or_default(), locals)

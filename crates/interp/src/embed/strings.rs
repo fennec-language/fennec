@@ -6,7 +6,9 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{TEXT_HEADER_WORDS, block_text, release, retain, text_address, text_from_bytes};
+use super::heap::{
+    TEXT_HEADER_WORDS, block_text, mark_owner, release, retain, text_address, text_from_bytes,
+};
 use super::{State, attempt, span, with};
 use crate::packed::Element;
 use crate::value::Value;
@@ -107,6 +109,8 @@ fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_char
     for (to, from) in grown.iter_mut().zip(state.heap.block(at)?.get(..used)?) {
         *to = *from;
     }
+    // What it was copied from may be another thread's, as under a read lock.
+    mark_owner(&mut grown, state.heap.owner_bits());
     put_words(&mut grown, length, added, extra);
     set_lengths(&mut grown, total, chars + extra_chars);
     if let Some([count, _, _, _, bytes, _cursor]) = grown.get_mut(..TEXT_HEADER_WORDS) {

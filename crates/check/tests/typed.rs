@@ -104,6 +104,10 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
                 values(expr, found);
                 values_in(body, found);
             }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                values_in(cleanup, found);
+                values_in(body, found);
+            }
             StmtKind::Def(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
         }
     }

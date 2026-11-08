@@ -276,6 +276,7 @@ fn statement(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
             block(body, visit);
         }
         StmtKind::Def(def) => block(&def.body, visit),
+        StmtKind::OnFailure { body, .. } => block(body, visit),
         StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
     }
 }

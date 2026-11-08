@@ -86,8 +86,7 @@ fn rewritten(sources: &Sources, whole: &Expr, table: &Expr, key: &Expr, default:
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut candidates: Vec<(Expr, Span, String, String)> = Vec::new();
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if !expr.span.in_prelude()
             && let Some((table, key, default)) = lookup(expr, sources)
             && let Some(fixed) = rewritten(sources, expr, table, key, default)

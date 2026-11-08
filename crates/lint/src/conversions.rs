@@ -63,8 +63,7 @@ fn lint(sources: &Sources, call: Span, value: &Expr, message: &str) -> Option<Li
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut calls: Vec<(String, Span, Expr)> = Vec::new();
     let mut shown: HashSet<(u32, u32)> = HashSet::new();
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if let ExprKind::FStr(parts) = &expr.kind {
             for part in parts {
                 if let FStrPart::Expr { expr, spec: None } = part {

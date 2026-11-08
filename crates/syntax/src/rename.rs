@@ -188,6 +188,10 @@ impl Renamer<'_> {
                 StmtKind::While { body: block, .. }
                 | StmtKind::For { body: block, .. }
                 | StmtKind::With { body: block, .. } => self.stmts(block),
+                StmtKind::OnFailure { cleanup, body, .. } => {
+                    self.stmts(cleanup);
+                    self.stmts(body);
+                }
                 StmtKind::Def(def) => self.function(def),
                 _ => {}
             }

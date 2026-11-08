@@ -135,6 +135,9 @@ impl Lowerer<'_, '_> {
         }
         let Some(ty @ (Ty::Int | Ty::Float)) = self.checked_expr(call) else { return Ok(None) };
         let span = call.span;
+        if ty == Ty::Float {
+            return self.fixed_float_sum(first, args.get(1), span);
+        }
         let start = match args.get(1) {
             Some(start) => self.expr(&start.value)?,
             None => self.expr(&Expr { kind: ExprKind::Int(0), span })?,
@@ -165,6 +168,45 @@ impl Lowerer<'_, '_> {
         let total = self.local(&name).and_then(|local| local.var).map(|var| self.b.use_var(var));
         self.close_scope()?;
         Ok(Some((total, ty)))
+    }
+
+    /// A sum of floats, in the fixed order `fennec_syntax::fixed_sum` writes, so it's the same
+    /// whatever the items are and wherever it runs.
+    fn fixed_float_sum(
+        &mut self,
+        first: &Arg,
+        start: Option<&Arg>,
+        span: Span,
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let at = Span { start: span.start, end: span.start };
+        let start = start.map_or(Expr { kind: ExprKind::Float(0.0), span: at }, |start| start.value.clone());
+        let name = hidden("sum", span);
+        let item = hidden("item", span);
+        let (names, iter, cond, elem) = match &first.value.kind {
+            ExprKind::Comprehension { kind: CompKind::Generator, elem, names, iter, cond, .. } => {
+                (names.clone(), (**iter).clone(), cond.as_deref(), (**elem).clone())
+            }
+            ExprKind::Comprehension { .. } => return Ok(None),
+            _ => (vec![item.clone()], first.value.clone(), None, name_expr(&item, span)),
+        };
+        let compared = Span { start: span.end, end: span.end };
+        let places = fennec_syntax::fixed_sum::Places { at, compared, counted: at, item: at };
+        let written = fennec_syntax::fixed_sum::fixed_sum(&name, start, &elem, places);
+        let body = match cond {
+            Some(cond) => vec![Stmt {
+                kind: StmtKind::If { branches: vec![(cond.clone(), written.each)], otherwise: None },
+                span,
+            }],
+            None => written.each,
+        };
+        let looped = Stmt { kind: StmtKind::For { names, is_mut: false, iter, body }, span };
+        self.open_scope();
+        for stmt in written.setup.iter().chain(std::iter::once(&looped)).chain(&written.finish) {
+            self.stmt_inside_expr(stmt)?;
+        }
+        let total = self.local(&name).and_then(|local| local.var).map(|var| self.b.use_var(var));
+        self.close_scope()?;
+        Ok(Some((total, Ty::Float)))
     }
 
     /// `sum(...)`, when the call is to the built-in one.

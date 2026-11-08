@@ -5,6 +5,7 @@ mod diagnostic;
 mod doc_examples;
 #[doc(hidden)]
 pub mod dump;
+pub mod fixed_sum;
 pub mod fuse;
 mod lexer;
 mod modules;

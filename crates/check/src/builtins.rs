@@ -259,7 +259,7 @@ fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
         ("Net", "connect")
-            | ("Connection", "read" | "read_line")
+            | ("Connection", "read" | "read_line" | "start_tls")
             | ("Server", "accept")
             | ("UdpSocket", "receive")
     )
@@ -363,6 +363,8 @@ impl FnCx<'_> {
         }
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
+            Some("Net") if name == "connect" => &["timeout", "tls"],
+            Some("Net") if name == "listen" => &["tls"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
@@ -493,6 +495,7 @@ impl FnCx<'_> {
                         self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));
                     }
                 }
+                Some("tls") if named.contains(&"tls") => self.tls_option(name, &ty, arg.value.span),
                 Some("port") if named.contains(&"port") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
@@ -518,6 +521,15 @@ impl FnCx<'_> {
         }
         plain.extend(start);
         plain
+    }
+
+    /// `tls=`: whether `connect` uses TLS, and the `Certificate` a server shows, if any.
+    fn tls_option(&mut self, method: &str, ty: &Type, span: Span) {
+        let wanted =
+            if method == "connect" { Type::Bool } else { Type::optional(Type::named("Certificate")) };
+        if !self.checker.fits(&wanted, ty) {
+            self.error(mismatch("`tls`", &wanted, ty, span));
+        }
     }
 
     /// `names=` and `extra=` take a case of `JsonNames` and `JsonExtra`, like `.camel_case`.

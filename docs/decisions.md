@@ -921,7 +921,7 @@ def echo(conn: Connection) fails NetError:
     for line in conn.lines():
         conn.write(f"{line}\n")?
 ```
-- **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
+- **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. `tls=True` on `connect`, or a `Certificate` as `tls=` on `listen`, makes them TLS, and `conn.start_tls(host)` upgrades a plain connection. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
 - **UDP:** `net.udp(port=9001)` gives a socket whose items are `Packet(data, sender)`, and `send_to(data, address)` answers.
 - **A failing connection is handled in its own round,** as in `main` above, since a failure that passes up ends the loop. A crash, like overflow, ends only that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
 - **Shared state** between connections is a `shared` value made in `main` and passed down, and one task hands work to another through a channel, as under Concurrency.

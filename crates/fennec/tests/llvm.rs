@@ -6480,7 +6480,7 @@ fn a_program_that_makes_no_requests_links_no_tls() -> std::io::Result<()> {
 }
 
 /// A program built with no interpreter in its runtime prints what it should and has none of the
-/// interpreter in it, and one still needing the interpreter fails to link rather than to run.
+/// interpreter in it.
 #[test]
 fn a_lean_runtime_leaves_the_interpreter_out() -> std::io::Result<()> {
     if !ready() || !crate::executables::lean_runtime_built() {
@@ -6529,21 +6529,6 @@ def main(stdout: Stdout, args: Args, process: Process):
         assert!(!symbols.contains("6Interp11with_output"), "the interpreter is still linked");
     }
 
-    let needs = dir.join("needs.fen");
-    std::fs::write(
-        &needs,
-        "\
-from std import json
-from std.collections import Packed
-
-def main(stdout: Stdout):
-    stdout.print(json.dumps(Packed.of([[1, 2]])))
-",
-    )?;
-    let refused = lean(&needs, &dir.join("needs"))?;
-    assert!(!refused.status.success(), "it linked without the interpreter");
-    let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("fennec_json"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -6591,10 +6576,10 @@ fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
     Ok(())
 }
 
-/// With nothing asked, a program whose code doesn't cross into the interpreter is built with the
-/// runtime that leaves it out, and one that does is built with the runtime that has it, and runs.
+/// With nothing asked, a program is built with the runtime that leaves the interpreter out. No
+/// program's code crosses into the interpreter any more, so none is built with the one that has it.
 #[test]
-fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::Result<()> {
+fn a_build_leaves_the_interpreter_out() -> std::io::Result<()> {
     if !ready() || !crate::executables::lean_runtime_built() {
         return Ok(());
     }
@@ -6621,15 +6606,9 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
         String::from_utf8_lossy(&Command::new(&lean).output_within()?.stdout),
         "[1, 2] {\"key\": 3}\n"
     );
-    let needs = built(
-        "from std import json\nfrom std.collections import Packed\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(Packed.of([[1, 2]])))\n",
-        "needs",
-    )?;
-    assert!(Command::new(&needs).output_within()?.status.success());
     // A Windows executable has no symbols to look through.
     if !cfg!(windows) {
         assert!(!has_interpreter(&lean)?, "the interpreter is still linked");
-        assert!(has_interpreter(&needs)?, "a program that needs the interpreter lost it");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

@@ -1,0 +1,7 @@
+error: this assertion failed
+  --> <dir>/game.fen:23:12
+   |
+23 |     assert double(2) == 5
+   |            ^^^^^^^^^^^^^^
+   |
+   = help: the left side is 4 and the right side is 5

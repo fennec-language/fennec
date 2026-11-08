@@ -1,0 +1,7 @@
+source 13f223e23d8074f7c4ec28f65a1b03ea0e30fee708766f3fc184df87df64e6b4
+code 0
+stdout 50
+fib 6765 1.4142135623730951 True
+-4 -1 -4 1 -3
+30
+stderr 0

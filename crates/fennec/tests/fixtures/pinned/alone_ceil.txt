@@ -1,0 +1,10 @@
+source c1f94fbf372c5538b22d21a7461bf2a8cb042599890e837546304f82ec5e2061
+code 1
+stdout 2
+0
+stderr 156
+error: can't turn a float into an int
+ --> <dir>/alone_ceil.fen:6:18
+  |
+6 |     stdout.print(ceil(1e300 * 1e300))
+  |                  ^^^^^^^^^^^^^^^^^^^

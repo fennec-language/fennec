@@ -1,0 +1,20 @@
+source f7cc42b16f4cd8d0e8071125efe7dbed9261c89f8900a033cd9cdbea1c0d4453
+code 0
+stdout 204
+Ok("ash at 7")
+ash at 7
+Err(TooWeak(level=1))
+weak 1
+Err(NotFound(name=""))
+other NotFound(name="") NotFound(name="")
+not found 0
+plain 3
+TooWeak(level=1)
+True
+False
+True
+False
+False
+True
+kit at 9 failed
+stderr 0

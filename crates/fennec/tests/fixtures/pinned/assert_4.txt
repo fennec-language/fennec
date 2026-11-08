@@ -1,0 +1,12 @@
+source 2af2a3ffab15bc98d40f91e31ff686dc684d57980da508bc29276ffba1f4981c
+code 1
+stdout 2
+1
+stderr 200
+error: this assertion failed
+  --> <dir>/assert_4.fen:31:12
+   |
+31 |     assert "a\nb" == "c\"d"
+   |            ^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is "a\nb" and the right side is "c\"d"

@@ -410,6 +410,7 @@ stream = fs.open(filename) else:
 
 - A `match` over what something that can fail gives back handles both its value and its failure, or has `case _:`, as a `match` over an enum handles every case. A failure is handled with `case Err(error):`, or one case for each error it can fail with. Built.
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
+- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. `return Err(...)`, and a function that says it gives back a `Result`, give back a value. Built for `def`s; a lambda's body still passes one up as it is.
 - `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
@@ -574,7 +575,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built. The JIT and the interpreter are then removed, once LLVM builds everything, and the commit before gets a tag. Not built yet.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. Built. The JIT is removed, and the commit before got the tag `before-jit-interpreter-removal`. Built. The interpreter is removed from `fennec` next. Not built yet.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
 
 ## Checks

@@ -1,0 +1,10 @@
+source b88cf7453a61f53932318819cf17b01c486d3fb6dfdb3e98ccf03e0f6da930dc
+code 1
+stdout 2
+2
+stderr 231
+error: this was expected to succeed (three is even), but it failed: Fault(reason="odd")
+  --> <dir>/expect.fen:10:18
+   |
+10 |     stdout.print(half(3).expect("three is even"))
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

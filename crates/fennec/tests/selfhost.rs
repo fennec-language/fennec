@@ -1,6 +1,6 @@
 //! The self-hosted front end in `selfhost/` lexes and parses every example, every error
 //! example, the standard library's Fennec sources and its own source exactly as the Rust front
-//! end does, built through LLVM and on the JIT.
+//! end does, built through LLVM.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -294,14 +294,14 @@ fn sources_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
 /// Under mutation testing, one in this many of the repository's files is compared.
 const MUTANTS_SAMPLE: usize = 8;
 
-/// The JIT runs one in this many of the corpus's files, with the whole standard library. LLVM's
-/// build runs every file. Each dump has to match Rust's front end. The JIT takes about fifty
-/// times as long as LLVM's build, so on every file the checker's test alone took over a minute.
-const JIT_SAMPLE: usize = 8;
+/// Where LLVM can't build the front end, as under coverage, `fennec run` runs it in the interpreter
+/// on one in this many of the corpus's files, since on every file it takes minutes. LLVM's build
+/// runs every file. Each dump has to match Rust's front end.
+const SAMPLE: usize = 8;
 
-/// The JIT checks one in this many files. It takes 16 seconds just to check the standard
-/// library's sources first, as selfhost's checker still crosses into the interpreter there.
-const JIT_CHECK_SAMPLE: usize = 32;
+/// The checker's sample, where LLVM can't build it, which checks the standard library's sources
+/// first.
+const CHECK_SAMPLE: usize = 32;
 
 /// Whether a corpus file is one of the standard library's sources, written as `prelude_*.fen`.
 fn in_the_library(path: &Path) -> bool {
@@ -378,13 +378,6 @@ fn on_llvm() -> Result<Command, String> {
     Ok(command)
 }
 
-/// The self-hosted front end on the JIT.
-fn on_the_jit() -> Command {
-    let mut command = crate::executables::fennec_command();
-    command.args(["run", "--jit"]).arg(repo().join("selfhost"));
-    command
-}
-
 /// Runs the self-hosted front end with `mode` on each file in `files`, returning what it printed.
 /// The checker is given the standard library's sources in `corpus` first. It reads its work
 /// from standard input.
@@ -447,21 +440,15 @@ fn corpus_for(test: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
 }
 
 /// Checks LLVM's build of the self-hosted front end on every file in the corpus against
-/// `rust_dump`, and, alongside, the JIT on a sample. Returns a report of what differs.
+/// `rust_dump`. Returns a report of what differs.
 fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
     let (work, corpus) = corpus_for(mode)?;
-    let (native, jitted) = std::thread::scope(|scope| {
-        let jit = scope.spawn(|| on_the_jit_against_rust(&work, mode, &corpus, rust_dump));
-        let native = on_llvm_against_rust(&work, mode, &corpus, rust_dump);
-        (native, jit.join().unwrap_or_else(|_| Err("running the JIT panicked".to_owned())))
-    });
-    native.and(jitted)
+    on_llvm_against_rust(&work, mode, &corpus, rust_dump)
 }
 
 /// Checks LLVM's build of the self-hosted front end on every file in `corpus` against
 /// `rust_dump`. Returns a report of what differs. Where LLVM can't build it, as under coverage,
-/// what runs it is the JIT, so it's the JIT's sample instead: on every file, the JIT took minutes
-/// there, and the JIT's own check would run the same again.
+/// what runs it is the interpreter, so it's a sample instead.
 fn on_llvm_against_rust(
     work: &Path,
     mode: &str,
@@ -469,7 +456,7 @@ fn on_llvm_against_rust(
     rust_dump: fn(&str) -> String,
 ) -> Result<(), String> {
     if built()?.is_none() {
-        return jit_sample_against_rust(work, mode, corpus, rust_dump);
+        return sample_against_rust(work, mode, corpus, rust_dump);
     }
     let every: Vec<&PathBuf> = corpus.iter().collect();
     against_rust(work, mode, corpus, &every, on_llvm()?, rust_dump).map_err(|first| {
@@ -477,35 +464,17 @@ fn on_llvm_against_rust(
     })
 }
 
-/// Checks the self-hosted front end on the JIT, on a sample of the files in `corpus`, against
-/// `rust_dump`. LLVM's build is checked on all of them, so this needs none of its own. Where LLVM
-/// can't build it, `on_llvm_against_rust` has checked this sample already, and this does nothing.
-/// Returns a report of what differs.
-fn on_the_jit_against_rust(
-    work: &Path,
-    mode: &str,
-    corpus: &[PathBuf],
-    rust_dump: fn(&str) -> String,
-) -> Result<(), String> {
-    if built()?.is_none() {
-        return Ok(());
-    }
-    jit_sample_against_rust(work, mode, corpus, rust_dump)
-}
-
-/// The JIT's check of its sample of `corpus` against `rust_dump`.
-fn jit_sample_against_rust(
+/// The check of a sample of `corpus` against `rust_dump`, run by `fennec run`.
+fn sample_against_rust(
     work: &Path,
     mode: &str,
     corpus: &[PathBuf],
     rust_dump: fn(&str) -> String,
 ) -> Result<(), String> {
     let files: Vec<&PathBuf> =
-        corpus.iter().step_by(if mode == "check" { JIT_CHECK_SAMPLE } else { JIT_SAMPLE }).collect();
-    against_rust(work, mode, corpus, &files, on_the_jit(), rust_dump).map_err(|first| {
-        format!(
-            "on the JIT, the self-hosted {mode} differ from Rust's for {first}\n\nWhere LLVM's build matches Rust's, that's a bug in the JIT, not in selfhost/."
-        )
+        corpus.iter().step_by(if mode == "check" { CHECK_SAMPLE } else { SAMPLE }).collect();
+    against_rust(work, mode, corpus, &files, on_llvm()?, rust_dump).map_err(|first| {
+        format!("the self-hosted {mode} differ from Rust's for {first}\n\n{}", mirror_hint(mode))
     })
 }
 
@@ -689,20 +658,10 @@ fn selfhost_parser_matches_the_rust_parser() {
     }
 }
 
-/// The checker's JIT run is a test of its own, as it takes longest: see `JIT_CHECK_SAMPLE`.
 #[test]
 fn selfhost_checker_matches_the_rust_checker() {
     let compared =
         corpus_for("check").and_then(|(work, corpus)| on_llvm_against_rust(&work, "check", &corpus, checked));
-    if let Err(difference) = compared {
-        panic!("{difference}");
-    }
-}
-
-#[test]
-fn selfhost_checker_on_the_jit_matches_the_rust_checker() {
-    let compared = corpus_for("check-jit")
-        .and_then(|(work, corpus)| on_the_jit_against_rust(&work, "check", &corpus, checked));
     if let Err(difference) = compared {
         panic!("{difference}");
     }

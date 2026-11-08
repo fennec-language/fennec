@@ -58,7 +58,7 @@ fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
     Ok(done)
 }
 
-/// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
+/// What the program printed, its errors and its exit code, built with LLVM, and what the JIT gave.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     both_built(name, source, &["--llvm"])
 }
@@ -74,10 +74,67 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
         ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output_within()?);
-    let jit = outcome(&fennec(&["run", "--jit", &program], &dir)?);
+    let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
+    let jit = pinned(name, source, || Ok(ours.clone()))?;
     std::fs::remove_dir_all(&dir)?;
     Ok((ours, jit))
+}
+
+/// Where the outcomes the JIT gave are pinned, one file for each program, named as the test names
+/// it. They were written from the JIT before it was removed.
+fn pinned_folder() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned")
+}
+
+/// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
+fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
+    let mut folders = vec![dir.to_string_lossy().into_owned()];
+    folders.extend(std::fs::canonicalize(dir).ok().map(|real| real.to_string_lossy().into_owned()));
+    let plain =
+        |text: String| folders.iter().fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"));
+    (plain(out), plain(err), code)
+}
+
+/// The outcome pinned for program `name`. One pinned for other source than `source` is out of date,
+/// as is a missing one, and the test says so. With `FENNEC_PIN_OUTPUTS` set, it's written from
+/// `reference`, the build's own outcome, which then has to be checked by reading it: a new test's
+/// expected outcome is decided before it's built, not copied from it.
+fn pinned(
+    name: &str,
+    source: &str,
+    reference: impl FnOnce() -> std::io::Result<Outcome>,
+) -> std::io::Result<Outcome> {
+    let file = pinned_folder().join(format!("{name}.txt"));
+    let hash = fennec_blake3::hash(source.as_bytes()).to_hex();
+    if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
+        let (out, err, code) = reference()?;
+        let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
+        std::fs::create_dir_all(pinned_folder())?;
+        let text =
+            format!("source {hash}\ncode {code}\nstdout {}\n{out}stderr {}\n{err}", out.len(), err.len());
+        std::fs::write(&file, text)?;
+    }
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let read = read_pinned(&text).filter(|(pinned_for, _)| *pinned_for == hash);
+    read.map(|(_, outcome)| outcome).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "{} is missing or was pinned for other source: check what the program should do, and write it there",
+            file.display()
+        ))
+    })
+}
+
+/// A pinned file's source hash and outcome.
+fn read_pinned(text: &str) -> Option<(String, Outcome)> {
+    let (hash, rest) = text.strip_prefix("source ")?.split_once('\n')?;
+    let (code, rest) = rest.strip_prefix("code ")?.split_once('\n')?;
+    let (length, rest) = rest.strip_prefix("stdout ")?.split_once('\n')?;
+    let (out, rest) = rest.split_at_checked(length.parse().ok()?)?;
+    let (length, err) = rest.strip_prefix("stderr ")?.split_once('\n')?;
+    if err.len() != length.parse::<usize>().ok()? {
+        return None;
+    }
+    Some((hash.to_owned(), (out.to_owned(), err.to_owned(), code.parse().ok())))
 }
 
 type Outcome = (String, String, Option<i32>);
@@ -6789,6 +6846,98 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A round that crashes lets go of everything its functions own on the way out, as a failure
+/// does: 10,000 crashing rounds, each holding a string, a list and a dict, leave the server's
+/// memory where it was. A crash once left them all behind, about 1.8 KB a round.
+#[test]
+fn rounds_that_crash_keep_nothing_of_theirs() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash-leaks")?;
+    let program = dir.join("leaks.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def overflowed(n: int) -> int:
+    big = 9223372036854775000
+    big + n * 1000
+
+def answer(line: str) -> str:
+    words = [f\"{line} {at}\" for at in range(8)]
+    seen = {word: word.len() for word in words}
+    said = f\"{words} {seen.len()}\"
+    f\"{overflowed(line.len())} {said}\"
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            conn.write(answer(line))?
+",
+    )?;
+    let executable = dir.join("leaks");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    // Four at a time, so 10,000 rounds take seconds.
+    let crash = |rounds: u32| -> std::io::Result<()> {
+        let each = || -> std::io::Result<()> {
+            for _ in 0..rounds / 4 {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+                stream.write_all(b"a line long enough to need a block of its own\n")?;
+                let mut back = String::new();
+                let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+                assert_eq!(read, 0, "a crashing round answered: {back}");
+            }
+            Ok(())
+        };
+        std::thread::scope(|scope| {
+            let clients: Vec<_> = (0..4).map(|_| scope.spawn(each)).collect();
+            clients.into_iter().try_for_each(|client| client.join().unwrap_or(Ok(())))
+        })
+    };
+    let resident = || -> std::io::Result<u64> {
+        let said = Command::new("ps").args(["-o", "rss=", "-p", &server.0.id().to_string()]).output()?;
+        Ok(String::from_utf8_lossy(&said.stdout).trim().parse().unwrap_or(0))
+    };
+    // What the first rounds make for good, like the runtime's pools, is there before the count.
+    crash(2_000)?;
+    let before = resident()?;
+    crash(10_000)?;
+    let after = resident()?;
+    std::fs::remove_dir_all(&dir)?;
+    // 10,000 leaked rounds would be about 18 MB.
+    assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
 /// A round that fails, by `fail` or `?`, stops the server, and its failure passes up out of the
 /// loop to the function serving, which handles it. The rounds before it were answered. Natively a
 /// round's failure once only ended that round, as a crash does.
@@ -7780,7 +7929,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let ran = Command::new(dir.join("built")).output()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
     let stored: Vec<String> =
-        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+        std::fs::read_dir(home.join("cache").join(fennec_build::FOLDER).join("programs"))?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()?;
     assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");

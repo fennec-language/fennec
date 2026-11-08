@@ -1,0 +1,16 @@
+source 61e8bf49671031baa24175df22ee6b395f3e4e258a471c1f3f7b62bd15c7a05e
+code 0
+stdout 429
+a much longer name than fits in a header=a much longer name than fits in a header=a much longer name than fits in a header=7,null,true;b='é',null,true;b='é',null,true;b='é'
+True 172
+350
+True False True
+True True
+3 3 'replaced' null a much longer name than fits in a header=7,null,true;b='é'
+[Json.Text(value="replaced"), Json.Text(value="in a list"), Json.Items(values=[Json.Number(value=1)])]
+6 4 deeper
+False 0
+20000
+2 f
+6
+stderr 0

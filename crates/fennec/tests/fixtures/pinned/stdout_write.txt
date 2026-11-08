@@ -1,0 +1,7 @@
+source 6cfc0d84ac0e6b17b013d987e7df64c9584aae5780e459f5554e4fc8d75f8787
+code 0
+stdout 95
+no newline, then one
+1 2.5 True words [1, 2] Point(x=1, label="p") here None and print after
+2
+stderr 0

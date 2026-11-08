@@ -30,6 +30,23 @@ fn run_tests(dir: &Path, args: &[&str]) -> std::io::Result<Output> {
         .output()
 }
 
+/// What the JIT printed and said for one of these programs' tests, pinned when it was removed, with
+/// their folder written as `<dir>`.
+fn pinned(name: &str) -> (String, String) {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned");
+    let read = |extension: &str| {
+        std::fs::read_to_string(folder.join(format!("{name}.{extension}"))).unwrap_or_default()
+    };
+    (read("out"), read("err"))
+}
+
+/// Text a run in `dir` wrote, with `dir` written as `<dir>`, as the pins have it.
+fn apart_from(dir: &Path, text: &str) -> String {
+    let real = std::fs::canonicalize(dir).map(|real| real.display().to_string()).unwrap_or_default();
+    let text = text.replace(&dir.display().to_string(), "<dir>");
+    if real.is_empty() { text } else { text.replace(&real, "<dir>") }
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n")
 }
@@ -445,7 +462,7 @@ fn llvm_here() -> bool {
 }
 
 #[test]
-fn tests_through_llvm_pass_and_fail_as_they_do_on_the_jit() {
+fn tests_through_llvm_pass_and_fail_as_they_did_on_the_jit() {
     if !llvm_here() {
         return;
     }
@@ -467,19 +484,19 @@ fn tests_through_llvm_pass_and_fail_as_they_do_on_the_jit() {
     assert_eq!(stdout(&passing), "6 passed, 0 failed\n", "{}", String::from_utf8_lossy(&passing.stderr));
 
     std::fs::write(&game, source("5")).unwrap();
-    let jit = run_tests(&dir, &["--all", "--jit"]).unwrap();
     let llvm = run_tests(&dir, &["--all"]).unwrap();
-    assert_eq!(stdout(&llvm), stdout(&jit));
-    assert_eq!(String::from_utf8_lossy(&llvm.stderr), String::from_utf8_lossy(&jit.stderr));
+    let (out, err) = pinned("tests-pass-and-fail");
+    assert_eq!(stdout(&llvm), out);
+    assert_eq!(apart_from(&dir, &String::from_utf8_lossy(&llvm.stderr)), err);
     assert!(!llvm.status.success());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A test that fails through LLVM says why as the JIT does, and isn't run again another way to
+/// A test that fails through LLVM says why as the JIT did, and isn't run again another way to
 /// find out: both sides of a comparison, a plain condition, a failure passed up with `?`, a check
 /// the runtime makes, and `is not None`.
 #[test]
-fn failing_tests_say_why_through_llvm_as_on_the_jit_and_run_once() {
+fn failing_tests_say_why_through_llvm_as_they_did_on_the_jit_and_run_once() {
     if !llvm_here() {
         return;
     }
@@ -492,16 +509,16 @@ fn failing_tests_say_why_through_llvm_as_on_the_jit_and_run_once() {
                 test \"out of range\":\n    items = [1, 2]\n    assert items[double(1)] == 1\n\n\
                 test \"is none\":\n    found = [1, 2].index(5) else None\n    assert found is not None\n";
     std::fs::write(dir.join("game.fen"), text).unwrap();
-    let jit = run_tests(&dir, &["--all", "--jit"]).unwrap();
     let llvm = run_tests(&dir, &["--all", "--verbose"]).unwrap();
     let said = String::from_utf8_lossy(&llvm.stderr);
     assert!(said.contains("note: 5 of 5 tests ran through LLVM"), "{said}");
+    let (out, err) = pinned("tests-say-why");
     let shown: String = said.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
-    assert_eq!(shown, String::from_utf8_lossy(&jit.stderr));
+    assert_eq!(apart_from(&dir, &shown), err);
     // `--verbose` lists what passed too, and nothing did.
     let printed = stdout(&llvm);
     let failed: String = printed.split_inclusive('\n').filter(|line| !line.starts_with("  ✓")).collect();
-    assert_eq!(failed, stdout(&jit));
+    assert_eq!(failed, out);
     assert!(!llvm.status.success());
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -510,7 +527,7 @@ fn failing_tests_say_why_through_llvm_as_on_the_jit_and_run_once() {
 /// the interpreter does, and says the same: ints, words, lists, bools, two inputs at once, and a
 /// test with capabilities, which gets new fakes for each attempt.
 #[test]
-fn failing_property_tests_shrink_through_llvm_as_on_the_jit() {
+fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
     if !llvm_here() {
         return;
     }
@@ -524,16 +541,16 @@ fn failing_property_tests_shrink_through_llvm_as_on_the_jit() {
                 test \"passes\" for n: int:\n    assert n == n\n\n\
                 test \"files\" (fs: Fs) for n: int:\n    assert not fs.exists(\"seen\")\n    _ = fs.write_text(\"seen\", \"1\")\n    assert n < 100\n";
     std::fs::write(dir.join("game.fen"), text).unwrap();
-    let jit = run_tests(&dir, &["--all", "--jit"]).unwrap();
     let llvm = run_tests(&dir, &["--all", "--verbose"]).unwrap();
     let said = String::from_utf8_lossy(&llvm.stderr);
     assert!(said.contains("note: 8 of 8 tests ran through LLVM"), "{said}");
     assert!(said.contains("it failed for a = 0, b = 50"), "{said}");
+    let (out, err) = pinned("tests-shrink");
     let shown: String = said.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
-    assert_eq!(shown, String::from_utf8_lossy(&jit.stderr));
+    assert_eq!(apart_from(&dir, &shown), err);
     let printed = stdout(&llvm);
     let failed: String = printed.split_inclusive('\n').filter(|line| !line.starts_with("  ✓")).collect();
-    assert_eq!(failed, stdout(&jit));
+    assert_eq!(failed, out);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -568,7 +585,7 @@ fn tested(program: &Path, args: &[&str], home: &Path) -> std::io::Result<(String
     ))
 }
 
-/// How many tests `--verbose` says left LLVM for the JIT or the interpreter, taken out of what it
+/// How many tests `--verbose` says left LLVM for the interpreter, taken out of what it
 /// printed. Only a run through LLVM says so, which the other way has to match.
 fn left_llvm(said: &mut (String, String)) -> usize {
     let mut left = 0;
@@ -626,14 +643,14 @@ fn off_llvm_differs(left: &[(String, usize)]) -> Option<String> {
     ))
 }
 
-/// Every example with tests says the same whichever way its tests run. And a wrong "unchanged" is
-/// a test skipped that should have run, so everything the JIT says a test ran, LLVM has to say too.
-/// How many of each example's tests leave LLVM can only go down: `fixtures/tests-off-llvm.txt`
-/// holds them.
+/// Every example's tests pass through LLVM, which keeps what most of them ran, for running them
+/// again only when that changes. How many of each example's tests leave LLVM can only go down:
+/// `fixtures/tests-off-llvm.txt` holds them. While the JIT was here, what it said each test ran
+/// had to be among what LLVM kept, and every example said the same both ways.
 /// The examples are tested on every core, up to 8, each worker with a Fennec home of its own: one
 /// at a time took 34 seconds.
 #[test]
-fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
+fn every_example_tested_through_llvm_passes_and_keeps_what_it_ran() {
     if !llvm_here() {
         return;
     }
@@ -655,32 +672,15 @@ fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
     // For each, how many of its tests were compared and traced, and what differed.
     let found = crate::executables::at_once(&paths, |worker, path| {
         let home = home.join(format!("worker-{worker}"));
-        let on_the_jit = tested(path, &["--all", "--verbose", "--jit"], &home)?;
-        let jit = kept_ran(&home, path)?;
         let mut through_llvm = tested(path, &["--all", "--verbose"], &home)?;
         let left = left_llvm(&mut through_llvm);
         let llvm = kept_ran(&home, path)?;
         let mut wrong = Vec::new();
-        if through_llvm != on_the_jit {
-            let shown = path.display();
-            wrong.push(format!(
-                "{shown} says something else through LLVM:\n  {through_llvm:?}\non the JIT:\n  {on_the_jit:?}"
-            ));
+        if through_llvm.0.contains("  ✗") {
+            wrong.push(format!("{} has a test failing through LLVM:\n  {through_llvm:?}", path.display()));
         }
-        let (mut compared, mut traced) = (0, 0);
-        for (test, ran) in &jit {
-            let Some(ran) = ran else { continue };
-            compared += 1;
-            let Some(Some(ran_through_llvm)) = llvm.get(test) else { continue };
-            traced += 1;
-            let missing: Vec<_> = ran.iter().filter(|name| !ran_through_llvm.contains(name)).collect();
-            if !missing.is_empty() {
-                wrong.push(format!(
-                    "{}: `{test}` ran {missing:?} on the JIT, and LLVM doesn't say so",
-                    path.display()
-                ));
-            }
-        }
+        let compared = llvm.len();
+        let traced = llvm.values().filter(|ran| ran.is_some()).count();
         Ok((compared, traced, left, wrong))
     })
     .unwrap();
@@ -696,14 +696,14 @@ fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
     let mut wrong: Vec<String> = found.into_iter().flat_map(|(.., wrong)| wrong).collect();
     wrong.extend(off_llvm_differs(&left));
     let off: usize = left.iter().map(|(_, count)| count).sum();
-    println!("{programs} examples, {traced} of {compared} tests' traces compared, {off} tests off LLVM");
+    println!("{programs} examples, {traced} of {compared} tests' traces kept, {off} tests off LLVM");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     assert!(programs > 20, "only {programs} examples have tests");
-    assert!(traced > 20, "only {traced} of {compared} tests were compared");
+    assert!(traced > 20, "only {traced} of {compared} tests kept what they ran");
     std::fs::remove_dir_all(&home).unwrap();
 }
 
-/// As on the JIT, a test isn't run again for a change to code it never reached.
+/// A test isn't run again for a change to code it never reached.
 #[test]
 fn only_what_a_test_ran_through_llvm_can_make_it_run_again() {
     if !llvm_here() {

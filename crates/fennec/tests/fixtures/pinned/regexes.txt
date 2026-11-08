@@ -1,0 +1,13 @@
+source d8b66097f738dc5f1455ace3542070ef6751223e7e92d357c82a62ae128f25fb
+code 0
+stdout 103
+fox 0 3 2 f ox
+and 4 7 2 a nd
+éclair 8 14 2 é clair
+ab True
+axb False
+oxf end 3
+False True
+42 3
+True
+stderr 0

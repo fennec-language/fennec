@@ -1,0 +1,6 @@
+source b3bf564892415742af20dcd0f54574fc906514fdc0bf513f66df070c19f74636
+code 0
+stdout 42
+read
+`x` should be an int, but it's a str
+stderr 0

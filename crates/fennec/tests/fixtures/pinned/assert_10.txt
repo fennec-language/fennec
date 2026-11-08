@@ -1,0 +1,12 @@
+source f838fcf041a87f018ad9f4f7345dee798b96d74f1b9fe173c1009f0f78e3ec60
+code 1
+stdout 2
+1
+stderr 215
+error: this assertion failed
+  --> <dir>/assert_10.fen:31:12
+   |
+31 |     assert Light.Red == .Green
+   |            ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is Light.Red and the right side is Light.Green

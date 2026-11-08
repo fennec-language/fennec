@@ -1,8 +1,7 @@
 //! `fennec run`: checks a program, then runs its `main` as native code. That's the cached dev
 //! build LLVM makes, as `fennec build` does, compiled a function at a time so an edit
 //! recompiles only what it touched. Where LLVM can't build the program yet it says why, in
-//! one line, and the JIT runs it, or the interpreter what the JIT can't. `--jit` and
-//! `--interp` ask for those directly.
+//! one line, and the interpreter runs it. `--interp` asks for that directly.
 
 use std::io::{BufReader, BufWriter, Write};
 use std::process::ExitCode;
@@ -12,11 +11,8 @@ use fennec_interp::Inputs;
 /// What runs a program.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Engine {
-    /// The LLVM dev build, or the JIT where LLVM can't build it, or the interpreter for what
-    /// neither can compile yet.
+    /// The LLVM dev build, or the interpreter where LLVM can't build it yet.
     Native,
-    /// The JIT, saying when the interpreter stands in. The benchmarks ask for this.
-    NativeNoted,
     /// As `Native`, without running the tests first.
     Untested,
     Interpreter,
@@ -67,28 +63,30 @@ pub(crate) fn run_logged(
         return failed;
     }
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
-    // standard error. `--jit` and `--interp` choose an engine, to compare one with another, so
-    // what they print is the program's alone.
+    // standard error. `--interp` chooses the interpreter, to compare it with native code, so what
+    // it prints is the program's alone.
     if matches!(engine, Engine::Native | Engine::Untested) {
         eprint!("{}", crate::lint::errors_remembered(path));
     }
     let prepared = if engine == Engine::Interpreter { whole(path) } else { reached(path) };
-    let (program, signatures) = match prepared {
+    let (program, _) = match prepared {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
-    // Where LLVM's tools or the runtime library aren't there, the JIT runs it without a word:
-    // that's this machine, not the program. Only LLVM turning the program down is said.
+    // Where LLVM's tools or the runtime library aren't there, the interpreter runs it without a
+    // word: that's this machine, not the program. Only LLVM turning the program down is said.
     if matches!(engine, Engine::Native | Engine::Untested) {
         if crate::aot::llvm_ready() {
             match built_and_run(&program, path, arguments, logged) {
                 Ok(code) => return code,
-                Err(why) => eprintln!("note: running this with the JIT, since LLVM can't build it: {why}"),
+                Err(why) => {
+                    eprintln!("note: running this with the interpreter, since LLVM can't build it: {why}");
+                }
             }
         } else if let Some(why) = crate::aot::stale_runtime() {
             // A runtime library that's there but from other source is the build's to fix, not
             // this machine's, so it's said.
-            eprintln!("note: running this with the JIT, since {why}");
+            eprintln!("note: running this with the interpreter, since {why}");
         }
     }
     let module = &program.module;
@@ -106,10 +104,7 @@ pub(crate) fn run_logged(
         stdin: Box::new(BufReader::new(std::io::stdin())),
         live: true,
     };
-    let result = match engine {
-        Engine::Interpreter => interpret(module, &mut out, inputs()),
-        _ => native(module, &signatures, (path, engine == Engine::NativeNoted), &mut out, inputs),
-    };
+    let result = interpret(module, &mut out, inputs());
     let flushed = out.flush();
     // A replay that ended with its recording not all read isn't the run that was recorded.
     let result = result.and_then(|code| match fennec_interp::replay::unfinished() {
@@ -184,27 +179,6 @@ fn rendered(program: &fennec_kit::Program, path: &str, diagnostic: &fennec_synta
     match fennec_kit::load(std::path::Path::new(path), path, fennec_kit::Entry::Main) {
         Ok(whole) => whole.sources.render(diagnostic),
         Err(_) => format!("error: {}\n", diagnostic.message),
-    }
-}
-
-/// `fennec dev startup <path>`: everything `fennec run --jit` does before `main`, for the
-/// benchmark suite to tell how long a program takes to start from how long its work takes.
-pub(crate) fn startup(path: &str) -> ExitCode {
-    let (program, signatures) = match reached(path) {
-        Ok(prepared) => prepared,
-        Err(code) => return code,
-    };
-    let Some(home) = fennec_build::fennec_home() else {
-        eprintln!("error: couldn't find a home folder; set FENNEC_HOME");
-        return ExitCode::FAILURE;
-    };
-    let cache = fennec_build::Cache::new(&home);
-    match fennec_jit::start_only(&program.module, &signatures, &cache, &absolute(path)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(fennec_jit::JitError::Failed(diagnostic) | fennec_jit::JitError::Unsupported(diagnostic)) => {
-            eprint!("{}", program.sources.render(&diagnostic));
-            ExitCode::FAILURE
-        }
     }
 }
 
@@ -300,37 +274,6 @@ pub(crate) fn fingerprint<'t>(files: impl Iterator<Item = (&'t str, &'t str)>) -
         }
     }
     hasher.finalize()
-}
-
-/// Runs a program as native code, or with the interpreter if it uses something the JIT
-/// can't compile yet. Nothing runs before the JIT decides, so nothing runs twice.
-fn native(
-    module: &fennec_syntax::Module,
-    signatures: &fennec_check::Signatures,
-    (path, noted): (&str, bool),
-    out: &mut dyn Write,
-    inputs: impl Fn() -> Inputs,
-) -> Result<u8, fennec_syntax::Diagnostic> {
-    // Machine code is reused from the cache in `~/.fennec`, unless `FENNEC_NO_CACHE` is set.
-    let ran = match &cache() {
-        // A program's machine code is kept together, under its absolute path.
-        Some(cache) => {
-            fennec_jit::run_cached(module, Some(signatures), out, inputs(), cache, &absolute(path))
-                .map(|_| ())
-        }
-        None => fennec_jit::run_with_inputs(module, out, inputs()),
-    };
-    match ran {
-        // What native code gave back from `main` is kept by the runtime.
-        Ok(()) => Ok(fennec_interp::embed::take_exit_code()),
-        Err(fennec_jit::JitError::Failed(diagnostic)) => Err(diagnostic),
-        Err(fennec_jit::JitError::Unsupported(diagnostic)) => {
-            if noted {
-                eprintln!("note: {}; using the interpreter", diagnostic.message);
-            }
-            interpret(module, out, inputs())
-        }
-    }
 }
 
 /// Runs a program in the interpreter, giving back its exit code.

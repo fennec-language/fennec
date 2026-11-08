@@ -1,0 +1,9 @@
+source 8f2741d0ef474ff7fa63215ead9d5a2c8a0cae1ded2601ca8cd45d3eb5f8815f
+code 1
+stdout 0
+stderr 132
+error: `max` of an empty list
+ --> <dir>/max_of_nothing.fen:4:18
+  |
+4 |     stdout.print(max(none))
+  |                  ^^^^^^^^^

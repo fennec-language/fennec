@@ -314,10 +314,16 @@ impl Emit<'_, '_, '_> {
             (None, None) => self.slot(dest),
         };
         let access = if block.is_some() { FIELD_ACCESS } else { "" };
-        for ((offset, held), value) in written.into_iter().zip(fields) {
+        let given = fields.len();
+        for ((offset, held), value) in written.iter().cloned().zip(fields) {
             let held = held.ok_or("a field this backend doesn't take yet")?;
             let at = self.offset(&base, offset);
             self.fill(&held, value, &at, access)?;
+        }
+        // What the IR doesn't give, an error's notes, starts with none.
+        for (offset, _) in written.iter().skip(given) {
+            let at = self.offset(&base, *offset);
+            self.line(&format!("store i64 0, ptr {at}{access}"));
         }
         if let (Some(block), true) = (&block, self.module.threads && self.is_cell(&kind)) {
             // Before anything else holds it: what it was given goes in its table.
@@ -947,12 +953,14 @@ impl Emit<'_, '_, '_> {
         Ok(result)
     }
 
-    /// The fields of a plain struct, with where they are and how they're held.
+    /// The fields of a plain struct, with where they are and how they're held: not an error's
+    /// notes, which `==` and ordering pass over.
     fn struct_fields(&self, id: u32) -> Result<Vec<(u32, Kind)>, String> {
         let layout = self.layout_of(id)?;
         layout
             .fields
             .iter()
+            .filter(|field| !fennec_interp::packed::hidden(&field.name))
             .map(|field| {
                 Kind::from_ty(self.module.layouts, field.ty)
                     .map(|kind| (field.offset, kind))

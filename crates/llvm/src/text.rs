@@ -9,6 +9,14 @@ use fennec_syntax::{BinOp, Span};
 use crate::emit::{Emit, HEADER_ACCESS, LENGTH_ACCESS};
 use crate::kinds::Kind;
 
+/// How a value of one of several types is written: as itself, as `print` and `str` write it, or
+/// as it's shown inside a list or a failure's message, a string member quoted.
+#[derive(Clone, Copy)]
+enum Shown {
+    Plain,
+    Quoted,
+}
+
 impl Emit<'_, '_, '_> {
     /// The number of a string, read from its symbol, since it depends on the whole program.
     fn string_number(&mut self, text: &str) -> String {
@@ -168,7 +176,7 @@ impl Emit<'_, '_, '_> {
                     emit.line(&format!("call void @fennec_str_print(ptr {block})"));
                 });
             }
-            _ if self.is_one_of_several(kind) => {
+            _ if self.is_one_of_several(kind) || self.is_union(kind) => {
                 let text = self.plain_text(value, kind)?;
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {text})"));
@@ -197,8 +205,8 @@ impl Emit<'_, '_, '_> {
     /// A new string with a plain value's text, as the interpreter writes it: `True`, `(1, 2)`,
     /// `Point(x=1, y=2)` or `Kind.Stay`. `value` is a bool, or a plain struct's or enum's address.
     fn plain_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
-        if self.is_one_of_several(kind) {
-            return self.one_of_several_text(value, kind);
+        if self.is_one_of_several(kind) || self.is_union(kind) {
+            return self.one_of_several_text(value, kind, Shown::Plain);
         }
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         self.declare("declare ptr @fennec_int_text(i64) nounwind");
@@ -347,7 +355,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A new string with the text of the error it is, with no sign of the others it might be.
-    fn one_of_several_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+    fn one_of_several_text(&mut self, value: &str, kind: &Kind, how: Shown) -> Result<String, String> {
         let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return Err("not one of several".to_owned()) };
         let layouts = self.module.layouts;
         let cases =
@@ -371,7 +379,16 @@ impl Emit<'_, '_, '_> {
             self.start_block(&this);
             let place = self.offset(&base, field.offset);
             let inside = if held.in_memory() { place } else { self.load_field(&held, &place, "") };
-            let text = self.shown_text(&inside, &held)?;
+            // Printed as itself, a string member is its text, as an interpreter's value prints;
+            // anything else is written as it's shown.
+            let text = match (how, &held) {
+                (Shown::Plain, Kind::Str) if self.headers() => self.owned_text_block(&inside),
+                (Shown::Plain, Kind::Str) => {
+                    self.retain(&inside);
+                    inside
+                }
+                _ => self.shown_text(&inside, &held)?,
+            };
             self.line(&format!("store ptr {text}, ptr {shown}"));
             self.line(&format!("br label %{joined}"));
             self.start_block(&next);
@@ -422,7 +439,7 @@ impl Emit<'_, '_, '_> {
     /// A new string with a value's text as the interpreter shows it, with a string in quotes.
     fn shown_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
         if self.is_one_of_several(kind) {
-            return self.one_of_several_text(value, kind);
+            return self.one_of_several_text(value, kind, Shown::Quoted);
         }
         let none = self.literal("None");
         if let Kind::Maybe(inner) = kind {
@@ -530,6 +547,8 @@ impl Emit<'_, '_, '_> {
                     return Ok(value);
                 }
                 Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
+                // A union of plain types is its value's text, written as `print` writes it.
+                Kind::Boxed(_) if self.is_union(&kind) => return self.plain_text(&value, &kind),
                 Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                     return Ok(self.text_of_block(&value));
                 }

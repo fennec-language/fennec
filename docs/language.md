@@ -101,7 +101,7 @@ for at, ref score in enumerate(scores): ...
 - `items()` is for keyed things: a dict, a `Table`, and your own types that give `len`, `[]` and `key(i)`. Built for dicts and `Table`s.
 - Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built.
 - A generator passed to a call like `sum` can read anything, but it can't change the names around it, which is a compile error. Use a loop for that. Built.
-- `f(ref xs[i], ref xs[j])` is always refused, since `i` and `j` may be the same. `xs.swap(i, j)` swaps two items, and there's no `pair`. Not built yet: the call compiles today, and there's no `swap`.
+- `f(ref xs[i], ref xs[j])` is always refused, since `i` and `j` may be the same, and so is `f(ref xs[0], ref xs[2])`. `xs.swap(i, j)` swaps two items, and there's no `pair`. Not built yet: there's no `swap`.
 
 ## Copies
 

@@ -4,7 +4,8 @@
 //! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
 //! collects the changes and makes them after.
 //!
-//! A `mut` argument has its place to itself the same way: nothing else in the call can reach it.
+//! A `ref` argument has its place to itself the same way: nothing else in the call can reach it,
+//! not even another item of the same collection, as `f(ref xs[0], ref xs[2])` would.
 //! Nor can an argument change what its call changes, like `self.items.append(self.grow())` where
 //! `grow` appends to `self.items`: the engines would disagree on which change wins.
 
@@ -524,16 +525,21 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
     let mut earlier: Vec<(Place, &Expr, bool)> = Vec::new();
     for arg in args {
         let Some(given) = place(&arg.value) else { continue };
+        // Two `ref`s into one collection overlap however they're written, `xs[0]` and `xs[2]` too:
+        // each has its place to itself. A value read beside a `ref` is apart when its index is
+        // written as a different one.
         let clash = earlier.iter().find(|(other, written, is_mut)| {
-            (arg.is_mut || *is_mut) && given.overlaps(other) && !written_apart(&arg.value, written)
+            (arg.is_mut || *is_mut)
+                && given.overlaps(other)
+                && ((arg.is_mut && *is_mut) || !written_apart(&arg.value, written))
         });
-        let held = receiver.as_ref().filter(|(called_on, written)| {
-            arg.is_mut && given.overlaps(called_on) && !written_apart(&arg.value, written)
-        });
+        let held = receiver.as_ref().filter(|(called_on, _)| arg.is_mut && given.overlaps(called_on));
         if let Some((_, other, is_mut)) = clash {
             let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
             let message = format!("{first} and {second} overlap");
-            problems.push(Diagnostic::new(message, arg.value.span).with_help(OVERLAP_FIX));
+            let items = arg.is_mut && *is_mut && first != second && given.steps.contains(&None);
+            let fix = if items { ITEMS_FIX } else { OVERLAP_FIX };
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(fix));
         } else if let Some((_, called_on)) = held {
             let (first, second) = (written(&arg.value, true), written(called_on, false));
             let message = format!("{first} overlaps {second}, which this method is called on");
@@ -626,6 +632,10 @@ const ARGUMENT_CHANGES_FIX: &str =
 
 const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
 it reads, or make the changes one at a time";
+
+/// Two `ref`s into one collection, at indexes written apart or not.
+const ITEMS_FIX: &str = "two items of one collection are never both `ref`, even at different indexes: \
+make the changes one at a time";
 
 /// An argument that names a place, in backticks as it's written.
 fn written(expr: &Expr, is_mut: bool) -> String {

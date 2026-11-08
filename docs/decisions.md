@@ -63,7 +63,7 @@ for attacker_id, attacker in units.items():
     units[attacker.target_id].health -= attacker.damage
 ```
 
-**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. `xs.swap(i, j)` swaps two items, and `pair` is gone. Not built yet for `xs[i]` and `xs[j]`, which compiles today, or `swap`. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
+**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. `xs.swap(i, j)` swaps two items, and `pair` is gone. Built, except `swap`. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
 ```fennec
 for ref unit in units:
     units[unit.target_id].health -= 1    # error: the target may be `unit`

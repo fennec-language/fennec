@@ -91,15 +91,12 @@ def nanos_of(timeout: Duration?) -> int:
 
 ## What a send's answer means: 0 sent, 1 closed, 2 timed out.
 def sent(answer: int, timeout: Duration?) fails Closed | Timeout:
-    if answer == 1:
-        fail Closed()
-    if answer == 2:
-        fail Timeout(waited=timeout else Duration())
+    if answer == 1: fail Closed()
+    if answer == 2: fail Timeout(waited=timeout else Duration())
 
 ## The next message on channel `channel`, or why there isn't one.
 def received[T](channel: int, timeout: Duration?) -> T fails Closed | Timeout:
     mut why = 0
     got = channel_receive[T](channel, nanos_of(timeout), ref why)
-    if why == 2:
-        fail Timeout(waited=timeout else Duration())
+    if why == 2: fail Timeout(waited=timeout else Duration())
     got else fail Closed()

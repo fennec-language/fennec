@@ -700,7 +700,10 @@ pub(crate) fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
         StmtKind::If { branches, otherwise } => {
             branches.iter().map(|(_, block)| block.as_slice()).chain(otherwise.as_deref()).collect()
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => vec![body],
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => vec![body],
         _ => Vec::new(),
     }
 }
@@ -721,8 +724,11 @@ pub(crate) fn exprs(stmt: &Stmt) -> Vec<&Expr> {
         | StmtKind::With { value, .. } => {
             vec![value]
         }
-        StmtKind::Return(None) | StmtKind::Def(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {
-            Vec::new()
-        }
+        StmtKind::OnFailure { .. }
+        | StmtKind::Return(None)
+        | StmtKind::Def(_)
+        | StmtKind::Break
+        | StmtKind::Continue
+        | StmtKind::Pass => Vec::new(),
     }
 }

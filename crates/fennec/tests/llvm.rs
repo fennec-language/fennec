@@ -3729,6 +3729,145 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// A failure can leave a `with` block from inside what it calls: from a generator, whether it's
+/// read through a name, looped over or summed, or from a round of a `parallel` loop. Each runs the
+/// source's `else:` once, a `ref` case still puts back what it changed, and what a failing
+/// cleanup says goes on the failure as a note.
+#[test]
+fn a_failure_from_inside_what_a_block_calls_runs_its_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("failure_inside_a_block", FAILURE_INSIDE_A_BLOCK)?;
+    assert_eq!(
+        printed,
+        "open\nopen\nclosed\nclosed\n7\n\
+         open\n7\n8\ncleanup ran\nfailed 2 []\n\
+         open\n7\n8\ncleanup ran\nfailed 2 []\n\
+         open\ncleanup ran\nfailed 2 []\n\
+         open\nopen\n14\n15\ncleanup ran\ncleanup ran\nfailed 2 []\n\
+         open\ncleanup ran\nfailed 3 []\n\
+         failed 2 [\"Boom(at=99)\"]\n\
+         failed 2 [] 2\n"
+    );
+    Ok(())
+}
+
+const FAILURE_INSIDE_A_BLOCK: &str = "error Boom:
+    at: int
+
+def numbers(limit: int) -> Iterator[int] fails Boom:
+    for at in range(limit):
+        if at == 2:
+            fail Boom(at=at)
+        yield at
+
+def opened(stdout: Stdout) -> with int fails Boom:
+    stdout.print(\"open\")
+    lend 7 else:
+        stdout.print(\"cleanup ran\")
+    stdout.print(\"closed\")
+
+def through_a_name(stdout: Stdout) fails Boom:
+    with opened(stdout)? as held:
+        items = numbers(5)?
+        for each in items:
+            stdout.print(each + held)
+
+def looped(stdout: Stdout) fails Boom:
+    with opened(stdout)? as held:
+        for each in numbers(5)?:
+            stdout.print(each + held)
+
+def summed(stdout: Stdout) fails Boom:
+    with opened(stdout)? as held:
+        stdout.print(sum(numbers(5)?) + held)
+
+def nested(stdout: Stdout) fails Boom:
+    with opened(stdout)? as first:
+        with opened(stdout)? as second:
+            for each in numbers(5)?:
+                stdout.print(each + first + second)
+
+def check(item: int) -> int fails Boom:
+    if item == 3:
+        fail Boom(at=item)
+    return item
+
+def rounds(stdout: Stdout) fails Boom:
+    items = [1, 2, 3, 4]
+    with opened(stdout)? as held:
+        for item in parallel(items):
+            _ = check(item)?
+        stdout.print(held)
+
+enum Kind:
+    Button(clicks: int)
+    Label
+
+def clicks_of(kind: Kind) -> int:
+    return match kind:
+        case .Button(clicks):
+            clicks
+        case .Label:
+            0
+
+def put_back(ref kind: Kind) fails Boom:
+    match kind:
+        case .Button(ref clicks):
+            clicks += 1
+            _ = sum(numbers(5)?)
+        case .Label:
+            pass
+
+def closing_fails() -> with int fails Boom:
+    lend 1 else:
+        fail Boom(at=99)
+
+def noted(stdout: Stdout) fails Boom:
+    with closing_fails()? as held:
+        stdout.print(sum(numbers(5)?) + held)
+
+def inner_returns(stdout: Stdout) -> int fails Boom:
+    with opened(stdout)? as first:
+        with opened(stdout)? as second:
+            if first == second:
+                return first
+    return 0
+
+def main(stdout: Stdout):
+    match inner_returns(stdout):
+        case Ok(value):
+            stdout.print(value)
+        case Err(problem):
+            stdout.print(problem.at)
+    for run in [0, 1, 2, 3, 4, 6]:
+        ran = match run:
+            case 0:
+                through_a_name(stdout)
+            case 1:
+                looped(stdout)
+            case 2:
+                summed(stdout)
+            case 3:
+                nested(stdout)
+            case 4:
+                rounds(stdout)
+            case _:
+                noted(stdout)
+        match ran:
+            case Ok(_):
+                stdout.print(\"no failure\")
+            case Err(problem):
+                stdout.print(\"failed\", problem.at, problem.notes())
+    mut kind = Kind.Button(clicks=1)
+    match put_back(ref kind):
+        case Ok(_):
+            stdout.print(\"no failure\")
+        case Err(problem):
+            stdout.print(\"failed\", problem.at, problem.notes(), clicks_of(kind))
+";
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

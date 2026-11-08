@@ -116,6 +116,10 @@ impl FnCx<'_> {
                 self.condition(cond, "assert");
                 Flow::unit()
             }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                self.on_failure(name, cleanup, stmt.span);
+                self.block(body, used)
+            }
             StmtKind::With { value, names, body, lock: true } => self.lock_block(value, names, body, used),
             StmtKind::With { value, names, body, .. } => self.with_block(value, names, body, used),
             StmtKind::Def(def) => {
@@ -209,6 +213,18 @@ impl FnCx<'_> {
             );
         }
         Flow::exit()
+    }
+
+    /// A block's cleanup for what fails inside what it calls, with the failure in `name`. It
+    /// runs instead of what follows, so what it learns goes no further.
+    fn on_failure(&mut self, name: &str, cleanup: &[Stmt], at: Span) {
+        let failure = self.fails.clone().unwrap_or(Type::Unknown);
+        let before = self.snapshot();
+        self.push(false);
+        self.declare(name, failure, false, at);
+        self.stmts(cleanup, false);
+        self.pop();
+        self.restore(&before);
     }
 
     fn fail(&mut self, error: &Expr) {

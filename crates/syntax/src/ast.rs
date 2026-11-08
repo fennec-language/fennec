@@ -269,6 +269,15 @@ pub enum StmtKind {
         lock: bool,
     },
     Def(FnDef),
+    /// Written in for a `with` block whose source has an `else:`. A `?` or `fail` in `body` runs
+    /// that cleanup where it's written, but a failure can also leave from inside what the block
+    /// calls: from a generator it reads, or a `parallel` loop's round. Those run `cleanup`
+    /// first, with the failure in `name`, and `cleanup` ends by failing with it.
+    OnFailure {
+        name: String,
+        cleanup: Vec<Stmt>,
+        body: Vec<Stmt>,
+    },
     /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
     /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
     /// caller's block fails, empty when there's none.

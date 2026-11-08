@@ -48,7 +48,8 @@ pub(crate) fn lower(
         }
     });
     COPIES.with(|copies| copies.set(lowest));
-    let mut lowering = Lowering { sources, launches, ref_matches, made: 0, returns: Vec::new() };
+    let mut lowering =
+        Lowering { sources, launches, ref_matches, made: 0, returns: Vec::new(), failing: Vec::new() };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -127,7 +128,10 @@ fn nest_in(body: &mut [Stmt], opened_apart: &std::collections::BTreeSet<(u32, u3
                 }
                 nest_in(body, opened_apart, nested);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 nest_in(body, opened_apart, nested);
             }
             _ => {}
@@ -160,6 +164,8 @@ struct Lowering<'s> {
     made: usize,
     /// The return type written for each function being walked, innermost last.
     returns: Vec<Option<TypeExpr>>,
+    /// Whether each function being walked says it fails, innermost last.
+    failing: Vec<bool>,
 }
 
 thread_local! {
@@ -247,8 +253,21 @@ const CONTINUED: i64 = 3;
 impl Lowering<'_> {
     fn function(&mut self, def: &mut FnDef) {
         self.returns.push(def.ret.clone());
+        self.failing.push(def.fails.is_some());
         self.stmts(&mut def.body);
+        self.failing.pop();
         self.returns.pop();
+    }
+
+    /// `block`, with `cleanup` also run for what fails inside what it calls, which can only
+    /// pass up from a function that says it fails.
+    fn on_failure(&self, cleanup: &[Stmt], block: Vec<Stmt>, at: Span) -> Vec<Stmt> {
+        if cleanup.is_empty() || self.failing.last() != Some(&true) {
+            return block;
+        }
+        let held = format!("failed__within{}", here(at).start);
+        let cleanup = failing_with(name(&held, at), cleanup, at);
+        vec![stmt(StmtKind::OnFailure { name: held, cleanup, body: block }, at)]
     }
 
     fn stmts(&mut self, body: &mut Vec<Stmt>) {
@@ -301,7 +320,10 @@ impl Lowering<'_> {
                     self.stmts(body);
                 }
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 self.stmts(body);
             }
             StmtKind::Def(def) => self.function(def),
@@ -382,6 +404,7 @@ impl Lowering<'_> {
         let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
         exits(&mut block, &mut caller, false);
         let ways = caller.ways;
+        let mut block = self.on_failure(std::slice::from_ref(&put_back), block, at);
         let mut body = copies;
         if ways.any() {
             body.push(assign(&exit, int(0, at), true, None));
@@ -475,6 +498,7 @@ impl Lowering<'_> {
             }
             caller.ways = Ways::default();
             exits(&mut block, &mut caller, false);
+            let mut block = self.on_failure(otherwise, block, at);
             let mut lent: Vec<Stmt> = binding.into_iter().collect();
             if caller.ways.any() {
                 block.push(stmt(StmtKind::Break, at));
@@ -597,7 +621,10 @@ fn retype_written(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>)
                     retype_written(body, given);
                 }
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 retype_written(body, given);
             }
             StmtKind::Lend { otherwise, .. } => retype_written(otherwise, given),
@@ -735,9 +762,10 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
                 branches.iter_mut().any(|(_, body)| replace_lend(body, with_block))
                     || otherwise.as_mut().is_some_and(|body| replace_lend(body, with_block))
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-                replace_lend(body, with_block)
-            }
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => replace_lend(body, with_block),
             _ => false,
         };
         if found {
@@ -794,7 +822,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 }
                 None
             }
-            StmtKind::With { body, .. } => {
+            StmtKind::With { body, .. } | StmtKind::OnFailure { body, .. } => {
                 exits(body, caller, in_loop);
                 None
             }
@@ -864,7 +892,13 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
                     fail_through(body, otherwise);
                 }
             }
+            // A round's failure leaves where the loop ends, and a round can't write outside itself.
+            StmtKind::For { iter, .. } if crate::parallel::parallel_items(iter).is_some() => {}
             StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                fail_through(body, otherwise);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                fail_through(cleanup, otherwise);
                 fail_through(body, otherwise);
             }
             StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
@@ -1131,6 +1165,10 @@ fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
                 declared_in(body, found);
             }
             StmtKind::While { body, .. } => declared_in(body, found),
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                declared_in(cleanup, found);
+                declared_in(body, found);
+            }
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
                     declared_in(body, found);
@@ -1203,6 +1241,10 @@ fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {
                 rename_bound(body, fresh);
             }
             StmtKind::While { body, .. } => rename_bound(body, fresh),
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                rename_bound(cleanup, fresh);
+                rename_bound(body, fresh);
+            }
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
                     rename_bound(body, fresh);

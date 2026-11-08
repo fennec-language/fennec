@@ -27,6 +27,9 @@ from std.sql import SqlError, SqlRows, SqlValue, rows_as
 ## The protocol's version, 3.0, as a startup message gives it.
 PROTOCOL = 196608
 
+## The most SCRAM rounds a server may ask for. Postgres uses 4096 unless it's told otherwise.
+MOST_ROUNDS = 1_000_000
+
 ## The longest message a reader takes, so a server can't make it hold more than this.
 LONGEST = 1073741824
 
@@ -324,6 +327,11 @@ export struct PgScram:
             fail SqlError.Failed(reason="the server's SCRAM nonce doesn't extend ours")
         if salt.len() == 0 or rounds < 4096:
             fail SqlError.Failed(reason="the server's SCRAM salt or rounds are too weak")
+        # Each round is work done here, so a server can't ask for hours of it.
+        if rounds > MOST_ROUNDS:
+            fail SqlError.Failed(
+                reason=f"the server asks for {rounds} SCRAM rounds, over the limit of {MOST_ROUNDS}",
+            )
         salted = salted_password(self._password.expose_secret().encode(), salt, rounds)
         client_key = mac(salted, "Client Key".encode())
         stored = unhex(crypto.sha256(client_key))
@@ -338,6 +346,9 @@ export struct PgScram:
     ## Checks the server's last message: its signature, which only a server that knows the
     ## password could make.
     def check(self, server_final: bytes) fails SqlError:
+        # Before `answer`, there's no key to check it with, and an empty one anyone can sign with.
+        if self._signed == "":
+            fail SqlError.Failed(reason="the server sent its SCRAM proof before the exchange")
         said = server_final.decode() else ""
         wanted = base64.encode(mac(self._server_key, self._signed.encode()))
         if not crypto.equal(said, f"v={wanted}"):
@@ -497,7 +508,7 @@ def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlEr
         rows.texts.append(text)
 
 def float_of(text: str) -> float fails SqlError:
-    if text == "NaN": return 0.0 / 0.0
+    if text == "NaN": return float("nan") else 0.0
     if text == "Infinity": return 1e308 * 10.0
     if text == "-Infinity": return -1e308 * 10.0
     float(text) else fail SqlError.Failed(reason=f"the server sent `{text}` as a float")
@@ -532,8 +543,11 @@ export def failure_of(fields: dict[str, str]) -> SqlError:
     SqlError.Failed(reason=reason)
 
 ## Connects to the database, signs in, and lends a `PgDatabase` for a `with` block, closing it at the
-## end. `password` is needed if the server asks for one: it's sent with SCRAM-SHA-256, which
-## never puts it on the wire, or as it is if the server asks for that. `entropy` makes SCRAM's nonce.
+## end. `password` is needed if the server asks for one, and goes through SCRAM-SHA-256, which never
+## puts it on the wire and makes the server prove it knows it too. Given a password, a server that
+## lets the client in with no proof, or asks for the password as it is, is refused, since anything
+## on the way could be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server
+## set up that way. `entropy` makes SCRAM's nonce.
 export def connect(
     net: Net,
     entropy: Entropy,
@@ -542,9 +556,10 @@ export def connect(
     database: str,
     password: Secret[str]? = None,
     port = 5432,
+    allow_weak_sign_in = False,
 ) -> with PgDatabase fails SqlError:
     db = PgDatabase(_conn=opened(net, host=host, port=port)?)
-    db._sign_in(entropy, user=user, database=database, secret=password)?
+    db._sign_in(entropy, user=user, database=database, secret=password, weak=allow_weak_sign_in)?
     lend db else:
         db._close()
     db._close()
@@ -569,7 +584,12 @@ export struct PgDatabase:
         tx = PgTransaction(_db=self)
         lend tx else:
             _ = self._run(t"rollback") else PgResult()
-        _ = self._run(t"commit")?
+        kept = self._run(t"commit")?
+        # A transaction that had a failure in it is rolled back by the commit, with no error.
+        if kept.tag != "COMMIT":
+            fail SqlError.Failed(
+                reason=f"the transaction wasn't kept: the server answered the commit with `{kept.tag}`, as it does when something in it failed",
+            )
 
     ## Sends a query, and reads what comes back up to the server's saying it's ready again. A
     ## failure is kept until then, so the connection is ready for the next query.
@@ -607,6 +627,7 @@ export struct PgDatabase:
         user: str,
         database: str,
         secret: Secret[str]?,
+        weak: bool,
     ) fails SqlError:
         send(self._conn, startup(user, database=database))?
         mut reader = PgReader()
@@ -617,11 +638,15 @@ export struct PgDatabase:
             message = next_message(self._conn, ref reader)?
             match message:
                 case .AuthOk:
-                    if signing and not proved:
+                    if not proved and (signing or (secret is not None and not weak)):
                         fail SqlError.Failed(
-                            reason="the server let us in without proving it knows the password",
+                            reason="the server let us in without proving it knows the password: `allow_weak_sign_in=True` accepts that",
                         )
                 case .AuthCleartext:
+                    if not weak:
+                        fail SqlError.Failed(
+                            reason="the server asks for the password as it is, so it wasn't sent: `allow_weak_sign_in=True` sends it",
+                        )
                     held = needed(secret)?
                     send(self._conn, cleartext(held))?
                 case .AuthSasl(mechanisms=mechanisms):

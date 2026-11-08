@@ -40,7 +40,10 @@ pub(crate) fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
             .map(|(_, body)| body.as_slice())
             .chain(otherwise.iter().map(Vec::as_slice))
             .collect(),
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => {
             vec![body.as_slice()]
         }
         _ => Vec::new(),

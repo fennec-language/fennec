@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use fennec_interp::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, Word};
+use fennec_interp::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, LONGEST_PROBE, Word};
 use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::Ty;
@@ -17,10 +17,25 @@ const MIX: i64 = 0x9E37_79B9_7F4A_7C15_u64.cast_signed();
 const KEYS: u32 = 16;
 const USED: u32 = 24;
 const MASK: u32 = 32;
+/// Where a dict says how its keys are hashed: 0 the fast way, 1 the strong way.
+const HOW_HASHED: u32 = 40;
 /// Where an entry's key is.
 const ENTRY_KEY: u32 = 8;
 /// The hash a removed entry has.
 const REMOVED: i64 = -1;
+
+/// What a find helper does for a dict hashed the strong way, for a one-word key.
+const STRONG_WORD: &str = "  %strong_hash = call i64 @fen_strong_word(i64 %key)\n";
+
+/// The same for a key of 23 bytes or fewer, in a helper that has `%bytes`.
+const STRONG_BYTES_OF_BYTES: &str = "  %strong_hash = call i64 @fen_strong_bytes(ptr %bytes, i64 %length)\n";
+
+/// The same for a key given as its bytes and their length.
+const STRONG_BYTES: &str = "  %strong_hash = call i64 @fen_strong_bytes(ptr %key, i64 %length)\n";
+
+/// Loads the hash seed, which is set before the program starts and never changes.
+const SEEDED_LENGTH: &str =
+    "  %seed = load i64, ptr @fennec_hash_seed, !invariant.load !1\n  %seeded = xor i64 %length, %seed\n";
 
 fn header_bytes() -> i64 {
     i64::try_from(DICT_HEADER_WORDS * 8).unwrap_or(40)
@@ -38,15 +53,15 @@ fn entry_value(key: Word) -> u32 {
 }
 
 /// The start of a function that looks up a key: gives back its entry's address, or zero.
-fn find_start(name: &str, key_type: &str) -> String {
-    find_start_wide(name, key_type, ENTRY_WORDS)
+fn find_start(name: &str, key_type: &str, strong: &str) -> String {
+    find_start_wide(name, key_type, ENTRY_WORDS, strong)
 }
 
 /// [`find_start`] for entries `width` words wide.
-fn find_start_wide(name: &str, key_type: &str, width: usize) -> String {
+fn find_start_wide(name: &str, key_type: &str, width: usize, strong: &str) -> String {
     let header = header_bytes();
     format!(
-        "define internal ptr @{name}(ptr %d, {key_type} %key, i64 %hash) #0 {{\nentry:\n  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}\n  %mask = load i64, ptr %mask_at\n  %slots = getelementptr inbounds i8, ptr %d, i64 {header}\n  %count = add i64 %mask, 1\n  %first = and i64 %hash, %mask\n  %entries = getelementptr inbounds i64, ptr %slots, i64 %count\n  br label %head\nhead:\n  %at = phi i64 [ %first, %entry ], [ %after, %next ]\n  %slot = getelementptr inbounds i64, ptr %slots, i64 %at\n  %taken = load i64, ptr %slot\n  %empty = icmp eq i64 %taken, 0\n  br i1 %empty, label %none, label %check\nnone:\n  ret ptr null\ncheck:\n  %number = add i64 %taken, -1\n  %entry_at = getelementptr inbounds [{width} x i64], ptr %entries, i64 %number\n  %theirs = load i64, ptr %entry_at\n  %same_hash = icmp eq i64 %theirs, %hash\n  br i1 %same_hash, label %compare, label %next\nnext:\n  %stepped = add i64 %at, 1\n  %after = and i64 %stepped, %mask\n  br label %head\nfound:\n  ret ptr %entry_at\ncompare:\n  %other_at = getelementptr inbounds i8, ptr %entry_at, i64 {ENTRY_KEY}\n"
+        "define internal ptr @{name}(ptr %d, {key_type} %key, i64 %given) #0 {{\nentry:\n  %how_at = getelementptr inbounds i8, ptr %d, i64 {HOW_HASHED}\n  %how = load i64, ptr %how_at\n  %is_strong = icmp ne i64 %how, 0\n  br i1 %is_strong, label %rehash, label %probe, !prof !0\nrehash:\n{strong}  br label %probe\nprobe:\n  %hash = phi i64 [ %given, %entry ], [ %strong_hash, %rehash ]\n  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}\n  %mask = load i64, ptr %mask_at\n  %slots = getelementptr inbounds i8, ptr %d, i64 {header}\n  %count = add i64 %mask, 1\n  %first = and i64 %hash, %mask\n  %entries = getelementptr inbounds i64, ptr %slots, i64 %count\n  br label %head\nhead:\n  %at = phi i64 [ %first, %probe ], [ %after, %next ]\n  %slot = getelementptr inbounds i64, ptr %slots, i64 %at\n  %taken = load i64, ptr %slot\n  %empty = icmp eq i64 %taken, 0\n  br i1 %empty, label %none, label %check\nnone:\n  ret ptr null\ncheck:\n  %number = add i64 %taken, -1\n  %entry_at = getelementptr inbounds [{width} x i64], ptr %entries, i64 %number\n  %theirs = load i64, ptr %entry_at\n  %same_hash = icmp eq i64 %theirs, %hash\n  br i1 %same_hash, label %compare, label %next\nnext:\n  %stepped = add i64 %at, 1\n  %after = and i64 %stepped, %mask\n  br label %head\nfound:\n  ret ptr %entry_at\ncompare:\n  %other_at = getelementptr inbounds i8, ptr %entry_at, i64 {ENTRY_KEY}\n"
     )
 }
 
@@ -89,7 +104,11 @@ impl Emit<'_, '_, '_> {
             }
             Word::Plain(id) => {
                 let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
-                let mut hash = i64::from(words).wrapping_mul(MIX).to_string();
+                let (seeded, started) = (self.temp(), self.temp());
+                let seed = self.hash_seed();
+                self.line(&format!("{seeded} = xor i64 {words}, {seed}"));
+                self.line(&format!("{started} = mul i64 {seeded}, {MIX}"));
+                let mut hash = started;
                 for at in 0..words {
                     let (place, word_held, turned, mixed, next) =
                         (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -104,8 +123,10 @@ impl Emit<'_, '_, '_> {
                 hash
             }
             _ => {
-                let held = self.temp();
-                self.line(&format!("{held} = mul i64 {key}, {MIX}"));
+                let (seeded, held) = (self.temp(), self.temp());
+                let seed = self.hash_seed();
+                self.line(&format!("{seeded} = xor i64 {key}, {seed}"));
+                self.line(&format!("{held} = mul i64 {seeded}, {MIX}"));
                 held
             }
         };
@@ -116,11 +137,40 @@ impl Emit<'_, '_, '_> {
         done
     }
 
+    /// This run's hash seed, as a value.
+    fn hash_seed(&mut self) -> String {
+        self.declare("@fennec_hash_seed = external dso_local global i64");
+        let seed = self.temp();
+        self.line(&format!("{seed} = load i64, ptr @fennec_hash_seed, !invariant.load !1"));
+        seed
+    }
+
+    /// Defines what a find helper calls to hash a key for a dict hashed the strong way: the same
+    /// words as `strong_hash` in the runtime, one `fennec_dict_strong_step` each.
+    fn strong_hash_helpers(&mut self) {
+        self.declare("declare i64 @fennec_dict_strong_step(i64, i64) nounwind");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        self.module.add_helper(
+            "fen_strong_word",
+            "define internal i64 @fen_strong_word(i64 %key) #0 {\nentry:\n  %count = call i64 @fennec_dict_strong_step(i64 0, i64 1)\n  %mixed = call i64 @fennec_dict_strong_step(i64 %count, i64 %key)\n  %hash = lshr i64 %mixed, 1\n  ret i64 %hash\n}\n\n".to_owned(),
+        );
+        self.module.add_helper(
+            "fen_strong_words",
+            "define internal i64 @fen_strong_words(ptr %key, i64 %count) #0 {\nentry:\n  %start = call i64 @fennec_dict_strong_step(i64 0, i64 %count)\n  br label %head\nhead:\n  %mixed = phi i64 [ %start, %entry ], [ %after, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %count\n  br i1 %more, label %body, label %done\nbody:\n  %place = getelementptr inbounds i64, ptr %key, i64 %at\n  %word = load i64, ptr %place\n  %after = call i64 @fennec_dict_strong_step(i64 %mixed, i64 %word)\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  %hash = lshr i64 %mixed, 1\n  ret i64 %hash\n}\n\n".to_owned(),
+        );
+        self.module.add_helper(
+            "fen_strong_bytes",
+            "define internal i64 @fen_strong_bytes(ptr %bytes, i64 %length) #0 {\nentry:\n  %part = alloca i64\n  %start = call i64 @fennec_dict_strong_step(i64 0, i64 %length)\n  %whole = lshr i64 %length, 3\n  br label %head\nhead:\n  %mixed = phi i64 [ %start, %entry ], [ %after, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %whole\n  br i1 %more, label %body, label %tail\nbody:\n  %place = getelementptr inbounds i64, ptr %bytes, i64 %at\n  %word = load i64, ptr %place, align 1\n  %after = call i64 @fennec_dict_strong_step(i64 %mixed, i64 %word)\n  %next = add i64 %at, 1\n  br label %head\ntail:\n  %rest = and i64 %length, 7\n  %some = icmp ne i64 %rest, 0\n  br i1 %some, label %last, label %done\nlast:\n  store i64 0, ptr %part\n  %from = getelementptr inbounds i64, ptr %bytes, i64 %whole\n  call void @llvm.memcpy.p0.p0.i64(ptr %part, ptr %from, i64 %rest, i1 false)\n  %last_word = load i64, ptr %part\n  %last_mixed = call i64 @fennec_dict_strong_step(i64 %mixed, i64 %last_word)\n  %last_hash = lshr i64 %last_mixed, 1\n  ret i64 %last_hash\ndone:\n  %hash = lshr i64 %mixed, 1\n  ret i64 %hash\n}\n\n".to_owned(),
+        );
+    }
+
     fn string_hash_helper(&mut self) {
+        self.strong_hash_helpers();
+        self.declare("@fennec_hash_seed = external dso_local global i64");
         self.module.add_helper(
             "fen_text_hash",
             format!(
-                "define internal i64 @fen_text_hash(ptr %text) #0 {{\nentry:\n  %length_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}\n  %length = load i64, ptr %length_at\n  %start = mul i64 %length, {MIX}\n  %rounded = add i64 %length, 7\n  %words = lshr i64 %rounded, 3\n  %first = getelementptr inbounds i8, ptr %text, i64 {TEXT}\n  br label %head\nhead:\n  %hash = phi i64 [ %start, %entry ], [ %mixed, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %words\n  br i1 %more, label %body, label %done\nbody:\n  %place = getelementptr inbounds i64, ptr %first, i64 %at\n  %word = load i64, ptr %place\n  %turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %xored = xor i64 %turned, %word\n  %mixed = mul i64 %xored, {MIX}\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  ret i64 %hash\n}}\n\n"
+                "define internal i64 @fen_text_hash(ptr %text) #0 {{\nentry:\n  %length_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}\n  %length = load i64, ptr %length_at\n{SEEDED_LENGTH}  %start = mul i64 %seeded, {MIX}\n  %rounded = add i64 %length, 7\n  %words = lshr i64 %rounded, 3\n  %first = getelementptr inbounds i8, ptr %text, i64 {TEXT}\n  br label %head\nhead:\n  %hash = phi i64 [ %start, %entry ], [ %mixed, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %words\n  br i1 %more, label %body, label %done\nbody:\n  %place = getelementptr inbounds i64, ptr %first, i64 %at\n  %word = load i64, ptr %place\n  %turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %xored = xor i64 %turned, %word\n  %mixed = mul i64 %xored, {MIX}\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  ret i64 %hash\n}}\n\n"
             ),
         );
         self.declare("declare i64 @llvm.fshl.i64(i64, i64, i64)");
@@ -128,6 +178,7 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        self.strong_hash_helpers();
         if word == Word::Float {
             return self.find_float_key(dict, key);
         }
@@ -161,7 +212,10 @@ impl Emit<'_, '_, '_> {
         let (name, key_type) = match word {
             Word::Str => {
                 self.declare("declare i8 @fennec_box_equal(ptr, ptr) nounwind");
-                let mut text = find_start("fen_find_text", "ptr");
+                let strong = format!(
+                    "  %length_at = getelementptr inbounds i8, ptr %key, i64 {TEXT_BYTES}\n  %length = load i64, ptr %length_at\n  %text_at = getelementptr inbounds i8, ptr %key, i64 {TEXT}\n  %strong_hash = call i64 @fen_strong_bytes(ptr %text_at, i64 %length)\n"
+                );
+                let mut text = find_start("fen_find_text", "ptr", &strong);
                 text += "  %other = load ptr, ptr %other_at\n  %same = icmp eq ptr %other, %key\n  br i1 %same, label %found, label %text\ntext:\n  %equal = call i8 @fennec_box_equal(ptr %other, ptr %key)\n  %is = icmp ne i8 %equal, 0\n  br i1 %is, label %found, label %next\n}\n\n";
                 self.module.add_helper("fen_find_text", text);
                 ("fen_find_text".to_owned(), "ptr")
@@ -169,7 +223,8 @@ impl Emit<'_, '_, '_> {
             Word::Plain(id) => {
                 let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
                 let name = format!("fen_find_words{words}");
-                let mut text = find_start(&name, "ptr");
+                let strong = format!("  %strong_hash = call i64 @fen_strong_words(ptr %key, i64 {words})\n");
+                let mut text = find_start(&name, "ptr", &strong);
                 text += "  %other = load ptr, ptr %other_at\n  br label %w0\n";
                 for at in 0..words {
                     let after = if at + 1 == words { "found".to_owned() } else { format!("w{}", at + 1) };
@@ -184,7 +239,7 @@ impl Emit<'_, '_, '_> {
                 (name, "ptr")
             }
             _ => {
-                let mut text = find_start("fen_find_int", "i64");
+                let mut text = find_start("fen_find_int", "i64", STRONG_WORD);
                 text += "  %other = load i64, ptr %other_at\n  %same = icmp eq i64 %other, %key\n  br i1 %same, label %found, label %next\n}\n\n";
                 self.module.add_helper("fen_find_int", text);
                 ("fen_find_int".to_owned(), "i64")
@@ -231,7 +286,7 @@ impl Emit<'_, '_, '_> {
                 "define internal i64 @fen_float_key(i64 %bits) #0 {{\nentry:\n  %value = bitcast i64 %bits to double\n  %zero = fcmp oeq double %value, 0x0000000000000000\n  %nan = fcmp uno double %value, %value\n  %plain = select i1 %zero, i64 0, i64 %bits\n  %key = select i1 %nan, i64 {nan}, i64 %plain\n  ret i64 %key\n}}\n\n"
             ),
         );
-        let mut text = find_start("fen_find_float", "i64");
+        let mut text = find_start("fen_find_float", "i64", STRONG_WORD);
         text += "  %other = load i64, ptr %other_at\n  %other_key = call i64 @fen_float_key(i64 %other)\n  %same = icmp eq i64 %other_key, %key\n  br i1 %same, label %found, label %next\n}\n\n";
         self.module.add_helper("fen_find_float", text);
         let wanted = self.temp();
@@ -267,8 +322,8 @@ impl Emit<'_, '_, '_> {
     /// [`Self::find_text_key`] for a key of any length, compared by its bytes.
     fn find_long_text_key(&mut self, dict: &str, bytes: &str, length: &str) -> String {
         self.string_slice_helpers();
-        let mut find = find_start_wide("fen_find_header_key", "ptr", entry_words(Word::Text))
-            .replace("(ptr %d, ptr %key, i64 %hash)", "(ptr %d, ptr %key, i64 %length, i64 %hash)");
+        let mut find = find_start_wide("fen_find_header_key", "ptr", entry_words(Word::Text), STRONG_BYTES)
+            .replace("(ptr %d, ptr %key, i64 %given)", "(ptr %d, ptr %key, i64 %length, i64 %given)");
         find += &format!(
             "  %last_at = getelementptr inbounds i8, ptr %entry_at, i64 24\n  %last = load i64, ptr %last_at\n  %inline = icmp slt i64 %last, 0\n  br i1 %inline, label %short, label %long\nshort:\n  %tag = lshr i64 %last, 56\n  %short_length = and i64 %tag, 127\n  %same_short = icmp eq i64 %short_length, %length\n  br i1 %same_short, label %short_bytes, label %next\nshort_bytes:\n  %short_order = call i32 @memcmp(ptr %other_at, ptr %key, i64 %length)\n  %short_equal = icmp eq i32 %short_order, 0\n  br i1 %short_equal, label %found, label %next\nlong:\n  %other = load ptr, ptr %other_at\n  %long_length_at = getelementptr inbounds i8, ptr %other, i64 {TEXT_BYTES}\n  %long_length = load i64, ptr %long_length_at\n  %same_long = icmp eq i64 %long_length, %length\n  br i1 %same_long, label %long_bytes, label %next\nlong_bytes:\n  %their_text = getelementptr inbounds i8, ptr %other, i64 {TEXT}\n  %long_order = call i32 @memcmp(ptr %their_text, ptr %key, i64 %length)\n  %long_equal = icmp eq i32 %long_order, 0\n  br i1 %long_equal, label %found, label %next\n}}\n\n"
         );
@@ -724,7 +779,12 @@ impl Emit<'_, '_, '_> {
                 "define internal i1 @{name}(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{
 entry:
   %short = icmp ule i64 %length, 23
-  br i1 %short, label %room, label %no
+  br i1 %short, label %hashed, label %no
+hashed:
+  %how_at = getelementptr inbounds i8, ptr %d, i64 {HOW_HASHED}
+  %how = load i64, ptr %how_at
+  %is_fast = icmp eq i64 %how, 0
+  br i1 %is_fast, label %room, label %no
 room:
   %used_at = getelementptr inbounds i8, ptr %d, i64 {USED}
   %used = load i64, ptr %used_at
@@ -748,7 +808,10 @@ probe:
 taken:
   %stepped = add i64 %at, 1
   %after = and i64 %stepped, %mask
-  br label %probe
+  %gone = sub i64 %after, %first
+  %distance = and i64 %gone, %mask
+  %too_far = icmp ugt i64 %distance, {LONGEST_PROBE}
+  br i1 %too_far, label %no, label %probe
 place:
   %number = add i64 %used, 1
   store i64 %number, ptr %slot
@@ -793,15 +856,23 @@ no:
             format!(
                 "define internal ptr @{name}(ptr %d, ptr %bytes, i64 %length) #0 {{
 entry:
-{key}  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
+{key}  %how_at = getelementptr inbounds i8, ptr %d, i64 {HOW_HASHED}
+  %how = load i64, ptr %how_at
+  %is_strong = icmp ne i64 %how, 0
+  br i1 %is_strong, label %rehash, label %start, !prof !0
+rehash:
+{STRONG_BYTES_OF_BYTES}  br label %start
+start:
+  %probe_hash = phi i64 [ %hash, %entry ], [ %strong_hash, %rehash ]
+  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
   %mask = load i64, ptr %mask_at
   %slots = getelementptr inbounds i8, ptr %d, i64 {header}
   %count = add i64 %mask, 1
-  %first = and i64 %hash, %mask
+  %first = and i64 %probe_hash, %mask
   %entries = getelementptr inbounds i64, ptr %slots, i64 %count
   br label %head
 head:
-  %at = phi i64 [ %first, %entry ], [ %after, %next ]
+  %at = phi i64 [ %first, %start ], [ %after, %next ]
   %slot = getelementptr inbounds i64, ptr %slots, i64 %at
   %taken = load i64, ptr %slot
   %empty = icmp eq i64 %taken, 0
@@ -812,7 +883,7 @@ check:
   %number = add i64 %taken, -1
   %entry_at = getelementptr inbounds [5 x i64], ptr %entries, i64 %number
   %theirs = load i64, ptr %entry_at
-  %same_hash = icmp eq i64 %theirs, %hash
+  %same_hash = icmp eq i64 %theirs, %probe_hash
   br i1 %same_hash, label %compare, label %next
 compare:
   %k0_at = getelementptr inbounds i64, ptr %entry_at, i64 1
@@ -974,6 +1045,8 @@ found:
 
     /// Hashing bytes where they are, as a stored key's block is hashed, and finding them.
     fn string_slice_helpers(&mut self) {
+        self.strong_hash_helpers();
+        self.declare("@fennec_hash_seed = external dso_local global i64");
         self.declare("declare i64 @llvm.fshl.i64(i64, i64, i64)");
         self.declare("declare i64 @llvm.smax.i64(i64, i64)");
         self.declare("declare i64 @llvm.smin.i64(i64, i64)");
@@ -984,11 +1057,11 @@ found:
         self.module.add_helper(
             "fen_slice_hash",
             format!(
-                "define internal i64 @fen_slice_hash(ptr %bytes, i64 %length) #0 {{\nentry:\n  %part = alloca i64\n  %start = mul i64 %length, {MIX}\n  %whole = lshr i64 %length, 3\n  br label %head\nhead:\n  %hash = phi i64 [ %start, %entry ], [ %mixed, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %whole\n  br i1 %more, label %body, label %tail\nbody:\n  %place = getelementptr inbounds i64, ptr %bytes, i64 %at\n  %word = load i64, ptr %place, align 1\n  %turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %xored = xor i64 %turned, %word\n  %mixed = mul i64 %xored, {MIX}\n  %next = add i64 %at, 1\n  br label %head\ntail:\n  %rest = and i64 %length, 7\n  %some = icmp ne i64 %rest, 0\n  br i1 %some, label %last, label %done\nlast:\n  store i64 0, ptr %part\n  %from = getelementptr inbounds i64, ptr %bytes, i64 %whole\n  call void @llvm.memcpy.p0.p0.i64(ptr %part, ptr %from, i64 %rest, i1 false)\n  %last_word = load i64, ptr %part\n  %last_turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %last_xored = xor i64 %last_turned, %last_word\n  %last_mixed = mul i64 %last_xored, {MIX}\n  ret i64 %last_mixed\ndone:\n  ret i64 %hash\n}}\n\n"
+                "define internal i64 @fen_slice_hash(ptr %bytes, i64 %length) #0 {{\nentry:\n  %part = alloca i64\n{SEEDED_LENGTH}  %start = mul i64 %seeded, {MIX}\n  %whole = lshr i64 %length, 3\n  br label %head\nhead:\n  %hash = phi i64 [ %start, %entry ], [ %mixed, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %whole\n  br i1 %more, label %body, label %tail\nbody:\n  %place = getelementptr inbounds i64, ptr %bytes, i64 %at\n  %word = load i64, ptr %place, align 1\n  %turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %xored = xor i64 %turned, %word\n  %mixed = mul i64 %xored, {MIX}\n  %next = add i64 %at, 1\n  br label %head\ntail:\n  %rest = and i64 %length, 7\n  %some = icmp ne i64 %rest, 0\n  br i1 %some, label %last, label %done\nlast:\n  store i64 0, ptr %part\n  %from = getelementptr inbounds i64, ptr %bytes, i64 %whole\n  call void @llvm.memcpy.p0.p0.i64(ptr %part, ptr %from, i64 %rest, i1 false)\n  %last_word = load i64, ptr %part\n  %last_turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %last_xored = xor i64 %last_turned, %last_word\n  %last_mixed = mul i64 %last_xored, {MIX}\n  ret i64 %last_mixed\ndone:\n  ret i64 %hash\n}}\n\n"
             ),
         );
-        let mut find = find_start("fen_find_slice", "ptr")
-            .replace("(ptr %d, ptr %key, i64 %hash)", "(ptr %d, ptr %key, i64 %length, i64 %hash)");
+        let mut find = find_start("fen_find_slice", "ptr", STRONG_BYTES)
+            .replace("(ptr %d, ptr %key, i64 %given)", "(ptr %d, ptr %key, i64 %length, i64 %given)");
         find += &format!(
             "  %other = load ptr, ptr %other_at\n  %their_length_at = getelementptr inbounds i8, ptr %other, i64 {TEXT_BYTES}\n  %their_length = load i64, ptr %their_length_at\n  %same_length = icmp eq i64 %their_length, %length\n  br i1 %same_length, label %bytes, label %next\nbytes:\n  %their_text = getelementptr inbounds i8, ptr %other, i64 {TEXT}\n  %order = call i32 @memcmp(ptr %their_text, ptr %key, i64 %length)\n  %equal = icmp eq i32 %order, 0\n  br i1 %equal, label %found, label %next\n}}\n\n"
         );
@@ -1485,7 +1558,7 @@ fn short_key(from: KeyBytes) -> String {
     }
     let _ = write!(
         lines,
-        "  %h0 = mul i64 %length, {MIX}\n  %t0 = call i64 @llvm.fshl.i64(i64 %h0, i64 %h0, i64 23)\n  %x0 = xor i64 %t0, %a\n  %h1 = mul i64 %x0, {MIX}\n  %t1 = call i64 @llvm.fshl.i64(i64 %h1, i64 %h1, i64 23)\n  %x1 = xor i64 %t1, %b\n  %h2 = mul i64 %x1, {MIX}\n  %t2 = call i64 @llvm.fshl.i64(i64 %h2, i64 %h2, i64 23)\n  %x2 = xor i64 %t2, %c_text\n  %h3 = mul i64 %x2, {MIX}\n  %rounded = add i64 %length, 7\n  %words = lshr i64 %rounded, 3\n  %one = icmp eq i64 %words, 1\n  %two = icmp eq i64 %words, 2\n  %three = icmp eq i64 %words, 3\n  %pick3 = select i1 %three, i64 %h3, i64 %h0\n  %pick2 = select i1 %two, i64 %h2, i64 %pick3\n  %mixed = select i1 %one, i64 %h1, i64 %pick2\n  %high = lshr i64 %mixed, 29\n  %folded = xor i64 %mixed, %high\n  %hash = lshr i64 %folded, 1\n"
+        "{SEEDED_LENGTH}  %h0 = mul i64 %seeded, {MIX}\n  %t0 = call i64 @llvm.fshl.i64(i64 %h0, i64 %h0, i64 23)\n  %x0 = xor i64 %t0, %a\n  %h1 = mul i64 %x0, {MIX}\n  %t1 = call i64 @llvm.fshl.i64(i64 %h1, i64 %h1, i64 23)\n  %x1 = xor i64 %t1, %b\n  %h2 = mul i64 %x1, {MIX}\n  %t2 = call i64 @llvm.fshl.i64(i64 %h2, i64 %h2, i64 23)\n  %x2 = xor i64 %t2, %c_text\n  %h3 = mul i64 %x2, {MIX}\n  %rounded = add i64 %length, 7\n  %words = lshr i64 %rounded, 3\n  %one = icmp eq i64 %words, 1\n  %two = icmp eq i64 %words, 2\n  %three = icmp eq i64 %words, 3\n  %pick3 = select i1 %three, i64 %h3, i64 %h0\n  %pick2 = select i1 %two, i64 %h2, i64 %pick3\n  %mixed = select i1 %one, i64 %h1, i64 %pick2\n  %high = lshr i64 %mixed, 29\n  %folded = xor i64 %mixed, %high\n  %hash = lshr i64 %folded, 1\n"
     );
     lines
 }

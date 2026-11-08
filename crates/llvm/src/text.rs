@@ -278,7 +278,8 @@ impl Emit<'_, '_, '_> {
                 self.retain(&text);
                 if !tuple {
                     // A program's own type named like one of std's is marked apart inside, not when shown.
-                    let name = self.literal(&format!("{}(", layout.name.trim_end_matches('\'')));
+                    let shown = fennec_syntax::without_kits(layout.name.trim_end_matches('\''));
+                    let name = self.literal(&format!("{shown}("));
                     text = self.joined(&text, &name, false);
                 }
                 // An error's notes aren't shown with its fields.

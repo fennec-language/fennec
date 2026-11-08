@@ -952,6 +952,61 @@ fn run_no_test_with_no_path_runs_the_kit_here() {
     assert_eq!(text(&output.stdout), "Hello from demo!\n");
 }
 
+/// After a run, an edit that changes only functions' bodies is checked on its own, and one that
+/// changes a signature checks the whole kit: either way, a mistake anywhere is found, and a good
+/// edit runs.
+#[test]
+fn a_run_after_an_edit_finds_its_mistakes_however_it_checks() {
+    let dir = scratch("edits_checked").unwrap();
+    assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
+    let kit = dir.join("demo");
+    let maths = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
+    std::fs::write(kit.join("src/maths.fen"), maths).unwrap();
+    std::fs::write(
+        kit.join("src/main.fen"),
+        "from maths import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice(21))\n",
+    )
+    .unwrap();
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert_eq!(text(&first.stdout), "42\n", "{}", text(&first.stderr));
+    // Only a body changes, and it's good.
+    std::fs::write(kit.join("src/maths.fen"), maths.replace("number * 2", "number + number + 1")).unwrap();
+    assert_eq!(text(&run().stdout), "43\n");
+    // Only a body changes, and it's a mistake.
+    std::fs::write(kit.join("src/maths.fen"), maths.replace("number * 2", "number * \"two\"")).unwrap();
+    let broken = run();
+    assert!(
+        !broken.status.success() && text(&broken.stderr).contains("maths.fen"),
+        "{}",
+        text(&broken.stderr)
+    );
+    // The signature changes, which breaks the call in another file.
+    std::fs::write(
+        kit.join("src/maths.fen"),
+        maths.replace("number: int", "number: str").replace("number * 2", "0"),
+    )
+    .unwrap();
+    let caller = run();
+    assert!(
+        !caller.status.success() && text(&caller.stderr).contains("main.fen"),
+        "{}",
+        text(&caller.stderr)
+    );
+    // Put right, it runs.
+    std::fs::write(kit.join("src/maths.fen"), maths).unwrap();
+    assert_eq!(text(&run().stdout), "42\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Everything Fennec keeps between commands goes in its store, so a kit's folder holds only its own
 /// files after running, testing, checking, linting, formatting and building it, cache and all. A
 /// build writes the program where `-o` says. See `docs/store.md`.

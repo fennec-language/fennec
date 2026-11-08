@@ -11,6 +11,7 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::checker::Checker;
 use crate::function::FnCx;
+use crate::types::Type;
 
 /// What to do instead, on every message about waiting inside a lock.
 const WAIT_FIRST: &str = "do the waiting first, then take the lock: a task that waits while it holds one stops every task that wants it";
@@ -27,7 +28,7 @@ pub(crate) struct LockCall {
 }
 
 /// What a method of a capability waits on, if it waits.
-pub(crate) fn capability_waits(owner: &str, method: &str) -> bool {
+fn capability_waits(owner: &str, method: &str) -> bool {
     match owner {
         "Net" | "Connection" | "Server" | "UdpSocket" => true,
         "Clock" => method == "sleep",
@@ -54,6 +55,13 @@ impl FnCx<'_> {
         self.not_under_lock(&format!("{what} waits"), span, WAIT_FIRST);
         let key = self.key.clone();
         self.checker.note_waits(&key, what);
+    }
+
+    /// Notes the wait of a capability's method that has one.
+    pub(crate) fn note_capability_wait(&mut self, ty: &Type, name: &str, span: Span) {
+        if let Some(owner) = ty.type_name().filter(|owner| capability_waits(owner, name)) {
+            self.note_wait(&format!("`{owner}.{name}`"), span);
+        }
     }
 
     /// Keeps a call made inside a lock body, for when every function's waits are known.

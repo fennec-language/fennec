@@ -355,14 +355,9 @@ impl FnCx<'_> {
         if let Some(refused) = self.refused_method(ty, name, span) {
             return self.unusable(refused, args);
         }
-        if let Some(owner) = ty.type_name().filter(|owner| crate::waits::capability_waits(owner, name)) {
-            self.note_wait(&format!("`{owner}.{name}`"), span);
-        }
+        self.note_capability_wait(ty, name, span);
         if method.changes {
-            let what = format!(
-                "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"
-            );
-            self.mut_place(object, &what);
+            self.mut_place(object, &format!("`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"));
         }
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],

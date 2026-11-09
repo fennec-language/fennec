@@ -7195,7 +7195,7 @@ struct Server:
     secret: Secret[str]
 
 def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port)? as db:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port, tls=False)? as db:
         # A temporary table is this connection's own, so runs at once can't meet.
         _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
         for at in range(3):
@@ -7250,7 +7250,7 @@ def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy)
             return error.message()
 
 def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port)? as db:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port, tls=False)? as db:
         _ = db.execute(t"select 1")?
 
 def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
@@ -9746,7 +9746,7 @@ from std.crypto import Secret
 from std.sql import SqlError
 
 def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak)? as db:
+    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak, tls=False)? as db:
         with db.transaction()? as tx:
             _ = tx.execute(t"select 1")?
 
@@ -9830,6 +9830,42 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     let printed = printed_by("iter_fail", &source)?;
     std::fs::remove_dir_all(&place)?;
     assert_eq!(printed, "failed read 8\nfailed read 8\n");
+    Ok(())
+}
+
+/// A server on a port of its own that reads the 8 bytes of a TLS request, answers `answer`, and
+/// hangs up.
+fn postgres_tls_answering(answer: &'static [u8]) -> std::io::Result<u16> {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut asked = [0_u8; 8];
+        if stream.read_exact(&mut asked).is_ok() && asked == [0, 0, 0, 8, 4, 210, 22, 47] {
+            let _ = stream.write_all(answer);
+        }
+    });
+    Ok(port)
+}
+
+/// `postgres.connect` asks for TLS unless told not to, and never falls back to the clear: a server
+/// that says no is refused, and so is one that says yes and then sends plain bytes, as someone
+/// in the middle would to have them read as if they came over TLS.
+#[test]
+fn postgres_asks_for_tls_and_never_falls_back_to_the_clear() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let refused = postgres_tls_answering(b"N")?;
+    let injected = postgres_tls_answering(b"SR\0\0\0\x08\0\0\0\0")?;
+    let source = format!(
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, host=\"localhost\", user=\"u\", database=\"d\", password=Secret.of(\"pw\"), port=port)? as db:\n        _ = db.execute(t\"select 1\")?\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        match run(port, net=net, entropy=entropy):\n            case Ok(_):\n                stdout.print(\"went through\")\n            case Err(error):\n                stdout.print(error.message())\n"
+    );
+    let printed = printed_by("postgres_tls", &source)?;
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines.first().copied(), Some("the server doesn't take TLS: `tls=False` connects without it"));
+    assert!(lines.get(1).is_some_and(|line| line.starts_with("TLS with the server failed: ")), "{printed}");
     Ok(())
 }
 

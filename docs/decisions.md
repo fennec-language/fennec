@@ -1234,12 +1234,13 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
-- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order.
+- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order. It's a `std` type over two read-only lists, the sorted paths and their bytes, with `get(path) -> bytes?`, `len()`, and `keys()`, `values()` and `items()` in sorted order.
 - Both are views into the program's read-only data: no copy, nothing loaded at startup, and readable whole or in chunks, since the OS pages it in on demand.
 - The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
+- The kit's edge is the folder holding the nearest `kit.toml`, and for a lone `.fen` file with no `kit.toml`, the file's own folder. Embedding anything above that folder, or anything a symlink reaches outside it, is a compile error. In Chris's words, it's "wherever the kit.toml is, it cannot be above it", and "only things in that folder". This closes the hole where a lone file's `embed` could follow a symlink out of its folder.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path and, in a kit, anything outside it, a symlink included. This replaces `embed("path")`.
+- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path, a whole path and, in a kit, anything outside it, a symlink included. A lone file's `embed` still follows a symlink out of its folder today; the rule above closes that. This replaces `embed("path")`.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 

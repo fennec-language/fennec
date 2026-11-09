@@ -155,11 +155,10 @@ fn settled(server: &Server) -> String {
         // What's cached for reuse grows as the server warms up, within its bounds: only what's
         // live has to hold.
         let report = std::fs::read_to_string(&server.report).unwrap_or_default();
-        let now: String = report
+        let now = report
             .lines()
             .filter(|line| !line.starts_with("cached "))
-            .map(|line| format!("{line}\n"))
-            .collect();
+            .fold(String::new(), |now, line| now + line + "\n");
         if now != last {
             last = now;
             held_since = Instant::now();

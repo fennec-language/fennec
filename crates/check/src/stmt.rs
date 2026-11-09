@@ -121,7 +121,7 @@ impl FnCx<'_> {
                 self.block(body, used)
             }
             StmtKind::With { value, names, body, lock: true } => self.lock_block(value, names, body, used),
-            StmtKind::With { value, names, body, .. } => self.with_block(value, names, body, used),
+            StmtKind::With { value, names, body, .. } => self.with_block(value, names, body, used, stmt.span),
             StmtKind::Def(def) => {
                 self.nested(def);
                 Flow::unit()

@@ -93,16 +93,22 @@ impl FnCx<'_> {
         flow
     }
 
-    /// Reports a `with` on a `shared T`, which is reached with `lock`, giving what it holds.
-    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span) {
+    /// Reports a `with` on a `shared` value, which is reached with `lock`, with the fix that says so.
+    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span, at: Span) {
+        // Lowering writes each `lock` on a `shared` declaration in as a `with`, which the second
+        // check takes as written.
+        let first = !self.checker.again;
+        let locks = |ty: &Type| held(ty).is_some() || (first && self.checker.program.takes_lock(ty));
         let shared = match ty {
-            Type::Tuple(types) => types.iter().any(|ty| held(ty).is_some()),
-            ty => held(ty).is_some(),
+            Type::Tuple(types) => types.iter().any(locks),
+            ty => locks(ty),
         };
         if shared {
+            let keyword = Span { start: at.start, end: at.start + 4 };
             self.error(
                 Diagnostic::new("a `shared` value is reached with `lock`, not `with`", span)
-                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`"),
+                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`")
+                    .with_fix(keyword, "lock"),
             );
         }
     }

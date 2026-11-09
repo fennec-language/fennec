@@ -1,82 +1,109 @@
-//! `shared Name:` types: a handle to one cell, changed only through its methods, which lock it.
+//! `shared T`: a value many tasks reach, each inside a `lock`, which replaced `shared Name:`
+//! declarations and `with` on them.
 
 use crate::problems;
 
 const ACCOUNT: &str =
-    "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n";
+    "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n";
+
+/// A `shared Name:` declaration and a `with` on its values are refused, and their fix writes in
+/// what's mechanical: `struct`, `shared` on each type and new name, and `lock`.
+#[test]
+fn a_shared_declaration_and_a_with_on_it_are_refused_with_a_fix() {
+    let program = "shared Account:\n    total = 0\n\ndef pay(account: Account):\n    with account as ref held:\n        held.total += 5\n\n\
+        def main(stdout: Stdout):\n    account = Account()\n    pay(account)\n    with account as seen:\n        stdout.print(seen.total)\n";
+    assert_eq!(
+        problems(program),
+        [
+            "`shared Account:` is gone: a type is declared with `struct`, and `shared` goes where a value is shared @ shared",
+            "a `shared` value is reached with `lock`, not `with` @ account",
+            "a `shared` value is reached with `lock`, not `with` @ account",
+        ]
+    );
+    let module = fennec_syntax::parse(program).unwrap();
+    let diagnostics = fennec_check::check(&module).unwrap_err();
+    let fixed = fennec_syntax::apply_fixes(program, 0, &diagnostics).unwrap();
+    assert_eq!(
+        fixed,
+        "struct Account:\n    total = 0\n\ndef pay(account: shared Account):\n    lock account as ref held:\n        held.total += 5\n\n\
+        def main(stdout: Stdout):\n    shared account = Account()\n    pay(account)\n    lock account as seen:\n        stdout.print(seen.total)\n"
+    );
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(&fixed), empty);
+}
 
 #[test]
-fn any_name_for_a_handle_can_call_a_method_that_changes_it() {
+fn any_name_for_a_shared_value_locks_the_same_one() {
     let text = format!(
-        "{ACCOUNT}def pay(account: Account):\n    account.add(5)\n\ndef main(stdout: Stdout):\n    \
-         account = Account()\n    same = account\n    pay(account)\n    same.add(1)\n    stdout.print(account.total)\n"
+        "{ACCOUNT}def pay(account: shared Account):\n    lock account as ref held:\n        held.add(5)\n\n\
+         def main(stdout: Stdout):\n    shared account = Account()\n    same = account\n    pay(account)\n    \
+         lock same as ref held:\n        held.add(1)\n    lock account as seen:\n        stdout.print(seen.total)\n"
     );
     let empty: [&str; 0] = [];
     assert_eq!(problems(&text), empty);
 }
 
 #[test]
-fn a_handles_fields_change_only_in_its_methods() {
-    let text =
-        format!("{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account()\n    account.total = 5\n");
+fn a_shared_values_fields_change_only_in_a_lock() {
+    let text = format!(
+        "{ACCOUNT}def main(stdout: Stdout):\n    shared account = Account()\n    account.total = 5\n"
+    );
+    assert_eq!(problems(&text), ["`account` is `shared`, so it's reached inside a `lock` @ account.total"]);
+}
+
+/// A `shared` value can hold another, but taking the inner one's lock inside the outer's is
+/// refused for now, however many calls down: `shared Name:` allowed it, inner lock first.
+#[test]
+fn a_lock_on_what_a_shared_value_holds_is_refused_inside_its_own() {
+    let text = format!(
+        "{ACCOUNT}struct Bank:\n    main: shared Account\n    accounts: list[shared Account] = []\n\n    \
+         def deposit(ref self, amount: int):\n        lock self.main as ref main:\n            main.add(amount)\n\n\
+         def main(stdout: Stdout):\n    shared first = Account()\n    shared bank = Bank(main=first)\n    \
+         lock bank as ref held:\n        held.deposit(5)\n    lock first as ref one:\n        one.add(1)\n"
+    );
     assert_eq!(
         problems(&text),
-        ["`account` is `shared`, so change it in one of its methods @ account.total"]
+        ["`deposit` takes `self.main`'s lock while `held` is locked @ held.deposit(5)"]
     );
-}
-
-#[test]
-fn a_shared_value_holds_another_and_takes_its_lock_inside_its_own() {
-    let text = format!(
-        "{ACCOUNT}shared Bank:\n    main: Account\n    accounts = list[Account]()\n\n    \
-         def deposit(ref self, amount: int):\n        self.main.add(amount)\n        self.accounts[0].add(1)\n\n\
-         def main(stdout: Stdout):\n    bank = Bank(main=Account())\n    bank.deposit(5)\n    \
-         with bank as ref held:\n        held.main.add(1)\n        with held.main as ref inner:\n            \
-         inner.total += 1\n    stdout.print(bank.main.total)\n"
-    );
-    let empty: [&str; 0] = [];
-    assert_eq!(problems(&text), empty);
 }
 
 #[test]
 fn shared_values_never_hold_each_other_in_a_cycle() {
-    let text = "shared A:\n    b: B?\n\nshared B:\n    a: A?\n\nshared Node:\n    next: list[Node]\n";
+    let text = "struct A:\n    b: (shared B)?\n\nstruct B:\n    a: (shared A)?\n\nstruct Node:\n    next: list[shared Node]\n";
     assert_eq!(
         problems(text),
         [
-            "`A` holds `B`, which holds `A` again, and `shared` types can't hold each other in a cycle @ b: B?",
-            "`B` holds `A`, which holds `B` again, and `shared` types can't hold each other in a cycle @ a: A?",
-            "`Node` holds itself, and `shared` types can't hold each other in a cycle @ next: list[Node]",
+            "a `shared A` holds a `shared B`, which holds a `shared A` again, and `shared` values can't hold each other in a cycle @ b: (shared B)?",
+            "a `shared B` holds a `shared A`, which holds a `shared B` again, and `shared` values can't hold each other in a cycle @ a: (shared A)?",
+            "a `shared Node` can hold itself, and `shared` values can't hold each other in a cycle @ next: list[shared Node]",
         ]
     );
 }
 
 #[test]
-fn a_lock_body_takes_only_inner_locks() {
+fn a_lock_body_takes_no_other_lock() {
     let text = format!(
-        "{ACCOUNT}shared Bank:\n    main: Account\n\n\
-         def main(stdout: Stdout):\n    bank = Bank(main=Account())\n    account = bank.main\n    \
-         with account as ref held:\n        with bank as ref outer:\n            pass\n    stdout.print(1)\n"
+        "{ACCOUNT}struct Bank:\n    main: shared Account\n\n\
+         def main(stdout: Stdout):\n    shared first = Account()\n    shared bank = Bank(main=first)\n    \
+         lock first as ref held:\n        lock bank as ref outer:\n            pass\n    stdout.print(1)\n"
     );
-    assert_eq!(problems(&text), ["this `with` takes another lock while `held` is locked @ bank"]);
+    assert_eq!(problems(&text), ["this `lock` waits for another lock while `held` is locked @ bank"]);
 }
 
 #[test]
 fn a_shared_value_cant_be_a_constant() {
-    let text =
-        format!("{ACCOUNT}BANK = Account()\n\ndef main(stdout: Stdout):\n    stdout.print(BANK.total)\n");
-    assert_eq!(
-        problems(&text),
-        ["`BANK` holds `Account`, which is `shared`, so it can't be a constant @ BANK = Account()"]
+    let text = format!(
+        "{ACCOUNT}BANK: shared Account = Account()\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n"
     );
+    assert_eq!(problems(&text), ["`BANK` should be a shared Account, but this is an Account @ Account()"]);
 }
 
 #[test]
-fn a_with_block_changes_handles_through_the_names_it_locks() {
+fn a_lock_changes_values_through_the_names_it_gives() {
     let text = format!(
-        "{ACCOUNT}def transfer(a: Account, b: Account, amount: int):\n    with a, b as ref x, ref y:\n        \
-         x.total -= amount\n        y.add(amount)\n\ndef main(stdout: Stdout):\n    a = Account(total=10)\n    \
-         b = Account()\n    transfer(a, b, 3)\n    mut total = 0\n    with a as seen:\n        \
+        "{ACCOUNT}def transfer(a: shared Account, b: shared Account, amount: int):\n    lock a, b as ref x, ref y:\n        \
+         x.total -= amount\n        y.add(amount)\n\ndef main(stdout: Stdout):\n    shared a = Account(total=10)\n    \
+         shared b = Account()\n    transfer(a, b, amount=3)\n    mut total = 0\n    lock a as seen:\n        \
          total = seen.total\n    stdout.print(total)\n"
     );
     let empty: [&str; 0] = [];
@@ -84,33 +111,27 @@ fn a_with_block_changes_handles_through_the_names_it_locks() {
 }
 
 #[test]
-fn a_with_block_locks_only_handles_and_names_each_one() {
-    let with = |body: &str| {
+fn a_lock_takes_only_shared_values_and_names_each_one() {
+    let lock = |body: &str| {
         format!(
-            "{ACCOUNT}def main(stdout: Stdout):\n    a = Account()\n    b = Account()\n{body}        pass\n"
+            "{ACCOUNT}def main(stdout: Stdout):\n    shared a = Account()\n    shared b = Account()\n{body}        pass\n"
         )
     };
     assert_eq!(
-        problems(&with("    with a, b as x, y:\n        x.total = 1\n")),
+        problems(&lock("    lock a, b as x, y:\n        x.total = 1\n")),
         ["`x` isn't `ref` @ x.total"]
     );
+    assert_eq!(problems(&lock("    lock a as x:\n        x.add(1)\n")), ["`x` isn't `ref` @ x"]);
+    assert_eq!(problems(&lock("    lock a:\n")), ["parse: a `lock` names what it holds, for the block"]);
     assert_eq!(
-        problems(&with("    with a as x:\n        x.add(1)\n")),
-        ["`x` is locked to read, and `add` changes it @ x"]
+        problems(&lock("    lock a, 5 as x, y:\n")),
+        ["`lock` takes `shared` values, but this is an int @ 5"]
     );
     assert_eq!(
-        problems(&with("    with a:\n")),
-        ["this `with` locks an Account, so it needs a name for it @ a"]
+        problems(&lock("    lock a as ref x:\n        x = b\n")),
+        ["`x` names what this `lock` holds, so it can't name anything else @ x"]
     );
-    assert_eq!(
-        problems(&with("    with a, 5 as x, y:\n")),
-        ["this `with` locks `shared` handles, so it can't open an int too @ 5"]
-    );
-    assert_eq!(
-        problems(&with("    with a as ref x:\n        x = b\n")),
-        ["`x` holds a lock for this `with` block, so it can't name anything else @ x"]
-    );
-    assert_eq!(problems(&with("    with a, b as x:\n")), ["parse: this `with` holds 2 values but names 1"]);
+    assert_eq!(problems(&lock("    lock a, b as x:\n")), ["parse: this `lock` holds 2 values but names 1"]);
 }
 
 /// A program with `Account`, an error, and a fallible function, then `rest`.
@@ -127,26 +148,14 @@ fn a_lock_body_can_do_io_and_leave_early() {
     let empty: [&str; 0] = [];
     assert_eq!(
         locking(
-            "def main(stdout: Stdout):\n    a = Account()\n    with a as x:\n        stdout.print(x.total)\n"
+            "def main(stdout: Stdout):\n    shared a = Account()\n    lock a as x:\n        stdout.print(x.total)\n"
         ),
         empty
     );
     assert_eq!(
         locking(
-            "shared Log:\n    count = 0\n\n    def show(self, out: Stdout):\n        out.print(self.count)\n"
-        ),
-        empty
-    );
-    assert_eq!(
-        locking(
-            "shared Log:\n    count = 0\n\n    def set(ref self, n: int):\n        self.count = checked(n)?\n"
-        ),
-        empty
-    );
-    assert_eq!(
-        locking(
-            "def drain(a: Account):\n    with a as ref x:\n        if x.total < 0:\n            \
-             fail TooLow(total=x.total)\n        x.total = 0\n"
+            "def drain(a: shared Account):\n    lock a as ref x:\n        if x.total < 0:\n            \
+             fail TooLow(total=x.total)\n        x.total = checked(x.total)?\n"
         ),
         empty
     );
@@ -156,118 +165,110 @@ fn a_lock_body_can_do_io_and_leave_early() {
 fn locks_never_nest() {
     assert_eq!(
         locking(
-            "def pay(a: Account, b: Account):\n    with a as ref x:\n        b.add(1)\n        \
-             x.total = b.total\n        with b as y:\n            pass\n"
+            "def pay(a: shared Account, b: shared Account):\n    lock a as ref x:\n        lock b as ref y:\n            \
+             y.add(1)\n            x.total = y.total\n"
         ),
-        [
-            "calling `add` locks `b` while `x` is locked @ b",
-            "reading `total` locks `b` while `x` is locked @ b",
-            "this `with` takes another lock while `x` is locked @ b",
-        ]
+        ["this `lock` waits for another lock while `x` is locked @ b"]
     );
     assert_eq!(
         locking(
-            "def pay(account: Account):\n    account.add(1)\n\nshared Bank:\n    total = 0\n\n    \
-             def take(ref self, source: Account):\n        source.add(-1)\n\n    def give(self, to: Account):\n        \
-             pay(to)\n"
+            "def give(account: shared Account):\n    lock account as ref held:\n        held.add(1)\n\n\
+             struct Bank:\n    total = 0\n\n    def take(ref self, source: shared Account):\n        \
+             lock source as ref s:\n            s.add(-1)\n\n\
+             def main(stdout: Stdout):\n    shared a = Account()\n    shared bank = Bank()\n    \
+             lock bank as ref held:\n        held.take(a)\n        give(a)\n"
         ),
         [
-            "calling `add` locks `source` while `self` is locked @ source",
-            "a `shared` handle can't be passed to a call while `self` is locked @ to",
+            "`take` takes `source`'s lock while `held` is locked @ held.take(a)",
+            "`give` takes `account`'s lock while `held` is locked @ give(a)",
         ]
     );
 }
 
-const HOLDERS: &str = "shared Cell:
+const HOLDERS: &str = "struct Cell:
     count = 0
 
     def add(ref self, by: int):
         self.count += by
 
 struct Holder:
-    cell: Cell
+    cell: shared Cell
 
     def poke(self):
-        self.cell.add(1)
+        lock self.cell as ref held:
+            held.add(1)
 
 def through(holder: Holder):
     holder.poke()
 
-def through_all(cells: list[Cell]):
-    cells[0].add(1)
+def through_all(cells: list[shared Cell]):
+    lock cells[0] as ref held:
+        held.add(1)
+
+def plain(n: int) -> int:
+    n + 1
 
 def apply(work: (int) -> int) -> int:
     work(1)
-
-def run(work: () -> int) -> int:
-    work()
 ";
 
 fn in_a_lock(body: &str) -> Vec<String> {
     let body = body.replace('\n', "\n    ");
     let found = crate::in_main_after(
         HOLDERS,
-        &format!("one = Cell()\nwith one as ref locked:\n    locked.count += 1\n    {body}\n"),
+        &format!("shared one = Cell()\nlock one as ref locked:\n    locked.count += 1\n    {body}\n"),
     );
     found.iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect()
 }
 
+/// A call under a lock that takes another, however many calls down, is refused, whether the
+/// `shared` value is handed to it inside something else or reached through what it holds.
 #[test]
-fn what_holds_a_handle_cant_be_handed_on_under_a_lock() {
-    let found = in_a_lock("through(Holder(cell=one))");
+fn what_takes_another_lock_cant_be_called_under_one() {
     assert_eq!(
-        found,
-        ["a Holder holds a `shared` `Cell`, so it can't be passed to a call while `locked` is locked"]
+        in_a_lock("through(Holder(cell=one))"),
+        ["`through` takes `self.cell`'s lock while `locked` is locked"]
     );
-    let found = in_a_lock("through_all([one])");
+    assert_eq!(in_a_lock("through_all([one])"), ["`through_all` takes a lock while `locked` is locked"]);
     assert_eq!(
-        found,
-        ["a list[Cell] holds a `shared` `Cell`, so it can't be passed to a call while `locked` is locked"]
+        in_a_lock("holder = Holder(cell=one)\nholder.poke()"),
+        ["`poke` takes `self.cell`'s lock while `locked` is locked"]
     );
-    let found = in_a_lock("holder = Holder(cell=one)\nholder.poke()");
-    assert_eq!(found, ["calling `poke` on a Holder that holds a `shared` `Cell` while `locked` is locked"]);
 }
 
+/// A nested function that locks a `shared` value it reads is refused under that lock, called
+/// directly or through another.
 #[test]
-fn a_function_that_captures_a_handle_cant_run_under_a_lock() {
+fn a_function_that_locks_what_it_captures_cant_run_under_a_lock() {
     let before = |lines: &str, body: &str| {
-        let source =
-            format!("one = Cell()\n{lines}\nwith one as ref locked:\n    locked.count += 1\n    {body}\n");
-        let found = crate::in_main_after(HOLDERS, &source);
-        found.iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect::<Vec<_>>()
+        let lines = lines.replace('\n', "\n    ");
+        let source = format!(
+            "def main(stdout: Stdout):\n    shared one = Cell()\n    {lines}\n    lock one as ref locked:\n        locked.count += 1\n        {body}\n"
+        );
+        problems(&format!("{HOLDERS}\n{source}"))
+            .iter()
+            .filter_map(|said| said.split(" @ ").next().map(str::to_owned))
+            .collect::<Vec<_>>()
     };
-    let calling = "calling `poke`, which captures a `shared` handle, could lock it while `locked` is locked";
-    let nested = "def poke():\n    one.add(1)";
-    assert_eq!(before(nested, "poke()"), [calling]);
-    let through = "def poke():\n    one.add(1)\ndef again():\n    poke()";
-    assert_eq!(
-        before(through, "again()"),
-        ["calling `again`, which captures a `shared` handle, could lock it while `locked` is locked"]
-    );
-    let stored = "work = () => one.count";
-    assert_eq!(
-        before(stored, "locked.count += work()"),
-        ["calling `work`, which captures a `shared` handle, could lock it while `locked` is locked"]
-    );
-    assert_eq!(
-        before(stored, "locked.count += run(work)"),
-        ["`work` holds a `shared` handle, so it can't be passed to a call while `locked` is locked"]
-    );
+    let nested = "def poke():\n    lock one as ref held:\n        held.add(1)";
+    assert_eq!(before(nested, "poke()"), ["`poke` takes `one`'s lock while `locked` is locked"]);
+    let through = "def poke():\n    lock one as ref held:\n        held.add(1)\ndef again():\n    poke()";
+    assert_eq!(before(through, "again()"), ["`again` takes `one`'s lock while `locked` is locked"]);
 }
 
 #[test]
-fn what_holds_no_handle_goes_on_as_before_under_a_lock() {
+fn what_takes_no_other_lock_goes_on_as_before_under_a_lock() {
     let empty: [&str; 0] = [];
     for body in [
         "locked.count += apply(n => n + 1)",
         "numbers = [1]\nlocked.count += numbers.len()",
-        "def plain(n: int) -> int:\n    n + 1\nlocked.count += plain(1)",
+        "locked.count += plain(1)",
         // Making a value that holds it hands it to no call.
         "holder = Holder(cell=one)\nlocked.count += 1",
     ] {
         assert_eq!(in_a_lock(body), empty, "{body}");
     }
-    let outside = "one = Cell()\nholder = Holder(cell=one)\nthrough(holder)\nholder.poke()\n";
+    let outside = "shared one = Cell()\nholder = Holder(cell=one)\nthrough(holder)\nholder.poke()\n";
     assert_eq!(crate::in_main_after(HOLDERS, outside), empty);
 }
 

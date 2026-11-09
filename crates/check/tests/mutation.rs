@@ -491,10 +491,10 @@ fn a_generator_cant_change_whats_around_it() {
 
 #[test]
 fn a_parallel_loop_can_change_a_shared_value_outside_it() {
-    let source = "shared Counter:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
-                  def main(stdout: Stdout):\n    counter = Counter()\n    mut hps = [1, 2]\n    \
-                  for ref hp in parallel(hps):\n        counter.add(hp)\n        with counter as ref held:\n            \
-                  held.total += hp\n        hp += 1\n    stdout.print(counter.total, hps)\n";
+    let source = "struct Counter:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
+                  def main(stdout: Stdout):\n    shared counter = Counter()\n    mut hps = [1, 2]\n    \
+                  for ref hp in parallel(hps):\n        lock counter as ref held:\n            held.add(hp)\n            \
+                  held.total += hp\n        hp += 1\n    lock counter as seen:\n        stdout.print(seen.total, hps)\n";
     assert_eq!(problems(source), Vec::<String>::new());
 }
 

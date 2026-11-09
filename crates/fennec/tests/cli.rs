@@ -2754,3 +2754,32 @@ fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// A file with no kit embeds only what's in its own folder or under it: not what's above it, and
+/// not through a link that leads out of it. One inside a kit's folder goes by the kit's.
+#[test]
+#[cfg(unix)]
+fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-embed-edge-{}", std::process::id()));
+    let inner = dir.join("inner");
+    std::fs::create_dir_all(inner.join("data")).unwrap();
+    std::fs::write(dir.join("secret.txt"), "above").unwrap();
+    std::fs::write(inner.join("data/here.txt"), "here").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret.txt"), inner.join("link.txt")).unwrap();
+    let game = inner.join("game.fen");
+    let checked = |path: &str| {
+        let source = format!("def main(stdout: Stdout):\n    stdout.print(embed_file({path:?}).len())\n");
+        std::fs::write(&game, source).unwrap();
+        let output = fennec(&["check", &game.to_string_lossy()], "").unwrap();
+        (output.status.success(), text(&output.stderr))
+    };
+    assert!(checked("data/here.txt").0);
+    for outside in ["../secret.txt", "link.txt"] {
+        let (passed, said) = checked(outside);
+        assert!(!passed && said.contains(&format!("`{outside}` is outside this file's folder")), "{said}");
+    }
+    // Inside a kit's folder, the kit's is the edge, and what's above the file but in the kit is fine.
+    std::fs::write(dir.join("kit.toml"), "name = \"edge\"\nversion = \"0.1.0\"\n").unwrap();
+    assert!(checked("../secret.txt").0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

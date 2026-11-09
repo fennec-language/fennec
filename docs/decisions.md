@@ -893,7 +893,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
 
-**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000))` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
+**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000)?)` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
 
 **`Secret[str]` in `std.crypto` holds text that can't be printed, logged or saved.** Printing one, putting it in an f-string, a log line or a failure's message, and saving it in any format are compile errors. The text comes out only through one method, whose name says it's revealing a secret, so every place that reads it can be found by searching for that name. Chris decided this on 2026-11-07. Built: `Secret.of(value)` makes a `Secret[str]` or a `Secret[bytes]`, and `expose_secret()` is the one method that reads it. Printing it, an f-string or `str()` of it, and `json`, `toml` and `pack` saving it are compile errors, which name the field when it's inside a struct. A log line takes text, so a secret only reaches one through those. Printed some other way, as through a generic function's `T`, it shows `Secret(hidden)`. `==` on two secrets compares them in constant time, as `crypto.equal` does, so nobody has to remember to call it, and a `Secret` of anything but text or bytes can't be compared, since it can't be compared that way. Built.
 *Why:* Keys and passwords often leak through logs and error messages, and a type the compiler checks catches that where it's written, not after it ships.
@@ -923,7 +923,7 @@ def main(net: Net, stdout: Stdout):
 
 ## Sends back each line it's sent, until the client hangs up.
 def echo(conn: Connection) fails NetError:
-    for line in conn.lines():
+    for line in conn.lines()?:
         conn.write(f"{line}\n")?
 ```
 - **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. `tls=True` on `connect`, or a `Certificate` as `tls=` on `listen`, makes them TLS, and `conn.start_tls(host)` upgrades a plain connection. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
@@ -1234,12 +1234,13 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
-- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order.
+- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order. It's a `std` type over two read-only lists, the sorted paths and their bytes, with `get(path) -> bytes?`, `len()`, and `keys()`, `values()` and `items()` in sorted order.
 - Both are views into the program's read-only data: no copy, nothing loaded at startup, and readable whole or in chunks, since the OS pages it in on demand.
 - The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
+- The kit's edge is the folder holding the nearest `kit.toml`, and for a lone `.fen` file with no `kit.toml`, the file's own folder. Embedding anything above that folder, or anything a symlink reaches outside it, is a compile error. In Chris's words, it's "wherever the kit.toml is, it cannot be above it", and "only things in that folder". This closes the hole where a lone file's `embed` could follow a symlink out of its folder.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A single `.fen` file with no kit has no kit folder to stay inside yet. `embed_folder` isn't built yet.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file with no `kit.toml` can still follow a symlink out of its folder today; the rule above closes that. `embed_folder` isn't built yet.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 

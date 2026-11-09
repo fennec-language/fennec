@@ -146,7 +146,7 @@ def set_head(fs: Fs, hash: str) fails IoError:
 def ignored(fs: Fs) -> list[str] fails IoError:
     mut found = list[str]()
     with fs.open(".hoardignore")? as file:
-        for line in file.lines():
+        for line in file.lines()?:
             if line != "": found.append(line)
     found
 
@@ -154,7 +154,7 @@ def ignored(fs: Fs) -> list[str] fails IoError:
 def size_of(fs: Fs, path: str) -> int fails IoError:
     mut total = 0
     with fs.open(path)? as file:
-        for chunk in file.chunks(65536):
+        for chunk in file.chunks(65536)?:
             total += chunk.len()
     total
 
@@ -270,7 +270,7 @@ from std.net import Connection, NetError
 
 ## Sends back each line a client sends, until it hangs up.
 def echo(conn: Connection) fails NetError:
-    for line in conn.lines():
+    for line in conn.lines()?:
         conn.write(f"{line}\n")?
 
 def main(net: Net, stdout: Stdout):
@@ -316,7 +316,7 @@ from std.crypto import blake3
 def hash_of(fs: Fs, path: str) -> str fails IoError:
     mut hash = ""
     with fs.open(path)? as file:
-        hash = blake3(file.chunks(65536))
+        hash = blake3(file.chunks(65536)?)
     hash
 ```
 

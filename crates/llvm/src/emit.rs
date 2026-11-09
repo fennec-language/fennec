@@ -109,7 +109,7 @@ pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Sha
     emit_with(program, cpu, Shared { tracing_costs: true, ..Shared::default() })
 }
 
-/// Whether every build from here on checks proofs: see [`Shared::check_proofs`].
+/// Whether every build from here on checks proofs: see [`crate::Proofs::Checked`].
 static PROOFS_CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Makes every build from here on check proofs, or not: each check left out because of a proof is
@@ -125,7 +125,9 @@ pub(crate) fn emit_with(
 ) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
-    shared.check_proofs |= PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+    if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
+        shared.proofs = crate::Proofs::Checked;
+    }
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
     let mut units = Vec::with_capacity(program.functions.len());
@@ -1170,7 +1172,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether checks left out because of a proof are written anyway, as assertions.
     pub(crate) fn checks_proofs(&self) -> bool {
-        self.module.shared.check_proofs
+        self.module.shared.proofs == crate::Proofs::Checked
     }
 
     /// In a build that checks proofs, ends the program if `broken`, an `i1`, is true: what the
@@ -3072,7 +3074,7 @@ def main(stdout: Stdout):
     fn checking_proofs_writes_what_they_left_out() -> Result<(), String> {
         let source = "def total(xs: list[int]) -> int:\n    mut sum = 0\n    for i in range(xs.len()):\n        sum += xs[i] * 0\n    sum\n\ndef main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
         let program = lowered(source)?;
-        let checked = Shared { check_proofs: true, ..Shared::default() };
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
         let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
         let said: Vec<&String> = shared.strings.values().chain(shared.literals.values()).collect();

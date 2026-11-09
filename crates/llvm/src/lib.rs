@@ -76,6 +76,17 @@ pub use fennec_layout::Layouts;
 pub use parallel::{uses_parallel, uses_tls};
 pub use waits::{Waits, Why, may_wait};
 
+/// What a build does with a check the compiler proved can't fail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Proofs {
+    /// Leaves it out.
+    #[default]
+    Trusted,
+    /// Writes it anyway, as an assertion that the proof held: a build to find false proofs with,
+    /// which `FENNEC_CHECK_PROOFS=1` asks for. One that didn't hold says "proof broken" and which.
+    Checked,
+}
+
 /// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shared {
@@ -115,9 +126,8 @@ pub struct Shared {
     pub sites: BTreeMap<u32, String>,
     /// Whether each check the code is written with is noted in `checks`, as it's written.
     pub noting_checks: bool,
-    /// Whether every check left out because of a proof is written anyway, as an assertion that
-    /// the proof held: a build to find false proofs with, which `FENNEC_CHECK_PROOFS=1` asks for.
-    pub check_proofs: bool,
+    /// Whether checks left out because of a proof are, or are written anyway as assertions.
+    pub proofs: Proofs,
     /// The checks written, when they're noted: the same one more than once if its function is
     /// copied into callers.
     pub checks: Vec<CheckLeft>,

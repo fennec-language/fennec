@@ -164,10 +164,6 @@ impl Emit<'_, '_, '_> {
                 self.let_go_of_generator(*generator);
                 Ok(())
             }
-            ("value.let_go", [Operand::Local(local)], _) => {
-                self.let_go_of_value(*local);
-                Ok(())
-            }
             ("sorted", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| {
                 self.dict_list(dest, set, "keys")?;
                 self.sorted(dest, &Operand::Local(dest))
@@ -250,7 +246,9 @@ impl Emit<'_, '_, '_> {
             ("shared.out", [value, Operand::Int(held)], _) => {
                 dest.and_then(|dest| self.across_lock(dest, value, crate::locks::Way::Out(*held)))
             }
-            ("shared.drop", [Operand::Local(local)], _) => self.drop_local(*local),
+            // `value.let_go` lets go of the result a generator for a loop was taken out of, when
+            // the loop ends rather than when the function returns.
+            ("shared.drop" | "value.let_go", [Operand::Local(local)], _) => self.drop_local(*local),
             ("task.failed", [error], _) => self.hand_over_failure(error),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.

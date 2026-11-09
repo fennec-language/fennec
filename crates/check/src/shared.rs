@@ -1,10 +1,10 @@
-//! `shared Name:` types: a counted handle to one cell, whose methods lock it. Assigning a handle
-//! gives another name for the same cell, and a `mut self` method changes the cell, so calling
-//! one needs no `mut` name. Anything else that changes a handle's fields would skip the lock.
-//! A `shared` value holds plain values and `Id`s, never another `shared`, so handles can't form
-//! a cycle, and none lives at the top of a file.
+//! `shared` declarations: a counted handle to one cell, whose methods lock it. A program no longer
+//! writes one, as `shared T` and `lock` replaced them, and one it writes is refused with a fix;
+//! lowering writes each `shared T` in as one (see `lock_lowering`), and the rules here hold for
+//! what it writes. Assigning a handle gives another name for the same cell. A `shared` value holds
+//! plain values and `Id`s, never itself, and none lives at the top of a file.
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, Stmt, WithName};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind, TypeDef, TypeExpr, WithName};
 
 use crate::checker::Checker;
 use crate::function::{FnCx, Origin};
@@ -185,6 +185,14 @@ impl Checker {
             .filter(|info| info.def.shared && !info.prelude)
             .map(|info| info.def.clone())
             .collect();
+        // Lowering writes in a `shared` declaration for each `shared T`, with no place in the
+        // source, which a check of what it wrote takes as written.
+        if !self.again {
+            for def in defs.iter().filter(|def| def.span != Span::default()) {
+                let refused = self.declared_shared(def);
+                self.diagnostics.push(refused);
+            }
+        }
         for def in defs {
             for field in &def.fields {
                 let held = self.field_type(&def.name, None, &field.name);
@@ -210,6 +218,168 @@ impl Checker {
                 ));
             }
         }
+        self.shared_cycles();
+    }
+
+    /// Reports each type whose fields reach a `shared` value of its own type, at any depth: a
+    /// `shared` value is freed when the last holder lets go, and one that holds itself never is.
+    fn shared_cycles(&mut self) {
+        let defs: Vec<_> = self
+            .program
+            .types
+            .values()
+            .filter(|info| !info.def.shared && !info.prelude)
+            .map(|info| info.def.clone())
+            .collect();
+        for def in defs {
+            let fields = def.fields.iter().map(|field| (None, field));
+            let in_cases = def
+                .cases
+                .iter()
+                .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+            for (case, field) in fields.chain(in_cases) {
+                let ty = self.field_type(&def.name, case, &field.name);
+                let mut found = Vec::new();
+                self.shared_held(&ty, &mut Vec::new(), &mut found);
+                if !found.contains(&def.name) {
+                    continue;
+                }
+                let name = fennec_syntax::rename::shown_type_name(&def.name);
+                let message = match found.first().map(|first| fennec_syntax::rename::shown_type_name(first)) {
+                    Some(first) if first != name => format!(
+                        "a `shared {name}` holds a `shared {first}`, which holds a `shared {name}` again, and `shared` values can't hold each other in a cycle"
+                    ),
+                    _ => format!(
+                        "a `shared {name}` can hold itself, and `shared` values can't hold each other in a cycle"
+                    ),
+                };
+                self.diagnostics.push(Diagnostic::new(message, field.span).with_help(
+                    "a `shared` value is freed when the last holder lets go, and one in a cycle never is: hold an `Id` from a `Table` on one side",
+                ));
+            }
+        }
+    }
+
+    /// The types of the `shared` values a value of this type reaches through what it holds, at
+    /// any depth, in the order they're met.
+    fn shared_held(&mut self, ty: &Type, open: &mut Vec<String>, found: &mut Vec<String>) {
+        if let Some(name) = crate::lock::held(ty).and_then(Type::type_name)
+            && !found.iter().any(|seen| seen == name)
+        {
+            found.push(name.to_owned());
+        }
+        for child in ty.children() {
+            self.shared_held(&child.clone(), open, found);
+        }
+        let (Type::Named(name) | Type::Generic(name, _)) = ty else { return };
+        if open.contains(name) {
+            return;
+        }
+        let Some(info) = self.program.type_info(name) else { return };
+        let def = info.def.clone();
+        open.push(name.clone());
+        let fields = def.fields.iter().map(|field| (None, field));
+        let in_cases = def
+            .cases
+            .iter()
+            .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+        for (case, field) in fields.chain(in_cases) {
+            let held = self.field_type(name, case, &field.name);
+            self.shared_held(&held, open, found);
+        }
+        open.pop();
+    }
+}
+
+impl Checker {
+    /// The refusal of a `shared Name:` declaration, which `shared T` replaced. Its fix makes
+    /// what's mechanical: `struct Name:`, `shared Name` wherever the type is written, and
+    /// `shared x = Name(...)` where a name is given a new one. What's left, like a method called
+    /// outside a `lock`, is refused once it's made, with how to write it.
+    fn declared_shared(&self, def: &TypeDef) -> Diagnostic {
+        let name = &def.name;
+        let keyword = Span { start: def.span.start, end: def.span.start + 6 };
+        let mut written = Vec::new();
+        let mut made = Vec::new();
+        for info in self.program.types.values().filter(|info| !info.prelude) {
+            let fields = info.def.fields.iter().chain(info.def.cases.iter().flat_map(|case| &case.fields));
+            for ty in fields.filter_map(|field| field.ty.as_ref()) {
+                types_named(ty, name, &mut written);
+            }
+        }
+        for entry in self.program.functions.values().filter(|entry| !entry.prelude) {
+            let def = &entry.def;
+            let signature = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(&def.ret);
+            for ty in signature {
+                types_named(ty, name, &mut written);
+            }
+            in_stmts(&def.body, name, &mut written, &mut made);
+        }
+        for test in &self.program.tests {
+            in_stmts(&test.body, name, &mut written, &mut made);
+        }
+        let mut refused = Diagnostic::new(
+            format!("`shared {}:` is gone: a type is declared with `struct`, and `shared` goes where a value is shared", shown(name)),
+            keyword,
+        )
+        .with_help(format!(
+            "declare `struct {0}:`, write `shared {0}` for the type of a shared value, and make one with `shared x = {0}()`",
+            shown(name)
+        ))
+        .with_fix(keyword, "struct");
+        for at in written.into_iter().chain(made) {
+            refused = refused.with_fix(Span { start: at, end: at }, "shared ");
+        }
+        refused
+    }
+}
+
+/// The type's name as it's written, which a type named like one of std's isn't checked under.
+fn shown(name: &str) -> &str {
+    fennec_syntax::rename::shown_type_name(name)
+}
+
+/// Where each `name` starts in `ty`, as written.
+fn types_named(ty: &TypeExpr, name: &str, found: &mut Vec<u32>) {
+    if ty.name == name && ty.span != Span::default() {
+        found.push(ty.span.start);
+    }
+    for arg in &ty.args {
+        types_named(arg, name, found);
+    }
+}
+
+/// The types named `name` written in `body`, and where each `x = Name(...)` that gives a name its
+/// value starts.
+fn in_stmts(body: &[Stmt], name: &str, written: &mut Vec<u32>, made: &mut Vec<u32>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Assign { target, op: None, value, declare_mut: false, ty } => {
+                if let Some(ty) = ty {
+                    types_named(ty, name, written);
+                }
+                let made_here = matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Name(callee) if callee == name));
+                if ty.is_none() && made_here && matches!(target.kind, ExprKind::Name(_)) {
+                    made.push(target.span.start);
+                }
+            }
+            StmtKind::Assign { ty: Some(ty), .. } => types_named(ty, name, written),
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches {
+                    in_stmts(block, name, written, made);
+                }
+                in_stmts(otherwise.as_deref().unwrap_or_default(), name, written, made);
+            }
+            StmtKind::While { body: block, .. }
+            | StmtKind::For { body: block, .. }
+            | StmtKind::With { body: block, .. } => in_stmts(block, name, written, made),
+            StmtKind::OnFailure { cleanup, body: block, .. } => {
+                in_stmts(cleanup, name, written, made);
+                in_stmts(block, name, written, made);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -221,9 +391,16 @@ impl FnCx<'_> {
     /// `with value as name:`, or `with a, b as mut x, mut y:`. Several values are `shared`
     /// handles locked together, and a handle is always named: the block changes it through that
     /// name, which holds its lock, to write when it's `mut`.
-    pub(crate) fn with_block(&mut self, value: &Expr, names: &[WithName], body: &[Stmt], used: bool) -> Flow {
+    pub(crate) fn with_block(
+        &mut self,
+        value: &Expr,
+        names: &[WithName],
+        body: &[Stmt],
+        used: bool,
+        at: Span,
+    ) -> Flow {
         let ty = self.with_value(value);
-        self.with_on_shared(&ty, value.span);
+        self.with_on_shared(&ty, value.span, at, names);
         let (items, types) = match (&value.kind, ty) {
             (ExprKind::Tuple(items), Type::Tuple(types)) if names.len() != 1 => {
                 (items.iter().collect(), types)
@@ -243,14 +420,17 @@ impl FnCx<'_> {
                 );
             }
         }
+        // A `lock` lowering wrote in was held to `lock`'s own rules when it was checked as
+        // written, so the rules for a `with` on a `shared` declaration's value don't apply to it.
+        let lowered = crate::lock::lowered(names);
         let locked: Vec<&WithName> = names
             .iter()
             .zip(&types)
-            .filter(|(_, ty)| self.checker.program.takes_lock(ty))
+            .filter(|(_, ty)| !lowered && self.checker.program.takes_lock(ty))
             .map(|(held, _)| held)
             .collect();
         let locking: Vec<Type> =
-            types.iter().filter(|ty| self.checker.program.takes_lock(ty)).cloned().collect();
+            types.iter().filter(|ty| !lowered && self.checker.program.takes_lock(ty)).cloned().collect();
         let inner = locking.iter().all(|ty| self.takes_inner(ty));
         if let (Some(held), Some(first), false) = (
             self.lock.clone(),
@@ -461,7 +641,7 @@ impl FnCx<'_> {
     /// Reports what a lock body can't do: pause with `yield`, which would hold the lock for as
     /// long as whatever asks for the next item waits. Leaving early with `?`, `fail`, `return`,
     /// `break` or `continue` releases the lock on the way out, and I/O only makes it slow.
-    pub(crate) fn not_under_lock(&mut self, what: &str, span: fennec_syntax::Span, help: &str) {
+    pub(crate) fn not_under_lock(&mut self, what: &str, span: Span, help: &str) {
         if let Some(held) = self.lock.clone() {
             self.error(Diagnostic::new(format!("{what} {held}"), span).with_help(help));
         }
@@ -493,7 +673,7 @@ impl FnCx<'_> {
     }
 
     /// The type of a chain of names and fields, from their declarations.
-    fn declared_type_of(&mut self, expr: &Expr) -> Option<Type> {
+    pub(crate) fn declared_type_of(&mut self, expr: &Expr) -> Option<Type> {
         match &expr.kind {
             ExprKind::Name(name) => self.lookup(name).map(|(ty, _)| ty),
             ExprKind::Attr { object, name, .. } => {

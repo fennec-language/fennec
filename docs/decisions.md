@@ -1054,13 +1054,13 @@ A big program that wants walls between its own parts splits into local kits in o
 **Four questions, each with its own words:** `mut` and `ref` say whether something can change; `shared` and `lock` say who's touching it; `with` says when it goes back; `launch` and channels say who talks to whom.
 *Why:* Each question gets one answer you can see in the code, and every borrow lives in a block, so there are no lifetimes to write.
 
-**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically, which still compile until `fennec fix` rewrites them. Built.
+**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically: one is refused, and `fennec fix` rewrites what's mechanical of it. Built.
 *Why:* Sharing then shows up in types and signatures, and a search for `shared` finds every place it happens.
 
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking, which is refused, with a fix to `lock`. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:

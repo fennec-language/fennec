@@ -737,7 +737,7 @@ It answers four questions, each with its own words:
 | When does it go back? | `with` |
 | Who talks to whom? | `launch`, channels |
 
-Every borrow lives in a block you can see, so there are no lifetimes to write. Today's `shared Name:` declarations and `with x as ref y:` still compile, and `fennec fix` rewrites them.
+Every borrow lives in a block you can see, so there are no lifetimes to write. A `shared Name:` declaration, and a `with` on a `shared` value, are refused, and `fennec fix` rewrites what's mechanical of them.
 
 ### `shared` and `lock`
 

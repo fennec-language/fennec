@@ -301,6 +301,15 @@ pub enum InstKind {
         dest: LocalId,
         items: Vec<Operand>,
     },
+    /// From here, a crash runs `cleanup`, a closure taking nothing, on its way out of this
+    /// function, innermost first among what's to undo: a `with` source's `else:`, for its block.
+    CrashCleanup {
+        cleanup: Operand,
+    },
+    /// From here, a crash no longer runs `cleanup`: its block ended, or failed another way.
+    CrashCleanupDone {
+        cleanup: Operand,
+    },
     MakeSet {
         dest: LocalId,
         items: Vec<Operand>,
@@ -592,6 +601,8 @@ impl InstKind {
             | InstKind::SetSlot { .. }
             | InstKind::Lock { .. }
             | InstKind::Unlock { .. }
+            | InstKind::CrashCleanup { .. }
+            | InstKind::CrashCleanupDone { .. }
             | InstKind::LockAll { .. }
             | InstKind::UnlockAll { .. } => None,
         }

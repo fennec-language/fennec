@@ -45,7 +45,7 @@ export error HtmlError:
 ##   the page fails with `Misplaced`. A value for a script goes in a `data-` attribute instead.
 ## An `Html` between tags goes in as it is.
 export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
-    mut scan = Scan()
+    mut scan = PageScan()
     mut out = ""
     for at, piece in enumerate(page.strings):
         for c in piece:
@@ -85,7 +85,7 @@ export def escape(text: str) -> str:
     out
 
 ## Where in a page the text written so far has reached, as a browser reads it.
-enum Spot:
+enum PageSpot:
     Text
     ## Just after `<`.
     TagOpen
@@ -108,7 +108,7 @@ enum Spot:
     RawText
 
 ## Where `spot` is, in words.
-def where(spot: Spot) -> str:
+def where(spot: PageSpot) -> str:
     match spot:
         case .Text:
             "between tags"
@@ -131,8 +131,8 @@ LINKS = [
 ]
 
 ## Reads a page's text a character at a time, keeping where it's reached.
-struct Scan:
-    spot = Spot.Text
+struct PageScan:
+    spot = PageSpot.Text
     ## The tag being read, in lower case, and whether it's an end tag.
     tag = ""
     closing = False

@@ -69,6 +69,8 @@ def main(stdout: Stdout):
         reader.feed(written[at:at + 7 if at + 7 < written.len() else written.len()])
         at += 7
         while True:
-            message = reader.next() else break
+            # A failure, or no whole message yet, ends this round.
+            message = reader.next() else as failed:
+                break
             if message is None: break
             stdout.print(shown(message))

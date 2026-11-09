@@ -213,15 +213,17 @@ impl Fake {
     ) -> Result<Value, Diagnostic> {
         let lost = || Diagnostic::new("the native code lost a method's name", span);
         let (kind, method) = name.split_once('.').ok_or_else(lost)?;
-        let (method, args, _) = timed(method, args, span)?;
+        let (method, args, timeout) = timed(method, args, span)?;
         let done = match (kind, method.as_str(), args.as_slice()) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
-                self.read(handle, Some(count), span)?
+                self.read_by(handle, Some(count), timeout, span)?
                     .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("Connection", "read_line", []) => self.read_line(handle, false, span)?,
-            ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => self.read_line(handle, *crlf, span)?,
+            ("Connection", "read_line", []) => or_timed_out(self.read_line(handle, false, span), timeout)?,
+            ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => {
+                or_timed_out(self.read_line(handle, *crlf, span), timeout)?
+            }
             ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
@@ -380,6 +382,18 @@ impl Fake {
                 "no connection is waiting for the test's fake server on port {port}, and none can come while a test waits"
             ))
         })
+    }
+
+    /// A read of `count` bytes in a test that's given `timeout=`, which gives up as `or_timed_out`
+    /// says.
+    fn read_by(
+        &mut self,
+        handle: i64,
+        count: Option<usize>,
+        timeout: Option<Duration>,
+        span: Span,
+    ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
+        or_timed_out(self.read(handle, count, span), timeout)
     }
 
     /// The next `count` bytes, or with no count the next line, of a connection in a test.
@@ -1407,6 +1421,18 @@ impl Fake {
 fn trim_line(line: &[u8]) -> &[u8] {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+/// A read in a test that was given `timeout=`. Nothing can arrive while a test waits, so one that
+/// would wait forever gives up at once, as a real one would once its time ran out.
+fn or_timed_out<T>(
+    read: Result<Result<T, Failure>, Diagnostic>,
+    timeout: Option<Duration>,
+) -> Result<Result<T, Failure>, Diagnostic> {
+    match (read, timeout) {
+        (Err(_), Some(after)) => Ok(Err(Failure::TimedOut(after))),
+        (read, _) => read,
+    }
 }
 
 #[cfg(test)]

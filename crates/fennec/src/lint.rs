@@ -163,6 +163,30 @@ pub(crate) fn errors_shown(path: &str) -> String {
 /// The lint errors in the program at `path`, as `errors_shown` gives them, from the cache when
 /// its files haven't changed since they were last linted, so a run of unchanged code doesn't lint
 /// it again. In a kit, only the files that changed are linted again, as `of_kit` says.
+/// The lint errors of a run's program, being found on a thread of their own while it's built.
+static FINDING: std::sync::Mutex<Option<std::thread::JoinHandle<String>>> = std::sync::Mutex::new(None);
+
+/// Starts finding the lint errors of the program at `path` beside whatever comes next, for
+/// `show_errors_found` to show.
+pub(crate) fn find_errors_beside(path: &str) {
+    let owned = path.to_owned();
+    // It parses and walks the program as a run does, so it has a run's stack.
+    let thread = std::thread::Builder::new().stack_size(crate::STACK_BYTES);
+    match thread.spawn(move || errors_remembered(&owned)) {
+        Ok(finding) => *FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(finding),
+        Err(_) => eprint!("{}", errors_remembered(path)),
+    }
+}
+
+/// Shows the lint errors `find_errors_beside` found, waiting for them if they aren't ready, the
+/// first time it's called. A run calls it before anything else it says, so they come first.
+pub(crate) fn show_errors_found() {
+    let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(found) = finding.and_then(|finding| finding.join().ok()) {
+        eprint!("{found}");
+    }
+}
+
 pub(crate) fn errors_remembered(path: &str) -> String {
     let Some(cache) = crate::run::cache() else { return errors_shown(path) };
     let files = crate::image::files_now(path, &cache);

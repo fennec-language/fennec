@@ -82,6 +82,19 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         return fail(format!("couldn't serve: {error}"));
     }
     let listener = mio::net::TcpListener::from_std(listener);
+    // A task serving can't lend its worker's blocks, which other tasks there are using: it lends a
+    // copy of what its rounds are given, in a table of its own.
+    let in_task = super::super::parallel::here().is_some();
+    let given = if in_task && env != 0 {
+        let copied = attempt(|state: &mut State| {
+            super::super::guarded::copied_for_task(state, env.cast_unsigned()).map(Some)
+        });
+        let Some((copy, table)) = copied else { return 1 };
+        Some((copy, Arc::new(*table)))
+    } else {
+        None
+    };
+    let env = given.as_ref().map_or(env, |(copy, _)| copy.cast_signed());
     let passed: Passed = Arc::new(Mutex::new(None));
     let passing = Arc::clone(&passed);
     let handler: Handler = Arc::new(move |conn: Conn| {
@@ -109,12 +122,27 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
     };
     super::super::write_kept_output();
-    let lent = threads::lend();
+    let lent = match &given {
+        Some((_, table)) => Arc::clone(table),
+        None => threads::lend(),
+    };
     let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), tls));
     // Ended, it's nothing left to stop.
     STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).retain(|stopper| Some(stopper.id()) != id.get());
-    threads::take_back(lent);
-    threads::settle(finished.owners);
+    if let Some((copy, table)) = given {
+        // What the copy holds is this task's now, with what its rounds did to its owners.
+        drop(lent);
+        let table = Arc::try_unwrap(table).unwrap_or_default();
+        super::super::with(|state| state.heap.adopt_made(table.into_blocks()));
+        threads::settle(finished.owners);
+        attempt(|state: &mut State| {
+            super::super::heap::release(state, copy);
+            Ok(())
+        });
+    } else {
+        threads::take_back(lent);
+        threads::settle(finished.owners);
+    }
     let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();
     let Some((failure, table)) = failure else { return 0 };
     super::super::with(|state| state.heap.adopt_made(table.into_blocks()));

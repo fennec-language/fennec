@@ -1,7 +1,6 @@
 //! `std.net`: TCP and UDP through the `Net` capability. A `Connection`, `Server` or `UdpSocket` holds
 //! a private handle into the program's table of open sockets, so code that was never given `Net` can't
-//! make one up to reach a socket. What's real here needs nothing of the interpreter, as native
-//! code runs it too. In a test, the network is in memory, in `Fake`.
+//! make one up to reach a socket. In a test, the network is in memory, in `Fake`.
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
 //! says why, and a server with no connection waiting is done.
 
@@ -184,19 +183,19 @@ impl Fake {
             ("requests", []) => {
                 return Ok(Value::list(self.requests.iter().map(|sent| Value::str(sent)).collect()));
             }
-            ("connect", [Value::Str(host), Value::Int(port)]) => {
+            ("_connect", [Value::Str(host), Value::Int(port)]) => {
                 self.connect(host, port_of(*port, span)?, false)
             }
-            ("connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+            ("_connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
                 self.connect(host, port_of(*port, span)?, *tls)
             }
-            ("listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?, false),
-            ("listen", [Value::Int(port), certificate]) => {
+            ("_listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?, false),
+            ("_listen", [Value::Int(port), certificate]) => {
                 self.listen(port_of(*port, span)?, has_certificate(certificate, span)?)
             }
-            ("udp", []) => self.udp(0),
-            ("udp", [Value::Int(port)]) => self.udp(port_of(*port, span)?),
-            ("connect" | "listen" | "udp" | "script" | "requests", _) => return Err(wrong(method, span)),
+            ("_udp", []) => self.udp(0),
+            ("_udp", [Value::Int(port)]) => self.udp(port_of(*port, span)?),
+            ("_connect" | "_listen" | "_udp" | "script" | "requests", _) => return Err(wrong(method, span)),
             _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
         };
         Ok(made_or_failed(found))
@@ -213,15 +212,17 @@ impl Fake {
     ) -> Result<Value, Diagnostic> {
         let lost = || Diagnostic::new("the native code lost a method's name", span);
         let (kind, method) = name.split_once('.').ok_or_else(lost)?;
-        let (method, args, _) = timed(method, args, span)?;
+        let (method, args, timeout) = timed(method, args, span)?;
         let done = match (kind, method.as_str(), args.as_slice()) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
-                self.read(handle, Some(count), span)?
+                self.read_by(handle, Some(count), timeout, span)?
                     .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("Connection", "read_line", []) => self.read_line(handle, false, span)?,
-            ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => self.read_line(handle, *crlf, span)?,
+            ("Connection", "read_line", []) => or_timed_out(self.read_line(handle, false, span), timeout)?,
+            ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => {
+                or_timed_out(self.read_line(handle, *crlf, span), timeout)?
+            }
             ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
@@ -230,7 +231,7 @@ impl Fake {
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
-            ("Server", "accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
+            ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -382,6 +383,18 @@ impl Fake {
         })
     }
 
+    /// A read of `count` bytes in a test that's given `timeout=`, which gives up as `or_timed_out`
+    /// says.
+    fn read_by(
+        &mut self,
+        handle: i64,
+        count: Option<usize>,
+        timeout: Option<Duration>,
+        span: Span,
+    ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
+        or_timed_out(self.read(handle, count, span), timeout)
+    }
+
     /// The next `count` bytes, or with no count the next line, of a connection in a test.
     pub(crate) fn read(
         &mut self,
@@ -528,8 +541,7 @@ fn waits_forever(what: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("{what}, and nothing else runs while a test waits"), span)
 }
 
-/// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network: needing nothing of the
-/// interpreter, for native code too.
+/// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network.
 pub(crate) fn real_net(
     method: &str,
     args: &[Value],
@@ -537,23 +549,25 @@ pub(crate) fn real_net(
     span: Span,
 ) -> Result<Value, Diagnostic> {
     let found = match (method, args) {
-        ("connect", [Value::Str(host), Value::Int(port)]) => {
+        ("_connect", [Value::Str(host), Value::Int(port)]) => {
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), false)
         }
         // `tls=True`, which native code keeps on the method's name.
-        ("connect.tls" | "connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+        ("_connect.tls" | "_connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), *tls)
         }
-        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
+        ("_listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
         // `tls=Certificate(...)`, or `None`, which native code keeps on the method's name.
-        ("listen.tls" | "listen", [Value::Int(port), certificate]) => match tls_server(certificate, span)? {
-            Ok(tls) => listen(port_of(*port, span)?, tls),
-            Err(failure) => Err(failure),
-        },
-        ("udp", []) => udp(0),
+        ("_listen.tls" | "_listen", [Value::Int(port), certificate]) => {
+            match tls_server(certificate, span)? {
+                Ok(tls) => listen(port_of(*port, span)?, tls),
+                Err(failure) => Err(failure),
+            }
+        }
+        ("_udp", []) => udp(0),
         // Native code keeps a named argument on the method's name.
-        ("udp" | "udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
-        ("connect" | "connect.tls" | "listen" | "listen.tls" | "udp" | "udp.port", _) => {
+        ("_udp" | "_udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
+        ("_connect" | "_connect.tls" | "_listen" | "_listen.tls" | "_udp" | "_udp.port", _) => {
             return Err(wrong(method, span));
         }
         _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
@@ -636,7 +650,7 @@ pub(crate) fn real_server(
     span: Span,
 ) -> Result<Value, Diagnostic> {
     match (method, args) {
-        ("accept", []) => Ok(made_or_failed(accept(handle, timeout).map(connection_made))),
+        ("_accept", []) => Ok(made_or_failed(accept(handle, timeout).map(connection_made))),
         ("close", []) => {
             close(handle);
             Ok(Value::Unit)
@@ -775,9 +789,9 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
     let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
     let mut ordered = plain.to_vec();
     let params: &[&str] = match method {
-        "connect" => &["host", "port", "tls"],
-        "listen" => &["port", "tls"],
-        "udp" => &["port"],
+        "_connect" => &["host", "port", "tls"],
+        "_listen" => &["port", "tls"],
+        "_udp" => &["port"],
         _ => &[],
     };
     for param in params.iter().skip(plain.len()) {
@@ -1017,9 +1031,8 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
     if count == 0 {
         return Ok(Vec::new());
     }
-    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut data = vec![0; count];
-    let read = reading(&stream.socket, &mut reader, timeout, |reader| reader.read(&mut data))?;
+    let read = reading(&stream, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
     Ok(data)
 }
@@ -1032,18 +1045,16 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
 /// `MOST_LINE_BYTES` fails too.
 fn read_line_crlf(handle: i64, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
-    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut partial = stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut line = std::mem::take(&mut *partial);
+    let mut line = std::mem::take(&mut *stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner));
     // What a read cut short by having to wait got is kept in `line`, and the next adds to it. It
     // reads at most what's left of the most a line may hold, and one more to tell it's too long.
-    let read = reading(&stream.socket, &mut reader, timeout, |reader| {
+    let read = reading(&stream, timeout, |reader| {
         let left = (MOST_LINE_BYTES + 1).saturating_sub(line.len());
         let mut limited = reader.take(u64::try_from(left).unwrap_or(u64::MAX));
         limited.read_until(b'\n', &mut line)
     });
     if matches!(read, Err(Failure::TimedOut(_))) {
-        *partial = line;
+        *stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner) = line;
         return read.map(|_| None);
     }
     read?;
@@ -1062,15 +1073,9 @@ fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
 fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
-    let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
-        stream.socket.set_write_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
-        let wrote = secured
-            .write_all(data)
-            .and_then(|()| secured.flush())
-            .map_err(|error| Failure::of(&error, timeout));
-        let _ = stream.socket.set_write_timeout(None);
-        return wrote;
+    let _writing = lock_parking(&stream.writing);
+    if matches!(&*stream.reader.lock().unwrap_or_else(PoisonError::into_inner), Reading::Tls(_)) {
+        return write_securely(&stream, data, (timeout, deadline));
     }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
@@ -1098,6 +1103,65 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
         }
     }
     socket.flush().map_err(|error| Failure::of(&error, None))
+}
+
+/// `write_within` over TLS. It holds the connection's TLS only to hand it data and to send
+/// what it holds, never while it waits for room, so a task reading meanwhile can go on. TLS takes
+/// all of `data` at once, and sends it as the socket has room.
+fn write_securely(
+    stream: &Stream,
+    data: &[u8],
+    (timeout, deadline): (Option<Duration>, Option<Instant>),
+) -> Result<(), Failure> {
+    let mut given = false;
+    loop {
+        let sent = {
+            let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+            let Reading::Tls(secured) = &mut *reader else { return Err(Failure::Closed) };
+            if !given {
+                secured.write_all(data).map_err(|error| Failure::of(&error, timeout))?;
+                given = true;
+            }
+            secured.flush()
+        };
+        match sent {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if wait_to_write(&stream.socket, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(Failure::of(&error, timeout)),
+        }
+    }
+}
+
+/// Lets the other tasks on this thread run, giving back whether it did.
+fn yield_to_others() -> bool {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        crate::embed::serve::yield_now()
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        false
+    }
+}
+
+/// Takes a lock another task may hold while it waits: a task that can park lets the others on its
+/// thread run until it's free, rather than block the thread the holder needs.
+fn lock_parking<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    loop {
+        match lock.try_lock() {
+            Ok(held) => return held,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if !socket_parks() || !yield_to_others() {
+            return lock.lock().unwrap_or_else(PoisonError::into_inner);
+        }
+    }
 }
 
 /// Connects to `host` on `port`, reads a line and closes, for tests of waits that park.
@@ -1147,46 +1211,29 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
 }
 
 /// Runs `read` on a connection, plain or through TLS: parked if it has to wait in a task, and
-/// otherwise waiting at most `timeout`.
+/// otherwise waiting at most `timeout`. A task holds the connection only while it tries, never
+/// while it waits, so another task can write to it meanwhile.
 fn reading<T>(
-    socket: &TcpStream,
-    reader: &mut Reading,
+    stream: &Stream,
     timeout: Option<Duration>,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
-    match reader {
-        Reading::Plain(plain) => read_on(socket, plain, timeout, |reader| read(reader)),
-        Reading::Tls(secured) => read_on(socket, &mut **secured, timeout, |reader| read(reader)),
+    let mut attempt = || {
+        let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *reader {
+            Reading::Plain(plain) => read(plain),
+            Reading::Tls(secured) => read(&mut **secured),
+        }
+    };
+    if !socket_parks() {
+        wait_at_most(&stream.socket, timeout)?;
+        return attempt().map_err(|error| Failure::of(&error, timeout));
     }
-}
-
-/// `reading`, on one kind of reader.
-fn read_on<R: BufRead + ?Sized, T>(
-    socket: &TcpStream,
-    reader: &mut R,
-    timeout: Option<Duration>,
-    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
-) -> Result<T, Failure> {
-    if socket_parks() {
-        return parked(socket, reader, timeout, read);
-    }
-    wait_at_most(socket, timeout)?;
-    read(reader).map_err(|error| Failure::of(&error, timeout))
-}
-
-/// Runs a read that may have to wait, in a task that parks rather than block: with the socket not
-/// blocking, `read` is tried, and each time it would block, the task parks until the socket's
-/// readable or `timeout` passes. The socket blocks again after.
-fn parked<R: ?Sized, T>(
-    socket: &TcpStream,
-    reader: &mut R,
-    timeout: Option<Duration>,
-    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
-) -> Result<T, Failure> {
+    let socket = &stream.socket;
     socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let done = loop {
-        match read(reader) {
+        match attempt() {
             Ok(done) => break Ok(done),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
@@ -1407,6 +1454,18 @@ fn trim_line(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
+/// A read in a test that was given `timeout=`. Nothing can arrive while a test waits, so one that
+/// would wait forever gives up at once, as a real one would once its time ran out.
+fn or_timed_out<T>(
+    read: Result<Result<T, Failure>, Diagnostic>,
+    timeout: Option<Duration>,
+) -> Result<Result<T, Failure>, Diagnostic> {
+    match (read, timeout) {
+        (Err(_), Some(after)) => Ok(Err(Failure::TimedOut(after))),
+        (read, _) => read,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use fennec_syntax::Span;
@@ -1429,14 +1488,14 @@ pub(crate) mod tests {
         let host = || Value::str("localhost");
         let mut fake = Fake::default();
 
-        let secure = fake.net_method("listen.tls", &[Value::Int(0), certificate], span).unwrap();
-        let plain = fake.net_method("listen", &[Value::Int(0)], span).unwrap();
+        let secure = fake.net_method("_listen.tls", &[Value::Int(0), certificate], span).unwrap();
+        let plain = fake.net_method("_listen", &[Value::Int(0)], span).unwrap();
         let (secure, plain) = (port(&secure), port(&plain));
         let tls = Value::Bool(true);
 
-        let both = fake.net_method("connect.tls", &[host(), secure.clone(), tls.clone()], span).unwrap();
+        let both = fake.net_method("_connect.tls", &[host(), secure.clone(), tls.clone()], span).unwrap();
         assert!(matches!(both, Value::Ok(_)), "{both:?}");
-        for (name, args) in [("connect", vec![host(), secure]), ("connect.tls", vec![host(), plain, tls])] {
+        for (name, args) in [("_connect", vec![host(), secure]), ("_connect.tls", vec![host(), plain, tls])] {
             let refused = fake.net_method(name, &args, span).unwrap();
             let Value::Err(error) = refused else { panic!("{name} connected") };
             assert!(format!("{error:?}").contains("Tls"), "{error:?}");
@@ -1534,7 +1593,7 @@ pub(crate) mod tests {
     #[test]
     fn a_tests_listen_takes_only_a_certificate() {
         let mut fake = Fake::default();
-        assert!(fake.net_method("listen.tls", &[Value::Int(0), Value::Int(1)], Span::default()).is_err());
+        assert!(fake.net_method("_listen.tls", &[Value::Int(0), Value::Int(1)], Span::default()).is_err());
     }
 
     fn handle_of_made((_, fields): &Made) -> i64 {
@@ -1760,11 +1819,11 @@ pub(crate) mod tests {
         fn a_server_listening_with_a_certificate_accepts_over_tls() {
             http::use_tls();
             let span = Span::default();
-            let listened = real_net("listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
+            let listened = real_net("_listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
             let (server, port) = (field(&listened, "_handle"), field(&listened, "port"));
             let serving = std::thread::spawn(move || {
                 let span = Span::default();
-                let taken = real_server(server, "accept", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let taken = real_server(server, "_accept", &[], Some(Duration::from_secs(10)), span).unwrap();
                 let conn = field(&taken, "_handle");
                 let line =
                     real_connection(conn, "read_line", &[], Some(Duration::from_secs(10)), span).unwrap();
@@ -1798,10 +1857,10 @@ pub(crate) mod tests {
                     ("key", Value::made("Secret", vec![("_value", Value::str("nope"))])),
                 ],
             );
-            let listened = real_net("listen.tls", &[Value::Int(0), bad], None, span).unwrap();
+            let listened = real_net("_listen.tls", &[Value::Int(0), bad], None, span).unwrap();
             let Value::Err(error) = listened else { panic!("it listened") };
             assert!(format!("{error:?}").contains("Tls"), "{error:?}");
-            assert!(real_net("listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
+            assert!(real_net("_listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
         }
 
         fn shake_trusting_the_tests(

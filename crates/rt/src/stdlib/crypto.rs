@@ -78,7 +78,7 @@ fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic
     }
 }
 
-/// One of these functions, which need nothing of the interpreter.
+/// One of these functions, by its full name.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     if name.starts_with("crypto._") {
         return hashing(name, values, span);

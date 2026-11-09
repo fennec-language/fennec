@@ -21,6 +21,11 @@ pub(crate) fn held(ty: &Type) -> Option<&Type> {
     }
 }
 
+/// Whether a `with` is a `lock` lowering wrote in, by the names it gives what it holds.
+pub(crate) fn lowered(names: &[WithName]) -> bool {
+    !names.is_empty() && names.iter().all(|held| held.name.ends_with(crate::lock_lowering::HELD))
+}
+
 /// `shared T` for what a plain value of type `held` is.
 pub(crate) fn shared(held: Type) -> Type {
     Type::Generic(SHARED.to_owned(), vec![held])
@@ -93,16 +98,22 @@ impl FnCx<'_> {
         flow
     }
 
-    /// Reports a `with` on a `shared T`, which is reached with `lock`, giving what it holds.
-    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span) {
+    /// Reports a `with` on a `shared` value, which is reached with `lock`, with the fix that says so.
+    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span, at: Span, names: &[WithName]) {
+        // Lowering writes each `lock` in as a `with` on a `shared` declaration, naming what it
+        // holds `{name}__lock`, which a check of what it wrote takes as written.
+        let first = !self.checker.again && !lowered(names);
+        let locks = |ty: &Type| held(ty).is_some() || (first && self.checker.program.takes_lock(ty));
         let shared = match ty {
-            Type::Tuple(types) => types.iter().any(|ty| held(ty).is_some()),
-            ty => held(ty).is_some(),
+            Type::Tuple(types) => types.iter().any(locks),
+            ty => locks(ty),
         };
         if shared {
+            let keyword = Span { start: at.start, end: at.start + 4 };
             self.error(
                 Diagnostic::new("a `shared` value is reached with `lock`, not `with`", span)
-                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`"),
+                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`")
+                    .with_fix(keyword, "lock"),
             );
         }
     }

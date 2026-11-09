@@ -314,7 +314,7 @@ pub extern "C" fn encode(text: i64) -> i64 {
     })
 }
 
-/// A block from an interpreter value, when it crosses back.
+/// A block from a `Value`, when it crosses back.
 pub(super) fn write(state: &mut State, value: &Value) -> Option<i64> {
     let Value::Bytes(data) = value else { return None };
     Some(make(state, data))

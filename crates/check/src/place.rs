@@ -49,6 +49,21 @@ impl FnCx<'_> {
         }
     }
 
+    /// Reports a place inside a `shared T` reached outside a `lock`, like `scores.best = {}`,
+    /// saying whether it was one.
+    fn shared_place(&mut self, place: &Expr) -> bool {
+        let (ExprKind::Attr { object, .. } | ExprKind::Index { object, .. }) = &place.kind else {
+            return false;
+        };
+        if self.shared_place(object) {
+            return true;
+        }
+        match self.declared_type_of(object) {
+            Some(ty) if crate::lock::held(&ty).is_some() => self.outside_lock(object, &ty, place.span),
+            _ => false,
+        }
+    }
+
     /// How to change what `target = units[at]` read from, when `target.health` can't change.
     fn write_it_there(&self, name: &str, expr: &Expr) -> Option<String> {
         if self.origin(name) != Some(Origin::Local) {
@@ -122,6 +137,9 @@ impl FnCx<'_> {
             ExprKind::Index { object, index } if op.is_none() && self.has_set_index(object) => {
                 let held = self.set_index(object, index, value);
                 self.record(target.span, &held);
+            }
+            _ if self.shared_place(target) => {
+                self.expr(value);
             }
             _ => {
                 self.mut_place(target, "this can't be assigned to");
@@ -201,7 +219,7 @@ impl FnCx<'_> {
         if !declare_mut && self.origin(name) == Some(Origin::Locked) {
             self.error(
                 Diagnostic::new(
-                    format!("`{name}` holds a lock for this `with` block, so it can't name anything else"),
+                    format!("`{name}` names what this `lock` holds, so it can't name anything else"),
                     span,
                 )
                 .with_help("give the other value a name of its own"),

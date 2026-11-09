@@ -824,15 +824,15 @@ struct Inventory:
 struct Character:
     inventory: Inventory
 
-shared Cell:
+struct Cell:
     count = 0
 
 struct Celled:
-    cell: Cell
+    cell: shared Cell
 
 struct Quiet:
     @skip
-    cell: Cell? = None
+    cell: (shared Cell)? = None
     size = 1
 
 def saved[T: Serializable](x: T) -> int:
@@ -938,4 +938,24 @@ fn a_program_that_doesnt_save_isnt_given_the_methods() {
     let signatures = crate::check(source).unwrap();
     assert!(signatures.get("Spot.serialize").is_none());
     assert!(signatures.get("Spot.deserialize").is_none());
+}
+
+/// A loop over `fields(T)` gives each field's `name` and `get(x)`, checked once: the value of a
+/// field goes only where any type can, and nothing else is asked of a field.
+#[test]
+fn a_loop_over_fields_is_checked_once() {
+    let types = "def take[V](value: V) -> int:\n    1\n\n";
+    let body = |inside: &str| {
+        problems(&format!(
+            "{types}def walk[T](value: T) -> int:\n    mut count = 0\n    for field in fields(T):\n        {inside}\n    count\n\n\
+             def main(stdout: Stdout):\n    stdout.print(walk(3))\n"
+        ))
+        .into_iter()
+        .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+        .collect::<Vec<String>>()
+    };
+    assert_eq!(body("count += take(field.get(value)) + field.name.len()"), Vec::<String>::new());
+    assert_eq!(body("count += field.size"), ["a field has a `name` and a `get(...)`, not `size`"]);
+    assert_eq!(body("count += take(field.get(1.5))"), ["`get` reads a field of a T, not a float"]);
+    assert_eq!(body("count += field.get(value) + 1"), ["can't use `+` on a FieldValue and an int"]);
 }

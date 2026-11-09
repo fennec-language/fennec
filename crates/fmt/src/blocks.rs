@@ -305,7 +305,7 @@ fn top_level_colon(toks: &[Tok<'_>]) -> bool {
 
 /// The kind of block a line opens, if an indented block follows it.
 fn opened_kind(toks: &[Tok<'_>]) -> BlockKind {
-    let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
+    let mut words = toks.iter().skip_while(|tok| tok.text == "export");
     if let (Some(first), Some(second)) = (words.next(), words.next())
         && first.kind == TokenKind::Name
         && second.kind == TokenKind::Name

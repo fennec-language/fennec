@@ -28,10 +28,10 @@ pub(super) enum Leaving {
     Item { place: Place, item: LocalId, index: Operand },
     /// A `for mut` loop over positions writes its item back to the place the position is.
     Place { place: Place, item: LocalId },
-    /// A `with` block calls the `del` of what it holds.
-    With { resource: LocalId, cleanup: String },
     /// A `with` block gives back the locks of the `shared` handles it holds.
     Unlock { handles: Vec<LocalId> },
+    /// A loop lets go of the generator made for it, closing what that holds.
+    Generator { generator: Operand, known: Option<String> },
 }
 
 impl Lowering<'_> {
@@ -351,11 +351,6 @@ impl Lowering<'_> {
             Leaving::Place { place, item } => {
                 self.store(place.local, &place.steps, Operand::Local(*item), span)
             }
-            Leaving::With { resource, cleanup } => {
-                let args = vec![Operand::Local(*resource)];
-                self.emit(InstKind::Call { dest: None, function: cleanup.clone(), args }, span);
-                Ok(())
-            }
             Leaving::Unlock { handles } => {
                 // A failure leaving a lock to write puts back what the block changed, as a crash
                 // does: the last taken first.
@@ -374,6 +369,20 @@ impl Lowering<'_> {
                 };
                 self.emit(kind, span);
                 Ok(())
+            }
+            Leaving::Generator { generator, known } => {
+                // A cleanup's failure leaves from here, through what was entered before the
+                // loop, and not through this again.
+                let at = self.leaving.iter().position(|entered| {
+                    matches!(entered, Leaving::Generator { generator: held, .. } if held == generator)
+                });
+                let all = self.leaving.clone();
+                if let Some(at) = at {
+                    self.leaving.truncate(at);
+                }
+                let let_go = self.let_go_now(generator, known.clone(), span);
+                self.leaving = all;
+                let_go
             }
         }
     }
@@ -415,12 +424,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Copy { dest: resource, value: held }, span);
             if self.context.is_handle(&ty) {
                 locks.push((resource, names.get(at).is_some_and(|name| name.is_mut)));
-                continue;
             }
-            let cleanup = crate::lower::calls::owner_name(&ty).map(|owner| format!("{owner}.del"));
-            let cleanup =
-                cleanup.and_then(|key| self.resolve(&key, &[Some(ty.clone())], None)).map(|(name, _)| name);
-            entries.extend(cleanup.map(|cleanup| Leaving::With { resource, cleanup }));
         }
         let kind = match locks.as_slice() {
             [] => None,

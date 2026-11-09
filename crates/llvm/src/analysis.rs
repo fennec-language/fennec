@@ -43,6 +43,10 @@ pub(crate) struct Analysis {
     shared: HashSet<usize>,
     /// Lists changed here, by an index or an append.
     changed: HashSet<usize>,
+    /// Lists that may be one a lock's rollback log has marked, only appended to, extended or popped
+    /// here: a marked list never reads as having one owner, so each change there asks, and none is
+    /// let off asking by an earlier one (see `lists::MARKED` in the runtime).
+    maybe_marked: HashSet<usize>,
     /// Locals given to a call's `mut` parameter, which writes them with no write here to see.
     given_mut: HashSet<usize>,
     /// Locals whose one read can run again without their one write running first: in a loop
@@ -237,6 +241,7 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
         InstKind::Make { dest, fields: items, .. }
         | InstKind::MakeCase { dest, fields: items, .. }
         | InstKind::MakeList { dest, items }
+        | InstKind::ConstantList { dest, items }
         | InstKind::MakeTuple { dest, items }
         | InstKind::MakeClosure { dest, captures: items, .. }
         | InstKind::MakeSet { dest, items } => {
@@ -447,6 +452,48 @@ fn count_uses(
     grown
 }
 
+/// Notes the lists that may be one a lock's rollback log has marked, where each change should ask:
+/// `ref` parameters, what's read out of a field or an item, what a call changes in place, and copies
+/// of any of them, when every change here to the list is an append, an extend or a pop, which the
+/// log notes and leaves in place. A list changed any other way here is better copied once on the way
+/// in, as it is when its first check copies a marked one, than asked about at every change.
+fn find_maybe_marked(function: &Function, known: &mut Analysis) {
+    let mut maybe: HashSet<usize> = function.mut_params.iter().copied().collect();
+    maybe.extend(function.places.iter().map(|place| place.value.0));
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            let dest = match &inst.kind {
+                InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } => Some(*dest),
+                InstKind::Copy { dest, value: Operand::Local(from) } if maybe.contains(&from.0) => {
+                    Some(*dest)
+                }
+                _ => None,
+            };
+            if let Some(dest) = dest {
+                grew |= maybe.insert(dest.0);
+            }
+        }
+    }
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        match &inst.kind {
+            InstKind::Builtin { name, args, changes, .. } if *changes || name == "list.append" => {
+                let noted = matches!(name.as_str(), "list.append" | "list.extend")
+                    || (name == "list.pop" && args.len() == 1);
+                if !noted && let Some(Operand::Local(list)) = args.first() {
+                    maybe.remove(&list.0);
+                }
+            }
+            InstKind::SetIndex { object, .. } => {
+                maybe.remove(&object.0);
+            }
+            _ => {}
+        }
+    }
+    known.maybe_marked = maybe;
+}
+
 fn analyze(
     function: &Function,
     changes: &dyn Fn(&str) -> Vec<usize>,
@@ -454,6 +501,7 @@ fn analyze(
 ) -> Analysis {
     let mut known = Analysis::empty(function.locals.len());
     let grown = count_uses(function, (changes, keeps), &mut known);
+    find_maybe_marked(function, &mut known);
     find_reads_again(function, &mut known);
     find_place_takes(function, changes, &mut known);
     find_borrows(function, changes, &mut known);
@@ -486,6 +534,7 @@ fn analyze(
             InstKind::Make { fields: items, .. }
             | InstKind::MakeCase { fields: items, .. }
             | InstKind::MakeList { items, .. }
+            | InstKind::ConstantList { items, .. }
             | InstKind::MakeTuple { items, .. }
             | InstKind::MakeSet { items, .. }
             | InstKind::MakeClosure { captures: items, .. } => {
@@ -1616,6 +1665,7 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     // Making something else, from neither of them.
                     other @ (InstKind::Make { .. }
                     | InstKind::MakeList { .. }
+                    | InstKind::ConstantList { .. }
                     | InstKind::MakeTuple { .. }
                     | InstKind::MakeCase { .. }
                     | InstKind::Copy { .. })
@@ -2251,7 +2301,7 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
         let made_here = block
             .insts
             .iter()
-            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
+            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
             let zeros = fills_with_zeros(function, block, (header, body), list, known);
             match appends_within_room(function, (block, header_at.0), then.0, list) {
@@ -2457,6 +2507,7 @@ impl Analysis {
             writes: vec![0; count],
             shared: HashSet::new(),
             changed: HashSet::new(),
+            maybe_marked: HashSet::new(),
             given_mut: HashSet::new(),
             read_again: HashSet::new(),
             borrowed: HashSet::new(),
@@ -2534,7 +2585,9 @@ impl Analysis {
     /// Whether this function changes a list in a local nothing else here comes to hold, so
     /// it's enough to see that it has one owner when the local gets it.
     pub(crate) fn alone_once_checked(&self, local: LocalId) -> bool {
-        self.changed.contains(&local.0) && !self.shared.contains(&local.0)
+        self.changed.contains(&local.0)
+            && !self.shared.contains(&local.0)
+            && !self.maybe_marked.contains(&local.0)
     }
 
     /// What a local borrows from, if it's borrowing.

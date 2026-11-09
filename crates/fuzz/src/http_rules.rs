@@ -64,6 +64,8 @@ def main(net: Net, args: Args, stdout: Stdout):
 const MOST_HEADERS: usize = 100;
 const MOST_HEADER_BYTES: usize = 16384;
 const MOST_BODY: usize = 10_485_760;
+/// The most blank lines `std.net` passes over before a request line.
+const MOST_BLANK_LINES: usize = 8;
 
 /// How long the server may take to answer and close.
 const ANSWERED_WITHIN: Duration = Duration::from_secs(10);
@@ -91,9 +93,8 @@ enum Stop {
     End,
     /// What comes next isn't promised anything.
     Unpromised,
-    /// The server closed with input unread, which resets the connection and can lose answers.
-    /// Reported: take this out once `an_http_server_answers_what_it_refuses_and_passes_over_blank_lines`
-    /// passes.
+    /// More blank lines than the server passes over, with input after them: it closes at once,
+    /// which can reset the connection and lose answers. No client sends that, so it isn't promised.
     ClosedUnread,
 }
 
@@ -167,12 +168,9 @@ fn wanted(input: &[u8]) -> (Vec<Wanted>, Stop) {
                 let refused = matches!(answer, Wanted::Refused(_));
                 answers.push(answer);
                 if refused || !keep {
-                    // Closing with input unread resets the connection (reported).
-                    let unread = at < input.len();
-                    return (answers, if unread { Stop::ClosedUnread } else { Stop::End });
+                    return (answers, Stop::End);
                 }
             }
-            // An empty line where a request should start closes, input unread (reported).
             Err(Stop::End) if at < input.len() => return (answers, Stop::ClosedUnread),
             Err(stop) => return (answers, stop),
         }
@@ -184,6 +182,14 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     let refused = |status| Ok((Wanted::Refused(status), false));
     let (first, next) = line(input, *at).ok_or(Stop::End)?;
     *at = next;
+    // A few blank lines before a request line are passed over, as HTTP/1.1 says.
+    let mut first = first;
+    let mut blank = 0;
+    while first.is_empty() && blank < MOST_BLANK_LINES {
+        blank += 1;
+        let (line, next) = line(input, *at).ok_or(Stop::End)?;
+        (first, *at) = (line, next);
+    }
     if first.is_empty() {
         return Err(Stop::End);
     }
@@ -296,7 +302,8 @@ struct Heard {
 }
 
 /// The responses in what the server said, in order, up to `most`, or what's wrong with them.
-fn heard(said: &[u8], heads: &[bool], most: usize) -> Result<Vec<Heard>, String> {
+/// With `reset`, the connection may have been reset, cutting off what came last.
+fn heard(said: &[u8], heads: &[bool], most: usize, reset: bool) -> Result<Vec<Heard>, String> {
     let mut responses = Vec::new();
     let mut at = 0;
     while at < said.len() && responses.len() < most {
@@ -323,8 +330,13 @@ fn heard(said: &[u8], heads: &[bool], most: usize) -> Result<Vec<Heard>, String>
         if heads.get(responses.len()).copied().unwrap_or(false) {
             length = 0;
         }
-        // A refusal closed with input unread can lose its body to a reset (reported).
-        let Some(body) = said.get(next..next + length) else { break };
+        // A reset can cut the last answer short, where one may come.
+        let Some(body) = said.get(next..next + length) else {
+            if reset {
+                break;
+            }
+            return Err("a response's body was cut short".to_owned());
+        };
         let body = body.to_vec();
         at = next + length;
         responses.push(Heard { status, body });
@@ -407,7 +419,7 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
     let heads: Vec<bool> = wanted.iter().map(|wanted| matches!(wanted, Wanted::Head)).collect();
     // Past what's unpromised, which may be a `HEAD`, a response's length can't be known.
     let most = if matches!(stop, Stop::Unpromised) { wanted.len() } else { usize::MAX };
-    let responses = heard(&said, &heads, most)
+    let responses = heard(&said, &heads, most, matches!(stop, Stop::ClosedUnread))
         .map_err(|wrong| format!("{wrong} in {:?}", String::from_utf8_lossy(&said)))?;
     let shown = || {
         format!("asked {:?}, it said {:?}", String::from_utf8_lossy(input), String::from_utf8_lossy(&said))
@@ -443,7 +455,7 @@ mod tests {
     #[test]
     fn the_reader_here_takes_requests_apart_as_http_says() {
         let (answers, stop) = wanted(b"GET /a%20b?x=1+2&x=3 HTTP/1.1\r\nHost: h\r\nX-Y:  z \r\n\r\nPOST / HTTP/1.0\r\nContent-Length: 2\r\n\r\nhiGET");
-        assert!(matches!(stop, Stop::ClosedUnread));
+        assert!(matches!(stop, Stop::End));
         let [Wanted::Echoed { path, query, headers, .. }, Wanted::Echoed { body, .. }] = answers.as_slice()
         else {
             assert_eq!(answers.len(), 2, "{answers:?}");
@@ -473,7 +485,7 @@ mod tests {
 /// What a response should give the client: its status and body, or failing, or nothing certain.
 #[derive(Debug, PartialEq, Eq)]
 enum Answer {
-    Read(u16, Vec<u8>),
+    Read(i64, Vec<u8>),
     Fails,
     Unpromised,
 }
@@ -532,20 +544,23 @@ fn answer(input: &[u8]) -> Result<Answer, Answer> {
         headers.iter().filter(|(name, _)| name == wanted).map(|(_, value)| value.clone()).collect()
     };
     if matches!(status, 204 | 304) || (100..200).contains(&status) {
-        return Ok(Answer::Read(status, Vec::new()));
+        return Ok(Answer::Read(i64::from(status), Vec::new()));
     }
     let (codings, lengths) = (all("transfer-encoding"), all("content-length"));
     if !codings.is_empty() {
         if codings != ["chunked"] {
             return Err(Answer::Unpromised);
         }
-        return chunked(input, at).map(|body| Answer::Read(status, body));
+        return chunked(input, at).map(|body| Answer::Read(i64::from(status), body));
     }
     match lengths.as_slice() {
-        [] => Ok(Answer::Read(status, input.get(at..).unwrap_or_default().to_vec())),
+        [] => Ok(Answer::Read(i64::from(status), input.get(at..).unwrap_or_default().to_vec())),
         [length] if !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit()) => {
             let length: usize = length.parse().map_err(|_| Answer::Unpromised)?;
-            input.get(at..at + length).map(|body| Answer::Read(status, body.to_vec())).ok_or(Answer::Fails)
+            input
+                .get(at..at + length)
+                .map(|body| Answer::Read(i64::from(status), body.to_vec()))
+                .ok_or(Answer::Fails)
         }
         _ => Err(Answer::Unpromised),
     }

@@ -9,9 +9,9 @@ fn text_of(state: &State, text: i64) -> String {
     state.heap.block(text.cast_unsigned()).map(block_text).unwrap_or_default()
 }
 
-/// `int(text)`, with what's around the number ignored, as the interpreter reads it: whether it
-/// was one, with the number written to `bits`. A value of two words isn't given back whole, since
-/// platforms differ on how one comes back.
+/// `int(text)`, with the whitespace around the number ignored: whether it was one, with the
+/// number written to `bits`. A value of two words isn't given back whole, since platforms differ
+/// on how one comes back.
 pub extern "C" fn parse_int(text: i64, bits: &mut i64) -> i64 {
     with(|state| match text_of(state, text).trim().parse::<i64>() {
         Ok(number) => {

@@ -193,6 +193,7 @@ export! {
     fennec_int_power(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::int_power(a0, a1, a2, a3);
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
     fennec_list_grow(a0: i64) -> i64 => lists::grow(a0);
+    fennec_list_pop_unshare(a0: i64) -> i64 => lists::pop_unshare(a0);
     fennec_list_reserve(a0: i64, a1: i64) -> i64 => lists::reserve(a0, a1);
     fennec_list_truncate(a0: i64, a1: i64) -> i64 => lists::truncate(a0, a1);
     fennec_list_unshare(a0: i64) -> i64 => lists::unshare(a0);
@@ -351,6 +352,7 @@ export! {
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
     fennec_crypto_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_call(a0, a1, a2, a3);
     fennec_use_tls() => capabilities::use_tls();
+    fennec_constant_kept(a0: i64) => heap::constant_kept(a0);
     fennec_on_task_resume(a0: extern "C" fn(i64)) => parallel::on_task_resume(a0);
     fennec_clock_now() -> i64 => capabilities::clock_now();
     fennec_clock_time() -> i64 => capabilities::clock_time();

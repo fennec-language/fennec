@@ -113,6 +113,9 @@ pub(crate) struct Checker {
     pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
+    /// Set when what's checked is a program as lowering rewrote it, checked again: the rules
+    /// about how a program is written were held to it as written, the first time.
+    pub(crate) again: bool,
     /// Each function that takes a lock itself, with how the first one's written.
     pub(crate) takes_locks: BTreeMap<String, String>,
     /// The calls made inside lock bodies, judged once every function's waits are known.
@@ -198,6 +201,7 @@ impl Checker {
             previous: BTreeMap::new(),
             callers: BTreeMap::new(),
             waits: BTreeMap::new(),
+            again: false,
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
             diagnostics,
@@ -497,7 +501,7 @@ impl Checker {
         // to be emitted has been checked as written and rewritten since: a `with` function's body
         // is written into its caller, where a change to a `ref` parameter is to a local, and a
         // failure leaves before anything reads it.
-        if problems.is_empty() && scope != Scope::ReachedWithFields {
+        if problems.is_empty() && scope != Scope::ReachedWithFields && !self.again {
             for key in keys {
                 let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else {
                     continue;
@@ -1108,19 +1112,8 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
 /// operator's, a protocol's like `str`, `iter` or `len`, or any of `StrWriter`'s, which a type's
 /// own `str` is given.
 fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
-    const PROTOCOLS: [&str; 11] = [
-        "str",
-        "iter",
-        "len",
-        "is_live",
-        "del",
-        "hash",
-        "serialize",
-        "deserialize",
-        "contains",
-        "in",
-        "own_text",
-    ];
+    const PROTOCOLS: [&str; 10] =
+        ["str", "iter", "len", "is_live", "hash", "serialize", "deserialize", "contains", "in", "own_text"];
     if entry.owner.as_deref() == Some("StrWriter") {
         return true;
     }

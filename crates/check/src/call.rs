@@ -87,6 +87,14 @@ impl FnCx<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
         self.closure_locks_again(callee);
         self.note_generator_worked_out_here(callee, args);
+        // `connect(...)` after `from std.postgres import connect`; through the module it's
+        // checked where `postgres.connect` is found.
+        if let ExprKind::Name(name) = &callee.kind
+            && self.lookup(name).is_none()
+            && let Some(function) = self.checker.program.std_functions.get(name).cloned()
+        {
+            self.no_password_in_written_url(&function, args);
+        }
         match &callee.kind {
             ExprKind::Attr { object, name, .. } if self.is_built_in_function(object, name) => {
                 return self.built_in_function(name, args, span);
@@ -94,6 +102,7 @@ impl FnCx<'_> {
             ExprKind::Attr { object, name, optional } => {
                 return match self.module_member(object, name, callee.span) {
                     Some(Member::Name(member)) => {
+                        self.no_password_in_written_url(&member, args);
                         self.call(&Expr { kind: ExprKind::Name(member), span: callee.span }, args, span)
                     }
                     Some(Member::Missing) => {

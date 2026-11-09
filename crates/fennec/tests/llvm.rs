@@ -2036,6 +2036,34 @@ def main(stdout: Stdout):
     )
 }
 
+/// Each character read twice, as a parser checks one and then takes it, and the few before it
+/// sliced off, in text with characters of each width: a slice of ASCII is found as many bytes
+/// back as it has characters, and one taking in part of a wider character is walked to instead.
+/// Then jumps ahead, from the end, and the last character twice.
+#[test]
+fn reading_again_and_slicing_back_in_text_that_isnt_ascii() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "reading_again_slicing_back",
+        r#"def main(stdout: Stdout):
+    text = "ab日c🦊de é f" + "x" * 8 + "ñ"
+    mut out = []
+    for at in range(text.len()):
+        first = text[at]
+        again = text[at]
+        out.append(f"{first}{again}")
+        for back in range(1, 4):
+            if at >= back:
+                out.append(text[at - back:at])
+    stdout.print("|".join(out))
+    stdout.print(text[0], text[4], text[9], text[3], text[-1], text[-1], text[text.len() - 1], text[2], text[2])
+"#,
+        "aa|bb|a|日日|b|ab|cc|日|b日|ab日|🦊🦊|c|日c|b日c|dd|🦊|c🦊|日c🦊|ee|d|🦊d|c🦊d|  |e|de|🦊de|éé| |e |de |  |é| é|e é|ff| |é | é |xx|f| f|é f|xx|x|fx| fx|xx|x|xx|fxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|ññ|x|xx|xxx\na 🦊   c ñ ñ ñ 日 日\n",
+    )
+}
+
 /// A loop over a string's characters: a text all ASCII takes a byte at a time with nothing to
 /// test, and any other its characters' bytes, whether it's inline or a block's, and the body
 /// breaking, going on, or looping over text of its own.

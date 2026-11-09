@@ -24,7 +24,7 @@ from std import base64, crypto
 from std.crypto import Secret
 from std.intrinsics import bytes_text
 from std.concurrent import Borrowed, Pool, Timeout, pool
-from std.net import Connection
+from std.net import Connection, NetError
 from std.time import Duration
 from std.url import parse, unquote
 from std.sql import SqlError, SqlRows, SqlValue, rows_as
@@ -926,7 +926,8 @@ export struct PgDatabase:
         mut reader = PgReader()
         mut marked = False
         while True:
-            message = next_message(self._conn, ref reader)?
+            # A server that doesn't answer soon isn't kept waiting for: the connection's replaced.
+            message = next_message(self._conn, ref reader, wait=RESET_WAIT)?
             match message:
                 case .Row(cells=cells, present=_):
                     if cells.len() == 1 and cells[0] == RESET_MARK.encode(): marked = True
@@ -984,6 +985,9 @@ def changed(tag: str) -> int:
 ## no query a program sends gives it back.
 RESET_MARK = "fennec pool reset 7c1e"
 
+## How long a reset waits for the server's answer before giving up on the connection.
+RESET_WAIT = 2s
+
 ## A query in the simple protocol: `Q`, its length, and its text ending with a zero byte.
 def simple_query(text: str) -> bytes:
     mut out = PgWriter()
@@ -997,12 +1001,17 @@ def send(conn: Connection, data: bytes) fails SqlError:
         case Err(error):
             fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
 
-## The next whole message from the server, waiting for it.
-def next_message(conn: Connection, ref reader: PgReader) -> PgMessage fails SqlError:
+## What the server's sent next, waiting for at most `wait` when it's given.
+def more_from(conn: Connection, wait: Duration?) -> bytes fails NetError:
+    if wait is None: return conn.read(65536)?
+    conn.read(65536, timeout=wait)?
+
+## The next whole message from the server, waiting for it, for at most `wait` when it's given.
+def next_message(conn: Connection, ref reader: PgReader, wait: Duration? = None) -> PgMessage fails SqlError:
     while True:
         found = reader.next()?
         if found is not None: return found
-        match conn.read(65536):
+        match more_from(conn, wait):
             case Ok(more):
                 if more.len() == 0: fail SqlError.Failed(reason="the server closed the connection")
                 reader.feed(more)

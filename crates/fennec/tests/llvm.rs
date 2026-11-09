@@ -8347,6 +8347,7 @@ fn sqlite_from_parallel_rounds_keeps_every_write() -> std::io::Result<()> {
 /// What the next test builds: everything `std.postgres` does, against the server
 /// `FENNEC_TEST_POSTGRES` names, or, with none, against a port nothing listens on.
 const POSTGRES_SERVER: &str = r#"from std import postgres
+from std.concurrent import Timeout
 from std.crypto import Secret
 from std.sql import SqlError
 
@@ -8375,6 +8376,11 @@ def said(failure: SqlError) -> str:
         case .Failed(reason=reason):
             return f"failed {reason.len() > 0}"
 
+## What a failure says, whichever kind it is.
+def said_of(error: SqlError | Timeout) -> str:
+    if error is SqlError: return error.message()
+    "no connection came free"
+
 def rows_in(db: postgres.PgDatabase) -> int fails SqlError:
     db.query[Count](t"select count(*) as total from fennec_entries")?[0].total
 
@@ -8394,52 +8400,57 @@ struct Server:
     database: str
     secret: Secret[str]
 
-def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port, tls=False)? as db:
-        # A temporary table is this connection's own, so runs at once can't meet.
-        _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
-        for at in range(3):
-            path = f"p{at}"
-            size = at * 10
-            weight = float(at) * 0.5
-            blob = bytes([at, 255])
-            seen = at % 2 == 0
-            stdout.print(db.execute(t"insert into fennec_entries values ({path}, {size}, {weight}, {blob}, {seen})")?)
-        least = 10
-        for entry in db.query[Entry](t"select path, size, weight, blob, seen from fennec_entries where size >= {least} order by path")?:
-            stdout.print(entry.path, entry.size, entry.weight, entry.blob.len(), entry.blob[1], entry.seen)
-        # A value can't change what the query means, whatever it says.
-        evil = "x'); drop table fennec_entries; --"
-        none = bytes([])
-        _ = db.execute(t"insert into fennec_entries values ({evil}, {0}, {0.0}, {none}, {False})")?
-        stdout.print(rows_in(db)?)
-        # Failures say what they are, and the connection goes on.
-        path = "p0"
-        match db.execute(t"insert into fennec_entries values ({path}, {0}, {0.0}, {none}, {False})"):
-            case Ok(_):
-                stdout.print("inserted twice")
-            case Err(error):
-                stdout.print(said(error))
-        match db.execute(t"select from no_such_table"):
-            case Ok(_):
-                stdout.print("no error")
-            case Err(error):
-                stdout.print(said(error))
-        match db.query[PathOnly](t"select path from fennec_entries"):
-            case Ok(_):
-                stdout.print("read a column that isn't there")
-            case Err(error):
-                stdout.print(said(error))
-        # A transaction that fails changes nothing; one that ends is kept.
-        match adds_then_fails(db):
-            case Ok(_):
-                stdout.print("no failure")
-            case Err(error):
-                stdout.print(said(error), rows_in(db)?)
-        kept = "kept"
-        with db.transaction()? as tx:
-            stdout.print(tx.execute(t"update fennec_entries set path = {kept} where path = {path}")?)
-        stdout.print(rows_in(db)?, db.query[Count](t"select count(*) as total from fennec_entries where path = {kept}")?[0].total)
+## The server's URL, without its password, which goes in `password=`.
+def url_of(server: Server) -> str:
+    f"postgres://{server.user}@{server.host}:{server.port}/{server.database}?tls=false"
+
+def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError | Timeout:
+    with postgres.connect(net, entropy, url_of(server), password=server.secret, pool_size=1)? as pool:
+        with pool.borrow()? as db:
+            # A temporary table is this connection's own, so runs at once can't meet.
+            _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
+            for at in range(3):
+                path = f"p{at}"
+                size = at * 10
+                weight = float(at) * 0.5
+                blob = bytes([at, 255])
+                seen = at % 2 == 0
+                stdout.print(db.execute(t"insert into fennec_entries values ({path}, {size}, {weight}, {blob}, {seen})")?)
+            least = 10
+            for entry in db.query[Entry](t"select path, size, weight, blob, seen from fennec_entries where size >= {least} order by path")?:
+                stdout.print(entry.path, entry.size, entry.weight, entry.blob.len(), entry.blob[1], entry.seen)
+            # A value can't change what the query means, whatever it says.
+            evil = "x'); drop table fennec_entries; --"
+            none = bytes([])
+            _ = db.execute(t"insert into fennec_entries values ({evil}, {0}, {0.0}, {none}, {False})")?
+            stdout.print(rows_in(db)?)
+            # Failures say what they are, and the connection goes on.
+            path = "p0"
+            match db.execute(t"insert into fennec_entries values ({path}, {0}, {0.0}, {none}, {False})"):
+                case Ok(_):
+                    stdout.print("inserted twice")
+                case Err(error):
+                    stdout.print(said(error))
+            match db.execute(t"select from no_such_table"):
+                case Ok(_):
+                    stdout.print("no error")
+                case Err(error):
+                    stdout.print(said(error))
+            match db.query[PathOnly](t"select path from fennec_entries"):
+                case Ok(_):
+                    stdout.print("read a column that isn't there")
+                case Err(error):
+                    stdout.print(said(error))
+            # A transaction that fails changes nothing; one that ends is kept.
+            match adds_then_fails(db):
+                case Ok(_):
+                    stdout.print("no failure")
+                case Err(error):
+                    stdout.print(said(error), rows_in(db)?)
+            kept = "kept"
+            with db.transaction()? as tx:
+                stdout.print(tx.execute(t"update fennec_entries set path = {kept} where path = {path}")?)
+            stdout.print(rows_in(db)?, db.query[Count](t"select count(*) as total from fennec_entries where path = {kept}")?[0].total)
 
 ## Signs in with `secret`, and says how it went.
 def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) -> str:
@@ -8447,11 +8458,12 @@ def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy)
         case Ok(_):
             return "signed in"
         case Err(error):
-            return error.message()
+            return said_of(error)
 
-def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port, tls=False)? as db:
-        _ = db.execute(t"select 1")?
+def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError | Timeout:
+    with postgres.connect(net, entropy, url_of(server), password=secret)? as pool:
+        with pool.borrow()? as db:
+            _ = db.execute(t"select 1")?
 
 def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
     # With no server to use, it's a port nothing listens on, and only connecting is tried.
@@ -8470,7 +8482,7 @@ def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
         case Ok(_):
             pass
         case Err(error):
-            stdout.print(error.message().startswith(f"couldn't connect to {server.host}:{server.port}"))
+            stdout.print(said_of(error).startswith(f"couldn't connect to {server.host}:{server.port}"))
             return
     stdout.print("28P01" in signing_in(server, secret=Secret.of("not the password"), net=net, entropy=entropy))
     stdout.print(signing_in(server, secret=None, net=net, entropy=entropy))
@@ -11329,11 +11341,12 @@ fn postgres_scripted(answers: Vec<Vec<u8>>) -> std::io::Result<(u16, std::sync::
 
 /// What the next test builds: `connect`, a transaction and a query, against each port it's given.
 const POSTGRES_SCRIPTED: &str = r#"from std import postgres
+from std.concurrent import Timeout
 from std.crypto import Secret
 from std.sql import SqlError
 
-def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak, tls=False)? as db:
+def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError | Timeout:
+    with postgres.connect(net, entropy, f"postgres://u@127.0.0.1:{port}/d?tls=false", password=Secret.of("pw"), allow_weak_sign_in=weak, pool_size=1)? as db:
         with db.transaction()? as tx:
             _ = tx.execute(t"select 1")?
 
@@ -11343,7 +11356,7 @@ def main(stdout: Stdout, net: Net, entropy: Entropy):
             case Ok(_):
                 stdout.print("went through")
             case Err(error):
-                stdout.print(error.message())
+                stdout.print(error.message() if error is SqlError else "timed out")
 "#;
 
 /// A server can't trick the driver. A commit the server answers with `ROLLBACK` fails. A server
@@ -11557,7 +11570,7 @@ fn postgres_asks_for_tls_and_never_falls_back_to_the_clear() -> std::io::Result<
     let refused = postgres_tls_answering(b"N")?;
     let injected = postgres_tls_answering(b"SR\0\0\0\x08\0\0\0\0")?;
     let source = format!(
-        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, host=\"localhost\", user=\"u\", database=\"d\", password=Secret.of(\"pw\"), port=port)? as db:\n        _ = db.execute(t\"select 1\")?\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        match run(port, net=net, entropy=entropy):\n            case Ok(_):\n                stdout.print(\"went through\")\n            case Err(error):\n                stdout.print(error.message())\n"
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, f\"postgres://u@localhost:{{port}}/d\", password=Secret.of(\"pw\"))? as _:\n        pass\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        match run(port, net=net, entropy=entropy):\n            case Ok(_):\n                stdout.print(\"went through\")\n            case Err(error):\n                stdout.print(error.message())\n"
     );
     let printed = printed_by("postgres_tls", &source)?;
     let lines: Vec<&str> = printed.lines().collect();

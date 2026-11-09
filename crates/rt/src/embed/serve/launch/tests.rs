@@ -409,7 +409,7 @@ extern "C" fn measures_ticks(_env: i64, _thread: i64) -> i64 {
 }
 
 /// What ticking costs a loop whose turn is a few arithmetic instructions, in a task alone on its
-/// worker: `cargo test --release -p fennec-interp --lib tick_s_cost -- --ignored --nocapture`.
+/// worker: `cargo test --release -p fennec-rt --lib tick_s_cost -- --ignored --nocapture`.
 #[test]
 #[ignore = "a measurement, not a check"]
 fn measure_the_tick_s_cost() {

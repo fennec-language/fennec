@@ -1,5 +1,5 @@
 # This path starts from src/levels, where this file is.
-FIRST = embed("first.bin")
+FIRST = embed_file("first.bin")
 
 def size() -> int:
     FIRST.len()

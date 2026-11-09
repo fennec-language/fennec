@@ -255,7 +255,7 @@ fn a_kit_that_moves_keeps_what_passed() {
 fn an_edit_to_an_embedded_file_runs_only_the_tests_that_use_it() {
     let dir = kit_with_tests("kit_embed").unwrap();
     std::fs::write(dir.join("src/data.bin"), [1]).unwrap();
-    let uses = "DATA = embed(\"data.bin\")\n\ntest \"the data\":\n    assert DATA.len() == 1\n";
+    let uses = "DATA = embed_file(\"data.bin\")\n\ntest \"the data\":\n    assert DATA.len() == 1\n";
     std::fs::write(dir.join("src/with_data.fen"), uses).unwrap();
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed\n");
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed (0 run, 3 unchanged)\n");
@@ -539,7 +539,7 @@ fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
                 test \"flags\" for flag: bool:\n    assert not flag\n\n\
                 test \"two at once\" for a: int, b: int:\n    assert a + b < 50\n\n\
                 test \"passes\" for n: int:\n    assert n == n\n\n\
-                test \"files\" (fs: Fs) for n: int:\n    assert not fs.exists(\"seen\")\n    _ = fs.write_text(\"seen\", \"1\")\n    assert n < 100\n";
+                test \"files\" (fs: Fs) for n: int:\n    assert not fs.exists(\"seen\")\n    fs.write_text(\"seen\", \"1\")?\n    assert n < 100\n";
     std::fs::write(dir.join("game.fen"), text).unwrap();
     let llvm = run_tests(&dir, &["--all", "--verbose"]).unwrap();
     let said = String::from_utf8_lossy(&llvm.stderr);

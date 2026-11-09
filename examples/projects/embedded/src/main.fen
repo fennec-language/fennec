@@ -3,14 +3,14 @@
 # only what's in src.
 from levels.first import size
 
-NAME = embed("../assets/name.txt")
+NAME = embed_file("../assets/name.txt")
 START = NAME[0:3]
 
 def main(stdout: Stdout):
     stdout.print(size())
     stdout.print(NAME.len())
     stdout.print(START.len())
-    stdout.print(embed("levels/first.bin").len() == size())
+    stdout.print(embed_file("levels/first.bin").len() == size())
 
 test "the name is all there":
     assert NAME.len() == 6

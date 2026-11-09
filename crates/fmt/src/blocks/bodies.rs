@@ -11,7 +11,7 @@ const JUMPS: [&str; 4] = ["return", "fail", "break", "continue"];
 /// Where the `:` is in a block statement written with its body on the same line, like
 /// `case .Point: 0.0`. None for a body that opens a block of its own, which stays put.
 pub(super) fn inline_body(toks: &[Tok<'_>], kind: BlockKind) -> Option<usize> {
-    let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
+    let mut words = toks.iter().skip_while(|tok| tok.text == "export");
     let first = words.next()?;
     let is_bench = first.text == "bench" && toks.get(1).is_some_and(|tok| tok.text.starts_with('"'));
     let opens_block =

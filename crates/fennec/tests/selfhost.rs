@@ -53,7 +53,7 @@ const LEX_CASES: &[(&str, &str)] = &[
     ("operators", "a -> b => c == d != e <= f >= g // h ** i += j -= k *= l /= m ? n . o % p\n"),
     (
         "keywords",
-        "def if elif else while for in return break continue pass mut and or not is\nTrue False None fail yield with as import from export noalloc assert extern unsafe match case\n",
+        "def if elif else while for in return break continue pass mut and or not is\nTrue False None fail yield with as import from export assert extern unsafe match case\n",
     ),
     ("empty", ""),
     ("only_comments", "# nothing\n   # here\n"),
@@ -62,8 +62,6 @@ const LEX_CASES: &[(&str, &str)] = &[
 /// Small sources that reach the parser's error paths, and one that uses every construct.
 const PARSE_CASES: &[(&str, &str)] = &[
     ("top_level_statement", "x = 1\n"),
-    ("noalloc_struct", "noalloc struct A:\n    x: int\n"),
-    ("noalloc_def", "noalloc def f():\n    pass\n"),
     ("pub_field", "struct A:\n    pub x: int\n"),
     ("export_field", "export struct A:\n    export x: int\n"),
     ("pub_def", "pub def f():\n    pass\n\nstruct A:\n    pub def g(self):\n        pass\n"),

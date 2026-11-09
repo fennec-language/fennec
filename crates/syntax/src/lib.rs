@@ -31,7 +31,7 @@ pub use modules::{
     std_import,
 };
 pub use parser::{parse, parse_at, parse_prelude};
-pub use sources::Sources;
+pub use sources::{Sources, Trace};
 pub use span::Span;
 pub use stdlib::{
     core_to_run, given, module_providing, module_to_run, prelude, prelude_files, prelude_modules,

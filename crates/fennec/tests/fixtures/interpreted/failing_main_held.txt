@@ -2,9 +2,11 @@ source 2b24c1974c06c5b7bdfd51c98021dc50c10320eac5e9b239f35ed872047deb3b
 code 1
 stdout 2
 1
-stderr 149
+stderr 268
 error: `main` failed: Held(items=[2, 2], table={"k": 2})
-  --> <dir>/held.fen:26:1
+  --> <dir>/held.fen:20:15
    |
-26 | def main(stdout: Stdout):
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+20 |     if n > 1: fail Held(items=[n, n], table={"k": n})
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = in `held`
+  = called from `main` at <dir>/held.fen:28:18

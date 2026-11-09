@@ -1,5 +1,7 @@
 //! The files of a program with several, so a span can be traced back to its file and line.
 
+use std::fmt::Write as _;
+
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 
@@ -76,6 +78,105 @@ impl Sources {
         Some((file.path.as_str(), line, column, file.text.get(line_start..line_end)?))
     }
 
+    /// A failure's call chain, to go under it: the function it failed in, then each call it left
+    /// on its way out, innermost first, with the file, line and column of each. Nothing when
+    /// it left no call. Calls in the standard library's code are said to be there.
+    pub fn render_trace(&self, failed_at: Span, trace: &Trace) -> String {
+        if trace.is_empty() {
+            return String::new();
+        }
+        let named = |span: Span| {
+            self.function_at(span)
+                .map_or_else(|| "the standard library".to_owned(), |name| format!("`{name}`"))
+        };
+        let mut text = format!("  = in {}\n", named(failed_at));
+        // Calls the standard library's code makes among its own functions all say the same, once.
+        let mut lines: Vec<(String, u64)> = Vec::new();
+        let mut add = |line: String, times: u64| match lines.last_mut() {
+            Some((last, already)) if *last == line => *already += times,
+            _ => lines.push((line, times)),
+        };
+        for (call, times) in &trace.inner {
+            add(self.called_from(*call, &named), *times);
+        }
+        if trace.skipped > 0 {
+            add("... more calls".to_owned(), 1);
+        }
+        for (call, times) in &trace.outer {
+            add(self.called_from(*call, &named), *times);
+        }
+        // How often isn't said: how deep a runaway recursion goes before it's stopped depends on
+        // the machine, and a failure says the same wherever it runs.
+        for (line, times) in lines {
+            let _ = match times {
+                1 => writeln!(text, "  = {line}"),
+                _ => writeln!(text, "  = {line}, more than once"),
+            };
+        }
+        text
+    }
+
+    /// A call in a call chain, as `called from ... at path:line:column`.
+    fn called_from(&self, call: Span, named: &impl Fn(Span) -> String) -> String {
+        match self.locate(call) {
+            Some((path, line, column, _)) => format!("called from {} at {path}:{line}:{column}", named(call)),
+            None => "called from the standard library".to_owned(),
+        }
+    }
+
+    /// The name of the function written around a span, as `name`, or `Type.name` for a method:
+    /// the nearest `def` above it that it's indented under. `None` outside any file.
+    pub fn function_at(&self, span: Span) -> Option<String> {
+        let file = self.file(span)?;
+        let at = usize::try_from(span.start.saturating_sub(file.base)).ok()?.min(file.text.len());
+        let before = file.text.get(..at)?;
+        let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+        let here = file.text.get(line_start..)?;
+        let mut indent = here.len() - here.trim_start().len();
+        let words = |text: &str| -> Option<String> {
+            let name: String = text.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            (!name.is_empty()).then_some(name)
+        };
+        // A failure at a `def`'s own line, like a function's whole span, is in that function.
+        let mut function = here
+            .trim_start()
+            .strip_prefix("export ")
+            .unwrap_or(here.trim_start())
+            .strip_prefix("def ")
+            .and_then(words);
+        if function.is_some() {
+            indent = here.len() - here.trim_start().len();
+        }
+        for line in before.get(..line_start)?.lines().rev() {
+            let written = line.trim_start();
+            if written.is_empty() || written.starts_with('#') {
+                continue;
+            }
+            let this = line.len() - written.len();
+            if this >= indent {
+                continue;
+            }
+            indent = this;
+            let written = written.strip_prefix("export ").unwrap_or(written);
+            match &function {
+                None => function = written.strip_prefix("def ").and_then(words),
+                Some(name) => {
+                    let owner = ["struct ", "extend ", "enum ", "error ", "shared struct "]
+                        .iter()
+                        .find_map(|word| written.strip_prefix(word))
+                        .and_then(words);
+                    if let Some(owner) = owner {
+                        return Some(format!("{owner}.{name}"));
+                    }
+                }
+            }
+            if indent == 0 {
+                break;
+            }
+        }
+        function
+    }
+
     /// Each file the fixes of `diagnostics` change, with its new text.
     pub fn fixed(&self, diagnostics: &[Diagnostic]) -> Vec<(String, String)> {
         self.files
@@ -112,5 +213,51 @@ impl Sources {
 impl File {
     fn end(&self) -> u32 {
         self.base.saturating_add(u32::try_from(self.text.len()).unwrap_or(u32::MAX))
+    }
+}
+
+/// A failure's call chain: each call it left on its way out, innermost first. It stays small however
+/// deep the failure went. A call left over and over in a row, as a recursion is, is one entry with
+/// how often, and past the first [`Trace::KEPT`] entries only the last [`Trace::KEPT`] are kept,
+/// with how many calls went between.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Trace {
+    inner: Vec<(Span, u64)>,
+    outer: std::collections::VecDeque<(Span, u64)>,
+    skipped: u64,
+}
+
+impl Trace {
+    /// How many entries it keeps at each end.
+    pub const KEPT: usize = 16;
+
+    /// The failure left the call at `span`, `times` times in a row.
+    pub fn push(&mut self, span: Span, times: u64) {
+        let last = if self.outer.is_empty() { self.inner.last_mut() } else { self.outer.back_mut() };
+        if let Some((at, already)) = last
+            && *at == span
+        {
+            *already = already.saturating_add(times);
+            return;
+        }
+        if self.outer.is_empty() && self.inner.len() < Self::KEPT {
+            self.inner.push((span, times));
+            return;
+        }
+        self.outer.push_back((span, times));
+        if self.outer.len() > Self::KEPT
+            && let Some((_, gone)) = self.outer.pop_front()
+        {
+            self.skipped = self.skipped.saturating_add(gone);
+        }
+    }
+
+    /// `calls` calls the failure left, past what's kept.
+    pub fn skip(&mut self, calls: u64) {
+        self.skipped = self.skipped.saturating_add(calls);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty() && self.skipped == 0
     }
 }

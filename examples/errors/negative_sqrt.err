@@ -3,3 +3,5 @@ error: can't take the square root of a negative number
   |
 4 |     math.sqrt(squared)
   |     ^^^^^^^^^^^^^^^^^^
+  = in `distance`
+  = called from `main` at examples/errors/negative_sqrt.fen:8:18

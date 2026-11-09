@@ -5,3 +5,6 @@ error: this calculation overflows an int
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: ints are 64-bit; check the values involved, or use floats for very large numbers
+  = in `over`
+  = called from `over` at examples/errors/overflow_in_recursion.fen:5:5, more than once
+  = called from `main` at examples/errors/overflow_in_recursion.fen:9:18

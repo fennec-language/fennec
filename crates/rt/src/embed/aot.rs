@@ -295,7 +295,13 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
             .map(|why| fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default()))
     });
     report_counts(&leftovers.counts);
-    (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
+    (output, failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default())
+}
+
+/// A failure as it's shown when it ends the program: with its call chain under it.
+fn rendered(sources: &Sources, failure: &fennec_syntax::Diagnostic) -> String {
+    let trace = super::take_trace();
+    sources.render(failure) + &sources.render_trace(failure.span, &trace)
 }
 
 /// Native code built to trace what it costs is about to do what's at this place in the source.
@@ -381,7 +387,7 @@ pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
     let (output, failure, leftovers) = super::finish_for_exit();
     report_counts(&leftovers.counts);
-    let failure = failure.map(|failure| sources.render(&failure)).unwrap_or_default();
+    let failure = failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default();
     let code = report(&output, &failure);
     if let Some(stop) = STOP.get() {
         stop(code);

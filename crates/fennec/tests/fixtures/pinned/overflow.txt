@@ -2,7 +2,7 @@ source 0a4f84d1cc7acde2df44f2c849846f5b170324edd50ac38480fb17e602c1a7e8
 code 1
 stdout 7
 before
-stderr 232
+stderr 293
 error: this calculation overflows an int
  --> <dir>/overflow.fen:2:5
   |
@@ -10,3 +10,5 @@ error: this calculation overflows an int
   |     ^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: ints are 64-bit; check the values involved, or use floats for very large numbers
+  = in `f`
+  = called from `main` at <dir>/overflow.fen:6:18

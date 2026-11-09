@@ -4,12 +4,23 @@
 
 use std::rc::Rc;
 
+use fennec_syntax::{Span, Trace};
+
 use super::heap::{read_block, release, text_address};
 use super::{State, with};
 use crate::value::Value;
 
-/// The texts a notes word holds: none for 0.
+/// What starts a note that's a place in the error's call chain rather than one the program added:
+/// `raised` or `passed`, then the place's span. Never shown as a note or given by `notes()`.
+const FRAME: &str = "\0frame ";
+
+/// The notes a notes word holds that the program added: none for 0.
 fn texts(state: &State, notes: i64) -> Vec<Rc<str>> {
+    every_text(state, notes).into_iter().filter(|text| !text.starts_with(FRAME)).collect()
+}
+
+/// Every text a notes word holds, its call chain's places among them.
+fn every_text(state: &State, notes: i64) -> Vec<Rc<str>> {
     let Ok(address) = u64::try_from(notes) else { return Vec::new() };
     if address == 0 {
         return Vec::new();
@@ -28,7 +39,7 @@ fn texts(state: &State, notes: i64) -> Vec<Rc<str>> {
 /// back the new word, which has the note last.
 pub extern "C" fn add(notes: i64, text: i64) -> i64 {
     with(|state| {
-        let mut all = texts(state, notes);
+        let mut all = every_text(state, notes);
         if let Ok(Value::Str(added)) = u64::try_from(text).map(|address| read_block(state, address)) {
             all.push(added);
         }
@@ -48,18 +59,122 @@ pub extern "C" fn add(notes: i64, text: i64) -> i64 {
 }
 
 /// `fennec_notes_list(notes)`: `error.notes()`, a list of strings owned once by the caller: an
-/// empty one for 0, and otherwise the notes' own list, with one more owner.
+/// empty one for 0, the notes' own list with one more owner when they're all the program's, and
+/// otherwise a list of those.
 pub extern "C" fn list(notes: i64) -> i64 {
     with(|state| {
         if let Ok(address) = u64::try_from(notes)
             && address != 0
+            && every_text(state, notes).len() == texts(state, notes).len()
         {
             super::heap::retain(state, address);
             return notes;
         }
         let element = super::text::string_element(state);
-        super::lists::write_list(state, &element, &Value::list(Vec::new())).unwrap_or(0)
+        let own = Value::list(texts(state, notes).into_iter().map(Value::Str).collect());
+        super::lists::write_list(state, &element, &own).unwrap_or(0)
     })
+}
+
+/// `fennec_notes_frame(notes, raised, start, end)`: an error leaves a function at this span, by
+/// `fail` if `raised` is 1 and by `?` if 0, which goes in its call chain. Takes over the word's
+/// owner and gives back the new word, as `fennec_notes_add` does. The chain stays small however
+/// far the error goes: the same place again is counted on the note before, and past twice
+/// [`Trace::KEPT`] places, those after the first [`Trace::KEPT`] go into a count of the left out.
+pub extern "C" fn frame(notes: i64, raised: i64, start: i64, end: i64) -> i64 {
+    let how = if raised == 1 { "raised" } else { "passed" };
+    let mut all = with(|state| every_text(state, notes));
+    let place = format!("{FRAME}{how} {start} {end} ");
+    match all.last_mut() {
+        Some(last)
+            if let Some(times) =
+                last.strip_prefix(place.as_str()).and_then(|times| times.parse::<u64>().ok()) =>
+        {
+            *last = Rc::from(format!("{place}{}", times + 1));
+        }
+        _ => all.push(Rc::from(format!("{place}1"))),
+    }
+    let frames: Vec<usize> =
+        all.iter().enumerate().filter(|(_, text)| text.starts_with(FRAME)).map(|(at, _)| at).collect();
+    if frames.len() > 2 * Trace::KEPT + 1
+        && let (Some(&count), Some(&gone)) = (frames.get(Trace::KEPT), frames.get(Trace::KEPT + 1))
+    {
+        let calls = |at: usize| {
+            all.get(at)
+                .and_then(|text| text.rsplit(' ').next())
+                .and_then(|times| times.parse::<u64>().ok())
+                .unwrap_or(1)
+        };
+        let counted = all.get(count).is_some_and(|text| text.starts_with(SKIPPED));
+        // The first place past the kept ones becomes the count of those left out, and each after
+        // it goes into that count.
+        let left_out = if counted { calls(count) + calls(gone) } else { calls(count) };
+        if counted {
+            all.remove(gone);
+        }
+        if let Some(text) = all.get_mut(count) {
+            *text = Rc::from(format!("{SKIPPED}{left_out}"));
+        }
+    }
+    with(|state| {
+        let element = super::text::string_element(state);
+        let list = Value::list(all.into_iter().map(Value::Str).collect());
+        let made = super::lists::write_list(state, &element, &list).unwrap_or(notes);
+        if let Ok(address) = u64::try_from(notes)
+            && address != 0
+            && made != notes
+        {
+            release(state, address);
+        }
+        made
+    })
+}
+
+/// What starts the note counting the places of a call chain left out of it.
+const SKIPPED: &str = "\0frame skipped ";
+
+/// `fennec_notes_traced(notes)`: the error in these notes has ended the program, which says so
+/// at the place it was raised, or passed up into the program, with the rest of its call chain
+/// under it. Where it went inside the standard library says nothing the program can act on, so
+/// it's said where the program's own code first had it: the `?` it came into the program by.
+pub extern "C" fn traced(notes: i64) {
+    // Each place, and how often in a row, or `None` for those left out.
+    let places: Vec<(Option<Span>, u64)> = with(|state| {
+        every_text(state, notes)
+            .iter()
+            .filter_map(|text| {
+                if let Some(skipped) = text.strip_prefix(SKIPPED) {
+                    return Some((None, skipped.parse().ok()?));
+                }
+                let mut words = text.strip_prefix(FRAME)?.split(' ').skip(1);
+                let start = words.next()?.parse().ok()?;
+                let end = words.next()?.parse().ok()?;
+                let times = words.next()?.parse().ok()?;
+                Some((Some(Span { start, end }), times))
+            })
+            .collect()
+    });
+    let Some(own) = places.iter().position(|(place, _)| place.is_some_and(|place| !place.in_prelude()))
+    else {
+        return;
+    };
+    let Some((Some(first), times)) = places.get(own).copied() else { return };
+    with(|state| {
+        if let Some(failure) = &mut state.failure {
+            failure.span = first;
+        }
+    });
+    let mut trace = Trace::default();
+    if times > 1 {
+        trace.push(first, times - 1);
+    }
+    for (place, times) in places.iter().skip(own + 1) {
+        match place {
+            Some(place) => trace.push(*place, *times),
+            None => trace.skip(*times),
+        }
+    }
+    super::set_trace(trace);
 }
 
 /// `fennec_notes_shown(notes)`: what goes under a failure that reached `main`, a string owned

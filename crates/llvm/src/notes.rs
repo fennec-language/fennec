@@ -5,6 +5,7 @@
 
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::Layout;
+use fennec_syntax::Span;
 
 use crate::emit::Emit;
 use crate::kinds::Kind;
@@ -49,6 +50,27 @@ impl Emit<'_, '_, '_> {
             }
             _ => Err(format!("it calls `{name}` in a way this backend doesn't take yet")),
         }
+    }
+
+    /// `error.raised` and `error.passed`: an error leaves here by `fail` or `?`, so this place
+    /// goes in its call chain, kept with its notes. Only the way out of a failure gets here.
+    pub(crate) fn error_frame(&mut self, name: &str, args: &[Operand], span: Span) -> Result<(), String> {
+        let [Operand::Local(error)] = args else { return Err(format!("`{name}` on something written out")) };
+        let kind = self.kind_of(*error)?.clone();
+        let slot = self.slot(*error);
+        let Some(at) = self.notes_in(&slot, &kind, true)? else { return Ok(()) };
+        let raised = i64::from(name == "error.raised");
+        let (old, new) = (self.temp(), self.temp());
+        let here = self.label("frame");
+        let (place, args) = self.span_values(&here, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.declare("declare i64 @fennec_notes_frame(i64, i64, i64, i64) nounwind cold");
+        self.line(&format!("{old} = load i64, ptr {at}"));
+        self.line(&format!("{new} = call i64 @fennec_notes_frame(i64 {old}, i64 {raised}, {args})"));
+        self.line(&format!("store i64 {new}, ptr {at}"));
+        Ok(())
     }
 
     /// The notes word of an error, read where it is: `None` when it isn't an error.

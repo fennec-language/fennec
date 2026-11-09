@@ -3011,8 +3011,8 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        // A dict keyed by a `u64` isn't built natively yet.
-        let source = "def f() -> int:\n    d = {u64(1): 2}\n    d.len()\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+        // Sorting `u64`s isn't built natively yet.
+        let source = "def f() -> int:\n    xs = sorted([u64(2), u64(1)])\n    xs.len()\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

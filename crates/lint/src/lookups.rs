@@ -89,7 +89,9 @@ fn rewritten(sources: &Sources, whole: &Expr, table: &Expr, key: &Expr, default:
     // `if` goes in parentheses, since it can't share a line with a fallback `else` without them.
     let rest = match lookup(default, sources) {
         Some((table, key, inner)) => rewritten(sources, default, table, key, inner)?,
-        None if matches!(default.kind, ExprKind::Cond { .. }) => format!("({})", written(sources, default.span)?),
+        None if matches!(default.kind, ExprKind::Cond { .. }) => {
+            format!("({})", written(sources, default.span)?)
+        }
         None => written(sources, default.span)?,
     };
     Some(format!("{call} else {rest}"))

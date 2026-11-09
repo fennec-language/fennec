@@ -186,7 +186,11 @@ impl<'a> Lowering<'a> {
                 .filter_map(|local| slots.get(&local).map(|slot| (local, *slot)))
                 .collect()
         };
-        let abandon = abandon_function(&name, &generating, span);
+        let failure = match returns {
+            Type::Result(_, error) => Some((**error).clone()),
+            _ => None,
+        };
+        let abandon = abandon_function(&name, &generating, failure, span);
         let mut places = vec![(0, body, saved_at(body), false)];
         for (at, stop) in generating.yields.iter().enumerate() {
             let pc = i64::try_from(at).map_err(|_| "too many yields")? + 1;
@@ -767,10 +771,61 @@ fn make_block_function(
     }
 }
 
+/// Makes the abandon function's second block stop the task with the generator's failure, when
+/// it ended failing: there's nothing to take the failure where its last owner let it go.
+fn stop_on_failure(
+    blocks: &mut Vec<crate::Block>,
+    temporary: &mut impl FnMut(Type) -> LocalId,
+    error: Type,
+    span: Span,
+) {
+    let this = Operand::Local(LocalId(0));
+    let inst = |kind: InstKind| Inst { kind, span };
+    let (ended, failed, held, said) =
+        (temporary(Type::Int), temporary(Type::Bool), temporary(error), temporary(Type::Str));
+    let shown = "a generator's cleanup failed as it was let go by its last owner: ".to_owned();
+    let advice = "loop over the call itself, as `for x in made()?:`, and its failure fails the loop";
+    let (stopped, went_on) = (crate::BlockId(2), crate::BlockId(3));
+    if let Some(block) = blocks.get_mut(1) {
+        block.insts = vec![
+            inst(InstKind::GetSlot { dest: ended, generator: this.clone(), slot: slot::PC }),
+            inst(InstKind::Binary {
+                dest: failed,
+                op: BinOp::Eq,
+                lhs: Operand::Local(ended),
+                rhs: Operand::Int(FAILED),
+            }),
+        ];
+        block.end = Terminator::Branch { cond: Operand::Local(failed), then: stopped, otherwise: went_on };
+    }
+    let parts = vec![
+        crate::FormatPart::Text(shown),
+        crate::FormatPart::Value { value: Operand::Local(held), spec: None },
+        crate::FormatPart::Text(format!("{}{advice}", fennec_syntax::HELP_MARK)),
+    ];
+    let name = "intrinsics.stop".to_owned();
+    blocks.push(crate::Block {
+        insts: vec![
+            inst(InstKind::GetSlot { dest: held, generator: this, slot: slot::FAILURE }),
+            inst(InstKind::Format { dest: said, parts }),
+            inst(InstKind::Builtin { dest: None, name, args: vec![Operand::Local(said)], changes: false }),
+        ],
+        end: Terminator::Return(None),
+    });
+    blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
+}
+
 /// The function the runtime calls for a generator let go partway, if it can be let go inside a
 /// `with` source's block: stopped at such a `yield`, it goes on once more, told to leave, and the
-/// way out runs the source's cleanup, innermost first. The runtime then marks it finished.
-fn abandon_function(name: &str, generating: &Generating, span: Span) -> Option<Function> {
+/// way out runs the source's cleanup, innermost first. The runtime then marks it finished. Let go
+/// by its last owner, nothing's there to take a failure of that cleanup, so the task stops with it,
+/// as for a crash. A generator made for a loop is let go by the loop instead, which fails with it.
+fn abandon_function(
+    name: &str,
+    generating: &Generating,
+    failure: Option<Type>,
+    span: Span,
+) -> Option<Function> {
     if !generating.yields.iter().any(|stop| stop.abandonable) {
         return None;
     }
@@ -787,6 +842,12 @@ fn abandon_function(name: &str, generating: &Generating, span: Span) -> Option<F
         insts: vec![inst(InstKind::GetSlot { dest: pc, generator: this.clone(), slot: slot::PC })],
         end: Terminator::Unreachable,
     }];
+    // Each way it goes on meets here, where a failure is looked for.
+    let checked = crate::BlockId(1);
+    blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
+    if let Some(error) = failure {
+        stop_on_failure(&mut blocks, &mut temporary, error, span);
+    }
     let mut current = 0;
     for (at, _) in generating.yields.iter().enumerate().filter(|(_, stop)| stop.abandonable) {
         let same = temporary(Type::Bool);
@@ -807,7 +868,7 @@ fn abandon_function(name: &str, generating: &Generating, span: Span) -> Option<F
         let block = blocks.get_mut(current)?;
         block.insts.push(inst(compare));
         block.end = Terminator::Branch { cond: Operand::Local(same), then, otherwise: next };
-        blocks.push(crate::Block { insts, end: Terminator::Return(None) });
+        blocks.push(crate::Block { insts, end: Terminator::Jump(checked) });
         blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
         current = next.0;
     }

@@ -6417,6 +6417,80 @@ def main(stdout: Stdout):
             stdout.print("failing failed", why)
 "#;
 
+/// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
+/// failure: the task stops with it, saying so, as for a crash, where the loop over a call it's
+/// made for would fail.
+#[test]
+fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("named_generator_failing")?;
+    let program = dir.join("named.fen");
+    std::fs::write(&program, NAMED_GENERATOR_FAILING)?;
+    let executable = dir.join("named");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(out, "after quiet\nclosing quiet\n");
+    assert!(
+        err.contains(
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"quiet\")"
+        ),
+        "{err}"
+    );
+    assert!(err.contains("help: loop over the call itself"), "{err}");
+    Ok(())
+}
+
+const NAMED_GENERATOR_FAILING: &str = r#"error Shut:
+    Stuck(name: str)
+
+error Other:
+    Inside(why: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+
+def quiet(stdout: Stdout):
+    match held("quiet", stdout):
+        case Ok(walk):
+            for n in walk:
+                break
+        case Err(why):
+            stdout.print("opening failed", why)
+    stdout.print("after quiet")
+
+def kept(stdout: Stdout) fails Shut:
+    walk = held("kept", stdout)?
+    for n in walk:
+        break
+    stdout.print("after kept")
+
+def main(stdout: Stdout):
+    quiet(stdout)
+    match kept(stdout):
+        case Ok(_):
+            stdout.print("kept worked")
+        case Err(why):
+            stdout.print("kept failed", why)
+"#;
+
 /// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
 /// as one that can't fail does, closing what it holds then and not when the function ends.
 #[test]

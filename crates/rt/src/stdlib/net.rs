@@ -1017,9 +1017,8 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
     if count == 0 {
         return Ok(Vec::new());
     }
-    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut data = vec![0; count];
-    let read = reading(&stream.socket, &mut reader, timeout, |reader| reader.read(&mut data))?;
+    let read = reading(&stream, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
     Ok(data)
 }
@@ -1032,18 +1031,16 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
 /// `MOST_LINE_BYTES` fails too.
 fn read_line_crlf(handle: i64, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
-    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut partial = stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut line = std::mem::take(&mut *partial);
+    let mut line = std::mem::take(&mut *stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner));
     // What a read cut short by having to wait got is kept in `line`, and the next adds to it. It
     // reads at most what's left of the most a line may hold, and one more to tell it's too long.
-    let read = reading(&stream.socket, &mut reader, timeout, |reader| {
+    let read = reading(&stream, timeout, |reader| {
         let left = (MOST_LINE_BYTES + 1).saturating_sub(line.len());
         let mut limited = reader.take(u64::try_from(left).unwrap_or(u64::MAX));
         limited.read_until(b'\n', &mut line)
     });
     if matches!(read, Err(Failure::TimedOut(_))) {
-        *partial = line;
+        *stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner) = line;
         return read.map(|_| None);
     }
     read?;
@@ -1062,15 +1059,9 @@ fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
 fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
-    let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
-        stream.socket.set_write_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
-        let wrote = secured
-            .write_all(data)
-            .and_then(|()| secured.flush())
-            .map_err(|error| Failure::of(&error, timeout));
-        let _ = stream.socket.set_write_timeout(None);
-        return wrote;
+    let _writing = lock_parking(&stream.writing);
+    if matches!(&*stream.reader.lock().unwrap_or_else(PoisonError::into_inner), Reading::Tls(_)) {
+        return write_securely(&stream, data, (timeout, deadline));
     }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
@@ -1098,6 +1089,65 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
         }
     }
     socket.flush().map_err(|error| Failure::of(&error, None))
+}
+
+/// `write_within` over TLS. It holds the connection's TLS only to hand it data and to send
+/// what it holds, never while it waits for room, so a task reading meanwhile can go on. TLS takes
+/// all of `data` at once, and sends it as the socket has room.
+fn write_securely(
+    stream: &Stream,
+    data: &[u8],
+    (timeout, deadline): (Option<Duration>, Option<Instant>),
+) -> Result<(), Failure> {
+    let mut given = false;
+    loop {
+        let sent = {
+            let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+            let Reading::Tls(secured) = &mut *reader else { return Err(Failure::Closed) };
+            if !given {
+                secured.write_all(data).map_err(|error| Failure::of(&error, timeout))?;
+                given = true;
+            }
+            secured.flush()
+        };
+        match sent {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if wait_to_write(&stream.socket, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(Failure::of(&error, timeout)),
+        }
+    }
+}
+
+/// Lets the other tasks on this thread run, giving back whether it did.
+fn yield_to_others() -> bool {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        crate::embed::serve::yield_now()
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        false
+    }
+}
+
+/// Takes a lock another task may hold while it waits: a task that can park lets the others on its
+/// thread run until it's free, rather than block the thread the holder needs.
+fn lock_parking<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    loop {
+        match lock.try_lock() {
+            Ok(held) => return held,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if !socket_parks() || !yield_to_others() {
+            return lock.lock().unwrap_or_else(PoisonError::into_inner);
+        }
+    }
 }
 
 /// Connects to `host` on `port`, reads a line and closes, for tests of waits that park.
@@ -1147,46 +1197,29 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
 }
 
 /// Runs `read` on a connection, plain or through TLS: parked if it has to wait in a task, and
-/// otherwise waiting at most `timeout`.
+/// otherwise waiting at most `timeout`. A task holds the connection only while it tries, never
+/// while it waits, so another task can write to it meanwhile.
 fn reading<T>(
-    socket: &TcpStream,
-    reader: &mut Reading,
+    stream: &Stream,
     timeout: Option<Duration>,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
-    match reader {
-        Reading::Plain(plain) => read_on(socket, plain, timeout, |reader| read(reader)),
-        Reading::Tls(secured) => read_on(socket, &mut **secured, timeout, |reader| read(reader)),
+    let mut attempt = || {
+        let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *reader {
+            Reading::Plain(plain) => read(plain),
+            Reading::Tls(secured) => read(&mut **secured),
+        }
+    };
+    if !socket_parks() {
+        wait_at_most(&stream.socket, timeout)?;
+        return attempt().map_err(|error| Failure::of(&error, timeout));
     }
-}
-
-/// `reading`, on one kind of reader.
-fn read_on<R: BufRead + ?Sized, T>(
-    socket: &TcpStream,
-    reader: &mut R,
-    timeout: Option<Duration>,
-    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
-) -> Result<T, Failure> {
-    if socket_parks() {
-        return parked(socket, reader, timeout, read);
-    }
-    wait_at_most(socket, timeout)?;
-    read(reader).map_err(|error| Failure::of(&error, timeout))
-}
-
-/// Runs a read that may have to wait, in a task that parks rather than block: with the socket not
-/// blocking, `read` is tried, and each time it would block, the task parks until the socket's
-/// readable or `timeout` passes. The socket blocks again after.
-fn parked<R: ?Sized, T>(
-    socket: &TcpStream,
-    reader: &mut R,
-    timeout: Option<Duration>,
-    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
-) -> Result<T, Failure> {
+    let socket = &stream.socket;
     socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let done = loop {
-        match read(reader) {
+        match attempt() {
             Ok(done) => break Ok(done),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 if deadline.is_some_and(|deadline| deadline <= Instant::now()) {

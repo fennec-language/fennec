@@ -261,7 +261,9 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
         Value::Sized(_, n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
-        Value::Shared(_) | Value::Bag(_) | Value::Count(_) | Value::Buf(_) => "shared".to_owned(),
+        Value::Shared(_) | Value::Bag(_) | Value::Count(_) => "shared".to_owned(),
+        // A buffer prints as a list does.
+        Value::Buf(items) => shown(&Value::Ints(items.clone())),
         Value::Float(bits) => float_text(f64::from_bits(*bits)),
         Value::Counts(pairs) => {
             let pairs: Vec<String> = pairs.iter().map(|(key, n)| format!("\"{key}\": {n}")).collect();

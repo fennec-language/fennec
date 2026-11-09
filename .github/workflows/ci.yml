@@ -8,6 +8,9 @@ on:
     branches: [main]
   # `staging.yml` runs this on the commit it may move main to.
   workflow_call:
+  # By hand on any branch, `gh workflow run CI --ref <branch>`, for what only another system shows,
+  # like a Windows failure.
+  workflow_dispatch:
 
 permissions:
   contents: read

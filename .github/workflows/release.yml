@@ -127,6 +127,9 @@ jobs:
             if [ "$RUNNER_OS" = macOS ]; then
               flags="$flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
               echo "ZERO_AR_DATE=1" >> "$GITHUB_ENV"
+              # The runtime's C parts are built for the macOS a program is built for, as LLVM's
+              # code is, rather than for the runner's SDK.
+              echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
             fi
             echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
             echo "CFLAGS_${TARGET//-/_}=-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$PWD=/fennec" >> "$GITHUB_ENV"
@@ -207,6 +210,11 @@ jobs:
             cp "$tools"/bin/{opt,llc,llvm-link,llvm-ar,rust-lld} "$name/llvm/bin/"
             # The tools share LLVM from a library of their own, which they find in `../lib`.
             cp "$TOOLCHAIN"/lib/libLLVM* "$name/llvm/lib/"
+            # On a Mac, what LLD links a program against in place of Xcode's SDK: stubs naming the
+            # system libraries' symbols that the runtime and LLVM's code call, and nothing more.
+            if [ "$RUNNER_OS" = macOS ]; then
+              NM="$tools/bin/llvm-nm" python3 .github/scripts/darwin-stubs.py "$(xcrun --show-sdk-path)" "$name/llvm/lib/darwin" "$from/libfennec_runtime.a" "$from/libfennec_runtime_threads.a"
+            fi
           fi
           # On Linux, what a release build links a program with to make one that runs on its own.
           # Its programs hold musl's notices themselves, and the archive has them too.

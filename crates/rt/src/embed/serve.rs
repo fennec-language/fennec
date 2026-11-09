@@ -269,8 +269,21 @@ impl Conn {
     pub fn read_line_crlf(&self, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
         let most = crate::stdlib::net::MOST_LINE_BYTES;
         let until = Until::after(timeout);
+        // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
+        // once however slowly the line comes.
+        let mut looked = 0;
         loop {
-            let found = self.ahead.borrow().iter().position(|byte| *byte == b'\n');
+            let found = {
+                let ahead = self.ahead.borrow();
+                let from = looked.min(ahead.len());
+                looked = ahead.len();
+                ahead
+                    .get(from..)
+                    .unwrap_or_default()
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map(|at| from + at)
+            };
             if found.is_none() && self.ahead.borrow().len() > most {
                 return Err(Failure::Other(format!("a line was longer than {most} bytes")));
             }

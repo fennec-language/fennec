@@ -10322,7 +10322,8 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     std::fs::create_dir_all(place.join("folder"))?;
     std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
     std::fs::write(place.join("good.txt"), "one\ntwo\n")?;
-    let folder = place.to_string_lossy().into_owned();
+    // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
+    let folder = place.to_string_lossy().replace('\\', "\\\\");
     let source = format!(
         "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    match found:\n        case Ok(n):\n            return f\"read {{n}}\"\n        case Err(_):\n            return \"failed\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
     );

@@ -52,34 +52,53 @@ impl Within for Command {
 /// while it runs, so a program printing a lot isn't stopped by a full one. One that runs past
 /// `deadline` is killed, and the error says what it printed by then, which shows where it stopped.
 fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Output> {
-    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::sync::mpsc::Receiver<Vec<u8>> {
-        let (send, read) = std::sync::mpsc::channel();
+    /// What a pipe has given so far, kept as it comes, and whether it's ended.
+    type Kept = std::sync::Arc<std::sync::Mutex<(Vec<u8>, bool)>>;
+    fn read_all(pipe: Option<impl Read + Send + 'static>) -> Kept {
+        let kept: Kept = Kept::default();
+        let filling = std::sync::Arc::clone(&kept);
         std::thread::spawn(move || {
-            let mut all = Vec::new();
+            let mut chunk = [0; 4096];
             if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut all);
+                while let Ok(read @ 1..) = pipe.read(&mut chunk) {
+                    if let Ok(mut kept) = filling.lock() {
+                        kept.0.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                    }
+                }
             }
-            let _ = send.send(all);
+            if let Ok(mut kept) = filling.lock() {
+                kept.1 = true;
+            }
         });
-        read
+        kept
+    }
+    // What a pipe gave, once it ends or `wait` passes: a program it started may still hold it
+    // open after it's killed.
+    fn taken(kept: &Kept, wait: Duration) -> Vec<u8> {
+        let until = Instant::now() + wait;
+        loop {
+            let ended = kept.lock().map_or(true, |kept| kept.1);
+            if ended || Instant::now() > until {
+                return kept.lock().map(|mut kept| std::mem::take(&mut kept.0)).unwrap_or_default();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     let stdout = read_all(child.stdout.take());
     let stderr = read_all(child.stderr.take());
     match wait_before(&mut child, deadline) {
         Ok(status) => {
-            let joined = |reader: std::sync::mpsc::Receiver<Vec<u8>>| reader.recv().unwrap_or_default();
-            Ok(Output { status, stdout: joined(stdout), stderr: joined(stderr) })
+            let wait = Duration::from_secs(10);
+            Ok(Output { status, stdout: taken(&stdout, wait), stderr: taken(&stderr, wait) })
         }
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-            // A program it started may still hold the pipes open, so this waits only a moment.
-            let so_far = |reader: std::sync::mpsc::Receiver<Vec<u8>>| {
-                let printed = reader.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
-                let printed = String::from_utf8_lossy(&printed).into_owned();
+            let so_far = |kept: &Kept| {
+                let printed = String::from_utf8_lossy(&taken(kept, Duration::from_secs(2))).into_owned();
                 let start = printed.char_indices().rev().nth(2_000).map_or(0, |(at, _)| at);
                 printed.get(start..).unwrap_or(&printed).to_owned()
             };
             let why =
-                format!("{error}, having printed:\n{}\nand to stderr:\n{}", so_far(stdout), so_far(stderr));
+                format!("{error}, having printed:\n{}\nand to stderr:\n{}", so_far(&stdout), so_far(&stderr));
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why))
         }
         Err(error) => Err(error),

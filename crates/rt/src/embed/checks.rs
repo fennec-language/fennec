@@ -60,10 +60,44 @@ pub extern "C" fn fail(code: i64, start: i64, end: i64) {
     });
 }
 
-/// `round(x, places)`.
+/// The most places a float can have digits at.
+const MOST_PLACES: i64 = 1100;
+
+/// `round(x, places)`, by the number `x` really is: 1.115 is a little under it, so it rounds down.
+/// Past every digit `x` has, it's `x`.
 pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
-    let scale = 10_f64.powi(i32::try_from(places).unwrap_or(0));
-    (x * scale).round_ties_even() / scale
+    if !x.is_finite() {
+        return x;
+    }
+    if places < 0 {
+        return round_to_tens(x, places);
+    }
+    if places > MOST_PLACES {
+        return x;
+    }
+    // Nowhere near a tie, multiplying can't change which way it rounds, and both the power of ten
+    // and the rounded number are exact, so dividing gives the nearest float to the answer.
+    if places <= 22 {
+        let scale = 10_f64.powi(i32::try_from(places).unwrap_or(0));
+        let scaled = x * scale;
+        if scaled.abs() < 4_503_599_627_370_496.0 && (scaled.fract().abs() - 0.5).abs() > 1e-6 {
+            return scaled.round_ties_even() / scale;
+        }
+    }
+    let digits = usize::try_from(places).unwrap_or(0);
+    format!("{x:.digits$}").parse().unwrap_or(x)
+}
+
+/// `round(x, places)` for a negative `places`: to tens, hundreds and so on.
+fn round_to_tens(x: f64, places: i64) -> f64 {
+    let power = places.checked_neg().and_then(|power| i32::try_from(power).ok());
+    match power.filter(|power| *power <= 308) {
+        Some(power) => {
+            let scale = 10_f64.powi(power);
+            (x / scale).round_ties_even() * scale
+        }
+        None => 0.0_f64.copysign(x),
+    }
 }
 
 // The float functions every engine computes them with: `libm`'s, the same on every platform, so a
@@ -92,4 +126,34 @@ pub extern "C" fn exp(x: f64) -> f64 {
 
 pub extern "C" fn log(x: f64) -> f64 {
     libm::log(x)
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::round_places;
+
+    #[test]
+    fn rounding_goes_by_the_number_a_float_really_is() {
+        // 1.115 is really a little below it.
+        assert_eq!(round_places(1.115, 2), 1.11);
+        assert_eq!(round_places(1.2345, 1), 1.2);
+        assert_eq!(round_places(2.5, 0), 2.0);
+        assert_eq!(round_places(0.125, 2), 0.12);
+    }
+
+    #[test]
+    fn rounding_past_what_a_float_holds_changes_nothing() {
+        assert_eq!(round_places(1e307, 2), 1e307);
+        assert_eq!(round_places(1.5, 400), 1.5);
+        assert_eq!(round_places(1.5, 5_000_000_000), 1.5);
+        assert!(round_places(f64::NAN, 2).is_nan());
+        assert_eq!(round_places(f64::INFINITY, 2), f64::INFINITY);
+    }
+
+    #[test]
+    fn rounding_to_tens_and_past_every_digit() {
+        assert_eq!(round_places(1234.5, -2), 1200.0);
+        assert_eq!(round_places(1234.5, -400), 0.0);
+        assert_eq!(round_places(1234.5, -5_000_000_000), 0.0);
+    }
 }

@@ -6577,7 +6577,8 @@ def main(stdout: Stdout):
 }
 
 /// JSON read into dicts, by string, int, plain struct and tuple keys, and a dict a capability
-/// gives back, as the JIT has them.
+/// gives back, as the JIT has them. The variable is looked for by name in any case: Windows calls
+/// it `Path`.
 #[test]
 fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -6603,7 +6604,7 @@ def main(stdout: Stdout, env: Env):
     stdout.print(json.loads[dict[(int, int), str]](json.dumps(corners)) else {}, corners)
     placed = {(Spot(x=1, y=2), "a"): 1}
     stdout.print((json.loads[dict[(Spot, str), int]](json.dumps(placed)) else {}) == placed)
-    stdout.print(env.all().get("PATH") is not None)
+    stdout.print("PATH" in [name.upper() for name in env.all().keys()])
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
     {

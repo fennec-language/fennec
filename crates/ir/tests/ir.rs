@@ -2316,7 +2316,7 @@ def f(ref pair: Pair):
     assert!(!text.contains("`Pair.high`"), "{text}");
 }
 
-const ACCOUNT: &str = "shared Account:
+const ACCOUNT: &str = "struct Account:
     total = 0
     log = list[int]()
 
@@ -2332,27 +2332,32 @@ const ACCOUNT: &str = "shared Account:
         self.total
 
 
-def pay(account: Account, amount: int):
-    account.add(amount)
+def pay(account: shared Account, amount: int):
+    lock account as ref held:
+        held.add(amount)
 
 
 def main(stdout: Stdout):
-    account = Account()
+    shared account = Account()
     same = account
     pay(account, 5)
-    same.add(10)
-    stdout.print(account.balance(), same.total, account)
+    lock same as ref held:
+        held.add(10)
+    lock account as held:
+        stdout.print(held.balance(), held.total, held)
 ";
 
 #[test]
-fn a_shared_types_methods_are_called_with_its_lock() {
+fn a_shared_value_is_locked_for_each_lock_block() {
     let program = lowered(ACCOUNT).unwrap();
-    let account = program.structs.iter().find(|def| def.name == "Account");
-    assert_eq!(account.map(|def| def.shared), Some(true));
-    // Inside its own methods, `self` is locked already, and the handle is never copied back.
+    let shared = |name: &str| program.structs.iter().find(|def| def.name == name).map(|def| def.shared);
+    // `shared Account` is a hidden `shared` type holding a plain `Account`.
+    assert_eq!(shared("Account"), Some(false));
+    assert_eq!(shared("Shared__Account"), Some(true));
+    // `Account`'s own methods take no lock: they're called on what a `lock` holds.
     assert_eq!(
         printed(ACCOUNT, "Account.add").unwrap(),
-        "fn Account.add(_0, _1)
+        "fn Account.add(ref _0, _1)
   local _0 self: Account
   local _1 amount: int
   local _2: int
@@ -2369,36 +2374,47 @@ fn a_shared_types_methods_are_called_with_its_lock() {
     return
 "
     );
-    // Anywhere else, a `mut self` method locks to write and a `self` method to read, and so do
-    // reading a field and printing.
+    // Each `lock` locks the value for its block, to write with `ref` and to read without, and
+    // what it holds is taken out, changed and put back while it's held.
     assert_eq!(
         printed(ACCOUNT, "main").unwrap(),
         "fn main(_0)
   local _0 stdout: Stdout
   local _1: list[int]
   local _2: Account
-  local _3 account: Account
-  local _4 same: Account
-  local _5: int
-  local _6: int
+  local _3: Shared__Account
+  local _4 account: Shared__Account
+  local _5 same: Shared__Account
+  local _6 held__lock: Shared__Account
+  local _7: Account
+  local _8 held__lock: Shared__Account
+  local _9: Account
+  local _10: int
+  local _11: Account
+  local _12: int
+  local _13: Account
   bb0:
     _1 = []
     _2 = make Account(0, _1)
-    _3 = _2
+    _3 = make Shared__Account(_2)
     _4 = _3
-    call pay(_3, 5)
-    lock _4 to write
-    call Account.add(_4, 10)
-    unlock _4
-    lock _3 to read
-    _5 = call Account.balance(_3)
-    unlock _3
-    lock _4 to read
-    _6 = _4.total
-    unlock _4
-    lock _3 to read
-    builtin Stdout.print(_0, _5, _6, _3)
-    unlock _3
+    _5 = _4
+    call pay(_4, 5)
+    _6 = _5
+    lock _6 to write
+    _7 = _6.value
+    call Account.add(_7, 10)
+    _6.value = _7
+    unlock _6
+    _8 = _4
+    lock _8 to read
+    _9 = _8.value
+    _10 = call Account.balance(_9)
+    _11 = _8.value
+    _12 = _11.total
+    _13 = _8.value
+    builtin Stdout.print(_0, _10, _12, _13)
+    unlock _8
     return
 "
     );
@@ -2756,53 +2772,60 @@ fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
     }
 }
 
-const TRANSFER: &str = "shared Account:
+const TRANSFER: &str = "struct Account:
     total = 0
 
     def add(ref self, amount: int):
         self.total += amount
 
-def transfer(a: Account, b: Account, amount: int) -> bool:
-    with a, b as ref x, ref y:
+def transfer(a: shared Account, b: shared Account, amount: int) -> bool:
+    lock a, b as ref x, ref y:
         if x.total < amount:
             return False
         x.total -= amount
         y.add(amount)
     True
 
-def peek(a: Account) -> int:
-    with a as seen:
+def peek(a: shared Account) -> int:
+    lock a as seen:
         seen.total
 ";
 
 #[test]
-fn a_with_block_locks_its_handles_for_the_block() {
-    // Several handles lock together, in an order the backend fixes, and unlock on every way
-    // out. Through the names the block gives them, nothing locks again.
+fn a_lock_locks_its_values_for_the_block() {
+    // Several values lock together, in an order the backend fixes, and unlock on every way out.
+    // Through the names the block gives them, nothing locks again.
     assert_eq!(
         printed(TRANSFER, "transfer").unwrap(),
         "fn transfer(_0, _1, _2) -> bool
-  local _0 a: Account
-  local _1 b: Account
+  local _0 a: Shared__Account
+  local _1 b: Shared__Account
   local _2 amount: int
-  local _3 x: Account
-  local _4 y: Account
-  local _5: int
-  local _6: bool
-  local _7: int
-  local _8: int
+  local _3 x__lock: Shared__Account
+  local _4 y__lock: Shared__Account
+  local _5: Account
+  local _6: int
+  local _7: bool
+  local _8: Account
+  local _9: int
+  local _10: int
+  local _11: Account
   bb0:
     _3 = _0
     _4 = _1
     lock all _3 to write, _4 to write
-    _5 = _3.total
-    _6 = _5 < _2
-    branch _6 bb2 bb3
+    _5 = _3.value
+    _6 = _5.total
+    _7 = _6 < _2
+    branch _7 bb2 bb3
   bb1:
-    _7 = _3.total
-    _8 = _7 - _2
-    _3.total = _8
-    call Account.add(_4, _2)
+    _8 = _3.value
+    _9 = _8.total
+    _10 = _9 - _2
+    _3.value.total = _10
+    _11 = _4.value
+    call Account.add(_11, _2)
+    _4.value = _11
     unlock all _3, _4
     return true
   bb2:
@@ -2812,21 +2835,23 @@ fn a_with_block_locks_its_handles_for_the_block() {
     jump bb1
 "
     );
-    // One handle takes its own lock, to read when its name isn't `mut`.
+    // One value takes its own lock, to read when its name isn't `ref`.
     assert_eq!(
         printed(TRANSFER, "peek").unwrap(),
         "fn peek(_0) -> int
-  local _0 a: Account
-  local _1 seen: Account
-  local _2: int
+  local _0 a: Shared__Account
+  local _1 seen__lock: Shared__Account
+  local _2: Account
   local _3: int
+  local _4: int
   bb0:
     _1 = _0
     lock _1 to read
-    _2 = _1.total
-    _3 = _2
+    _2 = _1.value
+    _3 = _2.total
+    _4 = _3
     unlock _1
-    return _3
+    return _4
 "
     );
 }

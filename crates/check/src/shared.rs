@@ -1,8 +1,8 @@
-//! `shared Name:` types: a counted handle to one cell, whose methods lock it. Assigning a handle
-//! gives another name for the same cell, and a `mut self` method changes the cell, so calling
-//! one needs no `mut` name. Anything else that changes a handle's fields would skip the lock.
-//! A `shared` value holds plain values and `Id`s, never another `shared`, so handles can't form
-//! a cycle, and none lives at the top of a file.
+//! `shared` declarations: a counted handle to one cell, whose methods lock it. A program no longer
+//! writes one, as `shared T` and `lock` replaced them, and one it writes is refused with a fix;
+//! lowering writes each `shared T` in as one (see `lock_lowering`), and the rules here hold for
+//! what it writes. Assigning a handle gives another name for the same cell. A `shared` value holds
+//! plain values and `Id`s, never itself, and none lives at the top of a file.
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind, TypeDef, TypeExpr, WithName};
 
@@ -185,10 +185,10 @@ impl Checker {
             .filter(|info| info.def.shared && !info.prelude)
             .map(|info| info.def.clone())
             .collect();
-        // Lowering writes in a `shared` declaration for each `shared T`, which the second check
-        // takes as written.
+        // Lowering writes in a `shared` declaration for each `shared T`, with no place in the
+        // source, which a check of what it wrote takes as written.
         if !self.again {
-            for def in &defs {
+            for def in defs.iter().filter(|def| def.span != Span::default()) {
                 let refused = self.declared_shared(def);
                 self.diagnostics.push(refused);
             }
@@ -400,7 +400,7 @@ impl FnCx<'_> {
         at: Span,
     ) -> Flow {
         let ty = self.with_value(value);
-        self.with_on_shared(&ty, value.span, at);
+        self.with_on_shared(&ty, value.span, at, names);
         let (items, types) = match (&value.kind, ty) {
             (ExprKind::Tuple(items), Type::Tuple(types)) if names.len() != 1 => {
                 (items.iter().collect(), types)
@@ -420,14 +420,17 @@ impl FnCx<'_> {
                 );
             }
         }
+        // A `lock` lowering wrote in was held to `lock`'s own rules when it was checked as
+        // written, so the rules for a `with` on a `shared` declaration's value don't apply to it.
+        let lowered = crate::lock::lowered(names);
         let locked: Vec<&WithName> = names
             .iter()
             .zip(&types)
-            .filter(|(_, ty)| self.checker.program.takes_lock(ty))
+            .filter(|(_, ty)| !lowered && self.checker.program.takes_lock(ty))
             .map(|(held, _)| held)
             .collect();
         let locking: Vec<Type> =
-            types.iter().filter(|ty| self.checker.program.takes_lock(ty)).cloned().collect();
+            types.iter().filter(|ty| !lowered && self.checker.program.takes_lock(ty)).cloned().collect();
         let inner = locking.iter().all(|ty| self.takes_inner(ty));
         if let (Some(held), Some(first), false) = (
             self.lock.clone(),

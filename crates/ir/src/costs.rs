@@ -228,7 +228,14 @@ fn allocation(
     let of = |id: &crate::LocalId| function.locals.get(id.0).map(|local| &local.ty);
     match inst {
         InstKind::Make { type_name, .. } if handles.contains(type_name.as_str()) => {
-            Some(format!("this `shared` {type_name}"))
+            // `shared T` is made as a hidden `Shared__T`, whose name says `T` when `T` is a name.
+            match type_name.strip_prefix("Shared__") {
+                Some(held) if held.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                    Some(format!("this `shared {held}`"))
+                }
+                Some(_) => Some("this `shared` value".to_owned()),
+                None => Some(format!("this `shared` {type_name}")),
+            }
         }
         InstKind::MakeList { .. } | InstKind::ConstantList { .. } => Some("this list".to_owned()),
         InstKind::MakeSet { .. } => Some("this set".to_owned()),

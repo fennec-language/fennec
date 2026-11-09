@@ -21,6 +21,11 @@ pub(crate) fn held(ty: &Type) -> Option<&Type> {
     }
 }
 
+/// Whether a `with` is a `lock` lowering wrote in, by the names it gives what it holds.
+pub(crate) fn lowered(names: &[WithName]) -> bool {
+    !names.is_empty() && names.iter().all(|held| held.name.ends_with(crate::lock_lowering::HELD))
+}
+
 /// `shared T` for what a plain value of type `held` is.
 pub(crate) fn shared(held: Type) -> Type {
     Type::Generic(SHARED.to_owned(), vec![held])
@@ -94,10 +99,10 @@ impl FnCx<'_> {
     }
 
     /// Reports a `with` on a `shared` value, which is reached with `lock`, with the fix that says so.
-    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span, at: Span) {
-        // Lowering writes each `lock` on a `shared` declaration in as a `with`, which the second
-        // check takes as written.
-        let first = !self.checker.again;
+    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span, at: Span, names: &[WithName]) {
+        // Lowering writes each `lock` in as a `with` on a `shared` declaration, naming what it
+        // holds `{name}__lock`, which a check of what it wrote takes as written.
+        let first = !self.checker.again && !lowered(names);
         let locks = |ty: &Type| held(ty).is_some() || (first && self.checker.program.takes_lock(ty));
         let shared = match ty {
             Type::Tuple(types) => types.iter().any(locks),

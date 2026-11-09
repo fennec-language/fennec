@@ -829,9 +829,10 @@ impl Parser {
                 }
             }
             self.expect_p(Punct::RParen)?;
-            // `(Circle | Square)?`: a union in parentheses is the union, so it can be optional.
+            // `(Circle | Square)?`: a union in parentheses is the union, so it can be optional, as
+            // is `(shared Scores)?`.
             if let [only] = args.as_slice()
-                && only.name == "|"
+                && (only.name == "|" || only.name == "shared")
                 && !self.at_p(Punct::Arrow)
             {
                 let optional = self.eat_p(Punct::Question);

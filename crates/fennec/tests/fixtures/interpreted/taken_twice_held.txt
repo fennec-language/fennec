@@ -1,10 +1,10 @@
-source 769f5034e5a45bcbc7ba70ff0cabf0838c8c6f839be18d72f476279abbe93c48
+source 7ca522ec2f20f94aa0f125cc6d83edaf98f90120aa8f3e7b49ffb450bf354293
 code 1
 stdout 10
 before 21
 stderr 178
-error: this `with` takes the same `shared` value twice
-  --> <dir>/held.fen:17:10
+error: this `lock` takes the same `shared` value twice
+  --> <dir>/held.fen:18:10
    |
-17 |     with Holder(box=one).box, one as ref x, y:
+18 |     lock Holder(box=one).box, one as ref x, y:
    |          ^^^^^^^^^^^^^^^^^^^^^^^^

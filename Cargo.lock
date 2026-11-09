@@ -128,13 +128,13 @@ dependencies = [
  "fennec-count",
  "fennec-deps",
  "fennec-fmt",
- "fennec-interp",
  "fennec-ir",
  "fennec-kit",
  "fennec-lint",
  "fennec-llvm",
  "fennec-lsp",
  "fennec-reference",
+ "fennec-rt",
  "fennec-syntax",
  "mimalloc",
 ]
@@ -204,28 +204,11 @@ dependencies = [
  "fennec-build",
  "fennec-check",
  "fennec-fmt",
- "fennec-interp",
  "fennec-ir",
  "fennec-parked",
  "fennec-re",
+ "fennec-rt",
  "fennec-syntax",
-]
-
-[[package]]
-name = "fennec-interp"
-version = "0.0.1"
-dependencies = [
- "crossbeam-deque",
- "fennec-blake3",
- "fennec-parked",
- "fennec-re",
- "fennec-syntax",
- "getrandom 0.4.3",
- "libm",
- "mio",
- "rusqlite",
- "rustls",
- "rustls-platform-verifier",
 ]
 
 [[package]]
@@ -264,7 +247,7 @@ name = "fennec-layout"
 version = "0.0.1"
 dependencies = [
  "fennec-check",
- "fennec-interp",
+ "fennec-rt",
  "fennec-syntax",
 ]
 
@@ -284,9 +267,9 @@ dependencies = [
  "fennec-blake3",
  "fennec-build",
  "fennec-check",
- "fennec-interp",
  "fennec-ir",
  "fennec-layout",
+ "fennec-rt",
  "fennec-syntax",
 ]
 
@@ -320,11 +303,28 @@ name = "fennec-reference"
 version = "0.0.1"
 
 [[package]]
+name = "fennec-rt"
+version = "0.0.1"
+dependencies = [
+ "crossbeam-deque",
+ "fennec-blake3",
+ "fennec-parked",
+ "fennec-re",
+ "fennec-syntax",
+ "getrandom 0.4.3",
+ "libm",
+ "mio",
+ "rusqlite",
+ "rustls",
+ "rustls-platform-verifier",
+]
+
+[[package]]
 name = "fennec-runtime"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
- "fennec-interp",
+ "fennec-rt",
  "mimalloc",
 ]
 

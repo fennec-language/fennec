@@ -25,7 +25,7 @@ Every program in `examples/` is a test: it must print exactly its `.out` file an
 Each module under `std` has its own files, so modules added in parallel don't touch the same lines:
 
 - `crates/syntax/src/stdlib/`: the names it provides, in `<module>.rs`, and any code written in Fennec, in `<module>.fen`.
-- `crates/interp/src/stdlib/`: its functions and methods written in Rust, if it has any.
+- `crates/rt/src/stdlib/`: its functions and methods written in Rust, if it has any.
 - `crates/check/src/stdlib/`: their signatures.
 
 Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, one line each.

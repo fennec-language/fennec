@@ -71,7 +71,7 @@ impl Emit<'_, '_, '_> {
                 // every integer type: a shift is bit work, not arithmetic.
                 let far = self.temp();
                 self.line(&format!("{far} = icmp uge i64 {b}, 64"));
-                self.fail_if(&far, fennec_interp::embed::checks::BAD_SHIFT, span);
+                self.fail_if(&far, fennec_rt::embed::checks::BAD_SHIFT, span);
                 let word = if op == BinOp::ShiftRight { "lshr" } else { "shl" };
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
             }

@@ -177,7 +177,7 @@ impl Emit<'_, '_, '_> {
                 ));
             }
             Kind::Bytes => {
-                let shape = fennec_interp::embed::heap::BYTES_SHAPE;
+                let shape = fennec_rt::embed::heap::BYTES_SHAPE;
                 self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
                 self.line(&format!(
                     "{value} = call ptr @fennec_box_from_value(i64 {handle}, i64 {shape}, i64 {from}, i64 {to})"

@@ -1,9 +1,9 @@
 //! Builtins written out here: loops over a list that the runtime has no call for.
 
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
-use fennec_interp::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
+use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
+use fennec_rt::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS};
 use fennec_syntax::Span;
 
 use crate::emit::{Emit, ITEM_ACCESS, LENGTH_ACCESS};

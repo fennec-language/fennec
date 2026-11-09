@@ -100,7 +100,7 @@ fennec-ir = { path = "crates/ir" }
 fennec-parked = { path = "crates/parked" }
 fennec-layout = { path = "crates/layout" }
 fennec-llvm = { path = "crates/llvm" }
-fennec-interp = { path = "crates/interp" }
+fennec-rt = { path = "crates/rt" }
 fennec-runtime = { path = "crates/runtime" }
 fennec-kit = { path = "crates/kit" }
 fennec-lint = { path = "crates/lint" }

@@ -919,7 +919,7 @@ jobs:
         run: |
           env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 RUSTFLAGS=-Zsanitizer=thread \
             cargo "+$NIGHTLY" test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
-            -p fennec-interp --features threads --lib -- embed::serve embed::parallel
+            -p fennec-rt --features threads --lib -- embed::serve embed::parallel
 
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed, and so do the two a

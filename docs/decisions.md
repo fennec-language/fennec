@@ -1230,7 +1230,7 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 **`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-# Planned: today the first is `embed("assets/level1.bin")`, and the second doesn't exist
+# Planned: the second doesn't exist yet
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
@@ -1239,7 +1239,7 @@ SHADERS = embed_folder("assets/shaders")
 - The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path and, in a kit, anything outside it, a symlink included. This replaces `embed("path")`.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A single `.fen` file with no kit has no kit folder to stay inside yet. `embed_folder` isn't built yet.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 
@@ -1364,6 +1364,7 @@ match tok:
 - A kit's version is `fennec = "0.4.2"` at the top of its `kit.toml`, found by walking up from the current folder.
 - A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set. With neither, the command stops and says how to set one. In a kit, `--version` is an error, since `kit.toml` says.
 - `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
+- `fennec toolchain link dev <path>` is for whoever works on Fennec itself: it runs the `fennec` in a folder of their own, like a checkout's `target/release`, with whatever LLVM that build finds, and fetches nothing. A kit asks for it with `fennec = "dev"`, which is never pinned, and `+dev` runs it once. `fennec toolchain remove dev` unlinks it and leaves the build.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.

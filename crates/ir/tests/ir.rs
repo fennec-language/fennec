@@ -1071,6 +1071,19 @@ def f() -> P:
 
 /// Each argument a call leaves out is written in with its own type: a `Duration` and an `int`
 /// left out of one call don't take each other's.
+/// A call that leaves out an argument with a default, as the standard library's own code runs,
+/// unrewritten by the checker: the call takes the default where it's lowered.
+#[test]
+fn a_call_left_unrewritten_takes_its_defaults() {
+    let source = "def added(n: int, more = 1) -> int:\n    n + more\n\ndef main(stdout: Stdout):\n    stdout.print(added(2))\n";
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let program = lower(&module, &checked);
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+    let main = program.functions.iter().find(|function| function.name == "main").unwrap().to_string();
+    assert!(main.contains("call added(2, 1)"), "{main}");
+}
+
 #[test]
 fn arguments_left_out_get_their_defaults_with_their_types() {
     let source = "from std.time import Duration

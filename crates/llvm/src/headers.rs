@@ -442,7 +442,7 @@ impl Emit<'_, '_, '_> {
         let (length_at, length, address) = (self.temp(), self.temp(), self.temp());
         self.line(&format!(
             "{length_at} = getelementptr inbounds i8, ptr {grown}, i64 {}",
-            fennec_interp::embed::layout::TEXT_BYTES
+            fennec_rt::embed::layout::TEXT_BYTES
         ));
         self.line(&format!("{length} = load i64, ptr {length_at}"));
         self.line(&format!("{address} = ptrtoint ptr {grown} to i64"));
@@ -630,7 +630,7 @@ impl Emit<'_, '_, '_> {
     /// in when the block is alone and has room, and anything else goes as [`Self::append_text`]
     /// does.
     pub(crate) fn append_header(&mut self, block: &str, more: &str) -> String {
-        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
+        use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
         let in_block = self.header_in_block(more);
         let ascii = self.inline_ascii(more);
         let more_length = self.inline_length(more);
@@ -702,7 +702,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether a header's text is all ASCII, so a character's place is its byte's.
     fn header_ascii(&mut self, header: &str) -> String {
-        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS};
+        use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS};
         let in_block = self.header_in_block(header);
         let inline = self.inline_ascii(header);
         // A block's counts are only read when it is one.
@@ -744,7 +744,7 @@ impl Emit<'_, '_, '_> {
     /// are found where it's called, from the cursor and the lead byte's length. Anything else
     /// is walked to by `@fen_char_walk`.
     pub(crate) fn char_place_helper(&mut self) {
-        use fennec_interp::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
+        use fennec_rt::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
         self.char_walk_helper();
         self.declare("declare i8 @llvm.ctlz.i8(i8, i1)");
         self.module.add_helper(
@@ -802,7 +802,7 @@ done:
     /// block's cursor, and leaves the cursor there, so reading a string in order takes a step for
     /// each character.
     fn char_walk_helper(&mut self) {
-        use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
+        use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
         self.module.add_helper(
             "fen_char_walk",
             format!(
@@ -906,7 +906,7 @@ done:
         index: &fennec_ir::Operand,
         span: fennec_syntax::Span,
     ) -> Result<(), String> {
-        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS};
+        use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS};
         let (at, _) = self.operand(index)?;
         let in_block = self.header_in_block(text);
         let (block_path, inline_path, slow, done) = (
@@ -1146,7 +1146,7 @@ done:
         let (size, short) = (self.temp(), self.temp());
         self.line(&format!("{size} = sub i64 {end}, {start}"));
         self.line(&format!("{short} = icmp ule i64 {size}, 23"));
-        let base = self.offset(&data, fennec_interp::embed::bytes::DATA_OFFSET);
+        let base = self.offset(&data, fennec_rt::embed::bytes::DATA_OFFSET);
         let at = self.temp();
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {base}, i64 {start}"));
         let (head, body, tail, fast, slow, done) = (
@@ -1273,7 +1273,7 @@ done:
         (start, end): (&str, &str),
         (no_end, slow, done): (&str, &str, &str),
     ) -> (String, String) {
-        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
+        use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
         let in_block = self.header_in_block(text);
         let wide = self.label("slice_wide");
         self.line(&format!("br i1 {in_block}, label %{wide}, label %{slow}"));
@@ -1335,7 +1335,7 @@ done:
     /// A header's length in characters: a block's count, or an inline string's bytes that
     /// don't continue a character, worked out only for an inline one.
     pub(crate) fn header_chars(&mut self, header: &str) -> String {
-        use fennec_interp::embed::layout::TEXT_CHARS;
+        use fennec_rt::embed::layout::TEXT_CHARS;
         let in_block = self.header_in_block(header);
         let (block_path, inline_path, done) =
             (self.label("chars_block"), self.label("chars_inline"), self.label("chars_done"));

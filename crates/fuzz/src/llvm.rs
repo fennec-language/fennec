@@ -75,6 +75,42 @@ fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, St
     Err(format!("it didn't build with LLVM ({}):\n{said}", built.status))
 }
 
+/// A program built with `fennec build --llvm`, and `--release` when asked, then run: what it
+/// printed, the first line it said on standard error, and whether it succeeded. A build that
+/// fails gives what `fennec` said, whatever the reason, for programs that should always build.
+pub(crate) fn built_and_run(
+    source: &str,
+    name: &str,
+    release: bool,
+) -> Result<(Vec<u8>, String, bool), String> {
+    let work = work().join(name);
+    std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
+    let (program, executable) = (work.join("program.fen"), work.join("program"));
+    std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
+    let built = Command::new(fennec())
+        .args(["build", "--llvm"])
+        .args(release.then_some("--release"))
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &work)
+        .env("FENNEC_NO_CACHE", "1")
+        .output()
+        .map_err(|err| format!("couldn't run `{}`: {err}", fennec().display()))?;
+    if !built.status.success() {
+        let how = if release { "with --release" } else { "as a dev build" };
+        return Err(format!("it didn't build {how}:\n{}", String::from_utf8_lossy(&built.stderr)));
+    }
+    let (printed, said, succeeded) = ran(&executable, &[], &work)?;
+    Ok((printed, said.lines().next().unwrap_or_default().to_owned(), succeeded))
+}
+
+/// Whether the runtime with `threads` is beside `fennec`, which it builds a program running
+/// `parallel` or `launch` with, as a release does.
+pub(crate) fn threads_runtime_here() -> bool {
+    fennec().with_file_name("libfennec_runtime_threads.a").is_file()
+}
+
 /// What an executable printed, what it said on standard error, and whether it succeeded. One
 /// that crashes, gets stuck or holds too much memory is stopped and said so.
 fn ran(executable: &Path, args: &[&std::ffi::OsStr], work: &Path) -> Result<(Vec<u8>, String, bool), String> {

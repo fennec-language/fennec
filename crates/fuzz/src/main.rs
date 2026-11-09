@@ -33,6 +33,7 @@ mod mutate;
 mod pack_rules;
 mod parked;
 mod postgres_rules;
+mod programs;
 mod supervise;
 mod targets;
 mod toml_rules;
@@ -55,6 +56,7 @@ fn main() -> ExitCode {
         ["one", name, file] => one(name, Path::new(file)),
         ["show", file] => show(Path::new(file), generate::program),
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
+        ["show", "programs", file] => show(Path::new(file), programs::written),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["run", rest @ ..] => run(rest),
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]"
@@ -176,8 +178,11 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     } else {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
-    if chosen.iter().any(|target| target.name == targets::LLVM.name || targets::NATIVE.contains(&target.name))
-    {
+    let native = |target: &&Target| {
+        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name].contains(&target.name)
+            || targets::NATIVE.contains(&target.name)
+    };
+    if chosen.iter().any(native) {
         llvm::ready()?;
     }
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;

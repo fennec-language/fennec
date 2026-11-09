@@ -269,8 +269,18 @@ pub(crate) const NATIVE: [&str; 11] = [
 pub(crate) const UTF8: Target =
     Target { name: "utf8", corpus: &["crates/fuzz/seeds/utf8"], tokens: &BYTES, run: utf8, stuck: STUCK };
 
+/// Random, well-typed programs, each built both ways and run by the reference evaluator, which
+/// runs only when named, since it builds every input twice.
+pub(crate) const RANDOM_PROGRAMS: Target = Target {
+    name: "programs",
+    corpus: &["crates/fuzz/seeds/programs"],
+    tokens: &ANYTHING,
+    run: crate::programs::programs,
+    stuck: Duration::from_secs(60),
+};
+
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
-    TARGETS.iter().chain([&UTF8, &LLVM]).find(|target| target.name == name)
+    TARGETS.iter().chain([&UTF8, &LLVM, &RANDOM_PROGRAMS]).find(|target| target.name == name)
 }
 
 impl Target {

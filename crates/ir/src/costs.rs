@@ -230,7 +230,7 @@ fn allocation(
         InstKind::Make { type_name, .. } if handles.contains(type_name.as_str()) => {
             Some(format!("this `shared` {type_name}"))
         }
-        InstKind::MakeList { .. } => Some("this list".to_owned()),
+        InstKind::MakeList { .. } | InstKind::ConstantList { .. } => Some("this list".to_owned()),
         InstKind::MakeSet { .. } => Some("this set".to_owned()),
         InstKind::MakeDict { .. } => Some("this dict".to_owned()),
         InstKind::MakeTuple { .. } => Some("this tuple".to_owned()),

@@ -292,6 +292,7 @@ impl Flow<'_> {
             InstKind::Make { dest, .. }
             | InstKind::MakeCase { dest, .. }
             | InstKind::MakeList { dest, .. }
+            | InstKind::ConstantList { dest, .. }
             | InstKind::MakeSet { dest, .. }
             | InstKind::MakeDict { dest, .. }
             | InstKind::MakeTuple { dest, .. }

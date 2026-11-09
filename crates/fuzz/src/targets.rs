@@ -346,7 +346,10 @@ fn meaning(mut module: fennec_syntax::Module) -> String {
                 let mut bound: Vec<_> = import.names.drain(..).zip(import.aliases.drain(..)).collect();
                 bound.sort();
                 (import.names, import.aliases) = bound.into_iter().unzip();
-                let one = fennec_syntax::Module { items: vec![fennec_syntax::Item::Import(import)] };
+                let one = fennec_syntax::Module {
+                    items: vec![fennec_syntax::Item::Import(import)],
+                    ..Default::default()
+                };
                 Some(fennec_fmt::without_spans(&one))
             }
             _ => None,

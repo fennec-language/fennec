@@ -4779,6 +4779,55 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source with an `else:` around a block holding a source that opens another: the one written
+/// in last is written in first, so the outer `else:` runs when the innermost fails opening, and
+/// each `with` stays a `with` until it's written in.
+#[test]
+fn a_source_around_one_that_opens_another_writes_the_innermost_in_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "innermost_first",
+        r#"error Boom:
+    at: int
+
+def inner(n: int, stdout: Stdout) -> with int fails Boom:
+    if n < 0: fail Boom(at=n)
+    lend n
+    stdout.print("inner closed")
+
+def middle(n: int, stdout: Stdout) -> with int fails Boom:
+    with inner(n, stdout)? as got:
+        lend got + 1
+    stdout.print("middle closed")
+
+def outer(n: int, stdout: Stdout) -> with int fails Boom:
+    lend n else:
+        stdout.print("outer's cleanup")
+    stdout.print("outer closed")
+
+def used(n: int, stdout: Stdout) fails Boom:
+    with outer(n, stdout)? as a:
+        with middle(a, stdout)? as b:
+            stdout.print("got", b)
+
+def main(stdout: Stdout):
+    for n in [1, -1]:
+        match used(n, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "got 2\ninner closed\nmiddle closed\nouter closed\nworked\nouter's cleanup\nfailed Boom(at=-1)\n"
+    );
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]
@@ -15569,6 +15618,21 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     assert_eq!(often, format!("13000 {shown}"));
     // Each call may make the folder's own block, but never its two lists again.
     assert!(made_often - made_once <= 999, "{made_once} against {made_often}");
+    Ok(())
+}
+
+/// In a program with `parallel`, `main` works out each constant before any worker starts, and
+/// throws the value away there: one of a struct type, like a `Duration`, still has its type in
+/// `main`'s module.
+#[test]
+fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = "WAIT = 2s\n\ndef waited(n: int) -> int:\n    int(WAIT.as_millis()) + n\n\n\
+                  def main(stdout: Stdout):\n    mut totals = [0, 1, 2, 3]\n    for ref t in parallel(totals):\n        \
+                  t = waited(t)\n    stdout.print(totals)\n";
+    assert_eq!(printed_by("struct_constant_ahead", source)?, "[2000, 2001, 2002, 2003]\n");
     Ok(())
 }
 

@@ -518,7 +518,7 @@ mod tests {
             .collect();
         paths.sort();
         let mut sources = fennec_syntax::Sources::new();
-        let mut module = fennec_syntax::Module { items: Vec::new() };
+        let mut module = fennec_syntax::Module::default();
         for path in &paths {
             let text = std::fs::read_to_string(path).unwrap_or_default();
             let base = sources.add(path.display().to_string(), text.as_str());

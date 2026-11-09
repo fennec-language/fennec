@@ -2,6 +2,11 @@
 //! a toolchain whose `fennec` is a script saying what it was asked, and signs it with keys made
 //! for the test.
 
+#[cfg(test)]
+#[cfg(unix)]
+#[path = "common/signing.rs"]
+mod signing;
+
 // The helpers unwrap and index as freely as the tests themselves.
 #[cfg(test)]
 #[cfg(unix)]
@@ -10,9 +15,7 @@ mod launcher {
 
     use fennec_dist::{Kind, Manifest, PublicKey};
     use fennec_launcher::Launcher;
-    use ring::digest;
-    use ring::rand::SystemRandom;
-    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use ring::signature::Ed25519KeyPair;
 
     const TARGET: &str = "aarch64-apple-darwin";
 
@@ -52,57 +55,11 @@ mod launcher {
         }
     }
 
-    fn put(to: &mut Vec<u8>, part: &[u8]) {
-        to.extend_from_slice(&u32::try_from(part.len()).unwrap().to_be_bytes());
-        to.extend_from_slice(part);
-    }
-
-    fn base64(bytes: &[u8]) -> String {
-        const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut text = String::new();
-        for chunk in bytes.chunks(3) {
-            let word = chunk
-                .iter()
-                .enumerate()
-                .fold(0u32, |word, (at, byte)| word | u32::from(*byte) << (16 - 8 * at));
-            for at in 0..4 {
-                let letter = LETTERS[usize::try_from(word >> (18 - 6 * at) & 63).unwrap()];
-                text.push(if at <= chunk.len() { char::from(letter) } else { '=' });
-            }
-        }
-        text
-    }
+    use super::signing::sign;
 
     /// A key made for a test, and its public key as the launcher trusts one.
     fn key() -> (Ed25519KeyPair, PublicKey) {
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
-        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-        let mut blob = Vec::new();
-        put(&mut blob, b"ssh-ed25519");
-        put(&mut blob, pair.public_key().as_ref());
-        let public = PublicKey::parse(&format!("ssh-ed25519 {} test", base64(&blob))).unwrap();
-        (pair, public)
-    }
-
-    /// A signature as `ssh-keygen -Y sign` makes one.
-    fn sign(pair: &Ed25519KeyPair, namespace: &str, message: &[u8]) -> String {
-        let mut public = Vec::new();
-        put(&mut public, b"ssh-ed25519");
-        put(&mut public, pair.public_key().as_ref());
-        let mut signed = b"SSHSIG".to_vec();
-        for part in [namespace.as_bytes(), b"", b"sha512", digest::digest(&digest::SHA512, message).as_ref()]
-        {
-            put(&mut signed, part);
-        }
-        let mut signature = Vec::new();
-        put(&mut signature, b"ssh-ed25519");
-        put(&mut signature, pair.sign(&signed).as_ref());
-        let mut blob = b"SSHSIG".to_vec();
-        blob.extend_from_slice(&1u32.to_be_bytes());
-        for part in [&public[..], namespace.as_bytes(), b"", b"sha512", &signature] {
-            put(&mut blob, part);
-        }
-        format!("-----BEGIN SSH SIGNATURE-----\n{}\n-----END SSH SIGNATURE-----\n", base64(&blob))
+        super::signing::made_key().unwrap()
     }
 
     /// A tar's header for an entry.

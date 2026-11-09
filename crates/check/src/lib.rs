@@ -472,6 +472,134 @@ fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Diagnostic>> {
+    // The library's functions this program needs rewritten go through this round with its own.
+    let std_in = std_rewritten_in(module, &checked);
+    let round = resolved_round(module, &checked);
+    std_rewritten_out(module);
+    match round {
+        Round::Again => {
+            // Each `_` has a name of its own, as the first check gave it.
+            fennec_syntax::rename::discards_apart(module);
+            let mut second = checker::Checker::new(module);
+            second.again = true;
+            match second.run(checker::Scope::Everything) {
+                Ok(again) => resolved(module, again),
+                Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
+            }
+        }
+        Round::Done if std_in => {
+            // What was written in the library's functions is checked as what runs.
+            let mut second = checker::Checker::new(module);
+            second.again = true;
+            match second.run(checker::Scope::Everything) {
+                Ok(again) => resolved(module, again),
+                Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
+            }
+        }
+        Round::Done => {
+            fennec_syntax::fuse::stored_stages(module);
+            Ok(checked.into_signatures())
+        }
+    }
+}
+
+/// Whether a round of resolving wrote anything in, which is then checked again.
+enum Round {
+    Again,
+    Done,
+}
+
+/// What starts the name a library function goes under in a program's items while it's rewritten:
+/// no name a program writes starts with it.
+const STD_AT: &str = "\0std:";
+
+/// Puts into the program's items, under hidden names, the library's functions it runs that hold
+/// a `with` over a source or a `launch`, and those rewritten already, so a round rewrites them as
+/// it does the program's own. Says whether any was new, which the check after takes up.
+fn std_rewritten_in(module: &mut Module, checked: &Checked) -> bool {
+    let wanted: BTreeSet<(u32, u32)> = checked
+        .sources
+        .keys()
+        .chain(checked.launches.keys())
+        .filter(|(start, _)| Span { start: *start, end: *start }.in_prelude())
+        .copied()
+        .collect();
+    let mut new = false;
+    if !wanted.is_empty() {
+        for (key, def) in library_functions() {
+            // A source is written in where it's used, and its body lowered there.
+            let source = def.ret.as_ref().is_some_and(|ret| ret.name == lend::WITH);
+            if source || module.std_rewritten.iter().any(|(done, _)| *done == key) {
+                continue;
+            }
+            let mut copy = def.clone();
+            let mut holds = false;
+            fennec_syntax::visit::in_function(&mut copy, &mut |expr| {
+                holds |= wanted.contains(&(expr.span.start, expr.span.end));
+            });
+            if holds {
+                module.std_rewritten.push((key, def.clone()));
+                new = true;
+            }
+        }
+    }
+    for (key, mut def) in std::mem::take(&mut module.std_rewritten) {
+        def.name = format!("{STD_AT}{key}\0{}", def.name);
+        module.items.push(Item::Function(def));
+    }
+    new
+}
+
+/// Takes the library's functions back out of the program's items, with their own names.
+fn std_rewritten_out(module: &mut Module) {
+    let items = std::mem::take(&mut module.items);
+    for item in items {
+        match item {
+            Item::Function(mut def) if def.name.starts_with(STD_AT) => {
+                let marked = def.name.trim_start_matches(STD_AT).to_owned();
+                let (key, name) = marked.split_once('\0').unwrap_or((marked.as_str(), marked.as_str()));
+                name.clone_into(&mut def.name);
+                module.std_rewritten.push((key.to_owned(), def));
+            }
+            other => module.items.push(other),
+        }
+    }
+}
+
+/// Each of the standard library's functions and methods, by the key the checker gives it.
+fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
+    let mut found = Vec::new();
+    for module in fennec_syntax::prelude_modules().unwrap_or_default() {
+        let mut first: BTreeMap<String, &fennec_syntax::FnDef> = BTreeMap::new();
+        for item in &module.items {
+            match item {
+                Item::Function(def) => found.push((def.name.clone(), def.clone())),
+                Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                    for method in &def.methods {
+                        let plain = format!("{}.{}", def.name, method.name);
+                        let key = method_key(&def.name, method, first.get(&plain).copied());
+                        first.entry(plain).or_insert(method);
+                        found.push((key, method.clone()));
+                    }
+                }
+                Item::Extend(extension) => {
+                    for method in &extension.methods {
+                        let plain = format!("{}.{}", extension.name, method.name);
+                        let key = method_key(&extension.name, method, first.get(&plain).copied());
+                        first.entry(plain).or_insert(method);
+                        found.push((key, method.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// One round of writing in what the check found, saying whether anything was written that needs
+/// checking again.
+fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -492,7 +620,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
             if let Some(owner) = checked.cases.get(&span) {
                 fennec_syntax::visit::name_enum(expr, owner);
             }
-            start_written(expr, &checked, span);
+            start_written(expr, checked, span);
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
@@ -540,17 +668,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
     if lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested || tuples
     {
-        // Each `_` has a name of its own, as the first check gave it.
-        fennec_syntax::rename::discards_apart(module);
-        let mut second = checker::Checker::new(module);
-        second.again = true;
-        return match second.run(checker::Scope::Everything) {
-            Ok(again) => resolved(module, again),
-            Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
-        };
+        return Round::Again;
     }
-    fennec_syntax::fuse::stored_stages(module);
-    Ok(checked.into_signatures())
+    Round::Done
 }
 
 /// Each source with its leading-dot cases named, as the program's own text was above: what

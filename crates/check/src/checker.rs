@@ -160,6 +160,12 @@ impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
         let mut program = library().clone();
         program.add(module, false);
+        // The library's functions as this program runs them, rewritten as its own code is.
+        for (key, def) in &module.std_rewritten {
+            if let Some(entry) = program.functions.get_mut(key) {
+                entry.def = std::sync::Arc::new(def.clone());
+            }
+        }
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
         diagnostics.extend(crate::privacy::top_level_underscores(module));

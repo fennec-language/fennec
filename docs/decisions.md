@@ -349,7 +349,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. Not built yet: today `_ = f()` drops the failure, and `ignore(result, "why")` still compiles. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Built. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine

@@ -7455,7 +7455,11 @@ def main(net: Net, stdout: Stdout):
             stdout.print(error.message())
         case Ok(_):
             stdout.print(\"done\")
-    _ = net.udp(port=99999)
+    match net.udp(port=99999):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
 ";
 
 #[test]
@@ -11289,7 +11293,7 @@ def main(stdout: Stdout):
     _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
-    ignore(numbers.remove(gone), "it's fine if it's gone")
+    _ = numbers.remove(gone)
     stdout.print(numbers.len())
 "#,
     )

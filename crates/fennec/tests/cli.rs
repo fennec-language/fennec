@@ -411,7 +411,7 @@ fn real_tests_run_through_llvm() {
     let written = dir.join("written.txt");
     let source = format!(
         "test \"prints\"(stdout: Stdout):\n    stdout.print(\"hello from a test\")\n\n\
-         test \"a real file\"(fs: Fs, stdout: Stdout):\n    _ = fs.write_text({written:?}, \"kept\")\n    assert fs.read_text({written:?})? == \"kept\"\n    stdout.print(\"read it back\")\n\n\
+         test \"a real file\"(fs: Fs, stdout: Stdout):\n    fs.write_text({written:?}, \"kept\")?\n    assert fs.read_text({written:?})? == \"kept\"\n    stdout.print(\"read it back\")\n\n\
          test \"fails\"(stdout: Stdout):\n    stdout.print(\"before the failure\")\n    assert 1 + 1 == 3\n"
     );
     let path = dir.join("real.fen");

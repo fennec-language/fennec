@@ -104,19 +104,20 @@ def load(fs: Fs, hash: str) -> bytes fails StoreError:
 - `?` passes a failure up to the caller. It's only for failures, and a function using it must say `fails`.
 - `fail .Missing(hash)` leaves with a failure of your own.
 - `else` gives a default when something fails or is missing, or leaves: `else fail ...`, `else return`, `else continue`.
-- `match` handles each case:
+- `else as why:` names the failure in a block that leaves, and `match why:` handles each case. There's no `Ok`, `Err` or `Result`: a failure is always handled at the call.
 
 ```fennec
-match load(fs, hash):
-    case Ok(data):
-        stdout.print(data.len(), "bytes")
-    case Err(Missing(hash)):
-        stdout.print(f"nothing is saved under {hash}")
-    case Err(Unreadable(path)):
-        stdout.print(f"couldn't read {path}")
+data = load(fs, hash) else as why:
+    match why:
+        case .Missing(hash):
+            stdout.print(f"nothing is saved under {hash}")
+        case .Unreadable(path):
+            stdout.print(f"couldn't read {path}")
+    return
+stdout.print(data.len(), "bytes")
 ```
 
-Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away. Don't write it on a call that can fail: that's planned to be a compile error, so handle the failure instead.
+Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away. On a call that can fail, `_ = f()` is a compile error, so handle the failure instead.
 
 ## Files
 
@@ -395,11 +396,14 @@ test "what's saved loads back"(fs: Fs):
     assert load(fs, hash)? == "hello".encode()
 
 test "a hash nothing was saved under is missing"(fs: Fs):
-    match load(fs, "nothing"):
-        case Err(Missing(hash)):
-            assert hash == "nothing"
-        case _:
-            assert False
+    _ = load(fs, "nothing") else as why:
+        match why:
+            case .Missing(hash):
+                assert hash == "nothing"
+            case _:
+                assert False
+        return
+    assert False
 ```
 
 A property test takes its inputs after `for`. Fennec tries many random ones from a fixed seed, so a run repeats exactly, and shrinks a failing input to a small one:

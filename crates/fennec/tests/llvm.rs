@@ -9488,6 +9488,50 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A server can't make the client hold as much as it likes before a response's body: endless
+/// header lines fail, as one endless line does, and so do endless `100 Continue`s. A chunk's data
+/// has to end where its size says, with nothing after it but its line ending.
+#[test]
+fn a_response_cant_make_the_client_hold_without_end() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let answers = [
+        [
+            b"HTTP/1.1 200 OK\r\n".to_vec(),
+            b"X-A: b\r\n".repeat(400_000),
+            b"Content-Length: 2\r\n\r\nok".to_vec(),
+        ]
+        .concat(),
+        [
+            b"HTTP/1.1 100 Continue\r\n\r\n".repeat(200_000),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ]
+        .concat(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nokEXTRA\r\n0\r\n\r\n".to_vec(),
+    ];
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        for answer in answers {
+            let (mut stream, _) = listener.accept()?;
+            let mut asked = [0_u8; 4096];
+            let _ = stream.read(&mut asked)?;
+            // The client may stop reading part of the way through.
+            let _ = stream.write_all(&answer);
+        }
+        Ok(())
+    });
+    let source = format!(
+        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    match net.get(\"http://127.0.0.1:{port}/\", timeout=10s):\n        case Ok(answer):\n            return answer.text()\n        case Err(_):\n            return \"refused\"\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
+    );
+    let printed = printed_by("client_holds", &source)?;
+    server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
+    assert_eq!(printed, "refused refused refused\n");
+    Ok(())
+}
+
 /// A response's headers are a real dict, however many times a header came. Those that can be
 /// joined are, as HTTP says, and `Set-Cookie`, which can't, has all its values in `set_cookies`.
 #[test]

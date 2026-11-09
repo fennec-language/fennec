@@ -128,6 +128,13 @@ impl Lowering<'_> {
                 self.emit(InstKind::GetMember { dest, value, member }, expr.span);
                 Ok(Operand::Local(dest))
             }
+            // An error from a set the checker narrowed to one, as a `match` whose earlier cases
+            // took the others.
+            (Type::Errors(members), Type::Named(read)) if members.contains(&read) => {
+                let dest = self.temporary(Type::Named(read));
+                self.emit(InstKind::AsError { dest, value }, expr.span);
+                Ok(Operand::Local(dest))
+            }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
     }
@@ -314,16 +321,14 @@ impl Lowering<'_> {
         left
     }
 
-    /// Whether a failure of this type can carry notes natively: an error without cases, or a
-    /// union of those. One with cases can't yet, so a failing cleanup's failure still takes its
-    /// place there.
+    /// Whether a failure of this type carries notes: an error, with cases or without, or a union
+    /// of those.
     fn takes_notes(&self, ty: &Type) -> bool {
         let signatures = &self.context.signatures;
-        let plain =
-            |name: &str| signatures.error_type(name).is_some() && signatures.enumeration(name).is_none();
+        let error = |name: &str| signatures.error_type(name).is_some();
         match ty {
-            Type::Named(name) => plain(name),
-            Type::Errors(members) => members.iter().all(|member| plain(member)),
+            Type::Named(name) => error(name),
+            Type::Errors(members) => members.iter().all(|member| error(member)),
             _ => false,
         }
     }

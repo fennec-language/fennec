@@ -474,13 +474,13 @@ fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
 fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Diagnostic>> {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
+    unqualified_cases(module, &checked.signatures);
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.sized_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
-        || !checked.empty_collections.is_empty()
         || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
@@ -521,9 +521,6 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
             }
             if let Some(zero) = checked.array_zeros.get(&span) {
                 fennec_syntax::visit::filled_array(expr, zero);
-            }
-            if checked.empty_collections.contains(&span) {
-                fennec_syntax::visit::empty_collection(expr);
             }
             if checked.not_equals.contains(&span) {
                 fennec_syntax::visit::not_of_equals(expr);
@@ -576,6 +573,41 @@ fn cases_named(
         });
     }
     named
+}
+
+/// Each `Type.Case` in a `case`, as `case Err(SqlError.Failed(reason)):` is written on a result that
+/// fails with a union, made `Case`, as what runs reads it: the check found which type it's from.
+fn unqualified_cases(module: &mut Module, signatures: &Signatures) {
+    fn unqualified(pattern: &mut fennec_syntax::Pattern, signatures: &Signatures) {
+        use fennec_syntax::Pattern;
+        match pattern {
+            Pattern::Variant { name, args, .. } => {
+                if let Some((owner, case)) = name.rsplit_once('.')
+                    && signatures
+                        .enumeration(owner)
+                        .is_some_and(|found| found.cases.iter().any(|(known, _)| known == case))
+                {
+                    *name = case.to_owned();
+                }
+                for arg in args.iter_mut() {
+                    unqualified(arg, signatures);
+                }
+            }
+            Pattern::Tuple(items) | Pattern::Or(items) => {
+                for item in items.iter_mut() {
+                    unqualified(item, signatures);
+                }
+            }
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Literal(_) => {}
+        }
+    }
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &mut expr.kind {
+            for arm in arms.iter_mut() {
+                unqualified(&mut arm.pattern, signatures);
+            }
+        }
+    });
 }
 
 /// What a program rewritten by lowering doesn't check for: the compiler's mistake, not the
@@ -650,8 +682,6 @@ pub struct Checked {
     optional_steps: BTreeSet<(u32, u32)>,
     /// Those read from something that can fail, which is written in as `value else None`.
     failing_steps: BTreeSet<(u32, u32)>,
-    /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
-    empty_collections: BTreeSet<(u32, u32)>,
     /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
     array_zeros: BTreeMap<(u32, u32), Expr>,
 }

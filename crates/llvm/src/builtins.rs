@@ -3,7 +3,7 @@
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
 use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
-use fennec_rt::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS};
+use fennec_rt::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS, SORT_U64S};
 use fennec_syntax::Span;
 
 use crate::emit::{Emit, ITEM_ACCESS, LENGTH_ACCESS};
@@ -224,7 +224,9 @@ impl Emit<'_, '_, '_> {
     fn sort_kind(kind: &Kind) -> Result<i64, String> {
         match kind {
             Kind::Int | Kind::Bool => Ok(SORT_INTS),
-            Kind::Float => Ok(SORT_FLOATS),
+            Kind::U64 => Ok(SORT_U64S),
+            // An `f32` is held as the float it rounds to, so it orders as a float does.
+            Kind::Float | Kind::F32 => Ok(SORT_FLOATS),
             Kind::Str => Ok(SORT_STRINGS),
             other => Err(format!("it sorts by a {other:?}, which this backend doesn't take yet")),
         }
@@ -281,7 +283,13 @@ impl Emit<'_, '_, '_> {
                         &format!("  %xv{at} = load i64, ptr %xa{at}\n  %yv{at} = load i64, ptr %ya{at}\n");
                     (format!("icmp slt i64 %xv{at}, %yv{at}"), format!("icmp sgt i64 %xv{at}, %yv{at}"))
                 }
-                Kind::Float => {
+                Kind::U64 => {
+                    text +=
+                        &format!("  %xv{at} = load i64, ptr %xa{at}\n  %yv{at} = load i64, ptr %ya{at}\n");
+                    (format!("icmp ult i64 %xv{at}, %yv{at}"), format!("icmp ugt i64 %xv{at}, %yv{at}"))
+                }
+                // An `f32` is held as the float it rounds to.
+                Kind::Float | Kind::F32 => {
                     text += &format!(
                         "  %xv{at} = load double, ptr %xa{at}\n  %yv{at} = load double, ptr %ya{at}\n"
                     );
@@ -365,6 +373,8 @@ impl Emit<'_, '_, '_> {
             Kind::Int => ListItem::Int,
             Kind::Bool => ListItem::Bool,
             Kind::Float => ListItem::Float,
+            Kind::U64 => ListItem::U64,
+            Kind::F32 => ListItem::F32,
             Kind::Struct(id) => ListItem::Struct(id),
             Kind::Boxed(id) => ListItem::Boxed(id),
             _ => ListItem::Str,

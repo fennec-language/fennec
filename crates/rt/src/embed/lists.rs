@@ -22,10 +22,11 @@ use crate::value::Value;
 /// Words a list's block starts with: owner count, shape, items, room.
 pub const LIST_HEADER_WORDS: usize = 4;
 
-/// How `sorted` orders words: as ints or bools, as floats, or as strings.
+/// How `sorted` orders words: as ints or bools, as floats, as strings, or as `u64`s.
 pub const SORT_INTS: i64 = 0;
 pub const SORT_FLOATS: i64 = 1;
 pub const SORT_STRINGS: i64 = 2;
+pub const SORT_U64S: i64 = 3;
 
 /// The bit of a list's owner count a lock's rollback log sets when it marks the list, in place of
 /// holding a count of it (see `guarded::rollback`). The count then never reads as 1, so native code
@@ -335,8 +336,11 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
 }
 
 /// A number word as an int that orders the same way: floats in the order floats have, with those
-/// that are equal as one, and ints and bools as they are.
+/// that are equal as one, a `u64` with its top bit turned over, and ints and bools as they are.
 fn sort_word(word: u64, kind: i64) -> i64 {
+    if kind == SORT_U64S {
+        return (word ^ (1 << 63)).cast_signed();
+    }
     if kind != SORT_FLOATS {
         return word.cast_signed();
     }
@@ -401,11 +405,11 @@ fn in_places(state: &mut State, list: u64, places: &[usize]) -> Option<i64> {
     Some(state.heap.insert(block))
 }
 
-/// A new list owned once of a list of ints or bools in order, sorted as words. Ints that sort
+/// A new list owned once of a list of ints, bools or `u64`s in order, sorted as words. Ints that sort
 /// the same are the same int, so this needn't be stable, and nothing is gathered. Floats
 /// aren't sorted this way: floats that are equal can differ, like `0.0` and `-0.0`, so only
 /// a stable sort keeps their order from depending on how they're sorted.
-fn sorted_ints(state: &mut State, list: u64) -> Option<i64> {
+fn sorted_ints(state: &mut State, list: u64, kind: i64) -> Option<i64> {
     let block = state.heap.block(list)?;
     let element = element_in(state, block)?;
     if element.words() != 1 || owns_items(element) {
@@ -418,7 +422,7 @@ fn sorted_ints(state: &mut State, list: u64) -> Option<i64> {
     let mut block = build(state, at, 1, &numbers, 0);
     block
         .get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + numbers.len())?
-        .sort_unstable_by_key(|word| word.cast_signed());
+        .sort_unstable_by_key(|word| sort_word(*word, kind));
     Some(state.heap.insert(block))
 }
 
@@ -438,8 +442,8 @@ fn text_places(mut order: Vec<(&[u64], u64, usize)>) -> Vec<usize> {
 pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
     with(|state| {
         let list = u64::try_from(list).unwrap_or(0);
-        if kind == SORT_INTS
-            && let Some(sorted) = sorted_ints(state, list)
+        if (kind == SORT_INTS || kind == SORT_U64S)
+            && let Some(sorted) = sorted_ints(state, list, kind)
         {
             return sorted;
         }

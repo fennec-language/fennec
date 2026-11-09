@@ -2728,6 +2728,42 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
+/// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
+/// can be what a key gives.
+#[test]
+fn u64s_and_f32s_sort_by_their_values() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def main(stdout: Stdout):
+    top: u64 = 9223372036854775807
+    big = top * 2 + 1
+    half = top + 1
+    xs = [u64(5), big, u64(0), half, u64(7)]
+    stdout.print(sorted(xs))
+    mut ys = xs
+    ys.sort()
+    stdout.print(ys, xs)
+    stdout.print(sorted(xs, key=(x) => x))
+    stdout.print(sorted([(half + 1, "b"), (u64(1), "a"), (big, "c")]))
+    stdout.print(sorted([f32(2.5), f32(-1.0), f32(0.1), f32(3.0)]))
+    named = ["ccc", "a", "bb"]
+    stdout.print(sorted(named, key=(s) => u64(s.len())), sorted(named, key=(s) => f32(s.len())))
+"#;
+    let printed = printed_by("u64_sort", source)?;
+    let (low, top) = ("0, 5, 7, 9223372036854775808, 18446744073709551615", "9223372036854775809");
+    assert_eq!(
+        printed,
+        format!(
+            "[{low}]\n[{low}] [5, 18446744073709551615, 0, 9223372036854775808, 7]\n[{low}]\n\
+             [(1, \"a\"), ({top}, \"b\"), (18446744073709551615, \"c\")]\n[-1.0, 0.1, 2.5, 3.0]\n\
+             [\"a\", \"bb\", \"ccc\"] [\"a\", \"bb\", \"ccc\"]\n"
+        )
+    );
+    Ok(())
+}
+
 /// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
 /// or an overflow check away can't rest on the local's value from before the call.
 const REF_WRITES: &str = "def neg(ref at: int):
@@ -4649,6 +4685,100 @@ def main(stdout: Stdout) fails Crashed:
     Ok(())
 }
 
+/// `with src else fail E` on a source whose body has an `x else fail` and a `with launch(...)?`:
+/// both fail with `E` once it's written in, and the launch stays one.
+#[test]
+fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_failing_instead",
+        r#"from std.concurrent import Crashed
+
+error Outer:
+    why: str
+
+error Inner:
+    why: str
+
+def work():
+    pass
+
+def given(bad: bool) -> int?:
+    None if bad else 1
+
+def inner_source(bad: bool) -> with int fails Inner | Crashed:
+    first = given(bad) else fail Inner(why="none")
+    with launch(() => work())?:
+        lend first
+
+def outer_source(bad: bool) -> with int fails Outer:
+    with inner_source(bad) else fail Outer(why="the inner source failed") as n:
+        lend n + 1
+
+def run(bad: bool, stdout: Stdout) fails Outer:
+    with outer_source(bad)? as n:
+        stdout.print("got", n)
+
+def main(stdout: Stdout):
+    for bad in [False, True]:
+        match run(bad, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(printed, "got 2\nworked\nfailed Outer(why=\"the inner source failed\")\n");
+    Ok(())
+}
+
+/// On a result that fails with a union, `case Err(Shut.Stuck(...))` says which error's case, and a
+/// later `case Err(error)` holds what the earlier cases left: a `Shut` once `Late` is taken.
+#[test]
+fn a_case_names_a_unions_error_and_later_cases_hold_what_is_left() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "union_cases",
+        r#"error Shut:
+    Stuck(name: str)
+    Jammed
+
+    def said(self) -> str:
+        match self:
+            case .Stuck(name):
+                f"stuck {name}"
+            case .Jammed:
+                "jammed"
+
+error Late:
+    waited: int
+
+def run(n: int) fails Shut | Late:
+    if n == 0: fail Shut.Stuck(name="door")
+    if n == 1: fail Late(waited=1)
+    if n == 2: fail Shut.Jammed
+
+def main(stdout: Stdout):
+    for n in [0, 1, 2, 3]:
+        match run(n):
+            case Ok(_):
+                stdout.print("went through")
+            case Err(Late(waited=_)):
+                stdout.print("late")
+            case Err(Shut.Stuck(name=name)):
+                stdout.print("named", name)
+            case Err(error):
+                stdout.print(error.said())
+"#,
+    )?;
+    assert_eq!(printed, "named door\nlate\njammed\nwent through\n");
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]
@@ -6483,6 +6613,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator that can fail, held in a name and let go partway in a launched task, closes its
+/// open source as it does in `main`. What closes a generator is said once, on the thread `main`
+/// runs on, and the task's worker started its runtime before that, so it once let the generator go
+/// with its source left open. What's printed is compared line by line, sorted, as the task's lines
+/// and `main`'s may come in either order.
+#[test]
+fn a_generator_let_go_in_a_task_closes_what_it_has_open() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("generator_closed_in_a_task")?;
+    let program = dir.join("closed.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/generator_closed_in_a_task.fen"))?;
+    let executable = dir.join("closed");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "after looped in a task",
+            "after named in a task",
+            "after named in main",
+            "closing looped in a task",
+            "closing named in a task",
+            "closing named in main",
+            "main goes on",
+        ],
+        "{printed}"
+    );
+    Ok(())
+}
+
 /// Each source a generator holds open where it's let go closes then, innermost first and once:
 /// not its `else:`, which is for a block that fails, and nothing for a block that already ended
 /// or a generator that never started. A `return` out of the loop lets go of it too.
@@ -6547,8 +6719,8 @@ def main(stdout: Stdout):
 
 /// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
 /// failure while it gives an item does: at a `break` and at a `return` out of the loop. A failure
-/// already leaving through it is an error with cases here, which can't carry notes natively yet,
-/// so the cleanup's takes its place.
+/// already leaving through it is the one that leaves, an error with cases here, carrying the
+/// cleanup's as a note.
 #[test]
 fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
     if !ready() {
@@ -6558,7 +6730,8 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     assert_eq!(
         printed,
         "closing broke\nbroke failed Shut.Stuck(name=\"broke\")\nclosing returned\n\
-         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\nfailing failed Shut.Stuck(name=\"failing\")\n"
+         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\n\
+         failing failed Other.Inside(why=\"in the loop\") [\"Shut.Stuck(name=\\\"failing\\\")\"]\n"
     );
     Ok(())
 }
@@ -6680,7 +6853,7 @@ def main(stdout: Stdout):
         case Ok(_):
             stdout.print("failing worked")
         case Err(why):
-            stdout.print("failing failed", why)
+            stdout.print("failing failed", why, why.notes())
 "#;
 
 /// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
@@ -8971,6 +9144,64 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b",
     ];
     assert_eq!([too_big.as_str(), &refused_after, &after_blank], wanted);
+    Ok(())
+}
+
+/// What a server says to `asked` on one connection, sent whole with the sending side then
+/// closed, built with the runtime `threads` names: `"1"` for the one with threads, `"0"` for the
+/// plain one. A reset after what was said shows as `[reset]`.
+fn served_on(threads: &str, name: &str, asked: &[u8]) -> std::io::Result<String> {
+    use std::io::{Read, Write};
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    if threads == "1" {
+        assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
+    }
+    let dir = folder(name)?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("serve");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", threads)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let _ = stream.write_all(asked);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut heard = Vec::new();
+    let reset = stream.read_to_end(&mut heard).is_err();
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
+}
+
+/// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
+/// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
+/// when it read the line and `line_value` another. Found by fuzzing the server
+/// (`fennec-fuzz run http-server`).
+#[test]
+fn a_bare_carriage_return_isnt_taken_off_a_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for threads in ["0", "1"] {
+        let said =
+            served_on(threads, &format!("bare_carriage_return_{threads}"), b"\r\r\nGET /a HTTP/1.1\r\n\r\n")?;
+        assert!(said.starts_with("HTTP/1.1 400 Bad Request\r\n"), "threads {threads}: {said}");
+    }
     Ok(())
 }
 
@@ -15110,6 +15341,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list[int]()`, `dict[str, int]()` and `set[str]()` keep what they hold when the program's
+/// checked again: once trimmed to build, after a `with` is written in, and as a constant.
+#[test]
+fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "typed_empty_list",
+        "def main(stdout: Stdout):\n    stdout.print(list[int](), list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] 0\n");
+    let printed = printed_by(
+        "typed_empty_in_a_with",
+        "def opened() -> with int:\n    lend 1\n\ndef main(stdout: Stdout):\n    with opened() as n:\n        stdout.print(list[int](), n)\n",
+    )?;
+    assert_eq!(printed, "[] 1\n");
+    let printed = printed_by(
+        "typed_empties",
+        "EMPTY = list[int]()\n\ndef main(stdout: Stdout):\n    mut d = dict[str, int]()\n    d[\"a\"] = 1\n    s = set[str]()\n    \
+         stdout.print(EMPTY, d, s, [1].len() > list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] {\"a\": 1} set() True\n");
+    Ok(())
+}
+
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
 /// by a call, which is read once.
@@ -15263,6 +15520,55 @@ fn a_constant_is_worked_out_once() -> std::io::Result<()> {
     let ours = outcome(&Command::new(&executable).output_within()?);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours.0, "599999744999850000\n");
+    Ok(())
+}
+
+/// `embed_folder`'s lists are made the first time it's reached and kept: a function giving one,
+/// called a thousand times, makes them once, where it made both each time. A list taken from it
+/// and changed is the caller's own copy, and the kept one stays as it was.
+#[test]
+fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("embedded_once")?;
+    std::fs::create_dir_all(dir.join("site/css"))?;
+    std::fs::write(dir.join("site/css/app.css"), "body{}")?;
+    std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>")?;
+    let allocations = |calls: u32| -> std::io::Result<(String, u64)> {
+        let source = format!(
+            "def site() -> EmbeddedFolder:\n    embed_folder(\"site\")\n\n\
+             def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
+             files = site()\n        total += files.len() + (files.get(\"index.html\") else bytes()).len()\n    \
+             mut paths = site().keys()\n    paths.append(\"extra\")\n    \
+             stdout.print(total, paths, site().keys())\n"
+        );
+        let program = dir.join(format!("calls{calls}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(format!("calls{calls}"));
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let made = said
+            .split_whitespace()
+            .skip_while(|word| *word != "allocations")
+            .nth(1)
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("no counts: {said}"));
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
+    };
+    let (once, made_once) = allocations(1)?;
+    let (often, made_often) = allocations(1000)?;
+    std::fs::remove_dir_all(&dir)?;
+    let shown = "[\"css/app.css\", \"index.html\", \"extra\"] [\"css/app.css\", \"index.html\"]\n";
+    assert_eq!(once, format!("13 {shown}"));
+    assert_eq!(often, format!("13000 {shown}"));
+    // Each call may make the folder's own block, but never its two lists again.
+    assert!(made_often - made_once <= 999, "{made_once} against {made_often}");
     Ok(())
 }
 
@@ -15426,7 +15732,7 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
 /// An error's notes natively: none to start with, each `add_note` changing only that error, not
 /// a copy taken before, `==` and printing passing them over, a union of errors noting the error
 /// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
-/// interpreter.
+/// interpreter, for an error with cases as for one without.
 #[test]
 fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
     if !ready() {
@@ -15442,6 +15748,11 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
             "note: while loading a long one\nnote: second line\n  and a third\n",
         ),
         ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+        (
+            "cases",
+            include_str!("fixtures/error_notes_with_cases.fen"),
+            "note: while dialing -3\nnote: second line\n  and a third\n",
+        ),
     ] {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;

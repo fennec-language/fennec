@@ -48,7 +48,6 @@ it's found again from where the program is. These are this machine's own and are
 | `runs` | the hashes of each file and definition when the program last ran |
 | `checked` | the text of the program when it last passed the checker |
 | `run-image` | the program as last cut down to what `main` reaches, while none of its files change |
-| `packs` | every function the program compiled to, together, so a run reads one file |
 | `tests` | each test's result, with the hash of everything it reached, so an unchanged test that passed doesn't run again. A kit's are kept under its name in `kit.toml` too, so a kit that moves keeps them; a result only counts when its hash matches the test as it is, so another kit of that name can't pass a test it hasn't run |
 | `tested` | the text of the program when all its tests last passed |
 | `kit-state` | a kit's files when its tests last passed, by size and when they changed, so a run can tell what changed without reading them |

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Writes `crates/interp/src/unicode_tables.rs`, the tables `std.unicode` reads, from the
+"""Writes `crates/rt/src/unicode_tables.rs`, the tables `std.unicode` reads, from the
 Unicode Character Database as Python's `unicodedata` holds it. Run it with the Python whose
 Unicode version the tables should have, and commit what it writes:
 
-    python3.14 tools/unicode/tables.py > crates/interp/src/unicode_tables.rs
+    python3.14 tools/unicode/tables.py > crates/rt/src/unicode_tables.rs
     cargo fmt
 
 Hangul syllables are left out of the decomposition and composition tables, since they're

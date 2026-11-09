@@ -314,8 +314,8 @@ pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
 
 /// Where a program first narrows a capability with `only`, if it does. Native code carries a
 /// capability as its kind alone, so a narrowed one would quietly become the whole capability
-/// again: until a capability carries what it allows natively, both backends refuse such a
-/// program and it runs in the interpreter. A method of the program's own called `only` counts
+/// again: until a capability carries what it allows natively, LLVM refuses such a
+/// program. A method of the program's own called `only` counts
 /// too, which only costs speed.
 pub fn calls_only(module: &Module) -> Option<crate::Span> {
     let mut found = None;

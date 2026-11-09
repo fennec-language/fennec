@@ -18,8 +18,6 @@ use fennec_count::{Run, median};
 pub(crate) struct Timing {
     pub(crate) median: Duration,
     pub(crate) output: String,
-    /// What it wrote to stderr, where the JIT says it fell back to the interpreter.
-    pub(crate) notes: String,
 }
 
 /// Runs each program `runs` times, taking turns, and keeps each one's median time and count.
@@ -37,7 +35,6 @@ pub(crate) fn time_together(programs: &[Program], runs: usize) -> Result<Vec<Tim
         timings.push(Timing {
             median: median(&mut times, |a, b| (a + b) / 2).unwrap_or_default(),
             output: first.stdout,
-            notes: first.stderr,
         });
     }
     Ok(timings)
@@ -89,9 +86,8 @@ const OPTIMIZED: [&str; 8] =
     ["-C", "opt-level=3", "-C", "codegen-units=1", "-C", "panic=abort", "-C", "debug-assertions=no"];
 
 /// The CPU level twins are built for: fixed, so a target doesn't depend on which machine pinned
-/// it, and matching what the JIT uses. Cranelift emits VEX instructions on x86-64, which is
-/// worth about 20 points on `mandelbrot` against a twin built for the baseline. On 64-bit Arm
-/// the baseline already has what the JIT uses.
+/// it. On x86-64 that's v3, with VEX instructions, worth about 20 points on `mandelbrot` against
+/// a twin built for the baseline. On 64-bit Arm the baseline already has them.
 pub(crate) fn twin_cpu() -> &'static [&'static str] {
     if cfg!(target_arch = "x86_64") { &["-C", "target-cpu=x86-64-v3"] } else { &[] }
 }

@@ -17,7 +17,7 @@ def answer(net: Net, raw: str) -> list[str] fails NetError:
         with net.connect("localhost", server.port)? as client:
             client.write(raw)?
             server.serve(respond)
-            return list(client.lines())
+            return list(client.lines()?)
     []
 
 def status_of(net: Net, raw: str) -> str fails NetError:

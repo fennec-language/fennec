@@ -59,7 +59,7 @@ pub struct Layouts {
     /// list can hold lists, dicts and those optionals.
     one_word_optionals: bool,
     /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
-    /// methods. Otherwise it's an object the interpreter holds.
+    /// methods. Otherwise it's an object the runtime holds.
     native_buffers: bool,
     /// What's held in place rather than by a block's address.
     in_place: InPlace,
@@ -321,7 +321,7 @@ impl Layouts {
     }
 
     /// Lays out the boxed types: every struct and enum that isn't plain and has no `where`
-    /// rules. A field native code can't hold is an interpreter value in a cell of its own.
+    /// rules. A field native code can't hold is a runtime `Value` in a cell of its own.
     fn add_boxed(&mut self, sources: &Sources<'_>, names: &[String]) {
         let candidates: BTreeMap<String, Written> = names
             .iter()
@@ -879,7 +879,7 @@ pub fn closure_definition(captures: &[Type]) -> Written {
 #[cfg(test)]
 mod tests {
     use fennec_check::Type;
-    use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
+    use fennec_rt::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 
     use super::{Layouts, Written, generator_definition};
     use crate::{Block, ListItem, Ty};
@@ -1028,9 +1028,9 @@ mod tests {
         assert_eq!(layouts.block(other), Some(Ty::Maybe(Block::Str)));
         assert_eq!(
             crate::describe(&layouts, nested),
-            Some(fennec_interp::packed::Element::List(std::rc::Rc::new(
-                fennec_interp::packed::Element::List(std::rc::Rc::new(fennec_interp::packed::Element::Int))
-            )))
+            Some(fennec_rt::packed::Element::List(std::rc::Rc::new(fennec_rt::packed::Element::List(
+                std::rc::Rc::new(fennec_rt::packed::Element::Int)
+            ))))
         );
         assert_eq!(Layouts::default().ty(&list(list(Type::Int))), Ty::Obj);
     }

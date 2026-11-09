@@ -11,7 +11,7 @@
 //!
 //! So far this takes ints, floats, bools, strings, structs and enums, plain and boxed, tuples,
 //! lists of those, optionals of blocks, and f-strings, laid out as `fennec_layout` says, on the
-//! same runtime as the JIT. It says which function it can't take rather than running it some
+//! runtime. It says which function it can't take rather than running it some
 //! other way.
 //!
 //! A function that can fail hands that back in a register kept for it, so that succeeding costs
@@ -64,9 +64,9 @@ mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_interp::embed::dicts::Word;
 use fennec_ir::{EnumDef, Program};
 use fennec_layout::{ListItem, Written, generator_definition};
+use fennec_rt::embed::dicts::Word;
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
@@ -204,7 +204,7 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         let ty = fennec_check::Type::Optional(Box::new(fennec_check::Type::List(Box::new(
             fennec_check::Type::Str,
         ))));
-        (fennec_interp::packed::NOTES.to_owned(), kinds::canon_in(blocks, &ty), None)
+        (fennec_rt::packed::NOTES.to_owned(), kinds::canon_in(blocks, &ty), None)
     };
     let errors = program.errors.iter().map(|def| {
         let mut written = fields(&def.fields);

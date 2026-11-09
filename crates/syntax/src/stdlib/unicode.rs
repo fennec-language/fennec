@@ -1,5 +1,5 @@
 //! `std.unicode`: a character's general category, the normalization forms NFC, NFD, NFKC and
-//! NFKD, and full case folding, which the interpreter does in Rust from Unicode's own tables.
+//! NFKD, and full case folding, which the runtime does from Unicode's own tables.
 
 use super::Module;
 

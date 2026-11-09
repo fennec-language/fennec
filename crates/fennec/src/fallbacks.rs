@@ -1,5 +1,5 @@
 //! `fennec dev fallbacks [path]`: every function LLVM doesn't take yet in what `main` reaches,
-//! which leaves the whole program to the interpreter. `--llvm` says the same, as it used to.
+//! which keeps the program from building. `--llvm` says the same, as it used to.
 
 use std::process::ExitCode;
 

@@ -294,9 +294,9 @@ fn sources_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
 /// Under mutation testing, one in this many of the repository's files is compared.
 const MUTANTS_SAMPLE: usize = 8;
 
-/// Where LLVM can't build the front end, as under coverage, `fennec run` runs it in the interpreter
-/// on one in this many of the corpus's files, since on every file it takes minutes. LLVM's build
-/// runs every file. Each dump has to match Rust's front end.
+/// Where the front end's release build can't be made here, `fennec run` runs it on one in this
+/// many of the corpus's files. The release build runs every file. Each dump has to match the
+/// front end it mirrors.
 const SAMPLE: usize = 8;
 
 /// The checker's sample, where LLVM can't build it, which checks the standard library's sources
@@ -447,8 +447,8 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
 }
 
 /// Checks LLVM's build of the self-hosted front end on every file in `corpus` against
-/// `rust_dump`. Returns a report of what differs. Where LLVM can't build it, as under coverage,
-/// what runs it is the interpreter, so it's a sample instead.
+/// `rust_dump`. Returns a report of what differs. Where its release build can't be made,
+/// `fennec run` runs it on a sample instead.
 fn on_llvm_against_rust(
     work: &Path,
     mode: &str,

@@ -2,15 +2,15 @@
 //! go into one executable with what they reach, compiled a function at a time from the cache.
 //! Worker processes run it, each with its share of the tests. A test a crash left unfinished runs
 //! again alone, so a crash is reported as that test's. Tests LLVM can't build yet come back for
-//! the caller to run another way. A test that fails says why as the other way does, both sides of
-//! an `assert` and what a failure passed up was, and a property test's input is shrunk to the
-//! simplest that fails, as the interpreter shrinks it.
+//! the caller to fail, with why. A test that fails says why, both sides of an `assert` and what a
+//! failure passed up was, and a property test's input is shrunk to the simplest that fails, as the
+//! interpreter shrank it.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::process::Command;
 
-use fennec_interp::{PROPERTY_CASES, TestOutcome, property_seed};
+use fennec_rt::{PROPERTY_CASES, TestOutcome, property_seed};
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
 
 use crate::test_inputs::{Inputs, PREFIX, written};
@@ -20,7 +20,7 @@ use crate::test_inputs::{Inputs, PREFIX, written};
 pub(crate) struct LlvmTests {
     /// The tests that ran through LLVM, and how each went.
     pub(crate) outcomes: Vec<TestOutcome>,
-    /// The names of the tests to run another way.
+    /// The names of the tests LLVM wouldn't build, which fail.
     pub(crate) left: Vec<String>,
     /// Why LLVM wouldn't build some of them, the first it said.
     pub(crate) refused: Option<String>,
@@ -162,7 +162,7 @@ fn fails_or_gives_back(body: &[Stmt]) -> bool {
 
 /// Whether a test's body can pass a failure up, which makes its function give back a result. The
 /// executable refuses a test function that gives back a value, so one missed here, like a `fail`
-/// in a `match`, only means its tests run another way.
+/// in a `match`, means its tests fail as ones LLVM can't build.
 fn passes_failures_up(test: &TestDef) -> bool {
     let mut found = fails_or_gives_back(&test.body);
     let mut body = test.body.clone();
@@ -249,7 +249,7 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     let mut args: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
     let mut made = String::new();
     let indent = "        ";
-    // Each input gets fakes in a world of its own, as the interpreter gives it.
+    // Each input gets fakes in a world of its own.
     if !test.capabilities.is_empty() {
         let _ = writeln!(made, "{indent}{PREFIX}{NEW_WORLD}()");
     }
@@ -273,7 +273,7 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
 }
 
 /// The functions of property test `number` that shrinks a failing input itself, as the
-/// interpreter's `shrink` does: the test, which tries each input in turn; an attempt, which runs the
+/// interpreter's `shrink` did: the test, which tries each input in turn; an attempt, which runs the
 /// body on an input and says whether it passed; and the shrinking, which tries each input's simpler
 /// values, in order, keeping the first that still fails, until none does or 200 have been tried.
 /// Then it runs the body on the simplest, which fails as the test's failure, saying what it was
@@ -346,7 +346,7 @@ fn shrinking_functions(
     }
     let mut described = Vec::with_capacity(test.inputs.len());
     for (at, input) in test.inputs.iter().enumerate() {
-        // A value shown in a list is shown as the interpreter shows one on its own.
+        // A value shown in a list is shown as one on its own is.
         let _ = writeln!(source, "    shown{at} = str([best{at}])");
         described.push(format!("\"{} = \" + shown{at}[1:shown{at}.len() - 1]", input.name));
     }

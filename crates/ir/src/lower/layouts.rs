@@ -26,7 +26,20 @@ use fennec_check::Type;
 
 use super::Context;
 
+/// The name the kit loader gives a kit's `pack.lock` in its program, as `fennec_kit::PACK_LOCK`.
+const PACK_LOCK: &str = "\0pack_lock";
+
 impl Context<'_> {
+    /// The kit's `pack.lock`: a line for each layout it has saved, `<shape in hex> <layout>`. Empty
+    /// when it has none.
+    pub(super) fn pack_lock(&self) -> String {
+        let Some(written) = self.constants.get(PACK_LOCK) else { return String::new() };
+        match &written.value.kind {
+            fennec_syntax::ExprKind::Bytes(data) => String::from_utf8_lossy(&data.0).into_owned(),
+            _ => String::new(),
+        }
+    }
+
     /// The layout of `ty`, as its values are saved.
     pub(super) fn layout(&self, ty: &Type) -> String {
         let mut out = String::new();

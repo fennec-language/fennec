@@ -38,9 +38,6 @@ pub(crate) struct Result {
     pub(crate) unchecked: Option<u64>,
     /// How many places in its compiled code aren't native.
     pub(crate) not_native: Option<usize>,
-    /// Whether it ran on the JIT, since LLVM couldn't build it, or the JIT handed any of it to the
-    /// interpreter.
-    pub(crate) fell_back: bool,
 }
 
 impl Result {
@@ -162,9 +159,8 @@ pub(crate) fn table(results: &[Result]) -> String {
             _ => "-".to_owned(),
         };
         let extra = result.extra_instructions().map(|extra| format!("{:+.1}%", extra * 100.0));
-        let fell_back = if result.fell_back { " (on the JIT)" } else { "" };
         lines.push(format!(
-            "| {} | {} | {} | {}{fell_back} | {} | {} | {} | {} | {} | {floor} | {} | {previous} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {floor} | {} | {previous} | {} | {} |",
             result.kernel,
             millis(result.startup),
             or_dash(result.startup_instructions.map(millions)),
@@ -293,7 +289,6 @@ mod tests {
             total: Duration::from_millis(30),
             startup: Duration::from_millis(10),
             previous: Some(Duration::from_millis(40)),
-            fell_back: true,
             ..counted(2_000_000, 1_000_000, false)
         };
         partly.previous_instructions = partly.instructions;
@@ -304,7 +299,7 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "| k | 10.0 ms | 0.0 M | 20.0 ms (on the JIT) | 0.0 ms | - | 2.0 M | 1.0 M | 50% | not yet | - | 40.0 ms (-25%) | +0.0% | - |",
+                "| k | 10.0 ms | 0.0 M | 20.0 ms | 0.0 ms | - | 2.0 M | 1.0 M | 50% | not yet | - | 40.0 ms (-25%) | +0.0% | - |",
                 "| k | 0.0 ms | 0.0 M | 0.0 ms | 0.0 ms | - | 1.0 M | 0.9 M | 90% | met, enforced | - | - | - | - |",
                 "| k | 0.0 ms | - | 5.0 ms | - | - | - | - | - | - | - | - | - | - |",
             ]

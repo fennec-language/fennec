@@ -9235,6 +9235,28 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A type's own function, like `Unpacker.of`, can be called through its module's name.
+#[test]
+fn a_static_method_through_a_module_name_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "module_static",
+        r"from std import pack
+
+def main(stdout: Stdout) fails ParseError:
+    mut packer = pack.Packer()
+    packer.add(3)
+    packer.add(4)
+    mut values = pack.Unpacker.of(packer.bytes())
+    stdout.print(values.next[int]()?, values.next[int]()?, values.next[int]()?)
+",
+    )?;
+    assert_eq!(printed, "3 4 None\n");
+    Ok(())
+}
+
 /// A tuple saved only through `std.pack`, with nothing routed through JSON, saves natively: its
 /// saving isn't trimmed away as unreached. And one saved before what holds it is known, `pairs`
 /// here until its `append`, is what it holds once the check is done.

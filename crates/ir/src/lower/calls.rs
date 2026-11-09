@@ -540,6 +540,14 @@ impl Lowering<'_> {
         }
         match &named.kind {
             ExprKind::Name(owner) if self.names_a_type(owner) => Some(owner),
+            // `pack.Unpacker.of(data)`: a type named through its module's name. `Kind.Empty` is
+            // an enum's case instead.
+            ExprKind::Attr { object, name: owner, optional: false }
+                if matches!(&object.kind, ExprKind::Name(module) if self.lookup(module).is_none() && !self.context.enums.contains_key(module.as_str()))
+                    && self.names_a_type(owner) =>
+            {
+                Some(owner)
+            }
             _ => None,
         }
     }

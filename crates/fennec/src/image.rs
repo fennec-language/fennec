@@ -6,8 +6,8 @@
 //! program from here has no source text, so a failure loads the source to point at it.
 
 use fennec_build::{Cache, KitFile, KitState};
-use fennec_interp::embed::codec::{Decode, Encode, Reader, Writer};
 use fennec_kit::Program;
+use fennec_rt::embed::codec::{Decode, Encode, Reader, Writer};
 use fennec_syntax::{Module, Sources};
 
 const BUILD: &str = env!("FENNEC_BUILD");

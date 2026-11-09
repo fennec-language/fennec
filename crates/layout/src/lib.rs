@@ -5,9 +5,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
-pub use fennec_interp::embed::dicts::Word;
-use fennec_interp::embed::{Tables, dicts};
-use fennec_interp::packed::Element;
+pub use fennec_rt::embed::dicts::Word;
+use fennec_rt::embed::{Tables, dicts};
+use fennec_rt::packed::Element;
 
 mod layouts;
 
@@ -292,8 +292,8 @@ fn describe_numbered(layouts: &Layouts, ty: Ty, numbering: &Numbering) -> Option
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(numbering.number(id)?).ok()?),
         // By its block's address, whose own shape says it's a capability.
-        Ty::Cap(_) => Element::Boxed(usize::try_from(fennec_interp::embed::heap::CAPABILITY_SHAPE).ok()?),
-        Ty::Bytes => Element::Boxed(usize::try_from(fennec_interp::embed::heap::BYTES_SHAPE).ok()?),
+        Ty::Cap(_) => Element::Boxed(usize::try_from(fennec_rt::embed::heap::CAPABILITY_SHAPE).ok()?),
+        Ty::Bytes => Element::Boxed(usize::try_from(fennec_rt::embed::heap::BYTES_SHAPE).ok()?),
         // By its block's address, whose own shape says what it keeps.
         Ty::Gen => Element::Boxed(0),
         Ty::Str if layouts.text_headers() => Element::Text,
@@ -327,7 +327,7 @@ fn describe_numbered(layouts: &Layouts, ty: Ty, numbering: &Numbering) -> Option
             } else {
                 let mut held = fields(&layout.fields)?;
                 if layout.cell {
-                    held.push((Rc::from(fennec_interp::packed::LOCK), Element::Int));
+                    held.push((Rc::from(fennec_rt::packed::LOCK), Element::Int));
                 }
                 Element::Struct { name, fields: held }
             }

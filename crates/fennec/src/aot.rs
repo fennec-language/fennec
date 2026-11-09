@@ -152,7 +152,7 @@ pub(crate) fn tests_executable(
 ) -> Result<Vec<String>, String> {
     let emitted = emitted(module, true)?;
     let image_of = |image: &mut fennec_llvm::Image| {
-        fennec_interp::embed::codec::Image {
+        fennec_rt::embed::codec::Image {
             // `fennec test` renders a failure itself.
             sources: fennec_syntax::Sources::new(),
             tables: std::mem::take(&mut image.tables),
@@ -178,7 +178,7 @@ pub(crate) fn tracing_executable(
     fennec_build::keep_what_main_reaches(&mut reached);
     let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
-        fennec_interp::embed::codec::Image {
+        fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
@@ -485,7 +485,7 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
     fennec_build::keep_what_main_reaches(&mut reached);
     let emitted = emitted(&reached, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
-        fennec_interp::embed::codec::Image {
+        fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn the_main_stack_linked_is_the_one_the_runtime_counts_on() {
-        let flag = format!("-Wl,-stack_size,{:#x}", fennec_interp::embed::aot::MAIN_STACK_BYTES);
+        let flag = format!("-Wl,-stack_size,{:#x}", fennec_rt::embed::aot::MAIN_STACK_BYTES);
         assert!(super::SYSTEM_LIBRARIES.contains(&flag.as_str()), "{flag}");
     }
 

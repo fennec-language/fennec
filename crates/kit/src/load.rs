@@ -666,7 +666,7 @@ impl<'a> Loader<'a> {
             .collect();
         let kit_src = manifest.as_ref().map(|_| (self.own.src.clone(), self.own.shown_src.clone()));
         Ok(Program {
-            module: Module { items },
+            module: Module { items, ..Default::default() },
             sources: self.sources,
             manifest,
             embedded: self.embedded,

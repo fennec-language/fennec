@@ -3,9 +3,13 @@
 use crate::span::Span;
 
 /// A parsed `.fen` file.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Module {
     pub items: Vec<Item>,
+    /// Standard library functions as this program runs them, by the key the checker gives each,
+    /// like `concurrent.told` or `Pool.borrowed`: rewritten as a program's own code is, as by a
+    /// `with` source or `launch` written in where it's used. They stand in for the library's.
+    pub std_rewritten: Vec<(String, FnDef)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -4779,6 +4779,55 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source with an `else:` around a block holding a source that opens another: the one written
+/// in last is written in first, so the outer `else:` runs when the innermost fails opening, and
+/// each `with` stays a `with` until it's written in.
+#[test]
+fn a_source_around_one_that_opens_another_writes_the_innermost_in_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "innermost_first",
+        r#"error Boom:
+    at: int
+
+def inner(n: int, stdout: Stdout) -> with int fails Boom:
+    if n < 0: fail Boom(at=n)
+    lend n
+    stdout.print("inner closed")
+
+def middle(n: int, stdout: Stdout) -> with int fails Boom:
+    with inner(n, stdout)? as got:
+        lend got + 1
+    stdout.print("middle closed")
+
+def outer(n: int, stdout: Stdout) -> with int fails Boom:
+    lend n else:
+        stdout.print("outer's cleanup")
+    stdout.print("outer closed")
+
+def used(n: int, stdout: Stdout) fails Boom:
+    with outer(n, stdout)? as a:
+        with middle(a, stdout)? as b:
+            stdout.print("got", b)
+
+def main(stdout: Stdout):
+    for n in [1, -1]:
+        match used(n, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "got 2\ninner closed\nmiddle closed\nouter closed\nworked\nouter's cleanup\nfailed Boom(at=-1)\n"
+    );
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]

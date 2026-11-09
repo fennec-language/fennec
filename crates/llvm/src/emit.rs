@@ -2684,6 +2684,11 @@ impl Emit<'_, '_, '_> {
         } else if returns.counted() {
             self.retain_value(held, &returns);
         }
+        // A constant held in a block lives for the whole run, so a task anywhere can read it.
+        if matches!(returns, Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) | Kind::Bytes) {
+            self.declare("declare void @fennec_constant_kept(ptr) nounwind");
+            self.line(&format!("call void @fennec_constant_kept(ptr {held})"));
+        }
     }
 
     fn give_back(&mut self, value: Option<&Operand>) -> Result<(), String> {

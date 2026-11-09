@@ -1,6 +1,7 @@
 # `std.csv`: CSV text, rows of fields separated by commas, as RFC 4180 describes. A field
 # holding a comma, a quote or a line break is written in quotes, with its quotes doubled. Lines
-# can end in `\n`, `\r\n` or `\r`, and blank lines aren't rows. Every field is text.
+# can end in `\n`, `\r\n` or `\r`, and blank lines aren't rows, so `dumps` refuses a row with no fields.
+# Every field is text.
 
 ## The rows of `text`. Text that isn't CSV fails with a `ParseError`.
 export def loads(text: str, delimiter = ",") -> list[list[str]]:
@@ -22,20 +23,27 @@ export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
         found.append({name: field for name, field in zip(names, row)})
     found
 
-## CSV text of `rows`, each ending in `\n`.
-export def dumps(rows: list[list[str]], delimiter = ",") -> str:
+## CSV text of `rows`, each ending in `\n`. A row with no fields fails with an `InvalidValue`:
+## CSV can't write one, since a blank line isn't a row, and it would be lost.
+export def dumps(rows: list[list[str]], delimiter = ",") -> str fails InvalidValue:
     mut lines = list[str]()
-    for row in rows:
+    for at, row in enumerate(rows):
+        if row.len() == 0:
+            fail InvalidValue(message=f"row {at} has no fields, which CSV can't write")
         lines.append(written_row(row, delimiter))
     "".join(lines)
 
 ## CSV text with `names` as its first row, then each record's value for each name, which
 ## is empty when it has none. Other keys aren't written.
-export def dumps_records(names: list[str], entries: list[dict[str, str]], delimiter = ",") -> str:
+export def dumps_records(
+    names: list[str],
+    entries: list[dict[str, str]],
+    delimiter = ",",
+) -> str fails InvalidValue:
     mut rows = [names]
     for record in entries:
         rows.append([(record.get(name) else "") for name in names])
-    dumps(rows, delimiter)
+    dumps(rows, delimiter)?
 
 ## One row and the newline after it. A row of one empty field is written in quotes,
 ## since a blank line isn't a row.
@@ -44,7 +52,14 @@ def written_row(row: list[str], delimiter: str) -> str:
     delimiter.join([quoted_field(field, delimiter) for field in row]) + "\n"
 
 def quoted_field(field: str, delimiter: str) -> str:
-    special = delimiter in field or "\"" in field or "\n" in field or "\r" in field
+    # One starting with U+FEFF would be taken for the text's byte order mark and lost.
+    special = (
+        delimiter in field
+        or "\"" in field
+        or "\n" in field
+        or "\r" in field
+        or field.startswith("\ufeff")
+    )
     if not special: return field
     "\"" + field.replace("\"", "\"\"") + "\""
 

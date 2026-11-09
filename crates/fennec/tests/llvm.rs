@@ -7947,6 +7947,76 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// The server's answers reach a client that's still sending when it's refused, and a blank line
+/// between requests is passed over, as HTTP/1.1 says a server should (RFC 9112, 2.2), rather than
+/// closing. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
+/// reset: closing with what the client sent unread resets the connection, which throws away what
+/// the client hadn't read yet, the answers before too. Found by fuzzing the
+/// server (`fennec-fuzz run http-server`).
+#[test]
+fn an_http_server_answers_what_it_refuses_and_passes_over_blank_lines() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_server_blank_lines")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let connect = || -> std::io::Result<std::net::TcpStream> {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        Ok(stream)
+    };
+    // Everything the server says, read as it comes until it closes, or what went wrong.
+    let heard = |stream: &mut std::net::TcpStream| -> String {
+        let mut heard = Vec::new();
+        match stream.read_to_end(&mut heard) {
+            Ok(_) => String::from_utf8_lossy(&heard).into_owned(),
+            Err(err) => format!("{}[{err}]", String::from_utf8_lossy(&heard)),
+        }
+    };
+    // A body far bigger than the server takes, still being sent when it answers.
+    let mut big = connect()?;
+    big.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n")?;
+    let _ = big.write_all(&vec![b'x'; 4 << 20]);
+    let too_big = heard(&mut big);
+    // Answers first, then a refusal, with the rest of what was sent unread.
+    let mut pipelined = connect()?;
+    pipelined.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nNOT HTTP\r\n\r\n")?;
+    let _ = pipelined.write_all(&vec![b'y'; 1 << 20]);
+    let refused_after = heard(&mut pipelined);
+    let mut blank = connect()?;
+    blank.write_all(b"GET /a HTTP/1.1\r\n\r\n\r\nGET /b HTTP/1.1\r\nConnection: close\r\n\r\n")?;
+    let after_blank = heard(&mut blank);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    // Each closes cleanly once it's answered, with no reset.
+    let wanted = [
+        "HTTP/1.1 413 Content Too Large\r\ncontent-length: 19\r\nconnection: close\r\n\r\nthe body is too big",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/aHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/b\
+         HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/a\
+         HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b",
+    ];
+    assert_eq!([too_big.as_str(), &refused_after, &after_blank], wanted);
+    Ok(())
+}
+
 /// A failure leaving `lock ... as ref`, by `fail` or `?`, puts back everything the block changed,
 /// as a crash does: one value, or all those locked together, and on `parallel`'s threads too. What
 /// the failure says keeps what the block saw. A local changed in the block keeps its change, and
@@ -9788,6 +9858,34 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Rows read into a struct refuse two columns of the same name, as JSON and TOML refuse a field
+/// given twice, rather than one silently taking the other's place.
+#[test]
+fn rows_refuse_two_columns_for_one_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sql_twice",
+        r#"from std import sql
+from std.sql import SqlRows
+
+struct Entry:
+    size: int
+
+def main(stdout: Stdout):
+    rows = SqlRows(columns=["size", "size"], kinds=[1, 1], at=[0, 1], ints=[1, 2], floats=[], texts=[], blobs=[])
+    match sql.rows_as[Entry](rows):
+        case Ok(found):
+            stdout.print("read", found)
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "refused\n");
+    Ok(())
+}
+
 /// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
 /// written in the source. A value is part of one argument however much it holds, so it can't add
 /// an argument or start a command. Text written beside a value is that argument too.
@@ -9872,6 +9970,34 @@ def main(stdout: Stdout):
         printed,
         "loaded refused loaded refused\nPath(text=\"../..\") Path(text=\"a/../..\") Path(text=\"a\")\nPath(text=\"static/a/b.txt\")\nPath(text=\"static/a.txt\")\nrefused\nrefused\nrefused\nrefused\nloaded refused refused refused\nrefused\naxxx xxxa xax\naxyx xyxa xyaxy\n"
     );
+    Ok(())
+}
+
+/// CSV that `csv.dumps` writes reads back as the rows it was given: a first field starting with
+/// a byte order mark keeps it, rather than `loads` taking it for the text's, and a row with no
+/// fields, which CSV can't write, is refused rather than lost. Found by fuzzing `std.csv` (`fennec-fuzz run csv`).
+#[test]
+fn csv_dumps_writes_what_loads_reads_back_as_the_same_rows() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "csv_round_trip",
+        r#"from std import csv
+
+def back(rows: list[list[str]]) -> str:
+    text = csv.dumps(rows) else return "refused"
+    match csv.loads(text):
+        case Ok(read):
+            return str(read == rows)
+        case Err(_):
+            return "False"
+
+def main(stdout: Stdout):
+    stdout.print(back([["﻿a", "b"]]), back([["﻿"]]), back([["a"], [], ["b"]]))
+"#,
+    )?;
+    assert_eq!(printed, "True True refused\n");
     Ok(())
 }
 
@@ -10283,6 +10409,50 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     let sent: Vec<usize> = passwords.iter().map(|sent| sent.recv().unwrap_or(99)).collect();
     assert_eq!(sent[2], 0, "the password went to a server that asked for it as it is");
     assert_eq!(sent[5], 1, "the password wasn't sent when asked to send it as it is");
+    Ok(())
+}
+
+/// A Postgres server's messages are read as the protocol writes them, and anything else fails
+/// rather than reading as something: a count below zero, a cell's size below -1, an error with
+/// no zero byte ending its fields, a `ReadyForQuery` that isn't one byte, and bytes left over in
+/// a message. A `bool` cell is `t` or `f`, and anything else fails rather than reading as false.
+/// Found by fuzzing `PgReader` (`fennec-fuzz run postgres`).
+#[test]
+fn postgres_refuses_messages_a_server_never_sends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "postgres_strict",
+        r#"from std import postgres
+from std.postgres import PgMessage, PgReader
+
+def read(data: bytes) -> str:
+    mut reader = PgReader()
+    reader.feed(data)
+    match reader.next():
+        case Ok(_):
+            return "read"
+        case Err(_):
+            return "refused"
+
+def main(stdout: Stdout):
+    stdout.print(read(bytes([84, 0, 0, 0, 6, 255, 255])))
+    stdout.print(read(bytes([68, 0, 0, 0, 6, 255, 255])))
+    stdout.print(read(bytes([68, 0, 0, 0, 10, 0, 1, 255, 255, 255, 254])))
+    stdout.print(read(bytes([69, 0, 0, 0, 11, 83, 69, 82, 82, 79, 82, 0])))
+    stdout.print(read(bytes([90, 0, 0, 0, 4])), read(bytes([90, 0, 0, 0, 6, 73, 73])))
+    stdout.print(read(bytes([75, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3])))
+    stdout.print(read(bytes([49, 0, 0, 0, 5, 120])))
+    rows = [PgMessage.Row(cells=[bytes([120])], present=[True])]
+    match postgres.rows_of(["flag"], types=[16], rows=rows):
+        case Ok(found):
+            stdout.print("read", found.ints)
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "refused\nrefused\nrefused\nrefused\nrefused refused\nrefused\nrefused\nrefused\n");
     Ok(())
 }
 

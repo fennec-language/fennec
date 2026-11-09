@@ -76,7 +76,7 @@ fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Outp
                 let printed = reader.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
                 let printed = String::from_utf8_lossy(&printed).into_owned();
                 let start = printed.char_indices().rev().nth(2_000).map_or(0, |(at, _)| at);
-                printed[start..].to_owned()
+                printed.get(start..).unwrap_or(&printed).to_owned()
             };
             let why =
                 format!("{error}, having printed:\n{}\nand to stderr:\n{}", so_far(stdout), so_far(stderr));

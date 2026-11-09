@@ -6286,6 +6286,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator that can fail, held in a name and let go partway in a launched task, closes its
+/// open source as it does in `main`. What closes a generator is said once, on the thread `main`
+/// runs on, and the task's worker started its runtime before that, so it once let the generator go
+/// with its source left open. What's printed is compared line by line, sorted, as the task's lines
+/// and `main`'s may come in either order.
+#[test]
+fn a_generator_let_go_in_a_task_closes_what_it_has_open() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("generator_closed_in_a_task")?;
+    let program = dir.join("closed.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/generator_closed_in_a_task.fen"))?;
+    let executable = dir.join("closed");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "after looped in a task",
+            "after named in a task",
+            "after named in main",
+            "closing looped in a task",
+            "closing named in a task",
+            "closing named in main",
+            "main goes on",
+        ],
+        "{printed}"
+    );
+    Ok(())
+}
+
 /// Each source a generator holds open where it's let go closes then, innermost first and once:
 /// not its `else:`, which is for a block that fails, and nothing for a block that already ended
 /// or a generator that never started. A `return` out of the loop lets go of it too.

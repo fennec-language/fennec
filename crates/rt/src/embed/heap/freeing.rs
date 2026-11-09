@@ -71,11 +71,35 @@ pub extern "C" fn free_text(address: i64) {
 }
 
 /// Says what closes what's open in a generator with this shape that's let go partway. Only
-/// shapes given here are treated specially when they're freed.
+/// shapes given here are treated specially when they're freed. The program says it once, as it
+/// starts, on the thread `main` runs on; every other thread's runtime, started from the program
+/// before that, takes it up from `ABANDONS` when it next frees something.
 pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {
+    let shape = u64::try_from(shape).unwrap_or(u64::MAX);
+    let mut all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    all.get_or_insert_with(HashMap::new).insert(shape, abandon);
+    ABANDONS_SET.store(all.as_ref().map_or(0, HashMap::len), std::sync::atomic::Ordering::Release);
+    drop(all);
     with(|state| {
-        state.tables.abandons.insert(u64::try_from(shape).unwrap_or(u64::MAX), abandon);
+        state.tables.abandons.insert(shape, abandon);
     });
+}
+
+/// What closes each generator shape let go partway, for every thread: what `set_abandon` was told.
+static ABANDONS: std::sync::Mutex<Option<HashMap<u64, extern "C" fn(i64)>>> = std::sync::Mutex::new(None);
+/// How many `ABANDONS` holds, read without the lock on every free.
+static ABANDONS_SET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Brings this thread's runtime up to date with what closes generators, if the program has said
+/// more since it last looked: a worker started before `main`'s thread said it.
+fn take_up_abandons(state: &mut State) {
+    if state.tables.abandons.len() >= ABANDONS_SET.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(all) = all.as_ref() {
+        state.tables.abandons.extend(all.iter().map(|(shape, abandon)| (*shape, *abandon)));
+    }
 }
 
 /// Runs what closes the generators let go of, each only once nothing here is borrowed, since
@@ -114,6 +138,7 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
 /// way down.
 fn free_block(state: &mut State, address: u64) {
+    take_up_abandons(state);
     let mut pending = std::mem::take(&mut state.heap.pending);
     let mut taken = std::mem::take(&mut state.heap.taken);
     pending.push(address);

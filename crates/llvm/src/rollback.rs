@@ -1,5 +1,5 @@
 //! Rollback in `lock x as ref s:`: a crash inside puts back every value the block changed. The
-//! runtime keeps a log for each such lock (`crates/interp/src/embed/guarded/rollback.rs`), and
+//! runtime keeps a log for each such lock (`crates/rt/src/embed/guarded/rollback.rs`), and
 //! native code tells it what changes: it begins the log when the lock is taken, saves each word
 //! before writing it, and keeps the log at a normal end.
 //!

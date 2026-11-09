@@ -41,7 +41,7 @@ pub(crate) fn copies_in_a_run(path: &str) -> ExitCode {
 fn counted_run(
     program: &fennec_kit::Program,
     work: &std::path::Path,
-) -> Result<fennec_interp::embed::Counts, String> {
+) -> Result<fennec_rt::embed::Counts, String> {
     let executable = work.join(format!("counted{}", std::env::consts::EXE_SUFFIX));
     crate::aot::executable(program, &executable, false).map_err(|why| format!("error: {why}\n"))?;
     let ran = std::process::Command::new(&executable)
@@ -62,8 +62,8 @@ fn counted_run(
 }
 
 /// The counts in the line a run under `FENNEC_COUNTS` ends with.
-fn counts_in(line: &str) -> Option<fennec_interp::embed::Counts> {
-    let mut counts = fennec_interp::embed::Counts::default();
+fn counts_in(line: &str) -> Option<fennec_rt::embed::Counts> {
+    let mut counts = fennec_rt::embed::Counts::default();
     let mut words = line.split(' ');
     if !line.starts_with("copies ") {
         return None;
@@ -83,7 +83,7 @@ fn counts_in(line: &str) -> Option<fennec_interp::embed::Counts> {
 }
 
 /// What a run did, in a line.
-pub(crate) fn ran(counts: &fennec_interp::embed::Counts) -> String {
+pub(crate) fn ran(counts: &fennec_rt::embed::Counts) -> String {
     let copies = match counts.copies {
         0 => "no copies".to_owned(),
         1 => format!("1 copy of {}", bytes(counts.copied_bytes)),
@@ -148,7 +148,7 @@ pub(crate) fn copies(path: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{bytes, ran};
-    use fennec_interp::embed::Counts;
+    use fennec_rt::embed::Counts;
 
     #[test]
     fn sizes_read_in_the_unit_that_fits() {

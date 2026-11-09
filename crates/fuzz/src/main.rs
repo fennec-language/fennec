@@ -13,21 +13,30 @@
 //! the smallest input that still fails the same way, and kept in `found/<target>/`. The tests
 //! run everything kept there, so a failure stays fixed.
 //!
-//! `llvm`, `json`, `toml` and `utf8` build what they run natively, so they need `fennec` beside this
-//! program and LLVM's tools. Running with no targets named runs every one but `llvm`, which builds
-//! every input twice and runs only when named, and leaves out the other three, saying so, where
-//! nothing can be built.
+//! `llvm` and the targets in `targets::NATIVE` build what they run natively, so they need `fennec`
+//! beside this program and LLVM's tools. Those that read outside input, `json-rules`, `toml-rules`,
+//! `pack`, `csv`, `url`, `http-server`, `http-client` and `postgres`, hold what they read to the
+//! format's own rules, each in its own module, not only to not crashing. Running with no targets
+//! named runs every one but `llvm`, which builds every input twice and runs only when named, and
+//! leaves out the other native ones, saying so, where nothing can be built.
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
+mod csv_rules;
 mod engines;
 mod generate;
+mod http_rules;
+mod json_rules;
 mod llvm;
 mod minimize;
 mod mutate;
+mod pack_rules;
 mod parked;
+mod postgres_rules;
 mod supervise;
 mod targets;
+mod toml_rules;
+mod url_rules;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

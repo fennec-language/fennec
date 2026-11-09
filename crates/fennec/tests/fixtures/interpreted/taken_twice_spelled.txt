@@ -1,10 +1,10 @@
-source 0bcc4211aa8ba5e4c19f6bf4d7eff2ccec91d7ebe85376866ae1941a3e5876ef
+source e415bcbcd2024fb206819c91c37e5bbf2c82febdb3e65b656d8e5a2feb8837a7
 code 1
 stdout 10
 before 21
 stderr 153
-error: this `with` takes the same `shared` value twice
-  --> <dir>/spelled.fen:17:10
+error: this `lock` takes the same `shared` value twice
+  --> <dir>/spelled.fen:18:10
    |
-17 |     with one, one as ref x, ref y:
+18 |     lock one, one as ref x, ref y:
    |          ^^^^^^^^

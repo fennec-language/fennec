@@ -824,15 +824,15 @@ struct Inventory:
 struct Character:
     inventory: Inventory
 
-shared Cell:
+struct Cell:
     count = 0
 
 struct Celled:
-    cell: Cell
+    cell: shared Cell
 
 struct Quiet:
     @skip
-    cell: Cell? = None
+    cell: (shared Cell)? = None
     size = 1
 
 def saved[T: Serializable](x: T) -> int:

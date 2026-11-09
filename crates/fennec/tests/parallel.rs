@@ -861,9 +861,11 @@ fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A launched task that tries to serve says it can't, rather than wait forever for its own worker.
+/// A launched task can serve: its rounds read what it gave them, and other tasks on its worker go on
+/// meanwhile.
 #[test]
-fn serving_from_a_launched_task_fails_rather_than_hang() -> std::io::Result<()> {
+fn a_launched_task_can_serve() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
@@ -871,14 +873,35 @@ fn serving_from_a_launched_task_fails_rather_than_hang() -> std::io::Result<()> 
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/serve_from_a_task.fen");
     let built = build_on_threads(&dir, source, "serve_from_a_task")?;
-    for threads in ["1", "2"] {
-        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
-        let printed = String::from_utf8_lossy(&ran.stdout);
-        assert!(printed.starts_with("failed: Crashed"), "on {threads} threads: {printed}");
-        assert!(
-            String::from_utf8_lossy(&ran.stderr).contains("can't be served from a launched task"),
-            "on {threads} threads"
-        );
+    for threads in ["1", "2", "4"] {
+        let mut server = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+        let mut port = String::new();
+        out.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        for line in ["one", "two", "last"] {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            stream.write_all(format!("{line}\n").as_bytes())?;
+            let mut back = String::new();
+            BufReader::new(stream).read_line(&mut back)?;
+            assert_eq!(
+                back,
+                format!(
+                    "a greeting long enough to need a block of its own: {line}, the first name, also long enough and the second say hi\n"
+                ),
+                "on {threads} threads"
+            );
+        }
+        let mut rest = String::new();
+        out.read_to_string(&mut rest)?;
+        let ended = server.wait_with_output()?;
+        assert!(ended.status.success(), "on {threads} threads: {}", String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(rest, "the server ended\ndone the second\n", "on {threads} threads");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -926,10 +949,10 @@ fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     for (name, fields) in [("numbers", ""), ("blocks", "    names = [\"x\"]\n")] {
         let source = format!(
-            "shared Counter:\n    total = 0\n{fields}\n\
-             def main(stdout: Stdout):\n    one = Counter()\n    \
+            "struct Counter:\n    total = 0\n{fields}\n\
+             def main(stdout: Stdout):\n    shared one = Counter()\n    \
              mut items = [n for n in range(50_000)]\n    for ref item in parallel(items):\n        \
-             with one as ref x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
+             lock one as ref x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
              stdout.print(items.len())\n"
         );
         let built = build_on_threads(&dir, &source, name)?;
@@ -1081,27 +1104,30 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     Ok(())
 }
 
-/// A server whose connections share a counter: one fails inside a `with` on it.
+/// A server whose connections share a counter: one fails inside a `lock` on it.
 const SERVER_HOLDING: &str = "\
 from std.net import Connection, NetError
 
-shared Counter:
+struct Counter:
     total = 0
 
-def answer(connection: Connection, counter: Counter) -> int fails NetError:
+def answer(connection: Connection, counter: shared Counter) -> int fails NetError:
     connection.write(\"ready\\n\")?
     for line in connection.lines()?:
         if line == \"fail\":
-            with counter as ref held:
+            lock counter as ref held:
+                held.total += 100
                 held.total = 1 // (held.total - held.total)
         else:
-            with counter as ref held:
+            mut total = 0
+            lock counter as ref held:
                 held.total += 1
-            connection.write(f\"{counter.total}\\n\")?
+                total = held.total
+            connection.write(f\"{total}\\n\")?
     0
 
 def main(net: Net, stdout: Stdout) fails NetError:
-    counter = Counter()
+    shared counter = Counter()
     with net.listen(0)? as server:
         stdout.print(server.port)
         for connection in parallel(server):
@@ -1112,10 +1138,10 @@ def main(net: Net, stdout: Stdout) fails NetError:
                     stdout.print(\"failed\", error.message())
 ";
 
-/// A connection's task that fails while it holds a lock ends the whole program, rather than only
-/// itself: what the lock guards may be half changed, and other tasks may be waiting for it.
+/// A connection's task that crashes while it holds a lock ends only itself: the lock's changes are
+/// put back first, so the next connection sees none of them, and the server goes on.
 #[test]
-fn a_server_task_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
+fn a_server_task_crashing_under_a_lock_rolls_back_and_the_server_goes_on() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
@@ -1133,25 +1159,17 @@ fn a_server_task_failing_under_a_lock_ends_the_program() -> std::io::Result<()> 
     assert_eq!(talk(port, &["count"])?, ["ready", "1"]);
     let failing = std::thread::spawn(move || talk(port, &["fail"]));
     let _ = failing.join();
-    // It ends by itself: nothing here kills it.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let status = loop {
-        if let Some(status) = server.0.try_wait()? {
-            break status;
-        }
-        assert!(
-            std::time::Instant::now() <= deadline,
-            "the server kept going after a task failed holding a lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
+    // The crashed round's `+= 100` was put back, and the next round is answered.
+    let after = talk(port, &["count"]);
+    server.0.kill()?;
+    let _ = server.0.wait()?;
     let mut said = String::new();
     std::io::Read::read_to_string(
         &mut server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?,
         &mut said,
     )?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(status.code(), Some(1));
+    assert_eq!(after?, ["ready", "2"], "{said}");
     assert!(said.contains("division by zero"), "{said}");
     Ok(())
 }
@@ -1224,7 +1242,7 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-worked-out-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let source = "LONG = f\"{1 + 1} and then a string too long to fit in a header\"\n\
                   WORDS = [\"a\", \"b\", LONG]\n\n\

@@ -1999,6 +1999,33 @@ fn fix_moves_idmap_to_table() {
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
 }
 
+/// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
+/// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
+/// for the `with`, and then it runs.
+#[test]
+fn fix_moves_a_shared_declaration_to_shared_t_and_lock() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-shared-declaration", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("account.fen");
+    let path = program.to_string_lossy().into_owned();
+    let old = "shared Account:\n    total = 0\n\ndef pay(account: Account, amount: int):\n    \
+               with account as ref held:\n        held.total += amount\n\ndef main(stdout: Stdout):\n    \
+               account = Account()\n    pay(account, 5)\n    with account as seen:\n        stdout.print(seen.total)\n";
+    std::fs::write(&program, old).unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        "struct Account:\n    total = 0\n\ndef pay(account: shared Account, amount: int):\n    \
+         lock account as ref held:\n        held.total += amount\n\ndef main(stdout: Stdout):\n    \
+         shared account = Account()\n    pay(account, 5)\n    lock account as seen:\n        stdout.print(seen.total)\n"
+    );
+    assert_eq!(text(&ran.stdout), "5\n", "{}", text(&ran.stderr));
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =
@@ -2656,13 +2683,22 @@ fn a_hot_function_keeps_no_checks() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A `shared` value is a handle: every name for it, and every function it's passed to, changes
-/// one cell.
+/// A `shared` value is one value: every name for it, and every function it's passed to, changes
+/// the same one, each inside a `lock`.
 #[test]
 fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();
     let program = dir.join("account.fen");
-    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
+    std::fs::write(
+        &program,
+        "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    \
+         def balance(self) -> int:\n        self.total\n\n\
+         def pay(account: shared Account, amount: int):\n    lock account as ref held:\n        held.add(amount)\n\n\
+         def main(stdout: Stdout):\n    shared account = Account()\n    same = account\n    pay(account, 5)\n    \
+         lock same as ref held:\n        held.add(10)\n    mut through_same = 0\n    lock same as held:\n        \
+         through_same = held.total\n    lock account as held:\n        stdout.print(held.balance(), through_same, held)\n",
+    )
+    .unwrap();
     let output = fennec(&["run", "--no-test", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();

@@ -70,18 +70,35 @@ fn a_field_the_format_cant_hold_is_named() {
     let program = "
         a = dumps(Hooks(name='a'))
         b = loads[Player]('{}')
-        c = dumps(Account())
+        shared account = Account()
+        c = dumps(account)
     ";
     let declarations = "from std.json import dumps, loads\n\nstruct Hooks:\n    name: str\n    \
-                        tags = set[str]()\n\nshared Account:\n    total = 0\n\nstruct Player:\n    \
-                        name: str\n    account: Account\n";
+                        tags = set[str]()\n\nstruct Account:\n    total = 0\n\nstruct Player:\n    \
+                        name: str\n    account: shared Account\n";
     assert_eq!(
         with_imports(declarations, program),
         [
             "JSON can't hold `Hooks.tags`, which is a set @ dumps(Hooks(name=\"a\"))",
-            "JSON can't hold `Player.account`, which is the `shared` handle `Account` @ Player",
-            "JSON can't hold the `shared` handle `Account` @ dumps(Account())",
+            "JSON can't hold `Player.account`, which is a `shared Account` @ Player",
+            "JSON can't hold a `shared Account` @ dumps(account)",
         ]
+    );
+}
+
+/// A page is made only by `html.render`, so neither it nor a field holding one is ever loaded,
+/// which would make one from text it never saw.
+#[test]
+fn a_page_is_never_loaded() {
+    let program = "
+        a = loads[Html]('{}')
+        b = loads[Article]('{}')
+    ";
+    let declarations =
+        "from std.json import loads\nfrom std.html import Html\n\nstruct Article:\n    body: Html\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        ["JSON can't hold an `Html` @ Html", "JSON can't hold `Article.body`, which is an `Html` @ Article",]
     );
 }
 

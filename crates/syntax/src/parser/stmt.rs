@@ -258,11 +258,16 @@ impl Parser {
         // One value with several names splits what a source lends: `with conn.split() as r, w:`.
         if !names.is_empty() && names.len() != held && (held != 1 || lock) {
             let span = names.iter().fold(value.span, |span, name| span.to(name.span));
+            let (keyword, example) = if lock {
+                ("lock", "lock a, b as ref x, ref y:")
+            } else {
+                ("with", "with a as ref x, b as ref y:")
+            };
             return Err(Diagnostic::new(
-                format!("this `with` holds {held} values but names {}", names.len()),
+                format!("this `{keyword}` holds {held} values but names {}", names.len()),
                 span,
             )
-            .with_help("give each value its own name: `with a as ref x, b as ref y:`"));
+            .with_help(format!("give each value its own name: `{example}`")));
         }
         if lock && names.is_empty() {
             return Err(Diagnostic::new("a `lock` names what it holds, for the block", value.span)

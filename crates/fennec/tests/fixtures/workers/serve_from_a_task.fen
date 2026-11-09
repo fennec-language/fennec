@@ -1,20 +1,19 @@
 from std.net import NetError
 from std.concurrent import Crashed
 
-def serve(net: Net) fails NetError:
+def serve(net: Net, greeting: str, names: list[str], stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
+        stdout.print(server.port)
         for conn in parallel(server):
-            conn.write("hi\n")?
-            break
+            line = conn.read_line()? else ""
+            conn.write(f"{greeting} {line}, {names[0]} and {names[1]} say hi\n")?
+            if line == "last":
+                break
+    stdout.print("the server ended")
 
 def main(net: Net, stdout: Stdout) fails NetError | Crashed:
-    match serve_in_a_task(net):
-        case Ok():
-            stdout.print("served")
-        case Err(failure):
-            stdout.print("failed:", failure)
-    stdout.print("ended")
-
-def serve_in_a_task(net: Net) fails Crashed | NetError:
-    with launch(() => serve(net))?:
+    greeting = "a greeting long enough to need a block of its own:"
+    names = ["the first name, also long enough", "the second"]
+    with launch(() => serve(net, greeting, names, stdout))?:
         pass
+    stdout.print("done", names[1])

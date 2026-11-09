@@ -33,7 +33,12 @@ def problem(request: Request, status: int, message: str) -> Response:
     answer(request, status=status, text=json.dumps(Problem(error=message)))
 
 ## Answers one request, keeping notes in `notes`.
-export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Request) -> Response:
+export def respond(
+    notes: shared Notes,
+    clock: Clock,
+    entropy: Entropy,
+    request: Request,
+) -> Response:
     parts = [part for part in request.path.split("/") if part != ""]
     if parts.len() == 0 or parts[0] != "notes":
         return problem(request, status=404, message="there's nothing here")
@@ -41,7 +46,8 @@ export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Reques
         match request.method:
             case "GET":
                 words = request.query.get("q") else ""
-                return answer(request, status=200, text=json.dumps(notes.find(words)))
+                lock notes as current:
+                    return answer(request, status=200, text=json.dumps(current.find(words)))
             case "POST":
                 match json.loads[Draft](request.body.decode() else ""):
                     case Ok(draft):
@@ -53,7 +59,8 @@ export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Reques
                             created=now,
                             changed=now,
                         )
-                        notes.add(note)
+                        lock notes as ref current:
+                            current.add(note)
                         return answer(request, status=201, text=json.dumps(note))
                     case Err(why):
                         return problem(request, status=400, message=why.message)
@@ -65,7 +72,9 @@ export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Reques
                 )
     if parts.len() > 2: return problem(request, status=404, message="there's nothing here")
     id = parts[1]
-    found = notes.get(id)
+    mut found: Note? = None
+    lock notes as current:
+        found = current.get(id)
     if found is None: return problem(request, status=404, message=f"there's no note {id}")
     match request.method:
         case "GET":
@@ -74,12 +83,14 @@ export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Reques
             match json.loads[Draft](request.body.decode() else ""):
                 case Ok(draft):
                     changed = copy(found, title=draft.title, body=draft.body, changed=clock.time())
-                    notes.add(changed)
+                    lock notes as ref current:
+                        current.add(changed)
                     answer(request, status=200, text=json.dumps(changed))
                 case Err(why):
                     problem(request, status=400, message=why.message)
         case "DELETE":
-            _ = notes.remove(id)
+            lock notes as ref current:
+                _ = current.remove(id)
             Response(status=204)
         case _:
             problem(
@@ -93,7 +104,7 @@ def sent(method: str, path: str, body = "") -> Request:
     Request(method=method, path=path, body=body.encode())
 
 test "a note is made, read, changed and removed"(clock: Clock, entropy: Entropy):
-    notes = Notes()
+    shared notes = Notes()
     made = respond(
         notes,
         clock,
@@ -123,10 +134,11 @@ test "a note is made, read, changed and removed"(clock: Clock, entropy: Entropy)
     )
     assert respond(notes, clock, entropy, sent("DELETE", path=f"/notes/{note.id}")).status == 204
     assert respond(notes, clock, entropy, sent("GET", path=f"/notes/{note.id}")).status == 404
-    assert notes.count() == 0
+    lock notes as current:
+        assert current.count() == 0
 
 test "a search keeps the notes that have its words, oldest first"(clock: Clock, entropy: Entropy):
-    notes = Notes()
+    shared notes = Notes()
     for title in ["fox den", "badger sett", "fox earth"]:
         _ = respond(
             notes,
@@ -140,7 +152,7 @@ test "a search keeps the notes that have its words, oldest first"(clock: Clock, 
     assert titles == ["fox den", "fox earth"]
 
 test "what's wrong with a request is a JSON error"(clock: Clock, entropy: Entropy):
-    notes = Notes()
+    shared notes = Notes()
     bad = respond(
         notes,
         clock,
@@ -156,7 +168,7 @@ test "what's wrong with a request is a JSON error"(clock: Clock, entropy: Entrop
     )
 
 test "a big answer is gzipped for a client that takes it"(clock: Clock, entropy: Entropy):
-    notes = Notes()
+    shared notes = Notes()
     for at in range(40):
         _ = respond(
             notes,

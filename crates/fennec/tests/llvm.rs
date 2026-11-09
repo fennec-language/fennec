@@ -2452,6 +2452,59 @@ def main(stdout: Stdout):
         stdout.print(unit.seen)
 ";
 
+/// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
+/// read back through the list and through the name, its index worked out once at the `ref`, and
+/// passed on as `ref`. It's declared again each time round a loop.
+#[test]
+fn a_local_ref_changes_its_place_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("local_ref", LOCAL_REF, "25 15 0\n15 hit 110 1\n[[1, 2], [30, 4]]\n125\n17\n")
+}
+
+const LOCAL_REF: &str = r#"struct Unit:
+    health: int
+    status: str
+
+struct World:
+    units: list[Unit]
+    score: int
+
+def total(units: list[Unit]) -> int:
+    sum(unit.health for unit in units)
+
+def hit(ref unit: Unit, by: int):
+    unit.health -= by
+
+def main(stdout: Stdout):
+    mut world = World(units=[Unit(health=10, status="ok"), Unit(health=20, status="ok")], score=0)
+    mut actor = 1
+    ref unit = world.units[actor]
+    actor = 0
+    unit.health -= 3
+    unit.status = "hit"
+    hit(ref unit, by=2)
+    world.score += 1
+    stdout.print(total(world.units), unit.health, actor)
+    world.units[0].health += 100
+    stdout.print(world.units[1].health, world.units[1].status, world.units[0].health, world.score)
+    mut grid = [[1, 2], [3, 4]]
+    ref cell = grid[1][0]
+    cell *= 10
+    stdout.print(grid)
+    ref first = world.units[0]
+    bonus = sum(other.health for other in world.units if other.health < first.health)
+    first.health += bonus
+    stdout.print(first.health)
+    for turn in range(3):
+        ref last = world.units[world.units.len() - 1]
+        if turn == 1:
+            continue
+        last.health += turn
+    stdout.print(world.units[1].health)
+"#;
+
 /// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively as
 /// in the interpreter: a case that finishes, one that leaves by `return`, and one that fails, each
 /// putting the case back, and a `_` field kept as it was.

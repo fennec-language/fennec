@@ -186,6 +186,12 @@ fn names_for(stmts: &[Stmt], found: &mut Vec<(String, String)>) {
         {
             found.push((name.clone(), place.to_owned()));
         }
+        // `ref unit = units[at]` names a place in `units`.
+        if let Some((name, value)) = stmt.kind.local_ref()
+            && let Some(place) = root(value)
+        {
+            found.push((name.to_owned(), place.to_owned()));
+        }
         if let StmtKind::Def(def) = &stmt.kind {
             names_for(&def.body, found);
         }

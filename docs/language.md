@@ -9,7 +9,7 @@ Fennec reads at a glance, builds almost instantly, and is built to run as fast a
 - A name holds its own value.
 - `mut` lets a name change.
 - To change something in a list, write to it there.
-- `ref` lets a loop or a function change yours.
+- `ref` lets a loop, a function or a name change yours.
 
 ```fennec
 def heal_all(ref units: list[Unit]):
@@ -25,7 +25,7 @@ def main(stdout: Stdout):
     updated_health = target.health + 1
 ```
 
-There's no inline `ref`, and no scoped `with units[target_id] as ref target:` either: write directly, `units[target_id].health -= 1`, or call a `ref self` method on the element's type. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
+`ref target = units[target_id]` names a field or an item for the rest of its block: a change through `target` is a change there, and reading `units` sees it. Its index is worked out once, at the `ref`. From the `ref` to the last line that uses it, nothing else may change what it's in, so it's one `ref` into a list at a time, and reading is fine. It costs nothing when the program runs. Built. There's no scoped `with units[target_id] as ref target:`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare
 

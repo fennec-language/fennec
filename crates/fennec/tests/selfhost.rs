@@ -219,6 +219,9 @@ test \"any list\" for items: list[int], n: int:
     assert items.len() >= 0
 ",
     ),
+    ("local_ref", "def main():\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n"),
+    ("local_ref_without_a_name", "def main():\n    ref units[0] = 1\n"),
+    ("local_ref_without_a_value", "def main():\n    ref first\n"),
 ];
 
 /// Small programs that reach the checker's errors about written types, and the places
@@ -229,6 +232,11 @@ const CHECK_CASES: &[(&str, &str)] = &[
     (
         "own_type_named_like_std",
         "struct Heap:\n    size = 0\n\ndef main(stdout: Stdout):\n    stdout.print(Heap().size)\n",
+    ),
+    // `ref first = units[0]` is written in with `ref` as its type, which takes the place's.
+    (
+        "local_ref",
+        "def main(stdout: Stdout):\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n    stdout.print(units)\n",
     ),
     (
         "call_type_arguments",

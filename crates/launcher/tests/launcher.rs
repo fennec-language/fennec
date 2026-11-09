@@ -17,11 +17,39 @@ mod launcher {
     const TARGET: &str = "aarch64-apple-darwin";
 
     /// A folder of its own for a test, empty.
-    fn scratch(name: &str) -> PathBuf {
+    fn scratch(name: &str) -> Scratch {
+        // Linux won't start a file while anything holds it open to write, and a process another
+        // test thread starts holds a copy of every open file until it runs its program. So a test
+        // that writes a toolchain and starts it could find it busy: there, these tests take
+        // turns. macOS has no such rule, and checks each new program the first time it starts,
+        // one at a time, so taking turns there would only make them slow.
+        static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let turn =
+            cfg!(target_os = "linux").then(|| TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let dir = std::env::temp_dir().join(format!("fennec-launcher-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::canonicalize(dir).unwrap()
+        Scratch { dir: std::fs::canonicalize(dir).unwrap(), _turn: turn }
+    }
+
+    /// A test's folder, held with its turn.
+    struct Scratch {
+        dir: PathBuf,
+        _turn: Option<std::sync::MutexGuard<'static, ()>>,
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.dir
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.dir
+        }
     }
 
     fn put(to: &mut Vec<u8>, part: &[u8]) {

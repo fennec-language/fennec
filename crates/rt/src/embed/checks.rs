@@ -100,7 +100,7 @@ fn round_to_tens(x: f64, places: i64) -> f64 {
     }
 }
 
-// The float functions every engine computes them with: `libm`'s, the same on every platform, so a
+// The float functions are computed with `libm`'s, the same on every platform, so a
 // program's floats are the same bits wherever it runs. Past -1 or 1, `acos` has no angle, so it's
 // NaN, as `log` is of a number below 0.
 

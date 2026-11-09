@@ -199,9 +199,9 @@ fn parent(key: &str) -> &str {
 }
 
 impl TestWorld {
-    /// A method of a test's capability, as the interpreter and native code both run it, or nothing
-    /// where the world leaves that to the real capability: with `fennec test --real`, all but
-    /// `stdout.captured()`, and `only`, which narrows what it's given.
+    /// A method of a test's capability, or nothing where the world leaves that to the real
+    /// capability: with `fennec test --real`, all but `stdout.captured()`, and `only`, which
+    /// narrows what it's given.
     pub(crate) fn method(
         &mut self,
         capability: Capability,

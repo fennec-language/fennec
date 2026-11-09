@@ -218,16 +218,17 @@ fn a_word_changed_twice_goes_back_to_what_it_was_before_the_lock() {
 }
 
 #[test]
-fn a_value_changed_where_it_is_is_copied_once_and_the_copy_goes_on_a_crash() {
+fn a_list_changed_where_it_is_is_marked_and_a_copy_of_it_goes_on_a_crash() {
     begin_run();
     let cell = locked(&["one"]);
     let before = blocks();
     let inside = word(cell, LINES_AT);
     let at = i64::try_from(LINES_AT).unwrap();
     save_ref(cell, at, inside);
-    assert_eq!(count_of(inside), 2, "the log holds it too, so a change copies it");
-    // As `append` would, finding it isn't alone: a copy with one more line, in its place.
-    let copy = list(&["one", "two"]);
+    let marked = i64::try_from(lists::MARKED).unwrap();
+    assert_eq!(count_of(inside), marked + 1, "the log marks it rather than hold it");
+    // As an `insert` would, finding it marked: a copy with one more line, in its place.
+    let copy = list(&["zero", "one"]);
     release(inside);
     set_word(cell, LINES_AT, copy);
     save_ref(cell, at, copy);
@@ -238,6 +239,40 @@ fn a_value_changed_where_it_is_is_copied_once_and_the_copy_goes_on_a_crash() {
     assert!(!exists(copy));
     assert_eq!(blocks(), before);
     shared_leave(cell, 1);
+    finish();
+}
+
+#[test]
+fn an_append_and_a_pop_in_place_go_back_on_a_crash_and_stay_at_an_end() {
+    begin_run();
+    for crashed in [false, true] {
+        let cell = locked(&["one", "two"]);
+        let before = blocks();
+        let inside = word(cell, LINES_AT);
+        save_ref(cell, i64::try_from(LINES_AT).unwrap(), inside);
+        // A pop, as native code makes it once the runtime says where: the last item's word comes
+        // out with the list's owner of it, which the popping code lets go of.
+        assert_eq!(lists::pop_unshare(inside), inside, "a marked list with one owner pops in place");
+        let popped = word(inside, LIST_HEADER_WORDS + 1);
+        set_word(inside, 2, 1);
+        release(popped);
+        // An append, filled with a new line.
+        let grown = lists::grow(inside);
+        set_word(grown, LIST_HEADER_WORDS + 1, string("three"));
+        set_word(cell, LINES_AT, grown);
+        assert_eq!(lines(grown), ["one", "three"]);
+        if crashed {
+            crash(cell);
+        } else {
+            kept();
+        }
+        let now = word(cell, LINES_AT);
+        let wanted: &[&str] = if crashed { &["one", "two"] } else { &["one", "three"] };
+        assert_eq!(lines(now), wanted, "crashed: {crashed}");
+        assert_eq!(count_of(now), 1, "crashed: {crashed}");
+        assert_eq!(blocks(), before, "crashed: {crashed}");
+        shared_leave(cell, 1);
+    }
     finish();
 }
 

@@ -203,7 +203,17 @@ pub(crate) fn runtime_built() -> bool {
         {
             build.arg("--target-dir").arg(target).env_remove("RUSTC_WRAPPER");
         }
-        build.status().is_ok_and(|status| status.success())
+        let plain = build.status().is_ok_and(|status| status.success());
+        // A program that uses `parallel` links the threads library beside `fennec` whenever
+        // there's one, so one left there by a build from other source would be taken by any test,
+        // not only the ones that ask for it. It's brought up to date before anything links, or
+        // taken away when it can't be, so those programs link the plain library instead.
+        if !threads_runtime_built()
+            && let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent()
+        {
+            let _ = fs::remove_file(beside.join("libfennec_runtime_threads.a"));
+        }
+        plain
     })
 }
 

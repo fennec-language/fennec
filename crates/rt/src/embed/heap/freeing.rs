@@ -191,7 +191,7 @@ fn keep_abandoned(state: &mut State, address: u64, mut block: Box<[u64]>) {
     state.heap.abandoning.push(address);
 }
 
-/// Drops the interpreter's copy of a freed string's text.
+/// Drops the runtime's copy of a freed string's text.
 #[inline(never)]
 fn forget_text(state: &mut State, address: u64) {
     if let Ok(at) = usize::try_from(address) {

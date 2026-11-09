@@ -1,4 +1,4 @@
-//! `std.compress`: DEFLATE, and zlib and gzip around it, which the interpreter does in Rust in
+//! `std.compress`: DEFLATE, and zlib and gzip around it, which the runtime does in Rust in
 //! `crate::compress`. `level=` goes on a function's name, as native code has it:
 //! `compress.gzip.level`.
 
@@ -9,7 +9,7 @@ use fennec_syntax::{Diagnostic, Span};
 use crate::compress as codec;
 use crate::value::Value;
 
-/// One of these functions, which need nothing of the interpreter.
+/// One of these functions, by its full name.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let (function, level) = match name.strip_suffix(".level") {
         Some(function) => {

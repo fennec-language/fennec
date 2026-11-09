@@ -1339,7 +1339,6 @@ fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
 /// A list in a `shared` value, changed in place under its lock: a queue would otherwise copy the whole
 /// list on every call that changes it, and take time in proportion to its length squared.
 #[test]
-#[ignore = "a `lock ... as ref` saves the list for a crash to put back, and the saved one makes the append copy it"]
 fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -1359,14 +1358,9 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
             "    for n in range(2000):\n        lock queue as ref held:\n            held.push(n)\n    \
              for n in range(2000):\n        lock queue as ref held:\n            seen += held.pop()\n",
         ),
-        ("insert", "    for n in range(500):\n        lock queue as ref held:\n            held.first(n)\n"),
         (
             "extend",
             "    for n in range(2000):\n        lock queue as ref held:\n            held.more([n])\n",
-        ),
-        (
-            "nested",
-            "    for n in range(2000):\n        lock queue as ref held:\n            held.nested(n)\n",
         ),
         (
             "called",
@@ -1382,6 +1376,67 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
         assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
     }
     Ok(())
+}
+
+/// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
+/// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
+/// a note of each in the lock's rollback log, but these change what a note of one place can't put
+/// back, so the log keeps the list as it was, and the change copies it. `insert(0, x)` takes time
+/// in proportion to the list's length anyway.
+#[test]
+#[ignore = "a crash puts back only appends and pops from notes; an insert, or a change inside an item, under a `lock ... as ref` copies the list"]
+fn changes_inside_a_list_in_a_shared_value_copy_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Row:\n    tags: list[int]\n\nstruct Queue:\n    items = list[int]()\n    rows = [Row(tags=[1])]\n\n    \
+                 def first(ref self, item: int):\n        self.items.insert(0, item)\n\n    \
+                 def nested(ref self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n\
+                 def main(stdout: Stdout):\n    shared queue = Queue()\n";
+    for (name, body) in [
+        ("insert", "    for n in range(500):\n        lock queue as ref held:\n            held.first(n)\n"),
+        (
+            "nested",
+            "    for n in range(2000):\n        lock queue as ref held:\n            held.nested(n)\n",
+        ),
+    ] {
+        let counts = counts_of(
+            &format!("shared_place_copies_{name}"),
+            &format!("{types}{body}    stdout.print(0)\n"),
+        )?;
+        assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
+    }
+    Ok(())
+}
+
+/// Random changes to lists in a `shared` value under `lock ... as ref`, failing at a random step:
+/// appends and pops made in place are undone from the lock's log, and the rest copy, and either way
+/// a failure leaves the lists as they were, and an end leaves what plain lists get. Three thousand
+/// cases, in dev and release.
+#[test]
+fn random_changes_under_a_lock_are_undone_by_a_failure() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_by_failure",
+        include_str!("fixtures/lock_undo_by_failure.fen"),
+        "wrong 0 crashed True kept True\n",
+    )
+}
+
+/// The same random changes in a task, crashing at a random step: a crash leaves the lists as they
+/// were. Three thousand cases, in dev and release.
+#[test]
+fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_by_crash",
+        include_str!("fixtures/workers/lock_undo_by_crash.fen"),
+        "wrong 0 crashed True kept True\n",
+    )
 }
 
 /// What's changed in place stays right when it's read while changing, and when something still holds
@@ -2607,6 +2662,47 @@ def main(stdout: Stdout):
          18,446,744,073,709,551,610 0 [18446744073709551610, 5] [0.33333334, 2.0]\n\
          18446744073709551615 0.33333334 2 1.8446744073709552e+19 200 3673995259836664039\n"
     );
+    Ok(())
+}
+
+/// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
+/// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
+#[test]
+fn a_u64_to_a_power() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def main(stdout: Stdout):
+    zero: u64 = 0
+    one: u64 = 1
+    two: u64 = 2
+    three: u64 = 3
+    forty: u64 = 40
+    sixty_three: u64 = 63
+    sixty_four: u64 = 64
+    stdout.print(zero ** zero, two ** zero, zero ** two, one ** sixty_four, two ** sixty_three, three ** forty)
+    stdout.print(two ** sixty_four)
+";
+    let dir = folder("u64_power")?;
+    let program = dir.join("u64_power.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("u64_power"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(out, "1 1 0 1 9223372036854775808 12157665459056928801\n", "{how:?}: {err}");
+        assert!(!ran.status.success(), "{how:?}");
+        assert!(err.contains("this calculation overflows a u64"), "{err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -5553,6 +5649,47 @@ fn sets_and_dicts_of_sized_numbers() -> std::io::Result<()> {
     )
 }
 
+/// Sets and dicts of `u64`s and `f32`s, keys and values, which have words of their own: a `u64` past
+/// `int`'s top is shown unsigned, and an `f32` as the shortest text that reads back as it, `0.1`
+/// rather than a double's `0.10000000149011612`.
+#[test]
+fn sets_and_dicts_of_u64s_and_f32s() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "u64_f32_sets_dicts",
+        r#"def main(stdout: Stdout):
+    one: u64 = 1
+    five: u64 = 5
+    big: u64 = (one << 63) + five
+    mut seen = set[u64]()
+    seen.add(big)
+    seen.add(one)
+    seen.add(big)
+    stdout.print(seen.len(), big in seen, seen)
+    mut names = dict[u64, str]()
+    names[big] = "top"
+    names[one] = "one"
+    stdout.print(names[big], names)
+    tenth: f32 = 0.1
+    half: f32 = 0.5
+    mut weights = dict[str, f32]()
+    weights["a"] = tenth
+    weights["b"] = half
+    stdout.print(weights, weights["a"])
+    mut fs = set[f32]()
+    fs.add(tenth)
+    fs.add(tenth)
+    stdout.print(fs, tenth in fs, half in fs)
+    mut counts = dict[f32, u64]()
+    counts[tenth] = big
+    stdout.print(counts)
+"#,
+        "2 True {9223372036854775813, 1}\ntop {9223372036854775813: \"top\", 1: \"one\"}\n{\"a\": 0.1, \"b\": 0.5} 0.1\n{0.1} True False\n{0.1: 9223372036854775813}\n",
+    )
+}
+
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
 fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
@@ -6158,7 +6295,6 @@ def main(stdout: Stdout):
 /// A generator abandoned while a `with` source's block is open runs the source's cleanup then, as
 /// a `break` out of the block would, and one run to its end runs it as it goes past.
 #[test]
-#[ignore = "a source's cleanup written in around a `yield` doesn't run yet when the generator is abandoned"]
 fn an_abandoned_generator_runs_its_open_sources_cleanup() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -6188,6 +6324,235 @@ def main(stdout: Stdout):
 ",
     )?;
     assert_eq!(printed, "got 1\nclosed left early\nafter the loop\nclosed run out\n3\n");
+    Ok(())
+}
+
+/// Each source a generator holds open where it's let go closes then, innermost first and once:
+/// not its `else:`, which is for a block that fails, and nothing for a block that already ended
+/// or a generator that never started. A `return` out of the loop lets go of it too.
+#[test]
+fn an_abandoned_generator_closes_each_open_source_once_innermost_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("abandoned_sources", ABANDONED_SOURCES)?;
+    assert_eq!(
+        printed,
+        "got 0\nclosed inner 0\ngot 1\nclosed inner 1\nclosed outer\n--\ngot 1\nclosed short\ngot 2\n--\n\
+         closed inner 0\nclosed inner 1\nclosed outer\nkept 1\n--\nnever started\n"
+    );
+    Ok(())
+}
+
+const ABANDONED_SOURCES: &str = r#"struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door else:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def nested(stdout: Stdout) -> Iterator[int]:
+    with opened("outer", stdout) as outer:
+        for n in range(3):
+            with opened(f"inner {n}", stdout) as inner:
+                yield n
+    yield 99
+
+def after_the_block(stdout: Stdout) -> Iterator[int]:
+    with opened("short", stdout) as door:
+        yield 1
+    yield 2
+
+def kept(stdout: Stdout) -> int:
+    walk = nested(stdout)
+    for n in walk:
+        if n == 1:
+            return n
+    0
+
+def main(stdout: Stdout):
+    for n in nested(stdout):
+        stdout.print("got", n)
+        if n == 1:
+            break
+    stdout.print("--")
+    for n in after_the_block(stdout):
+        stdout.print("got", n)
+        if n == 2:
+            break
+    stdout.print("--")
+    stdout.print("kept", kept(stdout))
+    stdout.print("--")
+    never = nested(stdout)
+    stdout.print("never started")
+"#;
+
+/// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
+/// failure while it gives an item does: at a `break`, at a `return` out of the loop, and in place
+/// of a failure already leaving through it, as a `with` block's failing cleanup does today.
+#[test]
+fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("cleanup_failing_let_go", CLEANUP_FAILING)?;
+    assert_eq!(
+        printed,
+        "closing broke\nbroke failed Shut.Stuck(name=\"broke\")\nclosing returned\n\
+         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\nfailing failed Shut.Stuck(name=\"failing\")\n"
+    );
+    Ok(())
+}
+
+const CLEANUP_FAILING: &str = r#"error Shut:
+    Stuck(name: str)
+
+error Other:
+    Inside(why: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broke(stdout: Stdout) fails Shut:
+    for n in held("broke", stdout)?:
+        break
+    stdout.print("not here")
+
+def returned(stdout: Stdout) -> int fails Shut:
+    for n in held("returned", stdout)?:
+        return n
+    0
+
+def failing(stdout: Stdout) fails Shut | Other:
+    for n in held("failing", stdout)?:
+        fail Other.Inside(why="in the loop")
+
+def main(stdout: Stdout):
+    match broke(stdout):
+        case Ok(_):
+            stdout.print("broke worked")
+        case Err(why):
+            stdout.print("broke failed", why)
+    match returned(stdout):
+        case Ok(n):
+            stdout.print("returned", n)
+        case Err(why):
+            stdout.print("returned failed", why)
+    match failing(stdout):
+        case Ok(_):
+            stdout.print("failing worked")
+        case Err(why):
+            stdout.print("failing failed", why)
+"#;
+
+/// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
+/// as one that can't fail does, closing what it holds then and not when the function ends.
+#[test]
+fn a_failing_generator_for_a_loop_closes_when_the_loop_ends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "failing_generator_closed",
+        r#"error Boom:
+    pass
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door
+    stdout.print("closed", name)
+
+def plain(stdout: Stdout) -> Iterator[int]:
+    with opened("plain", stdout) as door:
+        yield 1
+        yield 2
+
+def failing(stdout: Stdout, bad: bool) -> Iterator[int] fails Boom:
+    if bad:
+        fail Boom()
+    with opened("failing", stdout) as door:
+        yield 1
+        yield 2
+
+def main(stdout: Stdout) fails Boom:
+    for n in plain(stdout):
+        break
+    stdout.print("after plain")
+    for n in failing(stdout, bad=False)?:
+        break
+    stdout.print("after failing")
+"#,
+    )?;
+    assert_eq!(printed, "closed plain\nafter plain\nclosed failing\nafter failing\n");
+    Ok(())
+}
+
+/// A generator over a file, let go by `break`, closes the file: one written takes its path's
+/// place right then, and 200 read and let go stay under a limit of 64 open files.
+#[cfg(unix)]
+#[test]
+fn a_generator_over_a_file_let_go_by_break_closes_the_file() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generator_files")?;
+    let program = dir.join("files.fen");
+    std::fs::write(
+        &program,
+        r#"def numbered(fs: Fs, path: str) -> Iterator[int] fails IoError:
+    with fs.create(path)? as file:
+        for n in range(10):
+            file.write_line(str(n))?
+            yield n
+
+def first_lines(fs: Fs, path: str) -> Iterator[str] fails IoError:
+    with fs.open(path)? as file:
+        for line in file.lines()?:
+            yield line
+
+def main(stdout: Stdout, fs: Fs) fails IoError:
+    for n in numbered(fs, "numbers.txt")?:
+        if n == 2:
+            break
+    with fs.open("numbers.txt")? as file:
+        stdout.print(file.read_text()?.split("\n"))
+    # Each loop lets go of a generator holding a file open: 200 of them run out of file
+    # handles under a limit of 64 if any stays open.
+    mut read = 0
+    for _ in range(200):
+        for line in first_lines(fs, "numbers.txt")?:
+            read += 1
+            break
+    stdout.print(read)
+"#,
+    )?;
+    let executable = dir.join("files");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new("/bin/sh")
+        .args(["-c", "ulimit -n 64 && exec \"$0\"", &executable.to_string_lossy()])
+        .current_dir(&dir)
+        .output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[\"0\", \"1\", \"2\", \"\"]\n200\n");
     Ok(())
 }
 
@@ -7107,6 +7472,53 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    Ok(())
+}
+
+/// A file whose block ends without it taking its path's place fails the `with`, and leaves nothing
+/// behind: the end of the block is where what was written is flushed, synced and renamed, and any
+/// of those failing is the block's failure. Here the path has become a folder by then.
+#[test]
+fn a_file_that_cant_take_its_place_fails_its_with_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("finish-fails")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+## Writes a file whose path becomes a folder before the block ends, so it can't take its place.
+def blocked(fs: Fs) fails IoError:
+    with fs.create(\"taken.txt\")? as file:
+        file.write_text(\"never seen\")?
+        fs.make_dir(\"taken.txt\")?
+        fs.write_text(\"taken.txt/inside.txt\", \"here first\")?
+
+def main(fs: Fs, stdout: Stdout):
+    match blocked(fs):
+        case Ok(_):
+            stdout.print(\"the block succeeded\")
+        case Err(problem):
+            stdout.print(\"the block failed:\", problem.reason != \"\")
+    stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
+    # The file written beside the path, to take its place, is gone.
+    names = fs.list_dir(\".\") else []
+    stdout.print([name for name in names if str(name).endswith(\".fennec-partial\")].len())
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "the block failed: True\nhere first\n0\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
     Ok(())
 }
 
@@ -9315,6 +9727,35 @@ fn a_channel_to_every_listener() -> std::io::Result<()> {
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(String::from_utf8_lossy(&ran.stderr).contains("when_behind=.DropOldest"));
+    Ok(())
+}
+
+/// A generic function opens a channel of a generic struct of its own type parameter, as a pool
+/// of `T` does: `channel[Box[T]]` is written in once for each copy, of each kind.
+#[test]
+fn a_channel_of_a_generic_struct_in_a_generic_function_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "generic_channel",
+        r#"from std.concurrent import channel
+
+struct Box[T]:
+    value: T
+
+def boxed[T](value: T, fallback: T) -> T:
+    with channel[Box[T]](size=1) as boxes:
+        boxes.send(Box[T](value=value)) else return fallback
+        got = boxes.receive() else return fallback
+        return got.value
+    fallback
+
+def main(stdout: Stdout):
+    stdout.print(boxed(3, fallback=0), boxed("fox", fallback=""), boxed([1, 2], fallback=[]))
+"#,
+    )?;
+    assert_eq!(printed, "3 fox [1, 2]\n");
     Ok(())
 }
 

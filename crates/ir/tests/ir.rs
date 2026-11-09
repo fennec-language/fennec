@@ -2585,16 +2585,19 @@ def f() -> int:
     sum(n for n in held(\"a\"))
 "
     );
-    // What the source lent is kept across the `yield`, and its cleanup runs once the generator
-    // goes on past the block.
+    // What the source lent is kept across the `yield`, and its cleanup is written in once, where
+    // the block's ways out meet.
     let resume = printed(&source, "held.resume").unwrap();
     assert_eq!(resume.matches("call closed").count(), 1, "{resume}");
-    // Abandoned inside the block, it doesn't run the cleanup yet, so it has nothing to close: see
-    // `an_abandoned_generator_runs_its_open_sources_cleanup` in the native tests.
+    // Let go inside the block, it goes on once more from where it stopped, told to leave, and
+    // leaves through the source's cleanup.
     let program = lowered(&source).unwrap();
     let generators: Vec<_> =
         program.generators.iter().map(|def| (&*def.name, def.abandon.as_deref())).collect();
-    assert_eq!(generators, [("held", None)]);
+    assert_eq!(generators, [("held", Some("held.abandon"))]);
+    let abandon = printed(&source, "held.abandon").unwrap();
+    assert!(abandon.contains("[slot 0] = -4") && abandon.contains("resume _0"), "{abandon}");
+    assert!(resume.contains(" == -4"), "{resume}");
     assert!(!printed(&source, "f").unwrap().contains("list.append"));
 }
 

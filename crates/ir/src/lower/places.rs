@@ -30,6 +30,8 @@ pub(super) enum Leaving {
     Place { place: Place, item: LocalId },
     /// A `with` block gives back the locks of the `shared` handles it holds.
     Unlock { handles: Vec<LocalId> },
+    /// A loop lets go of the generator made for it, closing what that holds.
+    Generator { generator: Operand, known: Option<String> },
 }
 
 impl Lowering<'_> {
@@ -367,6 +369,20 @@ impl Lowering<'_> {
                 };
                 self.emit(kind, span);
                 Ok(())
+            }
+            Leaving::Generator { generator, known } => {
+                // A cleanup's failure leaves from here, through what was entered before the
+                // loop, and not through this again.
+                let at = self.leaving.iter().position(|entered| {
+                    matches!(entered, Leaving::Generator { generator: held, .. } if held == generator)
+                });
+                let all = self.leaving.clone();
+                if let Some(at) = at {
+                    self.leaving.truncate(at);
+                }
+                let let_go = self.let_go_now(generator, known.clone(), span);
+                self.leaving = all;
+                let_go
             }
         }
     }

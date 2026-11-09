@@ -197,7 +197,7 @@ fn run_plan(
             format!("LLVM can't build what this test reaches yet: {why}"),
             span.unwrap_or_default(),
         );
-        outcomes.push(fennec_interp::TestOutcome { name, failure: Some(failure), cases: 1 });
+        outcomes.push(fennec_rt::TestOutcome { name, failure: Some(failure), cases: 1 });
     }
     // Workers finish in any order, and a report reads in the order the tests are written.
     let place = |name: &str| graph.tests().position(|test| test == name);

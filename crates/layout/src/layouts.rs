@@ -879,7 +879,7 @@ pub fn closure_definition(captures: &[Type]) -> Written {
 #[cfg(test)]
 mod tests {
     use fennec_check::Type;
-    use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
+    use fennec_rt::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 
     use super::{Layouts, Written, generator_definition};
     use crate::{Block, ListItem, Ty};
@@ -1028,9 +1028,9 @@ mod tests {
         assert_eq!(layouts.block(other), Some(Ty::Maybe(Block::Str)));
         assert_eq!(
             crate::describe(&layouts, nested),
-            Some(fennec_interp::packed::Element::List(std::rc::Rc::new(
-                fennec_interp::packed::Element::List(std::rc::Rc::new(fennec_interp::packed::Element::Int))
-            )))
+            Some(fennec_rt::packed::Element::List(std::rc::Rc::new(fennec_rt::packed::Element::List(
+                std::rc::Rc::new(fennec_rt::packed::Element::Int)
+            ))))
         );
         assert_eq!(Layouts::default().ty(&list(list(Type::Int))), Ty::Obj);
     }

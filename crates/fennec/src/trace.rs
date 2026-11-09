@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
-use fennec_interp::embed::Counts;
 use fennec_ir::{Cost, Finding};
+use fennec_rt::embed::Counts;
 use fennec_syntax::Span;
 
 use crate::copies::{bytes, ran};
@@ -249,7 +249,7 @@ fn json(path: &str) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use fennec_interp::embed::Counts;
+    use fennec_rt::embed::Counts;
 
     use super::read_sites;
 

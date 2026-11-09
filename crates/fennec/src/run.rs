@@ -13,7 +13,7 @@ pub(crate) enum Engine {
     Untested,
 }
 
-/// A run recorded into a log, or replayed from one (see `fennec_interp::replay`).
+/// A run recorded into a log, or replayed from one (see `fennec_rt::replay`).
 pub(crate) enum Logged {
     Recording(std::path::PathBuf),
     Replaying(std::path::PathBuf),

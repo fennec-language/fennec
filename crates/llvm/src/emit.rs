@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
-use fennec_interp::embed::layout::COUNT;
 use fennec_ir::{FormatPart, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_layout::Layouts;
+use fennec_rt::embed::layout::COUNT;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
@@ -52,7 +52,7 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !12 = !{!11, !11, i64 0}\n";
 
 /// Where a string block's bytes start.
-pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
+pub(crate) const TEXT_START: u32 = fennec_rt::embed::layout::TEXT.unsigned_abs();
 
 /// A list's header, and what's in it, never overlap its items, and a length is far from any limit.
 pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
@@ -1157,7 +1157,7 @@ impl Emit<'_, '_, '_> {
         let what = match code {
             OVERFLOW => Some(CheckKind::Overflow),
             DIVISION_BY_ZERO => Some(CheckKind::DivideByZero),
-            fennec_interp::embed::checks::BAD_SHIFT => Some(CheckKind::ShiftRange),
+            fennec_rt::embed::checks::BAD_SHIFT => Some(CheckKind::ShiftRange),
             // How deep the calls go is checked on the way into a function, not by what it does.
             TOO_DEEP => None,
             _ => Some(CheckKind::Builtin(self.failing_here())),
@@ -1653,7 +1653,7 @@ impl Emit<'_, '_, '_> {
                                 format!("can't shift {} by a count outside 0 to {}", num.name(), width - 1);
                             self.stop_if(&outside, &said, span);
                         }
-                        None => self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span),
+                        None => self.fail_if(&outside, fennec_rt::embed::checks::BAD_SHIFT, span),
                     }
                 }
                 let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
@@ -2761,8 +2761,8 @@ mod tests {
     fn an_image_has_shapes_only_for_what_the_program_makes() -> Result<(), String> {
         let named = |image: &crate::Image, wanted: &str| {
             image.tables.shapes.iter().any(|shape| match shape.as_ref() {
-                fennec_interp::packed::Element::Enum { name, .. }
-                | fennec_interp::packed::Element::Struct { name, .. } => &**name == wanted,
+                fennec_rt::packed::Element::Enum { name, .. }
+                | fennec_rt::packed::Element::Struct { name, .. } => &**name == wanted,
                 _ => false,
             })
         };

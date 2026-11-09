@@ -2,8 +2,8 @@
 
 use std::fmt::Write as _;
 
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_ir::{FormatPart, LocalId, Operand};
+use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, HEADER_ACCESS, LENGTH_ACCESS};
@@ -283,7 +283,7 @@ impl Emit<'_, '_, '_> {
                     text = self.joined(&text, &name, false);
                 }
                 // An error's notes aren't shown with its fields.
-                let shown = layout.fields.iter().filter(|field| !fennec_interp::packed::hidden(&field.name));
+                let shown = layout.fields.iter().filter(|field| !fennec_rt::packed::hidden(&field.name));
                 for (at, field) in shown.enumerate() {
                     let field_kind = Kind::from_ty(self.module.layouts, field.ty)
                         .ok_or("a field this backend doesn't take yet")?;

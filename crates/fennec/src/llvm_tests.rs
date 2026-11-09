@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::process::Command;
 
-use fennec_interp::{PROPERTY_CASES, TestOutcome, property_seed};
+use fennec_rt::{PROPERTY_CASES, TestOutcome, property_seed};
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
 
 use crate::test_inputs::{Inputs, PREFIX, written};

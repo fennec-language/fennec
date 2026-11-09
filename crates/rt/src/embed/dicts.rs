@@ -1150,8 +1150,8 @@ fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     Some(Taken::Removed(value))
 }
 
-/// `set.discard(key)`, or `set.remove(key)` when `must`, failing like the interpreter for a
-/// key it doesn't have. Takes over the set's owner and gives back the set's.
+/// `set.discard(key)`, or `set.remove(key)` when `must`, which fails for a key the set doesn't
+/// have. Takes over the set's owner and gives back the set's.
 pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64) -> i64 {
     remove_words(set, &[key.cast_unsigned()], must, (start, end))
 }
@@ -1189,7 +1189,7 @@ thread_local! {
 
 /// `dict.pop(key)`: takes over the dict's owner and gives back the dict's, copying it first if
 /// it's shared. The value taken out is picked up straight after with `popped`, whose owner goes
-/// with it. A key the dict doesn't have fails as the interpreter does.
+/// with it. A key the dict doesn't have fails.
 pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
     pop_words(dict, &[key.cast_unsigned()], (start, end))
 }
@@ -1236,7 +1236,7 @@ pub extern "C" fn set_clear(set: i64) -> i64 {
     })
 }
 
-/// Fails with the interpreter's message for a key a dict doesn't have: reading it, or, for
+/// Fails with the language's message for a key a dict doesn't have: reading it, or, for
 /// `augmented`, changing it with `+=` and the like.
 pub extern "C" fn missing(dict: i64, key: i64, augmented: i8, start: i64, end: i64) {
     missing_words(dict, &[key.cast_unsigned()], augmented, (start, end));
@@ -1305,7 +1305,7 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
     }
 }
 
-/// A dict's block as the interpreter holds a dict.
+/// A dict's block as a `Value`.
 pub(super) fn read(state: &State, block: &[u64]) -> Value {
     let Some(layout) = layout(state, block) else { return Value::None };
     if layout.value == Word::Nothing {
@@ -1359,7 +1359,7 @@ fn word_shown(state: &State, word: Word, words: &[u64], out: &mut Written) {
     super::heap::shown::item(state, &element, &mut words.iter(), out);
 }
 
-/// A set's block as the interpreter holds a set.
+/// A set's block as a `Value`.
 fn read_set(state: &State, layout: Layout, block: &[u64]) -> Value {
     let items = entries(block, layout.width)
         .chunks_exact(layout.width)
@@ -1368,7 +1368,7 @@ fn read_set(state: &State, layout: Layout, block: &[u64]) -> Value {
     Value::Set(std::rc::Rc::new(items))
 }
 
-/// A key's words as the interpreter holds the key.
+/// A key's words as a `Value`.
 fn key_value(state: &State, word: Word, key: &[u64]) -> Value {
     if let (Word::Text, Ok(&[a, b, c])) = (word, <&[u64; 3]>::try_from(key)) {
         return Value::str(&super::text::text_of(state, &[a, b, c]));
@@ -1386,7 +1386,7 @@ fn word_value(state: &State, word: Word, bits: u64) -> Value {
     }
 }
 
-/// A new block owned once holding a dict the interpreter holds, if every key and value is of
+/// A new block owned once holding a dict from a `Value`, if every key and value is of
 /// the kind the shape says.
 /// The name of a tuple key's shape, from its items: `(int, str)`, or `(Spot, (int, int))`. A key
 /// holds only what can be one, so each item is a number, a string, a bool, a plain struct or enum,
@@ -1468,8 +1468,7 @@ fn release_entry(state: &mut State, layout: Layout, entry: &[u64]) {
     }
 }
 
-/// Whether two dicts' blocks hold the same keys with equal values, in any order, as the
-/// interpreter compares dicts.
+/// Whether two dicts' blocks hold the same keys with equal values, in any order.
 pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
     let (Some(layout), theirs) = (layout(state, left), layout(state, right)) else { return false };
     // Dicts of the same type always share a layout, so differing ones are never equal.

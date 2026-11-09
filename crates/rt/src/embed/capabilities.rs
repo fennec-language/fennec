@@ -66,7 +66,7 @@ pub extern "C" fn block(kind: i64) -> i64 {
     with(|state| plain(state, kind))
 }
 
-/// What the interpreter holds for a capability word: a kind, or a capability's block.
+/// What a `Value` holds for a capability word: a kind, or a capability's block.
 pub(super) fn value_of(state: &State, word: i64) -> Value {
     if (0..KINDS).contains(&word) {
         return Value::Capability(super::capability(word));
@@ -117,8 +117,7 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
 }
 
 /// `fennec_native_capability(word, method, count, start, end)`: a method of a capability for
-/// compiled code, needing nothing of the interpreter, as `call` does. What's still only written
-/// for the interpreter, the network's methods, compiled code calls `call` for.
+/// compiled code.
 pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
     let at = span(start, end);
     let called = attempt(|state: &mut State| {

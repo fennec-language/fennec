@@ -4,6 +4,10 @@
 //! `parallel`. Once every function is checked, the waits are followed up the call graph across
 //! the whole program, so a call inside a lock to something that waits however many calls down
 //! is refused where the lock is.
+//!
+//! Locks are followed the same way: one lock is never taken inside another, so a call inside a
+//! lock to something that takes one, however many calls down, is refused too, and two tasks can't
+//! each hold a lock the other wants.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +18,10 @@ use crate::function::FnCx;
 use crate::types::Type;
 
 /// What to do instead, on every message about waiting inside a lock.
+/// What to do instead, on every message about a lock taken inside another.
+const TOGETHER: &str =
+    "take them in one `lock`, like `lock a, b as ref x, ref y:`, so they can't be taken in opposite orders";
+
 const WAIT_FIRST: &str = "do the waiting first, then take the lock: a task that waits while it holds one stops every task that wants it";
 
 /// A call made inside a lock body, to be judged once every function is checked.
@@ -80,6 +88,39 @@ impl FnCx<'_> {
 }
 
 impl Checker {
+    pub(crate) fn note_takes_lock(&mut self, key: &str, what: &str) {
+        let outer = self.outermost(key);
+        self.takes_locks.entry(outer).or_insert_with(|| what.to_owned());
+    }
+
+    /// Each function that does what `own` says some do, itself or through what it calls, with
+    /// what the first one found does.
+    fn up_the_calls(&self, own: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let mut found = own.clone();
+        let mut pending: Vec<String> = found.keys().cloned().collect();
+        while let Some(key) = pending.pop() {
+            let what = found.get(&key).cloned().unwrap_or_default();
+            for caller in self.callers.get(&key).into_iter().flatten() {
+                if !found.contains_key(caller) {
+                    found.insert(caller.clone(), what.clone());
+                    pending.push(caller.clone());
+                }
+            }
+        }
+        found
+    }
+
+    /// What a call reaches in `found`: its function's, or for an interface's method, any type's.
+    fn reached(&self, found: &BTreeMap<String, String>, callee: &str) -> Option<String> {
+        match callee.strip_prefix("*.") {
+            Some(method) => {
+                let suffix = format!(".{method}");
+                found.iter().find(|(key, _)| key.ends_with(&suffix)).map(|(_, what)| what.clone())
+            }
+            None => found.get(&self.outermost(callee)).cloned(),
+        }
+    }
+
     fn note_waits(&mut self, key: &str, what: &str) {
         let outer = self.outermost(key);
         self.waits.entry(outer).or_insert_with(|| what.to_owned());
@@ -91,28 +132,15 @@ impl Checker {
         if self.lock_calls.is_empty() {
             return;
         }
-        let mut waiting: BTreeMap<String, String> = self.waits.clone();
-        let mut pending: Vec<String> = waiting.keys().cloned().collect();
-        while let Some(key) = pending.pop() {
-            let what = waiting.get(&key).cloned().unwrap_or_default();
-            for caller in self.callers.get(&key).into_iter().flatten() {
-                if !waiting.contains_key(caller) {
-                    waiting.insert(caller.clone(), what.clone());
-                    pending.push(caller.clone());
-                }
-            }
-        }
+        let waiting = self.up_the_calls(&self.waits);
+        let locking = self.up_the_calls(&self.takes_locks);
         for call in std::mem::take(&mut self.lock_calls) {
-            let found = match call.callee.strip_prefix("*.") {
-                Some(method) => {
-                    let suffix = format!(".{method}");
-                    waiting.iter().find(|(key, _)| key.ends_with(&suffix)).map(|(_, what)| what.clone())
-                }
-                None => waiting.get(&self.outermost(&call.callee)).cloned(),
-            };
-            if let Some(what) = found {
+            if let Some(what) = self.reached(&waiting, &call.callee) {
                 let message = format!("`{}` waits on {what} {}", call.name, call.held);
                 self.diagnostics.push(Diagnostic::new(message, call.span).with_help(WAIT_FIRST));
+            } else if let Some(what) = self.reached(&locking, &call.callee) {
+                let message = format!("`{}` takes {what} {}", call.name, call.held);
+                self.diagnostics.push(Diagnostic::new(message, call.span).with_help(TOGETHER));
             }
         }
     }

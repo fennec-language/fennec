@@ -922,7 +922,7 @@ def waited(connection: Connection) -> str:
 def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails NetError:
     connection.write(greeting + \"\\n\")?
     mut count = 0
-    for line in connection.lines():
+    for line in connection.lines()?:
         if line == \"divide\":
             connection.write(\"dividing\\n\")?
             count += 1 // (count - count)
@@ -1028,7 +1028,7 @@ shared Counter:
 
 def answer(connection: Connection, counter: Counter) -> int fails NetError:
     connection.write(\"ready\\n\")?
-    for line in connection.lines():
+    for line in connection.lines()?:
         if line == \"fail\":
             with counter as ref held:
                 held.total = 1 // (held.total - held.total)

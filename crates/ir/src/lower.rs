@@ -42,8 +42,8 @@ pub struct Options {
     /// Whether `main`, if it can fail, ends the program itself rather than give its failure back
     /// to what started it, for a backend with nothing there to take one.
     pub stop_on_failed_main: bool,
-    /// Whether `for conn in parallel(server)` goes through the connections in order, as the
-    /// interpreter does, rather than giving each a task: a test's servers are a fake network the
+    /// Whether `for conn in parallel(server)` goes through the connections in order, one at
+    /// a time, rather than giving each a task: a test's servers are a fake network the
     /// runtime holds, which only answers in order.
     pub serve_in_order: bool,
 }
@@ -109,6 +109,7 @@ fn lower_from(
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
+        layouts: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
         generators: those_where(&every, |def| fuse::has_yield(&def.body)),
         mut_forms: those_where(&every, |def| def.name == "[]mut"),
@@ -147,8 +148,7 @@ fn lower_from(
     program.external = calls::external(&program);
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
-    program.generators = context.generator_defs.take();
-    program.own_texts = context.own_texts.take();
+    take_what_was_found(&mut program, &context);
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
@@ -165,6 +165,14 @@ fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
         .filter(|(key, def)| key.ends_with(".serialize") && !def.span.in_prelude())
         .filter_map(|(key, _)| key.strip_suffix(".serialize").map(str::to_owned))
         .collect()
+}
+
+/// What lowering the functions found along the way: the generators passed as values, the types
+/// with their own text, and the layouts `std.pack` saves.
+fn take_what_was_found(program: &mut Program, context: &Context<'_>) {
+    program.generators = context.generator_defs.take();
+    program.own_texts = context.own_texts.take();
+    program.layouts = context.layouts.take();
 }
 
 fn those_where<'a>(
@@ -296,6 +304,8 @@ struct Context<'a> {
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
     /// The types whose own text is asked for by printing something that holds them.
     own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
+    /// The layout of each type `std.pack` saves, as `layout[T]()` gives them.
+    layouts: std::cell::RefCell<Vec<(i64, String)>>,
     /// The standard library's `@intrinsic` functions, which have no body: a call to one is an
     /// [`InstKind::Builtin`] of its key, which each engine provides.
     intrinsics: HashSet<String>,

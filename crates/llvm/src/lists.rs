@@ -1,10 +1,10 @@
-//! Plain structs, tuples and lists, laid out as the runtime and the JIT lay them out.
+//! Plain structs, tuples and lists, laid out as the runtime lays them out.
 
 use std::fmt::Write as _;
 
-use fennec_interp::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
 use fennec_ir::{InstKind, LocalId, Operand, PlaceStep};
 use fennec_layout::ListItem;
+use fennec_rt::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
 use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS, VALUE_ACCESS};
@@ -765,7 +765,7 @@ impl Emit<'_, '_, '_> {
     /// it in place, and other threads don't count it at all, as with a string literal's block. Two threads making the
     /// first one at once each make a block, and either serves.
     fn shared_case(&mut self, id: u32, number: i64) -> Result<String, String> {
-        use fennec_interp::embed::heap::IMMORTAL;
+        use fennec_rt::embed::heap::IMMORTAL;
         let global = format!("@\"fen_case_{id}_{number}\"");
         self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
         let (kept, none) = (self.temp(), self.temp());
@@ -1022,7 +1022,7 @@ impl Emit<'_, '_, '_> {
         layout
             .fields
             .iter()
-            .filter(|field| !fennec_interp::packed::hidden(&field.name))
+            .filter(|field| !fennec_rt::packed::hidden(&field.name))
             .map(|field| {
                 Kind::from_ty(self.module.layouts, field.ty)
                     .map(|kind| (field.offset, kind))

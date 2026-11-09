@@ -2,15 +2,15 @@
 //! calls, exported under the name it calls it by. It has no interpreter in it. `fennec build`
 //! links an executable's object file with this library and the system's C libraries.
 //!
-//! The functions are `fennec_interp::embed`'s; this crate only gives them names a linker
+//! The functions are `fennec_rt::embed`'s; this crate only gives them names a linker
 //! can find, which is the one thing here Rust calls unsafe.
 #![expect(
     unsafe_code,
     reason = "exporting the runtime's functions under fixed names, for linked executables"
 )]
 
-use fennec_interp::embed::guarded::rollback;
-use fennec_interp::embed::{
+use fennec_rt::embed::guarded::rollback;
+use fennec_rt::embed::{
     aot, bytes, capabilities, channels, checks, cleanup, dicts, eval, guarded, heap, io, lists, notes,
     numbers, parallel, regex, serve, strings, temps, text, threads,
 };

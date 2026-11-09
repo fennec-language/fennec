@@ -1,4 +1,4 @@
-//! `embed("path")`: a file's bytes, read while the program loads. The file is an input to the
+//! `embed_file("path")`: a file's bytes, read while the program loads. The file is an input to the
 //! build rather than something the program reads when it runs, so it takes no `Fs` capability,
 //! and from here on the program just holds the bytes.
 
@@ -8,17 +8,20 @@ use fennec_syntax::{Blob, Diagnostic, Expr, ExprKind, Item, Module, Span, visit}
 
 use crate::{Embedded, Overlay};
 
-/// The file an `embed` is written in.
+/// What a program calls to embed a file.
+pub(crate) const NAME: &str = "embed_file";
+
+/// The file an `embed_file` is written in.
 pub(crate) struct Place<'a> {
     pub(crate) file: &'a Path,
     /// Its path as messages show it.
     pub(crate) shown: &'a str,
-    /// The folder of its kit, which `embed` can't reach out of.
+    /// The folder of its kit, which `embed_file` can't reach out of.
     pub(crate) root: Option<&'a Path>,
     pub(crate) overlay: &'a Overlay,
 }
 
-/// Replaces each `embed` call in a file with the bytes it names, unless the file has an `embed`
+/// Replaces each `embed_file` call in a file with the bytes it names, unless the file has an `embed_file`
 /// of its own.
 pub(crate) fn read_files(
     module: &mut Module,
@@ -44,19 +47,19 @@ pub(crate) fn read_files(
     });
 }
 
-/// Whether a file defines or imports a name `embed`.
+/// Whether a file defines or imports a name `embed_file`.
 fn has_its_own(module: &Module) -> bool {
     module.items.iter().any(|item| match item {
-        Item::Function(def) => def.name == "embed",
-        Item::Import(import) => import.bound().any(|(_, bound)| bound == "embed"),
+        Item::Function(def) => def.name == NAME,
+        Item::Import(import) => import.bound().any(|(_, bound)| bound == NAME),
         _ => false,
     })
 }
 
-/// The path an `embed` call gives, if this is one.
+/// The path an `embed_file` call gives, if this is one.
 fn called(expr: &Expr) -> Option<Result<&str, Diagnostic>> {
     let ExprKind::Call { callee, args } = &expr.kind else { return None };
-    if !matches!(&callee.kind, ExprKind::Name(name) if name == "embed") {
+    if !matches!(&callee.kind, ExprKind::Name(name) if name == NAME) {
         return None;
     }
     Some(match args.as_slice() {
@@ -69,7 +72,7 @@ fn called(expr: &Expr) -> Option<Result<&str, Diagnostic>> {
 }
 
 fn not_written_out(span: Span) -> Diagnostic {
-    Diagnostic::new("`embed` takes one path, written out as a string", span).with_help(
+    Diagnostic::new("`embed_file` takes one path, written out as a string", span).with_help(
         "the file is read when the program is built, before anything has run; to choose a file while it runs, read it with `std.fs`",
     )
 }
@@ -78,16 +81,28 @@ impl Place<'_> {
     fn read(&self, path: &str, span: Span) -> Result<Embedded, Diagnostic> {
         let written = Path::new(path);
         if written.components().any(|part| matches!(part, Component::RootDir | Component::Prefix(_))) {
-            return Err(Diagnostic::new(format!("`embed` can't take the whole path `{path}`"), span)
+            return Err(Diagnostic::new(format!("`embed_file` can't take the whole path `{path}`"), span)
                 .with_help("write the path from the folder this file is in"));
         }
-        let beside = self.file.parent().unwrap_or_else(|| Path::new(".")).join(written);
+        let folder = self.file.parent().unwrap_or_else(|| Path::new("."));
+        let beside = folder.join(written);
         let real = std::fs::canonicalize(&beside).ok();
-        if let (Some(root), Some(real)) = (self.root, &real)
-            && !real.starts_with(root)
+        let (edge, kit) = self.edge(folder);
+        if let Some(real) = &real
+            && !real.starts_with(&edge)
         {
-            return Err(Diagnostic::new(format!("`{path}` is outside this kit's folder"), span)
-                .with_help("a kit embeds only files inside its own folder, so it still builds wherever it's shared; move the file into the kit"));
+            let (said, help) = if kit {
+                (
+                    "this kit's folder",
+                    "a kit embeds only files inside its own folder, so it still builds wherever it's shared; move the file into the kit",
+                )
+            } else {
+                (
+                    "this file's folder",
+                    "a file with no kit embeds only files in its own folder or under it, so it still builds wherever it's copied; move the file there",
+                )
+            };
+            return Err(Diagnostic::new(format!("`{path}` is outside {said}"), span).with_help(help));
         }
         let data = match self.overlay.get(&beside) {
             Some(text) => text.clone().into_bytes(),
@@ -96,10 +111,25 @@ impl Place<'_> {
         Ok(Embedded { path: real.unwrap_or(beside), data: Blob::from(data) })
     }
 
+    /// The folder nothing embedded can be outside of, as it really is on disk: the kit's, which
+    /// holds the nearest `kit.toml`, or for a file with no kit, its own folder. Whether it's a kit's
+    /// comes with it.
+    fn edge(&self, folder: &Path) -> (std::path::PathBuf, bool) {
+        let real = |at: &Path| std::fs::canonicalize(at).unwrap_or_else(|_| at.to_path_buf());
+        if let Some(root) = self.root {
+            return (real(root), true);
+        }
+        let own = real(folder);
+        match own.ancestors().find(|at| at.join("kit.toml").is_file()) {
+            Some(kit) => (kit.to_path_buf(), true),
+            None => (own, false),
+        }
+    }
+
     fn read_disk(&self, path: &str, beside: &Path, span: Span) -> Result<Vec<u8>, Diagnostic> {
         if beside.is_dir() {
             return Err(Diagnostic::new(format!("`{path}` is a folder"), span)
-                .with_help("`embed` takes one file; embed each file you need"));
+                .with_help("`embed_file` takes one file; embed each file you need"));
         }
         std::fs::read(beside).map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {

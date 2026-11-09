@@ -1,6 +1,6 @@
 ## What `blake3(chunks)` and `sha256(chunks)` are written with: each chunk, text or `bytes`, is given
 ## to the hash in turn, so a file far bigger than memory hashes in a few kilobytes, as
-## `blake3(file.chunks(1_000_000))` does. The checker sends a call here when what's hashed is a list
+## `blake3(file.chunks(1_000_000)?)` does. The checker sends a call here when what's hashed is a list
 ## or an iterator of chunks.
 from std import crypto
 

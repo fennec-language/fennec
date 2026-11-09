@@ -71,6 +71,8 @@ pub struct Program {
     pub not_lowered: Vec<NotLowered>,
     /// The types printed inside other values that write their own text with `def str`.
     pub own_texts: Vec<OwnText>,
+    /// The shape number and layout of each type `std.pack` saves, for `fennec update` to lock.
+    pub layouts: Vec<(i64, String)>,
     /// What the program calls that isn't here or in `not_lowered`. Lowering a whole program
     /// leaves this empty.
     pub external: Vec<String>,
@@ -501,7 +503,7 @@ pub enum Operand {
     Float(f64),
     Bool(bool),
     Str(String),
-    /// Bytes written into the program, as `embed("path")` gives: a constant blob, shared rather
+    /// Bytes written into the program, as `embed_file("path")` gives: a constant blob, shared rather
     /// than copied, since a file can be big.
     Bytes(fennec_syntax::Blob),
     None,

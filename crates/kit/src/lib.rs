@@ -2,13 +2,14 @@
 //! `src/main.fen` holds `main` and the module `enemies.ai` is the file `src/enemies/ai.fen`.
 //!
 //! Loading reads a file and everything it imports, checks the imports, and merges the files
-//! into one module that the checker, the interpreter and the JIT run as they run a single
-//! file. Every file is parsed at its own byte offset, so `Program::sources` can say which
+//! into one module that the checker and the compiler take as they take a single file. Every file is parsed at its own byte offset, so `Program::sources` can say which
 //! file a diagnostic is in.
 
 mod embed;
 mod init;
 mod load;
+
+pub use load::PACK_LOCK;
 mod scope;
 mod starter;
 
@@ -121,7 +122,7 @@ pub fn all_texts(path: &Path) -> Option<Vec<(String, String)>> {
     let shown = path.to_string_lossy();
     if path.is_dir() {
         let mut texts = load::kit_texts(path)?;
-        if texts.iter().any(|(_, text)| text.contains("embed(")) {
+        if texts.iter().any(|(_, text)| text.contains("embed_file(")) {
             texts.extend(load(path, &shown, Entry::Everything).ok()?.embedded_texts());
         }
         return Some(texts);

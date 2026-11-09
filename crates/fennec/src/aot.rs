@@ -152,7 +152,7 @@ pub(crate) fn tests_executable(
 ) -> Result<Vec<String>, String> {
     let emitted = emitted(module, true)?;
     let image_of = |image: &mut fennec_llvm::Image| {
-        fennec_interp::embed::codec::Image {
+        fennec_rt::embed::codec::Image {
             // `fennec test` renders a failure itself.
             sources: fennec_syntax::Sources::new(),
             tables: std::mem::take(&mut image.tables),
@@ -178,7 +178,7 @@ pub(crate) fn tracing_executable(
     fennec_build::keep_what_main_reaches(&mut reached);
     let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
-        fennec_interp::embed::codec::Image {
+        fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
@@ -214,6 +214,8 @@ pub(crate) struct Built {
     fresh: usize,
     compiled: std::time::Duration,
     linked: std::time::Duration,
+    /// Its place in the store, when there's one: what a run of the same program can start from.
+    pub(crate) root: Option<String>,
 }
 
 /// Whether there's a linker to find. Windows doesn't come with one, so LLD and the libraries it
@@ -261,7 +263,24 @@ pub(crate) fn executable(
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
     let linked = finish(&built, output, runtime_in, statically)?;
-    Ok(Built { total: built.total, fresh: built.fresh, compiled, linked })
+    let root = built.stored.as_ref().map(|stored| stored.root.clone());
+    Ok(Built { total: built.total, fresh: built.fresh, compiled, linked, root })
+}
+
+/// Puts the finished program in the store under `root` at `output`, if it's there.
+pub(crate) fn stored_executable(cache: &fennec_build::Cache, root: &str, output: &Path) -> Option<()> {
+    let bytes = cache.read(PROGRAMS, root)?;
+    std::fs::write(output, bytes).ok()?;
+    executable_mode(output).ok()
+}
+
+/// What a dev build depends on besides the program: which runtime it links, as far as anything
+/// outside the program chooses that, and what `--cpu` asked for.
+pub(crate) fn dev_build_settings() -> String {
+    let threads = std::env::var_os("FENNEC_THREADS_RUNTIME").map(|on| on.to_string_lossy().into_owned());
+    let found = runtime_folder(false).is_ok_and(|folder| folder.join(Runtime::Threads.library()).is_file());
+    let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
+    format!("threads={threads:?} found={found} baseline={baseline}")
 }
 
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
@@ -398,8 +417,7 @@ fn emitted_with(
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
     tests: bool,
 ) -> Result<Emitted, String> {
-    // Reading and writing JSON and TOML go through std's code in Fennec where they can, here alone,
-    // so other engines keep the interpreter's. Where LLVM can't take that code yet, they don't.
+    // Reading and writing JSON and TOML go through std's code in Fennec, where LLVM can take it.
     let mut routed = reached.clone();
     // So does sorting what has its own `<`, before formats, which resolve what they change.
     let sorts = fennec_check::route_sorts_natively(&mut routed);
@@ -466,7 +484,7 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
     fennec_build::keep_what_main_reaches(&mut reached);
     let emitted = emitted(&reached, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
-        fennec_interp::embed::codec::Image {
+        fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
@@ -813,7 +831,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn the_main_stack_linked_is_the_one_the_runtime_counts_on() {
-        let flag = format!("-Wl,-stack_size,{:#x}", fennec_interp::embed::aot::MAIN_STACK_BYTES);
+        let flag = format!("-Wl,-stack_size,{:#x}", fennec_rt::embed::aot::MAIN_STACK_BYTES);
         assert!(super::SYSTEM_LIBRARIES.contains(&flag.as_str()), "{flag}");
     }
 

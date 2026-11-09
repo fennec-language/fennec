@@ -27,7 +27,8 @@ use crate::types::Type;
 /// read back from.
 pub fn tuple_function(method: &str, tuple: &Type) -> String {
     let mut name = format!("fennec_tuple_{method}_");
-    for c in tuple.to_string().chars() {
+    // A program's own type checked under another name is named as it's written.
+    for c in fennec_syntax::rename::shown_key(&tuple.to_string()).chars() {
         match c {
             '(' => name.push_str("_of_"),
             ')' => name.push_str("_end_"),
@@ -93,7 +94,11 @@ pub(crate) fn lower(module: &mut Module, saved: &BTreeSet<Type>) -> bool {
     if names.is_empty() {
         return false;
     }
-    let Ok(parsed) = fennec_syntax::parse_prelude(&text) else { return false };
+    let Ok(mut parsed) = fennec_syntax::parse_prelude(&text) else { return false };
+    // They're written with the program's own types named as written, and then named as the
+    // program's code names them, as a type named like a library type is checked under another
+    // name: that name can't be written.
+    fennec_syntax::rename::rename_types(&mut parsed, &renamed_types(module));
     let mut functions = parsed.items.into_iter().filter_map(|item| match item {
         Item::Function(def) => Some(def),
         _ => None,
@@ -108,6 +113,20 @@ pub(crate) fn lower(module: &mut Module, saved: &BTreeSet<Type>) -> bool {
         module.items.push(Item::Function(loading));
     }
     true
+}
+
+/// The program's own types checked under another name, each by the name it's written with.
+fn renamed_types(module: &Module) -> std::collections::BTreeMap<String, String> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some(def.name.as_str()),
+            _ => None,
+        })
+        .filter(|name| name.ends_with(fennec_syntax::rename::RENAMED))
+        .map(|name| (fennec_syntax::rename::shown_type_name(name).to_owned(), name.to_owned()))
+        .collect()
 }
 
 /// Whether a type holds a tuple anywhere in it.
@@ -164,7 +183,7 @@ fn written_plainly(ty: &Type) -> bool {
 /// gives back their own.
 fn functions_for(tuple: &Type, at: usize) -> Option<String> {
     let Type::Tuple(items) = tuple else { return None };
-    let shown = tuple.source()?;
+    let shown = fennec_syntax::rename::shown_key(&tuple.source()?);
     let count = items.len();
     let mut out = format!(
         "def tuple_save__{at}[S: Serializer](held: {shown}, ref out: S):\n    out.items(\"{shown}\", {count})\n"
@@ -188,7 +207,8 @@ fn functions_for(tuple: &Type, at: usize) -> Option<String> {
             let _ = writeln!(out, "    _ = src.item[int?]()?");
             made.push("None".to_owned());
         } else {
-            let _ = writeln!(out, "    item{at} = src.item[{}]()?", crate::saving::one_type(&item.source()?));
+            let written = fennec_syntax::rename::shown_key(&item.source()?);
+            let _ = writeln!(out, "    item{at} = src.item[{}]()?", crate::saving::one_type(&written));
             made.push(format!("item{at}"));
         }
     }

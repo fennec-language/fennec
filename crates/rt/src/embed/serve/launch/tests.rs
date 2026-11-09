@@ -569,3 +569,61 @@ fn a_task_waiting_to_read_a_tls_connection_lets_others_run_on_its_thread() {
     assert_eq!(TLS_READ.load(Ordering::SeqCst), 1, "the read didn't get its line");
     finish();
 }
+
+static WRITE_WORKER: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+static WRITE_BESIDE_DONE: AtomicBool = AtomicBool::new(false);
+static WRITE_HANDLE: AtomicI64 = AtomicI64::new(0);
+static WRITE_READ: AtomicI64 = AtomicI64::new(-1);
+static WRITE_WROTE: AtomicI64 = AtomicI64::new(-1);
+
+extern "C" fn reads_while_another_writes(_env: i64, _thread: i64) -> i64 {
+    let handle = WRITE_HANDLE.load(Ordering::SeqCst);
+    let read = crate::stdlib::net::real_connection(
+        handle,
+        "read_line",
+        &[],
+        Some(Duration::from_secs(10)),
+        Span::default(),
+    );
+    WRITE_READ.store(i64::from(matches!(read, Ok(crate::value::Value::Ok(_)))), Ordering::SeqCst);
+    ENDED
+}
+
+extern "C" fn writes_while_another_reads(_env: i64, _thread: i64) -> i64 {
+    let handle = WRITE_HANDLE.load(Ordering::SeqCst);
+    let wrote = crate::stdlib::net::real_connection(
+        handle,
+        "write",
+        &[crate::value::Value::str("more\n")],
+        None,
+        Span::default(),
+    );
+    WRITE_WROTE.store(i64::from(matches!(wrote, Ok(crate::value::Value::Ok(_)))), Ordering::SeqCst);
+    WRITE_BESIDE_DONE.store(true, Ordering::SeqCst);
+    ENDED
+}
+
+/// One task writes to a TLS connection while another on its thread is parked reading it. The write
+/// once waited on the lock the parked read held, blocking the thread the read needed to go on.
+#[test]
+fn a_task_can_write_a_tls_connection_another_is_reading() {
+    let worker = one_worker(&WRITE_WORKER);
+    let handle = crate::stdlib::net::tests::tls::connected_once_ready(&WRITE_BESIDE_DONE);
+    WRITE_HANDLE.store(handle, Ordering::SeqCst);
+    let (done, ended) = std::sync::mpsc::channel();
+    // On a thread of its own, so a test that hangs fails rather than waits forever.
+    let running = std::thread::spawn(move || {
+        begin();
+        let reading = launch_on(worker, reads_while_another_writes, 0);
+        let writing = launch_on(worker, writes_while_another_reads, 0);
+        let mut failure = 0;
+        let both = (launch_end(writing, -1, 0, &mut failure), launch_end(reading, -1, 0, &mut failure));
+        finish();
+        let _ = done.send(both);
+    });
+    let both = ended.recv_timeout(Duration::from_secs(30));
+    assert_eq!(both, Ok((ENDED, ENDED)), "the tasks didn't end: the write waited on the read");
+    assert_eq!(WRITE_WROTE.load(Ordering::SeqCst), 1, "the write failed");
+    assert_eq!(WRITE_READ.load(Ordering::SeqCst), 1, "the read didn't get its line");
+    drop(running.join());
+}

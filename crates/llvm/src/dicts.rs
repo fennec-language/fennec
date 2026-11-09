@@ -179,7 +179,7 @@ impl Emit<'_, '_, '_> {
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
         self.strong_hash_helpers();
-        if word == Word::Float {
+        if matches!(word, Word::Float | Word::F32) {
             return self.find_float_key(dict, key);
         }
         if let Word::Plain(id) = word
@@ -348,7 +348,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{wide} = zext i1 {value} to i64"));
             return Ok(wide);
         }
-        if word == Word::Float {
+        if matches!(word, Word::Float | Word::F32) {
             let bits = self.temp();
             self.line(&format!("{bits} = bitcast double {value} to i64"));
             return Ok(bits);
@@ -360,7 +360,7 @@ impl Emit<'_, '_, '_> {
     fn dict_word(&mut self, kind: &Kind, value: &str, retain: bool) -> String {
         let word = self.temp();
         match kind {
-            Kind::Float => self.line(&format!("{word} = bitcast double {value} to i64")),
+            Kind::Float | Kind::F32 => self.line(&format!("{word} = bitcast double {value} to i64")),
             Kind::Bool => self.line(&format!("{word} = zext i1 {value} to i64")),
             // A header becomes a block of its own, the dict's.
             Kind::Str | Kind::TextBlock if self.headers() => {
@@ -1500,6 +1500,8 @@ fn word_ty(word: Word) -> Ty {
     match word {
         Word::Int => Ty::Int,
         Word::Float => Ty::Float,
+        Word::U64 => Ty::U64,
+        Word::F32 => Ty::F32,
         Word::Bool => Ty::Bool,
         Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
@@ -1510,7 +1512,7 @@ fn word_ty(word: Word) -> Ty {
 
 /// Whether a dict's values are words that hold no block, so adding one owns nothing.
 fn plain_value(word: Word) -> bool {
-    matches!(word, Word::Int | Word::Float | Word::Bool | Word::Nothing)
+    matches!(word, Word::Int | Word::Float | Word::Bool | Word::Nothing | Word::U64 | Word::F32)
 }
 
 /// Where a key's bytes are, which says how its words can be read.

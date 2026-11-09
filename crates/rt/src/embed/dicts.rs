@@ -146,6 +146,11 @@ pub enum Word {
     /// As a value, the address of a block of anything held by one, like a list, by that kind's
     /// number in `Tables::blocks`. Shapes of its own say which, so the runtime can make one.
     Block(u32),
+    /// A `u64`, its bits in the word: hashed and compared as an int is, and shown unsigned.
+    U64,
+    /// An `f32`, as the `f64` that's exactly its value: hashed and compared as a float is, and
+    /// shown as the shortest text that reads back as that `f32`.
+    F32,
 }
 
 impl Word {
@@ -155,11 +160,12 @@ impl Word {
     }
 }
 
-const KEYS: [Word; 5] = [Word::Int, Word::Str, Word::Plain(0), Word::Text, Word::Float];
+const KEYS: [Word; 7] = [Word::Int, Word::Str, Word::Plain(0), Word::Text, Word::Float, Word::U64, Word::F32];
 
 /// Words an entry with a string header for its key takes: hash, the header's three, value.
 const HEADER_ENTRY_WORDS: usize = 5;
-const VALUES: [Word; 6] = [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing, Word::Plain(0)];
+const VALUES: [Word; 8] =
+    [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing, Word::Plain(0), Word::U64, Word::F32];
 
 /// The highest shape of a dict with `Word::Block` values, which count down from here, below the
 /// shapes that aren't numbered from the string shape.
@@ -334,7 +340,7 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
         Hashing::Fast => hash_int(word),
         Hashing::Strong => strong_hash(1, &[word]),
     };
-    if key_word == Word::Float {
+    if matches!(key_word, Word::Float | Word::F32) {
         return one_word(float_key(first));
     }
     if let Word::Plain(_) = key_word {
@@ -394,7 +400,7 @@ fn hash_header(state: &State, key: &[u64], how: Hashing) -> u64 {
 
 fn keys_equal(state: &State, key_word: Word, a: &[u64], b: &[u64]) -> bool {
     match (a, b) {
-        ([a], [b]) if key_word == Word::Float => float_key(*a) == float_key(*b),
+        ([a], [b]) if matches!(key_word, Word::Float | Word::F32) => float_key(*a) == float_key(*b),
         ([a], [b]) => a == b || (key_word.owned() && same(state, *a, *b)),
         // Equal strings have the same form, so inline headers are equal exactly when their
         // words are, and only two blocks need their bytes compared.
@@ -1344,6 +1350,8 @@ fn word_shown(state: &State, word: Word, words: &[u64], out: &mut Written) {
     let element = match word {
         Word::Int => Element::Int,
         Word::Float => Element::Float,
+        Word::U64 => Element::U64,
+        Word::F32 => Element::F32,
         Word::Bool => Element::Bool,
         Word::Text => Element::Text,
         Word::Str | Word::Plain(_) | Word::Block(_) | Word::Nothing => Element::Str,
@@ -1370,8 +1378,8 @@ fn key_value(state: &State, word: Word, key: &[u64]) -> Value {
 
 fn word_value(state: &State, word: Word, bits: u64) -> Value {
     match word {
-        Word::Int => Value::Int(i64::from_ne_bytes(bits.to_ne_bytes())),
-        Word::Float => Value::Float(f64::from_bits(bits)),
+        Word::Int | Word::U64 => Value::Int(i64::from_ne_bytes(bits.to_ne_bytes())),
+        Word::Float | Word::F32 => Value::Float(f64::from_bits(bits)),
         Word::Bool => Value::Bool(bits != 0),
         Word::Str | Word::Plain(_) | Word::Block(_) => super::heap::read_block(state, bits),
         Word::Nothing | Word::Text => Value::Unit,
@@ -1410,8 +1418,8 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
     };
     let words = |state: &mut State, word: Word, value: &Value| -> Option<u64> {
         Some(match (word, value) {
-            (Word::Int, Value::Int(n)) => u64::from_ne_bytes(n.to_ne_bytes()),
-            (Word::Float, Value::Float(x)) => x.to_bits(),
+            (Word::Int | Word::U64, Value::Int(n)) => u64::from_ne_bytes(n.to_ne_bytes()),
+            (Word::Float | Word::F32, Value::Float(x)) => x.to_bits(),
             (Word::Bool, Value::Bool(b)) => u64::from(*b),
             (Word::Str, Value::Str(text)) => u64::try_from(text_address(state, text)).ok()?,
             (Word::Nothing, Value::Unit) => 0,
@@ -1476,11 +1484,11 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
-                        Word::Float => {
+                        Word::Float | Word::F32 => {
                             crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
                         }
                         Word::Str | Word::Plain(_) | Word::Block(_) => same(state, value, *other),
-                        Word::Int | Word::Bool | Word::Nothing | Word::Text => value == *other,
+                        Word::Int | Word::U64 | Word::Bool | Word::Nothing | Word::Text => value == *other,
                     }),
                 Probe::Empty(_) => false,
             }

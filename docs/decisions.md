@@ -560,7 +560,7 @@ extend list[T: Ordered]:
 `count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written, apart from an operator defined for different right-hand types, as below. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
 *Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin and Go all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
 
-**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They need no new syntax: a unit is a struct holding its number, and its operators say what each combination gives, using one operator for each right-hand type. Chris decided this on 2026-11-07, which settles the syntax. Built: a unit struct with one operator of each kind, like `Meters + Meters`. Not built yet: a second operator of the same kind, like `Meters / float` beside `Meters / Seconds`, which waits for operators chosen by their right-hand type; today it's refused as a duplicate method.
+**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They need no new syntax: a unit is a struct holding its number, and its operators say what each combination gives, using one operator for each right-hand type. Chris decided this on 2026-11-07, which settles the syntax. Built: a unit struct with one operator of each kind, like `Meters + Meters`. A second operator of the same kind, like `Meters / float` beside `Meters / Seconds`, is built too.
 ```fennec
 # Planned: the second `def /` is refused today
 struct Meters:
@@ -667,7 +667,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 
 **`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply. A type with its own `def str` still satisfies `Format`.
 
-**A type may define each operator once for each right-hand type.** `Mat4 * Mat4` and `Mat4 * Vec4` can both exist, and so can `Time - Time -> Duration` and `Time - Duration -> Time`. The types must match exactly, with no conversions, and it's for operators only: a named function still has one meaning. Not built yet: today a type can have only one of each.
+**A type may define each operator once for each right-hand type.** `Mat4 * Mat4` and `Mat4 * Vec4` can both exist, and so can `Time - Time -> Duration` and `Time - Duration -> Time`. The types must match exactly, with no conversions, and it's for operators only: a named function still has one meaning. Built.
 *Why:* `m * v` and `deadline - now` read like the math, and exact matching keeps it simple to check, unlike overloading in languages with conversions, whose best-match rules give confusing errors and slow compiles.
 
 **`in` is an operator a type defines,** like `def +`, `def <` and `def []`.

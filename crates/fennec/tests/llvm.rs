@@ -4039,6 +4039,52 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A type with an operator for each of several types on its right calls the one for the type
+/// that's there, in its own methods, from an extension, and in a function.
+#[test]
+fn an_operator_is_chosen_by_the_type_on_its_right_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "operators_by_right",
+        "struct Vec2:
+    x: float
+    y: float
+
+struct Mat2:
+    a: float
+    b: float
+    c: float
+    d: float
+
+    def *(self, other: Mat2) -> Mat2:
+        Mat2(
+            a=self.a * other.a + self.b * other.c,
+            b=self.a * other.b + self.b * other.d,
+            c=self.c * other.a + self.d * other.c,
+            d=self.c * other.b + self.d * other.d,
+        )
+
+extend Mat2:
+    def *(self, other: Vec2) -> Vec2:
+        Vec2(x=self.a * other.x + self.b * other.y, y=self.c * other.x + self.d * other.y)
+
+    def *(self, other: float) -> Mat2:
+        Mat2(a=self.a * other, b=self.b * other, c=self.c * other, d=self.d * other)
+
+def main(stdout: Stdout):
+    turn = Mat2(a=0.0, b=-1.0, c=1.0, d=0.0)
+    twice = turn * turn
+    moved = turn * Vec2(x=1.0, y=2.0)
+    big = turn * 3.0
+    stdout.print(twice.a, twice.d, moved.x, moved.y, big.b)
+",
+    )?;
+    assert_eq!(printed, "-1.0 -1.0 -2.0 1.0 -3.0\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

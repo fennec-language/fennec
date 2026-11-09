@@ -17,8 +17,7 @@ use crate::{CheckKind, CheckLeft, Shared};
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
-    /// On x86-64, `x86-64-v3`: AVX2, FMA and BMI, the level the JIT uses and the twins are built
-    /// for. On 64-bit Arm, the baseline already has what's wanted.
+    /// On x86-64, `x86-64-v3`: AVX2, FMA and BMI, the level the twins are built for. On 64-bit Arm, the baseline already has what's wanted.
     #[default]
     Usual,
     /// The first of its architecture, for older machines.
@@ -72,7 +71,7 @@ const ALWAYS_INLINE: usize = 16;
 const COPIED: usize = 64;
 /// How many calls deep what's copied may call other small functions.
 const COPY_DEPTH: usize = 2;
-/// Below this many, a recursive function gets one level of itself inlined, as in the JIT.
+/// Below this many, a recursive function gets one level of itself inlined.
 const SELF_INLINED: usize = 24;
 
 const OVERFLOW: i64 = 1;
@@ -1155,14 +1154,19 @@ impl Emit<'_, '_, '_> {
 
     /// Calls the runtime's failure and leaves the function when `bad` holds.
     pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
-        let what = match code {
+        self.fail_noted(bad, code, span, None);
+    }
+
+    /// `fail_if`, with what the check is for when the code alone doesn't say.
+    fn fail_noted(&mut self, bad: &str, code: i64, span: Span, noted: Option<CheckKind>) {
+        let what = noted.or_else(|| match code {
             OVERFLOW => Some(CheckKind::Overflow),
             DIVISION_BY_ZERO => Some(CheckKind::DivideByZero),
             fennec_rt::embed::checks::BAD_SHIFT => Some(CheckKind::ShiftRange),
             // How deep the calls go is checked on the way into a function, not by what it does.
             TOO_DEEP => None,
             _ => Some(CheckKind::Builtin(self.failing_here())),
-        };
+        });
         self.next_check(span, what);
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
@@ -1838,7 +1842,7 @@ impl Emit<'_, '_, '_> {
                 if !self.known.is_nonzero(rhs) {
                     let zero = self.temp();
                     self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
-                    self.fail_if(&zero, DIVISION_BY_ZERO, span);
+                    self.fail_noted(&zero, DIVISION_BY_ZERO, span, Some(CheckKind::FloatDivideByZero));
                 }
                 if op == BinOp::Mod {
                     return Ok(self.float_remainder((a, b)));
@@ -2486,6 +2490,8 @@ impl Emit<'_, '_, '_> {
             }
             InstKind::Lock { handle, write } => self.lock(handle, *write, span),
             InstKind::Unlock { handle } => self.unlock(handle),
+            // A crash doesn't run a `with` source's `else:` natively yet.
+            InstKind::CrashCleanup { .. } | InstKind::CrashCleanupDone { .. } => Ok(()),
             InstKind::LockAll { handles } => self.lock_all(handles, span),
             InstKind::UnlockAll { handles } => self.unlock_all(handles),
         }

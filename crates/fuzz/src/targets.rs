@@ -94,20 +94,133 @@ const PATTERNS: [&str; 20] = [
 
 const BYTES: [&str; 8] = ["\u{7f}", "é", "🦊", "\u{800}", "\u{10ffff}", "\0", "a", "\u{fffd}"];
 
+/// What HTTP/1.1 requests give meaning to.
+const HTTP: [&str; 16] = [
+    "\r\n",
+    "\n",
+    "\r",
+    " ",
+    ":",
+    "GET / HTTP/1.1\r\n",
+    "HTTP/1.0",
+    "Content-Length: ",
+    "Transfer-Encoding: chunked\r\n",
+    "Connection: close\r\n",
+    "Host: a\r\n",
+    "\t",
+    "HEAD ",
+    "?a=1&b=%20+",
+    "99999999999999999999",
+    "é🦊",
+];
+
+/// What a Postgres server's messages are made of: their type bytes, lengths and counts.
+const POSTGRES: [&str; 12] = [
+    "R",
+    "T",
+    "D",
+    "Z",
+    "E",
+    "C",
+    "\0",
+    "\0\0\0\u{4}",
+    "\0\0\0\u{8}",
+    "\u{ff}\u{ff}",
+    "\u{ff}\u{ff}\u{ff}\u{ff}",
+    "\0\u{1}",
+];
+
+/// What URLs give meaning to.
+const URL: [&str; 16] =
+    ["://", "//", "/", ":", "@", "?", "#", "&", "=", "%", "%2F", "%ff", "+", "[::1]", ":65536", "é🦊"];
+
+/// What CSV gives meaning to, and the separators the `csv` target splits rows at.
+const CSV: [&str; 10] = [",", "\"", "\"\"", "\n", "\r", "\r\n", "\u{feff}", "\u{1e}", "\u{1f}", "é🦊"];
+
+/// Bytes `std.pack` gives meaning to: its headers, small and large varints, and text.
+const PACKED: [&str; 10] = [
+    "FPK2",
+    "FPKS",
+    "\0",
+    "\u{1}",
+    "\u{7f}",
+    "\u{ff}",
+    "\u{80}\u{80}\u{80}\u{80}\u{1}",
+    "\u{ff}\u{ff}\u{ff}\u{ff}\u{f}",
+    "é",
+    "Spot",
+];
+
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 9] = [
+pub(crate) const TARGETS: [Target; 17] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
     Target { name: "checker", corpus: &PROGRAMS, tokens: &SYNTAX, run: checker, stuck: STUCK },
     Target { name: "json", corpus: &["crates/fuzz/seeds/json"], tokens: &JSON, run: json, stuck: STUCK },
+    Target {
+        name: "json-rules",
+        corpus: &["crates/fuzz/seeds/json"],
+        tokens: &JSON,
+        run: crate::json_rules::json_rules,
+        stuck: STUCK,
+    },
+    Target {
+        name: "csv",
+        corpus: &["crates/fuzz/seeds/csv"],
+        tokens: &CSV,
+        run: crate::csv_rules::csv,
+        stuck: STUCK,
+    },
+    Target {
+        name: "pack",
+        corpus: &["crates/fuzz/seeds/pack"],
+        tokens: &PACKED,
+        run: crate::pack_rules::pack,
+        stuck: STUCK,
+    },
     Target { name: "toml", corpus: &["crates/fuzz/seeds/toml"], tokens: &TOML, run: toml, stuck: STUCK },
+    Target {
+        name: "toml-rules",
+        corpus: &["crates/fuzz/seeds/toml"],
+        tokens: &TOML,
+        run: crate::toml_rules::toml,
+        stuck: STUCK,
+    },
+    Target {
+        name: "http-server",
+        corpus: &["crates/fuzz/seeds/http"],
+        tokens: &HTTP,
+        run: crate::http_rules::http_server,
+        stuck: STUCK,
+    },
+    Target {
+        name: "http-client",
+        corpus: &["crates/fuzz/seeds/http-client"],
+        tokens: &HTTP,
+        run: crate::http_rules::http_client,
+        stuck: STUCK,
+    },
+    Target {
+        name: "postgres",
+        corpus: &["crates/fuzz/seeds/postgres"],
+        tokens: &POSTGRES,
+        run: crate::postgres_rules::postgres,
+        stuck: STUCK,
+    },
     Target {
         name: "regex",
         corpus: &["crates/fuzz/seeds/regex"],
         tokens: &PATTERNS,
         run: regex,
+        stuck: STUCK,
+    },
+    Target {
+        name: "url",
+        corpus: &["crates/fuzz/seeds/url"],
+        tokens: &URL,
+        run: crate::url_rules::url,
         stuck: STUCK,
     },
     Target {
@@ -138,7 +251,19 @@ pub(crate) const LLVM: Target = Target {
 };
 
 /// The targets, besides `llvm`, that run their input through a program built natively.
-pub(crate) const NATIVE: [&str; 3] = ["json", "toml", "utf8"];
+pub(crate) const NATIVE: [&str; 11] = [
+    "csv",
+    "http-client",
+    "http-server",
+    "json",
+    "json-rules",
+    "pack",
+    "postgres",
+    "toml",
+    "toml-rules",
+    "url",
+    "utf8",
+];
 
 /// The UTF-8 reader is fuzzed with the bytes it's given, so it has its own way to be run.
 pub(crate) const UTF8: Target =

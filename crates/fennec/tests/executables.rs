@@ -1,5 +1,5 @@
 //! `fennec build`: every example that fails while running fails the same way as a native
-//! program, with the interpreter's message, as its `.err` keeps it. That every example builds and
+//! program, with the message its `.err` keeps. That every example builds and
 //! prints exactly its `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
 
 use std::fs;
@@ -239,8 +239,8 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
 }
 
 /// Whether mutation testing is running the tests (CI's mutation jobs set
-/// `FENNEC_UNDER_MUTANTS`). Linking every example through the JIT's objects takes longer than it's
-/// worth for each mutant, so these two tests stand aside there: every other run of the tests runs
+/// `FENNEC_UNDER_MUTANTS`). Building and linking every example takes longer than it's worth for
+/// each mutant, so these two tests stand aside there: every other run of the tests runs
 /// them, and the LLVM tests run under mutants too.
 fn under_mutants() -> bool {
     std::env::var_os("FENNEC_UNDER_MUTANTS").is_some()
@@ -324,9 +324,9 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
     Ok(work)
 }
 
-/// Error examples whose native program fails otherwise than the interpreter does, with what
-/// differs. Each must still differ, so the list only shrinks. The first is a check native
-/// code doesn't make yet: it runs on, where the interpreter stops.
+/// Error examples whose native program fails otherwise than its `.err` says, with what differs.
+/// Each must still differ, so the list only shrinks. The first is a check native code doesn't
+/// make yet: it runs on, where the `.err` stops.
 const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
     ("expect_without_reason.fen", "native code doesn't check `expect`'s reason isn't blank, and runs on"),
     (
@@ -355,15 +355,14 @@ fn failing_examples_fail_the_same_way_as_executables() {
         // Most error examples are mistakes the checker catches, which don't build.
         let Ok(executable) = build(path, &work)? else { return Ok(None) };
         let ran = run(&executable)?;
-        // An executable's failure is held to the interpreter's, as its `.err` keeps it, with the
-        // path it was built from.
+        // An executable's failure is held to its `.err`, with the path it was built from.
         let theirs = fs::read_to_string(path.with_extension("err"))?
             .replace(&format!("examples/errors/{name}"), &path.display().to_string());
         let ours = String::from_utf8_lossy(&ran.stderr);
         let differs = if ran.status.success() {
             Some(format!("{name} should fail"))
         } else if ours != theirs {
-            Some(format!("{name} failed differently:\n{ours}\nwhere the interpreter said\n{theirs}"))
+            Some(format!("{name} failed differently:\n{ours}\nwhere its `.err` says\n{theirs}"))
         } else {
             None
         };
@@ -371,7 +370,7 @@ fn failing_examples_fail_the_same_way_as_executables() {
         Ok(Some(match differs {
             Some(_) if known => None,
             None if known => {
-                Some(format!("{name} fails as the interpreter does now: take it off `FAILS_DIFFERENTLY`"))
+                Some(format!("{name} fails as its `.err` says now: take it off `FAILS_DIFFERENTLY`"))
             }
             differs => differs,
         }))

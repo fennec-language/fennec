@@ -171,6 +171,28 @@ fn literals_take_the_size_they_go_into() {
     );
 }
 
+/// A set, dict or tuple literal written where one holding sized numbers goes takes their sizes,
+/// each number checked to fit, as a list literal's items are.
+#[test]
+fn sized_numbers_fit_in_sets_dicts_and_tuples_too() {
+    let program = "
+        def main(stdout: Stdout):
+            pixels: set[u8] = {1, 255}
+            names: dict[str, u8] = {'a': 200}
+            keyed: dict[u8, i16] = {7: -3}
+            pair: (u8, int) = (250, 1)
+            pairs: list[(u8, f32)] = [(9, 1.5)]
+            over: set[u8] = {1, 300}
+            wide: dict[str, u8] = {'b': 256}
+            low: (i8, int) = (-129, 1)
+            stdout.print(pixels, names, keyed, pair, pairs, over, wide, low)
+    ";
+    assert_eq!(
+        problems(program),
+        ["300 doesn't fit in u8 @ 300", "256 doesn't fit in u8 @ 256", "-129 doesn't fit in i8 @ -129"]
+    );
+}
+
 /// Each sized number type is a type of its own: `i64` is `int` and `f64` is `float`, and sizes
 /// never mix, with each other or with `int` and `float`, until one side is converted.
 #[test]

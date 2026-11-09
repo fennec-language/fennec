@@ -1,0 +1,12 @@
+## The methods an optional, `T?`, has, written in Fennec.
+extend Optional[T: Serializable]:
+    def serialize(self, ref out: Serializer):
+        if self is None:
+            out.none()
+        else:
+            out.some(self)
+
+extend Optional[T: Deserializable]:
+    def deserialize(ref src: Deserializer) -> T? fails ParseError:
+        if src.none()?: return None
+        src.value[T]()?

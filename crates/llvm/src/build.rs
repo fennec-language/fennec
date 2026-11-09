@@ -244,7 +244,17 @@ pub fn compile_whole(
     if !tools.link.is_file() {
         return Err(format!("LLVM's `llvm-link` isn't beside `opt` in {}", tools.link.display()));
     }
-    run(Command::new(&tools.link).args(&inputs).arg("-o").arg(&whole), "llvm-link")?;
+    // The functions' files go to `llvm-link` in a file, one to a line: on the command line, a big
+    // program's thousands go past what Windows lets a command be. Each is quoted, and on Windows
+    // written with `/`, so no `\` in one is read as an escape.
+    let listed = work.join("inputs.rsp");
+    let line = |input: &PathBuf| {
+        let path = input.display().to_string();
+        format!("\"{}\"\n", if cfg!(windows) { path.replace('\\', "/") } else { path })
+    };
+    let lines: String = inputs.iter().map(line).collect();
+    std::fs::write(&listed, lines).map_err(|err| format!("couldn't write {}: {err}", listed.display()))?;
+    run(Command::new(&tools.link).arg(format!("@{}", listed.display())).arg("-o").arg(&whole), "llvm-link")?;
     if let Some(runtime) = runtime {
         let program = work.join("program.bc");
         std::fs::rename(&whole, &program)

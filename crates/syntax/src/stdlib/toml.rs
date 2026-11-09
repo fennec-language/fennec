@@ -1,5 +1,4 @@
-//! `std.toml`: reading and writing TOML, which the interpreter does in Rust, and native code in
-//! Fennec.
+//! `std.toml`: reading and writing TOML, written in Fennec.
 
 use super::Module;
 

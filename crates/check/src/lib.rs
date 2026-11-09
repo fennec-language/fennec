@@ -537,8 +537,8 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
-    let sources_written =
-        lend_lowering::lower(module, &checked.sources, &checked.launches, &checked.ref_matches);
+    let sources = cases_named(&checked.sources, &checked.cases);
+    let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
     let counted = enumerate_lowering::lower(module);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
     if lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested || tuples
@@ -554,6 +554,28 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
     }
     fennec_syntax::fuse::stored_stages(module);
     Ok(checked.into_signatures())
+}
+
+/// Each source with its leading-dot cases named, as the program's own text was above: what
+/// lowering writes in comes from the source as it was checked, where `fail .Stuck(...)` can sit
+/// where its enum isn't known any more, as a note's text.
+fn cases_named(
+    sources: &BTreeMap<(u32, u32), lend_lowering::Source>,
+    cases: &BTreeMap<(u32, u32), String>,
+) -> BTreeMap<(u32, u32), lend_lowering::Source> {
+    let mut named = sources.clone();
+    if cases.is_empty() {
+        return named;
+    }
+    for source in named.values_mut() {
+        let def = std::sync::Arc::make_mut(&mut source.def);
+        fennec_syntax::visit::in_function(def, &mut |expr| {
+            if let Some(owner) = cases.get(&(expr.span.start, expr.span.end)) {
+                fennec_syntax::visit::name_enum(expr, owner);
+            }
+        });
+    }
+    named
 }
 
 /// What a program rewritten by lowering doesn't check for: the compiler's mistake, not the

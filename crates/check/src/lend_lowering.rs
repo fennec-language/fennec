@@ -642,15 +642,28 @@ fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
 /// Writes in what each type parameter stands for: in written types, as in `held: list[T]`, and in
 /// brackets, as in `Channel[T](...)`.
 fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
+    // What's written in can name the caller's own type parameters, like `T` in `Box[T]` for a
+    // source's `T`, and the walk goes on into it: each name is marked first, then the marks are
+    // written in, so nothing written in is retyped again.
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Name(name) = &mut expr.kind
+            && given.contains_key(name.as_str())
+        {
+            name.insert_str(0, RETYPED);
+        }
+    });
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
         if let ExprKind::Name(name) = &expr.kind
-            && let Some((_, bracketed)) = given.get(name)
+            && let Some((_, bracketed)) = name.strip_prefix(RETYPED).and_then(|name| given.get(name))
         {
             *expr = bracketed.clone();
         }
     });
     retype_written(body, given);
 }
+
+/// What marks a name to retype: no name a program writes starts with it.
+const RETYPED: &str = "\0retyped:";
 
 fn retype_written(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
     for each in body {
@@ -1566,5 +1579,37 @@ mod tests {
         let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
         assert!(super::lower(&mut module, &checked.sources, &launches, &matches));
         assert!(!super::lower(&mut module, &checked.sources, &launches, &matches));
+    }
+
+    /// A generic source's type parameter, written in as a type naming the caller's own, like a
+    /// `channel[T]` opened as `channel[Box[T]]`, is written in once: the `T` inside isn't taken
+    /// for the source's again, which wrote it in without end and took memory with it.
+    #[test]
+    fn a_type_written_in_for_a_sources_parameter_is_written_once() {
+        let mut block = vec![super::stmt(
+            fennec_syntax::StmtKind::Expr(super::name("T", fennec_syntax::Span::default())),
+            fennec_syntax::Span::default(),
+        )];
+        let boxed = fennec_syntax::parse("x = Box[T]\n").unwrap();
+        let Some(fennec_syntax::Item::Const { value, .. }) = boxed.items.first() else {
+            panic!("no constant in {boxed:?}");
+        };
+        let written = fennec_syntax::TypeExpr {
+            name: "Box".to_owned(),
+            args: vec![fennec_syntax::TypeExpr {
+                name: "T".to_owned(),
+                args: Vec::new(),
+                optional: false,
+                span: fennec_syntax::Span::default(),
+            }],
+            optional: false,
+            span: fennec_syntax::Span::default(),
+        };
+        let given = std::collections::BTreeMap::from([("T".to_owned(), (written, value.clone()))]);
+        super::retype(&mut block, &given);
+        let Some(fennec_syntax::StmtKind::Expr(retyped)) = block.first().map(|stmt| &stmt.kind) else {
+            panic!("no expression in {block:?}");
+        };
+        assert_eq!(retyped.kind, value.kind);
     }
 }

@@ -100,10 +100,29 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     bytes
 }
 
+/// The process's arguments, its own name first. Rust's library reads them where the C library
+/// hands them over, which musl does only for Rust's own `main`, and a Fennec program's `main` is
+/// its own: so a program linked on its own with musl, as every Linux build from a release is,
+/// reads them where Linux keeps them instead.
+fn arguments() -> Vec<String> {
+    let given: Vec<String> = std::env::args().collect();
+    #[cfg(target_os = "linux")]
+    if given.is_empty()
+        && let Ok(line) = std::fs::read("/proc/self/cmdline")
+    {
+        let line = line.strip_suffix(&[0]).unwrap_or(&line);
+        return line
+            .split(|byte| *byte == 0)
+            .map(|part| String::from_utf8_lossy(part).into_owned())
+            .collect();
+    }
+    given
+}
+
 /// What the process was handed from outside, for a thread of it to run with: every thread sees
 /// the same arguments and reads the same standard input.
 fn live_inputs() -> crate::Inputs {
-    let mut arguments = std::env::args();
+    let mut arguments = arguments().into_iter();
     crate::Inputs {
         live: true,
         program: program_name(arguments.next().unwrap_or_default()),
@@ -158,7 +177,8 @@ impl BufRead for StdinLines {
 /// failure stays for `test_done` to say, rather than ending the program.
 pub fn tests_start() {
     SOURCES.take();
-    let mut numbers: Vec<i64> = std::env::args().skip(1).filter_map(|number| number.parse().ok()).collect();
+    let mut numbers: Vec<i64> =
+        arguments().into_iter().skip(1).filter_map(|number| number.parse().ok()).collect();
     numbers.reverse();
     TESTS.set(numbers);
 }

@@ -180,12 +180,12 @@ export def pool[T: Pooled, E: Explained](
 ) -> with Pool[T] fails PoolError | Crashed:
     if size < 1: fail PoolError.Open(reason=f"a pool needs at least one value, not {size}")
     mut started = first
-    if started is None: started = opened[T, E](open)?
+    if started is None: started = opened(open)?
     begun = started else fail PoolError.Closed
     with channel[PoolNote[T]](size=size * 4 + 16) as notes:
         inbox = notes.inbox()
         sender = notes.sender()
-        with launch(() => run_pool[T, E](0, inbox, sender, size, open, begun))?:
+        with launch(() => run_pool(0, inbox, sender, size, open, begun))?:
             made = Pool[T](_notes=sender, _wait=wait)
             lend made else:
                 told(sender, PoolNote[T](kind=STOP))

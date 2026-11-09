@@ -77,7 +77,7 @@ pub(crate) fn located(sources: &Sources, lints: &[Lint]) -> Vec<Located> {
 /// works out written in, so it gets a copy.
 pub(crate) fn costs(module: &Module, checked: &Checked) -> Vec<fennec_ir::Finding> {
     let mut resolved = module.clone();
-    let signatures = checked.resolve(&mut resolved);
+    let Ok(signatures) = checked.resolve(&mut resolved) else { return Vec::new() };
     fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures))
 }
 

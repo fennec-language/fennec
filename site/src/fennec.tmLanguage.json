@@ -99,7 +99,7 @@
           }
         },
         {
-          "match": "\\b(def)\\s+(\\+|-|\\*|/|%|==|<|\\[\\]|del)(?=\\s*\\()",
+          "match": "\\b(def)\\s+(\\+|-|\\*|/|%|==|<|\\[\\])(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "storage.type.function.fennec"

@@ -76,10 +76,11 @@ pub extern "C" fn free_text(address: i64) {
 /// before that, takes it up from `ABANDONS` when it next frees something.
 pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {
     let shape = u64::try_from(shape).unwrap_or(u64::MAX);
-    let mut all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    all.get_or_insert_with(HashMap::new).insert(shape, abandon);
-    ABANDONS_SET.store(all.as_ref().map_or(0, HashMap::len), std::sync::atomic::Ordering::Release);
-    drop(all);
+    if SHARES_ABANDONS.get() {
+        let mut all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.get_or_insert_with(HashMap::new).insert(shape, abandon);
+        ABANDONS_SET.store(all.as_ref().map_or(0, HashMap::len), std::sync::atomic::Ordering::Release);
+    }
     with(|state| {
         state.tables.abandons.insert(shape, abandon);
     });
@@ -90,10 +91,24 @@ static ABANDONS: std::sync::Mutex<Option<HashMap<u64, extern "C" fn(i64)>>> = st
 /// How many `ABANDONS` holds, read without the lock on every free.
 static ABANDONS_SET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+thread_local! {
+    /// Whether this thread's runtime runs the process's program, as `main`'s thread and the
+    /// workers started from it do, and so shares what closes its generators. A runtime started
+    /// any other way, as a test's is, has shapes of its own.
+    static SHARES_ABANDONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread's runtime runs the process's program: see `SHARES_ABANDONS`.
+pub(in crate::embed) fn share_abandons() {
+    SHARES_ABANDONS.set(true);
+}
+
 /// Brings this thread's runtime up to date with what closes generators, if the program has said
 /// more since it last looked: a worker started before `main`'s thread said it.
 fn take_up_abandons(state: &mut State) {
-    if state.tables.abandons.len() >= ABANDONS_SET.load(std::sync::atomic::Ordering::Acquire) {
+    if !SHARES_ABANDONS.get()
+        || state.tables.abandons.len() >= ABANDONS_SET.load(std::sync::atomic::Ordering::Acquire)
+    {
         return;
     }
     let all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

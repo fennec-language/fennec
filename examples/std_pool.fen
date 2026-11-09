@@ -91,15 +91,17 @@ test "a value that can't be reset is replaced"():
         with links.take()? as again:
             assert again.number == 2
 
+## The wait is the first take's too, which a busy machine can take tens of milliseconds to answer,
+## so it's long enough for that and still short for a test.
 test "a borrower waits up to wait, then fails"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=1, wait=20ms)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False), size=1, wait=500ms)? as links:
         with links.take()? as _:
             match taken_number(links):
                 case Ok(_):
                     assert False
                 case Err(failure):
-                    assert failure.message() == "no value came free in 0.02s"
+                    assert failure.message() == "no value came free in 0.5s"
 
 test "a pool that can't open one fails at its with"():
     match pool_that_cant_open():

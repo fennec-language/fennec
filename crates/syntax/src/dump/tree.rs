@@ -306,6 +306,7 @@ impl Tree {
             ExprKind::Float(value) => self.spanned(&format!("float {}", float(*value)), expr.span),
             ExprKind::Duration(nanos) => self.spanned(&format!("duration {nanos}"), expr.span),
             ExprKind::Bytes(data) => self.spanned(&format!("bytes {}", data.0.len()), expr.span),
+            ExprKind::Folder(files) => self.spanned(&format!("folder of {} files", files.len()), expr.span),
             ExprKind::Str(text) => self.spanned(&format!("str {}", quoted(text)), expr.span),
             ExprKind::FStr(parts) => self.node("fstr", span, |tree| {
                 for part in parts {

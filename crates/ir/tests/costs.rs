@@ -219,13 +219,14 @@ fn every_example_can_be_reported_on() {
 }
 
 #[test]
-fn a_shared_handle_is_never_copied_and_making_one_allocates() {
-    let source = "shared Account:\n    log = list[int]()\n\n    def add(ref self, amount: int):\n        \
-                  self.log.append(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    \
-                  same = account\n    same.add(1)\n    stdout.print(account)\n";
+fn a_shared_value_is_never_copied_and_making_one_allocates() {
+    let source = "struct Account:\n    log = list[int]()\n\n    def add(ref self, amount: int):\n        \
+                  self.log.append(amount)\n\ndef main(stdout: Stdout):\n    shared account = Account()\n    \
+                  same = account\n    lock same as ref held:\n        held.add(1)\n    lock account as held:\n        \
+                  stdout.print(held)\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
     let made = allocations(source).unwrap();
-    assert!(made.contains(&("this `shared` Account may allocate".to_owned(), 0)), "{made:?}");
+    assert!(made.contains(&("this `shared Account` may allocate".to_owned(), 0)), "{made:?}");
 }
 
 #[test]

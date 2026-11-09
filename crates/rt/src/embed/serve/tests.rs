@@ -343,7 +343,7 @@ fn native_code_serves_a_server_the_runtime_opened() {
     start(Tables::default(), crate::Inputs::default());
     let span = fennec_syntax::Span::default();
     let (server, port) = (|| {
-        let listened = crate::stdlib::net::real_net("listen", &[Value::Int(0)], None, span).ok()?;
+        let listened = crate::stdlib::net::real_net("_listen", &[Value::Int(0)], None, span).ok()?;
         let Value::Ok(server) = listened else { return None };
         let Value::Instance(instance) = server.as_ref() else { return None };
         let (Some(Value::Int(port)), Some(Value::Int(handle))) =

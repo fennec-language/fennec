@@ -301,6 +301,13 @@ pub enum InstKind {
         dest: LocalId,
         items: Vec<Operand>,
     },
+    /// A list of constants that's never changed, made once for the whole program rather than
+    /// each time it's reached, as `embed_folder` gives: its items are `Str` and `Bytes`. Until
+    /// native code holds one in the program's data, it's made the way a `MakeList` is.
+    ConstantList {
+        dest: LocalId,
+        items: Vec<Operand>,
+    },
     /// From here, a crash runs `cleanup`, a closure taking nothing, on its way out of this
     /// function, innermost first among what's to undo: a `with` source's `else:`, for its block.
     CrashCleanup {
@@ -568,6 +575,7 @@ impl InstKind {
             | InstKind::IsCase { dest, .. }
             | InstKind::GetCaseField { dest, .. }
             | InstKind::MakeList { dest, .. }
+            | InstKind::ConstantList { dest, .. }
             | InstKind::MakeSet { dest, .. }
             | InstKind::MakeDict { dest, .. }
             | InstKind::MakeTuple { dest, .. }

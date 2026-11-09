@@ -70,18 +70,35 @@ fn a_field_the_format_cant_hold_is_named() {
     let program = "
         a = dumps(Hooks(name='a'))
         b = loads[Player]('{}')
-        c = dumps(Account())
+        shared account = Account()
+        c = dumps(account)
     ";
     let declarations = "from std.json import dumps, loads\n\nstruct Hooks:\n    name: str\n    \
-                        tags = set[str]()\n\nshared Account:\n    total = 0\n\nstruct Player:\n    \
-                        name: str\n    account: Account\n";
+                        tags = set[str]()\n\nstruct Account:\n    total = 0\n\nstruct Player:\n    \
+                        name: str\n    account: shared Account\n";
     assert_eq!(
         with_imports(declarations, program),
         [
             "JSON can't hold `Hooks.tags`, which is a set @ dumps(Hooks(name=\"a\"))",
-            "JSON can't hold `Player.account`, which is the `shared` handle `Account` @ Player",
-            "JSON can't hold the `shared` handle `Account` @ dumps(Account())",
+            "JSON can't hold `Player.account`, which is a `shared Account` @ Player",
+            "JSON can't hold a `shared Account` @ dumps(account)",
         ]
+    );
+}
+
+/// A page is made only by `html.render`, so neither it nor a field holding one is ever loaded,
+/// which would make one from text it never saw.
+#[test]
+fn a_page_is_never_loaded() {
+    let program = "
+        a = loads[Html]('{}')
+        b = loads[Article]('{}')
+    ";
+    let declarations =
+        "from std.json import loads\nfrom std.html import Html\n\nstruct Article:\n    body: Html\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        ["JSON can't hold an `Html` @ Html", "JSON can't hold `Article.body`, which is an `Html` @ Article",]
     );
 }
 
@@ -368,19 +385,44 @@ fn with_launch_takes_an_arrow_its_inbox_and_its_own_options() {
 fn tls_is_named_where_a_connection_is_made() {
     let imports = "from std.net import Certificate, Connection, NetError, Server\n\n";
     let good = format!(
-        "{imports}def use(net: Net, cert: Certificate, conn: Connection) -> Server fails NetError:\n    \
-         _ = net.connect(\"a\", 443, tls=True, timeout=1s)?\n    \
+        "{imports}def use(net: Net, cert: Certificate, conn: Connection) fails NetError:\n    \
+         with net.connect(\"a\", 443, tls=True, timeout=1s)? as _:\n        pass\n    \
          conn.start_tls(\"a\", timeout=1s)?\n    \
-         _ = net.listen(0, tls=None)?\n    net.listen(0, tls=cert)?\n"
+         with net.listen(0, tls=None)? as _:\n        pass\n    \
+         with net.listen(0, tls=cert)? as _:\n        pass\n"
     );
     let module = fennec_syntax::parse(&good).unwrap();
     assert_eq!(fennec_check::check(&module).err(), None);
     for wrong in ["net.connect(\"a\", 443, tls=cert)?", "net.listen(0, tls=True)?", "net.udp(tls=True)?"] {
         let bad = format!(
-            "{imports}def use(net: Net, cert: Certificate) fails NetError:\n    _ = cert\n    _ = {wrong}\n"
+            "{imports}def use(net: Net, cert: Certificate) fails NetError:\n    _ = cert\n    with {wrong} as _:\n        pass\n"
         );
         let module = fennec_syntax::parse(&bad).unwrap();
         assert!(fennec_check::check(&module).is_err(), "{wrong}");
+    }
+}
+
+/// Once lowering rewrites a program, it's checked again, and that check has to pass: the rules
+/// about how a program is written were held to it as written. Two `_ =` in one function stay
+/// apart, and a `with` source's `else:` changing a `ref` parameter isn't a lost change once it's
+/// written into its caller.
+#[test]
+fn a_program_lowering_rewrote_checks_again() {
+    for source in [
+        "struct World:\n    squads = list[int]()\n\n    def form(ref self, at: (int, int)) -> int:\n        \
+         self.squads.append(at[0])\n        self.squads.len()\n\n\
+         def main(stdout: Stdout):\n    mut world = World()\n    _ = world.form((1, 2))\n    _ = world.form((3, 4))\n    \
+         shared count = World()\n    lock count as held:\n        stdout.print(held.squads, world.squads)\n",
+        "error DbError:\n    why: str\n\nstruct Log:\n    lines = list[str]()\n\n\
+         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 else:\n        \
+         log.lines.append(\"rolled back\")\n        fail DbError(why=\"lost\")\n    pass\n\n\
+         def insert(n: int) fails DbError:\n    if n > 1: fail DbError(why=\"duplicate\")\n\n\
+         def main(stdout: Stdout) fails DbError:\n    mut log = Log()\n    \
+         with transaction(ref log)? as tx:\n        insert(tx + 4)?\n    stdout.print(log.lines)\n",
+    ] {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let resolved = fennec_check::check_and_resolve(&mut module);
+        assert!(resolved.is_ok(), "{:?}", resolved.err());
     }
 }
 

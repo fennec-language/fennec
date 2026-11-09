@@ -31,7 +31,7 @@ test "a request goes through the server"(net: Net):
             client.write("GET /hello?name=red%20fox HTTP/1.1\r\nconnection: close\r\n\r\n")?
             server.serve(respond)
             assert (
-                list(client.lines())
+                list(client.lines()?)
                 == [
                     "HTTP/1.1 200 OK", "content-length: 14", "connection: close", "",
                     "hello, red fox",

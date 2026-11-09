@@ -74,6 +74,9 @@ impl FnCx<'_> {
             }
             inner.push(Type::Unknown);
         }
+        let written = fennec_syntax::dotted(value)
+            .map_or_else(|| "a lock".to_owned(), |name| format!("`{name}`'s lock"));
+        self.checker.note_takes_lock(&self.key.clone(), &written);
         let shown: Vec<String> = names.iter().map(|held| format!("`{}`", held.name)).collect();
         let outer = self.lock.replace(format!(
             "while {} {} locked",

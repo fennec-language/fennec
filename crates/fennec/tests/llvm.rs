@@ -124,7 +124,7 @@ fn pinned_in(kind: &str, name: &str, source: &str) -> std::io::Result<Outcome> {
     let read = read_pinned(&text).filter(|(pinned_for, _)| *pinned_for == hash);
     read.map(|(_, outcome)| outcome).ok_or_else(|| {
         std::io::Error::other(format!(
-            "{} is missing or was pinned for other source: check what the program should do, and write it there",
+            "{} is missing or was pinned for other source: check what the program should do, and write it there, for source {hash}",
             file.display()
         ))
     })
@@ -6673,9 +6673,9 @@ def hashes(fs: Fs) -> list[str] fails IoError:
             file.write_text(chunk)?
     mut found = list[str]()
     with fs.open(\"big.txt\")? as file:
-        found.append(blake3(file.chunks(1000000)))
+        found.append(blake3(file.chunks(1000000)?))
     with fs.open(\"big.txt\")? as file:
-        found.append(sha256(file.chunks(1000000)))
+        found.append(sha256(file.chunks(1000000)?))
     found
 
 def main(stdout: Stdout, fs: Fs):
@@ -7412,7 +7412,7 @@ def reason[T](found: Result[T, NetError]) -> str:
 
 def lines_of(connection: Connection) -> int fails NetError:
     mut count = 0
-    for line in connection.lines():
+    for line in connection.lines()?:
         count += line.len()
     count
 
@@ -7438,6 +7438,10 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(reason(conn.write(\"gone\")))
     7
 
+def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
+    for line in conn.lines()?:
+        stdout.print(line)
+
 def main(net: Net, stdout: Stdout):
     stdout.print(reason(talk(net, stdout)))
     server = net.listen(0).expect(\"it listens\")
@@ -7445,8 +7449,7 @@ def main(net: Net, stdout: Stdout):
     client.write(\"looped\\n\").expect(\"it writes\")
     client.close()
     for conn in server:
-        for line in conn.lines():
-            stdout.print(line)
+        printed_lines(conn, stdout).expect(\"it reads\")
         break
     port = server.port
     server.close()
@@ -9800,6 +9803,28 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     let sent: Vec<usize> = passwords.iter().map(|sent| sent.recv().unwrap_or(99)).collect();
     assert_eq!(sent[2], 0, "the password went to a server that asked for it as it is");
     assert_eq!(sent[5], 1, "the password wasn't sent when asked to send it as it is");
+    Ok(())
+}
+
+/// Reading a file a chunk or a line at a time fails when reading does, inside the `with` that
+/// opened it, rather than ending the loop as if the file were done: a folder read as a file, and
+/// a line that isn't UTF-8.
+#[test]
+fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id()));
+    std::fs::create_dir_all(place.join("folder"))?;
+    std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
+    std::fs::write(place.join("good.txt"), "one\ntwo\n")?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    match found:\n        case Ok(n):\n            return f\"read {{n}}\"\n        case Err(_):\n            return \"failed\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
+    );
+    let printed = printed_by("iter_fail", &source)?;
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(printed, "failed read 8\nfailed read 8\n");
     Ok(())
 }
 

@@ -214,14 +214,15 @@ impl Fake {
         let lost = || Diagnostic::new("the native code lost a method's name", span);
         let (kind, method) = name.split_once('.').ok_or_else(lost)?;
         let (method, args, timeout) = timed(method, args, span)?;
-        let done = match (kind, method, args) {
+        let done = match (kind, method.as_str(), args.as_slice()) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
                 self.read_by(handle, Some(count), timeout, span)?
                     .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("Connection", "read_line", []) => {
-                self.read_by(handle, None, timeout, span)?.map(|line| line_value(line.as_deref()))
+            ("Connection", "read_line", []) => or_timed_out(self.read_line(handle, false, span), timeout)?,
+            ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => {
+                or_timed_out(self.read_line(handle, *crlf, span), timeout)?
             }
             ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
@@ -236,7 +237,7 @@ impl Fake {
                 self.close(handle);
                 return Ok(Value::Unit);
             }
-            ("Connection" | "UdpSocket" | "Server", _, _) => return Err(wrong(method, span)),
+            ("Connection" | "UdpSocket" | "Server", _, _) => return Err(wrong(&method, span)),
             _ => return Err(lost()),
         };
         Ok(done_or_failed(done))
@@ -383,8 +384,8 @@ impl Fake {
         })
     }
 
-    /// A read in a test that's given `timeout=`. Nothing can arrive while a test waits, so one that
-    /// would wait forever gives up at once, as a real one would once its time ran out.
+    /// A read of `count` bytes in a test that's given `timeout=`, which gives up as `or_timed_out`
+    /// says.
     fn read_by(
         &mut self,
         handle: i64,
@@ -392,10 +393,7 @@ impl Fake {
         timeout: Option<Duration>,
         span: Span,
     ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
-        match (self.read(handle, count, span), timeout) {
-            (Err(_), Some(after)) => Ok(Err(Failure::TimedOut(after))),
-            (read, _) => read,
-        }
+        or_timed_out(self.read(handle, count, span), timeout)
     }
 
     /// The next `count` bytes, or with no count the next line, of a connection in a test.
@@ -429,6 +427,26 @@ impl Fake {
             ),
             span,
         ))
+    }
+
+    /// A line from a test's connection, refused as a real one is: too long, or a bare `\n` with `crlf`.
+    fn read_line(
+        &mut self,
+        handle: i64,
+        crlf: bool,
+        span: Span,
+    ) -> Result<Result<Value, Failure>, Diagnostic> {
+        if let Some(stream) = self.streams.get(&handle)
+            && stream.inbox.len() > MOST_LINE_BYTES
+            && !stream.inbox.iter().take(MOST_LINE_BYTES + 1).any(|byte| *byte == b'\n')
+        {
+            return Ok(Err(Failure::Other(format!("a line was longer than {MOST_LINE_BYTES} bytes"))));
+        }
+        let line = self.read(handle, None, span)?;
+        Ok(line.and_then(|line| match line.as_deref().and_then(|line| line_refused(line, crlf)) {
+            Some(why) => Err(Failure::Other(why)),
+            None => Ok(line_value(line.as_deref())),
+        }))
     }
 
     pub(crate) fn write(&mut self, handle: i64, data: &[u8]) -> Result<(), Failure> {
@@ -603,11 +621,14 @@ pub(crate) fn real_connection(
             read(handle, bytes_asked(*count, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
         }
         ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
+        ("read_line.crlf", [Value::Bool(crlf)]) => {
+            read_line_crlf(handle, timeout, *crlf).map(|line| line_value(line.as_deref()))
+        }
         ("start_tls", [Value::Str(host)]) => {
             start_tls(handle, host, timeout.unwrap_or(CONNECT_TIMEOUT)).map(|()| Value::Unit)
         }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            write(handle, data_of(data)).map(|()| Value::Unit)
+            write_within(handle, data_of(data), timeout).map(|()| Value::Unit)
         }
         ("close", []) => {
             close(handle);
@@ -755,7 +776,7 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         return Ok(done_or_failed(http::send(&request).map(answer_value)));
     }
     let (method, args, timeout) = timed(name, args, span)?;
-    real_net(method, args, timeout, span)
+    real_net(&method, &args, timeout, span)
 }
 
 /// A `Net` method native code names, with its arguments in the order its parameters are, and
@@ -784,16 +805,26 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
 }
 
 /// A method native code names, its arguments and how long it may wait: `read_line.timeout` is
-/// `read_line` with `timeout=` given last.
-pub(crate) fn timed<'a>(
-    method: &'a str,
-    args: &'a [Value],
+/// `read_line` with `timeout=` given last. Named arguments are on the name in the order they were
+/// written, so `timeout=` can come before another, as in `read_line.timeout.crlf`, which is
+/// `read_line.crlf` with what `crlf=` was given.
+pub(crate) fn timed(
+    method: &str,
+    args: &[Value],
     span: Span,
-) -> Result<(&'a str, &'a [Value], Option<Duration>), Diagnostic> {
-    let (Some(method), Some((timeout, args))) = (method.strip_suffix(".timeout"), args.split_last()) else {
-        return Ok((method, args, None));
+) -> Result<(String, Vec<Value>, Option<Duration>), Diagnostic> {
+    const NAMED: [&str; 5] = ["timeout", "crlf", "tls", "port", "host"];
+    let parts: Vec<&str> = method.split('.').collect();
+    let named = parts.iter().rev().take_while(|part| NAMED.contains(part)).count().min(args.len());
+    let first_named = parts.len() - named;
+    let Some(at) = parts.iter().skip(first_named).position(|part| *part == "timeout") else {
+        return Ok((method.to_owned(), args.to_vec(), None));
     };
-    Ok((method, args, Some(duration_of(timeout, span)?)))
+    let mut args = args.to_vec();
+    let timeout = args.remove(args.len() - named + at);
+    let mut parts = parts;
+    parts.remove(first_named + at);
+    Ok((parts.join("."), args, Some(duration_of(&timeout, span)?)))
 }
 
 pub(crate) fn bytes_asked(count: i64, span: Span) -> Result<usize, Diagnostic> {
@@ -806,6 +837,20 @@ pub(crate) fn data_of(data: &Value) -> &[u8] {
         Value::Bytes(data) => data,
         _ => &[],
     }
+}
+
+/// The most bytes a line read from a connection may hold, its ending included. A line longer
+/// than this fails, rather than take as much memory as whoever's sending it likes.
+pub(crate) const MOST_LINE_BYTES: usize = 1 << 20;
+
+/// Why a line read fails: it's too long, or, with `crlf`, it ended with no `\r` before its `\n`.
+pub(crate) fn line_refused(line: &[u8], crlf: bool) -> Option<String> {
+    if line.len() > MOST_LINE_BYTES {
+        return Some(format!("a line was longer than {MOST_LINE_BYTES} bytes"));
+    }
+    let bare =
+        line.last() == Some(&b'\n') && line.len().checked_sub(2).and_then(|at| line.get(at)) != Some(&b'\r');
+    (crlf && bare).then(|| "a line ended without a carriage return".to_owned())
 }
 
 pub(crate) fn line_value(line: Option<&[u8]>) -> Value {
@@ -994,37 +1039,74 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
 }
 
 fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+    read_line_crlf(handle, timeout, false)
+}
+
+/// `read_line`, which with `crlf` fails on a line ended by a bare `\n`. A line longer than
+/// `MOST_LINE_BYTES` fails too.
+fn read_line_crlf(handle: i64, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut partial = stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner);
     let mut line = std::mem::take(&mut *partial);
-    // What a read cut short by having to wait got is kept in `line`, and the next adds to it.
-    let read = reading(&stream.socket, &mut reader, timeout, |reader| reader.read_until(b'\n', &mut line));
+    // What a read cut short by having to wait got is kept in `line`, and the next adds to it. It
+    // reads at most what's left of the most a line may hold, and one more to tell it's too long.
+    let read = reading(&stream.socket, &mut reader, timeout, |reader| {
+        let left = (MOST_LINE_BYTES + 1).saturating_sub(line.len());
+        let mut limited = reader.take(u64::try_from(left).unwrap_or(u64::MAX));
+        limited.read_until(b'\n', &mut line)
+    });
     if matches!(read, Err(Failure::TimedOut(_))) {
         *partial = line;
         return read.map(|_| None);
     }
     read?;
+    if let Some(why) = line_refused(&line, crlf) {
+        return Err(Failure::Other(why));
+    }
     Ok((!line.is_empty()).then_some(line))
 }
 
-fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
+#[cfg(test)]
+fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
+    write_within(handle, data, None)
+}
+
+/// `write`, giving up once `timeout` passes, as for a server that never reads.
+fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
     let stream = stream(handle)?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
     if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
-        return secured
+        stream.socket.set_write_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
+        let wrote = secured
             .write_all(data)
             .and_then(|()| secured.flush())
-            .map_err(|error| Failure::of(&error, None));
+            .map_err(|error| Failure::of(&error, timeout));
+        let _ = stream.socket.set_write_timeout(None);
+        return wrote;
     }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
     // buffer says so here, and this waits for room.
     while !data.is_empty() {
-        match socket.write(data) {
+        // A socket that blocks is given what's left of the time, so its write can't outlast it.
+        if let Some(deadline) = deadline {
+            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+            let _ = socket.set_write_timeout(Some(left));
+        }
+        let wrote = socket.write(data);
+        if deadline.is_some() {
+            let _ = socket.set_write_timeout(None);
+        }
+        match wrote {
             Ok(0) => return Err(Failure::Closed),
             Ok(written) => data = data.get(written..).unwrap_or_default(),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => wait_to_write(socket),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if wait_to_write(socket, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                }
+            }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => return Err(Failure::of(&error, None)),
         }
@@ -1154,15 +1236,20 @@ fn park_until_readable(_socket: &TcpStream, _deadline: Option<Instant>) -> bool 
 
 /// Waits until `socket` may take more to write: parked in a task that can, and otherwise a moment,
 /// as only a socket another task made not block gets here.
-fn wait_to_write(socket: &TcpStream) {
+/// Waits for room to write, or until `deadline` passes: true once it has.
+fn wait_to_write(socket: &TcpStream, deadline: Option<Instant>) -> bool {
+    if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        return true;
+    }
     #[cfg(all(unix, any(test, feature = "threads")))]
     if socket_parks() {
         let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-        let _ = crate::embed::serve::park_on_fd(fd, mio::Interest::WRITABLE, None);
-        return;
+        let _ = crate::embed::serve::park_on_fd(fd, mio::Interest::WRITABLE, deadline);
+        return deadline.is_some_and(|deadline| deadline <= Instant::now());
     }
     let _ = socket;
     std::thread::sleep(Duration::from_millis(1));
+    false
 }
 
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
@@ -1334,11 +1421,25 @@ fn trim_line(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
+/// A read in a test that was given `timeout=`. Nothing can arrive while a test waits, so one that
+/// would wait forever gives up at once, as a real one would once its time ran out.
+fn or_timed_out<T>(
+    read: Result<Result<T, Failure>, Diagnostic>,
+    timeout: Option<Duration>,
+) -> Result<Result<T, Failure>, Diagnostic> {
+    match (read, timeout) {
+        (Err(_), Some(after)) => Ok(Err(Failure::TimedOut(after))),
+        (read, _) => read,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use fennec_syntax::Span;
 
-    use super::{Failure, Fake, Made, close, receive, udp};
+    use std::rc::Rc;
+
+    use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
 
     /// Native code keeps `tls=` on the method's name.
@@ -1400,6 +1501,62 @@ pub(crate) mod tests {
         refused(start(&mut fake, second));
     }
 
+    /// A test's connection refuses the lines a real one does: too long, or ended by a bare `\n` when
+    /// `crlf=True` asks for `\r\n`. Native code keeps `crlf=` on the method's name, before or after
+    /// `timeout=`.
+    #[test]
+    fn a_tests_read_line_refuses_long_lines_and_bare_line_feeds() {
+        let span = Span::default();
+        let refused = |got: Value, why: &str| {
+            let Value::Err(error) = &got else { panic!("it wasn't refused: {got:?}") };
+            assert!(format!("{error:?}").contains(why), "{error:?}");
+        };
+        let mut fake = Fake::default();
+        let Ok((_, server)) = fake.listen(0, false) else { panic!("it didn't listen") };
+        let Some((_, Value::Int(port))) = server.get(1).cloned() else { panic!("no port") };
+        let Ok((_, client)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(client))) = client.first().cloned() else { panic!("no handle") };
+        let Some(other_end) = fake.streams.get(&client).map(|stream| stream.peer) else {
+            panic!("no other end")
+        };
+        assert!(matches!(fake.write(other_end, b"good\r\nbad\n"), Ok(())));
+        let crlf = Value::Bool(true);
+        let good = fake
+            .socket_method(client, "Connection.read_line.crlf", std::slice::from_ref(&crlf), span)
+            .unwrap();
+        assert_eq!(good, Value::Ok(Rc::new(Value::str("good"))));
+        refused(
+            fake.socket_method(client, "Connection.read_line.crlf", &[crlf], span).unwrap(),
+            "carriage return",
+        );
+        assert!(matches!(fake.write(other_end, &vec![b'x'; MOST_LINE_BYTES + 1]), Ok(())));
+        refused(fake.socket_method(client, "Connection.read_line", &[], span).unwrap(), "longer than");
+    }
+
+    /// `timeout=` comes off a method's name wherever it is among the named arguments.
+    #[test]
+    fn timeout_comes_off_wherever_it_was_written() {
+        let span = Span::default();
+        let wait = Value::made("Duration", vec![("nanos", Value::Int(5))]);
+        let (method, args, timeout) =
+            super::timed("Connection.read_line.timeout.crlf", &[wait.clone(), Value::Bool(true)], span)
+                .unwrap();
+        assert_eq!(
+            (method.as_str(), args, timeout),
+            ("Connection.read_line.crlf", vec![Value::Bool(true)], Some(std::time::Duration::from_nanos(5)))
+        );
+        let (method, args, timeout) =
+            super::timed("read_line.crlf.timeout", &[Value::Bool(true), wait], span).unwrap();
+        assert_eq!(
+            (method.as_str(), args, timeout),
+            ("read_line.crlf", vec![Value::Bool(true)], Some(std::time::Duration::from_nanos(5)))
+        );
+        let (method, args, timeout) = super::timed("read_line", &[], span).unwrap();
+        assert_eq!((method.as_str(), args, timeout), ("read_line", vec![], None));
+    }
+
     #[test]
     fn a_tests_listen_takes_only_a_certificate() {
         let mut fake = Fake::default();
@@ -1411,6 +1568,21 @@ pub(crate) mod tests {
             Some((_, Value::Int(handle))) => *handle,
             _ => -1,
         }
+    }
+
+    /// A write to a server that never reads gives up once its `timeout=` passes.
+    #[test]
+    fn a_write_nobody_reads_times_out() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        let wrote =
+            super::write_within(handle, &vec![b'x'; 64 << 20], Some(std::time::Duration::from_millis(200)));
+        assert!(matches!(wrote, Err(Failure::TimedOut(_))), "{wrote:?}");
+        close(handle);
+        drop(server);
     }
 
     /// A read of a line that times out keeps what it got, for the next read to go on from.
@@ -1429,6 +1601,34 @@ pub(crate) mod tests {
         let line = super::read_line(handle, Some(std::time::Duration::from_secs(10)));
         assert_eq!(line.ok().flatten().as_deref(), Some(&b"hello\n"[..]));
         close(handle);
+    }
+
+    /// A client's line read refuses what a served one does: a line past the most a line may hold,
+    /// and with `crlf` one ended by a bare `\n`.
+    #[test]
+    fn a_clients_line_read_refuses_long_lines_and_bare_line_feeds() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        let wait = Some(std::time::Duration::from_secs(10));
+        let writing = std::thread::spawn(move || {
+            server.write_all(b"good\r\nbad\n").unwrap();
+            let _ = server.write_all(&vec![b'x'; MOST_LINE_BYTES + 10]);
+            server
+        });
+        assert_eq!(
+            super::read_line_crlf(handle, wait, true).ok().flatten().as_deref(),
+            Some(&b"good\r\n"[..])
+        );
+        let bare = super::read_line_crlf(handle, wait, true);
+        assert!(matches!(&bare, Err(Failure::Other(why)) if why.contains("carriage return")), "{bare:?}");
+        let long = super::read_line(handle, wait);
+        assert!(matches!(&long, Err(Failure::Other(why)) if why.contains("longer than")), "{long:?}");
+        close(handle);
+        drop(writing.join());
     }
 
     /// UDP has no `shutdown`, so a read on another thread has to find out for itself.

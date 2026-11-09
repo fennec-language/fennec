@@ -23,7 +23,7 @@ pub(crate) const STUCK: Duration = Duration::from_secs(10);
 /// one waiting on something forever uses no CPU time at all.
 const WAITING_TIMES: u32 = 30;
 /// The most memory a worker may hold.
-const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
 
 /// How a worker went wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +116,7 @@ pub(crate) fn watch(
     child: &mut Child,
     stuck: Duration,
     deadline: Option<Instant>,
+    most_kilobytes: u64,
     mut moved: impl FnMut() -> bool,
 ) -> Option<Failure> {
     // When it last made progress, and the CPU time it had used by then.
@@ -133,7 +134,7 @@ pub(crate) fn watch(
         checks += 1;
         let mut too_big = false;
         if checks.is_multiple_of(10) {
-            too_big = kilobytes(child.id()).is_some_and(|held| held > MOST_KILOBYTES);
+            too_big = kilobytes(child.id()).is_some_and(|held| held > most_kilobytes);
             used = cpu_time(child.id()).or(used);
         }
         let on_the_clock = since.0.elapsed();
@@ -183,7 +184,7 @@ impl Run<'_> {
             let _ = std::fs::remove_file(&progress);
             let mut child = self.worker(next, inputs, &progress)?;
             let mut last = None;
-            let failure = watch(&mut child, self.stuck, deadline, || {
+            let failure = watch(&mut child, self.stuck, deadline, MOST_KILOBYTES, || {
                 let now = noted(&progress);
                 let moved = now != last;
                 last = now;
@@ -234,8 +235,14 @@ mod tests {
         use super::{Failure, watch};
         let start = |script: &str| std::process::Command::new("sh").args(["-c", script]).spawn().unwrap();
         let mut waits = start("sleep 1");
-        assert_eq!(watch(&mut waits, Duration::from_millis(500), None, || false), None);
+        assert_eq!(
+            watch(&mut waits, Duration::from_millis(500), None, super::MOST_KILOBYTES, || false),
+            None
+        );
         let mut spins = start("while :; do :; done");
-        assert_eq!(watch(&mut spins, Duration::from_millis(500), None, || false), Some(Failure::Stuck));
+        assert_eq!(
+            watch(&mut spins, Duration::from_millis(500), None, super::MOST_KILOBYTES, || false),
+            Some(Failure::Stuck)
+        );
     }
 }

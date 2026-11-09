@@ -340,6 +340,15 @@ pub fn add_float_start(call: &mut Expr) {
     }
 }
 
+/// Writes `start=0` into a `sum` call, for a sum of integers of a size that's empty.
+pub fn add_int_start(call: &mut Expr) {
+    let at = crate::Span { start: call.span.end, end: call.span.end };
+    if let ExprKind::Call { args, .. } = &mut call.kind {
+        let value = Expr { kind: ExprKind::Int(0), span: at };
+        args.push(crate::ast::Arg { name: Some("start".to_owned()), is_mut: false, value });
+    }
+}
+
 /// Gives a generator expression the type printing it shows, in the slot only dict
 /// comprehensions otherwise use.
 pub fn name_generator_type(comprehension: &mut Expr, shown: &str) {

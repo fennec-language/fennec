@@ -215,10 +215,19 @@ fn generic_types<'a>(modules: &[&'a Module]) -> HashMap<&'a str, &'a fennec_synt
 }
 
 /// Every function and method in a module, by its key in the typed tree.
-fn definitions(module: &Module) -> Vec<(String, &FnDef)> {
+fn definitions<'m>(module: &'m Module) -> Vec<(String, &'m FnDef)> {
     let mut found = Vec::new();
-    let methods = |owner: &str, defs: &'_ [FnDef]| -> Vec<String> {
-        defs.iter().map(|def| format!("{owner}.{}", def.name)).collect()
+    // The first of each name a type has, as the checker keys a method defined again.
+    let mut first: HashMap<String, &'m FnDef> = HashMap::new();
+    let mut methods = |owner: &str, defs: &'m [FnDef]| -> Vec<String> {
+        defs.iter()
+            .map(|def| {
+                let plain = format!("{owner}.{}", def.name);
+                let key = fennec_check::method_key(owner, def, first.get(&plain).copied());
+                first.entry(plain).or_insert(def);
+                key
+            })
+            .collect()
     };
     for item in &module.items {
         match item {

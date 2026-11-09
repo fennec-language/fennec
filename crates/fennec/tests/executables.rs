@@ -49,22 +49,60 @@ impl Within for Command {
 }
 
 /// What `child` printed and how it ended, once it ends within `deadline`. Both pipes are read
-/// while it runs, so a program printing a lot isn't stopped by a full one.
+/// while it runs, so a program printing a lot isn't stopped by a full one. One that runs past
+/// `deadline` is killed, and the error says what it printed by then, which shows where it stopped.
 fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Output> {
-    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    /// What a pipe has given so far, kept as it comes, and whether it's ended.
+    type Kept = std::sync::Arc<std::sync::Mutex<(Vec<u8>, bool)>>;
+    fn read_all(pipe: Option<impl Read + Send + 'static>) -> Kept {
+        let kept: Kept = Kept::default();
+        let filling = std::sync::Arc::clone(&kept);
         std::thread::spawn(move || {
-            let mut all = Vec::new();
+            let mut chunk = [0; 4096];
             if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut all);
+                while let Ok(read @ 1..) = pipe.read(&mut chunk) {
+                    if let Ok(mut kept) = filling.lock() {
+                        kept.0.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                    }
+                }
             }
-            all
-        })
+            if let Ok(mut kept) = filling.lock() {
+                kept.1 = true;
+            }
+        });
+        kept
+    }
+    // What a pipe gave, once it ends or `wait` passes: a program it started may still hold it
+    // open after it's killed.
+    fn taken(kept: &Kept, wait: Duration) -> Vec<u8> {
+        let until = Instant::now() + wait;
+        loop {
+            let ended = kept.lock().map_or(true, |kept| kept.1);
+            if ended || Instant::now() > until {
+                return kept.lock().map(|mut kept| std::mem::take(&mut kept.0)).unwrap_or_default();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     let stdout = read_all(child.stdout.take());
     let stderr = read_all(child.stderr.take());
-    let status = wait_before(&mut child, deadline)?;
-    let joined = |reader: std::thread::JoinHandle<Vec<u8>>| reader.join().unwrap_or_default();
-    Ok(Output { status, stdout: joined(stdout), stderr: joined(stderr) })
+    match wait_before(&mut child, deadline) {
+        Ok(status) => {
+            let wait = Duration::from_secs(10);
+            Ok(Output { status, stdout: taken(&stdout, wait), stderr: taken(&stderr, wait) })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            let so_far = |kept: &Kept| {
+                let printed = String::from_utf8_lossy(&taken(kept, Duration::from_secs(2))).into_owned();
+                let start = printed.char_indices().rev().nth(2_000).map_or(0, |(at, _)| at);
+                printed.get(start..).unwrap_or(&printed).to_owned()
+            };
+            let why =
+                format!("{error}, having printed:\n{}\nand to stderr:\n{}", so_far(&stdout), so_far(&stderr));
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// How `child` ended, once it ends within `deadline`. One still running then is killed.
@@ -94,6 +132,17 @@ fn a_program_past_its_deadline_is_killed() {
     let ran = Command::new("sleep").arg("600").output_before(Duration::from_secs(1));
     assert_eq!(ran.map_err(|error| error.kind()).err(), Some(std::io::ErrorKind::TimedOut));
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// A program killed at its deadline says what it printed by then, so a test's failure shows where
+/// the program stopped.
+#[test]
+fn a_program_past_its_deadline_says_what_it_printed() {
+    let ran = Command::new("sh")
+        .args(["-c", "echo got this far; exec sleep 600"])
+        .output_before(Duration::from_secs(1));
+    let why = ran.err().map(|error| error.to_string()).unwrap_or_default();
+    assert!(why.contains("having printed:\ngot this far\n"), "{why}");
 }
 
 /// A program a test started and talks to, like a server, killed once the test ends however it

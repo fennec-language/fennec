@@ -1,6 +1,7 @@
 //! The standard library written in Fennec, as files an editor can open. Its source is built into
-//! `fennec`, so each file is written once to `~/.fennec/std/<version>/`, and going to a library
-//! declaration goes there. It's parsed here a second time, with spans of its own, apart from the
+//! `fennec`, so each file is written once to `~/.fennec/std/<version>-<hash>/`, and going to a
+//! library declaration goes there. The hash is of the library's text, so two builds whose library
+//! differs, like two branches built at once, never write over each other's files. It's parsed here a second time, with spans of its own, apart from the
 //! program's: what a name in the library refers to is never the program's own, so renaming it is
 //! refused, and nothing in it is ever reported.
 
@@ -35,30 +36,37 @@ pub(crate) fn library() -> &'static Library {
     })
 }
 
-/// Where this version's library files go.
+/// Where this build's library files go: named by the version and a hash of every file's name and
+/// text, so the files there are only ever this library's.
 fn folder() -> Option<PathBuf> {
-    let folder = fennec_build::fennec_home()?.join("std").join(env!("CARGO_PKG_VERSION"));
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (name, text) in fennec_syntax::prelude_files() {
+        name.hash(&mut hasher);
+        text.hash(&mut hasher);
+    }
+    let name = format!("{}-{:016x}", env!("CARGO_PKG_VERSION"), hasher.finish());
+    let folder = fennec_build::fennec_home()?.join("std").join(name);
     std::fs::create_dir_all(&folder).ok()?;
     Some(folder)
 }
 
-/// The path of the library file `name`, written with `text` unless it's there already.
+/// The path of the library file `name`, written with `text` unless it's there already. It's
+/// written beside its place and then moved there, so a reader never sees half a file, and left
+/// read-only, since an edit to it would change nothing.
 fn written(folder: &std::path::Path, name: &str, text: &str) -> String {
     let path = folder.join(format!("{name}.fen"));
     if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
-        // It's for reading, since an edit to it would change nothing, so it's made writable only
-        // to be written again by a build of this version whose library has changed.
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            let mut permissions = metadata.permissions();
-            #[expect(clippy::permissions_set_readonly_false, reason = "only to write it again")]
-            permissions.set_readonly(false);
-            let _ = std::fs::set_permissions(&path, permissions);
-        }
-        let _ = std::fs::write(&path, text);
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            let mut permissions = metadata.permissions();
-            permissions.set_readonly(true);
-            let _ = std::fs::set_permissions(&path, permissions);
+        let beside = folder.join(format!(".{name}.{}.fen", std::process::id()));
+        if std::fs::write(&beside, text).is_ok() {
+            if let Ok(metadata) = std::fs::metadata(&beside) {
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(true);
+                let _ = std::fs::set_permissions(&beside, permissions);
+            }
+            if std::fs::rename(&beside, &path).is_err() {
+                let _ = std::fs::remove_file(&beside);
+            }
         }
     }
     path.to_string_lossy().into_owned()

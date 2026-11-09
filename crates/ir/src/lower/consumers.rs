@@ -5,7 +5,7 @@ use fennec_check::Type;
 use fennec_syntax::{Arg, BinOp, CompKind, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use super::{Lowered, Lowering, Tail};
-use crate::Operand;
+use crate::{InstKind, Operand};
 
 /// A generator written in place, in its parts.
 struct Written<'e> {
@@ -190,6 +190,17 @@ impl Lowering<'_> {
             ty: None,
         };
         let body = with_condition(parts.cond, vec![stmt(add, expr.span)], expr.span);
+        // A sum of sized numbers is held at their size from its start, a number written out.
+        if matches!(ty, Type::Sized(_)) {
+            let value = self.expr(&first)?;
+            let value = self.coerce(value, &ty, span)?;
+            let held = self.declare(&total, ty);
+            self.emit(InstKind::Copy { dest: held, value }, span);
+            let looped =
+                StmtKind::For { names: parts.names.to_vec(), is_mut: false, iter: parts.iter.clone(), body };
+            self.stmts(&[stmt(looped, expr.span)], Tail::Drop)?;
+            return Ok(Some(Operand::Local(held)));
+        }
         self.looping_for_value(&total, first, parts, body, expr.span).map(Some)
     }
 

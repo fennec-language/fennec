@@ -393,7 +393,8 @@ pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 
 /// puts the timer back as the process ends, so nothing has to ask it to.
 #[cfg(windows)]
 fn fine_timer() {
-    #[link(name = "winmm")]
+    // Linked by name with no import library, which the libraries Fennec links programs with lack.
+    #[link(name = "winmm", kind = "raw-dylib")]
     unsafe extern "system" {
         fn timeBeginPeriod(period: u32) -> u32;
     }

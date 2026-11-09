@@ -357,6 +357,7 @@ impl Writer {
             Expr::Bool(value) => (if *value { "True" } else { "False" }).to_owned(),
             Expr::Str(text) => format!("\"{text}\""),
             Expr::Name(name) => name.clone(),
+            Expr::Copy(name) => format!("copy({name})"),
             Expr::Arith(operator, left, right) => {
                 let symbol = match operator {
                     Arith::Add => "+",

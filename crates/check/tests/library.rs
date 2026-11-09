@@ -368,16 +368,17 @@ fn with_launch_takes_an_arrow_its_inbox_and_its_own_options() {
 fn tls_is_named_where_a_connection_is_made() {
     let imports = "from std.net import Certificate, Connection, NetError, Server\n\n";
     let good = format!(
-        "{imports}def use(net: Net, cert: Certificate, conn: Connection) -> Server fails NetError:\n    \
-         _ = net.connect(\"a\", 443, tls=True, timeout=1s)?\n    \
+        "{imports}def use(net: Net, cert: Certificate, conn: Connection) fails NetError:\n    \
+         with net.connect(\"a\", 443, tls=True, timeout=1s)? as _:\n        pass\n    \
          conn.start_tls(\"a\", timeout=1s)?\n    \
-         _ = net.listen(0, tls=None)?\n    net.listen(0, tls=cert)?\n"
+         with net.listen(0, tls=None)? as _:\n        pass\n    \
+         with net.listen(0, tls=cert)? as _:\n        pass\n"
     );
     let module = fennec_syntax::parse(&good).unwrap();
     assert_eq!(fennec_check::check(&module).err(), None);
     for wrong in ["net.connect(\"a\", 443, tls=cert)?", "net.listen(0, tls=True)?", "net.udp(tls=True)?"] {
         let bad = format!(
-            "{imports}def use(net: Net, cert: Certificate) fails NetError:\n    _ = cert\n    _ = {wrong}\n"
+            "{imports}def use(net: Net, cert: Certificate) fails NetError:\n    _ = cert\n    with {wrong} as _:\n        pass\n"
         );
         let module = fennec_syntax::parse(&bad).unwrap();
         assert!(fennec_check::check(&module).is_err(), "{wrong}");

@@ -257,9 +257,9 @@ fn bytes_method(name: &str) -> Option<Method> {
 fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
-        ("Net", "connect")
+        ("Net", "_connect")
             | ("Connection", "read" | "read_line" | "start_tls" | "write")
-            | ("Server", "accept")
+            | ("Server", "_accept")
             | ("UdpSocket", "receive")
     )
 }
@@ -385,12 +385,12 @@ impl FnCx<'_> {
         }
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
-            Some("Net") if name == "connect" => &["timeout", "tls"],
-            Some("Net") if name == "listen" => &["tls"],
+            Some("Net") if name == "_connect" => &["timeout", "tls"],
+            Some("Net") if name == "_listen" => &["tls"],
             // `crlf=True` takes a line as ending only at `\r\n`, as HTTP and SMTP do.
             Some("Connection") if name == "read_line" => &["crlf", "timeout"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
-            Some("Net") if name == "udp" => &["port"],
+            Some("Net") if name == "_udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
                 self.one_request_body(args, span);
@@ -558,7 +558,7 @@ impl FnCx<'_> {
     /// `tls=`: whether `connect` uses TLS, and the `Certificate` a server shows, if any.
     fn tls_option(&mut self, method: &str, ty: &Type, span: Span) {
         let wanted =
-            if method == "connect" { Type::Bool } else { Type::optional(Type::named("Certificate")) };
+            if method == "_connect" { Type::Bool } else { Type::optional(Type::named("Certificate")) };
         if !self.checker.fits(&wanted, ty) {
             self.error(mismatch("`tls`", &wanted, ty, span));
         }

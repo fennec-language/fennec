@@ -1,0 +1,58 @@
+error Nope:
+    why: str
+
+enum Shape:
+    Circle(r: float)
+    Tagged(name: str, tags: list[int])
+    Empty
+
+struct Inner:
+    shape: Shape
+    n: int
+
+struct C:
+    shape: Shape
+    inner: Inner
+    maybe: list[int]?
+    pair: (str, list[int])
+
+def made() -> C:
+    C(shape=.Tagged(name="a name long enough to need a block", tags=[1, 2]), inner=Inner(shape=.Circle(r=1.5), n=1), maybe=[7], pair=("first text, long enough for a block", [3]))
+
+def fails_after(c: shared C, which: int) fails Nope:
+    lock c as ref c:
+        if which == 0:
+            c.shape = .Circle(r=9.0)
+        elif which == 1:
+            c.shape = .Tagged(name="another long name for another block", tags=[9])
+        elif which == 2:
+            c.shape = .Empty
+        elif which == 3:
+            c.inner = Inner(shape=.Tagged(name="inner text long enough for a block", tags=[9]), n=9)
+        elif which == 4:
+            c.inner.shape = .Empty
+        elif which == 5:
+            c.maybe = None
+        elif which == 6:
+            c.pair = ("swapped text, long enough for a block", [9])
+        fail Nope(why="undone")
+
+def main(stdout: Stdout):
+    wanted = str(made())
+    mut bad = 0
+    for round in range(700):
+        which = round % 7
+        shared c = made()
+        match fails_after(c, which):
+            case Ok(_):
+                stdout.print("it didn't fail")
+            case Err(_):
+                pass
+        mut now = ""
+        lock c as held:
+            now = str(held)
+        if now != wanted:
+            if round < 7:
+                stdout.print(which, now)
+            bad += 1
+    stdout.print("kinds that kept a change:", bad)

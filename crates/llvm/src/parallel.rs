@@ -63,6 +63,17 @@ pub fn uses_parallel(program: &Program) -> bool {
     })
 }
 
+/// Whether a program starts a task with `with launch`, which only the threads runtime can run:
+/// unlike `parallel`'s loops, it has no way to run in order on one thread.
+pub fn uses_launch(program: &Program) -> bool {
+    program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name == "intrinsics.launch"))
+    })
+}
+
 /// Whether a builtin runs code on another of the runtime's threads: `parallel`'s, and
 /// `with launch`'s task.
 fn runs_beside(name: &str) -> bool {

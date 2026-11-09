@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::io::Write as _;
 use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
@@ -306,6 +307,27 @@ pub(super) fn mark_owner(block: &mut [u64], owner_bits: u64) {
     }
 }
 
+/// The most words a block may be asked for: far past what any machine has, and small enough that
+/// asking for it in bytes doesn't wrap around, on 32-bit targets too.
+const MOST_WORDS: usize = usize::MAX >> 16;
+
+/// How many words a block needs for `header` words and `count` items of `each` words. More than can
+/// ever exist stops the program, as nothing could give it the room.
+pub(super) fn words_for(header: usize, count: usize, each: usize) -> usize {
+    match count.checked_mul(each).and_then(|words| words.checked_add(header)) {
+        Some(words) if words <= MOST_WORDS => words,
+        _ => too_big(),
+    }
+}
+
+/// Stops the program: it asked for a block too big to exist. This is reached with the runtime's
+/// state borrowed, so it says so itself.
+pub(super) fn too_big() -> ! {
+    super::write_kept_output();
+    let _ = writeln!(std::io::stderr(), "error: this is too big to make: there isn't that much memory");
+    super::aot::stop_now(1)
+}
+
 /// The shape of a capability's block (see `super::capabilities`).
 pub const CAPABILITY_SHAPE: u64 = SHAPE_BITS - 2;
 
@@ -560,6 +582,8 @@ impl Heap {
             self.forget_place(address);
             if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
             {
+                // Its address can come back holding another string.
+                self.texts.get_mut().remove(&block.as_ptr().addr());
                 handed.push(block);
             }
         }

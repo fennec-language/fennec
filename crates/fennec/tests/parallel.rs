@@ -822,6 +822,28 @@ fn long_strings_made_on_different_threads_are_equal() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A list or buffer asked for more room than can exist stops the program with a message, rather
+/// than wrap around to a small block and write past it.
+#[test]
+fn asking_for_more_room_than_can_exist_stops_with_a_message() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-huge-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    for (name, source) in [
+        ("huge_list", include_str!("fixtures/workers/huge_list.fen")),
+        ("huge_buffer", include_str!("fixtures/workers/huge_buffer.fen")),
+    ] {
+        let built = build_on_threads(&dir, source, name)?;
+        let ran = Command::new(&built).output_within()?;
+        assert_eq!(ran.status.code(), Some(1), "{name}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert!(String::from_utf8_lossy(&ran.stderr).contains("too big"), "{name}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can read every constant the program has, not only its strings.
 #[test]
 fn a_task_reads_the_programs_constants() -> std::io::Result<()> {

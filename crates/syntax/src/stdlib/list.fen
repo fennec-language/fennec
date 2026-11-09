@@ -47,3 +47,11 @@ extend list[T: Eq]:
         for at, each in enumerate(self):
             if each == item: return at
         None
+
+extend list[T: Serializable]:
+    def serialize(self, ref out: Serializer):
+        out.sequence(self)
+
+extend list[T: Deserializable]:
+    def deserialize(ref src: Deserializer) -> list[T] fails ParseError:
+        src.sequence[T]()?

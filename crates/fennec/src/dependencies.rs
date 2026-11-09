@@ -55,17 +55,17 @@ fn lock_layouts(root: &Path) -> Result<String, String> {
     let path = root.join("pack.lock");
     let mut text = std::fs::read_to_string(&path).unwrap_or_default();
     let mut added = 0;
-    for (shape, layout) in &lowered.layouts {
-        let key = format!("{:016x} ", shape.cast_unsigned());
+    for saved in &lowered.layouts {
+        let key = format!("{:016x} ", saved.shape.cast_unsigned());
         if text.lines().any(|line| line.starts_with(&key)) {
             continue;
         }
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
-        text.push_str(&key);
-        text.push_str(layout);
-        text.push('\n');
+        for part in [key.as_str(), saved.name.as_str(), " ", saved.layout.as_str(), "\n"] {
+            text.push_str(part);
+        }
         added += 1;
     }
     if added == 0 {

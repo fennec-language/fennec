@@ -530,7 +530,10 @@ fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
         let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
         let found = &found.as_array().unwrap()[0];
         let uri = found.get("uri").and_then(Json::as_str).unwrap();
-        assert!(uri.ends_with(&format!("/std/{}/math.fen", env!("CARGO_PKG_VERSION"))), "{needle}: {uri}");
+        // The folder is named by the version and a hash of the library, so another build's never
+        // writes over it.
+        assert!(uri.contains(&format!("/std/{}-", env!("CARGO_PKG_VERSION"))), "{needle}: {uri}");
+        assert!(uri.ends_with("/math.fen"), "{needle}: {uri}");
         let copy = std::fs::read_to_string(fennec_lsp::path_of(uri).unwrap()).unwrap();
         let line = copy.lines().nth(line_of(found)).unwrap();
         assert!(line.starts_with(declared), "{needle}: {line}");

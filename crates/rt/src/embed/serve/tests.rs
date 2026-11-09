@@ -743,3 +743,62 @@ fn a_failure_to_accept_doesnt_strand_what_waits_behind_it() {
     assert_eq!(accept_failed(&Error::from_raw_os_error(24)), AfterAccept::Later);
     assert_eq!(accept_failed(&Error::from(ErrorKind::WouldBlock)), AfterAccept::Stop);
 }
+
+/// A connection whose other end writes `sent` and goes, read here as a plain thread would. The
+/// writer goes on beside the reader, as what it sends can be more than a socket holds.
+fn conn_sent(sent: Vec<u8>) -> Conn {
+    let (listener, address) = listener();
+    let client = std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        let _ = stream.write_all(&sent);
+    });
+    let accepted = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    drop(client);
+    Conn::new(accepted)
+}
+
+/// A line with no end in sight stops being read once it's past the most a line may hold, rather
+/// than take all the memory its sender can make it.
+#[test]
+fn a_line_longer_than_the_most_a_line_may_hold_fails() {
+    let mut sent = vec![b'x'; crate::stdlib::net::MOST_LINE_BYTES + 10];
+    sent.push(b'\n');
+    let conn = conn_sent(sent);
+    let read = conn.read_line(Some(Duration::from_secs(10)));
+    assert!(matches!(&read, Err(Failure::Other(why)) if why.contains("longer than")), "{read:?}");
+}
+
+/// Asked for lines ended `\r\n`, a line ended by a bare `\n` fails, as HTTP has to refuse one.
+#[test]
+fn a_line_with_no_carriage_return_fails_when_one_is_asked_for() {
+    let conn = conn_sent(b"good\r\nbad\nlast".to_vec());
+    let wait = Some(Duration::from_secs(10));
+    assert_eq!(conn.read_line_crlf(wait, true), Ok(Some(b"good".to_vec())));
+    let read = conn.read_line_crlf(wait, true);
+    assert!(matches!(&read, Err(Failure::Other(why)) if why.contains("carriage return")), "{read:?}");
+}
+
+/// A write to a client that never reads gives up once its `timeout=` passes, rather than hold its
+/// round forever.
+#[test]
+fn a_write_nobody_reads_times_out() {
+    let (listener, address) = listener();
+    let client = std::net::TcpStream::connect(address).unwrap();
+    let accepted = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    let conn = Conn::new(accepted);
+    let started = std::time::Instant::now();
+    let wrote = conn.write_within(&vec![b'x'; 64 << 20], Some(Duration::from_millis(200)));
+    assert!(matches!(wrote, Err(Failure::TimedOut(_))), "{wrote:?}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+    drop(client);
+}

@@ -11,8 +11,8 @@
 ## ```
 ##
 ## A connection runs one query at a time, so one task uses a `PgDatabase` at a time: tasks in
-## `parallel` each connect for themselves. There's no TLS yet, so it's for a server on this machine
-## or a private network.
+## `parallel` each connect for themselves. Its connection is TLS unless `tls=False` says
+## otherwise.
 ##
 ## Underneath, `startup`, `password` and `terminate` give the bytes a client sends, and a `PgReader`
 ## is fed the bytes a server sends and gives back each whole message, with no network of their
@@ -543,7 +543,10 @@ export def failure_of(fields: dict[str, str]) -> SqlError:
     SqlError.Failed(reason=reason)
 
 ## Connects to the database, signs in, and lends a `PgDatabase` for a `with` block, closing it at the
-## end. `password` is needed if the server asks for one, and goes through SCRAM-SHA-256, which never
+## end. The connection is TLS, its certificate checked against what the system trusts and `host`,
+## and a server that won't take TLS is refused rather than spoken to in the clear, since that's
+## what someone in the middle would answer. `tls=False` connects in the clear, for a server on this
+## machine or a private network. `password` is needed if the server asks for one, and goes through SCRAM-SHA-256, which never
 ## puts it on the wire and makes the server prove it knows it too. Given a password, a server that
 ## lets the client in with no proof, or asks for the password as it is, is refused, since anything
 ## on the way could be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server
@@ -557,8 +560,11 @@ export def connect(
     password: Secret[str]? = None,
     port = 5432,
     allow_weak_sign_in = False,
+    tls = True,
 ) -> with PgDatabase fails SqlError:
     db = PgDatabase(_conn=opened(net, host=host, port=port)?)
+    if tls:
+        db._start_tls(host)?
     db._sign_in(entropy, user=user, database=database, secret=password, weak=allow_weak_sign_in)?
     lend db else:
         db._close()
@@ -672,6 +678,28 @@ export struct PgDatabase:
                 case _:
                     pass
 
+    ## Asks for TLS, as every Postgres version takes it: the request, then one byte, `S` for yes.
+    ## Exactly one byte is read, so nothing the server sent in the clear goes on into TLS.
+    def _start_tls(self, host: str) fails SqlError:
+        send(self._conn, ssl_request())?
+        mut answer = bytes([])
+        match self._conn.read(1):
+            case Ok(got):
+                answer = got
+            case Err(error):
+                fail SqlError.Failed(
+                    reason=f"the connection to the server failed: {error.message()}",
+                )
+        if answer.len() == 0 or answer[0] != 83:
+            fail SqlError.Failed(
+                reason="the server doesn't take TLS: `tls=False` connects without it",
+            )
+        match self._conn.start_tls(host):
+            case Ok(_):
+                pass
+            case Err(error):
+                fail SqlError.Failed(reason=f"TLS with the server failed: {error.message()}")
+
     def _close(self):
         # Closing goes ahead whether or not the server hears it's the end.
         match self._conn.write(terminate()):
@@ -708,6 +736,10 @@ def opened(net: Net, host: str, port: int) -> Connection fails SqlError:
             return conn
         case Err(error):
             fail SqlError.Failed(reason=f"couldn't connect to {host}:{port}: {error.message()}")
+
+## The message asking for TLS: its length, 8, then the number Postgres knows it by.
+def ssl_request() -> bytes:
+    bytes([0, 0, 0, 8, 4, 210, 22, 47])
 
 ## The password a server asked for, which has to have been given.
 def needed(secret: Secret[str]?) -> Secret[str] fails SqlError:

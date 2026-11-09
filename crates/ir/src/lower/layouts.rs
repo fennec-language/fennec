@@ -183,3 +183,286 @@ fn std_saved_as(base: &str, args: &[Type]) -> Option<Type> {
         _ => return None,
     })
 }
+
+/// A field as it was saved: its name, and what it held.
+type Field = (String, Saved);
+
+/// A layout read back from its text, as `pack.lock` holds it.
+#[derive(Debug)]
+enum Saved {
+    /// One of `i`, `f`, `b`, `s`, `y`, `I`, `?`: what it is, by its letter.
+    Plain(char),
+    List(Box<Saved>),
+    Map(Box<Saved>, Box<Saved>),
+    Optional(Box<Saved>),
+    Tuple(Vec<Saved>),
+    Struct(Vec<(String, Saved)>),
+    Enum(Vec<(String, Vec<(String, Saved)>)>),
+    Union(Vec<(String, Saved)>),
+    Table(Box<Saved>),
+    /// A type that saves itself, by its name.
+    Own(String),
+    /// A struct or enum inside itself, which the outer one is compared as.
+    Same,
+}
+
+/// The layout in `text`, or `None` if it isn't one `std.pack` wrote.
+fn saved_layout(text: &str) -> Option<Saved> {
+    let mut words = text.split(' ');
+    let found = saved_node(&mut words)?;
+    words.next().is_none().then_some(found)
+}
+
+fn saved_node<'t>(words: &mut impl Iterator<Item = &'t str>) -> Option<Saved> {
+    let count = |words: &mut dyn Iterator<Item = &'t str>| words.next()?.parse::<usize>().ok();
+    Some(match words.next()? {
+        "l" => Saved::List(Box::new(saved_node(words)?)),
+        "o" => Saved::Optional(Box::new(saved_node(words)?)),
+        "T" => Saved::Table(Box::new(saved_node(words)?)),
+        "m" => Saved::Map(Box::new(saved_node(words)?), Box::new(saved_node(words)?)),
+        "t" => Saved::Tuple((0..count(words)?).map(|_| saved_node(words)).collect::<Option<_>>()?),
+        "S" => {
+            let fields = count(words)?;
+            Saved::Struct(named_nodes(words, fields)?)
+        }
+        "u" => {
+            let members = count(words)?;
+            Saved::Union(named_nodes(words, members)?)
+        }
+        "E" => {
+            let cases = (0..count(words)?)
+                .map(|_| {
+                    let name = words.next()?.to_owned();
+                    let fields = count(words)?;
+                    Some((name, named_nodes(words, fields)?))
+                })
+                .collect::<Option<_>>()?;
+            Saved::Enum(cases)
+        }
+        "r" => {
+            words.next()?;
+            Saved::Same
+        }
+        "O" => Saved::Own(words.next()?.to_owned()),
+        letter @ ("i" | "f" | "b" | "s" | "y" | "I" | "?") => Saved::Plain(letter.chars().next()?),
+        _ => return None,
+    })
+}
+
+fn named_nodes<'t>(words: &mut impl Iterator<Item = &'t str>, count: usize) -> Option<Vec<(String, Saved)>> {
+    (0..count).map(|_| Some((words.next()?.to_owned(), saved_node(words)?))).collect()
+}
+
+impl Context<'_> {
+    /// Notes why `ty`, called `name`, can't load what its kit's `pack.lock` holds for a type of
+    /// that name in another shape: data saved then would fail to load now.
+    pub(super) fn check_against_lock(&self, ty: &Type, name: &str, shape: i64) {
+        let lock = self.pack_lock();
+        let own = format!("{:016x} ", shape.cast_unsigned());
+        for line in lock.lines().filter(|line| !line.starts_with(&own)) {
+            let mut parts = line.splitn(3, ' ');
+            let (Some(_), Some(locked_name), Some(layout)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            if locked_name != name {
+                continue;
+            }
+            let Some(saved) = saved_layout(layout) else { continue };
+            let mut found = Vec::new();
+            self.loads_from(&saved, ty, name, &mut Vec::new(), &mut found);
+            let mut problems = self.layout_problems.borrow_mut();
+            for problem in found {
+                if !problems.contains(&problem) {
+                    problems.push(problem);
+                }
+            }
+        }
+    }
+
+    /// Why a `ty` can't be loaded from data `saved` that way, onto `found`, at `path` in it.
+    fn loads_from(
+        &self,
+        saved: &Saved,
+        ty: &Type,
+        path: &str,
+        open: &mut Vec<String>,
+        found: &mut Vec<String>,
+    ) {
+        let mut mismatch = |was: &str| {
+            found.push(format!("`{path}` was saved as {was}, which it can't load as now"));
+        };
+        match (ty, saved) {
+            (Type::Optional(inner), Saved::Optional(held)) => self.loads_from(held, inner, path, open, found),
+            (Type::Optional(inner), _) => self.loads_from(saved, inner, path, open, found),
+            (_, Saved::Optional(held)) => self.loads_from(held, ty, path, open, found),
+            // What loads as it is, and a struct inside itself, which the outer one is compared as.
+            (_, Saved::Same)
+            | (Type::Int | Type::Id(_), Saved::Plain('i' | 'I'))
+            | (Type::Float, Saved::Plain('i' | 'f'))
+            | (Type::Bool, Saved::Plain('b'))
+            | (Type::Str, Saved::Plain('s'))
+            | (Type::Bytes, Saved::Plain('y')) => {}
+            (Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes, _) => {
+                mismatch(&described(saved));
+            }
+            (Type::List(item) | Type::Set(item), Saved::List(held))
+            | (Type::Table(item), Saved::Table(held)) => {
+                self.loads_from(held, item, &format!("{path}[]"), open, found);
+            }
+            (Type::Dict(key, value), Saved::Map(held_key, held_value)) => {
+                self.loads_from(held_key, key, &format!("{path}[key]"), open, found);
+                self.loads_from(held_value, value, &format!("{path}[]"), open, found);
+            }
+            (Type::Tuple(items), Saved::Tuple(held)) if items.len() == held.len() => {
+                for (at, (item, held)) in items.iter().zip(held).enumerate() {
+                    self.loads_from(held, item, &format!("{path}[{at}]"), open, found);
+                }
+            }
+            (Type::Union(members), Saved::Union(held)) => {
+                for (member, saved_member) in held {
+                    let now =
+                        members.iter().find(|ty| ty.source().unwrap_or_default().replace(' ', "") == *member);
+                    match now {
+                        Some(now) => self.loads_from(saved_member, now, path, open, found),
+                        None => found.push(format!(
+                            "`{path}` may hold a `{member}`, saved before, which isn't one of its members now"
+                        )),
+                    }
+                }
+            }
+            (Type::Named(_) | Type::Generic(..), _) => self.named_loads_from(saved, ty, path, open, found),
+            _ => mismatch(&described(saved)),
+        }
+    }
+
+    /// A struct or an enum loaded from what was saved: by its fields' and cases' names.
+    fn named_loads_from(
+        &self,
+        saved: &Saved,
+        ty: &Type,
+        path: &str,
+        open: &mut Vec<String>,
+        found: &mut Vec<String>,
+    ) {
+        let concrete = self.concrete(ty, &super::generics::Subst::new());
+        let Type::Named(name) = &concrete else { return };
+        let name = name.clone();
+        let instance = self.type_instance(&name);
+        let base = instance.as_ref().map_or(name.as_str(), |instance| instance.base.as_str()).to_owned();
+        let subst = instance.as_ref().map(|instance| instance.subst.clone()).unwrap_or_default();
+        if open.contains(&name) || self.saves_itself.contains(&base) {
+            return;
+        }
+        if self.library.contains(format!("{base}.serialize").as_str()) {
+            let args: Vec<Type> = self
+                .generic_types
+                .get(base.as_str())
+                .map(|def| {
+                    def.generics.iter().filter_map(|generic| subst.get(&generic.name).cloned()).collect()
+                })
+                .unwrap_or_default();
+            if let Some(saved_as) = std_saved_as(&base, &args) {
+                return self.loads_from(saved, &saved_as, path, open, found);
+            }
+        }
+        open.push(name.clone());
+        let signatures = self.signatures;
+        match (signatures.structure(&base), signatures.enumeration(&base), saved) {
+            (Some(structure), _, Saved::Struct(held)) => {
+                let fields: Vec<(String, Type)> = structure
+                    .fields
+                    .iter()
+                    .filter(|(field, _)| {
+                        !structure
+                            .annotations
+                            .get(field)
+                            .is_some_and(|all| all.iter().any(|a| a.name == "skip"))
+                    })
+                    .map(|(field, ty)| {
+                        let shown =
+                            structure.annotations.get(field).and_then(|all| renamed(all)).unwrap_or(field);
+                        (shown.to_owned(), self.concrete(ty, &subst))
+                    })
+                    .collect();
+                self.fields_load_from((held, &fields), (&base, None), path, open, found);
+            }
+            (_, Some(enumeration), Saved::Enum(held)) => {
+                for (case, held_fields) in held {
+                    let Some((_, fields)) = enumeration.cases.iter().find(|(now, _)| now == case) else {
+                        found.push(format!(
+                            "`{path}` may hold `{case}`, saved before, a case it doesn't have now"
+                        ));
+                        continue;
+                    };
+                    let fields: Vec<(String, Type)> =
+                        fields.iter().map(|(field, ty)| (field.clone(), self.concrete(ty, &subst))).collect();
+                    self.fields_load_from(
+                        (held_fields, &fields),
+                        (&base, Some(case)),
+                        &format!("{path}.{case}"),
+                        open,
+                        found,
+                    );
+                }
+            }
+            (Some(_) | None, _, _) => {
+                found.push(format!("`{path}` was saved as {}, which it can't load as now", described(saved)));
+            }
+        }
+        open.pop();
+    }
+
+    /// A struct's or a case's fields loaded from the ones saved, by name. A field that's new needs
+    /// a default, or to be optional, and one that's gone has to be one that can be passed over.
+    fn fields_load_from(
+        &self,
+        (held, fields): (&[Field], &[(String, Type)]),
+        (owner, case): (&str, Option<&str>),
+        path: &str,
+        open: &mut Vec<String>,
+        found: &mut Vec<String>,
+    ) {
+        for (field, ty) in fields {
+            if let Some((_, saved)) = held.iter().find(|(saved, _)| saved == field) {
+                self.loads_from(saved, ty, &format!("{path}.{field}"), open, found);
+                continue;
+            }
+            let defaulted = self.defaults.contains_key(&(owner, case, field.as_str()));
+            if !defaulted && !matches!(ty, Type::Optional(_)) {
+                found.push(format!(
+                    "`{path}.{field}` has no default, and data saved before it doesn't have one"
+                ));
+            }
+        }
+        for (gone, saved) in held {
+            if let Saved::Own(kind) = saved
+                && !fields.iter().any(|(field, _)| field == gone)
+            {
+                found.push(format!(
+                    "`{path}.{gone}` is gone, and holds a `{kind}`, which saves itself, so saved data can't pass over it"
+                ));
+            }
+        }
+    }
+}
+
+/// What a saved value was, in words.
+fn described(saved: &Saved) -> String {
+    match saved {
+        Saved::Plain('i' | 'I') => "an int".to_owned(),
+        Saved::Plain('f') => "a float".to_owned(),
+        Saved::Plain('b') => "a bool".to_owned(),
+        Saved::Plain('s') => "text".to_owned(),
+        Saved::Plain('y') => "bytes".to_owned(),
+        Saved::List(_) | Saved::Table(_) => "a list".to_owned(),
+        Saved::Map(..) => "a dict".to_owned(),
+        Saved::Optional(_) => "an optional".to_owned(),
+        Saved::Tuple(items) => format!("a tuple of {}", items.len()),
+        Saved::Struct(_) => "a struct".to_owned(),
+        Saved::Enum(_) => "an enum".to_owned(),
+        Saved::Union(_) => "a union".to_owned(),
+        Saved::Own(name) => format!("a `{name}`"),
+        Saved::Plain(_) | Saved::Same => "something else".to_owned(),
+    }
+}

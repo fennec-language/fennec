@@ -251,6 +251,7 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     // Whether a wait timed out is in what it gave, so a replay doesn't time it again.
     let done = crate::replay::value(format_args!("{name}"), at, || {
         crate::stdlib::net::timed(&name, &given, at).and_then(|(method, args, timeout)| {
+            let args = args.as_slice();
             match method.split_once('.') {
                 Some(("Server", method)) => {
                     crate::stdlib::net::real_server(handle, method, args, timeout, at)

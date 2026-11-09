@@ -32,8 +32,11 @@ pub enum CheckKind {
     Bounds,
     /// A key that might not be in its dict, or an `Id` whose item might be gone.
     MissingKey,
-    /// A `/`, `//` or `%` by what might be zero.
+    /// An integer `/`, `//` or `%` by what might be zero.
     DivideByZero,
+    /// A float `/`, `//` or `%` by what might be zero, which `@hot` allows as it does an
+    /// overflow check.
+    FloatDivideByZero,
     /// A shift by what might be outside 0 to 63.
     ShiftRange,
     /// A builtin that can fail where it runs, by its name.
@@ -103,7 +106,7 @@ fn checks_in(program: &Program, function: &Function, known: &Analysis, inst: &In
                 _ => vec![CheckKind::ShiftRange],
             },
             (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) if !known.is_nonzero(rhs) => {
-                vec![CheckKind::DivideByZero]
+                vec![CheckKind::FloatDivideByZero]
             }
             _ => Vec::new(),
         },
@@ -400,7 +403,7 @@ mod tests {
         assert!(has(CheckKind::DivideByZero, "a // b"), "{found:?}");
         assert!(has(CheckKind::Overflow, "a // b"), "{found:?}");
         assert!(has(CheckKind::ShiftRange, "a << b"), "{found:?}");
-        assert!(has(CheckKind::DivideByZero, "float(c + d + e) / f"), "{found:?}");
+        assert!(has(CheckKind::FloatDivideByZero, "float(c + d + e) / f"), "{found:?}");
         let settled = ["a // 2", "a % 7", "a << 3", "f / 2.0"];
         assert!(!found.iter().any(|(_, on)| settled.contains(&on.as_str())), "{found:?}");
         assert_eq!(found.iter().filter(|(what, _)| *what == CheckKind::ShiftRange).count(), 1, "{found:?}");

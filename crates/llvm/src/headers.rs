@@ -740,9 +740,11 @@ impl Emit<'_, '_, '_> {
 
     /// Defines `@fen_char_place(text, at)`: where character `at` of a string's block starts, in
     /// bytes, counting from the end if `at` is negative, or -1 if there's no such character. A
-    /// parser reads the character at the block's cursor again or the one after it, so those
-    /// are found where it's called, from the cursor and the lead byte's length. Anything else
-    /// is walked to by `@fen_char_walk`.
+    /// parser reads the character at the block's cursor, the one before it or the one after it,
+    /// so those are found where it's called. An index leaves the cursor on the character after
+    /// the one it read, which is where reading in order goes next, and the one before is the one
+    /// it read, found a byte back when that's ASCII. Anything else is walked to by
+    /// `@fen_char_walk`, which is marked unlikely, so a loop reading in order keeps its registers.
     pub(crate) fn char_place_helper(&mut self) {
         use fennec_rt::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
         self.char_walk_helper();
@@ -755,14 +757,26 @@ entry:
   %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}
   %chars = load i64, ptr %chars_at
   %inside = icmp ult i64 %at, %chars
-  br i1 %inside, label %near, label %walk
+  br i1 %inside, label %near, label %walk, !prof !8
 near:
   %cursor_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CURSOR}
   %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
   %kept_char = and i64 %cursor, 4294967295
   %kept_byte = lshr i64 %cursor, 32
   %again = icmp eq i64 %at, %kept_char
-  br i1 %again, label %done, label %next_or_not
+  br i1 %again, label %done, label %back_or_not
+back_or_not:
+  %before = add i64 %kept_char, -1
+  %is_back = icmp eq i64 %at, %before
+  br i1 %is_back, label %back, label %next_or_not
+back:
+  %back_byte = add i64 %kept_byte, -1
+  %back_body = getelementptr inbounds i8, ptr %text, i64 {TEXT}
+  %back_at = getelementptr inbounds i8, ptr %back_body, i64 %back_byte
+  %back_lead = load i8, ptr %back_at
+  %back_top = and i8 %back_lead, -64
+  %back_continues = icmp eq i8 %back_top, -128
+  br i1 %back_continues, label %walk, label %done, !prof !0
 next_or_not:
   %after = add nuw nsw i64 %kept_char, 1
   %is_next = icmp eq i64 %at, %after
@@ -778,7 +792,7 @@ next:
   %width = select i1 %single, i64 1, i64 %wide
   %stepped = add nuw nsw i64 %kept_byte, %width
   %fits = icmp ult i64 %stepped, 4294967296
-  br i1 %fits, label %step, label %walk
+  br i1 %fits, label %step, label %walk, !prof !8
 step:
   %high = shl nuw i64 %stepped, 32
   %packed = or i64 %high, %at
@@ -788,8 +802,78 @@ walk:
   %walked = call i64 @fen_char_walk(ptr %text, i64 %at)
   br label %done
 done:
-  %place = phi i64 [ %kept_byte, %near ], [ %stepped, %step ], [ %walked, %walk ]
+  %place = phi i64 [ %kept_byte, %near ], [ %back_byte, %back ], [ %stepped, %step ], [ %walked, %walk ]
   ret i64 %place
+}}
+
+"
+            ),
+        );
+    }
+
+    /// Defines `@fen_char_read(text, at)`: where character `at` of a string's block starts, as
+    /// `@fen_char_place` gives it, for an index, which leaves the block's cursor on the character
+    /// after it. Reading in order asks for that one next, found at the cursor, and reading the
+    /// same one again finds it a byte back when it's ASCII, which changes nothing.
+    pub(crate) fn char_read_helper(&mut self) {
+        use fennec_rt::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
+        self.char_walk_helper();
+        self.declare("declare i8 @llvm.ctlz.i8(i8, i1)");
+        self.module.add_helper(
+            "fen_char_read",
+            format!(
+                "define internal i64 @fen_char_read(ptr %text, i64 %at) #2 {{
+entry:
+  %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}
+  %chars = load i64, ptr %chars_at
+  %body = getelementptr inbounds i8, ptr %text, i64 {TEXT}
+  %cursor_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CURSOR}
+  %inside = icmp ult i64 %at, %chars
+  br i1 %inside, label %near, label %walk, !prof !8
+near:
+  %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
+  %kept_char = and i64 %cursor, 4294967295
+  %kept_byte = lshr i64 %cursor, 32
+  %again = icmp eq i64 %at, %kept_char
+  br i1 %again, label %advance, label %back_or_not
+back_or_not:
+  %before = add i64 %kept_char, -1
+  %is_back = icmp eq i64 %at, %before
+  br i1 %is_back, label %back, label %walk
+back:
+  %back_byte = add i64 %kept_byte, -1
+  %back_at = getelementptr inbounds i8, ptr %body, i64 %back_byte
+  %back_lead = load i8, ptr %back_at
+  %back_top = and i8 %back_lead, -64
+  %back_continues = icmp eq i8 %back_top, -128
+  br i1 %back_continues, label %walk, label %done, !prof !0
+walk:
+  %walked = call i64 @fen_char_walk(ptr %text, i64 %at)
+  %found = icmp sge i64 %walked, 0
+  br i1 %found, label %advance, label %done
+advance:
+  %place = phi i64 [ %kept_byte, %near ], [ %walked, %walk ]
+  %lead_at = getelementptr inbounds i8, ptr %body, i64 %place
+  %lead = load i8, ptr %lead_at
+  %flipped = xor i8 %lead, -1
+  %ones = call i8 @llvm.ctlz.i8(i8 %flipped, i1 false)
+  %plain = icmp sge i8 %lead, 0
+  %wide = zext i8 %ones to i64
+  %width = select i1 %plain, i64 1, i64 %wide
+  %end = add nuw nsw i64 %place, %width
+  %counted = icmp sge i64 %at, 0
+  %small = icmp ult i64 %end, 4294967296
+  %keeps = and i1 %counted, %small
+  br i1 %keeps, label %keep, label %done, !prof !8
+keep:
+  %after = add nuw nsw i64 %at, 1
+  %high = shl nuw i64 %end, 32
+  %packed = or i64 %high, %after
+  store atomic i64 %packed, ptr %cursor_at monotonic, align 8
+  br label %done
+done:
+  %result = phi i64 [ %back_byte, %back ], [ %walked, %walk ], [ %place, %advance ], [ %place, %keep ]
+  ret i64 %result
 }}
 
 "
@@ -935,9 +1019,9 @@ done:
         // Text that isn't ASCII, or an index from the end: where the character starts is found
         // from the block's cursor, and the runtime only says what's wrong with one outside.
         self.start_block(&block_wide);
-        self.char_place_helper();
+        self.char_read_helper();
         let (place, found) = (self.temp(), self.temp());
-        self.line(&format!("{place} = call i64 @fen_char_place(ptr {block}, i64 {at})"));
+        self.line(&format!("{place} = call i64 @fen_char_read(ptr {block}, i64 {at})"));
         self.line(&format!("{found} = icmp sge i64 {place}, 0"));
         let block_char = self.label("index_block_char");
         self.line(&format!("br i1 {found}, label %{block_char}, label %{slow}"));
@@ -945,6 +1029,20 @@ done:
         let wide_start = self.offset(&block, crate::emit::TEXT_START);
         let lead_at = self.temp();
         self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {wide_start}, i64 {place}"));
+        // An ASCII character is its byte, as in ASCII text, on a way of its own, so a test of it
+        // against a character compares the byte.
+        let (lead, plain) = (self.temp(), self.temp());
+        self.line(&format!("{lead} = load i8, ptr {lead_at}"));
+        self.line(&format!("{plain} = icmp sge i8 {lead}, 0"));
+        let (wide_ascii, wide_other) = (self.label("index_wide_ascii"), self.label("index_wide_other"));
+        self.line(&format!("br i1 {plain}, label %{wide_ascii}, label %{wide_other}"));
+        self.start_block(&wide_ascii);
+        let lead_wide = self.temp();
+        self.line(&format!("{lead_wide} = zext i8 {lead} to i64"));
+        let from_ascii = self.header_of([&lead_wide, "0", "-9151314442816847872"]);
+        let ascii_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&wide_other);
         let from_wide = self.char_header_at(&lead_at, None);
         let wide_end = self.current.clone();
         self.line(&format!("br label %{done}"));
@@ -994,7 +1092,7 @@ done:
         self.start_block(&done);
         let one = self.temp();
         self.line(&format!(
-            "{one} = phi {HEADER} [ {from_block}, %{block_end} ], [ {from_inline}, %{inline_end} ], [ {from_wide}, %{wide_end} ]"
+            "{one} = phi {HEADER} [ {from_block}, %{block_end} ], [ {from_inline}, %{inline_end} ], [ {from_ascii}, %{ascii_end} ], [ {from_wide}, %{wide_end} ]"
         ));
         self.assign(dest, &one)?;
         self.line(&format!("br label %{after}"));
@@ -1310,9 +1408,31 @@ done:
             emit.line(&format!("{place} = select i1 {at_end}, i64 {bytes}, i64 {found}"));
             place
         };
-        // The end first, which a parser has just read up to and the cursor is at; then the start,
-        // walked back to, with the cursor put back at the end, where reading carries on.
+        // The end first, which a parser has just read up to and the cursor is at.
         let to_place = place(self, &to);
+        // A short part that's ASCII is as many bytes back from the end as it has characters: it's
+        // made from those bytes, and kept when they're all ASCII, as they then are its characters.
+        let body = self.offset(&block, crate::emit::TEXT_START);
+        let (count, guess, short_count, in_text, try_guess) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{count} = sub i64 {to}, {from}"));
+        self.line(&format!("{guess} = sub i64 {to_place}, {count}"));
+        self.line(&format!("{short_count} = icmp ule i64 {count}, 23"));
+        self.line(&format!("{in_text} = icmp sge i64 {guess}, 0"));
+        self.line(&format!("{try_guess} = and i1 {short_count}, {in_text}"));
+        let (guessing, walking, joined) =
+            (self.label("slice_guess"), self.label("slice_walk"), self.label("slice_joined"));
+        self.line(&format!("br i1 {try_guess}, label %{guessing}, label %{walking}"));
+        self.start_block(&guessing);
+        let guess_at = self.temp();
+        self.line(&format!("{guess_at} = getelementptr inbounds i8, ptr {body}, i64 {guess}"));
+        let guessed = self.inline_from(&guess_at, &count);
+        let plain = self.inline_ascii(&guessed);
+        let guessed_end = self.current.clone();
+        self.line(&format!("br i1 {plain}, label %{joined}, label %{walking}, !prof !8"));
+        // Otherwise the start is walked back to, with the cursor put back at the end, where
+        // reading carries on.
+        self.start_block(&walking);
         let (cursor_at, cursor) = (self.offset(&block, TEXT_CURSOR.unsigned_abs()), self.temp());
         self.line(&format!("{cursor} = load atomic i64, ptr {cursor_at} monotonic, align 8"));
         let from_place = place(self, &from);
@@ -1323,10 +1443,16 @@ done:
         let inline = self.label("slice_wide_inline");
         self.line(&format!("br i1 {short}, label %{inline}, label %{slow}"));
         self.start_block(&inline);
-        let body = self.offset(&block, crate::emit::TEXT_START);
         let piece_at = self.temp();
         self.line(&format!("{piece_at} = getelementptr inbounds i8, ptr {body}, i64 {from_place}"));
-        let piece = self.inline_from(&piece_at, &size);
+        let walked = self.inline_from(&piece_at, &size);
+        let walked_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let piece = self.temp();
+        self.line(&format!(
+            "{piece} = phi {HEADER} [ {guessed}, %{guessed_end} ], [ {walked}, %{walked_end} ]"
+        ));
         let end_block = self.current.clone();
         self.line(&format!("br label %{done}"));
         (piece, end_block)

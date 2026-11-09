@@ -71,8 +71,11 @@ pub struct Program {
     pub not_lowered: Vec<NotLowered>,
     /// The types printed inside other values that write their own text with `def str`.
     pub own_texts: Vec<OwnText>,
-    /// The shape number and layout of each type `std.pack` saves, for `fennec update` to lock.
-    pub layouts: Vec<(i64, String)>,
+    /// Each type `std.pack` saves: its shape number, its name and its layout, for `fennec update`
+    /// to lock.
+    pub layouts: Vec<SavedLayout>,
+    /// Why a type can't load a layout its kit's `pack.lock` holds for it, for `fennec check`.
+    pub layout_problems: Vec<String>,
     /// What the program calls that isn't here or in `not_lowered`. Lowering a whole program
     /// leaves this empty.
     pub external: Vec<String>,
@@ -123,6 +126,15 @@ pub struct GeneratorDef {
 pub struct EnumDef {
     pub name: String,
     pub cases: Vec<CaseDef>,
+}
+
+/// A type `std.pack` saves, as `pack.lock` keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedLayout {
+    pub shape: i64,
+    /// The type's name as written, with no spaces, like `list[Entry]`.
+    pub name: String,
+    pub layout: String,
 }
 
 /// A type that writes its own text, and the function giving that text for a value of the type.
@@ -288,6 +300,15 @@ pub enum InstKind {
     MakeList {
         dest: LocalId,
         items: Vec<Operand>,
+    },
+    /// From here, a crash runs `cleanup`, a closure taking nothing, on its way out of this
+    /// function, innermost first among what's to undo: a `with` source's `else:`, for its block.
+    CrashCleanup {
+        cleanup: Operand,
+    },
+    /// From here, a crash no longer runs `cleanup`: its block ended, or failed another way.
+    CrashCleanupDone {
+        cleanup: Operand,
     },
     MakeSet {
         dest: LocalId,
@@ -580,6 +601,8 @@ impl InstKind {
             | InstKind::SetSlot { .. }
             | InstKind::Lock { .. }
             | InstKind::Unlock { .. }
+            | InstKind::CrashCleanup { .. }
+            | InstKind::CrashCleanupDone { .. }
             | InstKind::LockAll { .. }
             | InstKind::UnlockAll { .. } => None,
         }

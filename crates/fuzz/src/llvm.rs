@@ -105,12 +105,6 @@ pub(crate) fn built_and_run(
     Ok((printed, said.lines().next().unwrap_or_default().to_owned(), succeeded))
 }
 
-/// Whether the runtime with `threads` is beside `fennec`, which it builds a program running
-/// `parallel` or `launch` with, as a release does.
-pub(crate) fn threads_runtime_here() -> bool {
-    fennec().with_file_name("libfennec_runtime_threads.a").is_file()
-}
-
 /// What an executable printed, what it said on standard error, and whether it succeeded. One
 /// that crashes, gets stuck or holds too much memory is stopped and said so.
 fn ran(executable: &Path, args: &[&std::ffi::OsStr], work: &Path) -> Result<(Vec<u8>, String, bool), String> {
@@ -313,7 +307,8 @@ fn forget_old(readers: &Path) {
 }
 
 /// Whether the runtime with `threads` is beside `fennec`, which it builds a program running
-/// `parallel` with, as a release does. Without it, such a program runs on the plain runtime.
+/// `parallel` or `launch` with, as a release does. Without it, such a program runs on the plain
+/// runtime, where `launch` fails.
 pub(crate) fn threads_runtime_here() -> bool {
     fennec().with_file_name("libfennec_runtime_threads.a").is_file()
 }

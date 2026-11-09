@@ -18,7 +18,9 @@
 //! `pack`, `csv`, `url`, `http-server`, `http-client` and `postgres`, hold what they read to the
 //! format's own rules, each in its own module, not only to not crashing. Running with no targets
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
-//! leaves out the other native ones, saying so, where nothing can be built.
+//! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
+//! when named too: random, well-typed programs built both ways and checked against a reference
+//! evaluator written here, which `fennec-fuzz show programs <file>` writes out.
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 

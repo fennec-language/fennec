@@ -383,3 +383,27 @@ fn tls_is_named_where_a_connection_is_made() {
         assert!(fennec_check::check(&module).is_err(), "{wrong}");
     }
 }
+
+/// Once lowering rewrites a program, it's checked again, and that check has to pass: the rules
+/// about how a program is written were held to it as written. Two `_ =` in one function stay
+/// apart, and a `with` source's `else:` changing a `ref` parameter isn't a lost change once it's
+/// written into its caller.
+#[test]
+fn a_program_lowering_rewrote_checks_again() {
+    for source in [
+        "struct World:\n    squads = list[int]()\n\n    def form(ref self, at: (int, int)) -> int:\n        \
+         self.squads.append(at[0])\n        self.squads.len()\n\n\
+         def main(stdout: Stdout):\n    mut world = World()\n    _ = world.form((1, 2))\n    _ = world.form((3, 4))\n    \
+         shared count = World()\n    lock count as held:\n        stdout.print(held.squads, world.squads)\n",
+        "error DbError:\n    why: str\n\nstruct Log:\n    lines = list[str]()\n\n\
+         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 else:\n        \
+         log.lines.append(\"rolled back\")\n        fail DbError(why=\"lost\")\n    pass\n\n\
+         def insert(n: int) fails DbError:\n    if n > 1: fail DbError(why=\"duplicate\")\n\n\
+         def main(stdout: Stdout) fails DbError:\n    mut log = Log()\n    \
+         with transaction(ref log)? as tx:\n        insert(tx + 4)?\n    stdout.print(log.lines)\n",
+    ] {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let resolved = fennec_check::check_and_resolve(&mut module);
+        assert!(resolved.is_ok(), "{:?}", resolved.err());
+    }
+}

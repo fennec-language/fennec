@@ -7578,6 +7578,69 @@ fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
 }
 
+/// The server's answers reach a client that's still sending when it's refused. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
+/// reset: closing with what the client sent unread resets the connection, which throws away what
+/// the client hadn't read yet, the answers before too. Found by fuzzing the
+/// server (`fennec-fuzz run http-server`).
+#[test]
+fn an_http_server_s_refusal_reaches_a_client_still_sending() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_server_refusals")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let connect = || -> std::io::Result<std::net::TcpStream> {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        Ok(stream)
+    };
+    // Everything the server says, read as it comes until it closes, or what went wrong.
+    let heard = |stream: &mut std::net::TcpStream| -> String {
+        let mut heard = Vec::new();
+        match stream.read_to_end(&mut heard) {
+            Ok(_) => String::from_utf8_lossy(&heard).into_owned(),
+            Err(err) => format!("{}[{err}]", String::from_utf8_lossy(&heard)),
+        }
+    };
+    // A body far bigger than the server takes, still being sent when it answers.
+    let mut big = connect()?;
+    big.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n")?;
+    let _ = big.write_all(&vec![b'x'; 4 << 20]);
+    let too_big = heard(&mut big);
+    // Answers first, then a refusal, with the rest of what was sent unread.
+    let mut pipelined = connect()?;
+    pipelined.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nNOT HTTP\r\n\r\n")?;
+    let _ = pipelined.write_all(&vec![b'y'; 1 << 20]);
+    let refused_after = heard(&mut pipelined);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    // Each closes cleanly once it's answered, with no reset.
+    let wanted = [
+        "HTTP/1.1 413 Content Too Large\r\ncontent-length: 19\r\nconnection: close\r\n\r\nthe body is too big",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/aHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/b\
+         HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
+    ];
+    assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
 /// An HTTP server natively: a handler answers each request, a connection stays open for more
 /// until it asks to close, and what's too big or isn't HTTP is answered without the handler.
 #[test]

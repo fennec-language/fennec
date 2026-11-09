@@ -88,8 +88,10 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         let handle = next_handle();
         CONNS.with_borrow_mut(|conns| conns.insert(handle, Rc::new(conn)));
         let result = body(env, handle, i64::from(threads::index()));
-        // Its task is done with it: dropping it closes it.
-        CONNS.with_borrow_mut(|conns| conns.remove(&handle));
+        // Its task is done with it: it ends gracefully, and dropping it closes it.
+        if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
+            conn.linger();
+        }
         if result == super::ROUND_FAILED {
             pass_up(&passing);
         }
@@ -215,7 +217,9 @@ pub(in crate::embed) fn served_call(
             on_conn(handle, |conn| conn.write(data_of(data))).map(|()| Value::Unit)
         }
         ("close", []) => {
-            CONNS.with_borrow_mut(|conns| conns.remove(&handle));
+            if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
+                conn.linger();
+            }
             return Some(Ok(Value::Unit));
         }
         ("peer", []) => {

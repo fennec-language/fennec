@@ -9115,6 +9115,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// The reading half: a list of tuples saved through `std.pack` reads back as itself natively,
+/// empty or not, with negative numbers and text that isn't ASCII, and bytes of another type
+/// fail to read rather than reading as something. It's a program of its own, since `loads`
+/// names its type and would settle what the program above leaves to be settled.
+#[test]
+fn a_list_of_tuples_reads_back_through_pack_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-loaded")?;
+    let program = dir.join("loaded.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import pack
+
+def main(stdout: Stdout):
+    pairs: list[(int, str)] = [(1, \"a\"), (-7, \"fén\"), (0, \"\")]
+    empty: list[(int, str)] = []
+    back = pack.loads[list[(int, str)]](pack.dumps(pairs)) else []
+    stdout.print(back, back == pairs)
+    stdout.print((pack.loads[list[(int, str)]](pack.dumps(empty)) else pairs) == empty)
+    stdout.print((pack.loads[list[(int, str)]](pack.dumps([1, 2])) else empty) == empty)
+",
+    )?;
+    let executable = dir.join("loaded");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[(1, \"a\"), (-7, \"fén\"), (0, \"\")] True\nTrue\nTrue\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 /// Native JSON and TOML write and read what the JIT does, and fail with the same messages: a
 /// field left out, a value of the wrong type, a key no field has, inside and outside, and text
 /// that isn't JSON.

@@ -4067,6 +4067,119 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost
+/// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
+/// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends
+/// the program.
+#[test]
+fn a_crash_runs_the_cleanups_of_the_blocks_it_leaves() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def lent(stdout: Stdout, name: str) -> with int:
+    lend 1 else:
+        stdout.print(f"cleanup {name}")
+    stdout.print(f"done {name}")
+
+def breaks(stdout: Stdout) -> with int:
+    lend 0 else:
+        stdout.print("cleanup that crashes")
+        xs = [0]
+        stdout.print(xs[7])
+
+def main(stdout: Stdout):
+    with lent(stdout, "ended") as first:
+        stdout.print("first", first)
+    with lent(stdout, "outer") as a:
+        with breaks(stdout) as broken:
+            with lent(stdout, "inner") as b:
+                stdout.print("in")
+                xs = [1]
+                stdout.print(xs[a + b + broken])
+"#;
+    let dir = folder("crash_cleanups")?;
+    let program = dir.join("crash_cleanups.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("crash_cleanups"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            out, "first 1\ndone ended\nin\ncleanup inner\ncleanup that crashes\ncleanup outer\n",
+            "{how:?}: {err}"
+        );
+        assert!(!ran.status.success(), "{how:?}");
+        assert!(
+            err.contains("index 7 is out of range for length 1 (while cleaning up after a crash)"),
+            "{err}"
+        );
+        assert!(err.contains("index 2 is out of range for length 1"), "{err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task that crashes inside a `with` runs the block's `lend x else:` before its crash ends it,
+/// and a task that doesn't runs the rest of the source instead.
+#[test]
+fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "task_crash_cleanup",
+        r#"from std.concurrent import Crashed, Sender, channel
+
+## Says `text` on `done`, whether or not anything's there to hear it.
+def tell(done: Sender[str], text: str):
+    match done.send(text):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
+
+def lent(done: Sender[str]) -> with int:
+    lend 7 else:
+        tell(done, text="crashed")
+    tell(done, text="finished")
+
+def job(done: Sender[str], at: int):
+    with lent(done) as held:
+        values = [1, 2, 3]
+        print_nothing(values[at] + held)
+
+def print_nothing(n: int):
+    pass
+
+## Runs a job in a task of its own, and says how its task ended.
+def ran(done: Sender[str], at: int) -> str:
+    match launched(done, at=at):
+        case Ok(_):
+            return "ended"
+        case Err(_):
+            return "crashed"
+
+def launched(done: Sender[str], at: int) fails Crashed:
+    with launch(() => job(done, at)) as task:
+        pass
+
+def main(stdout: Stdout):
+    with channel[str](size=4) as said:
+        stdout.print(ran(said.sender(), at=1), said.receive() else "none")
+        stdout.print(ran(said.sender(), at=9), said.receive(timeout=1s) else "none")
+"#,
+        "ended finished\ncrashed crashed\n",
+    )
+}
+
 /// A type with an operator for each of several types on its right calls the one for the type
 /// that's there, in its own methods, from an extension, and in a function.
 #[test]

@@ -9813,7 +9813,8 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
 
 /// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
 /// written without their layout, as short as before layouts, and the next version of the type
-/// reads them by the locked layout's names. Without the lock, they'd be refused.
+/// reads them by the locked layout's names. Without the lock, they'd be refused. `fennec check`
+/// warns about a version that couldn't load what was locked, and is quiet about one that can.
 #[test]
 fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io::Result<()> {
     if !ready() {
@@ -9849,13 +9850,27 @@ fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io
     let short = ran(first)?;
     let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    match pack.loads[Entry](fs.read_bytes(\"entry.pack\")?):\n        case Ok(found):\n            stdout.print(found.path, found.size, found.tags)\n        case Err(error):\n            stdout.print(error.message)\n";
     let read = ran(next)?;
+    // A version that can't load what was locked says so as it's checked, without failing.
+    let breaking = "from std import pack\n\nstruct Entry:\n    path: str\n    size: str\n    rank: int\n    note = \"\"\n\ndef main(stdout: Stdout):\n    stdout.print(pack.dumps(Entry(path=\"a\", size=\"1\", rank=2)).len())\n";
+    std::fs::write(&main, breaking)?;
+    let checked = in_kit(&["check", "."])?;
+    let warned = String::from_utf8_lossy(&checked.stderr).into_owned();
+    std::fs::write(&main, next)?;
+    let quiet = in_kit(&["check", "."])?;
     std::fs::remove_file(kit.join("pack.lock"))?;
     let unlocked = ran(next)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!((long.as_str(), short.as_str()), ("37\n", "19\n"));
     assert!(said.contains("locked 1 layout in pack.lock"), "{said}");
     assert_eq!(lock.lines().count(), 1, "{lock}");
-    assert!(lock.ends_with(" S 2 path s size i\n"), "{lock}");
+    assert!(lock.ends_with(" Entry S 2 path s size i\n"), "{lock}");
+    assert!(checked.status.success(), "{warned}");
+    assert_eq!(
+        warned,
+        "warning: `Entry.size` was saved as an int, which it can't load as now\n\
+         warning: `Entry.rank` has no default, and data saved before it doesn't have one\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&quiet.stderr), "");
     assert_eq!(read, "a.txt 12.0 []\n");
     assert_eq!(unlocked, "this was packed from a different `Entry`, at byte 4\n");
     Ok(())

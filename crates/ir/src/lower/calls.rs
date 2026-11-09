@@ -495,9 +495,12 @@ impl Lowering<'_> {
             "intrinsics.layout" => {
                 let layout = self.context.layout(ty);
                 let shape = shape_hash(&self.context.signatures.shape(ty));
-                let mut layouts = self.context.layouts.borrow_mut();
-                if !layouts.iter().any(|(known, _)| *known == shape) {
-                    layouts.push((shape, layout.clone()));
+                let name = ty.source().unwrap_or_default().replace(' ', "");
+                let known = self.context.layouts.borrow().iter().any(|saved| saved.shape == shape);
+                if !known {
+                    self.context.check_against_lock(ty, &name, shape);
+                    let saved = crate::SavedLayout { shape, name, layout: layout.clone() };
+                    self.context.layouts.borrow_mut().push(saved);
                 }
                 Some(Operand::Str(layout))
             }

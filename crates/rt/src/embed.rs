@@ -291,6 +291,9 @@ pub(in crate::embed) struct Temporaries {
     inputs: Vec<Value>,
     /// Which task it is, in a recording or a replay: a server's round, named by its connection.
     replay: Option<crate::replay::Task>,
+    /// For a server's round, what its server lent, when `round` is set.
+    lent: Option<std::sync::Arc<table::Table>>,
+    round: bool,
     /// Its failure, if it parked with one: it's the task's, not whatever its thread runs next.
     failure: Option<Diagnostic>,
     failed: u8,
@@ -304,6 +307,15 @@ impl Temporaries {
             && self.replay.is_none()
             && self.failure.is_none()
             && self.failed == 0
+            && !self.round
+    }
+
+    /// A server's round's own: named in a recording or a replay, and reading what its server lent.
+    pub(in crate::embed) fn of_round(
+        named: Option<crate::replay::Task>,
+        lent: Option<std::sync::Arc<table::Table>>,
+    ) -> Temporaries {
+        Temporaries { replay: named, lent, round: true, ..Temporaries::default() }
     }
 
     /// A task's own, named `task` in a recording or a replay.
@@ -321,6 +333,20 @@ pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
             std::mem::swap(&mut state.temps, &mut own.temps);
             std::mem::swap(&mut state.inputs, &mut own.inputs);
             std::mem::swap(&mut state.failure, &mut own.failure);
+            if own.round {
+                let lent = &mut own.lent;
+                let same = match (&state.heap.lent, &*lent) {
+                    (Some(here), Some(there)) => std::sync::Arc::ptr_eq(here, there),
+                    (None, None) => true,
+                    _ => false,
+                };
+                std::mem::swap(&mut state.heap.lent, lent);
+                // What the runtime kept of the lent strings goes when the lent blocks change.
+                if !same {
+                    state.heap.texts.get_mut().clear();
+                    state.heap.set_cursor(heap::Cursor::default());
+                }
+            }
         }
     });
     own.failed = FLAGS.with(|flags| flags.failed.replace(own.failed));

@@ -861,9 +861,11 @@ fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A launched task that tries to serve says it can't, rather than wait forever for its own worker.
+/// A launched task can serve: its rounds read what it gave them, and other tasks on its worker go on
+/// meanwhile.
 #[test]
-fn serving_from_a_launched_task_fails_rather_than_hang() -> std::io::Result<()> {
+fn a_launched_task_can_serve() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
@@ -871,14 +873,35 @@ fn serving_from_a_launched_task_fails_rather_than_hang() -> std::io::Result<()> 
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/serve_from_a_task.fen");
     let built = build_on_threads(&dir, source, "serve_from_a_task")?;
-    for threads in ["1", "2"] {
-        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
-        let printed = String::from_utf8_lossy(&ran.stdout);
-        assert!(printed.starts_with("failed: Crashed"), "on {threads} threads: {printed}");
-        assert!(
-            String::from_utf8_lossy(&ran.stderr).contains("can't be served from a launched task"),
-            "on {threads} threads"
-        );
+    for threads in ["1", "2", "4"] {
+        let mut server = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+        let mut port = String::new();
+        out.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        for line in ["one", "two", "last"] {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            stream.write_all(format!("{line}\n").as_bytes())?;
+            let mut back = String::new();
+            BufReader::new(stream).read_line(&mut back)?;
+            assert_eq!(
+                back,
+                format!(
+                    "a greeting long enough to need a block of its own: {line}, the first name, also long enough and the second say hi\n"
+                ),
+                "on {threads} threads"
+            );
+        }
+        let mut rest = String::new();
+        out.read_to_string(&mut rest)?;
+        let ended = server.wait_with_output()?;
+        assert!(ended.status.success(), "on {threads} threads: {}", String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(rest, "the server ended\ndone the second\n", "on {threads} threads");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

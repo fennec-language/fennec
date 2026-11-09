@@ -2491,7 +2491,14 @@ impl Emit<'_, '_, '_> {
             InstKind::Lock { handle, write } => self.lock(handle, *write, span),
             InstKind::Unlock { handle } => self.unlock(handle),
             // A crash doesn't run a `with` source's `else:` natively yet.
-            InstKind::CrashCleanup { .. } | InstKind::CrashCleanupDone { .. } => Ok(()),
+            InstKind::CrashCleanup { cleanup } => {
+                self.crash_cleanup(cleanup, true);
+                Ok(())
+            }
+            InstKind::CrashCleanupDone { cleanup } => {
+                self.crash_cleanup(cleanup, false);
+                Ok(())
+            }
             InstKind::LockAll { handles } => self.lock_all(handles, span),
             InstKind::UnlockAll { handles } => self.unlock_all(handles),
         }

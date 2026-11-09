@@ -91,7 +91,7 @@ impl Emit<'_, '_, '_> {
     fn notes_in(&mut self, place: &str, kind: &Kind, change: bool) -> Result<Option<String>, String> {
         let (Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id)) = *kind else { return Ok(None) };
         let layout = self.layout_of(id)?;
-        let notes = layout.fields.iter().find(|field| field.name == fennec_interp::packed::NOTES);
+        let notes = layout.fields.iter().find(|field| field.name == fennec_rt::packed::NOTES);
         let notes = notes.map(|field| field.offset);
         let union = layout.cases.is_some();
         if notes.is_none() && !(union && self.is_union_of_errors(id)) {
@@ -123,7 +123,7 @@ impl Emit<'_, '_, '_> {
             [field] => match Kind::from_ty(layouts, field.ty) {
                 Some(Kind::Struct(member) | Kind::Boxed(member)) => {
                     layouts.get(member).is_some_and(|layout| {
-                        layout.fields.iter().any(|field| field.name == fennec_interp::packed::NOTES)
+                        layout.fields.iter().any(|field| field.name == fennec_rt::packed::NOTES)
                     })
                 }
                 _ => false,

@@ -84,19 +84,46 @@ impl Place<'_> {
             return Err(Diagnostic::new(format!("`embed_file` can't take the whole path `{path}`"), span)
                 .with_help("write the path from the folder this file is in"));
         }
-        let beside = self.file.parent().unwrap_or_else(|| Path::new(".")).join(written);
+        let folder = self.file.parent().unwrap_or_else(|| Path::new("."));
+        let beside = folder.join(written);
         let real = std::fs::canonicalize(&beside).ok();
-        if let (Some(root), Some(real)) = (self.root, &real)
-            && !real.starts_with(root)
+        let (edge, kit) = self.edge(folder);
+        if let Some(real) = &real
+            && !real.starts_with(&edge)
         {
-            return Err(Diagnostic::new(format!("`{path}` is outside this kit's folder"), span)
-                .with_help("a kit embeds only files inside its own folder, so it still builds wherever it's shared; move the file into the kit"));
+            let (said, help) = if kit {
+                (
+                    "this kit's folder",
+                    "a kit embeds only files inside its own folder, so it still builds wherever it's shared; move the file into the kit",
+                )
+            } else {
+                (
+                    "this file's folder",
+                    "a file with no kit embeds only files in its own folder or under it, so it still builds wherever it's copied; move the file there",
+                )
+            };
+            return Err(Diagnostic::new(format!("`{path}` is outside {said}"), span).with_help(help));
         }
         let data = match self.overlay.get(&beside) {
             Some(text) => text.clone().into_bytes(),
             None => self.read_disk(path, &beside, span)?,
         };
         Ok(Embedded { path: real.unwrap_or(beside), data: Blob::from(data) })
+    }
+
+    /// The folder nothing embedded can be outside of, as it really is on disk: the kit's, which
+    /// holds the nearest `kit.toml`, or for a file with no kit, its own folder. Whether it's a kit's
+    /// comes with it.
+    fn edge(&self, folder: &Path) -> (std::path::PathBuf, bool) {
+        let real = |at: &Path| std::fs::canonicalize(at).unwrap_or_else(|_| at.to_path_buf());
+        if let Some(root) = self.root {
+            return (real(root), true);
+        }
+        let own = real(folder);
+        match own.ancestors().find(|at| at.join("kit.toml").is_file()) {
+            Some(kit) => (kit.to_path_buf(), true),
+            None => (own, false),
+        }
     }
 
     fn read_disk(&self, path: &str, beside: &Path, span: Span) -> Result<Vec<u8>, Diagnostic> {

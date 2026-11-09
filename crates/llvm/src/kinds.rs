@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use fennec_check::Type;
-use fennec_interp::embed::dicts::Word;
 use fennec_layout::{Block, Layouts, ListItem, Ty, Written};
+use fennec_rt::embed::dicts::Word;
 
 const WORD: u32 = 8;
 

@@ -269,7 +269,7 @@ impl Resident {
 /// Measures the memory each parked connection takes: `FENNEC_CONNECTIONS` (1,000 unless set)
 /// connections each parked in `read_line`, served by one worker. Run on request, with the
 /// open-file limit raised to twice the connections and more:
-/// `ulimit -n 30000; FENNEC_CONNECTIONS=10000 cargo test -p fennec-interp --release
+/// `ulimit -n 30000; FENNEC_CONNECTIONS=10000 cargo test -p fennec-rt --release
 /// measure_memory -- --ignored --nocapture`.
 #[test]
 #[ignore = "a measurement, run on request"]

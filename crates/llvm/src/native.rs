@@ -161,7 +161,7 @@ impl crate::emit::Emit<'_, '_, '_> {
     /// A new native block for layout `id`, owned once, its fields zero. A block that can't be
     /// had ends the program, as the runtime's do.
     pub(crate) fn new_native_block(&mut self, id: u32) -> Result<String, String> {
-        use fennec_interp::embed::layout::FIELDS;
+        use fennec_rt::embed::layout::FIELDS;
         let size = u64::from(self.layout_of(id)?.size);
         let bytes = (u64::from(FIELDS.unsigned_abs()) + size).div_ceil(8) * 8;
         let shape = self.shape_of(id)?;
@@ -238,7 +238,7 @@ impl crate::emit::Emit<'_, '_, '_> {
     /// last owner, then frees the block. The last one held is freed in the same loop rather
     /// than by a call, so a long chain of them needs no stack.
     fn define_drop(&mut self, id: u32) -> Result<(), String> {
-        use fennec_interp::embed::layout::FIELDS;
+        use fennec_rt::embed::layout::FIELDS;
         let (_, free) = allocator();
         self.declare(free);
         let free_call = if free.contains("@free") { "@free" } else { "@mi_free" };

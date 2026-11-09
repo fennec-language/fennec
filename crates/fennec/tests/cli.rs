@@ -2098,6 +2098,42 @@ fn write_kit(at: &Path, name: &str, dependencies: &str, files: &[(&str, &str)]) 
     Ok(())
 }
 
+/// Every command run from a folder deep inside a kit works on that kit.
+#[test]
+fn every_command_finds_the_kit_from_a_folder_inside_it() {
+    let dir = scratch("walks-up").unwrap();
+    let kit = dir.join("demo");
+    let main =
+        "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n\ntest \"adds\":\n    assert 1 + 1 == 2\n";
+    write_kit(&kit, "demo", "", &[("main.fen", main)]).unwrap();
+    let inside = kit.join("src/deep/er");
+    std::fs::create_dir_all(&inside).unwrap();
+    let output = dir.join("built");
+    let built = output.to_string_lossy();
+    let commands: [&[&str]; 9] = [
+        &["run"],
+        &["run", "--no-test"],
+        &["build", "-o", &built],
+        &["test"],
+        &["check"],
+        &["lint"],
+        &["fix"],
+        &["fmt", "--check"],
+        &["update"],
+    ];
+    for command in commands {
+        let ran = crate::executables::fennec_command()
+            .args(command)
+            .current_dir(&inside)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{command:?}: {}", text(&ran.stderr));
+    }
+    assert!(output.is_file());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The kits the import test depends on: `physics`, which depends on `maths`.
 fn write_physics_and_maths(dir: &Path) -> std::io::Result<()> {
     write_kit(
@@ -2717,4 +2753,33 @@ fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// A file with no kit embeds only what's in its own folder or under it: not what's above it, and
+/// not through a link that leads out of it. One inside a kit's folder goes by the kit's.
+#[test]
+#[cfg(unix)]
+fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-embed-edge-{}", std::process::id()));
+    let inner = dir.join("inner");
+    std::fs::create_dir_all(inner.join("data")).unwrap();
+    std::fs::write(dir.join("secret.txt"), "above").unwrap();
+    std::fs::write(inner.join("data/here.txt"), "here").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret.txt"), inner.join("link.txt")).unwrap();
+    let game = inner.join("game.fen");
+    let checked = |path: &str| {
+        let source = format!("def main(stdout: Stdout):\n    stdout.print(embed_file({path:?}).len())\n");
+        std::fs::write(&game, source).unwrap();
+        let output = fennec(&["check", &game.to_string_lossy()], "").unwrap();
+        (output.status.success(), text(&output.stderr))
+    };
+    assert!(checked("data/here.txt").0);
+    for outside in ["../secret.txt", "link.txt"] {
+        let (passed, said) = checked(outside);
+        assert!(!passed && said.contains(&format!("`{outside}` is outside this file's folder")), "{said}");
+    }
+    // Inside a kit's folder, the kit's is the edge, and what's above the file but in the kit is fine.
+    std::fs::write(dir.join("kit.toml"), "name = \"edge\"\nversion = \"0.1.0\"\n").unwrap();
+    assert!(checked("../secret.txt").0);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

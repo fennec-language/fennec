@@ -65,6 +65,8 @@ def main(stdout: Stdout, fs: Fs, args: Args):
 
 There's no global `print`, and no way to reach the disk or the network without being handed `Fs` or `Net`. The others are `Clock`, `Entropy`, `Stdin`, `Env` and `Process`. Tests get fakes of each, below.
 
+When a function deep in a program starts needing one, write it by its usual name, like `fs`, and run `fennec fix`. It gives that function an `fs: Fs` parameter, passes `fs` at each call, and does the same for each caller, up to the first one that already has an `Fs`, `main`, or a test. It changes nothing when a function in the chain is a method or is passed around as a value, and leaves the error for you.
+
 `main` ends the program. Failing out of it prints the failure to stderr and exits with code 1, and `def main(...) -> int:` exits with the `int` it gives back. There's no `exit()`.
 
 ## Failures and `?`

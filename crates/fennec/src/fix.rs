@@ -39,6 +39,7 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         };
         fennec_check::add_rename_fixes(&mut diagnostics, &program.module, &program.sources);
         fennec_check::add_pattern_fixes(&mut diagnostics, &program.sources);
+        fennec_check::add_capability_fixes(&mut diagnostics, &program.module, &program.sources);
         let changed = program.sources.fixed(&diagnostics);
         if changed.is_empty() {
             eprint!("{}", program.sources.render_all(&diagnostics));

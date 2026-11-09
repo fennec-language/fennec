@@ -4405,6 +4405,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// A launched task runs only on the runtime's threads, which have no way to run it in order the way
+/// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
+/// refused when it's built, saying why, rather than failing at line 1 when it's run.
+#[test]
+fn a_program_that_launches_is_refused_without_the_threads_runtime() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("launch-needs-threads")?;
+    let program = dir.join("launching.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    with launch(() => stdout.print(\"in a task\")):\n        pass\n",
+    )?;
+    let built = crate::executables::fennec_command()
+        .args(["build", &program.to_string_lossy(), "-o", &dir.join("launching").to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", "0")
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr);
+    assert!(!built.status.success(), "{said}");
+    assert!(said.contains("`launch` runs its task on the runtime's threads"), "{said}");
+    assert!(!dir.join("launching").exists(), "nothing's built");
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A type with an operator for each of several types on its right calls the one for the type
 /// that's there, in its own methods, from an extension, and in a function.
 #[test]

@@ -103,14 +103,21 @@ fn take_up_abandons(state: &mut State) {
 }
 
 /// Runs what closes the generators let go of, each only once nothing here is borrowed, since
-/// it's program code calling back in. A failure then ends the program on the spot: whatever
-/// released the generator isn't expecting one.
+/// it's program code calling back in. One that crashes crashes the task that let the generator go,
+/// and only that task, as any crash does: its crash stays this thread's, which the task's code
+/// finds at its next check. The rest are closed first, with it held aside, as a crash's cleanup
+/// holds one; a later one that crashes too is said, and the first is the one that goes on.
 pub(in crate::embed) fn run_abandons() {
+    let mut held = None;
     while let Some((address, abandon)) = with(next_abandoned) {
         // It reads where the generator stopped to know what's open.
         abandon(i64::try_from(address).unwrap_or(0));
         if crate::embed::failed() {
-            crate::embed::aot::stop_for_failure();
+            if let Some(first) = held {
+                // Said, with the first put back, which is held aside again.
+                crate::embed::cleanup::crash_resume(first);
+            }
+            held = Some(crate::embed::cleanup::crash_hold());
         }
         with(|state| {
             if let Some(pc) = state.heap.block_mut(address).and_then(|block| block.get_mut(GENERATOR_PC)) {
@@ -118,6 +125,9 @@ pub(in crate::embed) fn run_abandons() {
             }
             release(state, address);
         });
+    }
+    if let Some(first) = held {
+        crate::embed::cleanup::crash_resume(first);
     }
 }
 

@@ -70,11 +70,22 @@ use fennec_rt::embed::dicts::Word;
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
-pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
+pub use emit::{Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_parallel, uses_tls};
 pub use waits::{Waits, Why, may_wait};
+
+/// What a build does with a check the compiler proved can't fail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Proofs {
+    /// Leaves it out.
+    #[default]
+    Trusted,
+    /// Writes it anyway, as an assertion that the proof held: a build to find false proofs with,
+    /// which `FENNEC_CHECK_PROOFS=1` asks for. One that didn't hold says "proof broken" and which.
+    Checked,
+}
 
 /// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -115,6 +126,8 @@ pub struct Shared {
     pub sites: BTreeMap<u32, String>,
     /// Whether each check the code is written with is noted in `checks`, as it's written.
     pub noting_checks: bool,
+    /// Whether checks left out because of a proof are, or are written anyway as assertions.
+    pub proofs: Proofs,
     /// The checks written, when they're noted: the same one more than once if its function is
     /// copied into callers.
     pub checks: Vec<CheckLeft>,

@@ -109,6 +109,15 @@ pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Sha
     emit_with(program, cpu, Shared { tracing_costs: true, ..Shared::default() })
 }
 
+/// Whether every build from here on checks proofs: see [`crate::Proofs::Checked`].
+static PROOFS_CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes every build from here on check proofs, or not: each check left out because of a proof is
+/// written anyway, as an assertion that it held. `fennec` does when `FENNEC_CHECK_PROOFS=1`.
+pub fn check_proofs(on: bool) {
+    PROOFS_CHECKED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
@@ -116,6 +125,9 @@ pub(crate) fn emit_with(
 ) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
+    if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
+        shared.proofs = crate::Proofs::Checked;
+    }
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
     let mut units = Vec::with_capacity(program.functions.len());
@@ -1152,6 +1164,48 @@ impl Emit<'_, '_, '_> {
         let _ = writeln!(self.cold, "{here}:\n{place}  call void @fennec_at_call({args})\n  br label %prop");
     }
 
+    /// Where the instruction being written is in the source.
+    pub(crate) fn here_span(&self) -> Span {
+        let block = self.function.blocks.get(self.at.0);
+        block.and_then(|block| block.insts.get(self.at.1)).map_or_else(Span::default, |inst| inst.span)
+    }
+
+    /// Whether checks left out because of a proof are written anyway, as assertions.
+    pub(crate) fn checks_proofs(&self) -> bool {
+        self.module.shared.proofs == crate::Proofs::Checked
+    }
+
+    /// In a build that checks proofs, ends the program if `broken`, an `i1`, is true: what the
+    /// compiler proved, and left a check out for, didn't hold, which is a bug in the compiler.
+    /// It says which proof, and where.
+    pub(crate) fn proof_held(&mut self, broken: &str, proof: &str, span: Span) {
+        let (stop, carry_on) = (self.label("proof_broken"), self.label("proof_held"));
+        self.line(&format!("br i1 {broken}, label %{stop}, label %{carry_on}, !prof !8"));
+        self.start_block(&stop);
+        // It ends the program where it is, so the function needn't be one that can fail.
+        let text = self.literal(&format!("proof broken: {proof}"));
+        self.declare("declare void @fennec_proof_broken(ptr, i64, i64) #1");
+        let (place, args) = self.span_values(&stop, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.line(&format!("call void @fennec_proof_broken(ptr {text}, {args})"));
+        self.line("unreachable");
+        self.start_block(&carry_on);
+    }
+
+    /// In a build that checks proofs, ends the program if the block at `block` doesn't have one
+    /// owner, as a proof says it does.
+    pub(crate) fn proof_alone(&mut self, block: &str, proof: &str, span: Span) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let alone = self.alone(block);
+        let shared = self.temp();
+        self.line(&format!("{shared} = xor i1 {alone}, true"));
+        self.proof_held(&shared, proof, span);
+    }
+
     /// Calls the runtime's failure and leaves the function when `bad` holds.
     pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
         self.fail_noted(bad, code, span, None);
@@ -1458,6 +1512,19 @@ impl Emit<'_, '_, '_> {
         self.checked("sadd", a, b, span)
     }
 
+    /// What an arithmetic proven not to overflow gives, in a build that checks proofs: worked out
+    /// with the check, which says the proof broke if it fails.
+    fn proven_unchecked(&mut self, name: &str, (a, b): (&str, &str), span: Span) -> String {
+        let intrinsic = format!("@llvm.{name}.with.overflow.i64");
+        self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
+        let (pair, value, bad) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{pair} = call {{ i64, i1 }} {intrinsic}(i64 {a}, i64 {b})"));
+        self.line(&format!("{bad} = extractvalue {{ i64, i1 }} {pair}, 1"));
+        self.proof_held(&bad, "no overflow", span);
+        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        value
+    }
+
     fn checked(&mut self, name: &str, a: &str, b: &str, span: Span) -> String {
         let intrinsic = format!("@llvm.{name}.with.overflow.i64");
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
@@ -1606,7 +1673,16 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{temp} = icmp {cc} i64 {a}, {b}"));
             return Ok(temp);
         }
+        // A build that checks proofs keeps the check, saying a proof broke if it fails.
         let safe = self.known.is_safe(dest);
+        if safe && self.checks_proofs() && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+            let name = match op {
+                BinOp::Add => "sadd",
+                BinOp::Sub => "ssub",
+                _ => "smul",
+            };
+            return Ok(self.proven_unchecked(name, (a, b), span));
+        }
         Ok(match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul if safe => {
                 let word = match op {
@@ -1843,6 +1919,10 @@ impl Emit<'_, '_, '_> {
                     let zero = self.temp();
                     self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
                     self.fail_noted(&zero, DIVISION_BY_ZERO, span, Some(CheckKind::FloatDivideByZero));
+                } else if self.checks_proofs() {
+                    let zero = self.temp();
+                    self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
+                    self.proof_held(&zero, "nonzero divisor", span);
                 }
                 if op == BinOp::Mod {
                     return Ok(self.float_remainder((a, b)));
@@ -2371,6 +2451,9 @@ impl Emit<'_, '_, '_> {
             InstKind::Unary { dest, op, value } => {
                 let (value, kind) = self.operand(value)?;
                 let result = match (op, kind) {
+                    (UnaryOp::Neg, Kind::Int) if self.known.is_safe(*dest) && self.checks_proofs() => {
+                        self.proven_unchecked("ssub", ("0", &value), span)
+                    }
                     (UnaryOp::Neg, Kind::Int) if self.known.is_safe(*dest) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = sub nsw i64 0, {value}"));
@@ -2981,6 +3064,25 @@ def main(stdout: Stdout):
     fn a_function_that_cant_fail_has_no_flag() -> Result<(), String> {
         let source = "def half(a: float) -> float:\n    a * 0.5\n\ndef main(stdout: Stdout):\n    stdout.print(half(1.0))\n";
         assert!(text_of(source, "half")?.contains("define swiftcc double @\"f_half\"(double %p0)"));
+        Ok(())
+    }
+
+    /// A build that checks proofs writes the checks they left out, each saying which proof broke:
+    /// a loop's count can't overflow, and its index is inside the list it goes through.
+    #[test]
+    fn checking_proofs_writes_what_they_left_out() -> Result<(), String> {
+        let source = "def total(xs: list[int]) -> int:\n    mut sum = 0\n    for i in range(xs.len()):\n        sum += xs[i] * 0\n    sum\n\ndef main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
+        let program = lowered(source)?;
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let said: Vec<&String> = shared.strings.values().chain(shared.literals.values()).collect();
+        assert!(said.iter().any(|text| text.contains("proof broken: index inside its list")), "{said:?}");
+        assert!(said.iter().any(|text| text.contains("proof broken: no overflow")), "{said:?}");
+        let (plain, plain_shared, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
+        assert!(text.len() > plain.len());
         Ok(())
     }
 

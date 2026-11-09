@@ -28,6 +28,22 @@ pub extern "C" fn stop(message: i64, start: i64, end: i64) {
     }
 }
 
+/// `fennec_proof_broken(message, start, end)`: in a build that checks proofs, something the
+/// compiler proved, and left a check out for, didn't hold. That's a bug in the compiler, not the
+/// program, so nothing can pass it on: the whole program ends at once, whatever's running, saying
+/// which proof and where.
+pub extern "C" fn proof_broken(message: i64, start: i64, end: i64) {
+    stop(message, start, end);
+    super::aot::stop_for_failure();
+    // Somewhere with nothing to say where, like a thread the program's sources never reached.
+    let failure = super::with(|state| state.failure.take()).map(|failure| failure.message);
+    let _ = std::io::Write::write_all(
+        &mut std::io::stderr(),
+        format!("error: {}\n", failure.unwrap_or_else(|| "proof broken".to_owned())).as_bytes(),
+    );
+    super::aot::stop_now(1);
+}
+
 /// Fails a comparison in an `assert`, saying what each side was, given as strings.
 pub extern "C" fn assert_sides(left: i64, right: i64, start: i64, end: i64) {
     let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };

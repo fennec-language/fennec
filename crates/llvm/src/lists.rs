@@ -386,6 +386,8 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
         self.line(&format!("{from_end} = add i64 {index}, {length}"));
         self.line(&format!("{position} = select i1 {negative}, i64 {from_end}, i64 {index}"));
+        let span = self.here_span();
+        self.proof_inside(&list, &position, "item read just before still inside its list", span);
         // An item in place: its field is right there in the list, which is alone.
         if matches!(held, Kind::Struct(_)) {
             let memory = held.memory(self.module.layouts);
@@ -523,6 +525,7 @@ impl Emit<'_, '_, '_> {
                     let held = self.item_kind(list_item(&kind)?)?;
                     let (index, _) = self.operand(index_operand)?;
                     let position = if along.is_empty() && self.known.inside(root, index_operand) {
+                        self.proof_inside(&list, &index, "index inside its list", span);
                         index
                     } else {
                         let known_as = self.list_key(root, &along);
@@ -1285,6 +1288,18 @@ impl Emit<'_, '_, '_> {
         Some((root, along))
     }
 
+    /// In a build that checks proofs, ends the program if `position` isn't inside `list`, as a
+    /// proof says it is: from 0 to before its length.
+    fn proof_inside(&mut self, list: &str, position: &str, proof: &str, span: Span) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let length = self.list_length(list);
+        let outside = self.temp();
+        self.line(&format!("{outside} = icmp uge i64 {position}, {length}"));
+        self.proof_held(&outside, proof, span);
+    }
+
     /// Where an index points in a list, checked once: until something shortens or replaces
     /// the list, or writes the index, it's read back from where the first check left it.
     fn position_once(
@@ -1303,6 +1318,7 @@ impl Emit<'_, '_, '_> {
         {
             let position = self.temp();
             self.line(&format!("{position} = load i64, ptr {slot}"));
+            self.proof_inside(list, &position, "index checked before still inside its list", span);
             return position;
         }
         let position = self.position(list, index, span);
@@ -1366,7 +1382,12 @@ impl Emit<'_, '_, '_> {
             let inside = matches!(object, Operand::Local(pairs) if self.known.inside(*pairs, index));
             let (list, _) = self.operand(&Operand::Local(list))?;
             let (index, _) = self.operand(index)?;
-            let position = if inside { index } else { self.position(&list, &index, span) };
+            let position = if inside {
+                self.proof_inside(&list, &index, "index inside its list", span);
+                index
+            } else {
+                self.position(&list, &index, span)
+            };
             let slot = self.place_for(&Kind::Int);
             self.line(&format!("store i64 {position}, ptr {slot}"));
             self.pair_slots.insert(dest.0, slot);
@@ -1379,8 +1400,9 @@ impl Emit<'_, '_, '_> {
             }
             return Ok(());
         }
-        let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index))
-            || self.known.guarded_read(self.at);
+        let proven = matches!(object, Operand::Local(local) if self.known.inside(*local, index));
+        let guarded = !proven && self.known.guarded_read(self.at);
+        let inside = proven || guarded;
         if let Operand::Local(local) = object
             && self.is_id_map(&self.kind_of(*local)?.clone())
         {
@@ -1422,6 +1444,9 @@ impl Emit<'_, '_, '_> {
         let index_operand = index;
         let (index, _) = self.operand(index)?;
         let position = if inside {
+            let proof =
+                if guarded { "index inside its list, by the guard before" } else { "index inside its list" };
+            self.proof_inside(&list, &index, proof, span);
             index
         } else {
             let place = match object {
@@ -1450,6 +1475,8 @@ impl Emit<'_, '_, '_> {
         if self.known.alone_once_checked(local) {
             let (list, slot) = (self.temp(), self.slot(local));
             self.line(&format!("{list} = load ptr, ptr {slot}"));
+            let span = self.here_span();
+            self.proof_alone(&list, "list made alone once still alone", span);
             return list;
         }
         self.declare("declare ptr @fennec_list_pop_unshare(ptr) nounwind");
@@ -1503,6 +1530,8 @@ impl Emit<'_, '_, '_> {
         if self.known.alone_once_checked(local) {
             let (list, slot) = (self.temp(), self.slot(local));
             self.line(&format!("{list} = load ptr, ptr {slot}"));
+            let span = self.here_span();
+            self.proof_alone(&list, "list made alone once still alone", span);
             return list;
         }
         self.check_alone(local)
@@ -1708,6 +1737,7 @@ impl Emit<'_, '_, '_> {
         } else {
             let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
             let position = if inside {
+                self.proof_inside(&list, &index, "index inside its list", span);
                 index
             } else {
                 let place = self.list_key(object, path);
@@ -1964,6 +1994,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
                 self.line(&format!("store i64 {longer}, ptr {length_at}{HEADER_ACCESS}"));
             }
+            if self.checks_proofs() {
+                let span = self.here_span();
+                self.proof_alone(&list, "list filled by its loop has one owner", span);
+                let (room_at, room, full) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{room_at} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ROOM}"));
+                self.line(&format!("{room} = load i64, ptr {room_at}{HEADER_ACCESS}"));
+                self.line(&format!("{full} = icmp uge i64 {length}, {room}"));
+                self.proof_held(&full, "room enough for its loop's appends", span);
+            }
             let memory = held.memory(self.module.layouts);
             let at = self.item_address(&list, &memory, &length);
             return self.fill(&held, new_item, &at, ITEM_ACCESS);
@@ -1980,6 +2019,8 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{room} = load i64, ptr {room_at}{HEADER_ACCESS}"));
         self.line(&format!("{fits} = icmp ult i64 {length}, {room}"));
         if self.known.alone_once_checked(*local) {
+            let span = self.here_span();
+            self.proof_alone(&list, "list made alone once still alone", span);
             self.line(&format!("{ready} = and i1 {fits}, true"));
         } else {
             let alone = self.alone(&list);

@@ -144,9 +144,11 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
     pool.run_on(
         worker,
         Box::new(move |io: &mut Io| {
-            let started = Arc::clone(&launched);
-            let task = io.start_task(Box::new(move || run(&started, body, copy)), accounts);
-            *launched.task.lock().unwrap_or_else(PoisonError::into_inner) = task;
+            let running = Arc::clone(&launched);
+            let told = Box::new(move |task| {
+                *launched.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(task);
+            });
+            io.start_task(Box::new(move || run(&running, body, copy)), accounts, told);
         }),
     );
     number

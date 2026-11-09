@@ -38,6 +38,7 @@ modules! {
     crypto,
     csv,
     fs,
+    html,
     intrinsics,
     json,
     layout,
@@ -64,8 +65,9 @@ modules! {
 /// with, the `Template` a template string builds, and the built-in types' methods written in
 /// Fennec.
 /// Each built-in type's Fennec methods live in its own file, and only there.
-const CORE: [(&str, &str); 13] = [
+const CORE: [(&str, &str); 14] = [
     ("errors", include_str!("stdlib/errors.fen")),
+    ("embed", include_str!("stdlib/embed.fen")),
     ("template", include_str!("stdlib/template.fen")),
     // Its interfaces are the bounds the built-in types' files extend them with.
     ("serialize", include_str!("stdlib/serialize.fen")),

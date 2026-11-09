@@ -22,7 +22,9 @@ pub(super) struct Yield {
     block: crate::BlockId,
     value: Operand,
     next: crate::BlockId,
-    /// What `with` blocks it's inside hold, outermost first, and what closes each.
+    /// What's open where it stopped, outermost first, and the function that closes each, for
+    /// abandoning the generator there. Nothing is yet: a source's cleanup written in around a
+    /// `yield` doesn't run when the generator is abandoned.
     open: Vec<(LocalId, String)>,
 }
 
@@ -116,16 +118,8 @@ impl<'a> Lowering<'a> {
         let next = self.new_block();
         self.finish(Terminator::Jump(next));
         self.current = next;
-        let open = self
-            .leaving
-            .iter()
-            .filter_map(|entered| match entered {
-                Leaving::With { resource, cleanup } => Some((*resource, cleanup.clone())),
-                Leaving::Item { .. } | Leaving::Place { .. } | Leaving::Unlock { .. } => None,
-            })
-            .collect();
         if let Some(generating) = &mut self.generating {
-            generating.yields.push(Yield { block, value, next, open });
+            generating.yields.push(Yield { block, value, next, open: Vec::new() });
         }
     }
 

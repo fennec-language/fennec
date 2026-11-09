@@ -21,8 +21,8 @@ export struct Draft:
     ## The note's text, empty if the client leaves it out.
     body = ""
 
-## Every note, by id. It's `shared`, so each connection's task reaches the same notes.
-export shared Notes:
+## Every note, by id. It's kept as a `shared Notes`, so each connection's task reaches the same notes.
+export struct Notes:
     ## The notes by their ids.
     items = dict[str, Note]()
 

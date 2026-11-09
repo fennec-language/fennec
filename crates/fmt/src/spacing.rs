@@ -93,7 +93,7 @@ pub(crate) fn analyze(toks: &[Tok<'_>], block: BlockKind) -> Spacing {
 
 /// Whether a line declares a type, like `struct Box[T]:`, where `[` opens generic parameters.
 fn declares_type(toks: &[Tok<'_>]) -> bool {
-    let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
+    let mut words = toks.iter().skip_while(|tok| tok.text == "export");
     matches!(
         (words.next(), words.next()),
         (Some(first), Some(second))

@@ -1,7 +1,0 @@
-error: `Door` is a `struct`, so it can't have `def del`: a plain value is copied freely, so nothing can tell which copy is the last
- --> examples/errors/del_on_a_struct.fen:4:5
-  |
-4 |     def del(self):
-  |     ^^^^^^^^^^^^^
-  |
-  = help: hold a file or connection, which closes itself, or make this a `shared`

@@ -17,9 +17,9 @@ use fennec_syntax::{
 
 use crate::tree::tree_hash;
 
-/// Methods the language calls on a value without the code naming them: indexing, looping,
-/// cleanup. Operators, whose names aren't words, are called the same way, `[]mut` included.
-const IMPLICIT: [&str; 5] = ["[]", "iter", "len", "is_live", "del"];
+/// Methods the language calls on a value without the code naming them: indexing and looping.
+/// Operators, whose names aren't words, are called the same way, `[]mut` included.
+const IMPLICIT: [&str; 4] = ["[]", "iter", "len", "is_live"];
 
 /// Each test's name and the key of everything its result depends on.
 pub fn test_keys(module: &Module) -> Vec<(String, Hash)> {
@@ -418,6 +418,7 @@ impl Uses {
             }
             ExprKind::Int(_)
             | ExprKind::Bytes(_)
+            | ExprKind::Folder(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)
             | ExprKind::Bool(_)

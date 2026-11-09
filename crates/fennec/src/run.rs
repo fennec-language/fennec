@@ -50,17 +50,21 @@ pub(crate) fn run_logged(
         return failed;
     }
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
-    // standard error.
-    eprint!("{}", crate::lint::errors_remembered(path));
+    // standard error. It's found while the program is built, which takes as long or longer.
+    crate::lint::find_errors_beside(path);
     let (program, _, kept) = match reached(path) {
         Ok(prepared) => prepared,
-        Err(code) => return code,
+        Err(code) => {
+            crate::lint::show_errors_found();
+            return code;
+        }
     };
     // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
     // says it.
     match built_and_run((&program, kept.as_deref()), path, arguments, logged) {
         Ok(code) => code,
         Err(why) => {
+            crate::lint::show_errors_found();
             eprintln!("error: {why}");
             ExitCode::FAILURE
         }
@@ -101,6 +105,7 @@ fn built_and_run(
             let _ = cache.write(RUN_ROOTS, name, root.as_bytes());
         }
     }
+    crate::lint::show_errors_found();
     started(&executable, path, arguments, logged)
 }
 
@@ -280,6 +285,8 @@ pub(crate) fn check_to_build(program: &mut fennec_kit::Program) -> bool {
 
 /// Prints the problems a check found.
 pub(crate) fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax::Diagnostic]) -> ExitCode {
+    // Lint errors being found for a run come before what stops it.
+    crate::lint::show_errors_found();
     let told: Vec<_> = diagnostics.iter().map(|diagnostic| with_extension(program, diagnostic)).collect();
     eprint!("{}", program.sources.render_all(&told));
     ExitCode::FAILURE

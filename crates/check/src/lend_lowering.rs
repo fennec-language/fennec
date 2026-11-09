@@ -40,16 +40,31 @@ pub(crate) fn lower(
     if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
     }
-    NEXT.with(|next| next.set(Span::PRELUDE - 1));
-    let mut lowest = u32::MAX;
+    // What an earlier pass wrote in keeps its names and spans: a source written in now, inside one
+    // written in then, gets ones after them, never the same.
+    let (mut lowest, mut written_low, mut made) = (u32::MAX, Span::PRELUDE, 0);
     fennec_syntax::visit::exprs_mut(module, &mut |expr| {
         if expr.span.start >= COPIES_FROM {
             lowest = lowest.min(expr.span.start);
         }
+        if (WRITTEN_FROM..Span::PRELUDE).contains(&expr.span.start) {
+            written_low = written_low.min(expr.span.start);
+        }
+        if let ExprKind::Name(name) = &expr.kind {
+            made = made.max(made_in(name));
+        }
     });
+    NEXT.with(|next| next.set(written_low - 1));
     COPIES.with(|copies| copies.set(lowest));
-    let mut lowering =
-        Lowering { sources, launches, ref_matches, made: 0, returns: Vec::new(), failing: Vec::new() };
+    let mut lowering = Lowering {
+        sources,
+        launches,
+        ref_matches,
+        made,
+        returns: Vec::new(),
+        failing: Vec::new(),
+        instead: None,
+    };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -65,10 +80,12 @@ pub(crate) fn lower(
             _ => {}
         }
     }
-    if lowering.made > 0 {
+    // Only what this pass wrote in is a change: `made` starts from what earlier passes made.
+    let wrote = lowering.made > made;
+    if wrote {
         discards_apart_again(module);
     }
-    lowering.made > 0
+    wrote
 }
 
 /// Writes each `with` that opens several handles, `with a()? as x, b()? as y:`, as one inside
@@ -166,6 +183,8 @@ struct Lowering<'s> {
     returns: Vec<Option<TypeExpr>>,
     /// Whether each function being walked says it fails, innermost last.
     failing: Vec<bool>,
+    /// What the source being written in does in place of failing, for `with src else fail E:`.
+    instead: Option<Expr>,
 }
 
 thread_local! {
@@ -207,6 +226,20 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
             }
         });
     }
+}
+
+/// The lowest a span a lowering writes can be: well above any program's text, and below the
+/// standard library's.
+const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
+
+/// The number a name written in by an earlier pass ends with, like `3` in `conn__lend3`, or 0.
+fn made_in(name: &str) -> usize {
+    ["__lend", "__ref"]
+        .iter()
+        .filter_map(|mark| name.rsplit_once(mark))
+        .filter_map(|(_, number)| number.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Where a lowering writes something of its own: a span covering nothing, its own, so the
@@ -277,8 +310,14 @@ impl Lowering<'_> {
             self.inner(stmt);
             let written = match &stmt.kind {
                 StmtKind::With { value, names, body: block, lock: false } => {
+                    // `with src else fail E as x:`: every way the source fails does that instead.
+                    self.instead = None;
                     let call = match &value.kind {
                         ExprKind::Try { value: inner, context: None } => inner.as_ref(),
+                        ExprKind::Else { value: inner, default } if default.leaves() => {
+                            self.instead = Some(default.as_ref().clone());
+                            inner.as_ref()
+                        }
                         _ => value,
                     };
                     let at = (call.span.start, call.span.end);
@@ -455,6 +494,9 @@ impl Lowering<'_> {
         renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
         let mut body = def.body.clone();
         rename(&mut body, &renamed);
+        if let Some(instead) = self.instead.take() {
+            fail_instead(&mut body, &instead);
+        }
         // A generic source's body names its type parameters, which are this call's types here.
         let given = given_types(def, &source.generics, &source.gives)?;
         if !given.is_empty() {
@@ -954,7 +996,9 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             if taken.is_none()
                 && let ExprKind::Try { value, context: None } = &expr.kind
             {
-                let got = format!("got__try{}_{at}", span.start);
+                // A span of its own, as each written-in copy of a source gets the same `?` at the
+                // same place, and two copies in one block would declare one name twice.
+                let got = format!("got__try{}_{at}", here(span).start);
                 taken = Some((got.clone(), value.as_ref().clone()));
                 expr.kind = ExprKind::Name(got);
             }
@@ -1109,6 +1153,49 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
     match crash {
         Some((_, _, done)) => std::iter::once(done.clone()).chain(otherwise.iter().cloned()).collect(),
         None => otherwise.to_vec(),
+    }
+}
+
+/// A source's body as `with src else fail E:` writes it in: each `fail` does what the `else` does
+/// instead, and so does each `?`, through `else`.
+fn fail_instead(body: &mut [Stmt], instead: &Expr) {
+    instead_of_fails(body, instead);
+    let leaving = Box::new(instead.clone());
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Try { value, context: None } = &expr.kind {
+            let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
+            expr.kind = kind;
+        }
+    });
+}
+
+/// Each `fail` in a source's body, inside what's in it but not a function of its own, made to do
+/// what `instead` does.
+fn instead_of_fails(body: &mut [Stmt], instead: &Expr) {
+    for each in body {
+        match &mut each.kind {
+            StmtKind::Fail(_) => each.kind = StmtKind::Expr(instead.clone()),
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches {
+                    instead_of_fails(block, instead);
+                }
+                if let Some(block) = otherwise {
+                    instead_of_fails(block, instead);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                instead_of_fails(body, instead);
+            }
+            StmtKind::Lend { otherwise, .. } => instead_of_fails(otherwise, instead),
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
+                if let ExprKind::Match { arms, .. } = &mut value.kind {
+                    for arm in arms {
+                        instead_of_fails(&mut arm.body, instead);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1406,5 +1493,24 @@ fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {
             StmtKind::Lend { otherwise, .. } => rename_bound(otherwise, fresh),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A pass that writes nothing in says so, however many passes came before it: lowering
+    /// stops once nothing's left to write in, rather than checking and lowering again for ever,
+    /// as it did when a standard library source holding a `with` of another stayed in what was
+    /// checked.
+    #[test]
+    fn a_pass_that_writes_nothing_in_says_so() {
+        let source = "error Boom:\n    pass\n\n\
+            def opened(n: int) -> with int fails Boom:\n    lend n else:\n        pass\n\n\
+            def main(stdout: Stdout) fails Boom:\n    with opened(1)? as first:\n        stdout.print(first)\n";
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();
+        let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+        assert!(super::lower(&mut module, &checked.sources, &launches, &matches));
+        assert!(!super::lower(&mut module, &checked.sources, &launches, &matches));
     }
 }

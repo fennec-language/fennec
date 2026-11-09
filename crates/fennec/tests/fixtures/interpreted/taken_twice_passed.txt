@@ -1,10 +1,10 @@
-source 9f81e6d672d28f22ff32b6c792ca74c8b6a316820e521967a47e11640f7ef27a
+source e61a17b8024e9c7168b0b17ee9764486566cca8349c516fbbe1880c03af8003e
 code 1
 stdout 10
 before 21
 stderr 139
-error: this `with` takes the same `shared` value twice
+error: this `lock` takes the same `shared` value twice
  --> <dir>/passed.fen:8:10
   |
-8 |     with a, b as ref x, ref y:
+8 |     lock a, b as ref x, ref y:
   |          ^^^^

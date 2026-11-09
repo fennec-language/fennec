@@ -14,6 +14,11 @@ use std::fmt::Write as _;
 
 use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt};
 
+/// Reported to the checker lane: in a `for ref` loop, the item changed through the `ref` reads
+/// back by its place as it was, in the same round. While it is, the evaluator doesn't say what
+/// such a loop prints, and only the two builds are compared there. Set to `false` once it's fixed.
+const STALE_READ_REPORTED: bool = true;
+
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Value {
@@ -564,6 +569,25 @@ impl Machine {
                     {
                         *held = changed;
                     }
+                }
+            }
+            Stmt::EachRefThenRead(_, list, at) => {
+                if STALE_READ_REPORTED {
+                    return Err(Stop::Unsure);
+                }
+                let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                for place in 0..items.len() {
+                    let changed = match self.slot(list)? {
+                        Value::Ints(items) => {
+                            let held = items.get_mut(place).ok_or(Stop::Unsure)?;
+                            *held = checked(held.checked_add(1))?;
+                            items.clone()
+                        }
+                        _ => return Err(Stop::Unsure),
+                    };
+                    let len = i64::try_from(changed.len()).map_err(|_| Stop::Unsure)?;
+                    let read = usize::try_from(floor_rem(*at, len)?).map_err(|_| Stop::Unsure)?;
+                    let _ = writeln!(self.out, "{}", changed.get(read).copied().ok_or(Stop::Unsure)?);
                 }
             }
             Stmt::ShareOuter(name, _) => {

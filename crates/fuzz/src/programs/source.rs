@@ -243,6 +243,11 @@ impl Writer {
                 self.line(indent, &format!("for ref {name} in {list}:"));
                 self.line(indent + 1, &format!("{name} = {name} + at_or_zero({list}, {at})"));
             }
+            Stmt::EachRefThenRead(name, list, at) => {
+                self.line(indent, &format!("for ref {name} in {list}:"));
+                self.line(indent + 1, &format!("{name} += 1"));
+                self.line(indent + 1, &format!("stdout.print(at_or_zero({list}, {at}))"));
+            }
             Stmt::EachRef(name, list, by) => {
                 let by = self.expr(by, false);
                 self.line(indent, &format!("for ref {name} in {list}:"));

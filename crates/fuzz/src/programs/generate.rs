@@ -1,7 +1,8 @@
-//! Writing a program tree from bytes. Each byte chooses something, so fewer bytes make a smaller
-//! program, and cutting a failing input down cuts the program down. Every loop is bounded, so
-//! every program ends, and every name is printed when its block ends, which is the digest the
-//! builds and the evaluator are compared on.
+//! Writing a program tree from bytes. Each byte chooses something, and once they run out a
+//! stream seeded by them goes on choosing, so the input decides the whole program and a short
+//! one still makes a varied one. Every loop is bounded, so every program ends, and every name is
+//! printed when it's written and when its block ends, which is the digest the builds and the
+//! evaluator are compared on.
 //!
 //! Most programs keep their numbers small and their indexes in range, so they run to the end. One
 //! in eight is risky: big numbers, indexes as they come and division by anything, to compare where
@@ -13,6 +14,16 @@
 )]
 
 use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt, TYPES, Ty};
+
+/// How many statements a program has before it ends, where the input's bytes run out sooner.
+const MOST_FROM_STREAM: usize = 60;
+
+/// A stream's start from the input's bytes, never zero, which xorshift can't leave.
+fn seeded(bytes: &[u8]) -> u64 {
+    let hash = fennec_blake3::hash(bytes);
+    let first: [u8; 8] = hash.as_bytes().get(..8).and_then(|head| head.try_into().ok()).unwrap_or([1; 8]);
+    u64::from_le_bytes(first) | 1
+}
 
 /// How deep expressions nest.
 const MOST_DEPTH: usize = 3;
@@ -61,6 +72,9 @@ struct Writer<'b> {
     loops: usize,
     /// How many statements have been written.
     written: usize,
+    /// What chooses once the input's bytes run out: a stream seeded by them, so the input still
+    /// decides everything, and a short one doesn't make a program of nothing but its first choice.
+    stream: u64,
 }
 
 /// A name in scope.
@@ -77,9 +91,20 @@ struct InScope {
 pub(crate) fn program(bytes: &[u8]) -> Program {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
-    let mut writer = Writer { bytes: bytes.iter(), names: Vec::new(), made: 0, risky, loops: 0, written: 0 };
+    let mut writer = Writer {
+        bytes: bytes.iter(),
+        names: Vec::new(),
+        made: 0,
+        risky,
+        loops: 0,
+        written: 0,
+        stream: seeded(bytes),
+    };
     let mut body = Vec::new();
-    while writer.bytes.len() > 0 && body.len() < 64 && writer.written <= MOST_IN_ALL {
+    while (writer.bytes.len() > 0 || writer.written < MOST_FROM_STREAM)
+        && body.len() < 64
+        && writer.written <= MOST_IN_ALL
+    {
         writer.statement(&mut body, 0);
     }
     writer.print_from(&mut body, 0);
@@ -87,9 +112,16 @@ pub(crate) fn program(bytes: &[u8]) -> Program {
 }
 
 impl Writer<'_> {
-    /// The next choice. Running out always chooses 0, so every input ends.
+    /// The next choice: the input's next byte, then the stream's.
     fn byte(&mut self) -> u8 {
-        self.bytes.next().copied().unwrap_or(0)
+        if let Some(byte) = self.bytes.next() {
+            return *byte;
+        }
+        // xorshift64, which only has to be the same every time.
+        self.stream ^= self.stream << 13;
+        self.stream ^= self.stream >> 7;
+        self.stream ^= self.stream << 17;
+        self.stream.to_le_bytes().first().copied().unwrap_or(0)
     }
 
     fn choice(&mut self, count: usize) -> usize {
@@ -476,10 +508,10 @@ impl Writer<'_> {
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
                 // Half read the list they're changing, at a fixed place or where the item says.
                 let read = [None, Some(0), Some(-1), Some(2)].get(self.choice(4)).copied().flatten();
-                body.push(if self.choice(2) == 0 {
-                    Stmt::EachRef(item, list.clone(), by)
-                } else {
-                    Stmt::EachRefRead(item, list.clone(), read)
+                body.push(match self.choice(3) {
+                    0 => Stmt::EachRef(item, list.clone(), by),
+                    1 => Stmt::EachRefRead(item, list.clone(), read),
+                    _ => Stmt::EachRefThenRead(item, list.clone(), read.unwrap_or(0)),
                 });
                 self.read_back(body, &list);
             }

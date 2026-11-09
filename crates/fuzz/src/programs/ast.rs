@@ -293,6 +293,9 @@ pub(crate) enum Stmt {
     /// `for ref name in list:` with `name = name + at_or_zero(list, at)`, reading the list it's
     /// changing: at a fixed place, or where the item itself says when `at` is None.
     EachRefRead(String, String, Option<i64>),
+    /// `for ref name in list:` with `name += 1`, then printing `list[at]`: the item changed
+    /// through the `ref` has to read back changed by its place, in the same round.
+    EachRefThenRead(String, String, i64),
     /// `lock name as held:` printing an `Outer`'s number.
     PrintOuter(String),
     /// `shared name = Outer(inner=bag, n=0)`.

@@ -2995,3 +2995,19 @@ fn a_result_passed_on_fails_every_way_its_function_can() {
     let errors = Type::Errors(vec!["Bad".to_owned(), "Worse".to_owned()]);
     assert_eq!(outer.returns, Type::Result(Box::new(Type::Int), Box::new(errors)));
 }
+
+/// A `with` source's `else:` runs when its block crashes as well as when it fails: it's a closure
+/// marked to run on a crash where the block starts, and unmarked where the block ends, before the
+/// cleanup a failure runs, and before the one written in at a `?`. One that would pass a failure
+/// up some other way isn't marked.
+#[test]
+fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
+    let source = "error Boom:\n    pass\n\n\
+        def risky(n: int) -> int fails Boom:\n    if n > 2:\n        fail Boom()\n    n\n\n\
+        def opened(stdout: Stdout) -> with int fails Boom:\n    lend 7 else:\n        stdout.print(\"cleanup\")\n    stdout.print(\"closed\")\n\n\
+        def used(stdout: Stdout) fails Boom:\n    with opened(stdout)? as held:\n        stdout.print(risky(held)?)\n\n\
+        def main(stdout: Stdout):\n    used(stdout) else:\n        return\n";
+    let function = printed(source, "used").unwrap();
+    assert_eq!(function.matches("on crash run ").count(), 1, "{function}");
+    assert!(function.matches("on crash no longer run ").count() >= 2, "{function}");
+}

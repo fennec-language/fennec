@@ -7,7 +7,6 @@
 
 mod cache;
 mod changes;
-mod functions;
 mod locals;
 mod reach;
 mod reached;
@@ -19,7 +18,6 @@ mod verdict;
 
 pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, UNUSED_BUILD, VERSION};
 pub use changes::{Change, Kind, changes};
-pub use functions::{CompiledFunction, FunctionKey, Relocation, decode_pack, encode_pack};
 pub use reach::test_keys;
 pub use reached::{keep_what_functions_reach, keep_what_main_reaches};
 pub use snapshot::{FileRecord, Run, Snapshot};

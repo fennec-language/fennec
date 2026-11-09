@@ -11,7 +11,7 @@ def save(fs: Fs, path: str, scores: list[int]) fails IoError:
 def load(fs: Fs, path: str) -> list[int] fails IoError:
     mut found = list[int]()
     with fs.open(path)? as file:
-        for line in file.lines():
+        for line in file.lines()?:
             found.append(int(line) else 0)
     found
 
@@ -33,7 +33,7 @@ test "a file can be read in chunks"(fs: Fs):
     fs.write_text("letters.txt", "abcdefg")?
     mut sizes = list[int]()
     with fs.open("letters.txt")? as file:
-        for chunk in file.chunks(3):
+        for chunk in file.chunks(3)?:
             sizes.append(chunk.len())
     assert sizes == [3, 3, 1]
 

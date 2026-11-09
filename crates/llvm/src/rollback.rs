@@ -64,7 +64,9 @@ pub(crate) fn saving_handles(function: &Function) -> Vec<usize> {
 }
 
 /// The handles a function locks to read, which a crash gives back, in the order they're first
-/// locked, beside the handles that save their changes.
+/// locked, beside the handles that save their changes, and the cleanups a crash runs, each a
+/// closure from a `lend x else:`, in the order they're first set: a crash goes through them all
+/// innermost first.
 pub(crate) fn given_back_on_crash(function: &Function) -> Vec<usize> {
     let saving = saving_handles(function);
     let mut found = Vec::new();
@@ -80,6 +82,7 @@ pub(crate) fn given_back_on_crash(function: &Function) -> Vec<usize> {
         match &inst.kind {
             InstKind::Lock { handle, write } => add(handle, *write),
             InstKind::LockAll { handles } => handles.iter().for_each(|(handle, write)| add(handle, *write)),
+            InstKind::CrashCleanup { cleanup } => add(cleanup, false),
             _ => {}
         }
     }
@@ -179,6 +182,10 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn roll_back_on_crash(&mut self) -> Result<(), String> {
         for local in self.on_crash.clone().into_iter().rev() {
             let handle = Operand::Local(LocalId(local));
+            if self.is_crash_cleanup(local) {
+                self.run_crash_cleanup(&handle)?;
+                continue;
+            }
             let Some(flag) = self.held_flag(&handle) else { continue };
             let (held, undo, next) = (self.temp(), self.label("crash_undo"), self.label("crash_next"));
             self.line(&format!("{held} = load i1, ptr {flag}"));
@@ -193,6 +200,51 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("br label %{next}"));
             self.start_block(&next);
         }
+        Ok(())
+    }
+
+    /// Whether `local` is a cleanup a crash runs, a closure, where the rest a crash goes through
+    /// are lock handles.
+    fn is_crash_cleanup(&self, local: usize) -> bool {
+        matches!(self.kind_of(LocalId(local)), Ok(Kind::Closure(..)))
+    }
+
+    /// `CrashCleanup` and `CrashCleanupDone`: a crash from here on runs `cleanup`, or no longer
+    /// does, as the block it's for ends or its failure runs the cleanup itself.
+    pub(crate) fn crash_cleanup(&mut self, cleanup: &Operand, set: bool) {
+        if let Some(flag) = self.held_flag(cleanup) {
+            self.line(&format!("store i1 {set}, ptr {flag}"));
+        }
+    }
+
+    /// Runs `cleanup`, a closure that takes nothing, on the way out after a crash, when the block
+    /// it's for hasn't ended. The crash is held aside meanwhile, so the cleanup's own calls run as
+    /// normal, and goes on after; a failure or crash of the cleanup's own doesn't replace it.
+    fn run_crash_cleanup(&mut self, cleanup: &Operand) -> Result<(), String> {
+        let Some(flag) = self.held_flag(cleanup) else { return Ok(()) };
+        let (closure, kind) = self.operand(cleanup)?;
+        let Kind::Closure(params, returns) = kind else {
+            return Err("a crash's cleanup that isn't a closure".to_owned());
+        };
+        if !params.is_empty() || !matches!(*returns, Kind::Unit) {
+            return Err("a crash's cleanup that takes or gives something".to_owned());
+        }
+        self.declare("declare i64 @fennec_crash_hold() nounwind");
+        self.declare("declare void @fennec_crash_resume(i64) nounwind");
+        let (held, run, next) = (self.temp(), self.label("crash_cleanup"), self.label("crash_cleaned"));
+        self.line(&format!("{held} = load i1, ptr {flag}"));
+        self.line(&format!("br i1 {held}, label %{run}, label %{next}"));
+        self.start_block(&run);
+        self.line(&format!("store i1 false, ptr {flag}"));
+        let (number, at, code) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{number} = call i64 @fennec_crash_hold()"));
+        self.line("store ptr null, ptr %err");
+        self.line(&format!("{at} = getelementptr inbounds i8, ptr {closure}, i64 {}", crate::closures::CODE));
+        self.line(&format!("{code} = load ptr, ptr {at}, !invariant.load !1"));
+        self.line(&format!("call swiftcc void {code}(ptr {closure}, ptr swifterror %err)"));
+        self.line(&format!("call void @fennec_crash_resume(i64 {number})"));
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
         Ok(())
     }
 

@@ -1,0 +1,7 @@
+## `int`'s methods written in Fennec.
+extend int:
+    def serialize(self, ref out: Serializer):
+        out.int(self)
+
+    def deserialize(ref src: Deserializer) -> int fails ParseError:
+        src.int()?

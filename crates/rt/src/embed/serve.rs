@@ -188,6 +188,12 @@ pub struct Conn {
     tls: RefCell<Option<Box<dyn ServerSession>>>,
 }
 
+/// How long a connection ending gracefully reads what the other side still sends.
+const LINGER: Duration = Duration::from_secs(2);
+
+/// How long a connection ending gracefully waits for more once the other side has gone quiet.
+const LINGER_QUIET: Duration = Duration::from_millis(200);
+
 /// How long a connection has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -274,11 +280,36 @@ impl Conn {
 
     /// The next line, without its line ending, or `None` at the end.
     pub fn read_line(&self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+        self.read_line_crlf(timeout, false)
+    }
+
+    /// `read_line`, which with `crlf` fails on a line ended by a bare `\n`.
+    pub fn read_line_crlf(&self, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
+        let most = crate::stdlib::net::MOST_LINE_BYTES;
         let until = Until::after(timeout);
+        // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
+        // once however slowly the line comes.
+        let mut looked = 0;
         loop {
-            let found = self.ahead.borrow().iter().position(|byte| *byte == b'\n');
+            let found = {
+                let ahead = self.ahead.borrow();
+                let from = looked.min(ahead.len());
+                looked = ahead.len();
+                ahead
+                    .get(from..)
+                    .unwrap_or_default()
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map(|at| from + at)
+            };
+            if found.is_none() && self.ahead.borrow().len() > most {
+                return Err(Failure::Other(format!("a line was longer than {most} bytes")));
+            }
             if let Some(end) = found {
                 let mut line: Vec<u8> = self.ahead.borrow_mut().drain(..=end).collect();
+                if let Some(why) = crate::stdlib::net::line_refused(&line, crlf) {
+                    return Err(Failure::Other(why));
+                }
                 line.pop();
                 if line.last() == Some(&b'\r') {
                     line.pop();
@@ -301,15 +332,50 @@ impl Conn {
         }
     }
 
+    /// Ends the connection gracefully: says no more is coming, then reads and throws away what the
+    /// other side still sends, for a while. Closing with what it sent unread would reset the
+    /// connection, and the other side would lose what it hadn't read yet: the answer it was sent.
+    pub fn linger(&self) {
+        let _ = self.stream.borrow().shutdown(std::net::Shutdown::Write);
+        let until = Until::after(Some(LINGER));
+        let mut sink = [0_u8; READ_BYTES];
+        loop {
+            let read = self.stream.borrow_mut().read(&mut sink);
+            match read {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    // A client that's gone quiet has nothing more on the way.
+                    let quiet = Until::after(Some(LINGER_QUIET));
+                    let soonest = match (quiet.deadline, until.deadline) {
+                        (Some(quiet), Some(all)) if all < quiet => until,
+                        _ => quiet,
+                    };
+                    if self.wait(Interest::READABLE, soonest, "read").is_err() {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+        }
+    }
+
     /// The other side's address.
     pub fn peer(&self) -> String {
         self.stream.borrow().peer_addr().map(|peer| peer.to_string()).unwrap_or_default()
     }
 
     /// Writes all of `data`.
-    pub fn write(&self, mut data: &[u8]) -> Result<(), Failure> {
+    pub fn write(&self, data: &[u8]) -> Result<(), Failure> {
+        self.write_within(data, None)
+    }
+
+    /// `write`, giving up once `timeout` passes, as for a client that never reads.
+    pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+        let until = Until::after(timeout);
         if self.tls.borrow().is_some() {
-            return self.write_securely(data);
+            return self.write_securely(data, until);
         }
         while !data.is_empty() {
             let wrote = self.stream.borrow_mut().write(data);
@@ -317,7 +383,7 @@ impl Conn {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    self.wait(Interest::WRITABLE, until, "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -327,7 +393,7 @@ impl Conn {
     }
 
     /// Writes all of `data` through TLS, waiting whenever what it holds can't go yet.
-    fn write_securely(&self, mut data: &[u8]) -> Result<(), Failure> {
+    fn write_securely(&self, mut data: &[u8], until: Until) -> Result<(), Failure> {
         loop {
             let wrote = {
                 let mut tls = self.tls.borrow_mut();
@@ -340,13 +406,13 @@ impl Conn {
                 Ok((taken, wants_write)) => {
                     data = data.get(taken..).unwrap_or_default();
                     if wants_write {
-                        self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                        self.wait(Interest::WRITABLE, until, "write")?;
                     } else if data.is_empty() {
                         return Ok(());
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    self.wait(Interest::WRITABLE, until, "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),

@@ -1,5 +1,5 @@
-//! How a value of each type is held: in LLVM's terms, and in memory the way the runtime and the
-//! JIT lay it out, with `fennec_layout` deciding. Numbers are a word each, a bool included.
+//! How a value of each type is held: in LLVM's terms, and in memory the way the runtime lays it
+//! out, with `fennec_layout` deciding. Numbers are a word each, a bool included.
 
 use std::collections::BTreeMap;
 

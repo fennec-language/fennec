@@ -144,6 +144,16 @@ impl Lowering<'_> {
             return Ok(None);
         };
         let right = type_in(&self.locals, rhs);
+        // A type with the operator again for another type on its right calls the one for this.
+        let key = match (&right, swap) {
+            (Some(right), false) => self
+                .context
+                .signatures
+                .operator_again(&key)
+                .find(|(_, signature)| signature.params.get(1).is_some_and(|param| param.ty == *right))
+                .map_or(key, |(found, _)| found.to_owned()),
+            _ => key,
+        };
         let given = if swap { [right, Some(left)] } else { [Some(left), right] };
         let Some((function, signature)) = self.resolve(&key, &given, None) else { return Ok(None) };
         let own = self.context.functions.contains(self.context.base_key(&key).as_str());

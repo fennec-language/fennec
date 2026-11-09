@@ -249,7 +249,7 @@ struct Given[T]:
     succeeded: bool
 
 ## What a keeper is told: lend your value to `reply`, or stop when there's none.
-struct Order[T]:
+struct KeeperOrder[T]:
     reply: Sender[Lent[T]]?
 
 ## What the pool's dispatcher hears, of the kinds below.
@@ -257,7 +257,7 @@ struct PoolNote[T]:
     kind: int
     keeper = 0
     reply: Sender[Lent[T]]? = None
-    orders: Sender[Order[T]]? = None
+    orders: Sender[KeeperOrder[T]]? = None
 
 ## A borrower wants a value.
 WANT = 0
@@ -306,7 +306,7 @@ def run_pool[T: Pooled, E: Explained](
 ## Hands each borrower a keeper, first come first served: one whose value is open if there's one,
 ## or else one that'll open its value, or else the next that comes free.
 def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
-    mut keepers: dict[int, Sender[Order[T]]] = {}
+    mut keepers: dict[int, Sender[KeeperOrder[T]]] = {}
     mut open_free: list[int] = []
     mut empty_free: list[int] = []
     mut waiting: list[Sender[Lent[T]]] = []
@@ -317,9 +317,9 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
         elif note.kind == WANT:
             reply = note.reply else continue
             if open_free.len() > 0:
-                told(keepers[open_free.pop(0)], Order[T](reply=reply))
+                told(keepers[open_free.pop(0)], KeeperOrder[T](reply=reply))
             elif empty_free.len() > 0:
-                told(keepers[empty_free.pop(0)], Order[T](reply=reply))
+                told(keepers[empty_free.pop(0)], KeeperOrder[T](reply=reply))
             else:
                 waiting.append(reply)
         else:
@@ -327,7 +327,7 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
             if note.kind == HELLO:
                 keepers[keeper] = note.orders else continue
             if waiting.len() > 0 and not stopping:
-                told(keepers[keeper], Order[T](reply=waiting.pop(0)))
+                told(keepers[keeper], KeeperOrder[T](reply=waiting.pop(0)))
             elif note.kind == EMPTY or (note.kind == HELLO and keeper != 0):
                 empty_free.append(keeper)
             else:
@@ -335,7 +335,7 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
         # Every keeper has to have started to be told to stop.
         if stopping and keepers.len() == size:
             for _, orders in keepers.items():
-                told(orders, Order[T](reply=None))
+                told(orders, KeeperOrder[T](reply=None))
             return
 
 ## Keeper `number`: keeps one value, opening it when it's first needed, and lends it to each
@@ -349,7 +349,7 @@ def keep[T: Pooled, E: Explained](
     mut held: T? = None
     if number == 0:
         held = first
-    with channel[Order[T]](size=1) as orders, channel[Given[T]](size=1) as given:
+    with channel[KeeperOrder[T]](size=1) as orders, channel[Given[T]](size=1) as given:
         told(notes, PoolNote[T](kind=HELLO, keeper=number, orders=orders.sender()))
         for order in orders:
             reply = order.reply else break

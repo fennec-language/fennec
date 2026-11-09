@@ -2599,6 +2599,47 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
+/// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
+#[test]
+fn a_u64_to_a_power() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def main(stdout: Stdout):
+    zero: u64 = 0
+    one: u64 = 1
+    two: u64 = 2
+    three: u64 = 3
+    forty: u64 = 40
+    sixty_three: u64 = 63
+    sixty_four: u64 = 64
+    stdout.print(zero ** zero, two ** zero, zero ** two, one ** sixty_four, two ** sixty_three, three ** forty)
+    stdout.print(two ** sixty_four)
+";
+    let dir = folder("u64_power")?;
+    let program = dir.join("u64_power.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("u64_power"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(out, "1 1 0 1 9223372036854775808 12157665459056928801\n", "{how:?}: {err}");
+        assert!(!ran.status.success(), "{how:?}");
+        assert!(err.contains("this calculation overflows a u64"), "{err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
 /// or an overflow check away can't rest on the local's value from before the call.
 const REF_WRITES: &str = "def neg(ref at: int):

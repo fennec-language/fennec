@@ -263,7 +263,7 @@ jobs:
   # archives' names fails there rather than at a release.
   manifest:
     name: Write the release's manifest
-    if: (github.event_name != 'workflow_dispatch' && github.event_name != 'schedule') || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -305,7 +305,7 @@ jobs:
   # `.github/scripts/release-dry-run.sh`.
   dry-run:
     name: Installed and used (${{ matrix.target }})
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
     needs: build
     strategy:
       fail-fast: false

@@ -1129,7 +1129,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 - Each connection lives inside one keeper task's `with`. The keeper lends it to one block at a time and gets it back when the block ends, so nothing can leak or be used twice. Nothing is sent to the keeper to run: the block uses the connection itself.
 - A block that fails or crashes has its connection reset before the next block gets it. If the keeper can't prove the connection clean, it replaces it, so the pool heals itself and never shrinks.
 - Pools are written in plain Fennec in `std.concurrent`.
-- Chris decided this. Not built yet: `postgres.connect` makes one connection, from `host=`, `user=`, `database=` and `password=`, and tasks in `parallel` each connect for themselves. This replaces pools as keepers that blocks send jobs to.
+- Chris decided this. Built: `pool[T](open=..., size=, wait=)` in `std.concurrent`, its keepers each a task of its own, and `postgres.connect(net, entropy, url, password=)` lending a `PgPool`. A block that fails and one that crashes run the same cleanup, so both have their value reset, and Postgres's reset keeps a connection only when the server proves it clean. This replaces pools as keepers that blocks send jobs to.
 *Why:* No connection ever leaves its keeper's block, so nothing can leak or be used twice, and the pool needs no powers a user's code lacks. A block that uses the connection itself reads like code with one connection, and a pool by default means a server never has to be rewritten when it gets busy.
 
 **Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.** Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.

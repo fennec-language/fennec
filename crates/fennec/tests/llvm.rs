@@ -6348,6 +6348,75 @@ def main(stdout: Stdout):
     stdout.print("never started")
 "#;
 
+/// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
+/// failure while it gives an item does: at a `break`, at a `return` out of the loop, and in place
+/// of a failure already leaving through it, as a `with` block's failing cleanup does today.
+#[test]
+fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("cleanup_failing_let_go", CLEANUP_FAILING)?;
+    assert_eq!(
+        printed,
+        "closing broke\nbroke failed Shut.Stuck(name=\"broke\")\nclosing returned\n\
+         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\nfailing failed Shut.Stuck(name=\"failing\")\n"
+    );
+    Ok(())
+}
+
+const CLEANUP_FAILING: &str = r#"error Shut:
+    Stuck(name: str)
+
+error Other:
+    Inside(why: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broke(stdout: Stdout) fails Shut:
+    for n in held("broke", stdout)?:
+        break
+    stdout.print("not here")
+
+def returned(stdout: Stdout) -> int fails Shut:
+    for n in held("returned", stdout)?:
+        return n
+    0
+
+def failing(stdout: Stdout) fails Shut | Other:
+    for n in held("failing", stdout)?:
+        fail Other.Inside(why="in the loop")
+
+def main(stdout: Stdout):
+    match broke(stdout):
+        case Ok(_):
+            stdout.print("broke worked")
+        case Err(why):
+            stdout.print("broke failed", why)
+    match returned(stdout):
+        case Ok(n):
+            stdout.print("returned", n)
+        case Err(why):
+            stdout.print("returned failed", why)
+    match failing(stdout):
+        case Ok(_):
+            stdout.print("failing worked")
+        case Err(why):
+            stdout.print("failing failed", why)
+"#;
+
 /// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
 /// as one that can't fail does, closing what it holds then and not when the function ends.
 #[test]

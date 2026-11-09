@@ -9689,6 +9689,35 @@ fn a_channel_to_every_listener() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A generic function opens a channel of a generic struct of its own type parameter, as a pool
+/// of `T` does: `channel[Box[T]]` is written in once for each copy, of each kind.
+#[test]
+fn a_channel_of_a_generic_struct_in_a_generic_function_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "generic_channel",
+        r#"from std.concurrent import channel
+
+struct Box[T]:
+    value: T
+
+def boxed[T](value: T, fallback: T) -> T:
+    with channel[Box[T]](size=1) as boxes:
+        boxes.send(Box[T](value=value)) else return fallback
+        got = boxes.receive() else return fallback
+        return got.value
+    fallback
+
+def main(stdout: Stdout):
+    stdout.print(boxed(3, fallback=0), boxed("fox", fallback=""), boxed([1, 2], fallback=[]))
+"#,
+    )?;
+    assert_eq!(printed, "3 fox [1, 2]\n");
+    Ok(())
+}
+
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
 /// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
 /// timeout fails as `Timeout`.

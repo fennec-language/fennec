@@ -15159,6 +15159,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list[int]()`, `dict[str, int]()` and `set[str]()` keep what they hold when the program's
+/// checked again: once trimmed to build, after a `with` is written in, and as a constant.
+#[test]
+fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "typed_empty_list",
+        "def main(stdout: Stdout):\n    stdout.print(list[int](), list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] 0\n");
+    let printed = printed_by(
+        "typed_empty_in_a_with",
+        "def opened() -> with int:\n    lend 1\n\ndef main(stdout: Stdout):\n    with opened() as n:\n        stdout.print(list[int](), n)\n",
+    )?;
+    assert_eq!(printed, "[] 1\n");
+    let printed = printed_by(
+        "typed_empties",
+        "EMPTY = list[int]()\n\ndef main(stdout: Stdout):\n    mut d = dict[str, int]()\n    d[\"a\"] = 1\n    s = set[str]()\n    \
+         stdout.print(EMPTY, d, s, [1].len() > list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] {\"a\": 1} set() True\n");
+    Ok(())
+}
+
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
 /// by a call, which is read once.

@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Stmt};
+use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Size, Stmt};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,7 +23,8 @@ enum Value {
     Ints(Vec<i64>),
     Point(i64, i64),
     Shape(Case, i64),
-    Byte(u8),
+    /// A sized integer, its value whatever its size.
+    Sized(Size, i128),
     /// A `shared Point`, by where it is on the heap.
     Shared(usize),
     /// A `shared Bag`, by where it is among the bags.
@@ -34,6 +35,8 @@ enum Value {
     Count(Vec<i64>),
     Float(u64),
     Tally(i64),
+    /// A `dict[str, int]`, in the order its keys went in.
+    Counts(Vec<(String, i64)>),
 }
 
 /// Why running stopped before the end.
@@ -195,6 +198,18 @@ pub(crate) fn float_text(x: f64) -> String {
     format!("{sign}{first}{fraction}e{exponent}")
 }
 
+/// `n` if `size` holds it; a value it doesn't hold stops the program.
+fn fitting(size: Size, n: i128) -> Ran<i128> {
+    let (least, most) = size.range();
+    if (least..=most).contains(&n) { Ok(n) } else { Err(Stop::Failed) }
+}
+
+/// `n` wrapped round into what `size` holds, as `wrapping_add` does.
+fn wrapped(size: Size, n: i128) -> i128 {
+    let (least, most) = size.range();
+    (n - least).rem_euclid(most - least + 1) + least
+}
+
 /// Floats in Fennec's order: NaN equals itself and comes after everything, and `-0.0` is `0.0`.
 fn float_order(left: f64, right: f64) -> std::cmp::Ordering {
     match (left.is_nan(), right.is_nan()) {
@@ -242,10 +257,14 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Circle, radius) => format!("Shape.Circle(radius={radius})"),
         Value::Shape(Case::Square, side) => format!("Shape.Square(side={side})"),
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
-        Value::Byte(n) => n.to_string(),
+        Value::Sized(_, n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
         Value::Shared(_) | Value::Bag(_) | Value::Count(_) => "shared".to_owned(),
         Value::Float(bits) => float_text(f64::from_bits(*bits)),
+        Value::Counts(pairs) => {
+            let pairs: Vec<String> = pairs.iter().map(|(key, n)| format!("\"{key}\": {n}")).collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
         Value::Holder(items, tag) => {
             let items: Vec<String> = items.iter().map(ToString::to_string).collect();
             format!("Holder(items=[{}], tag={tag})", items.join(", "))
@@ -271,9 +290,9 @@ impl Machine {
         }
     }
 
-    fn byte_of(&mut self, expr: &Expr) -> Ran<u8> {
+    fn sized_of(&mut self, expr: &Expr) -> Ran<i128> {
         match self.expr(expr)? {
-            Value::Byte(n) => Ok(n),
+            Value::Sized(_, n) => Ok(n),
             _ => Err(Stop::Unsure),
         }
     }
@@ -383,6 +402,27 @@ impl Machine {
                     if !more? {
                         break;
                     }
+                }
+            }
+            Stmt::SetKey(name, key, value, add) => {
+                let Value::Counts(pairs) = self.get(name)? else { return Err(Stop::Unsure) };
+                let old = pairs.iter().find(|(held, _)| held == key).map(|(_, n)| *n);
+                // The place first: `+=` on a key that isn't there fails before the value's worked out.
+                if *add && old.is_none() {
+                    return Err(Stop::Failed);
+                }
+                let value = int(&self.expr(value)?)?;
+                let new = if *add { checked(old.unwrap_or(0).checked_add(value))? } else { value };
+                if let Value::Counts(pairs) = self.slot(name)? {
+                    match pairs.iter_mut().find(|(held, _)| held == key) {
+                        Some((_, held)) => *held = new,
+                        None => pairs.push(((*key).to_owned(), new)),
+                    }
+                }
+            }
+            Stmt::RemoveKey(name, key) => {
+                if let Value::Counts(pairs) = self.slot(name)? {
+                    pairs.retain(|(held, _)| held != key);
                 }
             }
             Stmt::HolderAppend(name, value) => {
@@ -784,6 +824,23 @@ impl Machine {
                 Value::Ints(items) => Value::Count(items.clone()),
                 _ => return Err(Stop::Unsure),
             },
+            Expr::Counts(pairs) => {
+                let mut counts = Vec::with_capacity(pairs.len());
+                for (key, n) in pairs {
+                    counts.push(((*key).to_owned(), int(&self.expr(n)?)?));
+                }
+                Value::Counts(counts)
+            }
+            Expr::CountOf(counts, key) => match self.expr(counts)? {
+                Value::Counts(pairs) => {
+                    Value::Int(pairs.iter().find(|(held, _)| held == key).map_or(0, |(_, n)| *n))
+                }
+                _ => return Err(Stop::Unsure),
+            },
+            Expr::Has(counts, key) => match self.expr(counts)? {
+                Value::Counts(pairs) => Value::Bool(pairs.iter().any(|(held, _)| held == key)),
+                _ => return Err(Stop::Unsure),
+            },
             Expr::Float(x) => Value::Float(x.to_bits()),
             Expr::FloatArith(operator, left, right) => {
                 let (left, right) = (self.float_of(left)?, self.float_of(right)?);
@@ -850,19 +907,23 @@ impl Machine {
                     Case::Empty => 0,
                 })
             }
-            Expr::Byte(value) => {
-                let value = int(&self.expr(value)?)?;
-                Value::Byte(u8::try_from(value).map_err(|_| Stop::Failed)?)
+            Expr::Convert(size, value) => {
+                Value::Sized(*size, fitting(*size, i128::from(int(&self.expr(value)?)?))?)
             }
-            Expr::ByteAdd(left, right) => {
-                let (left, right) = (self.byte_of(left)?, self.byte_of(right)?);
-                Value::Byte(left.checked_add(right).ok_or(Stop::Failed)?)
+            Expr::SizedArith(size, operator, left, right) => {
+                let (left, right) = (self.sized_of(left)?, self.sized_of(right)?);
+                let worked = match operator {
+                    Arith::Sub => left.checked_sub(right),
+                    Arith::Mul => left.checked_mul(right),
+                    _ => left.checked_add(right),
+                };
+                Value::Sized(*size, fitting(*size, worked.ok_or(Stop::Failed)?)?)
             }
-            Expr::ByteWrap(left, right) => {
-                let (left, right) = (self.byte_of(left)?, self.byte_of(right)?);
-                Value::Byte(left.wrapping_add(right))
+            Expr::SizedWrap(size, left, right) => {
+                let (left, right) = (self.sized_of(left)?, self.sized_of(right)?);
+                Value::Sized(*size, wrapped(*size, left + right))
             }
-            Expr::IntOf(byte) => Value::Int(i64::from(self.byte_of(byte)?)),
+            Expr::IntOf(sized) => Value::Int(i64::try_from(self.sized_of(sized)?).map_err(|_| Stop::Failed)?),
             Expr::SumCounted(limit) => {
                 let limit = int(&self.expr(limit)?)?;
                 let mut total: i64 = 0;

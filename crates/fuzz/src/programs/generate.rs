@@ -12,12 +12,30 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
-use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Stmt, TYPES, Ty};
+use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Size, Stmt, TYPES, Ty};
 
 /// How deep expressions nest.
 const MOST_DEPTH: usize = 3;
 /// How deep blocks nest.
 const MOST_BLOCKS: usize = 3;
+/// `n` made to fit `size`, for a literal, which has to.
+fn literal_in(size: Size, n: i64) -> i64 {
+    match size {
+        Size::U8 => n.rem_euclid(256),
+        Size::I32 => i64::from(i32::try_from(n.rem_euclid(1 << 31)).unwrap_or(0)) * n.signum(),
+        Size::U64 => n.saturating_abs(),
+    }
+}
+
+/// What a worked-out int is kept below, with `%`, to fit `size` where nothing's meant to fail.
+const fn inside(size: Size) -> i64 {
+    match size {
+        Size::U8 => 256,
+        Size::I32 => 1 << 31,
+        Size::U64 => 1 << 62,
+    }
+}
+
 /// The keys a `Bag`'s dict holds.
 const KEYS: [&str; 3] = ["a", "b", "c"];
 /// The most statements a block has.
@@ -103,8 +121,11 @@ impl Writer<'_> {
             return self.name_of(Ty::Int, false).map_or_else(|| self.small_int(), Expr::Name);
         }
         let next = depth + 1;
-        match self.choice(19) {
-            14 => Expr::IntOf(Box::new(self.of(Ty::Byte, next))),
+        match self.choice(20) {
+            14 => {
+                let size = self.size();
+                Expr::IntOf(Box::new(self.of(Ty::Sized(size), next)))
+            }
             15 => {
                 let limit = if self.risky {
                     Expr::Arith(Arith::Rem, Box::new(self.int(next)), Box::new(Expr::Int(9)))
@@ -114,6 +135,10 @@ impl Writer<'_> {
                 Expr::SumCounted(Box::new(limit))
             }
             16 => self.name_of(Ty::Tally, false).map_or_else(|| self.small_int(), Expr::Count),
+            19 => {
+                let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+                Expr::CountOf(Box::new(self.of(Ty::Counts, next)), key)
+            }
             17 if self.risky => Expr::Truncated(Box::new(self.float(next))),
             17 => Expr::Tag(Box::new(self.of(Ty::Holder, next))),
             18 => {
@@ -184,8 +209,12 @@ impl Writer<'_> {
         match ty {
             Ty::Int => self.int(depth),
             Ty::Bool if depth >= MOST_DEPTH => Expr::Bool(self.choice(2) == 0),
-            Ty::Bool => match self.choice(5) {
+            Ty::Bool => match self.choice(6) {
                 0 => Expr::Bool(self.choice(2) == 0),
+                5 => {
+                    let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+                    Expr::Has(Box::new(self.of(Ty::Counts, next)), key)
+                }
                 4 => {
                     const COMPARES: [Compare; 5] =
                         [Compare::Less, Compare::LessEq, Compare::Equal, Compare::NotEqual, Compare::Greater];
@@ -246,26 +275,33 @@ impl Writer<'_> {
                 _ => Expr::Ints(vec![Expr::Int(3), Expr::Int(1), Expr::Int(2)]),
             },
             Ty::Point => Expr::Point(Box::new(self.int(next)), Box::new(self.int(next))),
-            Ty::Byte if depth >= MOST_DEPTH => Expr::Byte(Box::new(Expr::Int(i64::from(self.byte())))),
-            Ty::Byte => match self.choice(4) {
+            Ty::Sized(size) if depth >= MOST_DEPTH => self.sized_literal(size),
+            Ty::Sized(size) => match self.choice(4) {
                 0 => {
                     let value = self.int(next);
-                    // Kept in range where nothing's meant to fail. A literal is checked to fit when
-                    // the program's compiled, so only what's worked out can be out of range.
-                    let value = if let Expr::Int(n) = value {
-                        Expr::Int(n.rem_euclid(256))
-                    } else if self.risky {
-                        value
-                    } else {
-                        Expr::Arith(Arith::Rem, Box::new(value), Box::new(Expr::Int(256)))
+                    // A literal is checked to fit when the program's compiled, so only what's
+                    // worked out can be out of range, and only where the program's risky.
+                    let value = match value {
+                        Expr::Int(n) => Expr::Int(literal_in(size, n)),
+                        value if self.risky => value,
+                        value => Expr::Arith(Arith::Rem, Box::new(value), Box::new(Expr::Int(inside(size)))),
                     };
-                    Expr::Byte(Box::new(value))
+                    Expr::Convert(size, Box::new(value))
                 }
-                1 => Expr::ByteWrap(Box::new(self.of(Ty::Byte, next)), Box::new(self.of(Ty::Byte, next))),
+                1 => Expr::SizedWrap(
+                    size,
+                    Box::new(self.of(Ty::Sized(size), next)),
+                    Box::new(self.of(Ty::Sized(size), next)),
+                ),
                 2 if self.risky => {
-                    Expr::ByteAdd(Box::new(self.of(Ty::Byte, next)), Box::new(self.of(Ty::Byte, next)))
+                    let operator = [Arith::Add, Arith::Sub, Arith::Mul]
+                        .get(self.choice(3))
+                        .copied()
+                        .unwrap_or(Arith::Add);
+                    let (left, right) = (self.of(Ty::Sized(size), next), self.of(Ty::Sized(size), next));
+                    Expr::SizedArith(size, operator, Box::new(left), Box::new(right))
                 }
-                _ => Expr::Byte(Box::new(Expr::Int(i64::from(self.byte())))),
+                _ => self.sized_literal(size),
             },
             // These are made by statements of their own, never in an expression.
             Ty::Holder => {
@@ -278,6 +314,11 @@ impl Writer<'_> {
                 Expr::Lists(pairs)
             }
             Ty::Float => self.float(depth),
+            Ty::Counts => {
+                let count = self.choice(4);
+                let pairs = KEYS.iter().take(count).map(|key| (*key, self.int(next))).collect();
+                Expr::Counts(pairs)
+            }
             Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count => Expr::Int(0),
             Ty::Shape => match self.choice(3) {
                 0 => Expr::Shape(Case::Circle, Box::new(self.int(next))),
@@ -285,6 +326,16 @@ impl Writer<'_> {
                 _ => Expr::Shape(Case::Empty, Box::new(Expr::Int(0))),
             },
         }
+    }
+
+    fn size(&mut self) -> Size {
+        [Size::U8, Size::I32, Size::U64].get(self.choice(3)).copied().unwrap_or(Size::U8)
+    }
+
+    /// A sized integer written out as a conversion of a literal that fits.
+    fn sized_literal(&mut self, size: Size) -> Expr {
+        let n = i64::from(self.byte()) * if self.choice(2) == 0 { 1 } else { -1_000_003 };
+        Expr::Convert(size, Box::new(Expr::Int(literal_in(size, n))))
     }
 
     /// A float: written out, worked out, or from an int.
@@ -353,10 +404,11 @@ impl Writer<'_> {
     }
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
-        let which = self.choice(26);
+        let which = self.choice(27);
         match which {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
+            26 => self.change_counts(body),
             22 => {
                 let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
@@ -663,6 +715,33 @@ impl Writer<'_> {
                 self.read_back(body, &lists);
             }
         }
+    }
+
+    /// A change to a `dict[str, int]`: a key set, added to or removed.
+    fn change_counts(&mut self, body: &mut Vec<Stmt>) {
+        let Some(counts) = self.name_of(Ty::Counts, true) else { return self.print(body) };
+        let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+        match self.choice(3) {
+            0 => body.push(Stmt::RemoveKey(counts.clone(), key)),
+            1 => {
+                let value = self.int(0);
+                let value = self.bounded(value);
+                body.push(Stmt::SetKey(counts.clone(), key, value, false));
+            }
+            _ => {
+                let value = self.int(1);
+                let value = self.bounded(value);
+                let add = Stmt::SetKey(counts.clone(), key, value, true);
+                // A key that isn't there fails `+=`, which only a risky program risks.
+                if self.risky {
+                    body.push(add);
+                } else {
+                    let there = Expr::Has(Box::new(Expr::Name(counts.clone())), key);
+                    body.push(Stmt::If(there, vec![add], Vec::new()));
+                }
+            }
+        }
+        self.read_back(body, &counts);
     }
 
     fn change_int(&mut self, body: &mut Vec<Stmt>) {

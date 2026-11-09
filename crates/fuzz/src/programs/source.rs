@@ -232,6 +232,12 @@ impl Writer {
                 self.line(indent + 1, &format!("stdout.print({list}[{name}])"));
                 self.block(body, indent + 1);
             }
+            Stmt::SetKey(name, key, value, add) => {
+                let value = self.expr(value, false);
+                let operator = if *add { "+=" } else { "=" };
+                self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
+            }
+            Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
             Stmt::HolderAppend(name, value) => {
                 let value = self.expr(value, false);
                 self.line(indent, &format!("{name}.items.append({value})"));
@@ -385,7 +391,7 @@ impl Writer {
                 let (yes, when, no) = (self.expr(yes, false), self.expr(when, false), self.expr(no, false));
                 format!("({yes} if {when} else {no})")
             }
-            Expr::Concat(left, right) | Expr::ByteAdd(left, right) => {
+            Expr::Concat(left, right) => {
                 format!("({} + {})", self.expr(left, false), self.expr(right, false))
             }
             Expr::Format(value) => format!("f\"<{{{}}}>\"", self.expr(value, false)),
@@ -420,8 +426,16 @@ impl Writer {
             }
             Expr::Area(shape) => format!("area({})", self.expr(shape, true)),
             Expr::Bump(name, by) => format!("bump(ref {name}, {})", self.expr(by, false)),
-            Expr::Byte(value) => format!("u8({})", self.expr(value, false)),
-            Expr::ByteWrap(left, right) => {
+            Expr::Convert(size, value) => format!("{}({})", size.name(), self.expr(value, false)),
+            Expr::SizedArith(_, operator, left, right) => {
+                let symbol = match operator {
+                    Arith::Sub => "-",
+                    Arith::Mul => "*",
+                    _ => "+",
+                };
+                format!("({} {symbol} {})", self.expr(left, false), self.expr(right, false))
+            }
+            Expr::SizedWrap(_, left, right) => {
                 format!("{}.wrapping_add({})", self.expr(left, false), self.expr(right, false))
             }
             Expr::IntOf(byte) => format!("int({})", self.expr(byte, false)),
@@ -443,6 +457,14 @@ impl Writer {
             }
             Expr::Summing(name) => format!("() => sum({name})"),
             Expr::Called(name) => format!("{name}()"),
+            Expr::Counts(pairs) if pairs.is_empty() => "dict[str, int]()".to_owned(),
+            Expr::Counts(pairs) => {
+                let pairs: Vec<String> =
+                    pairs.iter().map(|(key, n)| format!("\"{key}\": {}", self.expr(n, false))).collect();
+                format!("{{{}}}", pairs.join(", "))
+            }
+            Expr::CountOf(counts, key) => format!("({}.get(\"{key}\") else 0)", self.expr(counts, false)),
+            Expr::Has(counts, key) => format!("(\"{key}\" in {})", self.expr(counts, false)),
             Expr::Float(x) => super::eval::float_text(*x),
             Expr::FloatArith(operator, left, right) => {
                 let symbol = match operator {

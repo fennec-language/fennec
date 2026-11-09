@@ -11,8 +11,8 @@ pub(crate) enum Ty {
     Ints,
     Point,
     Shape,
-    /// `u8`.
-    Byte,
+    /// `u8`, `i32` or `u64`.
+    Sized(Size),
     /// `shared Point`, reached only through `lock`.
     Shared,
     /// What `tallied` lends a `with` block.
@@ -26,12 +26,55 @@ pub(crate) enum Ty {
     /// `() -> int`: a function that sums the list it captured.
     Count,
     Float,
+    /// `dict[str, int]`.
+    Counts,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 10] =
-    [Ty::Int, Ty::Bool, Ty::Str, Ty::Ints, Ty::Point, Ty::Shape, Ty::Byte, Ty::Holder, Ty::Lists, Ty::Float];
+pub(crate) const TYPES: [Ty; 13] = [
+    Ty::Int,
+    Ty::Bool,
+    Ty::Str,
+    Ty::Ints,
+    Ty::Point,
+    Ty::Shape,
+    Ty::Holder,
+    Ty::Lists,
+    Ty::Float,
+    Ty::Sized(Size::U8),
+    Ty::Sized(Size::I32),
+    Ty::Sized(Size::U64),
+    Ty::Counts,
+];
+
+/// A sized integer type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Size {
+    U8,
+    I32,
+    U64,
+}
+
+impl Size {
+    /// Its name in Fennec.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Size::U8 => "u8",
+            Size::I32 => "i32",
+            Size::U64 => "u64",
+        }
+    }
+
+    /// The least and the most it holds.
+    pub(crate) const fn range(self) -> (i128, i128) {
+        match self {
+            Size::U8 => (0, 255),
+            Size::I32 => (-2_147_483_648, 2_147_483_647),
+            Size::U64 => (0, 18_446_744_073_709_551_615),
+        }
+    }
+}
 
 /// An arithmetic operator on ints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,13 +151,13 @@ pub(crate) enum Expr {
     Area(Box<Expr>),
     /// `bump(ref name, by)`: adds `by` to an int name and gives ten times what it holds then.
     Bump(String, Box<Expr>),
-    /// `u8(int)`, which fails outside 0 to 255.
-    Byte(Box<Expr>),
-    /// `left + right` on `u8`s, checked.
-    ByteAdd(Box<Expr>, Box<Expr>),
-    /// `left.wrapping_add(right)` on `u8`s.
-    ByteWrap(Box<Expr>, Box<Expr>),
-    /// `int(byte)`.
+    /// `u8(int)`, `i32(int)` or `u64(int)`, which fails outside what the size holds.
+    Convert(Size, Box<Expr>),
+    /// `left + - * right` on one size, checked against it.
+    SizedArith(Size, Arith, Box<Expr>, Box<Expr>),
+    /// `left.wrapping_add(right)` on one size.
+    SizedWrap(Size, Box<Expr>, Box<Expr>),
+    /// `int(sized)`, which fails for a `u64` past the ints.
     IntOf(Box<Expr>),
     /// `sum(counted(limit))`, through a generator.
     SumCounted(Box<Expr>),
@@ -134,6 +177,12 @@ pub(crate) enum Expr {
     Summing(String),
     /// `count()`.
     Called(String),
+    /// A `dict[str, int]` written out.
+    Counts(Vec<(&'static str, Expr)>),
+    /// `counts.get(key) else 0`.
+    CountOf(Box<Expr>, &'static str),
+    /// `key in counts`.
+    Has(Box<Expr>, &'static str),
     /// A float written out.
     Float(f64),
     /// `left + - * / right` on floats: `/` by zero fails.
@@ -248,6 +297,10 @@ pub(crate) enum Stmt {
     /// `for name in range(list.len()):` reading `list[name]` first each round, with the body free
     /// to change the list, so a bound worked out once can stop holding.
     Indexed(String, String, Vec<Stmt>),
+    /// `counts[key] = value`, or `+=` with `add`, which fails for a key that isn't there.
+    SetKey(String, &'static str, Expr, bool),
+    /// `_ = counts.remove(key)`.
+    RemoveKey(String, &'static str),
     /// `holder.items.append(value)`.
     HolderAppend(String, Expr),
     /// `holder.tag += value`.

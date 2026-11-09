@@ -972,7 +972,9 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             if taken.is_none()
                 && let ExprKind::Try { value, context: None } = &expr.kind
             {
-                let got = format!("got__try{}_{at}", span.start);
+                // A span of its own, as each written-in copy of a source gets the same `?` at the
+                // same place, and two copies in one block would declare one name twice.
+                let got = format!("got__try{}_{at}", here(span).start);
                 taken = Some((got.clone(), value.as_ref().clone()));
                 expr.kind = ExprKind::Name(got);
             }

@@ -4282,6 +4282,43 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source written in at three levels of one block, each copy with a `?` on a line that names
+/// what it gives, keeps each copy's names apart.
+#[test]
+fn one_source_twice_in_a_block_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_twice",
+        "error Boom:
+    pass
+
+struct Conn:
+    n: int
+
+    def made(self, n: int) -> int fails Boom:
+        if n < 0:
+            fail Boom()
+        n + self.n
+
+    def opened(self, n: int) -> with int fails Boom:
+        got = self.made(n)?
+        lend got else:
+            pass
+
+def main(stdout: Stdout) fails Boom:
+    conn = Conn(n=0)
+    with conn.opened(0)? as outer:
+        with conn.opened(1)? as first:
+            with conn.opened(2)? as second:
+                stdout.print(outer + first + second)
+",
+    )?;
+    assert_eq!(printed, "3\n");
+    Ok(())
+}
+
 /// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
 /// or while finishing. A source can wrap another this way and say only its own error, and the
 /// block's own failures pass up as they are.

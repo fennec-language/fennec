@@ -1219,7 +1219,7 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-worked-out-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let source = "LONG = f\"{1 + 1} and then a string too long to fit in a header\"\n\
                   WORDS = [\"a\", \"b\", LONG]\n\n\

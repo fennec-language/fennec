@@ -138,8 +138,15 @@ pub(crate) fn watch(
             used = cpu_time(child.id()).or(used);
         }
         let on_the_clock = since.0.elapsed();
-        let busy = used.map_or(on_the_clock, |used| used.saturating_sub(since.1));
-        let is_stuck = busy > stuck || on_the_clock > stuck * WAITING_TIMES;
+        let busy = |used: Option<Duration>| used.map_or(on_the_clock, |used| used.saturating_sub(since.1));
+        let mut is_stuck = busy(used) > stuck || on_the_clock > stuck * WAITING_TIMES;
+        // CPU time is asked for only now and then, and until it's first known the time on the
+        // clock stands in for it, which a busy machine runs up without the process doing
+        // anything. So it's asked again before anything is called stuck.
+        if is_stuck && on_the_clock <= stuck * WAITING_TIMES {
+            used = cpu_time(child.id()).or(used);
+            is_stuck = busy(used) > stuck;
+        }
         let out_of_time = deadline.is_some_and(|deadline| Instant::now() >= deadline);
         if too_big || out_of_time || is_stuck {
             let _ = child.kill();

@@ -411,6 +411,11 @@ impl Lowering<'_> {
                 self.emit(kind, span);
                 Ok(None)
             }
+            "intrinsics.abandoning" => {
+                let dest = dest.ok_or("whether it's let go is kept")?;
+                self.abandoning(dest, span)?;
+                Ok(Some(dest))
+            }
             _ => self.launch_task(dest, &values, span).map(Some),
         }
     }
@@ -948,7 +953,8 @@ fn gives_a_value(ty: &Type) -> bool {
 }
 
 /// The intrinsics the IR lowers itself, rather than leave to the backend as they are.
-const LOWERED: [&str; 5] = [
+const LOWERED: [&str; 6] = [
+    "intrinsics.abandoning",
     "intrinsics.channel_receive",
     "intrinsics.launch_end",
     "intrinsics.launch",

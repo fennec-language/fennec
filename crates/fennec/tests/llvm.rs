@@ -5553,6 +5553,47 @@ fn sets_and_dicts_of_sized_numbers() -> std::io::Result<()> {
     )
 }
 
+/// Sets and dicts of `u64`s and `f32`s, keys and values, which have words of their own: a `u64` past
+/// `int`'s top is shown unsigned, and an `f32` as the shortest text that reads back as it, `0.1`
+/// rather than a double's `0.10000000149011612`.
+#[test]
+fn sets_and_dicts_of_u64s_and_f32s() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "u64_f32_sets_dicts",
+        r#"def main(stdout: Stdout):
+    one: u64 = 1
+    five: u64 = 5
+    big: u64 = (one << 63) + five
+    mut seen = set[u64]()
+    seen.add(big)
+    seen.add(one)
+    seen.add(big)
+    stdout.print(seen.len(), big in seen, seen)
+    mut names = dict[u64, str]()
+    names[big] = "top"
+    names[one] = "one"
+    stdout.print(names[big], names)
+    tenth: f32 = 0.1
+    half: f32 = 0.5
+    mut weights = dict[str, f32]()
+    weights["a"] = tenth
+    weights["b"] = half
+    stdout.print(weights, weights["a"])
+    mut fs = set[f32]()
+    fs.add(tenth)
+    fs.add(tenth)
+    stdout.print(fs, tenth in fs, half in fs)
+    mut counts = dict[f32, u64]()
+    counts[tenth] = big
+    stdout.print(counts)
+"#,
+        "2 True {9223372036854775813, 1}\ntop {9223372036854775813: \"top\", 1: \"one\"}\n{\"a\": 0.1, \"b\": 0.5} 0.1\n{0.1} True False\n{0.1: 9223372036854775813}\n",
+    )
+}
+
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
 fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
@@ -6158,7 +6199,6 @@ def main(stdout: Stdout):
 /// A generator abandoned while a `with` source's block is open runs the source's cleanup then, as
 /// a `break` out of the block would, and one run to its end runs it as it goes past.
 #[test]
-#[ignore = "a source's cleanup written in around a `yield` doesn't run yet when the generator is abandoned"]
 fn an_abandoned_generator_runs_its_open_sources_cleanup() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -6188,6 +6228,166 @@ def main(stdout: Stdout):
 ",
     )?;
     assert_eq!(printed, "got 1\nclosed left early\nafter the loop\nclosed run out\n3\n");
+    Ok(())
+}
+
+/// Each source a generator holds open where it's let go closes then, innermost first and once:
+/// not its `else:`, which is for a block that fails, and nothing for a block that already ended
+/// or a generator that never started. A `return` out of the loop lets go of it too.
+#[test]
+fn an_abandoned_generator_closes_each_open_source_once_innermost_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("abandoned_sources", ABANDONED_SOURCES)?;
+    assert_eq!(
+        printed,
+        "got 0\nclosed inner 0\ngot 1\nclosed inner 1\nclosed outer\n--\ngot 1\nclosed short\ngot 2\n--\n\
+         closed inner 0\nclosed inner 1\nclosed outer\nkept 1\n--\nnever started\n"
+    );
+    Ok(())
+}
+
+const ABANDONED_SOURCES: &str = r#"struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door else:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def nested(stdout: Stdout) -> Iterator[int]:
+    with opened("outer", stdout) as outer:
+        for n in range(3):
+            with opened(f"inner {n}", stdout) as inner:
+                yield n
+    yield 99
+
+def after_the_block(stdout: Stdout) -> Iterator[int]:
+    with opened("short", stdout) as door:
+        yield 1
+    yield 2
+
+def kept(stdout: Stdout) -> int:
+    walk = nested(stdout)
+    for n in walk:
+        if n == 1:
+            return n
+    0
+
+def main(stdout: Stdout):
+    for n in nested(stdout):
+        stdout.print("got", n)
+        if n == 1:
+            break
+    stdout.print("--")
+    for n in after_the_block(stdout):
+        stdout.print("got", n)
+        if n == 2:
+            break
+    stdout.print("--")
+    stdout.print("kept", kept(stdout))
+    stdout.print("--")
+    never = nested(stdout)
+    stdout.print("never started")
+"#;
+
+/// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
+/// as one that can't fail does, closing what it holds then and not when the function ends.
+#[test]
+fn a_failing_generator_for_a_loop_closes_when_the_loop_ends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "failing_generator_closed",
+        r#"error Boom:
+    pass
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door
+    stdout.print("closed", name)
+
+def plain(stdout: Stdout) -> Iterator[int]:
+    with opened("plain", stdout) as door:
+        yield 1
+        yield 2
+
+def failing(stdout: Stdout, bad: bool) -> Iterator[int] fails Boom:
+    if bad:
+        fail Boom()
+    with opened("failing", stdout) as door:
+        yield 1
+        yield 2
+
+def main(stdout: Stdout) fails Boom:
+    for n in plain(stdout):
+        break
+    stdout.print("after plain")
+    for n in failing(stdout, bad=False)?:
+        break
+    stdout.print("after failing")
+"#,
+    )?;
+    assert_eq!(printed, "closed plain\nafter plain\nclosed failing\nafter failing\n");
+    Ok(())
+}
+
+/// A generator over a file, let go by `break`, closes the file: one written takes its path's
+/// place right then, and 200 read and let go stay under a limit of 64 open files.
+#[cfg(unix)]
+#[test]
+fn a_generator_over_a_file_let_go_by_break_closes_the_file() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generator_files")?;
+    let program = dir.join("files.fen");
+    std::fs::write(
+        &program,
+        r#"def numbered(fs: Fs, path: str) -> Iterator[int] fails IoError:
+    with fs.create(path)? as file:
+        for n in range(10):
+            file.write_line(str(n))?
+            yield n
+
+def first_lines(fs: Fs, path: str) -> Iterator[str] fails IoError:
+    with fs.open(path)? as file:
+        for line in file.lines()?:
+            yield line
+
+def main(stdout: Stdout, fs: Fs) fails IoError:
+    for n in numbered(fs, "numbers.txt")?:
+        if n == 2:
+            break
+    with fs.open("numbers.txt")? as file:
+        stdout.print(file.read_text()?.split("\n"))
+    # Each loop lets go of a generator holding a file open: 200 of them run out of file
+    # handles under a limit of 64 if any stays open.
+    mut read = 0
+    for _ in range(200):
+        for line in first_lines(fs, "numbers.txt")?:
+            read += 1
+            break
+    stdout.print(read)
+"#,
+    )?;
+    let executable = dir.join("files");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new("/bin/sh")
+        .args(["-c", "ulimit -n 64 && exec \"$0\"", &executable.to_string_lossy()])
+        .current_dir(&dir)
+        .output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[\"0\", \"1\", \"2\", \"\"]\n200\n");
     Ok(())
 }
 

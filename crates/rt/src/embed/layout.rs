@@ -272,7 +272,7 @@ mod tests {
         set_word(block, FIELDS, 7);
         set_word(block, FIELDS + 8, u64::try_from(with(|state| heap::text_address(state, "fox"))).unwrap());
         let lent = heap::to_value(block);
-        // As the interpreter holds it, as `json.loads` would give it.
+        // As a `Value`, as `json.loads` would give it.
         let value = with(|state| {
             let plain = state.temp(lent);
             Some(state.push(plain))

@@ -20,12 +20,11 @@ fn text(state: &State, address: i64) -> Option<String> {
 }
 
 fn lost(start: i64, end: i64) -> Diagnostic {
-    Diagnostic::new("the JIT lost a string", span(start, end))
-        .with_help("this is a bug in Fennec; run with `--interp` and please report it")
+    Diagnostic::new("the compiled code lost a string", span(start, end))
+        .with_help("this is a bug in Fennec; please report it")
 }
 
-/// A string block owned once with a temporary's text, failing like the interpreter when
-/// it isn't a string.
+/// A string block owned once with a temporary's text. Fails when it isn't a string.
 pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| match state.temp(value) {
         Value::Str(text) => Ok(text_address(state, &text)),
@@ -196,7 +195,7 @@ pub extern "C" fn char_at(text: i64, at: i64) -> i64 {
     })
 }
 
-/// `text[at]`, a string of one character, counting characters as the interpreter does.
+/// `text[at]`, a string of one character, counting characters.
 pub extern "C" fn index(address: i64, at: i64, start: i64, end: i64) -> i64 {
     let byte = attempt(|state: &mut State| byte_of_char(state, address, at, (start, end)).map(Some));
     byte.map_or(0, |byte| char_at(address, byte))
@@ -247,7 +246,7 @@ pub extern "C" fn index_text(address: i64, at: i64, start: i64, end: i64) -> sup
     })
 }
 
-/// The failure for an index past either end of a string, as the interpreter's says it.
+/// The failure for an index past either end of a string, with the language's message.
 fn out_of_range(state: &State, address: i64, at: i64, (start, end): (i64, i64)) -> Result<(), Diagnostic> {
     let whole = text(state, address).ok_or_else(|| lost(start, end))?;
     crate::ops::index(&Value::str(&whole), &Value::Int(at), span(start, end))?;
@@ -255,7 +254,7 @@ fn out_of_range(state: &State, address: i64, at: i64, (start, end): (i64, i64)) 
 }
 
 /// Where the `at`th character starts, in bytes, reading none of the text for ASCII. An index
-/// past either end fails as the interpreter's does.
+/// past either end fails.
 fn byte_of_char(
     state: &mut State,
     address: i64,
@@ -458,7 +457,7 @@ fn part_by_bytes(state: &mut State, address: i64, from: i64, to: i64) -> Option<
     ascii_part_of(state, source, (from, to), u64::try_from(chars).ok()?)
 }
 
-/// How two strings order: -1, 0 or 1, comparing bytes as the interpreter does.
+/// How two strings order: -1, 0 or 1, comparing bytes.
 pub extern "C" fn compare(a: i64, b: i64) -> i64 {
     with(|state| match bytes(state, a).unwrap_or_default().0.cmp(&bytes(state, b).unwrap_or_default().0) {
         std::cmp::Ordering::Less => -1,
@@ -662,7 +661,7 @@ fn number_spec_text(value: &Value, spec: i64, (start, end): (i64, i64)) -> i64 {
     })
 }
 
-/// `text.code()`, failing like the interpreter for anything but one character.
+/// `text.code()`. Fails for anything but one character.
 pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let whole = text(state, address).unwrap_or_default();
@@ -846,8 +845,7 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     })
 }
 
-/// One of the interpreter's string methods, run on a string block with string blocks as its
-/// arguments, as the interpreter runs it.
+/// One of the string methods, run on a string block with string blocks as its arguments.
 fn method(state: &State, address: i64, name: &str, args: &[i64], at: Span) -> Result<Value, Diagnostic> {
     let lost = || Diagnostic::new("the native code lost a string", at);
     let whole = text(state, address).ok_or_else(lost)?;
@@ -888,7 +886,7 @@ pub extern "C" fn find(address: i64, part: i64) -> i64 {
 }
 
 /// `text.split(separator)`, or `text.split()` when `separator` is 0: a list of str owned
-/// once. An empty separator fails, as in the interpreter.
+/// once. An empty separator fails.
 pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);

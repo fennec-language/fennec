@@ -1,6 +1,6 @@
-//! Values a backend lays out as ordinary structs and enums, but the interpreter holds as
-//! values of their own: an optional held as an enum, a result, an `Id` and a `Table`. Reading a block
-//! turns these into what the interpreter holds, and writing one turns them back.
+//! Values a backend lays out as ordinary structs and enums, but a `Value` holds as values of
+//! their own: an optional held as an enum, a result, an `Id` and a `Table`. Reading a block turns
+//! these into `Value`s, and writing one turns them back.
 
 use std::rc::Rc;
 
@@ -35,7 +35,7 @@ pub(super) fn is_one_of_several(name: &str) -> bool {
 }
 
 /// A fixed-size array a backend keeps in place, laid out as a struct with a field for each item,
-/// named after its type, like `array[int, 4]`. The interpreter holds it as a list.
+/// named after its type, like `array[int, 4]`. A `Value` holds it as a list.
 pub(in crate::embed) fn is_array(name: &str) -> bool {
     name.starts_with("array[")
 }
@@ -46,13 +46,13 @@ pub(super) fn is_id_map(name: &str) -> bool {
     name.starts_with("Table[")
 }
 
-/// Whether items of a kind read as the interpreter's packed items: numbers, and structs and
+/// Whether items of a kind read as a `Value`'s packed items: numbers, and structs and
 /// enums of them that aren't one of these or a tuple. Anything else is read item by item.
 pub(in crate::embed) fn packable(element: &Element) -> bool {
     let all = |fields: &[(Rc<str>, Element)]| fields.iter().all(|(_, field)| packable(field));
     match element {
         Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => true,
-        // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple to the interpreter.
+        // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple as a `Value`.
         Element::Struct { name, fields } => {
             !name.starts_with('(')
                 && !is_array(name)
@@ -70,7 +70,7 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
     }
 }
 
-/// What the interpreter holds for a struct or enum read from a block named `name`.
+/// What a `Value` holds for a struct or enum read from a block named `name`.
 pub(super) fn interpreted(name: &str, value: Value) -> Value {
     let Value::Instance(instance) = &value else { return value };
     if is_option(name) {
@@ -144,7 +144,7 @@ impl From<Option<()>> for Written {
     }
 }
 
-/// Writes a value the interpreter holds as one of these, when `element` is laid out for it.
+/// Writes a `Value` held as one of these, when `element` is laid out for it.
 pub(super) fn write_named(
     state: &mut State,
     element: &Element,

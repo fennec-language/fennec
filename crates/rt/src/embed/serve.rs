@@ -15,10 +15,10 @@
 //! its timeout passes. Readiness is edge-triggered, which is safe because a task only waits
 //! after the socket said it would block.
 //!
-//! A wait that can't park, because it isn't in a task or the runtime's state is borrowed (in
-//! the interpreter), blocks its thread on a poll of its own instead. That keeps it correct but
-//! costs a thread, so it's never silent: each one is counted for `FENNEC_COUNTS`, and a dev
-//! build says so once for each place it happens.
+//! A wait that can't park, because it isn't in a task or the runtime's state is borrowed,
+//! blocks its thread on a poll of its own instead. That keeps it correct but costs a thread, so
+//! it's never silent: each one is counted for `FENNEC_COUNTS`, and a dev build says so once for
+//! each place it happens.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -503,7 +503,7 @@ fn warn_once(call: &'static str) {
     if warned.get_or_insert_with(HashSet::new).insert(call) {
         let message = format!(
             "fennec: a network `{call}` blocked its thread instead of parking its task, because it \
-             ran outside a task or inside the interpreter; a server loses its scalability this way\n"
+             ran outside a task; a server loses its scalability this way\n"
         );
         let _ = std::io::stderr().write_all(message.as_bytes());
     }

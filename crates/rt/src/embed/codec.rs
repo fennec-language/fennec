@@ -1,6 +1,5 @@
 //! Turning a program and the tables its native code uses into bytes and back, so a
-//! compiled executable can carry them: the interpreter runs the parts native code hands
-//! over, and reports failures against the program's source.
+//! compiled executable can carry them and report failures against the program's source.
 //!
 //! The encoding is plain: little-endian numbers, lengths before lists and strings, a tag
 //! before each variant. It only has to be read by the same version of Fennec that wrote it.

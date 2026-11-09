@@ -80,10 +80,12 @@ pub(crate) fn lower(
             _ => {}
         }
     }
-    if lowering.made > 0 {
+    // Only what this pass wrote in is a change: `made` starts from what earlier passes made.
+    let wrote = lowering.made > made;
+    if wrote {
         discards_apart_again(module);
     }
-    lowering.made > 0
+    wrote
 }
 
 /// Writes each `with` that opens several handles, `with a()? as x, b()? as y:`, as one inside

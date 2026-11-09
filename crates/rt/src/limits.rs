@@ -36,22 +36,36 @@ impl Limited {
 }
 
 /// A path made absolute, against the folder the program runs in, with `.` and `..` worked out.
+/// Its parts are what the system says they are, so on Windows `\\` separates them as `/` does,
+/// and a drive stays in front. It's written with `/` between its parts on every system, so paths
+/// compare as text.
 pub(crate) fn absolute(path: &str) -> String {
-    let joined = if path.starts_with('/') {
-        path.to_owned()
-    } else {
-        let here = std::env::current_dir().map(|dir| dir.display().to_string()).unwrap_or_default();
-        format!("{here}/{path}")
-    };
-    let mut parts: Vec<&str> = Vec::new();
-    for part in joined.split('/') {
+    // A path that has a drive stays as it is, and one from the root without a drive, on Windows,
+    // is on the drive the program runs on.
+    let joined = std::env::current_dir().unwrap_or_default().join(path);
+    plain(&joined)
+}
+
+/// A path's parts, `.` and `..` worked out, written with `/` between them: `/home/a` on Unix, and
+/// `C:/Users/a` on Windows, where a path the system has made whole (`\\?\C:\...`) reads the same.
+fn plain(path: &std::path::Path) -> String {
+    use std::path::{Component, Prefix};
+    let mut front = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    for part in path.components() {
         match part {
-            "" | "." => {}
-            ".." => drop(parts.pop()),
-            part => parts.push(part),
+            Component::Prefix(prefix) => {
+                front = match prefix.kind() {
+                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => format!("{}:", char::from(drive)),
+                    _ => prefix.as_os_str().to_string_lossy().replace('\\', "/"),
+                };
+            }
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => drop(parts.pop()),
+            Component::Normal(name) => parts.push(name.to_string_lossy().into_owned()),
         }
     }
-    format!("/{}", parts.join("/"))
+    format!("{front}/{}", parts.join("/"))
 }
 
 /// `path` with every link in it followed, as far as it's there: what isn't yet, like a new file,
@@ -62,7 +76,7 @@ fn with_links_followed(path: &str) -> String {
     loop {
         if let Ok(real) = std::fs::canonicalize(there) {
             let joined = missing.iter().rev().fold(real, |so_far, part| so_far.join(part));
-            return joined.to_string_lossy().into_owned();
+            return plain(&joined);
         }
         let (Some(parent), Some(name)) = (there.parent(), there.file_name()) else {
             return path.to_owned();
@@ -72,9 +86,14 @@ fn with_links_followed(path: &str) -> String {
     }
 }
 
-/// Whether `path` is `folder` or inside it, both absolute.
+/// Whether `path` is `folder` or inside it, both absolute, as [`plain`] writes them.
 fn inside(path: &str, folder: &str) -> bool {
-    path == folder || folder == "/" || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
+    if path == folder {
+        return true;
+    }
+    // A folder that's a root, `/` or `C:/`, already ends with the separator.
+    let folder = folder.strip_suffix('/').unwrap_or(folder);
+    path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Runs a method of a whole capability.
@@ -147,4 +166,32 @@ fn narrowed_fs(
     }
     let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
     Ok(crate::stdlib::fs::io_error(&reason))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{absolute, inside, plain};
+
+    /// `.` and `..` are worked out, so a path can't climb out of a folder by naming its parent.
+    #[test]
+    fn a_path_is_made_plain() {
+        let here = plain(&std::env::current_dir().unwrap_or_default());
+        assert_eq!(absolute("a/./b/../c"), format!("{}/a/c", here.trim_end_matches('/')));
+        assert!(inside(&absolute("saves/game.json"), &absolute("saves")));
+        assert!(!inside(&absolute("saves/../secret"), &absolute("saves")));
+        assert!(!inside(&absolute("savesmore/x"), &absolute("saves")));
+        assert!(inside("/anything", "/"));
+    }
+
+    /// On Windows, `\\` separates a path's parts too, so `..` written with it climbs as with `/`,
+    /// and a path the system made whole compares with one written plainly.
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_cant_climb_out_with_backslashes() {
+        assert!(!inside(&absolute("saves/..\\..\\secret"), &absolute("saves")));
+        assert!(!inside(&absolute("saves\\..\\secret"), &absolute("saves")));
+        assert!(inside(&absolute("saves\\game.json"), &absolute("saves")));
+        assert_eq!(plain(std::path::Path::new("\\\\?\\C:\\Users\\a")), "C:/Users/a");
+        assert!(inside("C:/x", "C:/"));
+    }
 }

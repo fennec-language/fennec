@@ -1,4 +1,4 @@
-# decision: A pool's keeper lends its value to one block at a time.
+# decision: Pools are keeper tasks, written in plain Fennec in `std.concurrent`.
 #
 # `pool[T](open=..., size=10, wait=30s)` keeps each value in a task of its own, a keeper, and
 # `take()` lends one to a `with` block, first come first served. One value opens up front, so a

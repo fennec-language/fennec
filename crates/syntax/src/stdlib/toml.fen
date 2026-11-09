@@ -456,6 +456,8 @@ struct TomlParser:
                 fail self.bad_at("this isn't a valid date", start)
             self.at += 1
             if not self.field(2, 1, 31): fail self.bad_at("this isn't a valid date", start)
+            if not real_day(text_part(self.source, start, self.at)):
+                fail self.bad_at("this isn't a valid date: that month has no such day", start)
             b = self.byte()
             next_digit = self.digit_at(1)
             if not (b == 84 or b == 116 or (b == 32 and next_digit)):
@@ -520,6 +522,9 @@ struct TomlParser:
             if not float_ok(unsigned): fail self.bad_at(unknown, at)
             match float(without_underscores(token)):
                 case Ok(x):
+                    # TOML writes `inf` for that. A number too big for a float didn't say it.
+                    if x == 1e308 * 10.0 or x == -1e308 * 10.0:
+                        fail self.bad_at(f"`{token}` is too big for a float", at)
                     return .Float(x=x)
                 case Err(_):
                     fail self.bad_at(unknown, at)
@@ -1388,3 +1393,14 @@ export def native_dumps[T: Serializable](value: T) -> str:
         case _:
             assert False
     text
+
+## Whether a `YYYY-MM-DD` that's in range is a day its month really has.
+def real_day(date: str) -> bool:
+    parts = date.split("-")
+    year = int(parts[0]) else 0
+    month = int(parts[1]) else 0
+    day = int(parts[2]) else 0
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    if month == 2: return day <= (29 if leap else 28)
+    if month == 4 or month == 6 or month == 9 or month == 11: return day <= 30
+    True

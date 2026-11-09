@@ -32,11 +32,14 @@ fn handle_of(value: &Value) -> Result<i64, String> {
 }
 
 fn run(handle: i64, method: &str, args: &[Value]) -> Result<String, String> {
-    call(handle, method, args, Span::default()).map(|done| crate::format::repr(&done)).map_err(|problem| problem.message)
+    call(handle, method, args, Span::default())
+        .map(|done| crate::format::repr(&done))
+        .map_err(|problem| problem.message)
 }
 
 #[test]
-fn a_tests_database_keeps_what_its_transactions_commit_and_none_of_what_they_roll_back() -> Result<(), String> {
+fn a_tests_database_keeps_what_its_transactions_commit_and_none_of_what_they_roll_back() -> Result<(), String>
+{
     let mut fakes = Fakes::default();
     let db = handle_of(&open_fake(&mut fakes, "index.db"))?;
     assert_eq!(run(db, "_execute", &query("create table notes (n integer, text text)", &[], &[]))?, "Ok(0)");
@@ -73,7 +76,9 @@ fn a_broken_rule_and_a_query_in_two_statements_fail_as_what_they_are() -> Result
     assert!(extra.contains("places for them"), "{extra}");
     // A test's databases are its own.
     let other = handle_of(&open_fake(&mut Fakes::default(), "rules.db"))?;
-    assert!(run(other, "_execute", &query("insert into keys values (?)", &[], &["b"]))?.contains("no such table"));
+    assert!(
+        run(other, "_execute", &query("insert into keys values (?)", &[], &["b"]))?.contains("no such table")
+    );
     Ok(())
 }
 

@@ -276,3 +276,72 @@ extend u32:
         # Checked by division first, so no product is past what an `int` holds.
         if a != 0 and b > 4294967295 // a: return u32(4294967295)
         u32(a * b)
+
+extend u64:
+    ## The `int` `x` as a u64, or an `InvalidValue` when it's negative. Convert another size
+    ## with `int(x)` first.
+    def from(x: int) -> u64 fails InvalidValue:
+        if x < 0:
+            fail InvalidValue(
+                message=f"{x} doesn't fit in u64, which holds 0 to 18446744073709551615",
+            )
+        u64(x)
+
+    ## The u64 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    ## What's past the largest `int` is read a digit at a time.
+    def parse(text: str) -> u64 fails InvalidValue:
+        match int(text):
+            case Ok(n):
+                u64.from(n)?
+            case Err(problem):
+                if not text.isdigit(): fail problem
+                top = u64(9223372036854775807) * 2 + 1
+                mut value = u64(0)
+                for c in text:
+                    digit = u64(c.code() - 48)
+                    # Checked before it's multiplied, so it never goes past the top.
+                    if value > (top - digit) // 10:
+                        fail InvalidValue(
+                            message=f"{text} doesn't fit in u64, which holds 0 to 18446744073709551615",
+                        )
+                    value = value * 10 + digit
+                value
+
+    ## `self + other`, wrapping round past the end, as a u64's bits do.
+    def wrapping_add(self, other: u64) -> u64:
+        top = u64(9223372036854775807) * 2 + 1
+        if self > top - other: return self - (top - other) - 1
+        self + other
+
+    ## `self - other`, wrapping round past 0, as a u64's bits do.
+    def wrapping_sub(self, other: u64) -> u64:
+        top = u64(9223372036854775807) * 2 + 1
+        if other > self: return top - (other - self) + 1
+        self - other
+
+    ## `self * other`, wrapping round past the end, as a u64's bits do.
+    def wrapping_mul(self, other: u64) -> u64:
+        # In 32-bit halves, so no product or sum is past what a u64 holds.
+        low = u64(4294967295)
+        (a_low, a_high) = (self & low, self >> 32)
+        (b_low, b_high) = (other & low, other >> 32)
+        crossed = ((a_high * b_low) & low) + ((a_low * b_high) & low)
+        (a_low * b_low).wrapping_add((crossed & low) << 32)
+
+    ## `self + other`, or the largest u64 when it's past it.
+    def saturating_add(self, other: u64) -> u64:
+        top = u64(9223372036854775807) * 2 + 1
+        if self > top - other: return top
+        self + other
+
+    ## `self - other`, or 0 when it's below it.
+    def saturating_sub(self, other: u64) -> u64:
+        if other > self: return u64(0)
+        self - other
+
+    ## `self * other`, or the largest u64 when it's past it.
+    def saturating_mul(self, other: u64) -> u64:
+        top = u64(9223372036854775807) * 2 + 1
+        # Checked by division first, so no product is past the top.
+        if self != 0 and other > top // self: return top
+        self * other

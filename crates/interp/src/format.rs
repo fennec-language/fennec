@@ -1,13 +1,6 @@
 //! Turning values into text: how `stdout.print` shows them, and f-string format specs like
 //! `{coins:,}` and `{health:.1f}`.
 
-use std::rc::Rc;
-
-use fennec_syntax::{Diagnostic, Span};
-
-use crate::call::CallArg;
-use crate::interp::Interp;
-use crate::place::Place;
 use crate::value::{Instance, Value};
 
 /// The text `stdout.print` and `str()` produce.
@@ -38,15 +31,6 @@ pub(crate) fn repr(value: &Value) -> String {
     repr_with(value, &mut |_| None)
 }
 
-/// Like `display`, with `own` giving the text of a value whose type writes its own with
-/// `def str`, wherever it sits.
-pub(crate) fn display_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<String>) -> String {
-    match value {
-        Value::Str(text) => text.to_string(),
-        other => repr_with(other, own),
-    }
-}
-
 /// Like `repr`, with `own` as in `display_with`.
 pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<String>) -> String {
     let mut join = |items: &mut dyn Iterator<Item = &Value>| {
@@ -54,8 +38,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
     };
     match value {
         Value::Unit | Value::Lent(_) => String::new(),
-        Value::Shared(cell) => repr_with(&cell.borrow(), own),
-        Value::Generator(generator) => format!("<{}>", generator.label()),
         Value::None => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
         Value::Bool(false) => "False".to_owned(),
@@ -67,7 +49,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
             format!("bytes([{}])", numbers.join(", "))
         }
         Value::List(items) => format!("[{}]", join(&mut items.iter())),
-        Value::Buffer(buffer) => format!("Buffer([{}])", join(&mut buffer.items.iter())),
         Value::Packed(packed) => repr_with(&packed.unpack(), own),
         Value::Tuple(items) if items.len() == 1 => format!("({},)", join(&mut items.iter())),
         Value::Tuple(items) => format!("({})", join(&mut items.iter())),
@@ -88,10 +69,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
         Value::Err(inner) => format!("Err({})", repr_with(inner, own)),
         Value::Table(map) => format!("Table([{}])", join(&mut map.entries().map(|(_, value)| value))),
         Value::Id(id) => format!("Id({})", id.slot),
-        Value::Type(name) => format!("<type {name}>"),
-        Value::Function(function) => format!("<function {}>", function.def.name),
-        Value::Builtin(name) => format!("<builtin {name}>"),
-        Value::Lambda(_) => "<function>".to_owned(),
         Value::Capability(_) | Value::Limited(_) => format!("<{}>", value.type_name()),
     }
 }
@@ -225,58 +202,5 @@ fn thousands(number: &str) -> String {
     match fraction {
         Some(fraction) => format!("{sign}{grouped}.{fraction}"),
         None => format!("{sign}{grouped}"),
-    }
-}
-
-impl Interp<'_> {
-    /// The text printing gives a value, through the `def str` of any type that has one,
-    /// wherever it sits: the value itself, or inside a list, a dict or another value.
-    pub(crate) fn shown(&mut self, value: &Value, span: Span) -> Result<String, Diagnostic> {
-        let mut failure = None;
-        let text = display_with(value, &mut |instance| match self.own_str(instance, span) {
-            Ok(text) => text,
-            Err(problem) => {
-                failure.get_or_insert(problem);
-                None
-            }
-        });
-        failure.map_or(Ok(text), Err)
-    }
-
-    /// Like `shown`, in an f-string's format spec. Only numbers take a spec.
-    pub(crate) fn shown_spec(&mut self, value: &Value, spec: &str, span: Span) -> Result<String, Diagnostic> {
-        if spec.is_empty() {
-            return self.shown(value, span);
-        }
-        with_spec(value, spec).map_err(|message| Diagnostic::new(message, span))
-    }
-
-    /// What a value's own `def str` writes, if its type has one.
-    fn own_str(&mut self, instance: &Instance, span: Span) -> Result<Option<String>, Diagnostic> {
-        const OUT: &str = "\0out";
-        let Some(method) =
-            self.type_info(&instance.type_name).and_then(|info| info.methods.get("str").cloned())
-        else {
-            return Ok(None);
-        };
-        let writer = self.make_value("StrWriter", Vec::new(), span)?;
-        self.frame.push();
-        self.frame.declare(OUT, Value::Unit, true);
-        let place = Place { root: OUT.to_owned(), steps: Vec::new(), span };
-        let written = CallArg { name: None, value: writer, mut_place: Some(place), literal: false, span };
-        let args = vec![CallArg::plain(Value::Instance(Rc::new(instance.clone())), span), written];
-        let ran = self.call_user(&method, args, span);
-        let writer =
-            self.frame.get_mut(OUT).map(|binding| std::mem::replace(&mut binding.value, Value::Unit));
-        self.frame.pop();
-        ran?;
-        let parts = match &writer {
-            Some(Value::Instance(writer)) => writer.field("_parts").cloned(),
-            _ => None,
-        };
-        Ok(Some(match parts {
-            Some(Value::List(parts)) => parts.iter().map(display).collect(),
-            _ => String::new(),
-        }))
     }
 }

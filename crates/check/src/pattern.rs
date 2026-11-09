@@ -43,7 +43,7 @@ impl FnCx<'_> {
         self.tail = outer;
         self.merge(&paths);
         self.check_cases(&ty, arms, subject.span);
-        let refs = arms.iter().any(|arm| holds_ref(&arm.pattern));
+        let refs = arms.iter().any(|arm| arm.pattern.holds_ref());
         if refs {
             self.ref_cases(subject, arms, &ty, span);
         }
@@ -91,7 +91,7 @@ impl FnCx<'_> {
         let mut cases = Vec::new();
         for arm in arms {
             let Pattern::Variant { name, args, .. } = &arm.pattern else {
-                if holds_ref(&arm.pattern) {
+                if arm.pattern.holds_ref() {
                     self.error(
                         Diagnostic::new("`ref` names a field of the case it's in", arm.span).with_help(
                             "write it inside a case's parentheses, like `case .Button(ref clicks):`",
@@ -102,7 +102,7 @@ impl FnCx<'_> {
                 continue;
             };
             if !args.iter().any(|arg| matches!(arg, Pattern::RefBind(_))) {
-                if holds_ref(&arm.pattern) {
+                if arm.pattern.holds_ref() {
                     self.error(
                         Diagnostic::new("`ref` names a field of the case it's in", arm.span).with_help(
                             "write it right inside the case's parentheses, like `case .Button(ref clicks):`",
@@ -632,17 +632,6 @@ fn mut_arg(expr: &Expr) -> Option<Span> {
         return Some(arg.value.span);
     }
     crate::effects::children(expr).into_iter().find_map(mut_arg)
-}
-
-/// Whether a pattern has a `ref` in it anywhere.
-fn holds_ref(pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::RefBind(_) => true,
-        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
-            patterns.iter().any(holds_ref)
-        }
-        Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => false,
-    }
 }
 
 /// Whether an expression is a place that reads the same each time: a name, a field of one, or an

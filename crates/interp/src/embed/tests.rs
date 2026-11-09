@@ -14,8 +14,6 @@ pub fn next_test() -> Option<Diagnostic> {
         if failure.is_some() {
             state.temps.clear();
             state.inputs.clear();
-            state.path = None;
-            state.leaving = None;
         }
         failure
     })

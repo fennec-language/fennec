@@ -762,7 +762,7 @@ pub(crate) fn unzlib(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// The low 32 bits of a length, which is all gzip keeps of it. It goes through `u64`, so it's
-/// right where a `usize` is 32 bits, as in the playground's wasm32, and where it's 64.
+/// right whether a `usize` is 32 bits or 64.
 fn length_word(size: usize) -> u32 {
     u32::try_from(u64::try_from(size).unwrap_or(u64::MAX) & 0xFFFF_FFFF).unwrap_or(0)
 }

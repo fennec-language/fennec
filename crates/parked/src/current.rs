@@ -110,6 +110,11 @@ pub(crate) fn enter(task: TaskId, yielder: &TaskYielder) {
     CURRENT.set(Some(current));
 }
 
+/// Whether the task running on this thread has been cancelled.
+pub(crate) fn is_cancelled() -> bool {
+    RUNNING.get().is_some_and(|resumed| resumed.cancelled)
+}
+
 /// Suspends the running task, asking for `request`, until it's resumed with a `Wake`. With no
 /// task running here, it gives back `None` and the caller waits as a plain thread would. A
 /// cancelled task isn't suspended again: it's told at once that it was cancelled.

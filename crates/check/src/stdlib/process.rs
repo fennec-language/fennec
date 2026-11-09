@@ -12,9 +12,12 @@ pub(crate) const MODULE: Module =
 fn method(type_name: &str, name: &str) -> Option<Method> {
     let output = || Type::named("Output");
     Some(match (type_name, name) {
-        // The arguments are a list, never one string a shell would split.
+        // The arguments are a list, or a template whose values each stay part of one argument:
+        // never one string a shell would split. Which of them it was given is checked in
+        // `process_run_given`, since a method's parameters have one type each.
         ("Process", "run") => {
-            reads(&[Type::Str, Type::list(Type::Str)], Type::result(output(), Type::named("ProcessError")))
+            reads(&[Type::Unknown, Type::list(Type::Str)], Type::result(output(), Type::named("ProcessError")))
+                .optional(1)
         }
         // A `Process` that can run only one program.
         ("Process", "only") => reads(&[Type::Str], Type::named("Process")),

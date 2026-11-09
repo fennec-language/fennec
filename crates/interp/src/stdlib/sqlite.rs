@@ -11,71 +11,18 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
-
-use super::{Module, no_constants, no_functions};
-use crate::call::CallArg;
-use crate::interp::Interp;
-use crate::methods::no_method;
-use crate::value::{Instance, Value};
-
-pub(crate) const MODULE: Module = Module {
-    functions: &[],
-    call: no_functions,
-    constant: no_constants,
-    methods: &[("Database", method), ("Transaction", method)],
-};
-
-/// `Database`'s and `Transaction`'s methods written in Rust, as the interpreter calls them.
-fn method(_: &mut Interp<'_>, held: &Instance, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    let Some(Value::Int(handle)) = held.field("_handle") else {
-        return Err(no_method(&Value::str("Database"), method, span));
-    };
-    let args: Vec<Value> = args.into_iter().map(|arg| arg.value).collect();
-    call(*handle, method, &args, span)
-}
+use crate::value::Value;
 
 /// The `Err` holding the case of `SqlError` a failure is.
 fn failed(case: &str, reason: &str) -> Value {
     Value::Err(Rc::new(Value::made_case("SqlError", case, vec![("reason", Value::str(reason))])))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use real::{Fakes, call, open_fake, open_file};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests;
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) use playground::{Fakes, call, open_fake, open_file};
-
-/// In the playground, in a browser, there's no disk for a database.
-#[cfg(target_arch = "wasm32")]
-mod playground {
-    use fennec_syntax::{Diagnostic, Span};
-
-    use crate::value::Value;
-
-    const NONE: &str = "SQLite isn't in the playground";
-
-    #[derive(Default)]
-    pub(crate) struct Fakes(());
-
-    pub(crate) fn open_file(_: &str) -> Value {
-        crate::stdlib::fs::io_error(NONE)
-    }
-
-    pub(crate) fn open_fake(_: &mut Fakes, _: &str) -> Value {
-        crate::stdlib::fs::io_error(NONE)
-    }
-
-    #[expect(clippy::unnecessary_wraps, reason = "it's called as the real one is")]
-    pub(crate) fn call(_: i64, _: &str, _: &[Value], _: Span) -> Result<Value, Diagnostic> {
-        Ok(super::failed("Failed", NONE))
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 mod real {
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -168,8 +115,11 @@ mod real {
                 return Ok(file.clone());
             }
             if self.folder.is_none() {
-                let made =
-                    std::env::temp_dir().join(format!("fennec-test-databases-{}-{}", std::process::id(), self.test));
+                let made = std::env::temp_dir().join(format!(
+                    "fennec-test-databases-{}-{}",
+                    std::process::id(),
+                    self.test
+                ));
                 std::fs::create_dir_all(&made)?;
                 self.folder = Some(made);
             }
@@ -183,8 +133,9 @@ mod real {
     /// A new connection, which never waits on a lock itself: see the module's comment.
     fn connect(place: &Place) -> rusqlite::Result<Connection> {
         // Serialized: SQLite takes a lock of its own around each call, as well as ours.
-        let flags =
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
         let (Place::File(path) | Place::Test(path)) = place;
         let conn = Connection::open_with_flags(path, flags)?;
         // Readers go on while a writer writes, and a commit is on the disk before it's done,
@@ -285,6 +236,12 @@ mod real {
                 statement.parameter_count()
             );
             return Err(rusqlite::Error::InvalidParameterName(message));
+        }
+        // SQLite stores a NaN as NULL, so the value would quietly be gone.
+        if query.values.iter().any(|value| matches!(value, Cell::Real(x) if x.is_nan())) {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "NaN can't be stored: SQLite would turn it into NULL".into(),
+            ));
         }
         for (at, value) in query.values.iter().enumerate() {
             statement.raw_bind_parameter(at + 1, value)?;
@@ -403,7 +360,9 @@ mod real {
             let deadline = Instant::now() + length;
             let token = crate::embed::serve::next_token();
             while Instant::now() < deadline {
-                if crate::embed::serve::park_on(token, Some(deadline)) == crate::embed::serve::Parked::Cancelled {
+                if crate::embed::serve::park_on(token, Some(deadline))
+                    == crate::embed::serve::Parked::Cancelled
+                {
                     return;
                 }
             }
@@ -466,7 +425,10 @@ mod real {
                     Ok(Err(column)) => Value::Err(Rc::new(Value::made_case(
                         "SqlError",
                         "Column",
-                        vec![("name", Value::str(&column)), ("reason", Value::str("it holds text that isn't UTF-8"))],
+                        vec![
+                            ("name", Value::str(&column)),
+                            ("reason", Value::str("it holds text that isn't UTF-8")),
+                        ],
                     ))),
                     Err(err) => sql_failed(&err),
                 }
@@ -520,7 +482,8 @@ mod real {
         OPEN.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle);
         let (opened, conn) = (Arc::clone(opened), Arc::clone(conn));
         blocking(move || {
-            let conn = Arc::into_inner(conn).map(|conn| conn.into_inner().unwrap_or_else(PoisonError::into_inner));
+            let conn =
+                Arc::into_inner(conn).map(|conn| conn.into_inner().unwrap_or_else(PoisonError::into_inner));
             let Some(conn) = conn else { return };
             if undo || !conn.is_autocommit() {
                 let _ = conn.execute_batch("rollback");

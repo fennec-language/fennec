@@ -124,7 +124,7 @@ fn pinned_in(kind: &str, name: &str, source: &str) -> std::io::Result<Outcome> {
     let read = read_pinned(&text).filter(|(pinned_for, _)| *pinned_for == hash);
     read.map(|(_, outcome)| outcome).ok_or_else(|| {
         std::io::Error::other(format!(
-            "{} is missing or was pinned for other source: check what the program should do, and write it there",
+            "{} is missing or was pinned for other source: check what the program should do, and write it there, for source {hash}",
             file.display()
         ))
     })
@@ -6620,9 +6620,9 @@ def hashes(fs: Fs) -> list[str] fails IoError:
             file.write_text(chunk)?
     mut found = list[str]()
     with fs.open(\"big.txt\")? as file:
-        found.append(blake3(file.chunks(1000000)))
+        found.append(blake3(file.chunks(1000000)?))
     with fs.open(\"big.txt\")? as file:
-        found.append(sha256(file.chunks(1000000)))
+        found.append(sha256(file.chunks(1000000)?))
     found
 
 def main(stdout: Stdout, fs: Fs):
@@ -7359,7 +7359,7 @@ def reason[T](found: Result[T, NetError]) -> str:
 
 def lines_of(connection: Connection) -> int fails NetError:
     mut count = 0
-    for line in connection.lines():
+    for line in connection.lines()?:
         count += line.len()
     count
 
@@ -7385,6 +7385,10 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(reason(conn.write(\"gone\")))
     7
 
+def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
+    for line in conn.lines()?:
+        stdout.print(line)
+
 def main(net: Net, stdout: Stdout):
     stdout.print(reason(talk(net, stdout)))
     server = net.listen(0).expect(\"it listens\")
@@ -7392,8 +7396,7 @@ def main(net: Net, stdout: Stdout):
     client.write(\"looped\\n\").expect(\"it writes\")
     client.close()
     for conn in server:
-        for line in conn.lines():
-            stdout.print(line)
+        printed_lines(conn, stdout).expect(\"it reads\")
         break
     port = server.port
     server.close()

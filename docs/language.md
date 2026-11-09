@@ -595,7 +595,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 - Every check stays, unless the compiler proves it can't fail: overflow, bounds, missing keys and divide by zero. A proven check is removed in every function, not only in `@hot` ones. Built.
 - `x / 0.0` stops the program, as Python's `ZeroDivisionError` does, and so does integer division by zero. Built. The compiler removes the check where it proves the divisor isn't zero.
 - A broken `where` rule stops the program in code, and a load that breaks one fails cleanly. Built.
-- `@hot` allows a leftover overflow check, and refuses any leftover bounds, key or integer divide check as a compile error that says why. Built. It will allow a leftover float divide check too, as it does overflow. Not built yet.
+- `@hot` allows a leftover overflow check, and refuses any leftover bounds, key or integer divide check as a compile error that says why. Built. It allows a leftover float divide check too, as it does overflow. Built.
 - Speed never comes from dropping a check: there's no unchecked arithmetic and no switch that turns checks off. There's no `@fast_math` either: a float result is the same bits on every machine and every build, which replays and lockstep games depend on.
 
 ## Speed

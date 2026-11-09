@@ -181,8 +181,10 @@ jobs:
         env:
           TARGET: ${{ matrix.platform.target }}
         run: |
-          # A pull request's ref has a slash in it.
-          name="fennec-${GITHUB_REF_NAME//\//-}-${TARGET}"
+          # Named by the version it builds as, which a tag has to match: the launcher takes an
+          # archive only when its folder inside is named as the file is, by that version.
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          name="fennec-v${version}-${TARGET}"
           mkdir "$name"
           cp README.md LICENSE-MIT LICENSE-APACHE RUNTIME-LIBRARY-EXCEPTION THIRD-PARTY.md "$name/"
           from="target/${TARGET}/release"
@@ -287,12 +289,12 @@ jobs:
           path: dist
           pattern: release-*
           merge-multiple: true
-      # Named as the archives are: by the tag, or for a pull request by its number.
+      # Named as the archives are, by the version they build as.
       - run: |
-          name="${GITHUB_REF_NAME//\//-}"
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
           mkdir manifest
-          cargo run --release --locked -q -p fennec-dist -- manifest toolchain "${name#v}" dist/fennec-* > "manifest/fennec-$name.manifest"
-          cat "manifest/fennec-$name.manifest"
+          cargo run --release --locked -q -p fennec-dist -- manifest toolchain "$version" dist/fennec-* > "manifest/fennec-v$version.manifest"
+          cat "manifest/fennec-v$version.manifest"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest

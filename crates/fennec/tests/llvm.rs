@@ -8365,6 +8365,24 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A program's resident memory in KB: `ps` gives it on Unix, and `tasklist` on Windows, as
+/// `"leaks.exe","1234","Console","1","12,345 K"`. No reading fails the test, so a check of it can't
+/// pass by reading nothing.
+fn resident_kb(id: u32) -> std::io::Result<u64> {
+    let id = id.to_string();
+    let said = if cfg!(windows) {
+        Command::new("tasklist").args(["/FI", &format!("PID eq {id}"), "/FO", "CSV", "/NH"]).output()?
+    } else {
+        Command::new("ps").args(["-o", "rss=", "-p", &id]).output()?
+    };
+    let said = String::from_utf8_lossy(&said.stdout);
+    let kb = said.trim().rsplit("\",\"").next().unwrap_or("");
+    let digits: String = kb.chars().filter(char::is_ascii_digit).collect();
+    let kb = digits.parse().unwrap_or(0);
+    assert!(kb > 0, "no memory reading for the program: {said}");
+    Ok(kb)
+}
+
 /// A round that crashes lets go of everything its functions own on the way out, as a failure
 /// does: 10,000 crashing rounds, each holding a string, a list and a dict, leave the server's
 /// memory where it was. A crash once left them all behind, about 1.8 KB a round.
@@ -8442,15 +8460,14 @@ def main(net: Net, stdout: Stdout) fails NetError:
             clients.into_iter().try_for_each(|client| client.join().unwrap_or(Ok(())))
         })
     };
-    let resident = || -> std::io::Result<u64> {
-        let said = Command::new("ps").args(["-o", "rss=", "-p", &server.0.id().to_string()]).output()?;
-        Ok(String::from_utf8_lossy(&said.stdout).trim().parse().unwrap_or(0))
-    };
+    let resident = || resident_kb(server.0.id());
     // What the first rounds make for good, like the runtime's pools, is there before the count.
     crash(2_000)?;
     let before = resident()?;
     crash(10_000)?;
     let after = resident()?;
+    // Windows can't remove a program while it runs.
+    drop(server);
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");

@@ -48,8 +48,15 @@ pub(crate) fn lower(
         }
     });
     COPIES.with(|copies| copies.set(lowest));
-    let mut lowering =
-        Lowering { sources, launches, ref_matches, made: 0, returns: Vec::new(), failing: Vec::new() };
+    let mut lowering = Lowering {
+        sources,
+        launches,
+        ref_matches,
+        made: 0,
+        returns: Vec::new(),
+        failing: Vec::new(),
+        instead: None,
+    };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -166,6 +173,8 @@ struct Lowering<'s> {
     returns: Vec<Option<TypeExpr>>,
     /// Whether each function being walked says it fails, innermost last.
     failing: Vec<bool>,
+    /// What the source being written in does in place of failing, for `with src else fail E:`.
+    instead: Option<Expr>,
 }
 
 thread_local! {
@@ -277,8 +286,14 @@ impl Lowering<'_> {
             self.inner(stmt);
             let written = match &stmt.kind {
                 StmtKind::With { value, names, body: block, lock: false } => {
+                    // `with src else fail E as x:`: every way the source fails does that instead.
+                    self.instead = None;
                     let call = match &value.kind {
                         ExprKind::Try { value: inner, context: None } => inner.as_ref(),
+                        ExprKind::Else { value: inner, default } if default.leaves() => {
+                            self.instead = Some(default.as_ref().clone());
+                            inner.as_ref()
+                        }
                         _ => value,
                     };
                     let at = (call.span.start, call.span.end);
@@ -455,6 +470,9 @@ impl Lowering<'_> {
         renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
         let mut body = def.body.clone();
         rename(&mut body, &renamed);
+        if let Some(instead) = self.instead.take() {
+            fail_instead(&mut body, &instead);
+        }
         // A generic source's body names its type parameters, which are this call's types here.
         let given = given_types(def, &source.generics, &source.gives)?;
         if !given.is_empty() {
@@ -1109,6 +1127,49 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
     match crash {
         Some((_, _, done)) => std::iter::once(done.clone()).chain(otherwise.iter().cloned()).collect(),
         None => otherwise.to_vec(),
+    }
+}
+
+/// A source's body as `with src else fail E:` writes it in: each `fail` does what the `else` does
+/// instead, and so does each `?`, through `else`.
+fn fail_instead(body: &mut [Stmt], instead: &Expr) {
+    instead_of_fails(body, instead);
+    let leaving = Box::new(instead.clone());
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Try { value, context: None } = &expr.kind {
+            let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
+            expr.kind = kind;
+        }
+    });
+}
+
+/// Each `fail` in a source's body, inside what's in it but not a function of its own, made to do
+/// what `instead` does.
+fn instead_of_fails(body: &mut [Stmt], instead: &Expr) {
+    for each in body {
+        match &mut each.kind {
+            StmtKind::Fail(_) => each.kind = StmtKind::Expr(instead.clone()),
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches {
+                    instead_of_fails(block, instead);
+                }
+                if let Some(block) = otherwise {
+                    instead_of_fails(block, instead);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                instead_of_fails(body, instead);
+            }
+            StmtKind::Lend { otherwise, .. } => instead_of_fails(otherwise, instead),
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
+                if let ExprKind::Match { arms, .. } = &mut value.kind {
+                    for arm in arms {
+                        instead_of_fails(&mut arm.body, instead);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

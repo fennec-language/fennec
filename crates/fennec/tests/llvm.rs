@@ -4247,6 +4247,49 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
+/// or while finishing. A source can wrap another this way and say only its own error, and the
+/// block's own failures pass up as they are.
+#[test]
+fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "with_else_fail",
+        "error First:
+    Broke(why: str)
+
+error Second:
+    Lost(why: str)
+
+def inner(fine: bool) -> with int fails First:
+    if not fine: fail .Broke(why=\"inner\")
+    lend 1 else:
+        pass
+
+def outer(fine: bool) -> with int fails Second:
+    with inner(fine) else fail .Lost(why=\"outer\") as held:
+        lend held + 1 else:
+            pass
+
+def main(stdout: Stdout):
+    for fine in [True, False]:
+        match used(fine, stdout):
+            case Ok(_):
+                stdout.print(\"worked\")
+            case Err(problem):
+                stdout.print(\"failed\", problem)
+
+def used(fine: bool, stdout: Stdout) fails Second:
+    with outer(fine)? as value:
+        stdout.print(value)
+",
+    )?;
+    assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

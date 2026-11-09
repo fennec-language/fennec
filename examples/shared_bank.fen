@@ -1,27 +1,40 @@
-# A `shared` value can hold others, but never in a cycle. Its lock comes first: a lock body for
-# the bank can take an account's, and nothing can take them the other way round.
+# A `shared` value can hold others, but never in a cycle. One lock is never taken inside another,
+# so the bank's accounts are read out of it first, under its lock, and then taken together in one
+# `lock`, which can't be taken in opposite orders.
 
-shared Account:
+struct Account:
     total = 0
 
     def add(ref self, amount: int):
         self.total += amount
 
-shared Bank:
-    accounts: list[Account]
+struct Bank:
+    accounts: list[shared Account]
 
-    def deposit(ref self, at: int, amount: int):
-        self.accounts[at].add(amount)
+def accounts_of(bank: shared Bank) -> list[shared Account]:
+    lock bank as held:
+        return held.accounts
 
-    def total(self) -> int:
-        sum(account.total for account in self.accounts)
+def deposit(bank: shared Bank, at: int, amount: int):
+    accounts = accounts_of(bank)
+    lock accounts[at] as ref account:
+        account.add(amount)
+
+def total(bank: shared Bank) -> int:
+    mut found = 0
+    for account in accounts_of(bank):
+        lock account as held:
+            found += held.total
+    found
 
 def main(stdout: Stdout):
-    first = Account(total=1)
-    bank = Bank(accounts=[first, Account(total=2)])
-    bank.deposit(0, amount=10)
-    with bank as ref held:
-        held.accounts[1].add(5)
-        with held.accounts[0] as ref inner:
-            inner.total += 100
-    stdout.print(bank.total(), first.total)
+    shared first = Account(total=1)
+    shared second = Account(total=2)
+    shared bank = Bank(accounts=[first, second])
+    deposit(bank, at=0, amount=10)
+    lock first, second as ref inner, ref other:
+        other.add(5)
+        inner.total += 100
+    banked = total(bank)
+    lock first as held:
+        stdout.print(banked, held.total)

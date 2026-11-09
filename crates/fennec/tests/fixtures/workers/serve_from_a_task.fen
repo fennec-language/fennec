@@ -1,0 +1,20 @@
+from std.net import NetError
+from std.concurrent import Crashed
+
+def serve(net: Net) fails NetError:
+    with net.listen(0)? as server:
+        for conn in parallel(server):
+            conn.write("hi\n")?
+            break
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    match serve_in_a_task(net):
+        case Ok():
+            stdout.print("served")
+        case Err(failure):
+            stdout.print("failed:", failure)
+    stdout.print("ended")
+
+def serve_in_a_task(net: Net) fails Crashed | NetError:
+    with launch(() => serve(net))?:
+        pass

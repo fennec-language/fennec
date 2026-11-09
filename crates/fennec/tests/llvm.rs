@@ -9417,8 +9417,10 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     }
     let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
     let path = place.to_string_lossy().into_owned();
+    // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
+    let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{path}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {

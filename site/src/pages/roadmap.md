@@ -90,7 +90,7 @@ Each of these is decided and not built.
 ## After that
 
 - **Hot reload,** so a running game or server picks up a change. It's on the backlog, and its design is in progress.
-- The rest of compile-time loops over a type, and `Writer` and `Reader` for every format built on them. A generic function's loop over a type's fields already works. `where` ranges, delta encoding and quantization in `std.pack`.
+- The rest of compile-time loops over a type, and `Serializer` and `Deserializer` for every format built on them. A generic function's loop over a type's fields already works. `where` ranges, delta encoding and quantization in `std.pack`.
 - WebSocket in `std.net`.
 - GPU kernels written as plain functions.
 - `fennec context`, a kit's whole API sized for a prompt, and an MCP server for agents.

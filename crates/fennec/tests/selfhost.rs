@@ -224,6 +224,12 @@ test \"any list\" for items: list[int], n: int:
 /// Small programs that reach the checker's errors about written types, and the places
 /// types are written.
 const CHECK_CASES: &[(&str, &str)] = &[
+    // A program's own `Heap`, which isn't generic, where std's `PriorityQueue` holds its own
+    // `Heap[(P, int)]`: the library's declarations keep meaning the library's type.
+    (
+        "own_type_named_like_std",
+        "struct Heap:\n    size = 0\n\ndef main(stdout: Stdout):\n    stdout.print(Heap().size)\n",
+    ),
     (
         "call_type_arguments",
         "from std import json\n\ndef read(text: str) -> int:\n    found = json.loads[Draft](text) else 0\n    \

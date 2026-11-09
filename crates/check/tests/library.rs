@@ -85,6 +85,22 @@ fn a_field_the_format_cant_hold_is_named() {
     );
 }
 
+/// A page is made only by `html.render`, so neither it nor a field holding one is ever loaded,
+/// which would make one from text it never saw.
+#[test]
+fn a_page_is_never_loaded() {
+    let program = "
+        a = loads[Html]('{}')
+        b = loads[Article]('{}')
+    ";
+    let declarations =
+        "from std.json import loads\nfrom std.html import Html\n\nstruct Article:\n    body: Html\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        ["JSON can't hold an `Html` @ Html", "JSON can't hold `Article.body`, which is an `Html` @ Article",]
+    );
+}
+
 #[test]
 fn json_and_toml_are_called_the_right_way() {
     let program = "

@@ -101,6 +101,7 @@ impl<'p> Check<'p> {
                 }
             }
             InstKind::MakeList { .. }
+            | InstKind::ConstantList { .. }
             | InstKind::MakeSet { .. }
             | InstKind::MakeDict { .. }
             | InstKind::MakeTuple { .. }
@@ -217,7 +218,9 @@ impl<'p> Check<'p> {
     /// Building collections, and reading and changing their items.
     fn collection_inst(&mut self, inst: &InstKind) {
         match inst {
-            InstKind::MakeList { dest, items } => self.make_list(inst, *dest, items),
+            InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } => {
+                self.make_list(inst, *dest, items);
+            }
             InstKind::MakeSet { dest, items } => match self.local(*dest) {
                 Some(Type::Set(item)) => self.operands(items, &item),
                 _ => self.problems.push(format!("`{inst}` makes a set in another type")),

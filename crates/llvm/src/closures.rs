@@ -182,7 +182,7 @@ impl Emit<'_, '_, '_> {
     /// A new closure's block in the runtime's table, owned once, whose layout puts its captured
     /// values where its code reads them.
     fn table_closure(&mut self, function: &str, kinds: &[Kind]) -> Result<String, String> {
-        use fennec_interp::embed::layout::FIELDS;
+        use fennec_rt::embed::layout::FIELDS;
         let layouts = self.module.layouts;
         let id = layouts.id(&layout_name(function, kinds.len())).ok_or("a closure with no layout")?;
         let layout = layouts.get(id).ok_or("a closure with no layout")?;

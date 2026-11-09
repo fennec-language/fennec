@@ -200,7 +200,7 @@ struct Linted {
 
 impl Linted {
     fn read(cache: &fennec_build::Cache, name: &str) -> Option<Linted> {
-        use fennec_interp::embed::codec::{Decode, Reader};
+        use fennec_rt::embed::codec::{Decode, Reader};
         let bytes = cache.read("linted-files", name)?;
         let mut reader = Reader::new(&bytes);
         if String::decode(&mut reader)? != env!("FENNEC_BUILD") {
@@ -225,7 +225,7 @@ impl Linted {
     }
 
     fn write(&self, cache: &fennec_build::Cache, name: &str) {
-        use fennec_interp::embed::codec::{Encode, Writer};
+        use fennec_rt::embed::codec::{Encode, Writer};
         let mut writer = Writer::default();
         env!("FENNEC_BUILD").encode(&mut writer);
         self.facts.encode(&mut writer);

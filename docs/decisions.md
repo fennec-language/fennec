@@ -1234,12 +1234,13 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
-- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order.
+- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order. It's a `std` type over two read-only lists, the sorted paths and their bytes, with `get(path) -> bytes?`, `len()`, and `keys()`, `values()` and `items()` in sorted order.
 - Both are views into the program's read-only data: no copy, nothing loaded at startup, and readable whole or in chunks, since the OS pages it in on demand.
 - The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
+- The kit's edge is the folder holding the nearest `kit.toml`, and for a lone `.fen` file with no `kit.toml`, the file's own folder. Embedding anything above that folder, or anything a symlink reaches outside it, is a compile error. In Chris's words, it's "wherever the kit.toml is, it cannot be above it", and "only things in that folder". This closes the hole where a lone file's `embed` could follow a symlink out of its folder.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A single `.fen` file with no kit has no kit folder to stay inside yet. `embed_folder` isn't built yet.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file with no `kit.toml` can still follow a symlink out of its folder today; the rule above closes that. `embed_folder` isn't built yet.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 
@@ -1364,6 +1365,7 @@ match tok:
 - A kit's version is `fennec = "0.4.2"` at the top of its `kit.toml`, found by walking up from the current folder.
 - A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set. With neither, the command stops and says how to set one. In a kit, `--version` is an error, since `kit.toml` says.
 - `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
+- `fennec toolchain link dev <path>` is for whoever works on Fennec itself: it runs the `fennec` in a folder of their own, like a checkout's `target/release`, with whatever LLVM that build finds, and fetches nothing. A kit asks for it with `fennec = "dev"`, which is never pinned, and `+dev` runs it once. `fennec toolchain remove dev` unlinks it and leaves the build.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.

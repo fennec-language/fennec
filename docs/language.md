@@ -9,7 +9,7 @@ Fennec reads at a glance, builds almost instantly, and is built to run as fast a
 - A name holds its own value.
 - `mut` lets a name change.
 - To change something in a list, write to it there.
-- `ref` lets a loop or a function change yours.
+- `ref` lets a loop, a function or a local name change yours.
 
 ```fennec
 def heal_all(ref units: list[Unit]):
@@ -25,7 +25,7 @@ def main(stdout: Stdout):
     updated_health = target.health + 1
 ```
 
-There's no inline `ref`, and no scoped `with units[target_id] as ref target:` either: write directly, `units[target_id].health -= 1`, or call a `ref self` method on the element's type. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
+A local `ref target = units[target_id]` links a name to a place for several changes in a row. It lasts until its last use, inside its block, and while it's alive nothing else reaches that container. It's checked at compile time and costs nothing at run time. Not built yet: today it's refused, so write directly, `units[target_id].health -= 1`, or call a `ref self` method on the element's type. There's no scoped `with units[target_id] as ref target:`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare
 
@@ -176,6 +176,8 @@ target = units.get(enemy.target_id) else return    # may be gone
 units[unit_id].health -= 1                         # sure: stops loudly if wrong
 ```
 
+`units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone. Not built yet.
+
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
 A copy of a `Table` keeps its tag, so an `Id` from before the copy works in both, and generations are unique across copies, so an item added to one copy can't be found through the other. Not built yet: today an item added to each copy can get the same `Id`.
@@ -184,7 +186,7 @@ An `Id` is local to its process's `Table`. To name something across servers, sen
 
 ## Sharing, resources and tasks
 
-Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now, however many calls down it's taken: take them together in one. Not built yet: `TaskGroup`, and pools. A `shared Name:` declaration, and a `with` on a `shared` value, are refused, and `fennec fix` rewrites what's mechanical: `struct Name:`, `shared Name` where the type is written, `shared x = Name()` and `lock`. A `def del` is refused.
+Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now, however many calls down it's taken: take them together in one. Not built yet: pools. A `shared Name:` declaration, and a `with` on a `shared` value, are refused, and `fennec fix` rewrites what's mechanical: `struct Name:`, `shared Name` where the type is written, `shared x = Name()` and `lock`. A `def del` is refused.
 
 Four questions, each with its own words:
 
@@ -274,7 +276,7 @@ with fs.create("save.dat")? as file:
 - `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles and the note: a cleanup that fails is added to the block's failure as a note, and the rest of the cleanup is skipped. Running it on a crash is built natively: the crash waits while the cleanups run, innermost first, and a cleanup that crashes too is said, with the first crash the one that goes on. A cleanup's `x = f()?` is a note too, and the rest of the cleanup is skipped. A `?` deeper in a line still replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
-- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
+- `for conn in parallel(server):` lends each connection to its own round's task, closed when that round ends. It's a plain loop, not `for ref`, and a connection's methods take `self`. A generator can't `lend` its items: there's no `Iterator[with T]`.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
 
 ### `launch` and channels
@@ -303,7 +305,6 @@ def main(speakers: Speakers, input: Input):
 - The arrow is the call you'd write anyway. `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it.
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock))?:`.
 - The `?` on its line covers the task: `with launch(...)` fails with the task's errors and `Crashed`, from `std.concurrent`, where the block ends. `inbox_size=` is 16 unless given. Checked, and written in around `std.intrinsics`' `launch` and `launch_end`. Built natively: a task runs on the runtime's threads, with what it captured copied for it.
-- `TaskGroup`, from `std.concurrent`, holds a number of tasks known only at run time, and stops them all when its block ends.
 - Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself opens with a plain function, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `channel[T](size)` is the only way to make one, since `Channel`'s constructor is private. It builds natively, and so do `send`, `receive` and `for job in jobs`, each message copied across as it's sent.
 - A channel delivers each message to one receiver by default, as a work queue. `to=.Every` gives every listener every message, as in `with channel[Hit](size=1024, to=.Every) as hits:`, and receiving reads the same either way, `for hit in hits`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. A listener asks with `for hit in hits.listen(when_behind=.DropOldest)`. There's no separate events type. Built natively.
 - Dev builds stop with a report when tasks are waiting only on each other, since a hang through channels alone can't be ruled out at compile time.

@@ -25,6 +25,11 @@ target=${2:-}
 (cd "$repo" && cargo build --locked --quiet --release -p fennec-launcher --bins --example dry_run ${target:+--target "$target"})
 built="$repo/target/${target:+$target/}release"
 work=$(mktemp -d)
+# On Windows the programs are Windows' own, which read `C:/...` and not Git Bash's `/tmp/...`.
+if [ -n "$exe" ]; then
+  work=$(cygpath -m "$work")
+  archive=$(cygpath -m "$archive")
+fi
 home="$work/home"
 mkdir -p "$home" "$work/bin" "$work/dist"
 cp "$built/fennec-launcher$exe" "$work/bin/fennec$exe"

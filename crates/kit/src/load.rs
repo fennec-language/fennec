@@ -157,7 +157,7 @@ fn with_pack_lock(program: &mut Program, root: &Path) {
         value: fennec_syntax::Expr { kind: fennec_syntax::ExprKind::Bytes(blob.clone()), span: at },
         span: at,
     });
-    program.embedded.push(crate::Embedded { path, data: blob });
+    program.embedded.push(Embedded { path, data: blob });
 }
 
 /// The text of every file of a kit, without parsing any of it, by its module name, with the
@@ -183,6 +183,11 @@ pub(crate) fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
         paths.push((module.join("."), path));
     }
     paths.push(("kit.toml".to_owned(), root.join("kit.toml")));
+    // The program holds it, so one appearing or changing changes the program.
+    let lock = root.join("pack.lock");
+    if lock.is_file() {
+        paths.push(("pack.lock".to_owned(), lock));
+    }
     paths.extend(dependency_paths(&root));
     Some(paths)
 }

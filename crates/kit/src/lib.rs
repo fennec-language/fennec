@@ -9,6 +9,8 @@
 mod embed;
 mod init;
 mod load;
+
+pub use load::PACK_LOCK;
 mod scope;
 mod starter;
 

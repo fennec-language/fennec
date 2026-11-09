@@ -184,7 +184,7 @@ fn embedding_kit(name: &str, test: &str) -> std::io::Result<PathBuf> {
     std::fs::write(dir.join("kit.toml"), manifest)?;
     std::fs::write(dir.join("src/data.bin"), [1, 2])?;
     let main = format!(
-        "DATA = embed(\"data.bin\")\n\ndef main(stdout: Stdout):\n    stdout.print(DATA[0])\n\n{test}"
+        "DATA = embed_file(\"data.bin\")\n\ndef main(stdout: Stdout):\n    stdout.print(DATA[0])\n\n{test}"
     );
     std::fs::write(dir.join("src/main.fen"), main)?;
     Ok(dir)
@@ -215,7 +215,8 @@ fn an_edit_to_an_embedded_file_is_seen_in_a_single_file() {
     let dir = scratch("embed_file").unwrap();
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
     std::fs::write(dir.join("data.bin"), [1]).unwrap();
-    std::fs::write(&game, "def main(stdout: Stdout):\n    stdout.print(embed(\"data.bin\")[0])\n").unwrap();
+    std::fs::write(&game, "def main(stdout: Stdout):\n    stdout.print(embed_file(\"data.bin\")[0])\n")
+        .unwrap();
     for _ in 0..2 {
         assert_eq!(stdout(&run(&home, &game).unwrap()), "1\n");
     }
@@ -228,8 +229,8 @@ fn an_edit_to_an_embedded_file_is_seen_in_a_single_file() {
 fn a_program_with_its_own_embed_function_calls_it() {
     let dir = scratch("embed_own").unwrap();
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
-    let source = "def embed(path: str) -> int:\n    path.len()\n\n\
-        def main(stdout: Stdout):\n    stdout.print(embed(\"no such file\"))\n";
+    let source = "def embed_file(path: str) -> int:\n    path.len()\n\n\
+        def main(stdout: Stdout):\n    stdout.print(embed_file(\"no such file\"))\n";
     std::fs::write(&game, source).unwrap();
     assert_eq!(stdout(&run(&home, &game).unwrap()), "12\n");
     std::fs::remove_dir_all(&dir).unwrap();

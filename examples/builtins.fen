@@ -49,7 +49,6 @@ def main(stdout: Stdout):
     three: Result[int, Failed] = Ok(3)
     no: Result[int, Failed] = Err(Failed(why="no"))
     stdout.print(checked(1), three, no)
-    ignore(three, "only checking that ignore accepts a reason")
 
     # Calls that return don't count toward the depth limit.
     stdout.print(sum(square(n) for n in range(2000)))

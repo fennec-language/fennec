@@ -136,6 +136,9 @@ struct Flow<'f> {
     /// The parameters that aren't `mut`, which the caller goes on holding.
     callers: HashSet<usize>,
     by_name: &'f HashMap<&'f str, &'f Function>,
+    /// The locals that are `shared` handles: another name for the cell, never a holder of what's
+    /// in it, so changing what's in the cell doesn't copy it for them.
+    handles: HashSet<usize>,
 }
 
 impl Flow<'_> {
@@ -174,12 +177,17 @@ impl Flow<'_> {
             if value.local == place.local
                 && place.path.starts_with(&value.path)
                 && *holder != place.local
+                && !self.handles.contains(holder)
                 && alive(*holder)
             {
                 return Some((*holder, *inside));
             }
-            (*holder == place.local && !inside && value.local != place.local && alive(value.local))
-                .then_some((value.local, false))
+            (*holder == place.local
+                && !inside
+                && value.local != place.local
+                && !self.handles.contains(&value.local)
+                && alive(value.local))
+            .then_some((value.local, false))
         })?;
         if self.callers.contains(&holder) {
             return Some(Why::Caller);
@@ -382,6 +390,7 @@ fn walk(
         live: live_after(function),
         callers: (0..function.params).filter(|at| !function.mut_params.contains(at) && !handle(at)).collect(),
         by_name,
+        handles: (0..function.locals.len()).filter(|at| handle(at)).collect(),
     };
     let count = function.blocks.len();
     let mut entry: Vec<Held> = vec![Held::new(); count];

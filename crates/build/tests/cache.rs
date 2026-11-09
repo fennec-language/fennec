@@ -25,6 +25,21 @@ fn entry(path: &Path, size: usize, age: u64) -> std::io::Result<()> {
     File::options().write(true).open(path)?.set_modified(SystemTime::now() - Duration::from_secs(age))
 }
 
+/// Makes a folder look last changed `age` seconds ago.
+fn age_folder(folder: &Path, age: u64) -> std::io::Result<()> {
+    let mut options = File::options();
+    options.read(true);
+    // Windows opens a folder only when asked for its backup semantics, and changes its times
+    // only through a handle that may write its attributes.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES and FILE_FLAG_BACKUP_SEMANTICS.
+        options.read(false).access_mode(0x0100).custom_flags(0x0200_0000);
+    }
+    options.open(folder)?.set_modified(SystemTime::now() - Duration::from_secs(age))
+}
+
 fn modified(path: &Path) -> std::io::Result<SystemTime> {
     std::fs::metadata(path)?.modified()
 }
@@ -210,7 +225,7 @@ fn old_scratch_work_is_swept_and_current_work_stays() -> std::io::Result<()> {
     entry(&home.join("work/fennec-llvm-1-a-0/f0.ll"), 10, 0)?;
     let left = home.join("work/fennec-llvm-2-b-0");
     entry(&left.join("f0.ll"), 10, 7200)?;
-    File::options().read(true).open(&left)?.set_modified(SystemTime::now() - Duration::from_secs(7200))?;
+    age_folder(&left, 7200)?;
     entry(&home.join("work/fennec-run-3-c-0"), 10, 7200)?;
     assert_eq!(fennec_build::sweep_work(&home, fennec_build::WORK_KEPT), 2);
     assert!(home.join("work/fennec-llvm-1-a-0/f0.ll").is_file(), "current work stays");

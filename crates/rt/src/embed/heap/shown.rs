@@ -1,5 +1,5 @@
 //! The text of a value, read straight from its block by its shape: what printing a list or a
-//! struct shows, as `format` writes it for the interpreter, with nothing made along the way.
+//! struct shows, as `format` writes it for a `Value`, with nothing made along the way.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;

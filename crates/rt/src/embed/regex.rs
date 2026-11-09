@@ -1,5 +1,5 @@
 //! Regular expressions for native code, by the addresses of strings' blocks. A pattern is
-//! compiled once and kept, as the interpreter does.
+//! compiled once and kept.
 //!
 //! What's found comes back as numbers, so this knows nothing of how `Match` is laid out: a list
 //! of ints, in characters, with each match's start and end, then the same for each of its

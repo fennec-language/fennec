@@ -1,6 +1,6 @@
 //! `std.sqlite`: the methods of a `Database` and a `Transaction` written in Rust, by the handle
-//! each holds, which only these make, as native code calls them and the interpreter does. SQLite itself is compiled in,
-//! through rusqlite, whose `unsafe` stays its own.
+//! each holds, which only these make. SQLite itself is compiled in, through rusqlite, whose
+//! `unsafe` stays its own.
 //!
 //! A database has a connection its own queries run on, one at a time, and each transaction takes
 //! a connection of its own, so two tasks' transactions never mix. Every wait on SQLite runs on
@@ -275,7 +275,7 @@ mod real {
     /// What a query found, or, for text that isn't UTF-8, its column's name.
     fn query(conn: &Connection, query: &Query) -> rusqlite::Result<Result<Found, String>> {
         let mut statement = prepared(conn, query)?;
-        let columns: Vec<String> = statement.column_names().into_iter().map(str::to_owned).collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let width = columns.len();
         let mut found = Found { columns, ..Found::default() };
         let mut rows = statement.raw_query();

@@ -126,6 +126,8 @@ pub struct GeneratorDef {
 pub struct EnumDef {
     pub name: String,
     pub cases: Vec<CaseDef>,
+    /// Whether it's an `error` with cases, held like an enum: an error carries notes.
+    pub error: bool,
 }
 
 /// A type `std.pack` saves, as `pack.lock` keeps it.

@@ -1,7 +1,6 @@
 //! `std.net`: TCP and UDP through the `Net` capability. A `Connection`, `Server` or `UdpSocket` holds
 //! a private handle into the program's table of open sockets, so code that was never given `Net` can't
-//! make one up to reach a socket. What's real here needs nothing of the interpreter, as native
-//! code runs it too. In a test, the network is in memory, in `Fake`.
+//! make one up to reach a socket. In a test, the network is in memory, in `Fake`.
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
 //! says why, and a server with no connection waiting is done.
 
@@ -542,8 +541,7 @@ fn waits_forever(what: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("{what}, and nothing else runs while a test waits"), span)
 }
 
-/// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network: needing nothing of the
-/// interpreter, for native code too.
+/// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network.
 pub(crate) fn real_net(
     method: &str,
     args: &[Value],

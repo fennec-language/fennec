@@ -1435,6 +1435,34 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
 
+    /// The list a `pop` takes its last item off: the local's, when it has one owner, and otherwise
+    /// what the runtime gives back, a copy, or the same list when a lock's rollback log has marked
+    /// it, which then holds the item for a crash to put back. A marked list never reads as having
+    /// one owner, so nothing here says it has one after. One checked once already, on the way in,
+    /// was made alone then, a marked one copied, so it isn't asked about again.
+    pub(crate) fn popped_from(&mut self, local: LocalId) -> String {
+        if self.known.alone_once_checked(local) {
+            let (list, slot) = (self.temp(), self.slot(local));
+            self.line(&format!("{list} = load ptr, ptr {slot}"));
+            return list;
+        }
+        self.declare("declare ptr @fennec_list_pop_unshare(ptr) nounwind");
+        let slot = self.slot(local);
+        let list = self.temp();
+        let (ok, shared) = (self.label("alone"), self.label("shared"));
+        self.line(&format!("{list} = load ptr, ptr {slot}"));
+        let alone = self.alone(&list);
+        let came_from = self.current.clone();
+        self.line(&format!("br i1 {alone}, label %{ok}, label %{shared}, !prof !8"));
+        let (copy, resolved) = (self.temp(), self.temp());
+        self.cold_block(&format!(
+            "{shared}:\n  {copy} = call ptr @fennec_list_pop_unshare(ptr {list})\n  store ptr {copy}, ptr {slot}\n  br label %{ok}\n"
+        ));
+        self.start_block(&ok);
+        self.line(&format!("{resolved} = phi ptr [ {list}, %{came_from} ], [ {copy}, %{shared} ]"));
+        resolved
+    }
+
     /// Sees that the local's list has no other owner, copying it if it has, and gives it back.
     pub(crate) fn check_alone(&mut self, local: LocalId) -> String {
         self.declare("declare ptr @fennec_list_unshare(ptr) nounwind");

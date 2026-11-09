@@ -27,7 +27,7 @@ The only exceptions are the primitives, `int`, `float`, `bool` and the raw `Buff
 
 ## Values and memory
 
-**`mut` is a local variable that can change, and `ref` is a link to something else.** `mut` is always your own value, so nothing outside the function sees its changes unless it's returned or handed to a `ref`. `ref` is a loop or a function being handed a place to change, and that includes `ref self`.
+**`mut` is a local variable that can change, and `ref` is a link to something else.** `mut` is always your own value, so nothing outside the function sees its changes unless it's returned or handed to a `ref`. `ref` is a loop, a function or a local being handed a place to change, and that includes `ref self`.
 ```fennec
 mut total = 0
 mut scores_copy = scores                 # your own copy
@@ -41,11 +41,14 @@ for ref unit in units:
 ```
 - A `ref` needs a `mut` source or another `ref`. So the chain always starts at a `mut` local, and a plain name never changes. `heal(ref make_unit())` is an error, since the change would be lost.
 - A `ref` can't be stored, returned or captured by a closure that outlives it, so there are no lifetimes to write.
-- There's no inline `ref x = place` for now. One change is a direct write, `units[unit_id].health -= 1`, and several are a method, `units[unit_id].take_hit(damage, now)`. Adding it later would break nothing.
+- A local `ref name = place` links a name to a place for several changes in a row, as in `ref target = units[target_id]`. It lasts until its last use, and never past the end of its block. While it's alive it's the only way to the container it points into, so nothing else reads or changes that container meanwhile. It's checked at compile time and costs nothing at run time. Chris decided this on 2026-11-09. Not built yet: today `ref first = units[0]` is refused with "there's no inline `ref`". This replaces the rule that `ref` is only for loops and parameters, with no inline `ref x = place`.
 - During the rename, the old `mut x = place` that made a link is a compile error, so nothing silently changes meaning.
 
 Built: the compiler takes `ref` in these places, and `fennec fix --mut-to-ref` rewrites the old `mut` forms. This replaces the rule that `mut x = place` edits a place, along with `mut a, b = xs.pair(i, j)`.
 *Why:* `mut` was doing two opposite jobs with one word. `mut unit = units[unit_id]` was a link and `mut unit = find(units, unit_id)` was a copy, and a write to the second was silently lost. Now a line says which it is.
+
+**The one-line `x if c else y` stays,** as in `kind = "boss" if health > 500 else "minion"`. It's Python's conditional expression, for a value that depends on one condition, and `match` covers more. Chris decided this on 2026-11-09. Built.
+*Why:* A name that can't change is set once, by one expression, and this is the form Python people already write for it.
 
 **A loop can change items, but not how many there are.** There are four forms, and `ids()` and `values()` go away:
 ```fennec
@@ -181,6 +184,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 **`Table` and `Id[T]` are the way to point at things.** `Table` was called `IdMap`, in `std.game`, until 2026-11-05; both are in `std.collections` now. An `Id[Enemy]` is an index, a generation and a tag for its map, made by a `Table[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
 - `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
+- `map.update(id, value) -> bool` puts a new value at a live ID and says whether it was there, for when the item may be gone. Chris decided this on 2026-11-09. Not built yet.
 - A map reports how many items are live, which makes a forgotten item visible.
 - Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
 - A copy of a `Table` keeps its tag, so an `Id` made before the copy finds its item in both. Generations are unique across copies, so an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Not built yet: today an item added to each copy can get the same `Id`, so one copy's `Id` finds the other's item.
@@ -625,7 +629,7 @@ def write[T, S: Serializer](x: T, ref out: S):
 - A kit may define its own annotations for fields, like `@column("todo_id")` for a database kit, and generic code reads them through `fields(T)`.
 - A function takes only the language's own: `@hot`, and std's `@intrinsic`. A kit can't define one for functions, so a route is registered in plain code, `router.get("/todos/{id}", show_todo)`, as a function value, and the table it builds is ordinary data.
 - Built: `@skip` and `@serialize` on fields, and refusing any other annotation, on a field or a function, with an error that lists the ones there are. Not built yet: annotations a kit defines, reading a field's annotations through `fields(T)`, and a router in `std`. `for f in fields(T):` is built, with each field's name and value.
-- Chris decided the kit and function rules on 2026-11-07, which settles whether kits can define annotations.
+- Chris decided the kit and function rules on 2026-11-07, which settles whether kits can define annotations, and confirmed on 2026-11-09 that a kit's annotations on fields are data only.
 *Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior. On a field, an annotation only describes data. On a function, it would invite decorators that change what a call does out of sight, and a route list in plain code is already one place to read every route.
 
 **Generic Fennec code compiles to a copy for each type, in every build.** A generic function or type is copied for each set of types a program uses it with, before any backend sees it, so `[T: Shape]` and `shape: Shape` compile the same and every call is direct. Development and release builds lower the same copies, and each is cached by a hash of its text. A program can ask for up to 2,000 copies. The runtime's own list and dict operations are still shared by design, taking an element number, since they're runtime code, not generic Fennec code. This corrects the entry that said generics compile the way Swift's do, with development builds sharing one copy.
@@ -745,8 +749,8 @@ def transaction(self) -> with Transaction fails DbError:
 **A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
 *Why:* The caller's block would run under a lock it can't see, and could wait in it.
 
-**A generator can `lend` each item, closed when that round of the loop ends.** `def clients(server: Server) -> Iterator[with Connection]:` is how `for conn in parallel(server)` works, and each item belongs to its own round's task. Not built yet.
-*Why:* Then a server loop is plain Fennec that any kit could write, not something only the standard library can do.
+**A generator can't `lend` its items: there's no `Iterator[with T]`.** `for conn in parallel(server)` lends each connection to its own round's task, and that's built in. Chris decided this on 2026-11-09. It was never built. This replaces the plan for a generator to `lend` each item, as `def clients(server: Server) -> Iterator[with Connection]:`.
+*Why:* Servers are the one case that needed it, and `parallel(server)` already covers them.
 
 **Tasks started inside a `with` may borrow what it lent.** From many tasks at once, only its read-only methods, like a server's `accept`. `with conn.split() as reader, writer:` gives a connection's two sides, for one task reading while another writes.
 *Why:* Those tasks always end before the block does, so the borrow can't outlive the resource.
@@ -896,6 +900,9 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
+
+**A program's log levels come from `FENNEC_LOG`.** `Log.from_env(env, out=...)` makes a `Log` from it, as in `FENNEC_LOG="info,physics=debug"`: `info` for everything, and `debug` for the part named `physics`. `log.named("physics")` gives a child `Log` with that name, and each child takes its own level from the variable. Chris decided this on 2026-11-09. Not built yet: today a `Log` is made with its `level=` given in code, and has no names. How logging handles its own failures is still open.
+*Why:* Turning up one part's logging without a rebuild is what people reach for when something goes wrong, and the levels come from `env`, so nothing global is read.
 
 **`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000)?)` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
 
@@ -1095,8 +1102,8 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
 **An inbox's enum is its protocol.** You can only send real cases, and the task's `match` must handle every one.
 *Why:* A typed message is checked at both ends at compile time.
 
-**`TaskGroup` holds tasks whose number is known only at run time.** It's in `std.concurrent`, written in plain Fennec, and stops them all when its block ends.
-*Why:* Every task still belongs to a block you can see, whether it's one or a thousand.
+**There's no `TaskGroup`.** Chris cut it on 2026-11-09. It was never built. `to=.Every` and `when_behind=` on channels stay. This replaces `TaskGroup`, in `std.concurrent`, for tasks whose number is known only at run time.
+*Why:* `parallel` and `with launch` cover the programs written so far, and every task still belongs to a block you can see.
 
 **Stopping a task drains it, then cuts it short.** When a `with launch` block ends normally, the task's inbox closes and the task finishes what's in it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once. A wait cut short by a stop ends the task quietly, with no failure reported.
 *Why:* A normal end never loses queued work, which would make tests flaky, and a stuck task can't hang its parent forever.
@@ -1373,6 +1380,9 @@ match tok:
 
 **Windows ships self-contained, after a license check.** `opt`, `llc`, `llvm-link`, `lld` and MinGW's libraries ship with `fennec`, so nothing else needs installing. A person has to check the licenses first.
 
+**Every release ships LLD,** LLVM's linker, beside `fennec`, so building a program needs no system linker. Chris decided this on 2026-11-09. Not built yet: Windows releases ship it, and on macOS and Linux programs still link through the system's `cc`.
+*Why:* A linker that comes with the release links the same way on every machine, and a missing or different system linker can't break a build.
+
 **Editions let syntax change after 1.0.** A kit names its edition in `kit.toml`, as in `edition = "2026"`, and `fennec fix` moves it to the next one.
 
 **Each Fennec version is one self-contained compiler binary.** It holds `run`, `build`, `fmt`, `test`, and Den search and install, with LLVM linked into it. It needs no system libraries and no separate LLVM download.
@@ -1628,11 +1638,11 @@ Every build and the language server share one build engine and store, described 
 **Debug info is planned,** so a debugger can step through Fennec code, a stack trace is readable, and a crash maps back to its source line. Not built yet: today no DWARF or stepping information is written. This replaces the rule that builds carry no debug info.
 *Why:* Games and native code need a debugger, even when tests and replay do most of the work.
 
-**Hot reload is on the backlog, and its design is in progress.** It's for changing code while a game or a server runs. The plan so far is all or nothing:
+**Hot reload is deferred, and its design is in progress.** It's for changing code while a game or a server runs. The plan so far is all or nothing:
 - Changed functions are swapped in only at a safe point: the top of a loop, or between requests. The state the main loop owns stays as it was.
 - Before anything changes, the live data is checked against the new code: fields matched by name, new fields taking their defaults, and every `where` rule run again. When a struct's fields change, the state is saved with `std.pack` and loaded back into the new types.
 - If every check passes, the reload applies completely. If any fails, it's refused with a message saying why, and the old code keeps running. A reload is never half-applied.
-- Chris decided this on 2026-11-08, and has since moved it to the backlog while its design is worked out. Not built yet. This replaces the rule that there's no hot reload, and the plan that swapped code between frames without checking first.
+- Chris decided this on 2026-11-08, and deferred it on 2026-11-09 while its design is worked out. Not built yet. This replaces the rule that there's no hot reload, and the plan that swapped code between frames without checking first.
 *Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small. Checking first means a reload that can't work costs nothing, and a half-applied one would leave data the new code can't trust.
 
 **The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.

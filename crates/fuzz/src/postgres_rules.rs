@@ -1,0 +1,288 @@
+//! The `postgres` target: `std.postgres`'s `PgReader`, built natively, fed any bytes as a
+//! server's, all at once and in small pieces. Both ways have to give the same messages, and those
+//! have to be what a reader here makes of the bytes as Postgres's protocol (3.0) writes them: each
+//! message whole, with nothing left over in it and no count below zero, or a failure.
+
+/// The program that reads the input as a server's messages, all at once and then a few bytes at
+/// a time, printing a line for each message, then `fail` or `end`.
+pub(crate) const READER: &str = "\
+from std.postgres import PgMessage, PgReader
+
+def shown(message: PgMessage) -> str:
+    match message:
+        case .AuthOk:
+            \"auth 0\"
+        case .AuthCleartext:
+            \"auth 3\"
+        case .AuthSasl(mechanisms=mechanisms):
+            f\"sasl {mechanisms.len()}\"
+        case .AuthSaslContinue(data=data):
+            f\"auth 11 {data.len()}\"
+        case .AuthSaslFinal(data=data):
+            f\"auth 12 {data.len()}\"
+        case .AuthOther(code=code):
+            f\"auth {code}\"
+        case .Setting(name=name, value=value):
+            f\"setting {name.len()} {value.len()}\"
+        case .BackendKey(process=process, secret=secret):
+            f\"key {process} {secret}\"
+        case .Ready(status=status):
+            f\"ready {status.len()}\"
+        case .Failed(fields=fields):
+            f\"failed {fields.len()}\"
+        case .Notice(fields=fields):
+            f\"notice {fields.len()}\"
+        case .Columns(names=names, types=types):
+            f\"columns {names.len()} {types.len()}\"
+        case .Row(cells=cells, present=present):
+            f\"row {cells.len()} {present.len()}\"
+        case .Done(tag=tag):
+            f\"done {tag.len()}\"
+        case .ParseComplete:
+            \"other 49\"
+        case .BindComplete:
+            \"other 50\"
+        case .NoData:
+            \"other 110\"
+        case .EmptyQuery:
+            \"other 73\"
+        case .Other(kind=kind):
+            f\"other {kind}\"
+
+def read_all(ref reader: PgReader) -> list[str]:
+    mut said = list[str]()
+    while said.len() < 10000:
+        match reader.next():
+            case Ok(message):
+                if message is None:
+                    said.append(\"end\")
+                    return said
+                said.append(shown(message))
+            case Err(_):
+                said.append(\"fail\")
+                return said
+    said
+
+def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
+    data = fs.read_bytes(args[0])?
+    mut whole = PgReader()
+    whole.feed(data)
+    for line in read_all(ref whole):
+        stdout.print(line)
+    stdout.print(\"--\")
+    mut pieces = PgReader()
+    mut said = list[str]()
+    mut at = 0
+    mut size = 1
+    while at < data.len():
+        end = at + size if at + size < data.len() else data.len()
+        pieces.feed(data[at:end])
+        at = end
+        size = size % 7 + 1
+        mut more = True
+        while more:
+            match pieces.next():
+                case Ok(message):
+                    if message is None:
+                        more = False
+                    else:
+                        said.append(shown(message))
+                case Err(_):
+                    said.append(\"fail\")
+                    more = False
+                    at = data.len() + 1
+    if at == data.len() + 1:
+        for line in said:
+            stdout.print(line)
+    else:
+        for line in said:
+            stdout.print(line)
+        stdout.print(\"end\")
+";
+
+/// The longest message `std.postgres` takes.
+const LONGEST: i64 = 1 << 30;
+
+/// A message's body, read from its start.
+struct Body<'a> {
+    data: &'a [u8],
+    at: usize,
+}
+
+/// Why reading stopped: the bytes break the protocol, or it's not certain what they should give.
+#[derive(Debug, PartialEq, Eq)]
+enum Broken {
+    Fails,
+    Unpromised,
+}
+
+impl Body<'_> {
+    fn take(&mut self, size: usize) -> Result<&[u8], Broken> {
+        let taken = self.data.get(self.at..self.at + size).ok_or(Broken::Fails)?;
+        self.at += size;
+        Ok(taken)
+    }
+
+    fn int16(&mut self) -> Result<i64, Broken> {
+        let bytes = self.take(2)?;
+        Ok(i64::from(i16::from_be_bytes([*bytes.first().unwrap_or(&0), *bytes.get(1).unwrap_or(&0)])))
+    }
+
+    fn int32(&mut self) -> Result<i64, Broken> {
+        let bytes: [u8; 4] = self.take(4)?.try_into().map_err(|_| Broken::Fails)?;
+        Ok(i64::from(i32::from_be_bytes(bytes)))
+    }
+
+    fn text(&mut self) -> Result<String, Broken> {
+        let rest = self.data.get(self.at..).unwrap_or_default();
+        let end = rest.iter().position(|byte| *byte == 0).ok_or(Broken::Fails)?;
+        let text = std::str::from_utf8(rest.get(..end).unwrap_or_default()).map_err(|_| Broken::Fails)?;
+        self.at += end + 1;
+        Ok(text.to_owned())
+    }
+
+    fn fields(&mut self) -> Result<usize, Broken> {
+        let mut codes = Vec::new();
+        while let Some(code) = self.data.get(self.at).copied().filter(|code| *code != 0) {
+            if !code.is_ascii() {
+                return Err(Broken::Unpromised);
+            }
+            self.at += 1;
+            self.text()?;
+            if !codes.contains(&code) {
+                codes.push(code);
+            }
+        }
+        // The zero byte that ends them. One missing is passed over (reported).
+        self.take(1).map_err(|_| Broken::Unpromised)?;
+        Ok(codes.len())
+    }
+
+    /// Fails unless the whole body has been read. `std.postgres` passes over what's left, so for
+    /// now that's not certain. Reported: these marks come out, and each becomes `Fails`, once
+    /// `postgres_refuses_messages_a_server_never_sends` passes.
+    fn done(&self) -> Result<(), Broken> {
+        if self.at == self.data.len() { Ok(()) } else { Err(Broken::Unpromised) }
+    }
+}
+
+/// What a message of type `kind` with `body` should print as.
+fn message(kind: u8, data: &[u8]) -> Result<String, Broken> {
+    let mut body = Body { data, at: 0 };
+    let shown = match kind {
+        b'R' => match body.int32()? {
+            10 => {
+                let mut count = 0;
+                while !body.text()?.is_empty() {
+                    count += 1;
+                }
+                format!("sasl {count}")
+            }
+            code @ (11 | 12) => format!("auth {code} {}", data.len().saturating_sub(4)),
+            code => format!("auth {code}"),
+        },
+        b'S' => format!("setting {} {}", body.text()?.chars().count(), body.text()?.chars().count()),
+        b'K' => format!("key {} {}", body.int32()?, body.int32()?),
+        b'Z' => match data {
+            [status] if status.is_ascii() => {
+                body.at = 1;
+                "ready 1".to_owned()
+            }
+            // A status that isn't one byte reads as "" (reported).
+            _ => return Err(Broken::Unpromised),
+        },
+        b'E' => format!("failed {}", body.fields()?),
+        b'N' => format!("notice {}", body.fields()?),
+        b'T' => {
+            let count = body.int16()?;
+            // A count below zero reads as none (reported).
+            if count < 0 {
+                return Err(Broken::Unpromised);
+            }
+            for _ in 0..count {
+                body.text()?;
+                body.take(18)?;
+            }
+            format!("columns {count} {count}")
+        }
+        b'D' => {
+            let count = body.int16()?;
+            // A count below zero reads as none (reported).
+            if count < 0 {
+                return Err(Broken::Unpromised);
+            }
+            for _ in 0..count {
+                let size = body.int32()?;
+                // A size below -1 reads as null (reported).
+                if size < -1 {
+                    return Err(Broken::Unpromised);
+                }
+                body.take(usize::try_from(size).unwrap_or(0))?;
+            }
+            format!("row {count} {count}")
+        }
+        b'C' => format!("done {}", body.text()?.chars().count()),
+        // These have nothing in them.
+        b'1' | b'2' | b'n' | b'I' => {
+            body.done()?;
+            format!("other {kind}")
+        }
+        _ => return Ok(format!("other {kind}")),
+    };
+    if !matches!((kind, shown.as_str()), (b'R', s) if s.starts_with("auth 11") || s.starts_with("auth 12")) {
+        body.done()?;
+    }
+    Ok(shown)
+}
+
+/// The lines the reader should print for `input`, or where they stop being certain.
+fn wanted(input: &[u8]) -> (Vec<String>, bool) {
+    let mut lines = Vec::new();
+    let mut at = 0;
+    loop {
+        let Some(head) = input.get(at..at + 5) else {
+            lines.push("end".to_owned());
+            return (lines, true);
+        };
+        let (kind, size) = (head.first().copied().unwrap_or(0), head.get(1..5).unwrap_or_default());
+        let size = i64::from(i32::from_be_bytes(size.try_into().unwrap_or([0; 4])));
+        if !(4..=LONGEST).contains(&size) {
+            lines.push("fail".to_owned());
+            return (lines, true);
+        }
+        let end = at + 1 + usize::try_from(size).unwrap_or(usize::MAX);
+        let Some(data) = input.get(at + 5..end) else {
+            lines.push("end".to_owned());
+            return (lines, true);
+        };
+        match message(kind, data) {
+            Ok(shown) => lines.push(shown),
+            Err(Broken::Fails) => {
+                lines.push("fail".to_owned());
+                return (lines, true);
+            }
+            Err(Broken::Unpromised) => return (lines, false),
+        }
+        at = end;
+    }
+}
+
+/// The target: both ways of feeding the reader agree, and give what the protocol says.
+pub(crate) fn postgres(input: &[u8]) -> Result<(), String> {
+    let Some(printed) = crate::llvm::read_natively("postgres", input)? else { return Ok(()) };
+    let printed = String::from_utf8_lossy(&printed).into_owned();
+    let Some((whole, pieces)) = printed.split_once("--\n") else {
+        return Err(format!("the reader printed something else:\n{printed}"));
+    };
+    let (whole, pieces): (Vec<&str>, Vec<&str>) = (whole.lines().collect(), pieces.lines().collect());
+    if whole != pieces {
+        return Err(format!("{input:?} read whole gives {whole:?}, but fed in pieces {pieces:?}"));
+    }
+    let (wanted, certain) = wanted(input);
+    let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+    let same = if certain { whole == wanted } else { whole.get(..wanted.len()) == Some(&wanted[..]) };
+    if !same {
+        return Err(format!("{input:?} reads as {whole:?}, but the protocol says {wanted:?}"));
+    }
+    Ok(())
+}

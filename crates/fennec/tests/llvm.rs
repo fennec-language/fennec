@@ -11578,7 +11578,21 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(_):\n            stdout.print(\"failed\")\n";
+    let source = "\
+from std.net import NetError
+
+def listening(net: Net) -> bool fails NetError:
+    with net.listen(0)? as server:
+        return server.port > 0
+    False
+
+def main(stdout: Stdout, net: Net):
+    match listening(net):
+        case Ok(up):
+            stdout.print(\"listening\", up)
+        case Err(_):
+            stdout.print(\"failed\")
+";
     same_as_the_jit("net_kind", source)
 }
 
@@ -15688,6 +15702,8 @@ fn tests_that_take_capabilities_run_through_llvm() -> std::io::Result<()> {
     std::fs::write(
         &program,
         "\
+from std.net import NetError
+
 test \"files are its own\"(fs: Fs):
     assert not fs.exists(\"a\")
     fs.write_text(\"a\", \"one\")?

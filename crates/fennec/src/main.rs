@@ -99,6 +99,9 @@ fn arguments() -> Option<Vec<String>> {
 
 fn main() -> ExitCode {
     fennec_rt::use_tls();
+    // A build that writes every check a proof left out as an assertion it held, to find false
+    // proofs with: each says "proof broken" and which, if one didn't.
+    fennec_llvm::check_proofs(std::env::var_os("FENNEC_CHECK_PROOFS").is_some_and(|value| value == "1"));
     let Some(args) = arguments() else {
         return ExitCode::FAILURE;
     };

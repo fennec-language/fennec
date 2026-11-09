@@ -70,7 +70,7 @@ use fennec_rt::embed::dicts::Word;
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
-pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
+pub use emit::{Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_parallel, uses_tls};
@@ -115,6 +115,9 @@ pub struct Shared {
     pub sites: BTreeMap<u32, String>,
     /// Whether each check the code is written with is noted in `checks`, as it's written.
     pub noting_checks: bool,
+    /// Whether every check left out because of a proof is written anyway, as an assertion that
+    /// the proof held: a build to find false proofs with, which `FENNEC_CHECK_PROOFS=1` asks for.
+    pub check_proofs: bool,
     /// The checks written, when they're noted: the same one more than once if its function is
     /// copied into callers.
     pub checks: Vec<CheckLeft>,

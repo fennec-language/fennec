@@ -9853,6 +9853,56 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     Ok(())
 }
 
+/// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
+/// written without their layout, as short as before layouts, and the next version of the type
+/// reads them by the locked layout's names. Without the lock, they'd be refused.
+#[test]
+fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("pack_lock")?;
+    let kit = dir.join("saver");
+    std::fs::create_dir_all(kit.join("src"))?;
+    std::fs::write(
+        kit.join("kit.toml"),
+        "name = \"saver\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n\n[dependencies]\n",
+    )?;
+    let main = kit.join("src/main.fen");
+    // Run in the kit's folder, as `fennec update` updates the kit it's in.
+    let in_kit = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)
+    };
+    let ran = |source: &str| -> std::io::Result<String> {
+        std::fs::write(&main, source)?;
+        let out = in_kit(&["run", "."])?;
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let first = "from std import pack\n\nstruct Entry:\n    path: str\n    size: int\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    data = pack.dumps(Entry(path=\"a.txt\", size=12))\n    fs.write_bytes(\"entry.pack\", data)?\n    stdout.print(data.len())\n";
+    let long = ran(first)?;
+    let updated = in_kit(&["update"])?;
+    let said = String::from_utf8_lossy(&updated.stdout).into_owned();
+    let lock = std::fs::read_to_string(kit.join("pack.lock"))?;
+    let short = ran(first)?;
+    let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    match pack.loads[Entry](fs.read_bytes(\"entry.pack\")?):\n        case Ok(found):\n            stdout.print(found.path, found.size, found.tags)\n        case Err(error):\n            stdout.print(error.message)\n";
+    let read = ran(next)?;
+    std::fs::remove_file(kit.join("pack.lock"))?;
+    let unlocked = ran(next)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((long.as_str(), short.as_str()), ("37\n", "19\n"));
+    assert!(said.contains("locked 1 layout in pack.lock"), "{said}");
+    assert_eq!(lock.lines().count(), 1, "{lock}");
+    assert!(lock.ends_with(" S 2 path s size i\n"), "{lock}");
+    assert_eq!(read, "a.txt 12.0 []\n");
+    assert_eq!(unlocked, "this was packed from a different `Entry`, at byte 4\n");
+    Ok(())
+}
+
 /// Reading a file a chunk or a line at a time fails when reading does, inside the `with` that
 /// opened it, rather than ending the loop as if the file were done: a folder read as a file, and
 /// a line that isn't UTF-8.

@@ -4113,6 +4113,27 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `sum` of sized numbers is one of their size, starting at its zero: of `f32`s, of `u8`s, of
+/// none, and of a generator's.
+#[test]
+fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_sums",
+        "def main(stdout: Stdout):
+    weights: list[f32] = [1.5, 2.25]
+    counts: list[u8] = [200, 50]
+    small: list[i16] = []
+    total: u8 = sum(counts)
+    stdout.print(sum(weights), total, sum(small), sum(count for count in counts), sum(counts, start=5))
+",
+    )?;
+    assert_eq!(printed, "3.75 250 0 250 255\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

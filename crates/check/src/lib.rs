@@ -456,11 +456,23 @@ fn imports_for_std_calls<'a>(module: &mut Module, functions: impl Iterator<Item 
     }
 }
 
+/// The start the checker writes into a `sum` with none: a float's zero for floats and `f32`s, and
+/// an int's for the other sized numbers.
+fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
+    if checked.float_sums.contains(&span) || checked.sized_sums.get(&span) == Some(&true) {
+        fennec_syntax::visit::add_float_start(call);
+    }
+    if checked.sized_sums.get(&span) == Some(&false) {
+        fennec_syntax::visit::add_int_start(call);
+    }
+}
+
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
+        || !checked.sized_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
@@ -476,9 +488,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             if let Some(owner) = checked.cases.get(&span) {
                 fennec_syntax::visit::name_enum(expr, owner);
             }
-            if checked.float_sums.contains(&span) {
-                fennec_syntax::visit::add_float_start(expr);
-            }
+            start_written(expr, &checked, span);
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
@@ -564,6 +574,7 @@ pub struct Checked {
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
+    sized_sums: BTreeMap<(u32, u32), bool>,
     /// The defaults each call leaves out, to write into it.
     defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.

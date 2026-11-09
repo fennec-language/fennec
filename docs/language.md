@@ -388,7 +388,7 @@ moved = model * point
 remaining = deadline - now
 ```
 
-- A type may define each operator once for each right-hand type, so `Mat4 * Mat4` and `Mat4 * Vec4` can both exist. Not built yet: today a type has one `def *`, and the checker lane builds this next.
+- A type may define each operator once for each right-hand type, so `Mat4 * Mat4` and `Mat4 * Vec4` can both exist. Built.
 - Types must match exactly, with no conversions, so there's never a best match to choose. `now + now` is a compile error that lists the `+` that `Time` has.
 - It's for operators only. A named function still has one meaning, so `load(path)` is always the same `load`.
 - A user type gets this exactly as `std`'s types do.

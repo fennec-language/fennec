@@ -1,5 +1,5 @@
 [package]
-name = "fennec-interp"
+name = "fennec-rt"
 description = "The code of the runtime library Fennec's compiled programs link against"
 version.workspace = true
 edition.workspace = true

@@ -13,7 +13,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 mimalloc.workspace = true
-fennec-interp.workspace = true
+fennec-rt.workspace = true
 
 [build-dependencies]
 fennec-blake3.workspace = true
@@ -51,8 +51,8 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [features]
-# The runtime for programs with tasks (see `fennec-interp`'s feature of the same name).
-threads = ["fennec-interp/threads"]
+# The runtime for programs with tasks (see `fennec-rt`'s feature of the same name).
+threads = ["fennec-rt/threads"]
 # For AddressSanitizer runs only: the system's allocator, which ASan watches, and freed
-# blocks given back at once (see `fennec-interp`'s feature of the same name).
-sanitize = ["fennec-interp/sanitize"]
+# blocks given back at once (see `fennec-rt`'s feature of the same name).
+sanitize = ["fennec-rt/sanitize"]

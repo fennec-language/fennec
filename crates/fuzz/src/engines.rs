@@ -1,7 +1,7 @@
 //! The runtime on its own, called as native code calls it.
 
-use fennec_interp::embed;
-use fennec_interp::packed::Element;
+use fennec_rt::embed;
+use fennec_rt::packed::Element;
 
 use crate::mutate::Rng;
 
@@ -66,7 +66,7 @@ pub(crate) fn runtime(input: &[u8]) -> Result<(), String> {
     tables.elements = elements.into_iter().map(std::rc::Rc::new).collect();
     tables.shapes = vec![std::rc::Rc::new(Element::Int), std::rc::Rc::new(Element::Str)];
     tables.str_shape = 2;
-    embed::start(tables, fennec_interp::Inputs::default());
+    embed::start(tables, fennec_rt::Inputs::default());
     let mut values: Vec<i64> = Vec::new();
     let mut rng = Rng::new(0, 0);
     let mut bytes = input.iter().copied();

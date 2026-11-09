@@ -29,7 +29,7 @@ mod tests;
 #[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
-pub(super) use freeing::{release, run_abandons};
+pub(super) use freeing::{release, run_abandons, share_abandons};
 pub(super) use named::packable;
 pub use shown::{own_text, own_text_written};
 
@@ -80,7 +80,7 @@ pub(crate) struct Heap {
     statics: usize,
     /// Whether this thread's string literals were moved where every thread can read them.
     shared_statics: bool,
-    /// Strings' text as the interpreter holds it, made once per block.
+    /// Strings' text as a `Value` holds it, made once per block.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Where a string that isn't ASCII was last read.
     cursor: Cursor,
@@ -91,7 +91,7 @@ pub(crate) struct Heap {
     pending: Vec<u64>,
     taken: Vec<Box<[u64]>>,
     found: Vec<u64>,
-    /// The interpreter values cells hold, by the number in each cell, and unused numbers.
+    /// The `Value`s cells hold, by the number in each cell, and unused numbers.
     cells: Vec<Value>,
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far, counted only when something will read it.
@@ -237,8 +237,8 @@ pub fn count_allocations() {
     COUNTING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// What a run of native code allocated and copied. Blocks that live for the whole run, and what
-/// the interpreter holds for it, aren't counted. Blocks are made and copied in the runtime,
+/// What a run of native code allocated and copied. Blocks that live for the whole run, and the
+/// `Value`s the runtime holds for it, aren't counted. Blocks are made and copied in the runtime,
 /// which does far more than add to these, so counting costs a run nothing it would notice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -265,7 +265,7 @@ impl Counts {
     }
 }
 
-/// The shape of a cell: a block holding an interpreter value for a boxed value's field.
+/// The shape of a cell: a block holding a `Value` for a boxed value's field.
 const CELL_SHAPE: u64 = SHAPE_BITS - 1;
 
 /// Where a block's shape word holds the number of the thread that made it: its top 16 bits,
@@ -1073,7 +1073,7 @@ pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u
 }
 
 /// Where among its words a block holds the addresses of others, as `children_into` finds them, for
-/// a copy of it to hold its own. An interpreter's value or a generator can't be copied like that,
+/// a copy of it to hold its own. A `Value` in a cell or a generator can't be copied like that,
 /// but a native closure can.
 pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>) -> Result<(), Diagnostic> {
     let Some(shape) = shape_word(block) else { return Ok(()) };
@@ -1317,13 +1317,13 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     read(state, &shape, &mut words)
 }
 
-/// A list's `count` items, laid out as `words`, as the interpreter holds them, one by one.
+/// A list's `count` items, laid out as `words`, as `Value`s, one by one.
 pub(super) fn read_items(state: &State, element: &Element, words: &[u64], count: usize) -> Value {
     let mut words = words.iter();
     Value::list((0..count).map(|_| read(state, element, &mut words)).collect())
 }
 
-/// A value of a word, as the interpreter holds it.
+/// A value of a word, as a `Value`.
 pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
     read(state, element, &mut std::iter::once(&word))
 }
@@ -1331,7 +1331,7 @@ pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
 fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
-        // The interpreter has no `u64`: it holds one as an `int` of the same bits, so it goes back
+        // A `Value` has no `u64`: it holds one as an `int` of the same bits, so it goes back
         // unchanged, though a value of 2^63 or more reads there as negative.
         Element::Int | Element::U64 => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float | Element::F32 => Value::Float(f64::from_bits(word(words))),
@@ -1341,7 +1341,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             let header = [word(words), word(words), word(words)];
             Value::str(&super::text::text_of(state, &header))
         }
-        // Only the top of a value the interpreter is handed may be a packed list.
+        // Only the top of a `Value` may be a packed list.
         Element::List(_) | Element::ListOf(_) => read_block(state, word(words)).unpacked(),
         element if element.is_optional_text() => match [word(words), word(words), word(words)] {
             [0, 0, 0] => Value::None,
@@ -1355,14 +1355,14 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
         Element::Struct { name, fields } if name.starts_with('(') => {
             Value::tuple(fields.iter().map(|(_, element)| read(state, element, words)).collect())
         }
-        // An array kept in place, which the interpreter holds as a list.
+        // An array kept in place, which a `Value` holds as a list.
         Element::Struct { name, fields } if named::is_array(name) => {
             Value::list(fields.iter().map(|(_, element)| read(state, element, words)).collect())
         }
         Element::Struct { name, fields } => {
             let value = instance(name, None, read_fields(state, fields, words));
             // An error's block is laid out like a struct's, so its type says which it is.
-            // Nothing built without the interpreter looks at this on a value read back.
+            // Nothing looks at this on a value read back.
             let error = false;
             match value {
                 Value::Instance(mut made) if error => {
@@ -1404,7 +1404,7 @@ fn read_fields(
     read_ones
 }
 
-/// The name the interpreter gives instances of a layout: a generic type's layout is named
+/// The name a `Value` gives instances of a layout: a generic type's layout is named
 /// with its type's arguments, like `Grid[Tile]`, and its instances just `Grid`.
 fn type_name(layout: &str) -> &str {
     layout.split_once('[').map_or(layout, |(name, _)| name)
@@ -1433,8 +1433,7 @@ fn instance(name: &Rc<str>, case: Option<Rc<str>>, mut fields: Vec<(Rc<str>, Val
     }))
 }
 
-/// A new block owned once, with a temporary's value, failing like the interpreter when the
-/// value isn't of the shape's type.
+/// A new block owned once, with a temporary's value. Fails when it isn't of the shape's type.
 pub extern "C" fn from_value(value: i64, shape: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let wanted = u64::try_from(shape).unwrap_or(u64::MAX);
@@ -1572,7 +1571,7 @@ fn write_field(
 }
 
 /// Whether two blocks hold equal values: the same bits, field by field, and equal boxed
-/// fields, which is how the interpreter compares values.
+/// fields.
 pub extern "C" fn equal(a: i64, b: i64) -> i8 {
     with(|state| i8::from(same(state, u64::try_from(a).unwrap_or(0), u64::try_from(b).unwrap_or(0))))
 }
@@ -1638,9 +1637,8 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     same_words(state, &shape, left, right)
 }
 
-/// Whether two `Table`s are equal, as the interpreter has it: the same items in the same slots,
-/// with the same generations. Which `Table` each is, its tag, and where a search for a free
-/// slot starts don't count.
+/// Whether two `Table`s are equal: the same items in the same slots, with the same generations.
+/// Which `Table` each is, its tag, and where a search for a free slot starts don't count.
 fn same_tables(state: &State, fields: &[(Rc<str>, Element)], left: &[u64], right: &[u64]) -> bool {
     let mut at = 0;
     for (field, element) in fields {

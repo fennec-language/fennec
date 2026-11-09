@@ -140,7 +140,7 @@ hash = hash.wrapping_mul(16777619)
 
 - There are ten: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32` and `f64`. `int` is `i64` and `float` is `f64`. There's no 128-bit type and no platform-sized one, since `int` already indexes.
 - A literal with nothing to go by is an `int` or a `float`, as today.
-- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail. Built in the checker: the ten types, `i64` as `int` and `f64` as `float`, the mixing errors, and literals taking the size they go into, checked to fit. `/` gives a `float` between integers of any one size, as between ints, and `//` keeps the size. Built natively for `i8` to `i32` and `u8` to `u32`: arithmetic checked against each size, `~` within an unsigned size's width, and `u8(x)`, `int(x)` and `float(x)`. Built natively for `u64` and `f32` too: a `u64` is unsigned on all 64 bits, with its arithmetic checked, and an `f32` is rounded to 32 bits after each operation and prints as the shortest text that reads back as the same `f32`. Both print, format in f-strings, and convert with `u64(x)`, `f32(x)`, `int(x)` and `float(x)`. `sum` of any sized numbers gives one of their size, starting at its zero. Sets and dicts of them build too, keys and values, each shown as its type is. Not built yet for them: a `u64` literal above the largest `int`, and `**` on a `u64`. `u8.from(x)?` and `u8.parse(text)?` are built for every integer size, written in Fennec in the standard library, and `u64.parse` reads what's past the largest `int` a digit at a time. `wrapping_add`, `wrapping_sub`, `wrapping_mul` and their `saturating_` twins are built for every integer size too. Not built yet: packed layout, and set, dict and tuple literals where sized numbers go (`{1, 2}` for a `set[u8]`).
+- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail. Built in the checker: the ten types, `i64` as `int` and `f64` as `float`, the mixing errors, and literals taking the size they go into, checked to fit. `/` gives a `float` between integers of any one size, as between ints, and `//` keeps the size. Built natively for `i8` to `i32` and `u8` to `u32`: arithmetic checked against each size, `~` within an unsigned size's width, and `u8(x)`, `int(x)` and `float(x)`. Built natively for `u64` and `f32` too: a `u64` is unsigned on all 64 bits, with its arithmetic checked, and an `f32` is rounded to 32 bits after each operation and prints as the shortest text that reads back as the same `f32`. Both print, format in f-strings, and convert with `u64(x)`, `f32(x)`, `int(x)` and `float(x)`. `sum` of any sized numbers gives one of their size, starting at its zero. Sets and dicts of them build too, keys and values, each shown as its type is. `**` on a `u64` is checked as its other arithmetic is. Not built yet for them: a `u64` literal above the largest `int`. `u8.from(x)?` and `u8.parse(text)?` are built for every integer size, written in Fennec in the standard library, and `u64.parse` reads what's past the largest `int` a digit at a time. `wrapping_add`, `wrapping_sub`, `wrapping_mul` and their `saturating_` twins are built for every integer size too. Not built yet: packed layout, and set, dict and tuple literals where sized numbers go (`{1, 2}` for a `set[u8]`).
 - Every sized type checks overflow, and a check is removed only where the compiler proves it can't fire. `wrapping_` and `saturating_` methods are for when you mean it.
 - `<<` is bit work, not arithmetic: it drops the bits shifted past the top on every integer type, with no check, so `200 << 1` on a `u8` is `144`. A count at or past the type's width stops the program, as any count outside 0 to 63 does on `int`. Built, on every integer type, with the count check.
 - Floats give the same bits on every platform. Arithmetic and `sqrt` are exact in IEEE 754, and `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed by one library, `libm`, on arm64, x86-64, Windows and WebAssembly alike, so replays and lockstep multiplayer agree. Each platform's own C library rounds some of these differently in the last bit. Built.
@@ -176,6 +176,8 @@ units[unit_id].health -= 1                         # sure: stops loudly if wrong
 ```
 
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
+
+A copy of a `Table` keeps its tag, so an `Id` from before the copy works in both, and generations are unique across copies, so an item added to one copy can't be found through the other. Not built yet: today an item added to each copy can get the same `Id`.
 
 An `Id` is local to its process's `Table`. To name something across servers, send a key of your own, like a player's name, and let each server find its own `Id` from it. Built: an `Id` from another `Table` finds nothing.
 
@@ -265,10 +267,10 @@ with fs.create("save.dat")? as file:
     file.write_text(data)?
 ```
 
-`fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Not built yet.
+`fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Built. Closing a writer flushes it, and a failed flush fails the `with` block. Built. `Writer` and a buffered `Reader` interfaces for streams are planned.
 
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
-- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles and the note: a cleanup that fails is added to the block's failure as a note, and the rest of the cleanup is skipped. Running it on a crash is built natively: the crash waits while the cleanups run, innermost first, and a cleanup that crashes too is said, with the first crash the one that goes on. A cleanup's `x = f()?`, short of a whole line, still replaces the block's failure.
+- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles and the note: a cleanup that fails is added to the block's failure as a note, and the rest of the cleanup is skipped. Running it on a crash is built natively: the crash waits while the cleanups run, innermost first, and a cleanup that crashes too is said, with the first crash the one that goes on. A cleanup's `x = f()?` is a note too, and the rest of the cleanup is skipped. A `?` deeper in a line still replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
@@ -308,15 +310,17 @@ def main(speakers: Speakers, input: Input):
 ### Pools
 
 ```fennec
-with Database.open(net, url, pool_size=10)? as db:
+with postgres.connect(net, entropy, "postgres://app@db.internal/shop?pool_size=20")? as db:
     for request in parallel(server):
         with db.transaction()? as tx:
-            tx.insert(order)?
+            tx.execute(t"insert into orders (item) values ({request.item})")?
 ```
 
-- Pools in `std.concurrent` are written in plain Fennec. Each connection lives inside one keeper task's `with`, and the pool keeps only the keepers' inboxes, so nothing can leak or be used twice.
-- A failed block resets the connection it used. A crashed job's connection is replaced, so the pool heals itself and never shrinks.
-- Libraries hand out what users need, like `with db.transaction() as tx:`, so keepers stay inside the library.
+- `postgres.connect` always lends a pool. `pool_size=10` and `wait=30s` unless given, as an argument or in the URL, and giving one in both is an error.
+- `with db.transaction()? as tx:` takes a connection for a transaction, and `with db.borrow()? as conn:` takes one for a block of statements. When every connection is in use, the block waits up to `wait` for one.
+- Each connection lives inside one keeper task's `with`, and the keeper lends it to one block at a time, so nothing can leak or be used twice. The block uses the connection itself: nothing is sent to the keeper to run.
+- A block that fails or crashes has its connection reset before the next block gets it, and replaced if the keeper can't prove it clean, so the pool heals itself and never shrinks.
+- Pools are written in plain Fennec in `std.concurrent`. Not built yet: `postgres.connect` makes one connection today.
 
 ### When tasks stop or crash
 
@@ -455,7 +459,7 @@ back = json.loads[World](text)?
 - JSON, TOML and `std.pack` save any type whose fields can all be saved, through one `serialize` and `deserialize`. Built.
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
-- `@skip` and `@serialize(name="uid")` on a field say how it's saved. Built. A kit may define annotations of its own for fields, which generic code reads through `fields(T)`, and neither is built yet. A function takes only `@hot`, so routes are registered in plain code, as in `router.get("/todos/{id}", show_todo)`.
+- `@skip` and `@serialize(name="uid")` on a field say how it's saved. Built. A kit may define annotations of its own for fields, which generic code reads through `fields(T)`. A generic function's `for f in fields(T):` is built, checked once, with each field's name and value, and annotations a kit defines and reading them aren't built yet. A function takes only `@hot`, so routes are registered in plain code, as in `router.get("/todos/{id}", show_todo)`.
 - A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through `expose_secret()`, whose name says so. Printing one, an f-string or `str()` of one, and saving one in any format are compile errors, and so is doing any of those to something that holds one. Printed through a generic function's `T`, in a failed `assert` or in the failure that ends `main`, it shows `Secret(hidden)`. `==` on two secrets compares them in constant time, so its timing never says where they differ, and a secret of anything but text or bytes can't be compared. Built. `Secret.of(text)` makes one, and `Secret[bytes]` holds a key. A server's `Certificate`, from `std.net`, holds its private key as one, beside its chain of certificates.
 
 Loading is safe on untrusted input:
@@ -477,7 +481,7 @@ result = process.run(t"git log --author={author}")?
 ```
 
 - `std.sqlite` takes them: `db.execute(t"...")` and `db.query[T](t"...")`, with each value bound as a parameter and each row read into a `T` by its columns' names. Built, natively. In a test, each path is a real WAL database file of the test's own, so a test reads as a program does.
-- `std.postgres` speaks Postgres's protocol in plain Fennec: its messages, signing in with SCRAM-SHA-256, and a query as the extended protocol's messages, its template's values bound apart and its rows read by column type into `sql.rows_as[T]`. `with postgres.connect(net, entropy, host=..., user=..., database=..., password=secret)? as db:` connects through `std.net` and lends a `PgDatabase` with `execute`, `query[T]` and `transaction`, as `std.sqlite` has. Built, and tested against a real server. One task uses a connection at a time, so tasks in `parallel` each connect for themselves, until pools exist. Its connection is TLS unless `tls=False` says otherwise, and a server that won't take TLS is refused rather than spoken to in the clear. It lives in `std` until first-party kits have a home.
+- `std.postgres` speaks Postgres's protocol in plain Fennec: its messages, signing in with SCRAM-SHA-256, and a query as the extended protocol's messages, its template's values bound apart and its rows read by column type into `sql.rows_as[T]`. `with postgres.connect(net, entropy, host=..., user=..., database=..., password=secret)? as db:` connects through `std.net` and lends a `PgDatabase` with `execute`, `query[T]` and `transaction`, as `std.sqlite` has. Built, and tested against a real server. One task uses a connection at a time, so tasks in `parallel` each connect for themselves, until pools exist. Its connection is TLS unless `tls=False` says otherwise, and a server that won't take TLS is refused rather than spoken to in the clear. Planned: a URL, a pool, and TLS picked by host, in the clear for a loopback host and verified TLS for any other, with the URL's `sslmode=` taking `disable`, `require`, `verify-ca` or `verify-full`, and refusing `prefer` and `allow`. It lives in `std` until first-party kits have a home.
 - `t"..."` makes a `std` `Template`, as Python 3.14's t-strings do. It holds the literal pieces and the values separately, and the values' type comes from where it goes, as in `Template[SqlValue]`. A `Template[T]` has `strings`, one more than its `values`, plus each value's `expressions` as written and its `format_specs`, and `interpolations()` gives each value with both.
 - `html.render(t"...")` gives an `Html`, each value put in for where it is in the page, found from the text around it. Between tags and in a quoted attribute it's escaped. Where escaping isn't enough, inside a `<script>` or `<style>`, an `on...`, `style` or `srcdoc` attribute, an attribute without quotes, a name or a comment, the page fails with `HtmlError.Misplaced`, naming the value. So does a value in a link's attribute, like `href` or `src`, that would make the link anything but `http`, `https`, `mailto` or relative, like `javascript:`: nothing is put in its place silently, and a program that wants a fallback checks the URL first. An `Html` goes into another as it is, and `html.join` puts pieces one after another, so pages are built from pieces. An `Html` is never loaded from saved data. Built, natively.
 - `process.run(t"git log --author={author}")` runs what the template says, its words split at the spaces in the text written in the source. A value stays part of one argument whatever it holds, so it can't add an argument or start a command. Built, beside `process.run("git", ["log"])`.
@@ -565,9 +569,9 @@ def autosave(rooms: shared dict[str, Room], fs: Fs, clock: Clock) fails IoError:
             snapshot = current
         fs.write_text("rooms.json", json.dumps(snapshot))?
 
-def main(net: Net, fs: Fs, clock: Clock):
+def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy):
     shared rooms = dict[str, Room]()
-    with Database.open(net, "postgres://localhost/chat", pool_size=10)? as db:
+    with postgres.connect(net, entropy, "postgres://localhost/chat")? as db:
         with launch(() => autosave(rooms, fs, clock), stop_after=5s)?:
             with net.listen(9000)? as server:
                 # each connection gets its own task, and closes when its round ends

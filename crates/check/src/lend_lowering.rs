@@ -232,6 +232,11 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
 /// standard library's.
 const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
 
+/// Whether lowering wrote what's at `span` in, rather than a program or the standard library.
+pub(crate) fn written_in(span: Span) -> bool {
+    (WRITTEN_FROM..Span::PRELUDE).contains(&span.start)
+}
+
 /// The number a name written in by an earlier pass ends with, like `3` in `conn__lend3`, or 0.
 fn made_in(name: &str) -> usize {
     ["__lend", "__ref"]
@@ -497,12 +502,7 @@ impl Lowering<'_> {
         if let Some(instead) = self.instead.take() {
             fail_instead(&mut body, &instead);
         }
-        // A generic source's body names its type parameters, which are this call's types here.
-        let given = given_types(def, &source.generics, &source.gives)?;
-        if !given.is_empty() {
-            retype(&mut written, &given);
-            retype(&mut body, &given);
-        }
+        typed_for_call(source, &mut written, &mut body)?;
         // Types are found by span, and each call gives the body types of its own, as `None` for a
         // parameter one call leaves out and another gives, so each written-in copy of a source's
         // text gets spans of its own.
@@ -642,15 +642,28 @@ fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
 /// Writes in what each type parameter stands for: in written types, as in `held: list[T]`, and in
 /// brackets, as in `Channel[T](...)`.
 fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
+    // What's written in can name the caller's own type parameters, like `T` in `Box[T]` for a
+    // source's `T`, and the walk goes on into it: each name is marked first, then the marks are
+    // written in, so nothing written in is retyped again.
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Name(name) = &mut expr.kind
+            && given.contains_key(name.as_str())
+        {
+            name.insert_str(0, RETYPED);
+        }
+    });
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
         if let ExprKind::Name(name) = &expr.kind
-            && let Some((_, bracketed)) = given.get(name)
+            && let Some((_, bracketed)) = name.strip_prefix(RETYPED).and_then(|name| given.get(name))
         {
             *expr = bracketed.clone();
         }
     });
     retype_written(body, given);
 }
+
+/// What marks a name to retype: no name a program writes starts with it.
+const RETYPED: &str = "\0retyped:";
 
 fn retype_written(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
     for each in body {
@@ -671,6 +684,54 @@ fn retype_written(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>)
                 retype_written(body, given);
             }
             StmtKind::Lend { otherwise, .. } => retype_written(otherwise, given),
+            _ => {}
+        }
+    }
+}
+
+/// A generic source's text, written in at a call: its type parameters are the call's types here.
+/// One named only in a parameter's type, like `E` in `make: () -> T fails E`, isn't in what the
+/// source gives, so isn't known here: a name with such a type takes its value's.
+fn typed_for_call(source: &Source, written: &mut [Stmt], body: &mut [Stmt]) -> Option<()> {
+    let given = given_types(source.def.as_ref(), &source.generics, &source.gives)?;
+    if !given.is_empty() {
+        retype(written, &given);
+        retype(body, &given);
+    }
+    let unknown: Vec<&str> =
+        source.generics.iter().map(String::as_str).filter(|name| !given.contains_key(*name)).collect();
+    if !unknown.is_empty() {
+        untyped_where_unknown(written, &unknown);
+        untyped_where_unknown(body, &unknown);
+    }
+    Some(())
+}
+
+/// Drops the written type of each name whose type names one of `unknown`, so it takes its value's.
+fn untyped_where_unknown(body: &mut [Stmt], unknown: &[&str]) {
+    fn names(ty: &TypeExpr, unknown: &[&str]) -> bool {
+        unknown.contains(&ty.name.as_str()) || ty.args.iter().any(|arg| names(arg, unknown))
+    }
+    for each in body {
+        match &mut each.kind {
+            StmtKind::Assign { ty, .. } => {
+                if ty.as_ref().is_some_and(|ty| names(ty, unknown)) {
+                    *ty = None;
+                }
+            }
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    untyped_where_unknown(body, unknown);
+                }
+                if let Some(body) = otherwise {
+                    untyped_where_unknown(body, unknown);
+                }
+            }
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. }
+            | StmtKind::Lend { otherwise: body, .. } => untyped_where_unknown(body, unknown),
             _ => {}
         }
     }
@@ -1071,7 +1132,11 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
 /// `if` inside it.
 fn cleanup_fails(each: &Stmt) -> bool {
     match &each.kind {
-        StmtKind::Fail(_) | StmtKind::Expr(Expr { kind: ExprKind::Try { context: None, .. }, .. }) => true,
+        StmtKind::Fail(_)
+        | StmtKind::Expr(Expr { kind: ExprKind::Try { context: None, .. }, .. })
+        | StmtKind::Assign {
+            value: Expr { kind: ExprKind::Try { context: None, .. }, .. }, op: None, ..
+        } => true,
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(_, body)| body.iter().any(cleanup_fails))
                 || otherwise.iter().flatten().any(cleanup_fails)
@@ -1083,24 +1148,9 @@ fn cleanup_fails(each: &Stmt) -> bool {
 /// A cleanup with each of its failures added to `held` as a note, and the rest of it skipped by
 /// leaving the loop it's run in.
 fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
-    let note = |failure: Expr| {
-        let text = Expr {
-            kind: ExprKind::FStr(vec![fennec_syntax::FStrPart::Expr { expr: failure, spec: None }]),
-            span: here(span),
-        };
-        let callee = Expr {
-            kind: ExprKind::Attr {
-                object: Box::new(name(held, span)),
-                name: "add_note".to_owned(),
-                optional: false,
-            },
-            span: here(span),
-        };
-        let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value: text }];
-        stmt_value(Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: here(span) })
-    };
+    let note = |failure: Expr| note_on(held, failure, span);
     let mut written = Vec::new();
-    for each in cleanup {
+    for (at, each) in cleanup.iter().enumerate() {
         match &each.kind {
             StmtKind::Fail(failure) => {
                 written.push(note(failure.clone()));
@@ -1127,6 +1177,36 @@ fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
                 };
                 written.push(stmt_value(matched));
             }
+            // `x = f()?`: `x` takes the value and the rest goes on with it, or the failure is a
+            // note and the rest is skipped.
+            StmtKind::Assign {
+                target,
+                op: None,
+                value: Expr { kind: ExprKind::Try { value, context: None }, .. },
+                declare_mut,
+                ty,
+            } => {
+                let got = format!("cleanup__got{}", here(span).start);
+                let kept = StmtKind::Assign {
+                    target: target.clone(),
+                    op: None,
+                    value: name(&got, span),
+                    declare_mut: *declare_mut,
+                    ty: ty.clone(),
+                };
+                let mut rest = vec![stmt(kept, each.span)];
+                rest.extend(noted(cleanup.get(at + 1..).unwrap_or_default(), held, span));
+                let ok = arm("Ok", &got, rest, span);
+                let cut = format!("cleanup__failed{}", here(span).start);
+                let failed =
+                    arm("Err", &cut, vec![note(name(&cut, span)), stmt(StmtKind::Break, span)], span);
+                let matched = Expr {
+                    kind: ExprKind::Match { subject: value.clone(), arms: vec![ok, failed] },
+                    span: here(span),
+                };
+                written.push(stmt_value(matched));
+                return written;
+            }
             StmtKind::If { branches, otherwise } => {
                 let branches =
                     branches.iter().map(|(cond, body)| (cond.clone(), noted(body, held, span))).collect();
@@ -1137,6 +1217,24 @@ fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
         }
     }
     written
+}
+
+/// `held.add_note(f"{failure}")`: a cleanup's failure, as a note on the block's.
+fn note_on(held: &str, failure: Expr, span: Span) -> Stmt {
+    let text = Expr {
+        kind: ExprKind::FStr(vec![fennec_syntax::FStrPart::Expr { expr: failure, spec: None }]),
+        span: here(span),
+    };
+    let callee = Expr {
+        kind: ExprKind::Attr {
+            object: Box::new(name(held, span)),
+            name: "add_note".to_owned(),
+            optional: false,
+        },
+        span: here(span),
+    };
+    let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value: text }];
+    stmt_value(Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: here(span) })
 }
 
 /// The block the caller wrote, given what's lent: by its name, or split into several names.
@@ -1165,11 +1263,26 @@ fn fail_instead(body: &mut [Stmt], instead: &Expr) {
     instead_of_fails(body, instead);
     let leaving = Box::new(instead.clone());
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
-        if let ExprKind::Try { value, context: None } = &expr.kind {
-            let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
-            expr.kind = kind;
+        match &mut expr.kind {
+            ExprKind::Try { value, context: None } => {
+                let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
+                expr.kind = kind;
+            }
+            // `value else fail E` fails as the source does, so with what's said instead.
+            ExprKind::Else { default, .. } if fails_out(default) => default.clone_from(&leaving),
+            _ => {}
         }
     });
+}
+
+/// Whether an `else`'s default is `fail E`: it leaves, with a `fail`.
+fn fails_out(default: &Expr) -> bool {
+    let ExprKind::Match { arms, .. } = &default.kind else { return false };
+    default.leaves()
+        && arms
+            .first()
+            .and_then(|arm| arm.body.last())
+            .is_some_and(|last| matches!(last.kind, StmtKind::Fail(_)))
 }
 
 /// Each `fail` in a source's body, inside what's in it but not a function of its own, made to do
@@ -1566,5 +1679,37 @@ mod tests {
         let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
         assert!(super::lower(&mut module, &checked.sources, &launches, &matches));
         assert!(!super::lower(&mut module, &checked.sources, &launches, &matches));
+    }
+
+    /// A generic source's type parameter, written in as a type naming the caller's own, like a
+    /// `channel[T]` opened as `channel[Box[T]]`, is written in once: the `T` inside isn't taken
+    /// for the source's again, which wrote it in without end and took memory with it.
+    #[test]
+    fn a_type_written_in_for_a_sources_parameter_is_written_once() {
+        let mut block = vec![super::stmt(
+            fennec_syntax::StmtKind::Expr(super::name("T", fennec_syntax::Span::default())),
+            fennec_syntax::Span::default(),
+        )];
+        let boxed = fennec_syntax::parse("x = Box[T]\n").unwrap();
+        let Some(fennec_syntax::Item::Const { value, .. }) = boxed.items.first() else {
+            panic!("no constant in {boxed:?}");
+        };
+        let written = fennec_syntax::TypeExpr {
+            name: "Box".to_owned(),
+            args: vec![fennec_syntax::TypeExpr {
+                name: "T".to_owned(),
+                args: Vec::new(),
+                optional: false,
+                span: fennec_syntax::Span::default(),
+            }],
+            optional: false,
+            span: fennec_syntax::Span::default(),
+        };
+        let given = std::collections::BTreeMap::from([("T".to_owned(), (written, value.clone()))]);
+        super::retype(&mut block, &given);
+        let Some(fennec_syntax::StmtKind::Expr(retyped)) = block.first().map(|stmt| &stmt.kind) else {
+            panic!("no expression in {block:?}");
+        };
+        assert_eq!(retyped.kind, value.kind);
     }
 }

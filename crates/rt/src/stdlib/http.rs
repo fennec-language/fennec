@@ -280,7 +280,7 @@ type WithTls = fn(TcpStream, &str, Instant, Duration) -> Result<Box<dyn Secure>,
 static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 
 /// Says TLS is wanted: compiled code that makes a request calls this first, and so does the
-/// `fennec` command, for the interpreter.
+/// `fennec` command.
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
     RAW_TLS.get_or_init(|| tls::raw);
@@ -625,6 +625,15 @@ pub(crate) mod tls {
 
         fn consume(&mut self, count: usize) {
             self.0.consume(count);
+        }
+    }
+
+    impl<C: Send> SecureStream for Buffered<C>
+    where
+        StreamOwned<C, TcpStream>: Read + Write,
+    {
+        fn socket(&self) -> &TcpStream {
+            &self.0.get_ref().sock
         }
     }
 

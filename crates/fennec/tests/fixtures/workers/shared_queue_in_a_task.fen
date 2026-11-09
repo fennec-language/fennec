@@ -1,0 +1,42 @@
+# A queue in a `shared` value, pushed and popped under its lock in a launched task and in `main`.
+from std.concurrent import Crashed
+
+struct Queue:
+    items = list[int]()
+
+    def push(ref self, item: int):
+        self.items.append(item)
+
+    def pop(ref self) -> int:
+        self.items.pop() else 0
+
+def worker(queue: shared Queue):
+    for n in range(2000):
+        lock queue as ref held:
+            held.push(n)
+    for n in range(2000):
+        lock queue as ref held:
+            _ = held.pop()
+    # Straight on the field, read under the lock.
+    for n in range(2000):
+        lock queue as ref held:
+            held.items.append(n)
+    for n in range(2000):
+        lock queue as ref held:
+            _ = held.items.pop() else 0
+
+def run(queue: shared Queue) fails Crashed:
+    with launch(() => worker(queue)) as task:
+        pass
+
+def main(stdout: Stdout) fails Crashed:
+    shared queue = Queue()
+    for n in range(2000):
+        lock queue as ref held:
+            held.push(n)
+    for n in range(2000):
+        lock queue as ref held:
+            held.items.append(n)
+    run(queue)?
+    lock queue as held:
+        stdout.print(held.items.len())

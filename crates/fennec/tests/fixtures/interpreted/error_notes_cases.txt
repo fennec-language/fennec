@@ -1,0 +1,20 @@
+source 8be604048080967debeab6b610e022d022ab41d518c0677156c629fc1dcaf5da
+code 1
+stdout 344
+[] Dial.Closed
+["first", "second"] ["first"] True Dial.Closed
+Dial.Closed Dial.Closed
+["refused once"] Dial.Refused(host="db", port=-1) True
+matched db -1
+["refused once"] [] [] [Dial.Refused(host="db", port=-1), Dial.Refused(host="db", port=-1), Dial.Closed]
+["while dialing -2", "second line\nand a third"] Dial.Refused(host="db", port=-2)
+2
+stderr 243
+error: `main` failed: Dial.Refused(host="db", port=-3)
+note: while dialing -3
+note: second line
+  and a third
+  --> <dir>/cases.fen:30:1
+   |
+30 | def main(stdout: Stdout) fails Dial | Broken:
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

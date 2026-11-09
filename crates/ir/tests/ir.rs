@@ -1071,6 +1071,19 @@ def f() -> P:
 
 /// Each argument a call leaves out is written in with its own type: a `Duration` and an `int`
 /// left out of one call don't take each other's.
+/// A call that leaves out an argument with a default, as the standard library's own code runs,
+/// unrewritten by the checker: the call takes the default where it's lowered.
+#[test]
+fn a_call_left_unrewritten_takes_its_defaults() {
+    let source = "def added(n: int, more = 1) -> int:\n    n + more\n\ndef main(stdout: Stdout):\n    stdout.print(added(2))\n";
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let program = lower(&module, &checked);
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+    let main = program.functions.iter().find(|function| function.name == "main").unwrap().to_string();
+    assert!(main.contains("call added(2, 1)"), "{main}");
+}
+
 #[test]
 fn arguments_left_out_get_their_defaults_with_their_types() {
     let source = "from std.time import Duration
@@ -2947,8 +2960,15 @@ def described(port: int) -> str:
 fn an_error_with_cases_is_held_like_an_enum() {
     let program = lowered(DIAL_ERROR).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
-    let held = program.enums.iter().find(|def| def.name == "DialError").map(|def| def.cases.len());
-    assert_eq!(held, Some(3));
+    let held = program.enums.iter().find(|def| def.name == "DialError");
+    assert_eq!(held.map(|def| def.cases.len()), Some(3));
+    // It says it's an error, which carries notes, as a plain enum doesn't.
+    assert_eq!(held.map(|def| def.error), Some(true));
+    let plain =
+        lowered("enum Kind:\n    One\n    Two\n\ndef main(stdout: Stdout):\n    stdout.print(Kind.One)\n")
+            .unwrap();
+    let kind = plain.enums.iter().find(|def| def.name == "Kind").map(|def| def.error);
+    assert_eq!(kind, Some(false));
     assert!(!program.errors.iter().any(|def| def.name == "DialError"));
     assert_eq!(
         printed(DIAL_ERROR, "connect").unwrap(),

@@ -20,8 +20,7 @@ const STACK_BYTES: usize = 1 << 30;
 /// arm64. Native calls may use `NATIVE_STACK_BYTES` of it, which leaves as much for the runtime.
 pub const MAIN_STACK_BYTES: usize = 1 << 29;
 
-/// How much of the stack native calls may use, leaving the rest for the runtime and the
-/// interpreter.
+/// How much of the stack native calls may use, leaving the rest for the runtime.
 const NATIVE_STACK_BYTES: usize = 1 << 28;
 
 /// What ends the process at once, which the runtime library provides.
@@ -93,6 +92,7 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
         if let Some(Image { sources, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
             super::start(tables, live_inputs());
+            heap::share_abandons();
             // A worker can end the program itself, and has to say where.
             SOURCES.set(Some(sources));
         }
@@ -176,7 +176,7 @@ pub fn test_ran(flag: i64) {
 thread_local! {
     /// Whether an attempt of a property test's shrinking failed since it was last asked.
     static ATTEMPT_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// What a failed property test's simplest failing input was, shown as the interpreter shows it.
+    /// What a failed property test's simplest failing input was, as text.
     static FAILED_FOR: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -205,7 +205,7 @@ pub fn failed_for(text: i64) {
 }
 
 /// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
-/// by the one before, as `run_case` gives the interpreter's.
+/// by the one before.
 pub fn test_world(fakes: i64) {
     with(|state: &mut State| {
         state.world = (fakes != 0 && !real_tests()).then(|| TestWorld::new(TestCapabilities::Fakes));
@@ -282,6 +282,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
         return (Vec::new(), "error: this executable's program is damaged\n".to_owned());
     };
     super::start(tables, live_inputs());
+    heap::share_abandons();
     LITERALS.set(literals);
     SOURCES.set(Some(sources.clone()));
     let here = 0_u8;

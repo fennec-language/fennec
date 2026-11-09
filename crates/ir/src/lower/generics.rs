@@ -211,6 +211,15 @@ impl Context<'_> {
                 }
                 self.unify(returns, other_returns, subst);
             }
+            // A function passed by name, like `one` for `make: () -> T fails E`: its signature
+            // says what `T` and `E` are.
+            (Type::Arrow(params, returns), Type::Function(key)) => {
+                let Some(signature) = self.signatures.get(key) else { return };
+                for (param, other) in params.iter().zip(&signature.params) {
+                    self.unify(param, &other.ty, subst);
+                }
+                self.unify(returns, &signature.returns, subst);
+            }
             (Type::Generic(name, args), Type::Named(copy)) => {
                 let Some(instance) = self.type_instance(copy).filter(|instance| instance.base == *name)
                 else {

@@ -267,12 +267,20 @@ fn forget_old(readers: &Path) {
     }
 }
 
-/// A name for what a reader's built from: its source, and the `fennec` and runtime that build it.
+/// Whether the runtime with `threads` is beside `fennec`, which it builds a program running
+/// `parallel` with, as a release does. Without it, such a program runs on the plain runtime.
+pub(crate) fn threads_runtime_here() -> bool {
+    fennec().with_file_name("libfennec_runtime_threads.a").is_file()
+}
+
+/// A name for what a reader's built from: its source, and the `fennec` and runtimes that build it.
 fn built_from(source: &str) -> String {
     let mut hasher = fennec_blake3::Hasher::new();
     hasher.update(source.as_bytes());
     let fennec = fennec();
-    for made in [fennec.clone(), fennec.with_file_name("libfennec_runtime.a")] {
+    let runtimes =
+        ["libfennec_runtime.a", "libfennec_runtime_threads.a"].map(|file| fennec.with_file_name(file));
+    for made in std::iter::once(fennec.clone()).chain(runtimes) {
         let changed = std::fs::metadata(&made).and_then(|meta| meta.modified()).ok();
         let since = changed.and_then(|changed| changed.duration_since(std::time::UNIX_EPOCH).ok());
         hasher.update(&since.unwrap_or_default().as_nanos().to_le_bytes());

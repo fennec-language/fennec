@@ -1378,6 +1378,28 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The same in a program with tasks, where a lock's value is read through the lock's edge: 2,000
+/// pushes under the lock in `main` and 2,000 pushes and pops in a launched task copy nothing a
+/// round. What the program copies is only what starting its task copies, the same program with no
+/// locks at all. A field read under the lock once held owners of what it read, as letting go at the
+/// lock's edge counted as a use, and they made every change copy.
+#[test]
+fn changing_a_list_in_a_shared_value_in_a_task_copies_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let locked =
+        counts_of("shared_queue_in_a_task", include_str!("fixtures/workers/shared_queue_in_a_task.fen"))?;
+    let unlocked = counts_of(
+        "shared_queue_no_locks",
+        include_str!("fixtures/workers/shared_queue_in_a_task_no_locks.fen"),
+    )?;
+    let copies = |counts: &str| counts.split_whitespace().nth(1).map(str::to_owned);
+    assert!(copies(&locked).is_some(), "{locked}");
+    assert_eq!(copies(&locked), copies(&unlocked), "{locked} against {unlocked}");
+    Ok(())
+}
+
 /// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
 /// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
 /// a note of each in the lock's rollback log, but these change what a note of one place can't put
@@ -2662,6 +2684,47 @@ def main(stdout: Stdout):
          18,446,744,073,709,551,610 0 [18446744073709551610, 5] [0.33333334, 2.0]\n\
          18446744073709551615 0.33333334 2 1.8446744073709552e+19 200 3673995259836664039\n"
     );
+    Ok(())
+}
+
+/// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
+/// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
+#[test]
+fn a_u64_to_a_power() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def main(stdout: Stdout):
+    zero: u64 = 0
+    one: u64 = 1
+    two: u64 = 2
+    three: u64 = 3
+    forty: u64 = 40
+    sixty_three: u64 = 63
+    sixty_four: u64 = 64
+    stdout.print(zero ** zero, two ** zero, zero ** two, one ** sixty_four, two ** sixty_three, three ** forty)
+    stdout.print(two ** sixty_four)
+";
+    let dir = folder("u64_power")?;
+    let program = dir.join("u64_power.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("u64_power"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(out, "1 1 0 1 9223372036854775808 12157665459056928801\n", "{how:?}: {err}");
+        assert!(!ran.status.success(), "{how:?}");
+        assert!(err.contains("this calculation overflows a u64"), "{err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -3962,6 +4025,45 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source's `else:` whose `x = f()?` fails: the block's own failure is the one that leaves,
+/// carrying the cleanup's as a note, and the rest of the cleanup is skipped.
+#[test]
+fn a_cleanups_failing_assignment_is_a_note_on_the_blocks_failure() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "cleanup_assignment_noted",
+        r#"error Shut:
+    name: str
+
+error Other:
+    why: str
+
+def closed(name: str) -> int fails Shut:
+    fail Shut(name=name)
+
+def opened(name: str, stdout: Stdout) -> with str fails Shut:
+    lend name else:
+        n = closed(name)?
+        stdout.print("not here", n)
+
+def used(stdout: Stdout) fails Shut | Other:
+    with opened("door", stdout)? as door:
+        fail Other(why="in the block")
+
+def main(stdout: Stdout):
+    match used(stdout):
+        case Ok(_):
+            stdout.print("worked")
+        case Err(why):
+            stdout.print("failed", why, why.notes())
+"#,
+    )?;
+    assert_eq!(printed, "failed Other(why=\"in the block\") [\"Shut(name=\\\"door\\\")\"]\n");
+    Ok(())
+}
+
 /// A failure can leave a `with` block from inside what it calls: from a generator, whether it's
 /// read through a name, looped over or summed, or from a round of a `parallel` loop. Each runs the
 /// source's `else:` once, a `ref` case still puts back what it changed, and what a failing
@@ -4449,6 +4551,150 @@ def main(stdout: Stdout):
 ",
     )?;
     assert_eq!(printed, "[\"name\", \"inner\", \"depth\"]\ndepth 4\n");
+    Ok(())
+}
+
+/// A program's own source with a call that leaves out a default, written in twice: each copy
+/// takes the default once, and so does the source it's written from.
+#[test]
+fn a_default_left_out_in_a_source_written_in_twice_is_given_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "default_given_once",
+            r"struct Counter:
+    start: int
+
+    def opened(self) -> with int:
+        lend added(self.start)
+
+def added(n: int, more = 1) -> int:
+    n + more
+
+def main(stdout: Stdout):
+    counter = Counter(start=1)
+    with counter.opened() as first:
+        with counter.opened() as second:
+            stdout.print(first + second)
+"
+        )?,
+        "4\n"
+    );
+    Ok(())
+}
+
+/// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
+/// generic source written in where it's used doesn't know it, and a call to a generic function
+/// learns it from the function it's given.
+#[test]
+fn a_type_parameter_only_in_a_function_parameter_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "source_with_e",
+            r#"error Nope:
+    why: str
+
+struct Held[T]:
+    value: T
+
+def holding[T, E](make: () -> T fails E) -> with Held[T] fails Nope:
+    value = make() else fail Nope(why="no")
+    lend Held[T](value=value) else:
+        pass
+
+def one() -> int fails Nope:
+    1
+
+def main(stdout: Stdout) fails Nope:
+    with holding(one)? as held:
+        stdout.print(held.value)
+"#
+        )?,
+        "1\n"
+    );
+    assert_eq!(
+        printed_by(
+            "call_with_e",
+            r#"from std.concurrent import Crashed
+
+error Nope:
+    why: str
+
+def started[T, E](make: () -> T fails E) fails Crashed:
+    with launch(() => ran(make))?:
+        pass
+
+def ran[T, E](make: () -> T fails E):
+    match make():
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
+
+def one() -> int fails Nope:
+    1
+
+def main(stdout: Stdout) fails Crashed:
+    started(one)?
+    stdout.print("ok")
+"#
+        )?,
+        "ok\n"
+    );
+    Ok(())
+}
+
+/// `with src else fail E` on a source whose body has an `x else fail` and a `with launch(...)?`:
+/// both fail with `E` once it's written in, and the launch stays one.
+#[test]
+fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_failing_instead",
+        r#"from std.concurrent import Crashed
+
+error Outer:
+    why: str
+
+error Inner:
+    why: str
+
+def work():
+    pass
+
+def given(bad: bool) -> int?:
+    None if bad else 1
+
+def inner_source(bad: bool) -> with int fails Inner | Crashed:
+    first = given(bad) else fail Inner(why="none")
+    with launch(() => work())?:
+        lend first
+
+def outer_source(bad: bool) -> with int fails Outer:
+    with inner_source(bad) else fail Outer(why="the inner source failed") as n:
+        lend n + 1
+
+def run(bad: bool, stdout: Stdout) fails Outer:
+    with outer_source(bad)? as n:
+        stdout.print("got", n)
+
+def main(stdout: Stdout):
+    for bad in [False, True]:
+        match run(bad, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(printed, "got 2\nworked\nfailed Outer(why=\"the inner source failed\")\n");
     Ok(())
 }
 
@@ -6286,6 +6532,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator that can fail, held in a name and let go partway in a launched task, closes its
+/// open source as it does in `main`. What closes a generator is said once, on the thread `main`
+/// runs on, and the task's worker started its runtime before that, so it once let the generator go
+/// with its source left open. What's printed is compared line by line, sorted, as the task's lines
+/// and `main`'s may come in either order.
+#[test]
+fn a_generator_let_go_in_a_task_closes_what_it_has_open() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("generator_closed_in_a_task")?;
+    let program = dir.join("closed.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/generator_closed_in_a_task.fen"))?;
+    let executable = dir.join("closed");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "after looped in a task",
+            "after named in a task",
+            "after named in main",
+            "closing looped in a task",
+            "closing named in a task",
+            "closing named in main",
+            "main goes on",
+        ],
+        "{printed}"
+    );
+    Ok(())
+}
+
 /// Each source a generator holds open where it's let go closes then, innermost first and once:
 /// not its `else:`, which is for a block that fails, and nothing for a block that already ended
 /// or a generator that never started. A `return` out of the loop lets go of it too.
@@ -6346,6 +6634,219 @@ def main(stdout: Stdout):
     stdout.print("--")
     never = nested(stdout)
     stdout.print("never started")
+"#;
+
+/// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
+/// failure while it gives an item does: at a `break` and at a `return` out of the loop. A failure
+/// already leaving through it is the one that leaves, an error with cases here, carrying the
+/// cleanup's as a note.
+#[test]
+fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("cleanup_failing_let_go", CLEANUP_FAILING)?;
+    assert_eq!(
+        printed,
+        "closing broke\nbroke failed Shut.Stuck(name=\"broke\")\nclosing returned\n\
+         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\n\
+         failing failed Other.Inside(why=\"in the loop\") [\"Shut.Stuck(name=\\\"failing\\\")\"]\n"
+    );
+    Ok(())
+}
+
+/// A failure already leaving through a loop whose generator's cleanup fails too is the one that
+/// leaves, carrying the cleanup's as a note, as a `with` block's failing `else:` does.
+#[test]
+fn a_cleanup_failing_as_a_failure_leaves_a_loop_is_a_note_on_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("cleanup_failing_noted", CLEANUP_FAILING_NOTED)?;
+    assert_eq!(
+        printed,
+        "closing broke\nbroke failed Shut(name=\"broke\")\nclosing returned\nreturned failed Shut(name=\"returned\")\n\
+         closing failing\nfailing failed Other(why=\"in the loop\") [\"Shut(name=\\\"failing\\\")\"]\n"
+    );
+    Ok(())
+}
+
+const CLEANUP_FAILING_NOTED: &str = r#"error Shut:
+    name: str
+
+error Other:
+    why: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broke(stdout: Stdout) fails Shut:
+    for n in held("broke", stdout)?:
+        break
+    stdout.print("not here")
+
+def returned(stdout: Stdout) -> int fails Shut:
+    for n in held("returned", stdout)?:
+        return n
+    0
+
+def failing(stdout: Stdout) fails Shut | Other:
+    for n in held("failing", stdout)?:
+        fail Other(why="in the loop")
+
+def main(stdout: Stdout):
+    match broke(stdout):
+        case Ok(_):
+            stdout.print("broke worked")
+        case Err(why):
+            stdout.print("broke failed", why)
+    match returned(stdout):
+        case Ok(n):
+            stdout.print("returned", n)
+        case Err(why):
+            stdout.print("returned failed", why)
+    match failing(stdout):
+        case Ok(_):
+            stdout.print("failing worked")
+        case Err(why):
+            stdout.print("failing failed", why, why.notes())
+"#;
+
+const CLEANUP_FAILING: &str = r#"error Shut:
+    Stuck(name: str)
+
+error Other:
+    Inside(why: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broke(stdout: Stdout) fails Shut:
+    for n in held("broke", stdout)?:
+        break
+    stdout.print("not here")
+
+def returned(stdout: Stdout) -> int fails Shut:
+    for n in held("returned", stdout)?:
+        return n
+    0
+
+def failing(stdout: Stdout) fails Shut | Other:
+    for n in held("failing", stdout)?:
+        fail Other.Inside(why="in the loop")
+
+def main(stdout: Stdout):
+    match broke(stdout):
+        case Ok(_):
+            stdout.print("broke worked")
+        case Err(why):
+            stdout.print("broke failed", why)
+    match returned(stdout):
+        case Ok(n):
+            stdout.print("returned", n)
+        case Err(why):
+            stdout.print("returned failed", why)
+    match failing(stdout):
+        case Ok(_):
+            stdout.print("failing worked")
+        case Err(why):
+            stdout.print("failing failed", why, why.notes())
+"#;
+
+/// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
+/// failure: the task stops with it, saying so, as for a crash, where the loop over a call it's
+/// made for would fail.
+#[test]
+fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("named_generator_failing")?;
+    let program = dir.join("named.fen");
+    std::fs::write(&program, NAMED_GENERATOR_FAILING)?;
+    let executable = dir.join("named");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(out, "after quiet\nclosing quiet\n");
+    assert!(
+        err.contains(
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"quiet\")"
+        ),
+        "{err}"
+    );
+    assert!(err.contains("help: loop over the call itself"), "{err}");
+    Ok(())
+}
+
+const NAMED_GENERATOR_FAILING: &str = r#"error Shut:
+    Stuck(name: str)
+
+error Other:
+    Inside(why: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+
+def quiet(stdout: Stdout):
+    match held("quiet", stdout):
+        case Ok(walk):
+            for n in walk:
+                break
+        case Err(why):
+            stdout.print("opening failed", why)
+    stdout.print("after quiet")
+
+def kept(stdout: Stdout) fails Shut:
+    walk = held("kept", stdout)?
+    for n in walk:
+        break
+    stdout.print("after kept")
+
+def main(stdout: Stdout):
+    quiet(stdout)
+    match kept(stdout):
+        case Ok(_):
+            stdout.print("kept worked")
+        case Err(why):
+            stdout.print("kept failed", why)
 "#;
 
 /// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
@@ -7362,6 +7863,53 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    Ok(())
+}
+
+/// A file whose block ends without it taking its path's place fails the `with`, and leaves nothing
+/// behind: the end of the block is where what was written is flushed, synced and renamed, and any
+/// of those failing is the block's failure. Here the path has become a folder by then.
+#[test]
+fn a_file_that_cant_take_its_place_fails_its_with_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("finish-fails")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+## Writes a file whose path becomes a folder before the block ends, so it can't take its place.
+def blocked(fs: Fs) fails IoError:
+    with fs.create(\"taken.txt\")? as file:
+        file.write_text(\"never seen\")?
+        fs.make_dir(\"taken.txt\")?
+        fs.write_text(\"taken.txt/inside.txt\", \"here first\")?
+
+def main(fs: Fs, stdout: Stdout):
+    match blocked(fs):
+        case Ok(_):
+            stdout.print(\"the block succeeded\")
+        case Err(problem):
+            stdout.print(\"the block failed:\", problem.reason != \"\")
+    stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
+    # The file written beside the path, to take its place, is gone.
+    names = fs.list_dir(\".\") else []
+    stdout.print([name for name in names if str(name).endswith(\".fennec-partial\")].len())
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "the block failed: True\nhere first\n0\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
     Ok(())
 }
 
@@ -9570,6 +10118,35 @@ fn a_channel_to_every_listener() -> std::io::Result<()> {
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(String::from_utf8_lossy(&ran.stderr).contains("when_behind=.DropOldest"));
+    Ok(())
+}
+
+/// A generic function opens a channel of a generic struct of its own type parameter, as a pool
+/// of `T` does: `channel[Box[T]]` is written in once for each copy, of each kind.
+#[test]
+fn a_channel_of_a_generic_struct_in_a_generic_function_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "generic_channel",
+        r#"from std.concurrent import channel
+
+struct Box[T]:
+    value: T
+
+def boxed[T](value: T, fallback: T) -> T:
+    with channel[Box[T]](size=1) as boxes:
+        boxes.send(Box[T](value=value)) else return fallback
+        got = boxes.receive() else return fallback
+        return got.value
+    fallback
+
+def main(stdout: Stdout):
+    stdout.print(boxed(3, fallback=0), boxed("fox", fallback=""), boxed([1, 2], fallback=[]))
+"#,
+    )?;
+    assert_eq!(printed, "3 fox [1, 2]\n");
     Ok(())
 }
 
@@ -14625,6 +15202,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list[int]()`, `dict[str, int]()` and `set[str]()` keep what they hold when the program's
+/// checked again: once trimmed to build, after a `with` is written in, and as a constant.
+#[test]
+fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "typed_empty_list",
+        "def main(stdout: Stdout):\n    stdout.print(list[int](), list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] 0\n");
+    let printed = printed_by(
+        "typed_empty_in_a_with",
+        "def opened() -> with int:\n    lend 1\n\ndef main(stdout: Stdout):\n    with opened() as n:\n        stdout.print(list[int](), n)\n",
+    )?;
+    assert_eq!(printed, "[] 1\n");
+    let printed = printed_by(
+        "typed_empties",
+        "EMPTY = list[int]()\n\ndef main(stdout: Stdout):\n    mut d = dict[str, int]()\n    d[\"a\"] = 1\n    s = set[str]()\n    \
+         stdout.print(EMPTY, d, s, [1].len() > list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] {\"a\": 1} set() True\n");
+    Ok(())
+}
+
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
 /// by a call, which is read once.
@@ -14941,7 +15544,7 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
 /// An error's notes natively: none to start with, each `add_note` changing only that error, not
 /// a copy taken before, `==` and printing passing them over, a union of errors noting the error
 /// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
-/// interpreter.
+/// interpreter, for an error with cases as for one without.
 #[test]
 fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
     if !ready() {
@@ -14957,6 +15560,11 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
             "note: while loading a long one\nnote: second line\n  and a third\n",
         ),
         ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+        (
+            "cases",
+            include_str!("fixtures/error_notes_with_cases.fen"),
+            "note: while dialing -3\nnote: second line\n  and a third\n",
+        ),
     ] {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;

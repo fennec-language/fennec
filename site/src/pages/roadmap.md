@@ -52,7 +52,7 @@ description: What Fennec does today, what's being built next, and the design que
 - `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
 - `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
 - `crypto`'s `Secret`, which can't be printed, logged or saved, and hashes over a file a chunk at a time.
-- `concurrent`, for tasks and channels. `sql` and `sqlite`, which take only t-strings, with a test's database a real file of its own. `postgres`, which connects over `std.net`, signs in with SCRAM-SHA-256, and runs queries and transactions, with no TLS yet.
+- `concurrent`, for tasks and channels. `sql` and `sqlite`, which take only t-strings, with a test's database a real file of its own. `postgres`, which connects over `std.net`, signs in with SCRAM-SHA-256, and runs queries and transactions over TLS.
 
 [The guide](https://github.com/fennec-language/fennec/blob/main/docs/guide.md) walks through building a real program with all of this. Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
@@ -60,12 +60,11 @@ description: What Fennec does today, what's being built next, and the design que
 
 - **More game math.** 32-bit math types, and `Simd` for when a loop must use vectors.
 - **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
-- **Hot reload,** after Hoard's core works, so a running game or server picks up a change. It's all or nothing: code swaps only at a safe point, after the live data is checked against the new code, or the reload is refused and the old code keeps running.
 - **Debug info and stack traces,** so a failure shows the calls that led to it.
 - **The rest of the sized numbers:** `wrapping_` and `saturating_` on a `u64`.
 - **Kit dependencies and [the Den](/den/),** Fennec's registry for kits. Kits from git or a path are already pinned in `kit.lock` by `fennec update`, and importing from them is next.
 - **Cross-compiling and WebAssembly.**
-- **The rest of the concurrency design:** `TaskGroup`, keeper pools, lock order checked across the whole program, and no waiting inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
+- **The rest of the concurrency design:** `TaskGroup`, database pools, and lock order checked across the whole program. The [tour](/tour/#sharing-resources-and-tasks) describes it.
 
 ## Next: speed and builds
 
@@ -90,7 +89,8 @@ Each of these is decided and not built.
 
 ## After that
 
-- Compile-time loops over a type, and `Writer` and `Reader` for every format built on them. `where` ranges, delta encoding and quantization in `std.pack`.
+- **Hot reload,** so a running game or server picks up a change. It's on the backlog, and its design is in progress.
+- The rest of compile-time loops over a type, and `Serializer` and `Deserializer` for every format built on them. A generic function's loop over a type's fields already works. `where` ranges, delta encoding and quantization in `std.pack`.
 - WebSocket in `std.net`.
 - GPU kernels written as plain functions.
 - `fennec context`, a kit's whole API sized for a prompt, and an MCP server for agents.

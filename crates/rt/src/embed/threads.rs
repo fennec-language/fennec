@@ -64,6 +64,14 @@ pub(crate) fn stopped() -> bool {
     level >= STOPPED_HARD || (level >= STOPPING && CLEANING.get() == 0)
 }
 
+/// Whether a launched task is what's running on this thread, rather than `main` or a range's job.
+pub(crate) fn in_a_task() -> bool {
+    #[cfg(any(test, feature = "threads"))]
+    return STOP.with_borrow(Option::is_some);
+    #[cfg(not(any(test, feature = "threads")))]
+    false
+}
+
 /// The task running on this thread starts cleaning up after a crash, or ends doing so.
 pub(crate) fn cleaning(starts: bool) {
     #[cfg(any(test, feature = "threads"))]

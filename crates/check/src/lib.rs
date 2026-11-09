@@ -480,7 +480,6 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
-        || !checked.empty_collections.is_empty()
         || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
@@ -522,9 +521,6 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
             if let Some(zero) = checked.array_zeros.get(&span) {
                 fennec_syntax::visit::filled_array(expr, zero);
             }
-            if checked.empty_collections.contains(&span) {
-                fennec_syntax::visit::empty_collection(expr);
-            }
             if checked.not_equals.contains(&span) {
                 fennec_syntax::visit::not_of_equals(expr);
             }
@@ -537,8 +533,8 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
-    let sources_written =
-        lend_lowering::lower(module, &checked.sources, &checked.launches, &checked.ref_matches);
+    let sources = cases_named(&checked.sources, &checked.cases);
+    let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
     let counted = enumerate_lowering::lower(module);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
     if lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested || tuples
@@ -554,6 +550,28 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
     }
     fennec_syntax::fuse::stored_stages(module);
     Ok(checked.into_signatures())
+}
+
+/// Each source with its leading-dot cases named, as the program's own text was above: what
+/// lowering writes in comes from the source as it was checked, where `fail .Stuck(...)` can sit
+/// where its enum isn't known any more, as a note's text.
+fn cases_named(
+    sources: &BTreeMap<(u32, u32), lend_lowering::Source>,
+    cases: &BTreeMap<(u32, u32), String>,
+) -> BTreeMap<(u32, u32), lend_lowering::Source> {
+    let mut named = sources.clone();
+    if cases.is_empty() {
+        return named;
+    }
+    for source in named.values_mut() {
+        let def = std::sync::Arc::make_mut(&mut source.def);
+        fennec_syntax::visit::in_function(def, &mut |expr| {
+            if let Some(owner) = cases.get(&(expr.span.start, expr.span.end)) {
+                fennec_syntax::visit::name_enum(expr, owner);
+            }
+        });
+    }
+    named
 }
 
 /// What a program rewritten by lowering doesn't check for: the compiler's mistake, not the
@@ -628,8 +646,6 @@ pub struct Checked {
     optional_steps: BTreeSet<(u32, u32)>,
     /// Those read from something that can fail, which is written in as `value else None`.
     failing_steps: BTreeSet<(u32, u32)>,
-    /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
-    empty_collections: BTreeSet<(u32, u32)>,
     /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
     array_zeros: BTreeMap<(u32, u32), Expr>,
 }

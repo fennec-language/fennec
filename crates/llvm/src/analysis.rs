@@ -401,6 +401,11 @@ fn count_uses(
         for inst in &block.insts {
             let (mut reads, mut writes) = (Vec::new(), Vec::new());
             visit(&inst.kind, |operand| reads.push(operand.clone()), |local| writes.push(local));
+            // Letting go of what a local holds at a lock's edge (`shared.drop`) isn't a use of it:
+            // a local that only borrows owns nothing to let go of, so it can still borrow.
+            if matches!(&inst.kind, InstKind::Builtin { name, .. } if name == "shared.drop") {
+                reads.clear();
+            }
             for operand in &reads {
                 if let Operand::Local(local) = operand
                     && let Some(held) = known.reads.get_mut(local.0)

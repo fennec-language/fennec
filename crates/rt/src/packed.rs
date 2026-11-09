@@ -1,9 +1,8 @@
 //! Lists packed into flat memory: lists of ints, floats or bools, or of structs and enums
 //! made only of those, stored one machine word per number, a struct's fields one after
 //! another. An enum is its case's number, then that case's fields, then zeros up to the
-//! size of its biggest case. Native
-//! code reads and changes them in place. To the interpreter they're ordinary lists: it
-//! unpacks one whenever it uses it.
+//! size of its biggest case. Native code reads and changes them in place. As a `Value` they're
+//! ordinary lists, unpacked whenever the runtime uses one.
 
 use std::rc::Rc;
 
@@ -37,8 +36,8 @@ pub enum Element {
     /// A string held in place as its 24-byte header: up to 23 bytes of text, or a block's
     /// address (see `embed::text`). Packed lists never hold these.
     Text,
-    /// An interpreter value inside a boxed value, by the address of a cell holding it. Packed
-    /// lists never hold these either.
+    /// A `Value` inside a boxed value, by the address of a cell holding it. Packed lists never
+    /// hold these either.
     Object,
     /// A list inside a boxed value, by the address of its block, with the kind of its items.
     /// Packed lists never hold these either.
@@ -114,7 +113,7 @@ impl Packed {
         Packed { element, words, stride }
     }
 
-    /// The list as the interpreter holds lists.
+    /// The list as a `Value` holds lists.
     pub(crate) fn unpack(&self) -> Value {
         let items = self
             .words
@@ -133,8 +132,8 @@ pub(crate) fn as_f32(x: f64) -> f64 {
 
 fn pack_item(element: &Element, item: &Value, words: &mut Vec<u64>) -> Option<()> {
     match (element, item) {
-        // The interpreter holds a `u64` as an `int` of the same bits, and an `f32` as the float
-        // that's exactly it.
+        // A `Value` holds a `u64` as an `int` of the same bits, and an `f32` as the float that's
+        // exactly it.
         (Element::Int | Element::U64, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),
         (Element::Bool, Value::Bool(b)) => words.push(u64::from(*b)),

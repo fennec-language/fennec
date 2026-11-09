@@ -730,6 +730,10 @@ impl Lowering<'_> {
         let (function, signature) = self
             .resolve_written(&key, &written, &types, keep)
             .ok_or_else(|| format!("its call to `{key}` doesn't say what its types stand for"))?;
+        // The checker writes what a call leaves out into the program's own code; the standard
+        // library's runs as it's written, so its calls take their defaults here.
+        let defaulted = with_defaults(args, &signature.params, first);
+        let args = defaulted.as_slice();
         let given = args.len() + usize::from(object.is_some());
         if given != signature.params.len() {
             return Err(format!("its call to `{key}` isn't a plain call"));
@@ -945,6 +949,22 @@ fn read_twice(expr: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// A call's arguments with the default of each parameter it leaves out, by name, after them.
+fn with_defaults(args: &[Arg], params: &[fennec_check::ParamType], first: usize) -> Vec<Arg> {
+    let mut all = args.to_vec();
+    let positional = args.iter().filter(|arg| arg.name.is_none()).count();
+    for (at, param) in params.iter().enumerate().skip(first) {
+        let named = args.iter().any(|arg| arg.name.as_deref() == Some(param.name.as_str()));
+        if at - first < positional || named {
+            continue;
+        }
+        if let Some(default) = &param.default {
+            all.push(Arg { name: Some(param.name.clone()), is_mut: false, value: default.clone() });
+        }
+    }
+    all
 }
 
 /// Whether a call's type says it gives back something that could be kept.

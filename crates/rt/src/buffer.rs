@@ -1,6 +1,6 @@
-//! `Buffer[T]` as the interpreter holds it: its items, and how many it has room for. The room
+//! `Buffer[T]` as a `Value` holds it: its items, and how many it has room for. The room
 //! follows the runtime's rule for a list's block exactly, so `capacity()` gives the same
-//! number whichever way a program runs.
+//! number whether the buffer is a `Value` or a block.
 
 /// The fewest items a new buffer or list has room for.
 pub(crate) const MIN_ROOM: usize = 4;

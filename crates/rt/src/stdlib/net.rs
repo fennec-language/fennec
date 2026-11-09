@@ -184,19 +184,19 @@ impl Fake {
             ("requests", []) => {
                 return Ok(Value::list(self.requests.iter().map(|sent| Value::str(sent)).collect()));
             }
-            ("connect", [Value::Str(host), Value::Int(port)]) => {
+            ("_connect", [Value::Str(host), Value::Int(port)]) => {
                 self.connect(host, port_of(*port, span)?, false)
             }
-            ("connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+            ("_connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
                 self.connect(host, port_of(*port, span)?, *tls)
             }
-            ("listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?, false),
-            ("listen", [Value::Int(port), certificate]) => {
+            ("_listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?, false),
+            ("_listen", [Value::Int(port), certificate]) => {
                 self.listen(port_of(*port, span)?, has_certificate(certificate, span)?)
             }
-            ("udp", []) => self.udp(0),
-            ("udp", [Value::Int(port)]) => self.udp(port_of(*port, span)?),
-            ("connect" | "listen" | "udp" | "script" | "requests", _) => return Err(wrong(method, span)),
+            ("_udp", []) => self.udp(0),
+            ("_udp", [Value::Int(port)]) => self.udp(port_of(*port, span)?),
+            ("_connect" | "_listen" | "_udp" | "script" | "requests", _) => return Err(wrong(method, span)),
             _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
         };
         Ok(made_or_failed(found))
@@ -230,7 +230,7 @@ impl Fake {
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
-            ("Server", "accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
+            ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -537,23 +537,23 @@ pub(crate) fn real_net(
     span: Span,
 ) -> Result<Value, Diagnostic> {
     let found = match (method, args) {
-        ("connect", [Value::Str(host), Value::Int(port)]) => {
+        ("_connect", [Value::Str(host), Value::Int(port)]) => {
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), false)
         }
         // `tls=True`, which native code keeps on the method's name.
-        ("connect.tls" | "connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+        ("_connect.tls" | "_connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), *tls)
         }
-        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
+        ("_listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
         // `tls=Certificate(...)`, or `None`, which native code keeps on the method's name.
-        ("listen.tls" | "listen", [Value::Int(port), certificate]) => match tls_server(certificate, span)? {
+        ("_listen.tls" | "_listen", [Value::Int(port), certificate]) => match tls_server(certificate, span)? {
             Ok(tls) => listen(port_of(*port, span)?, tls),
             Err(failure) => Err(failure),
         },
-        ("udp", []) => udp(0),
+        ("_udp", []) => udp(0),
         // Native code keeps a named argument on the method's name.
-        ("udp" | "udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
-        ("connect" | "connect.tls" | "listen" | "listen.tls" | "udp" | "udp.port", _) => {
+        ("_udp" | "_udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
+        ("_connect" | "_connect.tls" | "_listen" | "_listen.tls" | "_udp" | "_udp.port", _) => {
             return Err(wrong(method, span));
         }
         _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
@@ -636,7 +636,7 @@ pub(crate) fn real_server(
     span: Span,
 ) -> Result<Value, Diagnostic> {
     match (method, args) {
-        ("accept", []) => Ok(made_or_failed(accept(handle, timeout).map(connection_made))),
+        ("_accept", []) => Ok(made_or_failed(accept(handle, timeout).map(connection_made))),
         ("close", []) => {
             close(handle);
             Ok(Value::Unit)
@@ -775,9 +775,9 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
     let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
     let mut ordered = plain.to_vec();
     let params: &[&str] = match method {
-        "connect" => &["host", "port", "tls"],
-        "listen" => &["port", "tls"],
-        "udp" => &["port"],
+        "_connect" => &["host", "port", "tls"],
+        "_listen" => &["port", "tls"],
+        "_udp" => &["port"],
         _ => &[],
     };
     for param in params.iter().skip(plain.len()) {
@@ -1429,14 +1429,14 @@ pub(crate) mod tests {
         let host = || Value::str("localhost");
         let mut fake = Fake::default();
 
-        let secure = fake.net_method("listen.tls", &[Value::Int(0), certificate], span).unwrap();
-        let plain = fake.net_method("listen", &[Value::Int(0)], span).unwrap();
+        let secure = fake.net_method("_listen.tls", &[Value::Int(0), certificate], span).unwrap();
+        let plain = fake.net_method("_listen", &[Value::Int(0)], span).unwrap();
         let (secure, plain) = (port(&secure), port(&plain));
         let tls = Value::Bool(true);
 
-        let both = fake.net_method("connect.tls", &[host(), secure.clone(), tls.clone()], span).unwrap();
+        let both = fake.net_method("_connect.tls", &[host(), secure.clone(), tls.clone()], span).unwrap();
         assert!(matches!(both, Value::Ok(_)), "{both:?}");
-        for (name, args) in [("connect", vec![host(), secure]), ("connect.tls", vec![host(), plain, tls])] {
+        for (name, args) in [("_connect", vec![host(), secure]), ("_connect.tls", vec![host(), plain, tls])] {
             let refused = fake.net_method(name, &args, span).unwrap();
             let Value::Err(error) = refused else { panic!("{name} connected") };
             assert!(format!("{error:?}").contains("Tls"), "{error:?}");
@@ -1534,7 +1534,7 @@ pub(crate) mod tests {
     #[test]
     fn a_tests_listen_takes_only_a_certificate() {
         let mut fake = Fake::default();
-        assert!(fake.net_method("listen.tls", &[Value::Int(0), Value::Int(1)], Span::default()).is_err());
+        assert!(fake.net_method("_listen.tls", &[Value::Int(0), Value::Int(1)], Span::default()).is_err());
     }
 
     fn handle_of_made((_, fields): &Made) -> i64 {
@@ -1760,11 +1760,11 @@ pub(crate) mod tests {
         fn a_server_listening_with_a_certificate_accepts_over_tls() {
             http::use_tls();
             let span = Span::default();
-            let listened = real_net("listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
+            let listened = real_net("_listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
             let (server, port) = (field(&listened, "_handle"), field(&listened, "port"));
             let serving = std::thread::spawn(move || {
                 let span = Span::default();
-                let taken = real_server(server, "accept", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let taken = real_server(server, "_accept", &[], Some(Duration::from_secs(10)), span).unwrap();
                 let conn = field(&taken, "_handle");
                 let line =
                     real_connection(conn, "read_line", &[], Some(Duration::from_secs(10)), span).unwrap();
@@ -1798,10 +1798,10 @@ pub(crate) mod tests {
                     ("key", Value::made("Secret", vec![("_value", Value::str("nope"))])),
                 ],
             );
-            let listened = real_net("listen.tls", &[Value::Int(0), bad], None, span).unwrap();
+            let listened = real_net("_listen.tls", &[Value::Int(0), bad], None, span).unwrap();
             let Value::Err(error) = listened else { panic!("it listened") };
             assert!(format!("{error:?}").contains("Tls"), "{error:?}");
-            assert!(real_net("listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
+            assert!(real_net("_listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
         }
 
         fn shake_trusting_the_tests(

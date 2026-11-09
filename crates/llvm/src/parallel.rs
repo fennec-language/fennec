@@ -37,7 +37,7 @@ use crate::lists::list_item;
 /// Whether a builtin needs TLS: an HTTP request, a raw socket asked for it with `tls=True`, or a
 /// plain connection upgraded to it.
 pub(crate) fn is_request(name: &str) -> bool {
-    ["Net.get", "Net.post", "Net.request", "Net.connect.tls", "Net.listen.tls", "Connection.start_tls"]
+    ["Net.get", "Net.post", "Net.request", "Net._connect.tls", "Net._listen.tls", "Connection.start_tls"]
         .iter()
         .any(|request| name.starts_with(request))
 }

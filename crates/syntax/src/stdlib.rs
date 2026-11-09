@@ -63,15 +63,22 @@ modules! {
 /// What's available everywhere without an import: the errors standard operations fail
 /// with, the `Template` a template string builds, and the built-in types' methods written in
 /// Fennec.
-const CORE: [(&str, &str); 8] = [
+/// Each built-in type's Fennec methods live in its own file, and only there.
+const CORE: [(&str, &str); 13] = [
     ("errors", include_str!("stdlib/errors.fen")),
     ("template", include_str!("stdlib/template.fen")),
+    // Its interfaces are the bounds the built-in types' files extend them with.
+    ("serialize", include_str!("stdlib/serialize.fen")),
+    ("int", include_str!("stdlib/int.fen")),
+    ("float", include_str!("stdlib/float.fen")),
+    ("bool", include_str!("stdlib/bool.fen")),
+    ("bytes", include_str!("stdlib/bytes.fen")),
+    ("optional", include_str!("stdlib/optional.fen")),
     ("str", include_str!("stdlib/str.fen")),
     ("list", include_str!("stdlib/list.fen")),
     ("dict", include_str!("stdlib/dict.fen")),
     ("set", include_str!("stdlib/set.fen")),
     ("sized", include_str!("stdlib/sized.fen")),
-    ("serialize", include_str!("stdlib/serialize.fen")),
 ];
 
 /// Each file of the standard library written in Fennec, by its name, like `math` for
@@ -324,6 +331,33 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// Each type the standard library extends has its Fennec methods in one file only: a
+    /// built-in type's own, like `int.fen` for `int`, or the file that declares it.
+    #[test]
+    fn each_type_is_extended_in_one_file() {
+        let mut found: std::collections::BTreeMap<String, &str> = std::collections::BTreeMap::new();
+        let mut twice = Vec::new();
+        for (file, source) in super::prelude_files() {
+            let module = super::parse_module(file, source).unwrap();
+            for item in &module.items {
+                let crate::Item::Extend(extension) = item else { continue };
+                match found.get(&extension.name) {
+                    Some(first) if *first != file => {
+                        twice.push(format!("`{}` in {first} and {file}", extension.name));
+                    }
+                    _ => {
+                        found.insert(extension.name.clone(), file);
+                    }
+                }
+            }
+        }
+        assert_eq!(twice, Vec::<String>::new());
+        for builtin in ["int", "float", "bool", "bytes", "str", "list", "dict", "set"] {
+            assert_eq!(found.get(builtin).copied(), Some(builtin), "{builtin}");
+        }
+        assert_eq!(found.get("Optional").copied(), Some("optional"));
+    }
+
     /// A module's own functions are qualified where they're named, apart from where a
     /// function's parameter or local of the same name shadows one, as in any program.
     #[test]

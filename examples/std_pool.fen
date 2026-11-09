@@ -30,24 +30,29 @@ error Refused:
 error Broke:
     pass
 
+## How many links have been opened, and how many blocks were served one.
+struct Tally:
+    opened = 0
+    served = 0
+
 ## A new link, numbered by how many have been opened, all of them failing their reset if
 ## `fragile` says.
-def opened(count: shared int, fragile: bool) -> Link fails Refused:
-    lock count as ref made:
-        made += 1
-        Link(number=made, resets=not fragile)
+def opened(tally: shared Tally, fragile: bool) -> Link fails Refused:
+    lock tally as ref counts:
+        counts.opened += 1
+        Link(number=counts.opened, resets=not fragile)
 
 ## The number of links opened so far.
-def opens(count: shared int) -> int:
-    lock count as made:
-        made
+def opens(tally: shared Tally) -> int:
+    lock tally as counts:
+        counts.opened
 
 ## A block that fails with the link it took.
 def broken(link: Link) fails Broke:
     if link.number > 0: fail Broke()
 
 test "a value goes back and is lent again"():
-    shared count = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, False), size=1)? as links:
         with links.take()? as first:
             assert first.number == 1
@@ -56,7 +61,7 @@ test "a value goes back and is lent again"():
     assert opens(count) == 1
 
 test "only one opens up front, and the rest when they're needed"():
-    shared count = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, False), size=3)? as links:
         assert opens(count) == 1
         with links.take()? as first:
@@ -65,7 +70,7 @@ test "only one opens up front, and the rest when they're needed"():
         assert opens(count) == 2
 
 test "a failed block's value is reset and lent again"():
-    shared count = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, False), size=1)? as links:
         match borrowed_and_broken(links):
             case Ok(_):
@@ -76,7 +81,7 @@ test "a failed block's value is reset and lent again"():
             assert again.number == 1
 
 test "a value that can't be reset is replaced"():
-    shared count = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, True), size=1)? as links:
         match borrowed_and_broken(links):
             case Ok(_):
@@ -87,7 +92,7 @@ test "a value that can't be reset is replaced"():
             assert again.number == 2
 
 test "a borrower waits up to wait, then fails"():
-    shared count = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, False), size=1, wait=20ms)? as links:
         with links.take()? as _:
             match taken_number(links):
@@ -100,20 +105,29 @@ test "a pool that can't open one fails at its with"():
     match pool_that_cant_open():
         case Ok(_):
             assert False
-        case Err(failure):
-            assert failure.message() == "the server's away"
+        case Err(.Open(reason=reason)):
+            assert reason == "the server's away"
+        case Err(_):
+            assert False
 
 test "many tasks share a few values"():
-    shared count = 0
-    shared served = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, False), size=3)? as links:
         for _ in parallel(range(12)):
-            with links.take() else return as _:
-                lock served as ref done:
-                    done += 1
+            match served_once(links, count):
+                case Ok(_):
+                    pass
+                case Err(_):
+                    pass
     assert opens(count) <= 3
-    lock served as done:
-        assert done == 12
+    lock count as counts:
+        assert counts.served == 12
+
+## Takes a link, and counts that it was served.
+def served_once(links: Pool[Link], tally: shared Tally) fails PoolError:
+    with links.take()? as _:
+        lock tally as ref counts:
+            counts.served += 1
 
 ## Takes a link and fails with it.
 def borrowed_and_broken(links: Pool[Link]) fails PoolError | Broke:
@@ -135,7 +149,7 @@ def refused() -> Link fails Refused:
     fail Refused(why="the server's away")
 
 def main(stdout: Stdout) fails PoolError | Crashed:
-    shared count = 0
+    shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, False), size=2)? as links:
         with links.take()? as first:
             with links.take()? as second:

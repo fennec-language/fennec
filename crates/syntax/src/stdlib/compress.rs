@@ -1,4 +1,4 @@
-//! `std.compress`: DEFLATE, and zlib and gzip around it, which the interpreter does in Rust.
+//! `std.compress`: DEFLATE, and zlib and gzip around it, which the runtime does.
 
 use super::Module;
 

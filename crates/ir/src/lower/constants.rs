@@ -12,7 +12,7 @@ use crate::{Function, InstKind, NotLowered, Operand, Program};
 /// A constant's value, as written. `prelude` says it's the standard library's.
 #[derive(Clone, Copy)]
 pub(super) struct Written<'a> {
-    value: &'a Expr,
+    pub(super) value: &'a Expr,
     prelude: bool,
 }
 

@@ -30,7 +30,7 @@ test "lines gives each line until the other side is done"(net: Net):
         client.write("one\ntwo\n")?
         client.close()
         with server.accept()? as conn:
-            assert list(conn.lines()) == ["one", "two"]
+            assert list(conn.lines()?) == ["one", "two"]
 
 test "looping over a server gives each connection as it comes"(net: Net):
     with net.listen(0)? as server:
@@ -51,7 +51,7 @@ test "a server gives each connection its own task"(net: Net):
             client.write(f"{name}\n")?
             client.close()
         # In a test, a server's loop ends once no connection is waiting.
-        heard = [list(conn.lines()) for conn in parallel(server)]
+        heard = [list(conn.lines()?) for conn in parallel(server)]
         assert heard == [["ash"], ["kit"]]
 
 test "bytes go as they are"(net: Net):

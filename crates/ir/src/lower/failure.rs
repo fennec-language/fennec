@@ -428,7 +428,7 @@ impl Lowering<'_> {
         let (sees_error, inner) = match pattern {
             Pattern::Variant { name, dotted: false, args, .. } if name == "Err" => (true, args.first()),
             Pattern::Variant { name, dotted: false, args, .. } if name == "Ok" => (false, args.first()),
-            Pattern::Variant { name, dotted: false, .. } if self.context.errors.contains(name.as_str()) => {
+            Pattern::Variant { name, dotted: false, .. } if self.failure_side(name, error) => {
                 (true, Some(pattern))
             }
             other => (false, Some(other)),
@@ -453,6 +453,23 @@ impl Lowering<'_> {
         let dest = self.temporary(ok.clone());
         self.emit(InstKind::GetOk { dest, value: value.clone() }, span);
         self.pattern(inner, &Operand::Local(dest), ok, fail, span)
+    }
+
+    /// Whether an undotted name in a `case` over a result is the failure's, as the checker reads it:
+    /// an error type, or a case of one it fails with.
+    fn failure_side(&self, name: &str, error: &Type) -> bool {
+        let failing = match error {
+            Type::Named(one) => vec![one.as_str()],
+            Type::Errors(names) => names.iter().map(String::as_str).collect(),
+            _ => Vec::new(),
+        };
+        self.context.signatures.error_type(name).is_some()
+            || failing.into_iter().any(|owner| {
+                self.context
+                    .enums
+                    .get(owner)
+                    .is_some_and(|found| found.cases.iter().any(|case| case.name == name))
+            })
     }
 
     /// A pattern on an optional: `None`, or a pattern for the value inside.

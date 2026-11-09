@@ -42,6 +42,8 @@ pub(crate) const MODULE: Module = Module {
         "type_name",
         "shape_hash",
         "layout",
+        "shape_locked",
+        "pack_lock",
         "bytes_text",
         "text_plain_end",
         "text_escape_at",

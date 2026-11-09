@@ -1,4 +1,4 @@
-//! `std.crypto`: hashes, HMAC and comparing secrets, which the interpreter does in Rust.
+//! `std.crypto`: hashes, HMAC and comparing secrets, which the runtime does.
 
 use super::Module;
 

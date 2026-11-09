@@ -1918,7 +1918,23 @@ impl Emit<'_, '_, '_> {
             let kept = self.kept_length(dest.0);
             self.line(&format!("store i64 0, ptr {kept}"));
         }
+        // Checking proofs, the appends a list made whole of zeros leaves out are counted.
+        if self.checks_proofs() && self.known.zero_filled.contains(&dest.0) {
+            let counted = self.zeros_counted(dest.0);
+            self.line(&format!("store i64 0, ptr {counted}"));
+        }
         self.assign(dest, &list)
+    }
+
+    /// In a build that checks proofs, how many appends a list made whole of zeros has left out.
+    fn zeros_counted(&mut self, list: usize) -> String {
+        if let Some(counted) = self.zeros_counted.get(&list) {
+            return counted.clone();
+        }
+        let counted = self.label("%zeros_counted");
+        let _ = writeln!(self.allocas, "  {counted} = alloca i64");
+        self.zeros_counted.insert(list, counted.clone());
+        counted
     }
 
     /// The local a list's length is kept in while its loop fills it.
@@ -1932,13 +1948,17 @@ impl Emit<'_, '_, '_> {
         kept
     }
 
-    /// At the block after a loop that kept a list's length aside, writes it to the list.
+    /// At the block after a loop that kept a list's length aside, writes it to the list. A
+    /// `list[str]` kept as the string it's joined into has no length of its own to write: its
+    /// pieces go straight onto the string, which knows how long it is.
     pub(crate) fn write_kept_lengths(&mut self, block: usize) {
         let mut ended: Vec<usize> = self
             .known
             .length_kept
             .iter()
-            .filter(|(_, after)| **after == block)
+            .filter(|(list, after)| {
+                **after == block && matches!(self.kind_of(LocalId(**list)), Ok(Kind::List(_)))
+            })
             .map(|(list, _)| *list)
             .collect();
         ended.sort_unstable();
@@ -1948,6 +1968,20 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{length} = load i64, ptr {kept}"));
             self.line(&format!("{block} = load ptr, ptr {slot}"));
             let length_at = self.offset(&block, u32::try_from(LIST_LENGTH).unwrap_or(0));
+            // Checking proofs: nothing else added to the list while its length was kept aside,
+            // so its own still says 0, and what was kept fits the room it was made with.
+            if self.checks_proofs() {
+                let span = self.here_span();
+                let (own, changed) = (self.temp(), self.temp());
+                self.line(&format!("{own} = load i64, ptr {length_at}{HEADER_ACCESS}"));
+                self.line(&format!("{changed} = icmp ne i64 {own}, 0"));
+                self.proof_held(&changed, "nothing else changed a list whose length was kept aside", span);
+                let (room_at, room, over) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{room_at} = getelementptr inbounds i8, ptr {block}, i64 {LIST_ROOM}"));
+                self.line(&format!("{room} = load i64, ptr {room_at}{HEADER_ACCESS}"));
+                self.line(&format!("{over} = icmp ugt i64 {length}, {room}"));
+                self.proof_held(&over, "a length kept aside fits its list's room", span);
+            }
             self.line(&format!("store i64 {length}, ptr {length_at}{HEADER_ACCESS}"));
         }
     }
@@ -1966,8 +2000,26 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {joined}, ptr {slot}"));
             return Ok(());
         }
-        // Made whole already, of zeros.
+        // Made whole already, of zeros. Checking proofs, each turn's append is the one at the
+        // loop's count, inside the list: so there are as many as it has zeros.
         if self.known.zero_filled.contains(&local.0) {
+            if self.checks_proofs()
+                && let Some(count) = self.known.zero_counts.get(&local.0).copied()
+            {
+                let span = self.here_span();
+                let counted = self.zeros_counted(local.0);
+                let (done, (turn, _), list) =
+                    (self.temp(), self.operand(&Operand::Local(count))?, self.temp());
+                self.line(&format!("{done} = load i64, ptr {counted}"));
+                let (other, slot) = (self.temp(), self.slot(*local));
+                self.line(&format!("{other} = icmp ne i64 {done}, {turn}"));
+                self.proof_held(&other, "a list made whole of zeros gets one a turn, from 0", span);
+                self.line(&format!("{list} = load ptr, ptr {slot}"));
+                self.proof_inside(&list, &done, "a list made whole of zeros is as long as its loop", span);
+                let next = self.temp();
+                self.line(&format!("{next} = add i64 {done}, 1"));
+                self.line(&format!("store i64 {next}, ptr {counted}"));
+            }
             return Ok(());
         }
         let kind = self.kind_of(*local)?.clone();

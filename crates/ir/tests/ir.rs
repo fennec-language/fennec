@@ -657,6 +657,7 @@ fn fail_and_success_are_written_out() {
     branch _4 bb5 bb6
   bb2:
     _2 = make Missing(_0)
+    builtin error.raised(ref _2)
     _3 = err _2
     return _3
   bb3:
@@ -666,6 +667,7 @@ fn fail_and_success_are_written_out() {
     return _7
   bb5:
     _5 = make Denied(_0)
+    builtin error.raised(ref _5)
     _6 = err _5
     return _6
   bb6:
@@ -697,6 +699,7 @@ fn question_mark_leaves_with_the_error() {
     branch _2 bb1 bb2
   bb1:
     _3 = _1 as err
+    builtin error.passed(ref _3)
     _4 = err _3
     return _4
   bb2:
@@ -1625,6 +1628,7 @@ def g() -> Score:
     jump bb1
   bb4:
     _7 = _1 as err
+    builtin error.passed(ref _7)
     _8 = err _7
     return _8
   bb5:
@@ -1698,6 +1702,7 @@ def f(text: str) -> list[int] fails ParseError:
     branch _6 bb1 bb2
   bb1:
     _7 = _5 as err
+    builtin error.passed(ref _7)
     _8 = err _7
     return _8
   bb2:
@@ -1708,6 +1713,7 @@ def f(text: str) -> list[int] fails ParseError:
     branch _12 bb3 bb4
   bb3:
     _13 = _11 as err
+    builtin error.passed(ref _13)
     _14 = err _13
     return _14
   bb4:
@@ -2990,6 +2996,7 @@ fn an_error_with_cases_is_held_like_an_enum() {
     branch _5 bb5 bb6
   bb2:
     _3 = make DialError.NotFound(_0)
+    builtin error.raised(ref _3)
     _4 = err _3
     return _4
   bb3:
@@ -2999,6 +3006,7 @@ fn an_error_with_cases_is_held_like_an_enum() {
     return _8
   bb5:
     _6 = make DialError.Closed()
+    builtin error.raised(ref _6)
     _7 = err _6
     return _7
   bb6:

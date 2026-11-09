@@ -9,12 +9,16 @@ matched db -1
 ["refused once"] [] [] [Dial.Refused(host="db", port=-1), Dial.Refused(host="db", port=-1), Dial.Closed]
 ["while dialing -2", "second line\nand a third"] Dial.Refused(host="db", port=-2)
 2
-stderr 243
+stderr 401
 error: `main` failed: Dial.Refused(host="db", port=-3)
 note: while dialing -3
 note: second line
   and a third
-  --> <dir>/cases.fen:30:1
+  --> <dir>/cases.fen:10:18
    |
-30 | def main(stdout: Stdout) fails Dial | Broken:
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+10 |     if port < 0: fail .Refused(host, port)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+  = in `connect`
+  = called from `both` at <dir>/cases.fen:18:11
+  = called from `noted` at <dir>/cases.fen:28:13
+  = called from `main` at <dir>/cases.fen:62:18

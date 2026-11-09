@@ -2,9 +2,11 @@ source dda313918e140c53b3ac3a71df6e0ef14180e0188a1cd841cbf2378bfbc2561b
 code 1
 stdout 2
 1
-stderr 163
+stderr 235
 error: `main` failed: Short(why="too big")
-  --> <dir>/declared.fen:26:1
+  --> <dir>/declared.fen:12:15
    |
-26 | def main(stdout: Stdout) fails Short:
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+12 |     if n > 1: fail Short(why="too big")
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  = in `short`
+  = called from `main` at <dir>/declared.fen:28:18

@@ -1084,7 +1084,11 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
 /// `if` inside it.
 fn cleanup_fails(each: &Stmt) -> bool {
     match &each.kind {
-        StmtKind::Fail(_) | StmtKind::Expr(Expr { kind: ExprKind::Try { context: None, .. }, .. }) => true,
+        StmtKind::Fail(_)
+        | StmtKind::Expr(Expr { kind: ExprKind::Try { context: None, .. }, .. })
+        | StmtKind::Assign {
+            value: Expr { kind: ExprKind::Try { context: None, .. }, .. }, op: None, ..
+        } => true,
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(_, body)| body.iter().any(cleanup_fails))
                 || otherwise.iter().flatten().any(cleanup_fails)
@@ -1096,24 +1100,9 @@ fn cleanup_fails(each: &Stmt) -> bool {
 /// A cleanup with each of its failures added to `held` as a note, and the rest of it skipped by
 /// leaving the loop it's run in.
 fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
-    let note = |failure: Expr| {
-        let text = Expr {
-            kind: ExprKind::FStr(vec![fennec_syntax::FStrPart::Expr { expr: failure, spec: None }]),
-            span: here(span),
-        };
-        let callee = Expr {
-            kind: ExprKind::Attr {
-                object: Box::new(name(held, span)),
-                name: "add_note".to_owned(),
-                optional: false,
-            },
-            span: here(span),
-        };
-        let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value: text }];
-        stmt_value(Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: here(span) })
-    };
+    let note = |failure: Expr| note_on(held, failure, span);
     let mut written = Vec::new();
-    for each in cleanup {
+    for (at, each) in cleanup.iter().enumerate() {
         match &each.kind {
             StmtKind::Fail(failure) => {
                 written.push(note(failure.clone()));
@@ -1140,6 +1129,36 @@ fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
                 };
                 written.push(stmt_value(matched));
             }
+            // `x = f()?`: `x` takes the value and the rest goes on with it, or the failure is a
+            // note and the rest is skipped.
+            StmtKind::Assign {
+                target,
+                op: None,
+                value: Expr { kind: ExprKind::Try { value, context: None }, .. },
+                declare_mut,
+                ty,
+            } => {
+                let got = format!("cleanup__got{}", here(span).start);
+                let kept = StmtKind::Assign {
+                    target: target.clone(),
+                    op: None,
+                    value: name(&got, span),
+                    declare_mut: *declare_mut,
+                    ty: ty.clone(),
+                };
+                let mut rest = vec![stmt(kept, each.span)];
+                rest.extend(noted(cleanup.get(at + 1..).unwrap_or_default(), held, span));
+                let ok = arm("Ok", &got, rest, span);
+                let cut = format!("cleanup__failed{}", here(span).start);
+                let failed =
+                    arm("Err", &cut, vec![note(name(&cut, span)), stmt(StmtKind::Break, span)], span);
+                let matched = Expr {
+                    kind: ExprKind::Match { subject: value.clone(), arms: vec![ok, failed] },
+                    span: here(span),
+                };
+                written.push(stmt_value(matched));
+                return written;
+            }
             StmtKind::If { branches, otherwise } => {
                 let branches =
                     branches.iter().map(|(cond, body)| (cond.clone(), noted(body, held, span))).collect();
@@ -1150,6 +1169,24 @@ fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
         }
     }
     written
+}
+
+/// `held.add_note(f"{failure}")`: a cleanup's failure, as a note on the block's.
+fn note_on(held: &str, failure: Expr, span: Span) -> Stmt {
+    let text = Expr {
+        kind: ExprKind::FStr(vec![fennec_syntax::FStrPart::Expr { expr: failure, spec: None }]),
+        span: here(span),
+    };
+    let callee = Expr {
+        kind: ExprKind::Attr {
+            object: Box::new(name(held, span)),
+            name: "add_note".to_owned(),
+            optional: false,
+        },
+        span: here(span),
+    };
+    let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value: text }];
+    stmt_value(Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: here(span) })
 }
 
 /// The block the caller wrote, given what's lent: by its name, or split into several names.

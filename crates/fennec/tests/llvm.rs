@@ -4025,6 +4025,45 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source's `else:` whose `x = f()?` fails: the block's own failure is the one that leaves,
+/// carrying the cleanup's as a note, and the rest of the cleanup is skipped.
+#[test]
+fn a_cleanups_failing_assignment_is_a_note_on_the_blocks_failure() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "cleanup_assignment_noted",
+        r#"error Shut:
+    name: str
+
+error Other:
+    why: str
+
+def closed(name: str) -> int fails Shut:
+    fail Shut(name=name)
+
+def opened(name: str, stdout: Stdout) -> with str fails Shut:
+    lend name else:
+        n = closed(name)?
+        stdout.print("not here", n)
+
+def used(stdout: Stdout) fails Shut | Other:
+    with opened("door", stdout)? as door:
+        fail Other(why="in the block")
+
+def main(stdout: Stdout):
+    match used(stdout):
+        case Ok(_):
+            stdout.print("worked")
+        case Err(why):
+            stdout.print("failed", why, why.notes())
+"#,
+    )?;
+    assert_eq!(printed, "failed Other(why=\"in the block\") [\"Shut(name=\\\"door\\\")\"]\n");
+    Ok(())
+}
+
 /// A failure can leave a `with` block from inside what it calls: from a generator, whether it's
 /// read through a name, looped over or summed, or from a round of a `parallel` loop. Each runs the
 /// source's `else:` once, a `ref` case still puts back what it changed, and what a failing

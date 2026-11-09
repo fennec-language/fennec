@@ -97,6 +97,8 @@ struct SqlRowReader:
     _in_record = False
     _type = ""
     _field = 0
+    ## The fields the row being read has filled, so a second column for one is refused.
+    _filled = list[int]()
 
     def _column(self) -> str:
         self._rows.columns[self._cell] if self._cell < self._width else ""
@@ -176,6 +178,7 @@ struct SqlRowReader:
         self._in_record = True
         self._type = name
         self._cell = -1
+        self._filled = list[int]()
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         self._cell += 1
@@ -183,6 +186,9 @@ struct SqlRowReader:
         name = self._column()
         for at, field in enumerate(fields):
             if field[0] != "" and field[0] == name:
+                # Which of two columns to believe would be a guess, as JSON refuses a key twice.
+                if at in self._filled: fail self._bad("the query gives this column twice")
+                self._filled.append(at)
                 self._field = at
                 return True
         fail self._bad(f"`{self._type}` has no field called `{name}`")

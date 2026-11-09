@@ -455,6 +455,49 @@ fn nothing_waits_inside_a_lock() {
     );
 }
 
+/// One lock is never taken inside another, however many calls down, so two tasks can't each hold
+/// one the other wants: they're taken together in one `lock`.
+#[test]
+fn no_lock_is_taken_inside_another_through_a_call() {
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!(
+            "struct Scores:\n    total = 0\n\n\
+             interface Counter:\n    def count(self) -> int\n\n\
+             struct Locking:\n    scores: shared Scores\n\n    def count(self) -> int:\n        lock self.scores as held:\n            return held.total\n\n\
+             def read(scores: shared Scores) -> int:\n    lock scores as held:\n        return held.total\n\n\
+             def deeper(scores: shared Scores) -> int:\n    read(scores)\n\n\
+             def plain(total: int) -> int:\n    total + 1\n\n\
+             def through[T: Counter](counter: T, scores: shared Scores) -> int:\n    \
+             lock scores as held:\n        return held.total + counter.count()\n\n\
+             def main(stdout: Stdout):\n    shared scores = Scores()\n    shared others = Scores()\n    \
+             stdout.print(through(Locking(scores=others), scores))\n    lock scores as ref held:\n{body}"
+        ))
+        .into_iter()
+        .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+        .filter(|problem| !problem.contains("`count` takes"))
+        .collect()
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(found("        held.total = plain(held.total)\n"), empty);
+    // An interface's method could be any type's, so one that locks on any type counts.
+    let all = problems(
+        "struct Scores:\n    total = 0\n\ninterface Counter:\n    def count(self) -> int\n\n\
+        struct Locking:\n    scores: shared Scores\n\n    def count(self) -> int:\n        lock self.scores as held:\n            return held.total\n\n\
+        def through[T: Counter](counter: T, scores: shared Scores) -> int:\n    lock scores as held:\n        return held.total + counter.count()\n\n\
+        def main(stdout: Stdout):\n    shared scores = Scores()\n    shared others = Scores()\n    stdout.print(through(Locking(scores=others), scores))\n",
+    );
+    let said: Vec<&str> = all.iter().filter_map(|problem| problem.split(" @ ").next()).collect();
+    assert_eq!(said, ["`count` takes `self.scores`'s lock while `held` is locked"]);
+    assert_eq!(
+        found("        held.total = read(others)\n"),
+        ["`read` takes `scores`'s lock while `held` is locked"]
+    );
+    assert_eq!(
+        found("        held.total = deeper(others)\n"),
+        ["`deeper` takes `scores`'s lock while `held` is locked"]
+    );
+}
+
 /// A method of an interface could be any type's, so one that waits on any type counts.
 #[test]
 fn an_interface_method_inside_a_lock_counts_if_any_type_s_waits() {

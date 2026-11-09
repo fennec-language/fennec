@@ -518,3 +518,35 @@ fn a_program_reaches_only_what_the_standard_library_exports() {
         empty
     );
 }
+
+/// A type defines an operator once for each type on its right, and a use of it calls the one for
+/// exactly that type. A second for the same type is refused, and a named method still has one
+/// meaning.
+#[test]
+fn an_operator_is_defined_once_for_each_type_on_its_right() {
+    let program = "
+        struct Meters:
+            value: float
+
+            def /(self, other: float) -> Meters:
+                Meters(value=self.value / other)
+
+            def /(self, other: Meters) -> float:
+                self.value / other.value
+
+            def /(self, other: Meters) -> int:
+                1
+
+            def half(self) -> Meters:
+                self / 2.0
+
+        def main(stdout: Stdout):
+            ratio: float = Meters(value=6.0) / Meters(value=3.0)
+            scaled: Meters = Meters(value=6.0) / 2.0
+            stdout.print(ratio, scaled.value, Meters(value=1.0).half().value)
+    ";
+    assert_eq!(
+        problems(program),
+        ["`Meters` already has a `/` taking Meters on its right @ def /(self, other: Meters) -> int"]
+    );
+}

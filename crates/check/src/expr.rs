@@ -463,6 +463,7 @@ impl FnCx<'_> {
         if let (Some(name), Some(method)) = (left.method_owner(), op.method_name())
             && let Some((key, _)) = self.checker.program.method(name, method)
         {
+            let key = self.operator_for(&left, key, &right);
             return self.call_operator(&left, &key, &right, spans.1);
         }
         if let Some(method) = op.method_name()

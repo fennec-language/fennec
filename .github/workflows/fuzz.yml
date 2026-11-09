@@ -42,6 +42,14 @@ jobs:
             flags: ""
             target: ""
             only: llvm json toml utf8
+          # The standard library's readers of outside input, built natively, each held to its
+          # format's own rules: JSON, TOML, std.pack, CSV, URLs, the HTTP server and client, and
+          # Postgres's messages.
+          - name: Readers
+            toolchain: ""
+            flags: ""
+            target: ""
+            only: json-rules toml-rules pack csv url http-server http-client postgres
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

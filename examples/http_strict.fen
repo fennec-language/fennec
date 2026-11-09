@@ -3,8 +3,9 @@
 # A proxy and a server that disagree on where a request ends let one request hide inside another.
 # So anything the grammar doesn't allow gets a 400: a second `content-length`, a length that isn't
 # only digits, a space before a header's `:`, a header folded onto the next line, a version that
-# isn't 1.0 or 1.1, or a control character in the method. A value with a line break can't go into
-# a response's headers, where it would start a header of its own.
+# isn't 1.0 or 1.1, a control character in the method, or a line ended by a bare line feed. A line
+# over a mebibyte gets a 431. A value with a line break can't go into a response's headers, where
+# it would start a header of its own.
 from std.net import NetError, Request, Response
 
 def respond(request: Request) -> Response:
@@ -25,6 +26,7 @@ def status_of(net: Net, raw: str) -> str fails NetError:
 
 BAD = "HTTP/1.1 400 Bad Request"
 GOOD = "HTTP/1.1 200 OK"
+TOO_BIG = "HTTP/1.1 431 Request Header Fields Too Large"
 END = "connection: close\r\n\r\n"
 
 test "a plain request is answered"(net: Net):
@@ -53,6 +55,14 @@ test "a control character in the method is refused"(net: Net):
 
 test "a second host is refused"(net: Net):
     assert status_of(net, f"GET / HTTP/1.1\r\nhost: a\r\nhost: b\r\n{END}")? == BAD
+
+test "a line ended by a bare line feed is refused"(net: Net):
+    assert status_of(net, f"GET / HTTP/1.1\nhost: a\r\n{END}")? == BAD
+    assert status_of(net, f"GET / HTTP/1.1\r\nhost: a\n{END}")? == BAD
+
+test "a line over a mebibyte is refused"(net: Net):
+    long = "a" * 1048577
+    assert status_of(net, f"GET / HTTP/1.1\r\nx-long: {long}\r\n{END}")? == TOO_BIG
 
 test "a line break can't start a header in a response"(net: Net):
     lines = answer(net, f"GET /?echo=a%0d%0aset-cookie:%20stolen=1 HTTP/1.1\r\n{END}")?

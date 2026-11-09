@@ -78,10 +78,10 @@ fn waits(name: &str) -> Option<bool> {
     let network = [
         "Connection.read",
         "Connection.write",
-        "Server.accept",
+        "Server._accept",
         "UdpSocket.receive",
         "UdpSocket.send_to",
-        "Net.connect",
+        "Net._connect",
         "Net.get",
         "Net.post",
         "Net.request",

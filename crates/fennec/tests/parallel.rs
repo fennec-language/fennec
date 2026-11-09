@@ -1000,17 +1000,17 @@ def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails
         count += 1
     count
 
-def main(net: Net, stdout: Stdout):
+def main(net: Net, stdout: Stdout) fails NetError:
     greeting = \"hello from \" + str(1 + 1)
     marks = [\"!\"]
-    server = net.listen(0).expect(\"it listens\")
-    stdout.print(server.port)
-    for connection in parallel(server):
-        match answer(connection, greeting, marks):
-            case Ok(count):
-                stdout.print(\"answered\", count, connection.peer != \"\")
-            case Err(error):
-                stdout.print(\"failed\", error.message())
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for connection in parallel(server):
+            match answer(connection, greeting, marks):
+                case Ok(count):
+                    stdout.print(\"answered\", count, connection.peer != \"\")
+                case Err(error):
+                    stdout.print(\"failed\", error.message())
 ";
 
 /// One client's whole talk with a server: each line sent, what came back, and the end.
@@ -1100,16 +1100,16 @@ def answer(connection: Connection, counter: Counter) -> int fails NetError:
             connection.write(f\"{counter.total}\\n\")?
     0
 
-def main(net: Net, stdout: Stdout):
+def main(net: Net, stdout: Stdout) fails NetError:
     counter = Counter()
-    server = net.listen(0).expect(\"it listens\")
-    stdout.print(server.port)
-    for connection in parallel(server):
-        match answer(connection, counter):
-            case Ok(_):
-                stdout.print(\"answered\")
-            case Err(error):
-                stdout.print(\"failed\", error.message())
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for connection in parallel(server):
+            match answer(connection, counter):
+                case Ok(_):
+                    stdout.print(\"answered\")
+                case Err(error):
+                    stdout.print(\"failed\", error.message())
 ";
 
 /// A connection's task that fails while it holds a lock ends the whole program, rather than only

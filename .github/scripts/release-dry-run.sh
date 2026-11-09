@@ -42,7 +42,8 @@ within="$repo/.github/scripts/within.sh"
 
 # What a person has who's installed nothing but Fennec: the launcher and the shell's own tools,
 # with no C compiler, linker or `ar`, and nothing of Rust's, Cargo's, llvm-mingw's or Visual
-# Studio's. The archive's own LLD links, and its own `llvm-ar` takes a library apart. On Linux and
+# Studio's. On Linux and Windows the archive's own LLD links, and its own `llvm-ar` takes a
+# library apart everywhere. On Linux and
 # macOS a compiler sits in `/usr/bin` beside everything else, so the tools this script uses are
 # linked into a folder of their own; Git for Windows' folders hold none.
 if [ -n "$exe" ]; then
@@ -57,6 +58,12 @@ else
   reach="$bin:$tools"
 fi
 unreached=(cc c++ gcc clang ld ld.lld ld64.lld lld ar)
+# A Mac links through Xcode's command line tools, which a person installs with
+# `xcode-select --install`: `cc` is its way in, and finds the linker itself, not on the path.
+if [ "$(uname -s)" = Darwin ]; then
+  ln -s "$(type -P cc)" "$tools/cc"
+  unreached=(c++ gcc clang ld ld.lld ld64.lld lld ar)
+fi
 for linker in "${unreached[@]}"; do
   if PATH="$reach" command -v "$linker" > /dev/null 2>&1; then
     echo "::error::$linker is in reach of the dry run: $(PATH="$reach" command -v "$linker")"

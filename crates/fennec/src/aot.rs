@@ -608,15 +608,28 @@ fn link_objects(
     } else {
         linker(&paths, &runtime, output, tls)
     }
-    .output()
-    .map_err(|err| format!("couldn't run the linker: {err}"))?;
+    .output();
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
+    let linked = linked.map_err(|err| {
+        if cfg!(target_os = "macos") && err.kind() == std::io::ErrorKind::NotFound {
+            NO_XCODE_TOOLS.to_owned()
+        } else {
+            format!("couldn't run the linker: {err}")
+        }
+    })?;
     if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
 }
 
+/// What a Mac without Xcode's command line tools is told, as it links a program through them.
+const NO_XCODE_TOOLS: &str = "linking a program on a Mac needs Xcode's command line tools, which aren't installed: run `xcode-select --install`";
+
 /// What a linker said when it failed, on standard error or standard output.
 fn link_failure(linked: &std::process::Output) -> String {
+    // A Mac's `cc` is a stand-in that runs Xcode's, and says so through `xcrun` when there's none.
+    if cfg!(target_os = "macos") && String::from_utf8_lossy(&linked.stderr).contains("xcrun: error") {
+        return format!("{NO_XCODE_TOOLS}\n{}", String::from_utf8_lossy(&linked.stderr).trim_end());
+    }
     format!(
         "linking failed:\n{}{}",
         String::from_utf8_lossy(&linked.stderr),
@@ -624,53 +637,10 @@ fn link_failure(linked: &std::process::Output) -> String {
     )
 }
 
-/// LLD and the stubs of macOS's own libraries it links a program against, in the `llvm` folder
-/// beside `fennec`, as a release has them, so building needs nothing of Xcode's. The stubs name what
-/// each library exports, laid out as an SDK lays them out, for `-syslibroot`.
-#[cfg(target_os = "macos")]
-fn darwin_linker() -> Option<(PathBuf, PathBuf)> {
-    let tools = fennec_llvm::Tools::find().ok()?;
-    let lld = tools.folder().join("rust-lld");
-    let stubs = tools.folder().with_file_name("lib").join("darwin");
-    (lld.is_file() && stubs.join("usr/lib/libSystem.tbd").is_file()).then_some((lld, stubs))
-}
-
-/// LLD, set to link objects with a runtime library into a Mac executable, as `cc` would: the same
-/// libraries, and the macOS LLVM's code is built for.
-#[cfg(target_os = "macos")]
-fn darwin_command(
-    lld: &Path,
-    stubs: &Path,
-    objects: &[PathBuf],
-    runtime: &Path,
-    output: &Path,
-    tls: bool,
-) -> Command {
-    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" };
-    let mut command = Command::new(lld);
-    command
-        .args(["-flavor", "darwin", "-arch", arch, "-platform_version", "macos", "14.0", "14.0"])
-        .arg("-syslibroot")
-        .arg(stubs)
-        .args(objects)
-        .arg(runtime)
-        .args(["-lSystem", "-dead_strip", "-stack_size", "0x20000000"]);
-    if tls {
-        command.args(["-framework", "Security", "-framework", "CoreFoundation"]);
-    }
-    command.arg("-o").arg(output);
-    command
-}
-
-/// The linker that links objects with a runtime library into an executable: on a Mac, LLD where a
-/// release has it, and otherwise the system's, through `cc`.
+/// The system's linker, set to link objects with a runtime library into an executable. On a Mac
+/// that's `cc` from Xcode's command line tools, which a Mac program links against.
 #[cfg(not(windows))]
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Command {
-    // A sanitizer's runtime is the system compiler's, so it links through `cc` either way.
-    #[cfg(target_os = "macos")]
-    if let Some((lld, stubs)) = darwin_linker().filter(|_| fennec_llvm::sanitize_flag().is_none()) {
-        return darwin_command(&lld, &stubs, objects, runtime, output, tls);
-    }
     let mut command = Command::new("cc");
     command
         .args(objects)
@@ -920,6 +890,23 @@ mod tests {
         assert_eq!(super::stamp_in(b"an old library with no stamp"), None);
         assert_eq!(super::stamp_in(b"fennec-runtime-build:short"), None);
         assert_eq!(super::stamp_in(&[b"fennec-runtime-build:".as_slice(), &[b'z'; 64]].concat()), None);
+    }
+
+    /// A Mac whose `cc` says through `xcrun` that Xcode's command line tools aren't there is told
+    /// how to install them, and what `cc` said goes along.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_without_xcodes_tools_is_told_how_to_get_them() {
+        use std::os::unix::process::ExitStatusExt;
+        let said = "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools)\n";
+        let linked = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: said.as_bytes().to_vec(),
+        };
+        let told = super::link_failure(&linked);
+        assert!(told.starts_with(super::NO_XCODE_TOOLS), "{told}");
+        assert!(told.contains("invalid active developer path"), "{told}");
     }
 
     /// The main thread's stack an executable is linked with on macOS is the one the runtime

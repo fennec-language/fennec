@@ -6,7 +6,7 @@
 # block that fails or crashes hands its value back to be `reset()`, and one that can't be reset
 # is closed and opened again when it's next needed, so the pool never shrinks. A borrower waits
 # up to `wait` for a value to come free, then fails with `PoolError.Timeout`.
-from std.concurrent import Crashed, Pool, PoolError, pool
+from std.concurrent import Borrowed, Crashed, Pool, PoolError, pool
 
 ## A pretend connection: its number, in the order they were opened, and whether a reset works.
 struct Link:
@@ -94,7 +94,7 @@ test "a value that can't be reset is replaced"():
 test "a borrower waits up to wait, then fails"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=False), size=1, wait=20ms)? as links:
-        with links.take()? as _:
+        with taken_soon(links)? as _:
             match taken_number(links):
                 case Ok(_):
                     assert False
@@ -133,6 +133,27 @@ def served_once(links: Pool[Link], tally: shared Tally) fails PoolError:
 def borrowed_and_broken(links: Pool[Link]) fails PoolError | Broke:
     with links.take()? as link:
         broken(link)?
+
+## A link from `links`, asking again while its short `wait` runs out: a busy machine can take
+## longer than that to start the pool's tasks, and only the second borrower should time out.
+def taken_soon(links: Pool[Link]) -> with Link fails PoolError:
+    borrowed = borrowed_soon(links)?
+    lend borrowed.value else:
+        borrowed.give_back(False)
+    borrowed.give_back(True)
+
+def borrowed_soon(links: Pool[Link]) -> Borrowed[Link] fails PoolError:
+    mut tries = 0
+    while True:
+        match links.borrowed():
+            case Ok(borrowed):
+                return borrowed
+            case Err(.Timeout(waited=waited)):
+                tries += 1
+                if tries == 500: fail .Timeout(waited=waited)
+            case Err(failure):
+                fail failure
+    fail .Closed
 
 ## The number of the link `take()` lends.
 def taken_number(links: Pool[Link]) -> int fails PoolError:

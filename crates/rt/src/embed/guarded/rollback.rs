@@ -17,7 +17,9 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasherDefault;
 
+use super::super::heap::AddressHasher;
 use super::super::{State, attempt, heap};
 
 /// One word as it was before a block's code changed it.
@@ -39,6 +41,23 @@ struct Log {
     /// around it says means the lock brought a table of its own. A value of only numbers has none.
     depth: usize,
     saved: Vec<Saved>,
+    /// Where each save is for, so that a place written again and again is saved once.
+    places: HashSet<u64, BuildHasherDefault<AddressHasher>>,
+}
+
+/// The address of the word a save is for, which only that word has.
+fn place(saved: &Saved) -> u64 {
+    saved.block.wrapping_add(u64::try_from(saved.word).unwrap_or(0).wrapping_mul(8))
+}
+
+/// What became of a save.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pushed {
+    Added,
+    /// The place was saved already, and only its first save goes back.
+    Repeated,
+    /// No lock is held that may crash.
+    NoLog,
 }
 
 thread_local! {
@@ -56,22 +75,25 @@ fn address(value: i64) -> u64 {
 pub extern "C" fn begin(cell: i64) {
     attempt(|state: &mut State| {
         let depth = state.heap.tables_behind();
-        LOGS.with_borrow_mut(|logs| logs.push(Log { cell: address(cell), depth, saved: Vec::new() }));
+        LOGS.with_borrow_mut(|logs| {
+            logs.push(Log { cell: address(cell), depth, saved: Vec::new(), places: HashSet::default() });
+        });
         Ok(())
     });
 }
 
 /// Adds a save to the log of the lock it's for: the log whose cell it is, or the innermost.
-fn push(saved: Saved) -> bool {
+fn push(saved: Saved) -> Pushed {
     LOGS.with_borrow_mut(|logs| {
         let at = logs.iter().rposition(|log| log.cell == saved.block).or(logs.len().checked_sub(1));
-        match at.and_then(|at| logs.get_mut(at)) {
-            Some(log) => {
-                log.saved.push(saved);
-                true
-            }
-            None => false,
+        let Some(log) = at.and_then(|at| logs.get_mut(at)) else { return Pushed::NoLog };
+        // A loop writes the same place, so the last save is looked at first.
+        let last = log.saved.last().is_some_and(|last| last.block == saved.block && last.word == saved.word);
+        if last || !log.places.insert(place(&saved)) {
+            return Pushed::Repeated;
         }
+        log.saved.push(saved);
+        Pushed::Added
     })
 }
 
@@ -81,9 +103,10 @@ fn push(saved: Saved) -> bool {
 pub extern "C" fn save(block: i64, word: i64, old: i64, holds: i64) {
     let Ok(word) = usize::try_from(word) else { return };
     let saved = Saved { block: address(block), word, old: old.cast_unsigned(), held: holds != 0 && old != 0 };
-    if !push(saved) && saved.held {
-        // No lock is held that may crash, which would be a bug in generated code: the count is let
-        // go of, as the write would have.
+    if push(saved) != Pushed::Added && saved.held {
+        // What a repeated save names was made under the lock, and nothing will put it back. With no
+        // lock held that may crash, which would be a bug in generated code, it's the same. Either
+        // way the count is let go of, as the write would have.
         attempt(|state: &mut State| {
             heap::release(state, saved.old);
             Ok(())
@@ -110,10 +133,8 @@ pub extern "C" fn save_text(block: i64, word: i64, w0: i64, w1: i64, w2: i64) {
 pub extern "C" fn save_ref(block: i64, word: i64, old: i64) {
     let Ok(word) = usize::try_from(word) else { return };
     let saved = Saved { block: address(block), word, old: address(old), held: old != 0 };
-    let known = LOGS.with_borrow(|logs| {
-        logs.iter().any(|log| log.saved.iter().any(|it| it.block == saved.block && it.word == word))
-    });
-    if known || !push(saved) || !saved.held {
+    let known = LOGS.with_borrow(|logs| logs.iter().any(|log| log.places.contains(&place(&saved))));
+    if known || push(saved) != Pushed::Added || !saved.held {
         return;
     }
     attempt(|state: &mut State| {
@@ -142,11 +163,22 @@ pub extern "C" fn kept() {
                 passed.push(saved);
             }
         }
-        LOGS.with_borrow_mut(|logs| {
+        let repeated = LOGS.with_borrow_mut(|logs| {
+            let mut repeated = Vec::new();
             if let Some(outer) = logs.last_mut() {
-                outer.saved.extend(passed);
+                for saved in passed {
+                    if outer.places.insert(place(&saved)) {
+                        outer.saved.push(saved);
+                    } else if saved.held {
+                        repeated.push(saved.old);
+                    }
+                }
             }
+            repeated
         });
+        for old in repeated {
+            heap::release(state, old);
+        }
         Ok(())
     });
 }
@@ -240,6 +272,12 @@ pub extern "C" fn undo_word(word: i64, now: i64, now_holds: i64) -> i64 {
 #[cfg(test)]
 fn held() -> usize {
     LOGS.with_borrow(Vec::len)
+}
+
+/// How many saves the logs hold.
+#[cfg(test)]
+fn saved_entries() -> usize {
+    LOGS.with_borrow(|logs| logs.iter().map(|log| log.saved.len()).sum())
 }
 
 #[cfg(test)]

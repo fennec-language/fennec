@@ -529,9 +529,12 @@ fn strengthen(state: &mut State, at: u64, layout: Layout) -> Option<()> {
 fn with_room(state: &mut State, width: usize, live: usize, room: usize) -> (Box<[u64]>, usize) {
     let mut slots = MIN_SLOTS;
     while capacity(slots) < room.max(live) {
-        slots *= 2;
+        slots = slots.saturating_mul(2);
+        if slots == usize::MAX {
+            super::heap::too_big();
+        }
     }
-    (state.heap.fresh(DICT_HEADER_WORDS + slots + capacity(slots) * width), slots)
+    (state.heap.fresh(super::heap::words_for(DICT_HEADER_WORDS + slots, capacity(slots), width)), slots)
 }
 
 /// Fills in a new block with its header and `live` entries, finding each one's slot by its hash.

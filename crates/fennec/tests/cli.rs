@@ -154,7 +154,6 @@ fn the_proof_program_checks_passes_its_tests_and_runs() {
 /// When a `with` block fails and its source's `else:` cleanup fails too, the cleanup's failure
 /// rides along as a note on the block's, which is the one that passes up, and `main` prints it
 /// under its failure. The cleanup runs once, where a whole line that's a `?` fails the block.
-/// Through the interpreter for now, since native code for notes is the LLVM lane's.
 #[test]
 fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
     let dir = std::env::temp_dir().join(format!("fennec-cli-{}-cleanup-notes", std::process::id()));
@@ -276,8 +275,7 @@ fn fennec_on(command: &str, name: &str, source: &str) -> std::io::Result<Output>
 
 #[test]
 fn run_stops_runaway_recursion_with_an_error() {
-    // The interpreter runs on a big stack so that the depth limit, not a stack overflow,
-    // is what stops a program that recurses forever.
+    // The depth limit, not a stack overflow, is what stops a program that recurses forever.
     let source = "def forever(n: int) -> int:\n    forever(n + 1)\n\ndef main(stdout: Stdout):\n    stdout.print(forever(0))\n";
     let output = fennec_on("run", "forever", source).unwrap();
     assert_eq!(output.status.code(), Some(1));
@@ -629,8 +627,7 @@ fn llvm_ready_for_run() -> bool {
         && crate::executables::runtime_beside_fennec()
 }
 
-/// A conversion to the type a value has already gives it back, natively and in the
-/// interpreter. The linter takes these out of the examples, since they change nothing.
+/// A conversion to the type a value has already gives it back. The linter takes these out of the examples, since they change nothing.
 #[test]
 fn conversions_to_what_a_value_is_already_give_it_back() {
     let dir = scratch("same-type").unwrap();
@@ -2573,7 +2570,7 @@ fn a_hot_function_keeps_no_checks() {
 }
 
 /// A `shared` value is a handle: every name for it, and every function it's passed to, changes
-/// one cell, natively and in the interpreter.
+/// one cell.
 #[test]
 fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();

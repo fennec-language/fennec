@@ -59,7 +59,7 @@ pub struct Layouts {
     /// list can hold lists, dicts and those optionals.
     one_word_optionals: bool,
     /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
-    /// methods. Otherwise it's an object the interpreter holds.
+    /// methods. Otherwise it's an object the runtime holds.
     native_buffers: bool,
     /// What's held in place rather than by a block's address.
     in_place: InPlace,
@@ -321,7 +321,7 @@ impl Layouts {
     }
 
     /// Lays out the boxed types: every struct and enum that isn't plain and has no `where`
-    /// rules. A field native code can't hold is an interpreter value in a cell of its own.
+    /// rules. A field native code can't hold is a runtime `Value` in a cell of its own.
     fn add_boxed(&mut self, sources: &Sources<'_>, names: &[String]) {
         let candidates: BTreeMap<String, Written> = names
             .iter()

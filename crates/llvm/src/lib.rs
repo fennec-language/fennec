@@ -11,7 +11,7 @@
 //!
 //! So far this takes ints, floats, bools, strings, structs and enums, plain and boxed, tuples,
 //! lists of those, optionals of blocks, and f-strings, laid out as `fennec_layout` says, on the
-//! same runtime as the JIT. It says which function it can't take rather than running it some
+//! runtime. It says which function it can't take rather than running it some
 //! other way.
 //!
 //! A function that can fail hands that back in a register kept for it, so that succeeding costs

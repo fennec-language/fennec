@@ -417,8 +417,7 @@ fn emitted_with(
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
     tests: bool,
 ) -> Result<Emitted, String> {
-    // Reading and writing JSON and TOML go through std's code in Fennec where they can, here alone,
-    // so other engines keep the interpreter's. Where LLVM can't take that code yet, they don't.
+    // Reading and writing JSON and TOML go through std's code in Fennec, where LLVM can take it.
     let mut routed = reached.clone();
     // So does sorting what has its own `<`, before formats, which resolve what they change.
     let sorts = fennec_check::route_sorts_natively(&mut routed);

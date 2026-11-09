@@ -268,7 +268,7 @@ fn say_totals(options: Options, (passed, failed): (usize, usize), (ran, unchange
 /// so would cost whoever reads it for nothing they can act on, so only `--verbose` says.
 fn say_how_llvm_went(through_llvm: &crate::llvm_tests::LlvmTests, wanted: usize) {
     if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
-        eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
+        eprintln!("note: some tests fail, since LLVM can't build what they reach yet: {why}");
     }
     eprintln!("note: {} of {wanted} tests ran through LLVM", through_llvm.outcomes.len());
 }

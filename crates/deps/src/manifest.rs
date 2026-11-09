@@ -2,9 +2,8 @@
 //! it depends on.
 //!
 //! This reads only the few keys a kit has so far, with a small reader of its own.
-//! TODO: switch to `std.toml` (`crates/interp/src/formats/toml.rs`) and keep these checks on
-//! top of it. It needs a way to use it outside the interpreter, and the span of each key so
-//! errors can still point at their line.
+//! TODO: share one TOML reader with `std.toml` and keep these checks on top of it. It needs the
+//! span of each key so errors can still point at their line.
 
 use fennec_syntax::{Diagnostic, Span};
 

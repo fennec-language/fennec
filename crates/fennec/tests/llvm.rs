@@ -1675,7 +1675,7 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
     if !ready() {
         return Ok(());
     }
-    // The JIT reads the same lowering, so only the interpreter can say this is right.
+    // The JIT read the same lowering, so only the interpreter could say this was right.
     same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
 }
 
@@ -4761,8 +4761,7 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Every program in the repository builds as native code, with nothing left to the JIT or the
-/// interpreter: each example, kit and benchmark, `examples/proof` and `selfhost`. The examples
+/// Every program in the repository builds as native code, with nothing LLVM refuses: each example, kit and benchmark, `examples/proof` and `selfhost`. The examples
 /// that print something are run by the test above, and the rest by their own suites.
 #[test]
 fn every_program_builds_natively() -> std::io::Result<()> {
@@ -6364,8 +6363,7 @@ def main(stdout: Stdout, env: Env):
     Ok(())
 }
 
-/// Skirmish built with LLVM prints its `.out` file, as `cli.rs` checks the interpreter and the
-/// JIT do: a whole kit, saved to JSON and loaded back, cached and as a release.
+/// Skirmish built with LLVM prints its `.out` file: a whole kit, saved to JSON and loaded back, cached and as a release.
 #[test]
 fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()> {
     if !ready() {
@@ -6457,7 +6455,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     Ok(())
 }
 
-/// What compiled code does through capabilities without the interpreter, failing as well as not.
+/// What compiled code does through capabilities, failing as well as not.
 const NATIVE_CAPABILITIES: &str = "\
 from std.path import Path
 
@@ -9223,8 +9221,7 @@ def main(stdout: Stdout):
 }
 
 /// A known difference: native code writes a field holding a union tagged with its member, as
-/// the language says, where the JIT's JSON writer, which a plain `fennec build` uses too, leaves
-/// the tag out. The JIT is on its way out, so its side isn't being fixed.
+/// the language says, where the JIT's JSON writer left the tag out.
 #[test]
 fn native_json_tags_a_union_where_the_jit_does_not() -> std::io::Result<()> {
     if !ready() {
@@ -10842,7 +10839,7 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
 
 /// Floats have one equality, order and hash everywhere: `0.0` is `-0.0`, and NaN comes after
 /// everything and is the same as any other NaN, whatever its sign. So this is held to what that
-/// decision says, on LLVM and the interpreter both. The JIT's `==` and keys don't follow it yet.
+/// decision says, as the interpreter pinned it. The JIT's `==` and keys never followed it.
 #[test]
 fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
     if !ready() {
@@ -10984,8 +10981,8 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
 }
 
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
-/// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
-/// both. The JIT's `==` and keys don't follow it yet.
+/// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
+/// it. The JIT's `==` and keys never followed it.
 #[test]
 fn floats_are_equal_as_decided() -> std::io::Result<()> {
     if !ready() {
@@ -12185,7 +12182,7 @@ fn strips_match_the_jit() -> std::io::Result<()> {
     )
 }
 
-/// `upper`, `lower`, `replace`, `find` and `split`, which run the interpreter's own code.
+/// `upper`, `lower`, `replace`, `find` and `split`, which run the runtime's own code.
 #[test]
 fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -13671,7 +13668,7 @@ fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {
     )
 }
 
-/// A failed `assert` says all the JIT does, each side as the interpreter shows it.
+/// A failed `assert` says all the JIT did, each side as the interpreter showed it.
 #[test]
 fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
     if !ready() {
@@ -14068,7 +14065,7 @@ def main(stdout: Stdout):
 }
 
 /// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
-/// interpreter. LLVM refused it once, and the JIT still gets it wrong (#572).
+/// interpreter. LLVM refused it once, and the JIT got it wrong (#572).
 #[test]
 fn a_name_narrowed_to_none_prints_as_the_interpreter_does() -> std::io::Result<()> {
     if !ready() {

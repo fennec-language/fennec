@@ -11,7 +11,7 @@
 ## A channel holds at most its `size` messages, so `send` waits while it's full, and `receive`
 ## waits while it's empty. Both take `timeout=`. A channel closes when its `with` block ends,
 ## and anything still waiting on it then wakes as `Closed`.
-from std.intrinsics import channel_close, channel_free, channel_new, channel_receive, channel_send
+from std.intrinsics import channel_close, channel_free, channel_listen, channel_new, channel_new_every, channel_receive, channel_send
 from std.time import Duration
 
 ## A `send` on a channel that's closed, or a `receive` on one that's closed and empty.
@@ -28,13 +28,32 @@ export error Crashed:
 
 ## A channel holding up to `size` messages of type `T`, lent for a `with` block, and closed when it
 ## ends: `with channel[Job](size=64) as jobs:`. It's the only way to make a `Channel`.
-export def channel[T](size: int) -> with Channel[T]:
-    made = Channel[T](_channel=channel_new(size))
+export def channel[T](size: int, to: Delivery? = None) -> with Channel[T]:
+    mut number = 0
+    delivery: Delivery = to else .One
+    match delivery:
+        case .One:
+            number = channel_new(size)
+        case .Every:
+            number = channel_new_every(size)
+    made = Channel[T](_channel=number)
     lend made else:
         channel_close(made._channel)
         channel_free(made._channel)
     channel_close(made._channel)
     channel_free(made._channel)
+
+## Who a channel's messages go to: each to `.One` receiver, as a work queue, or every message to
+## `.Every` listener.
+export enum Delivery:
+    One
+    Every
+
+## What a listener of a channel to `.Every` does when it falls behind, and its next message has
+## gone: `.Fail` loudly, or with `.DropOldest`, go on from the oldest message kept.
+export enum Behind:
+    Fail
+    DropOldest
 
 ## A channel for messages of type `T`, which every task inside its `with` block can send on and
 ## receive from. Hand one end to a task with `sender()` or `inbox()`.
@@ -50,10 +69,20 @@ export struct Channel[T]:
     def receive(self, timeout: Duration? = None) -> T fails Closed | Timeout:
         received[T](self._channel, timeout)?
 
-    ## Each message until the channel is closed and empty, as `for message in channel`.
+    ## Each message until the channel is closed and empty, as `for message in channel`. On a
+    ## channel to `.Every`, each loop is a listener of its own, from the next message sent.
     def iter(self) -> Iterator[T]:
+        listener = channel_listen(self._channel, False)
         while True:
-            message = received[T](self._channel, None) else return
+            message = received[T](listener, None) else return
+            yield message
+
+    ## As `iter`, saying what to do when this listener of a channel to `.Every` falls behind.
+    def listen(self, when_behind: Behind? = None) -> Iterator[T]:
+        behind: Behind = when_behind else .Fail
+        listener = channel_listen(self._channel, behind == .DropOldest)
+        while True:
+            message = received[T](listener, None) else return
             yield message
 
     ## The sending end, to hand to a task.

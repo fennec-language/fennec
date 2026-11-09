@@ -42,6 +42,8 @@ impl Emit<'_, '_, '_> {
                 let nanos = self.load_field(&held, &at, access);
                 self.declare("declare void @fennec_clock_sleep(i64) nounwind");
                 self.line(&format!("call void @fennec_clock_sleep(i64 {nanos})"));
+                // A sleep cut short by a stop ends the task here.
+                self.leave_if_failed();
             }
             ("Args.len", []) => {
                 self.declare("declare i64 @fennec_args_len() nounwind");
@@ -160,6 +162,11 @@ impl Emit<'_, '_, '_> {
         rest: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if crate::parallel::is_request(name) {
+            // This call is all that links TLS into a program.
+            self.declare("declare void @fennec_use_tls() nounwind");
+            self.line("call void @fennec_use_tls()");
+        }
         self.crossing(dest, ("fennec_net_call", "i64", handle), name, rest, span)
     }
 
@@ -196,9 +203,6 @@ impl Emit<'_, '_, '_> {
             "{handle} = call i64 @{runtime}({word_type} {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
             rest.len()
         ));
-        if runtime == "fennec_net_call" {
-            self.stack_limit_again();
-        }
         self.leave_if_failed();
         self.take_what_crossed(dest, &handle, (&mark, crossed), span)
     }

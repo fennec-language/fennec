@@ -1,6 +1,5 @@
-//! Diagnostics the checker shares with the interpreter. The wording matches what the
-//! interpreter says when it finds the same mistake while running, so a mistake reads the
-//! same whichever one catches it.
+//! Diagnostics the checker shares among its passes, so a mistake reads the same wherever it's
+//! caught.
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -103,6 +102,11 @@ pub(crate) fn missing_step(span: Span) -> Diagnostic {
 pub(crate) fn unhandled_result(span: Span) -> Diagnostic {
     Diagnostic::new("this is the result of something that can fail", span)
         .with_help("get the value out with `?`, `else`, or `match` first")
+}
+
+pub(crate) fn dropped_failure(span: Span) -> Diagnostic {
+    Diagnostic::new("`_ =` would drop this failure", span)
+        .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")
 }
 
 pub(crate) fn unhandled(span: Span) -> Diagnostic {

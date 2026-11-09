@@ -25,6 +25,13 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
         .collect()
 }
 
+/// A `with` block's cleanup, run with the failure in `name` when one leaves from inside what the
+/// block calls.
+pub(super) struct OnFailure {
+    pub(super) name: String,
+    pub(super) cleanup: Vec<fennec_syntax::Stmt>,
+}
+
 impl Lowering<'_> {
     /// `Ok(value)` or `Err(error)` written out, as a function that says `fails E` can return.
     pub(super) fn written_result(
@@ -189,12 +196,12 @@ impl Lowering<'_> {
     pub(super) fn else_effect(&mut self, value: &Expr, default: &Expr, span: Span) -> Lowered<()> {
         let value = self.expr(value)?;
         let failed = self.temporary(Type::Bool);
-        self.emit(InstKind::IsErr { dest: failed, value }, span);
+        self.emit(InstKind::IsErr { dest: failed, value: value.clone() }, span);
         let (fallback, join) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(failed), then: fallback, otherwise: join });
         self.current = fallback;
         if default.leaves() {
-            self.tail_expr(default, Tail::Drop)?;
+            self.else_leaves(default, &value, span)?;
         } else {
             self.effect(default)?;
         }
@@ -203,6 +210,22 @@ impl Lowering<'_> {
         }
         self.current = join;
         Ok(())
+    }
+
+    /// The block of an `else` that leaves, which `else as failure:` runs with what failed.
+    fn else_leaves(&mut self, default: &Expr, value: &Operand, span: Span) -> Lowered<()> {
+        let Some((failure, block)) = default.failure_named() else {
+            return self.tail_expr(default, Tail::Drop);
+        };
+        let Some(Type::Result(_, error)) = type_in(&self.locals, value) else {
+            return Err("it names the failure of something that can't fail".to_owned());
+        };
+        self.scopes.push(std::collections::HashMap::new());
+        let held = self.declare(failure, *error);
+        self.emit(InstKind::GetErr { dest: held, value: value.clone() }, span);
+        let lowered = self.stmts(block, Tail::Drop);
+        self.scopes.pop();
+        lowered
     }
 
     /// `value else default`: the default only runs when the value is `None` or an error.
@@ -224,7 +247,7 @@ impl Lowering<'_> {
         self.finish(Terminator::Branch { cond, then: fallback, otherwise: present });
         self.current = fallback;
         if default.leaves() {
-            self.tail_expr(default, Tail::Drop)?;
+            self.else_leaves(default, &value, span)?;
         } else {
             let lowered = self.expr(default)?;
             let lowered = self.coerce(lowered, &ty, default.span)?;
@@ -232,6 +255,13 @@ impl Lowering<'_> {
         }
         self.finish(Terminator::Jump(join));
         self.current = present;
+        // `None else default`, as a `with` source's parameter is when its default is written in,
+        // never gets here: it's always the default.
+        if held == Type::None {
+            self.finish(Terminator::Jump(join));
+            self.current = join;
+            return Ok(Operand::Local(dest));
+        }
         let inside = match held {
             Type::Optional(inner) => {
                 let inside = self.temporary(*inner);
@@ -243,7 +273,6 @@ impl Lowering<'_> {
                 self.emit(InstKind::GetOk { dest: inside, value }, span);
                 Operand::Local(inside)
             }
-            Type::None => Operand::None,
             _ => return Err("it uses `else` on a result of nothing".to_owned()),
         };
         let inside = self.coerce(inside, &ty, span)?;
@@ -258,13 +287,44 @@ impl Lowering<'_> {
     pub(super) fn return_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let dest = self.temporary(self.returns.clone());
         self.emit(InstKind::MakeErr { dest, error }, span);
-        self.leave(Some(Operand::Local(dest)), span)
+        self.failing_out = true;
+        let left = self.leave(Some(Operand::Local(dest)), span);
+        self.failing_out = false;
+        left
+    }
+
+    /// Leaves with a failure that came from inside what's being called: the `with` block
+    /// around it runs its cleanup first, which ends by failing.
+    pub(super) fn pass_up_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+        let Some(around) = self.on_failure.pop() else { return self.return_error(error, span) };
+        let rounds = std::mem::take(&mut self.plain_rounds);
+        self.scopes.push(std::collections::HashMap::new());
+        let ty = match &self.returns {
+            Type::Result(_, failure) => (**failure).clone(),
+            other => other.clone(),
+        };
+        let held = self.declare(&around.name, ty);
+        self.emit(InstKind::Copy { dest: held, value: error }, span);
+        let lowered = self.stmts(&around.cleanup, Tail::Drop);
+        self.scopes.pop();
+        self.plain_rounds = rounds;
+        self.on_failure.push(around);
+        lowered
+    }
+
+    /// Leaves with a failure written in this function: from a `parallel` loop's round that's
+    /// lowered as an ordinary loop it's one whose block hasn't run its cleanup yet.
+    fn leave_with_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+        if self.plain_rounds > 0 {
+            return self.pass_up_error(error, span);
+        }
+        self.return_error(error, span)
     }
 
     /// `fail error`.
     pub(super) fn fail(&mut self, error: &Expr, span: Span) -> Lowered<()> {
         let error = self.expr(error)?;
-        self.return_error(error, span)
+        self.leave_with_error(error, span)
     }
 
     /// `value?`, and `value? from wrapper`: leaves the function if it's an error, and gives
@@ -297,7 +357,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, span);
             passed = Operand::Local(dest);
         }
-        self.return_error(passed, span)?;
+        self.leave_with_error(passed, span)?;
         self.current = present;
         if *ok == Type::Unit {
             return Ok(None);

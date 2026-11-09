@@ -26,29 +26,28 @@ fn fixed(source: &str) -> String {
     text
 }
 
-fn output_of(source: &str) -> Result<String, String> {
-    let mut module = fennec_syntax::parse(source).map_err(|err| format!("doesn't parse: {err:?}"))?;
-    fennec_check::check_and_resolve(&mut module).map_err(|err| format!("doesn't check: {err:?}"))?;
-    let mut out = Vec::new();
-    fennec_interp::run(&module, &mut out).map_err(|err| format!("fails: {err:?}"))?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
-}
-
-/// The interpreter recurses for each call, so it runs on a big stack, as `fennec` gives it.
-fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    let worker = std::thread::Builder::new().stack_size(1 << 30).spawn(test)?;
-    if let Err(panic) = worker.join() {
-        std::panic::resume_unwind(panic);
+/// What a program prints when it's run, or why it couldn't be.
+fn output_of(source: &str, dir: &Path) -> Result<String, String> {
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source).map_err(|err| err.to_string())?;
+    let ran = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(&program)
+        .env("FENNEC_HOME", dir.join("home"))
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !ran.status.success() {
+        return Err(String::from_utf8_lossy(&ran.stderr).into_owned());
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
 #[test]
 fn every_example_with_every_fix_does_the_same() {
-    let compared = std::sync::Arc::new(std::sync::Mutex::new(Err(String::new())));
-    let result = std::sync::Arc::clone(&compared);
-    on_big_stack(move || *result.lock().unwrap() = every_example()).unwrap();
-    let compared = compared.lock().unwrap().clone().unwrap();
+    if !crate::llvm::ready() {
+        return;
+    }
+    let compared = every_example().unwrap();
     // Fixtures whose only fixes were `positional-arguments` have none left: it's a compile error now,
     // so they're written with names.
     assert!(compared >= 6, "only {compared} programs had fixes to try");
@@ -57,6 +56,8 @@ fn every_example_with_every_fix_does_the_same() {
 /// How many programs had fixes to try, each of which still did the same, or the first that didn't.
 fn every_example() -> Result<usize, String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unlinted");
+    let work = std::env::temp_dir().join(format!("fennec-lint-fixes-{}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
     let mut compared = 0;
     for entry in std::fs::read_dir(&dir).map_err(|err| err.to_string())? {
         let path = entry.map_err(|err| err.to_string())?.path();
@@ -66,14 +67,15 @@ fn every_example() -> Result<usize, String> {
         }
         let source = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
         let changed = fixed(&source);
-        let before = output_of(&source);
+        let before = output_of(&source, &work);
         if changed == source || before.as_ref().ok() != Some(&expected) {
             continue;
         }
-        if output_of(&changed) != before {
+        if output_of(&changed, &work) != before {
             return Err(format!("{} does something else once fixed:\n{changed}", path.display()));
         }
         compared += 1;
     }
+    let _ = std::fs::remove_dir_all(&work);
     Ok(compared)
 }

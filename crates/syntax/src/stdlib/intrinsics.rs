@@ -62,6 +62,8 @@ pub(crate) const MODULE: Module = Module {
         "id_of_key",
         "stop",
         "channel_new",
+        "channel_new_every",
+        "channel_listen",
         "channel_send",
         "channel_receive",
         "channel_close",

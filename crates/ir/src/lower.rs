@@ -376,6 +376,9 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// Whether what's being left is left by a failure, which a `lock ... as ref` block doesn't keep
+    /// the changes of.
+    failing_out: bool,
     /// The `shared` handles the `with` blocks being lowered hold the locks of.
     locked: Vec<LocalId>,
     /// The locals changed so far, for operands read before one of those changes (see `order`).
@@ -398,6 +401,12 @@ struct Lowering<'a> {
     written_types: Vec<Type>,
     /// Set while lowering a `list.pop()` whose list is known not to be empty.
     popping: bool,
+    /// What the `with` blocks being lowered run when a failure leaves from inside what they
+    /// call, innermost last.
+    on_failure: Vec<failure::OnFailure>,
+    /// How many `parallel` loops being lowered as ordinary loops hold this statement. A failure
+    /// in one hasn't had its block's cleanup written in.
+    plain_rounds: usize,
     /// Types that stand in for what the typed tree says, innermost last: a union's receiver,
     /// read as one member while that member's method is called.
     retyped: Vec<(Span, Type)>,
@@ -423,6 +432,7 @@ impl<'a> Lowering<'a> {
             scopes: vec![HashMap::new()],
             loops: Vec::new(),
             leaving: Vec::new(),
+            failing_out: false,
             locked: Vec::new(),
             changed: Vec::new(),
             lifted: Vec::new(),
@@ -434,6 +444,8 @@ impl<'a> Lowering<'a> {
             bound: HashMap::new(),
             written_types: Vec::new(),
             popping: false,
+            on_failure: Vec::new(),
+            plain_rounds: 0,
             retyped: Vec::new(),
         }
     }
@@ -471,6 +483,15 @@ impl<'a> Lowering<'a> {
         }
         if let Some(ty) = itself {
             lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
+        }
+        // A failure that ends the program is shown, so a `Secret` in it has to stay hidden.
+        if key == "main" {
+            for name in context.signatures.error_types() {
+                let error = Type::Named(name.to_owned());
+                if lowering.holds_secret(&error, &mut Vec::new()) {
+                    lowering.own_texts_within(&error, &mut Vec::new(), def.span)?;
+                }
+            }
         }
         let plain = lowering.returns == Type::Unit;
         lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
@@ -647,10 +668,21 @@ impl<'a> Lowering<'a> {
                 let lifted = self
                     .parallel_for((names, *is_mut), iter, body, stmt.span)
                     .or_else(|| self.parallel_serve(names, iter, body, stmt.span));
-                match lifted {
-                    Some(outlined) => outlined?,
-                    None => self.for_stmt((names, *is_mut), iter, body, stmt.span)?,
+                if let Some(outlined) = lifted {
+                    outlined?;
+                } else {
+                    let rounds = usize::from(parallel::parallel_items(iter).is_some());
+                    self.plain_rounds += rounds;
+                    let lowered = self.for_stmt((names, *is_mut), iter, body, stmt.span);
+                    self.plain_rounds -= rounds;
+                    lowered?;
                 }
+            }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                self.on_failure.push(failure::OnFailure { name: name.clone(), cleanup: cleanup.clone() });
+                let lowered = self.block(body, tail);
+                self.on_failure.pop();
+                lowered?;
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
@@ -714,15 +746,25 @@ impl<'a> Lowering<'a> {
             self.emit(InstKind::Copy { dest, value }, span);
             return Ok(());
         }
+        // What's added to is read first, left to right, if the value can change it by `ref`.
+        let before = match (op, self.lookup(name)) {
+            (Some(_), Some(held)) if places::calls_in(value).1 => {
+                let copy = self.temporary(self.local_type(held));
+                self.emit(InstKind::Copy { dest: copy, value: Operand::Local(held) }, span);
+                Some(Operand::Local(copy))
+            }
+            _ => None,
+        };
         let value = self.expr(value)?;
         let dest = self.named_target(target, name)?;
         if let Some(op) = op {
             let ty = self.local_type(dest);
-            if self.check_operands(op, &Operand::Local(dest), &value).is_ok() {
-                let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
+            let left = before.unwrap_or(Operand::Local(dest));
+            if self.check_operands(op, &left, &value).is_ok() {
+                let kind = InstKind::Binary { dest, op, lhs: left, rhs: value };
                 self.emit(kind, span);
             } else {
-                let value = self.operate(op, (Operand::Local(dest), value), &ty, span)?;
+                let value = self.operate(op, (left, value), &ty, span)?;
                 self.emit(InstKind::Copy { dest, value }, span);
             }
         } else {

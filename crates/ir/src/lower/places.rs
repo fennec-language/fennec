@@ -311,11 +311,22 @@ impl Lowering<'_> {
         value: &Expr,
         span: Span,
     ) -> Lowered<()> {
-        let place = self.place_of(target)?;
+        let (calls, passes_ref) = calls_in(value);
+        // The target comes first, left to right: an index the value changes by `ref` isn't the
+        // place that's written.
+        let place = if passes_ref { self.held_place(target, span)? } else { self.place_of(target)? };
         let held = self.steps_type(&place)?;
+        // What a call could change is read before it, so `+=` adds to what was there.
+        let read_first = match op {
+            Some(_) if calls => Some(self.read_steps(place.local, &place.steps, span)?),
+            _ => None,
+        };
         let mut value = self.expr(value)?;
         if let Some(op) = op {
-            let read = self.read_steps(place.local, &place.steps, span)?;
+            let read = match read_first {
+                Some(read) => read,
+                None => self.read_steps(place.local, &place.steps, span)?,
+            };
             // A text growing in a field is one local read, added to and put back, as a local's
             // `+=` is, so a backend can grow it where it is.
             if let (BinOp::Add, Type::Str, Operand::Local(dest)) = (op, &held, &read) {
@@ -346,6 +357,15 @@ impl Lowering<'_> {
                 Ok(())
             }
             Leaving::Unlock { handles } => {
+                // A failure leaving a lock to write puts back what the block changed, as a crash
+                // does: the last taken first.
+                if self.failing_out {
+                    for handle in handles.iter().rev() {
+                        let args = vec![Operand::Local(*handle)];
+                        let name = "lock.roll_back".to_owned();
+                        self.emit(InstKind::Builtin { dest: None, name, args, changes: true }, span);
+                    }
+                }
                 let kind = match handles.as_slice() {
                     [handle] => InstKind::Unlock { handle: Operand::Local(*handle) },
                     _ => {
@@ -450,6 +470,16 @@ impl Lowering<'_> {
     /// What an `assert` tests, and the two sides of a comparison.
     fn asserted(&mut self, cond: &Expr) -> Lowered<(Operand, Option<(Operand, Operand)>)> {
         let span = cond.span;
+        // A failed assert says what each side was, so a `Secret` in one has to stay hidden.
+        if let ExprKind::Binary { lhs, rhs, .. } = &cond.kind {
+            for side in [lhs, rhs] {
+                if let Some(held) = self.type_at(side.span)
+                    && self.holds_secret(&held, &mut Vec::new())
+                {
+                    self.own_texts_within(&held, &mut Vec::new(), side.span)?;
+                }
+            }
+        }
         let ExprKind::Binary { op, lhs, rhs } = &cond.kind else { return Ok((self.expr(cond)?, None)) };
         match op {
             BinOp::Is | BinOp::IsNot => {
@@ -488,6 +518,18 @@ impl Lowering<'_> {
         self.finish(Terminator::Return(value));
         Ok(())
     }
+}
+
+/// Whether an expression makes a call, and whether one passes something by `ref`.
+pub(super) fn calls_in(value: &Expr) -> (bool, bool) {
+    let (mut calls, mut passes_ref) = (false, false);
+    fennec_syntax::visit::in_expr(&mut value.clone(), &mut |seen: &mut Expr| {
+        if let ExprKind::Call { args, .. } = &seen.kind {
+            calls = true;
+            passes_ref |= args.iter().any(|arg| arg.is_mut);
+        }
+    });
+    (calls, passes_ref)
 }
 
 fn field_path(steps: &[Step]) -> Vec<String> {

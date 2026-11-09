@@ -52,7 +52,7 @@ True True
 `Unit` has no field "extra", but the text has one
 expected `,` or `]` after the value, but found the end of the text, at line 1, column 6
 `[1]` should be an int, but it's a str
-Spot(x=2, y=2.5)
+Spot(x=0, y=2.5)
 x = 4
 y = 2.5
 

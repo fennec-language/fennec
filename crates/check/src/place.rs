@@ -94,6 +94,11 @@ impl FnCx<'_> {
                     Some(expected) => self.expr_as(value, expected),
                     None => self.expr(value),
                 };
+                if name.starts_with(&format!("_{}", fennec_syntax::visit::HIDDEN))
+                    && matches!(self.checker.settled(&ty), Type::Result(..))
+                {
+                    self.error(crate::messages::dropped_failure(value.span));
+                }
                 match written {
                     Some(written) => {
                         self.declare_written(name, written, &ty, (target.span, value.span), declare_mut);

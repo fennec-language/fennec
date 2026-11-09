@@ -1,0 +1,36 @@
+from std.concurrent import Inbox, Closed, Crashed, Timeout
+
+def build(base: str, count: int) -> str:
+    f"{base}{base}{count}"
+
+def churn(base: str) -> int:
+    temporary = build(base, 1)
+    temporary.len()
+
+def first_task(inbox: Inbox[int], base: str, stdout: Stdout):
+    stdout.print("A freed, length", churn(base))
+    for message in inbox:
+        stdout.print("A got", message)
+    stdout.print("A ends")
+
+def second_task(inbox: Inbox[int], base: str, stdout: Stdout):
+    mut held = ""
+    for message in inbox:
+        if message == 1:
+            held = build(base, 2)
+            stdout.print("B built", held.len())
+        else:
+            stdout.print("B holds:", held.len(), "[", held[0:12], "]")
+            joined = held + "!"
+            stdout.print("B joined:", joined.len(), "[", joined[0:12], "]")
+            stdout.print("B same:", held == build(base, 2))
+            stdout.print(held)
+
+def main(clock: Clock, stdout: Stdout) fails Closed | Crashed | Timeout:
+    base = "the same long text for both tasks, more than twenty three bytes in all"
+    with launch((inbox) => second_task(inbox, base, stdout), inbox_size=4)? as to_second:
+        with launch((inbox) => first_task(inbox, base, stdout), inbox_size=4)? as to_first:
+            clock.sleep(100ms)
+            to_second.send(1)?
+            clock.sleep(100ms)
+        to_second.send(2)?

@@ -5,8 +5,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fennec_kit::{Entry, Program};
-
 fn projects_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects")
 }
@@ -24,72 +22,63 @@ fn kits(dir: &Path) -> std::io::Result<Vec<String>> {
     Ok(names)
 }
 
-fn load(dir: &Path, shown_as: &str, entry: Entry) -> Result<Program, String> {
-    let mut program = fennec_kit::load(dir, shown_as, entry)?;
-    fennec_check::check_and_resolve(&mut program.module)
-        .map_err(|diagnostics| program.sources.render_all(&diagnostics))?;
-    Ok(program)
-}
-
-/// Runs a kit the way `fennec run` does: its output, or its rendered errors.
-fn run(dir: &Path, shown_as: &str) -> Result<String, String> {
-    let program = load(dir, shown_as, Entry::Main)?;
-    let mut out = Vec::new();
-    fennec_interp::run(&program.module, &mut out)
-        .map_err(|diagnostic| program.sources.render(&diagnostic))?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
-}
-
-/// Runs a test on a stack as big as `fennec run` gives programs.
-fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    let worker = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(test)?;
-    if let Err(panic) = worker.join() {
-        std::panic::resume_unwind(panic);
+/// Runs a kit as `fennec run` does, from the checkout: its output, or what it said on failing.
+fn run(shown_as: &str) -> Result<String, String> {
+    let ran = crate::executables::fennec_command()
+        .args(["run", "--no-test", shown_as])
+        .current_dir(repo())
+        .output()
+        .map_err(|err| err.to_string())?;
+    if ran.status.success() {
+        Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&ran.stderr).into_owned())
     }
-    Ok(())
+}
+
+/// The checkout.
+fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 #[test]
 fn projects_print_their_expected_output() {
-    on_big_stack(|| {
-        let dir = projects_dir();
-        let names = kits(&dir).unwrap();
-        assert!(!names.is_empty(), "no projects found");
-        for name in names {
-            let shown_as = format!("examples/projects/{name}");
-            let expected = fs::read_to_string(dir.join(format!("{name}.out"))).unwrap();
-            let actual =
-                run(&dir.join(&name), &shown_as).unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
-            assert_eq!(actual, expected, "{name} printed something different");
-
-            let program = load(&dir.join(&name), &shown_as, Entry::Everything).unwrap();
-            let mut out = std::io::sink();
-            let mut interp = fennec_interp::Interp::new(&mut out).unwrap();
-            interp.load(&program.module).unwrap();
-            let outcomes = interp.run_tests();
-            assert!(!outcomes.is_empty(), "{name} has no tests");
-            for outcome in outcomes {
-                assert!(outcome.failure.is_none(), "{name}: test {:?} failed", outcome.name);
-            }
-        }
-    })
-    .unwrap();
+    if !crate::llvm::ready() {
+        return;
+    }
+    let dir = projects_dir();
+    let names = kits(&dir).unwrap();
+    assert!(!names.is_empty(), "no projects found");
+    for name in names {
+        let shown_as = format!("examples/projects/{name}");
+        let expected = fs::read_to_string(dir.join(format!("{name}.out"))).unwrap();
+        let actual = run(&shown_as).unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
+        assert_eq!(actual, expected, "{name} printed something different");
+        let tested = crate::executables::fennec_command()
+            .args(["test", "--all", &shown_as])
+            .current_dir(repo())
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&tested.stdout);
+        assert!(tested.status.success(), "{name}: {said}{}", String::from_utf8_lossy(&tested.stderr));
+        assert!(!said.contains("no tests"), "{name} has no tests");
+    }
 }
 
 #[test]
 fn error_projects_fail_with_their_expected_message() {
-    on_big_stack(|| {
-        let dir = projects_dir().join("errors");
-        let names = kits(&dir).unwrap();
-        assert!(!names.is_empty(), "no error projects found");
-        for name in names {
-            let shown_as = format!("examples/projects/errors/{name}");
-            let expected = fs::read_to_string(dir.join(format!("{name}.err"))).unwrap();
-            let actual = run(&dir.join(&name), &shown_as).expect_err(&format!("{name} should fail"));
-            assert_eq!(actual, expected, "{name} failed with a different message");
-        }
-    })
-    .unwrap();
+    if !crate::llvm::ready() {
+        return;
+    }
+    let dir = projects_dir().join("errors");
+    let names = kits(&dir).unwrap();
+    assert!(!names.is_empty(), "no error projects found");
+    for name in names {
+        let shown_as = format!("examples/projects/errors/{name}");
+        let expected = fs::read_to_string(dir.join(format!("{name}.err"))).unwrap();
+        let actual = run(&shown_as).expect_err(&format!("{name} should fail"));
+        assert_eq!(actual, expected, "{name} failed with a different message");
+    }
 }
 
 #[test]

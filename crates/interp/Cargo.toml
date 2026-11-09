@@ -1,6 +1,6 @@
 [package]
 name = "fennec-interp"
-description = "Fennec's tree-walking interpreter, the first engine for running Fennec programs"
+description = "The code of the runtime library Fennec's compiled programs link against"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,9 +16,6 @@ fennec-blake3.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
 libm.workspace = true
-
-# The playground runs in a browser, where there's no operating system to ask.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true

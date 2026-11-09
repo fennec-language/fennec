@@ -5,27 +5,8 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
-
-use crate::methods::no_method;
 use crate::pairs::Pairs;
-use crate::value::{Capability, Value};
-
-/// A method of the real `Env`. A test's fake one is `TestWorld::env`.
-pub(crate) fn env_method(method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    // A test's fake `Env` is `TestWorld::env`.
-    match (method, args) {
-        ("get", [Value::Str(name)]) => Ok(variable(name)),
-        ("all", []) => Ok(variables()),
-        ("set", [Value::Str(_), Value::Str(_)]) => {
-            Err(Diagnostic::new("`set` changes only a test's fake `Env`", span).with_help(
-                "with `fennec test --real`, `env` is the real environment, which a test can't change",
-            ))
-        }
-        ("get" | "all" | "set", _) => Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span)),
-        _ => Err(no_method(&Value::Capability(Capability::Env), method, span)),
-    }
-}
+use crate::value::Value;
 
 /// The environment variable `name`, or `None` when it isn't set. One that isn't UTF-8 is read
 /// with each bad sequence as U+FFFD.

@@ -196,7 +196,8 @@ fn ignored_results_are_mistakes() {
             risky(3)
         for n in [1]:
             risky(n)
-        ignore(risky(3), 'best effort')
+        _ = risky(3)
+        _ = risky(3)?
         stdout.print('done')
     ";
     assert_eq!(
@@ -205,6 +206,7 @@ fn ignored_results_are_mistakes() {
             "this can fail, but nothing handles it @ risky(3)",
             "this can fail, but nothing handles it @ risky(3)",
             "this can fail, but nothing handles it @ risky(n)",
+            "`_ =` would drop this failure @ risky(3)",
         ]
     );
     let help = helps(&format!("{RISKY}\ndef f():\n    risky(3)\n    1\n"));
@@ -506,4 +508,16 @@ fn an_arrow_function_or_comprehension_cant_leave_with_else() {
         let found = crate::in_main(body);
         assert!(found.iter().any(|one| one.starts_with(said)), "{body}: {found:?}");
     }
+}
+
+#[test]
+fn else_as_is_for_what_can_fail_and_its_block_leaves() {
+    let found = problems(
+        "def main(stdout: Stdout):\n    held: int? = None\n    value = held else as failure:\n        stdout.print(failure)\n        return\n    stdout.print(value)\n",
+    );
+    assert_eq!(found, ["this can't fail, so `else as` has no failure to name @ held"]);
+    let parsed = fennec_syntax::parse(
+        "error Oops:\n    pass\n\ndef risky() -> int fails Oops:\n    fail Oops()\n\ndef main(stdout: Stdout):\n    value = risky() else as failure:\n        stdout.print(failure)\n    stdout.print(value)\n",
+    );
+    assert_eq!(parsed.err().map(|problem| problem.message), Some("an `else:` block must leave".to_owned()));
 }

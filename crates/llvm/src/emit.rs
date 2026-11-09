@@ -458,6 +458,7 @@ impl<'p> Module<'_, 'p> {
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
+            places_out: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
             inside_items: Vec::new(),
@@ -465,16 +466,18 @@ impl<'p> Module<'_, 'p> {
             pair_slots: HashMap::new(),
             walks: HashMap::new(),
             saving: crate::rollback::saving_handles(function),
+            on_crash: crate::rollback::given_back_on_crash(function),
             saving_slots: HashMap::new(),
+            rolled_back: HashSet::new(),
             wrote_prop: false,
             leave_after_crash: None,
         };
-        // A function with `lock ... as ref` blocks, or that owns anything, leaves on every failure
-        // through `prop`, where a crash puts back what the blocks it's inside changed and lets go
-        // of what the function owns, as a return does.
+        // A function with locks a crash gives back, or that owns anything, leaves on every failure
+        // through `prop`, where a crash puts back what the blocks it's inside changed, gives their
+        // locks back and lets go of what the function owns, as a return does.
         let owns_any =
             (0..emit.kinds.len()).any(|at| emit.owns(LocalId(at)) || emit.owns_inline(LocalId(at)));
-        let leave_after_crash = ((!emit.saving.is_empty() || owns_any) && emit.failed != "unreachable")
+        let leave_after_crash = ((!emit.on_crash.is_empty() || owns_any) && emit.failed != "unreachable")
             .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
         emit.body()?;
@@ -544,14 +547,20 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where a place taken out for a call goes back to: the address, what's held there, and how
     /// it's marked for LLVM.
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
+    /// For each place taken out to change, the stack slot saying where it goes back while it's out.
+    pub(crate) places_out: HashMap<usize, String>,
     /// The instruction being written: its block, and its place in it.
     pub(crate) at: (usize, usize),
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
     /// back, by local.
     pub(crate) saving: Vec<usize>,
+    /// The handles a crash leaving this function gives back the locks of: those that save, and read locks.
+    pub(crate) on_crash: Vec<usize>,
     /// For each of those handles, a flag that's set while its lock is held, for a crash to know
     /// which to put back.
     pub(crate) saving_slots: HashMap<usize, String>,
+    /// The locks to write whose changes a failure has just put back, for their unlock to know.
+    pub(crate) rolled_back: HashSet<usize>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
     /// How the function leaves on a failure once `prop` has put back what it changed and let go
@@ -836,7 +845,8 @@ impl Emit<'_, '_, '_> {
         // nothing of theirs.
         if let Some(leave) = self.leave_after_crash.clone() {
             self.start_block("prop");
-            if !self.saving.is_empty() {
+            self.put_places_back_after_crash()?;
+            if !self.on_crash.is_empty() {
                 self.roll_back_on_crash()?;
             }
             self.release_locals(None);
@@ -844,6 +854,11 @@ impl Emit<'_, '_, '_> {
             self.wrote_prop = true;
         }
         Ok(())
+    }
+
+    /// Whether a crash in this function lets go of what it owns, rather than leaving it.
+    pub(crate) fn lets_go_after_crash(&self) -> bool {
+        self.leave_after_crash.is_some()
     }
 
     /// A new slot on this function's stack.
@@ -1383,6 +1398,20 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// A word cut to a size's bits, as that size holds them: kept unsigned, or with the sign of its
+    /// top bit.
+    fn within_width(&mut self, value: &str, num: fennec_check::Num) -> String {
+        let bits = num.bits();
+        if bits >= 64 {
+            return value.to_owned();
+        }
+        let (narrow, wide) = (self.temp(), self.temp());
+        self.line(&format!("{narrow} = trunc i64 {value} to i{bits}"));
+        let extend = if num.is_unsigned() { "zext" } else { "sext" };
+        self.line(&format!("{wide} = {extend} i{bits} {narrow} to i64"));
+        wide
+    }
+
     /// Stops the program as an overflow, when an integer worked out for a local of a sized type
     /// doesn't fit it.
     pub(crate) fn check_size(&mut self, dest: LocalId, value: &str, span: Span) {
@@ -1458,8 +1487,12 @@ impl Emit<'_, '_, '_> {
             let found = self.dict_contains(op, lhs, rhs)?;
             return self.assign(dest, &found);
         }
-        let (a, kind) = self.operand(lhs)?;
+        let (a, mut kind) = self.operand(lhs)?;
         let (mut b, mut b_kind) = self.operand(rhs)?;
+        // A number written out takes the size of what's beside it, so the arithmetic is that size's.
+        if matches!(lhs, Operand::Int(_) | Operand::Float(_)) && matches!(b_kind, Kind::U64 | Kind::F32) {
+            kind = b_kind.clone();
+        }
         // `None` beside an optional string is that string's `None`: a header all zero.
         if *rhs == Operand::None && kind == Kind::MaybeText {
             (b, b_kind) = ("zeroinitializer".to_owned(), Kind::MaybeText);
@@ -1470,11 +1503,16 @@ impl Emit<'_, '_, '_> {
             Kind::F32 => self.f32_binary(op, (&a, &b), rhs, span)?,
             Kind::Int => {
                 let value = self.int_binary(dest, op, (&a, &b), rhs, span)?;
-                // What's worked out in a word has to fit its size; the bits of two that do, do.
-                if !matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
-                    self.check_size(dest, &value, span);
+                match (op, self.sized(dest)) {
+                    // Bits shifted past a size's top are dropped, as on every integer type.
+                    (BinOp::ShiftLeft, Some(num)) => self.within_width(&value, num),
+                    // What's worked out in a word has to fit its size; the bits of two that do, do.
+                    (BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor, _) => value,
+                    _ => {
+                        self.check_size(dest, &value, span);
+                        value
+                    }
                 }
-                value
             }
             Kind::Str | Kind::MaybeText
                 if matches!(op, BinOp::Eq | BinOp::NotEq) && (optional.0 || optional.1) =>
@@ -1604,10 +1642,20 @@ impl Emit<'_, '_, '_> {
                 temp
             }
             BinOp::ShiftLeft | BinOp::ShiftRight => {
-                if !matches!(rhs, Operand::Int(0..64)) {
+                // A shift by as many bits as the type has, or more, stops the program.
+                let sized = self.sized(dest);
+                let width = sized.map_or(64, |num| i64::from(num.bits()));
+                if !matches!(rhs, Operand::Int(count) if (0..width).contains(count)) {
                     let outside = self.temp();
-                    self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
-                    self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                    self.line(&format!("{outside} = icmp uge i64 {b}, {width}"));
+                    match sized {
+                        Some(num) => {
+                            let said =
+                                format!("can't shift {} by a count outside 0 to {}", num.name(), width - 1);
+                            self.stop_if(&outside, &said, span);
+                        }
+                        None => self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span),
+                    }
                 }
                 let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
                 let temp = self.temp();
@@ -1792,8 +1840,11 @@ impl Emit<'_, '_, '_> {
                     self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
                     self.fail_if(&zero, DIVISION_BY_ZERO, span);
                 }
-                if op != BinOp::Div {
-                    return Ok(self.float_floor(op, (a, b)));
+                if op == BinOp::Mod {
+                    return Ok(self.float_remainder((a, b)));
+                }
+                if op == BinOp::FloorDiv {
+                    return Ok(self.float_floor((a, b)));
                 }
                 "fdiv"
             }
@@ -1810,18 +1861,32 @@ impl Emit<'_, '_, '_> {
         Ok(temp)
     }
 
-    /// `a // b` or `a % b` on floats, rounding toward negative infinity.
-    fn float_floor(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+    /// `a // b` on floats, rounding toward negative infinity.
+    fn float_floor(&mut self, (a, b): (&str, &str)) -> String {
         self.declare("declare double @llvm.floor.f64(double)");
         let (ratio, floor) = (self.temp(), self.temp());
         self.line(&format!("{ratio} = fdiv double {a}, {b}"));
         self.line(&format!("{floor} = call double @llvm.floor.f64(double {ratio})"));
-        if op == BinOp::FloorDiv {
-            return floor;
-        }
-        let (times, rest) = (self.temp(), self.temp());
-        self.line(&format!("{times} = fmul double {floor}, {b}"));
-        self.line(&format!("{rest} = fsub double {a}, {times}"));
+        floor
+    }
+
+    /// `a % b` on floats: exact, with the sign of `b`. Worked out from `a / b` it would lose what's
+    /// left once `a` is much bigger than `b`.
+    fn float_remainder(&mut self, (a, b): (&str, &str)) -> String {
+        let zero = float_text(0.0);
+        let (left, some, left_below, b_below) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{left} = frem double {a}, {b}"));
+        self.line(&format!("{some} = fcmp une double {left}, {zero}"));
+        self.line(&format!("{left_below} = fcmp olt double {left}, {zero}"));
+        self.line(&format!("{b_below} = fcmp olt double {b}, {zero}"));
+        let (differ, shifts, moved, signed, rest) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{differ} = xor i1 {left_below}, {b_below}"));
+        self.line(&format!("{shifts} = and i1 {some}, {differ}"));
+        self.line(&format!("{moved} = fadd double {left}, {b}"));
+        self.line(&format!("{signed} = select i1 {shifts}, double {moved}, double {left}"));
+        // Nothing left is 0.0, whichever way it came.
+        self.line(&format!("{rest} = select i1 {some}, double {signed}, double {zero}"));
         rest
     }
 
@@ -2061,6 +2126,10 @@ impl Emit<'_, '_, '_> {
             channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
             "intrinsics.launch" | "intrinsics.launch_take" => self.launch_builtin(dest, name, args),
             "error.add_note" | "error.notes" => self.notes_builtin(dest, name, args),
+            "lock.roll_back" => {
+                let [handle] = args else { return Err("a lock to put back that isn't one".to_owned()) };
+                self.roll_back_on_failure(handle)
+            }
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
                 if args.len() == 1
@@ -2900,6 +2969,23 @@ def main(stdout: Stdout):
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";
         assert!(!text_of(source, "main")?.contains("with.overflow"));
+        Ok(())
+    }
+
+    /// A place taken out for a `ref` call goes back where it was before a crash lets go of what
+    /// holds it: what holds it has the address of what the call may have moved or freed.
+    #[test]
+    fn a_crash_puts_a_place_that_is_out_back_first() -> Result<(), String> {
+        let source = "struct Inner:\n    name: list[int]\n\nstruct Wrap:\n    r: Inner\n\ndef grow(ref xs: list[int], at: int):\n    xs.append(at)\n    empty: list[int] = []\n    xs[0] = empty[at]\n\ndef handle(at: int) -> int:\n    mut w = Wrap(r=Inner(name=[1]))\n    grow(ref w.r.name, at=at)\n    w.r.name.len()\n\ndef main(stdout: Stdout):\n    stdout.print(handle(0))\n";
+        let text = text_of(source, "handle")?;
+        let prop = text.find("prop:").ok_or("no way out on a crash")?;
+        let put_back =
+            text.get(prop..).and_then(|rest| rest.find("crash_place")).ok_or_else(|| text.clone())?;
+        let let_go = text
+            .get(prop..)
+            .and_then(|rest| rest.find("@fen_owner_gone").or_else(|| rest.find("add i64 %")))
+            .unwrap_or(usize::MAX);
+        assert!(put_back < let_go, "{text}");
         Ok(())
     }
 

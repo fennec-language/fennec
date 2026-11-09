@@ -12,8 +12,8 @@ from std.net import NetError, Request, Response
 from std.sql import SqlError
 from std.sqlite import Database
 
-## What every request has added up, shared by all of them.
-shared Stats:
+## What every request has added up, shared by all of them through a `shared` value.
+struct Stats:
     hits = 0
     notes = 0
     failed = 0
@@ -27,6 +27,21 @@ shared Stats:
             self.notes += 1
         else:
             self.failed += 1
+
+## Counts a request, and gives how many there have been.
+def hit(stats: shared Stats) -> int:
+    lock stats as ref held:
+        return held.hit()
+
+## Counts a note kept, or one that failed.
+def noted(stats: shared Stats, kept: bool):
+    lock stats as ref held:
+        held.noted(kept)
+
+## The stats, as text.
+def shown(stats: shared Stats) -> str:
+    lock stats as held:
+        return f"hits={held.hits} notes={held.notes} failed={held.failed}"
 
 ## An int that overflows once `n` is above 0: the checked add crashes the request.
 def overflowed(n: int) -> int:
@@ -50,19 +65,19 @@ def round_trip(fs: Fs, dir: str, n: int, body: str) -> int fails IoError:
 def text(status: int, said: str) -> Response:
     Response(status=status, headers={"content-type": "text/plain"}, body=said.encode())
 
-def respond(stats: Stats, db: Database, fs: Fs, dir: str, request: Request) -> Response:
+def respond(stats: shared Stats, db: Database, fs: Fs, dir: str, request: Request) -> Response:
     n = int(request.query.get("n") else "0") else 0
     body = request.body.decode() else ""
     match request.path:
         case "/count":
-            text(200, said=f"{stats.hit()}")
+            text(200, said=f"{hit(stats)}")
         case "/note":
             match keep_note(db, n, body):
                 case Ok(count):
-                    stats.noted(True)
+                    noted(stats, kept=True)
                     text(200, said=f"{count}")
                 case Err(why):
-                    stats.noted(False)
+                    noted(stats, kept=False)
                     text(500, said=f"{why}")
         case "/file":
             match round_trip(fs, dir, n, body):
@@ -73,8 +88,7 @@ def respond(stats: Stats, db: Database, fs: Fs, dir: str, request: Request) -> R
         case "/crash":
             text(200, said=f"{overflowed(n)}")
         case "/stats":
-            with stats as held:
-                text(200, said=f"hits={held.hits} notes={held.notes} failed={held.failed}")
+            text(200, said=shown(stats))
         case _:
             text(404, said="nothing here")
 
@@ -82,7 +96,7 @@ def main(net: Net, fs: Fs, args: Args, stdout: Stdout) fails NetError | SqlError
     dir = args[0] if args.len() > 0 else "soak-data"
     if not fs.exists(dir):
         fs.make_dir(dir)?
-    stats = Stats()
+    shared stats = Stats()
     with sqlite.open(fs, f"{dir}/soak.db")? as db:
         _ = db.execute(t"create table if not exists notes (id integer primary key, body text)")?
         with net.listen(0)? as server:

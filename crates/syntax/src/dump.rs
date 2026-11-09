@@ -98,7 +98,7 @@ pub(crate) fn quoted(text: &str) -> String {
     out
 }
 
-/// A float the way Fennec prints one, as `fennec_interp::format::float` does: with a decimal
+/// A float the way Fennec prints one, as `fennec_rt::format::float` does: with a decimal
 /// point when it's whole, and with an exponent when it's very large or very small.
 #[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
 pub fn float(x: f64) -> String {

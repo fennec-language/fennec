@@ -3,9 +3,9 @@
 
 use std::fmt::Write as _;
 
-use fennec_interp::embed::Tables;
 use fennec_ir::Program;
 use fennec_layout::{Layouts, Registry, Ty};
+use fennec_rt::embed::Tables;
 
 use crate::Shared;
 
@@ -53,7 +53,7 @@ impl Image {
         elements.extend(boxed);
         let str_shape = registry.str_shape();
         let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
-            let number = fennec_interp::embed::dicts::shape(str_shape, *key, *value)?;
+            let number = fennec_rt::embed::dicts::shape(str_shape, *key, *value)?;
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(dicts);

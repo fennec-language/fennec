@@ -205,9 +205,10 @@ impl FnCx<'_> {
                     self.bind_pattern(arg, &inner, span);
                 }
             }
-            Pattern::Variant { dotted, .. } => {
-                let target = if matches!(subject, Type::Result(..)) && !dotted { &error } else { &value };
-                self.bind_variant(pattern, target, span);
+            Pattern::Variant { name, dotted, .. } => {
+                let failure =
+                    matches!(subject, Type::Result(..)) && !dotted && self.failure_side(name, &error);
+                self.bind_variant(pattern, if failure { &error } else { &value }, span);
             }
         }
     }
@@ -529,11 +530,12 @@ impl FnCx<'_> {
             .filter(|arm| arm.guard.is_none())
             .flat_map(|arm| alternatives(&arm.pattern))
             .collect();
-        if unguarded.iter().any(|pattern| always_matches(pattern)) {
+        // Only `_` matches either side: a name, like `case found:`, is bound to the value.
+        if unguarded.iter().any(|pattern| matches!(pattern, Pattern::Wildcard)) {
             return;
         }
-        // `Ok(x)` and `.Case(...)` are the value's cases, and `Err(e)` and `IoError(...)` the
-        // failure's, as `bind_pattern` reads them.
+        // `Ok(x)` and `.Case(...)` are the value's cases, and `Err(e)`, `IoError(...)` and a case
+        // of what it fails with, `NotFound(path)`, the failure's, as `bind_pattern` reads them.
         let mut values = Vec::new();
         let mut failures = Vec::new();
         for pattern in unguarded {
@@ -546,8 +548,9 @@ impl FnCx<'_> {
                         _ => {}
                     }
                 }
-                Pattern::Variant { dotted: true, .. } => values.push(pattern),
-                Pattern::Variant { .. } => failures.push(pattern),
+                Pattern::Variant { name, dotted: false, .. } if self.failure_side(name, error) => {
+                    failures.push(pattern);
+                }
                 _ => values.push(pattern),
             }
         }
@@ -564,6 +567,23 @@ impl FnCx<'_> {
                 ),
             );
         }
+    }
+
+    /// Whether an undotted name in a `case` over a result is the failure's: an error type, or a case
+    /// of one it fails with. Lowering reads it the same way.
+    fn failure_side(&self, name: &str, error: &Type) -> bool {
+        let failing = match error {
+            Type::Named(one) => vec![one.as_str()],
+            Type::Errors(names) => names.iter().map(String::as_str).collect(),
+            _ => Vec::new(),
+        };
+        self.checker.is_error_type(&Type::named(name))
+            || failing.into_iter().any(|owner| {
+                self.checker
+                    .program
+                    .type_info(owner)
+                    .is_some_and(|info| info.def.cases.iter().any(|case| case.name == name))
+            })
     }
 
     /// Whether `patterns` match every value of type `ty`: one that matches anything, every case

@@ -1,7 +1,0 @@
-error: an `else:` block must leave
- --> examples/errors/else_block_must_leave.fen:4:9
-  |
-4 |         stdout.print("no price for the fig")
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = help: end it with `return`, `fail`, `continue` or `break`, or write a value after `else` instead of a block

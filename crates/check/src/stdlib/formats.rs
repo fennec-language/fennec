@@ -160,10 +160,9 @@ impl FnCx<'_> {
     ) -> Result<(), Diagnostic> {
         let cannot = |what: &Type| Diagnostic::new(cant_hold(format, field, &article(&what.kind())), span);
         if self.checker.program.is_shared(ty) {
-            let what = format!("the `shared` handle `{}`", ty.kind());
-            return Err(Diagnostic::new(cant_hold(format, field, &what), span).with_help(
-                "a `shared` value is a handle to one cell, not data: save what it holds in a plain struct",
-            ));
+            let what = format!("a `{}`", ty.source().unwrap_or_else(|| ty.kind()));
+            return Err(Diagnostic::new(cant_hold(format, field, &what), span)
+                .with_help("a `shared` value is reached inside a `lock`: save what it holds, read there"));
         }
         match ty {
             // `bytes` are written as base64 text, and an `Id` as its slot and generation, whatever

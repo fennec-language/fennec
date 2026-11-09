@@ -23,6 +23,9 @@ struct Lowering<'d> {
     changed: bool,
 }
 
+/// What ends the name a lowered `lock` gives what it holds: `s__lock` for `lock x as ref s:`.
+pub(crate) const HELD: &str = "__lock";
+
 /// Lowers every `shared T`, `shared s = e` and `lock` in `module`, saying whether there were any.
 pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) -> bool {
     let mut lowering = Lowering { declared, made: BTreeMap::new(), changed: false };
@@ -179,7 +182,7 @@ impl Lowering<'_> {
                     self.changed = true;
                     let renamed: Vec<(String, String)> = names
                         .iter()
-                        .map(|held| (held.name.clone(), format!("{}__lock", held.name)))
+                        .map(|held| (held.name.clone(), format!("{}{HELD}", held.name)))
                         .collect();
                     for (held, (_, handle)) in names.iter_mut().zip(&renamed) {
                         held.name.clone_from(handle);

@@ -19,7 +19,7 @@ use crate::kinds::Kind;
 use crate::lists::FIELDS_OFFSET;
 
 /// What a `with` that takes one `shared` value under two names says, in every engine.
-const TAKEN_TWICE: &str = "this `with` takes the same `shared` value twice";
+const TAKEN_TWICE: &str = "this `lock` takes the same `shared` value twice";
 
 /// What taking the lock of a `shared` value this thread holds already says, in every engine.
 const TAKEN_AGAIN: &str = "this takes the lock of a `shared` value that's already held";

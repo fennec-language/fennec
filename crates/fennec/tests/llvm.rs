@@ -4322,6 +4322,86 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source written in at three levels of one block, each copy with a `?` on a line that names
+/// what it gives, keeps each copy's names apart.
+#[test]
+fn one_source_twice_in_a_block_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_twice",
+        "error Boom:
+    pass
+
+struct Conn:
+    n: int
+
+    def made(self, n: int) -> int fails Boom:
+        if n < 0:
+            fail Boom()
+        n + self.n
+
+    def opened(self, n: int) -> with int fails Boom:
+        got = self.made(n)?
+        lend got else:
+            pass
+
+def main(stdout: Stdout) fails Boom:
+    conn = Conn(n=0)
+    with conn.opened(0)? as outer:
+        with conn.opened(1)? as first:
+            with conn.opened(2)? as second:
+                stdout.print(outer + first + second)
+",
+    )?;
+    assert_eq!(printed, "3\n");
+    Ok(())
+}
+
+/// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
+/// or while finishing. A source can wrap another this way and say only its own error, and the
+/// block's own failures pass up as they are.
+#[test]
+fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "with_else_fail",
+        "error First:
+    Broke(why: str)
+
+error Second:
+    Lost(why: str)
+
+def inner(fine: bool) -> with int fails First:
+    if not fine: fail .Broke(why=\"inner\")
+    lend 1 else:
+        pass
+
+def outer(fine: bool) -> with int fails Second:
+    with inner(fine) else fail .Lost(why=\"outer\") as held:
+        lend held + 1 else:
+            pass
+
+def main(stdout: Stdout):
+    for fine in [True, False]:
+        match used(fine, stdout):
+            case Ok(_):
+                stdout.print(\"worked\")
+            case Err(problem):
+                stdout.print(\"failed\", problem)
+
+def used(fine: bool, stdout: Stdout) fails Second:
+    with outer(fine)? as value:
+        stdout.print(value)
+",
+    )?;
+    assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
@@ -7727,7 +7807,8 @@ fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> 
 
 /// The real network, with no interpreter behind it: a server and a client on this machine, each
 /// way a call can come out, and looping over each.
-const REAL_NETWORK: &str = "from std.net import NetError, Connection
+const REAL_NETWORK: &str = "from std.net import NetError, Connection, Server
+from std.time import Duration
 
 def reason[T](found: Result[T, NetError]) -> str:
     match found:
@@ -7752,7 +7833,7 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(conn.read_line()?)
                 stdout.print(conn.read_line()?)
                 stdout.print(reason(conn.read_line(timeout=20ms)))
-                stdout.print(reason(server.accept(timeout=20ms)))
+                stdout.print(reason(accepting(server, wait=20ms)))
                 client.write(\"\\n\")?
                 stdout.print(conn.read_line()?)
                 client.write(\"one\\ntwo\\n\")?
@@ -7768,19 +7849,33 @@ def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
     for line in conn.lines()?:
         stdout.print(line)
 
+## Takes the next connection, waiting up to `wait`, and hangs up, to see how taking one goes.
+def accepting(server: Server, wait: Duration) fails NetError:
+    with server.accept(timeout=wait)? as _:
+        pass
+
+## Connects and hangs up, to see how connecting goes.
+def connecting(net: Net, host: str, port: int) fails NetError:
+    with net.connect(host, port)? as _:
+        pass
+
+def looped(net: Net, stdout: Stdout) -> int fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port)? as client:
+            client.write(\"looped\\n\")?
+        for conn in server:
+            printed_lines(conn, stdout)?
+            break
+        port = server.port
+        server.close()
+        stdout.print(reason(accepting(server, wait=1s)))
+        return port
+    0
+
 def main(net: Net, stdout: Stdout):
     stdout.print(reason(talk(net, stdout)))
-    server = net.listen(0).expect(\"it listens\")
-    client = net.connect(\"127.0.0.1\", server.port).expect(\"it connects\")
-    client.write(\"looped\\n\").expect(\"it writes\")
-    client.close()
-    for conn in server:
-        printed_lines(conn, stdout).expect(\"it reads\")
-        break
-    port = server.port
-    server.close()
-    stdout.print(reason(server.accept()))
-    stdout.print(reason(net.connect(\"127.0.0.1\", port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+    port = looped(net, stdout) else 0
+    stdout.print(reason(connecting(net, host=\"127.0.0.1\", port=port)) == f\"`127.0.0.1` refused a connection on port {port}\")
 ";
 
 #[test]
@@ -7795,6 +7890,11 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
 /// at the end, a packet's sender, timing out, a bad address and port, and looping over a socket.
 const NETWORK_BYTES: &str = "\
 from std.net import NetError
+
+## A UDP socket on `port`, closed at once, to see how binding one goes.
+def bound(net: Net, port: int) fails NetError:
+    with net.udp(port=port)? as _:
+        pass
 
 def talk(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
@@ -7837,7 +7937,7 @@ def main(net: Net, stdout: Stdout):
             stdout.print(error.message())
         case Ok(_):
             stdout.print(\"done\")
-    match net.udp(port=99999):
+    match bound(net, port=99999):
         case Ok(_):
             pass
         case Err(_):
@@ -8556,10 +8656,9 @@ fn fetches_in_parallel_wait_at_once_on_a_few_threads() -> std::io::Result<()> {
             "from std.net import NetError
 
 def fetch(net: Net, port: int) -> str fails NetError:
-    conn = net.connect(\"127.0.0.1\", port)?
-    line = conn.read_line()? else \"nothing\"
-    conn.close()
-    line
+    with net.connect(\"127.0.0.1\", port)? as conn:
+        return conn.read_line()? else \"nothing\"
+    \"nothing\"
 
 def main(net: Net, stdout: Stdout):
     items = [i for i in range(16)]
@@ -10036,6 +10135,29 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Only the first U+FEFF of CSV text is its byte order mark: a second is the first field's own
+/// character, which `csv.loads` keeps. Found by fuzzing `std.csv` (`fennec-fuzz run csv`).
+#[test]
+fn csv_reads_only_the_first_byte_order_mark() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "csv_two_marks",
+        r#"from std import csv
+
+def main(stdout: Stdout):
+    match csv.loads("﻿﻿a,b\n﻿c"):
+        case Ok(rows):
+            stdout.print(rows == [["﻿a", "b"], ["﻿c"]])
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "True\n");
+    Ok(())
+}
+
 /// A server can't make the client hold as much as it likes before a response's body: endless
 /// header lines fail, as one endless line does, and so do endless `100 Continue`s. A chunk's data
 /// has to end where its size says, with nothing after it but its line ending.
@@ -11496,7 +11618,21 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(_):\n            stdout.print(\"failed\")\n";
+    let source = "\
+from std.net import NetError
+
+def listening(net: Net) -> bool fails NetError:
+    with net.listen(0)? as server:
+        return server.port > 0
+    False
+
+def main(stdout: Stdout, net: Net):
+    match listening(net):
+        case Ok(up):
+            stdout.print(\"listening\", up)
+        case Err(_):
+            stdout.print(\"failed\")
+";
     same_as_the_jit("net_kind", source)
 }
 
@@ -15606,6 +15742,8 @@ fn tests_that_take_capabilities_run_through_llvm() -> std::io::Result<()> {
     std::fs::write(
         &program,
         "\
+from std.net import NetError
+
 test \"files are its own\"(fs: Fs):
     assert not fs.exists(\"a\")
     fs.write_text(\"a\", \"one\")?
@@ -15619,8 +15757,13 @@ test \"what it prints is kept\"(stdout: Stdout, clock: Clock):
     stdout.print(\"at\", clock.now().nanos)
     assert stdout.captured() == \"at 0\\n\"
 
+## Connects and hangs up, to see how connecting goes.
+def connecting(net: Net, host: str, port: int) fails NetError:
+    with net.connect(host, port)? as _:
+        pass
+
 test \"a failure comes back as its case\"(net: Net):
-    match net.connect(\"localhost\", 9001):
+    match connecting(net, host=\"localhost\", port=9001):
         case Err(Refused(host=host, port=port)):
             assert host == \"localhost\" and port == 9001
         case _:

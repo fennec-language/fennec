@@ -153,16 +153,14 @@ impl Body<'_> {
                 codes.push(code);
             }
         }
-        // The zero byte that ends them. One missing is passed over (reported).
-        self.take(1).map_err(|_| Broken::Unpromised)?;
+        // The zero byte that ends them.
+        self.take(1)?;
         Ok(codes.len())
     }
 
-    /// Fails unless the whole body has been read. `std.postgres` passes over what's left, so for
-    /// now that's not certain. Reported: these marks come out, and each becomes `Fails`, once
-    /// `postgres_refuses_messages_a_server_never_sends` passes.
+    /// Fails unless the whole body has been read.
     fn done(&self) -> Result<(), Broken> {
-        if self.at == self.data.len() { Ok(()) } else { Err(Broken::Unpromised) }
+        if self.at == self.data.len() { Ok(()) } else { Err(Broken::Fails) }
     }
 }
 
@@ -179,7 +177,12 @@ fn message(kind: u8, data: &[u8]) -> Result<String, Broken> {
                 format!("sasl {count}")
             }
             code @ (11 | 12) => format!("auth {code} {}", data.len().saturating_sub(4)),
-            code => format!("auth {code}"),
+            code @ (0 | 3) => format!("auth {code}"),
+            // A way of signing in this client doesn't speak may carry anything after its code.
+            code => {
+                body.at = data.len();
+                format!("auth {code}")
+            }
         },
         b'S' => format!("setting {} {}", body.text()?.chars().count(), body.text()?.chars().count()),
         b'K' => format!("key {} {}", body.int32()?, body.int32()?),
@@ -188,16 +191,15 @@ fn message(kind: u8, data: &[u8]) -> Result<String, Broken> {
                 body.at = 1;
                 "ready 1".to_owned()
             }
-            // A status that isn't one byte reads as "" (reported).
-            _ => return Err(Broken::Unpromised),
+            [_] => return Err(Broken::Unpromised),
+            _ => return Err(Broken::Fails),
         },
         b'E' => format!("failed {}", body.fields()?),
         b'N' => format!("notice {}", body.fields()?),
         b'T' => {
             let count = body.int16()?;
-            // A count below zero reads as none (reported).
             if count < 0 {
-                return Err(Broken::Unpromised);
+                return Err(Broken::Fails);
             }
             for _ in 0..count {
                 body.text()?;
@@ -207,15 +209,13 @@ fn message(kind: u8, data: &[u8]) -> Result<String, Broken> {
         }
         b'D' => {
             let count = body.int16()?;
-            // A count below zero reads as none (reported).
             if count < 0 {
-                return Err(Broken::Unpromised);
+                return Err(Broken::Fails);
             }
             for _ in 0..count {
                 let size = body.int32()?;
-                // A size below -1 reads as null (reported).
                 if size < -1 {
-                    return Err(Broken::Unpromised);
+                    return Err(Broken::Fails);
                 }
                 body.take(usize::try_from(size).unwrap_or(0))?;
             }

@@ -65,7 +65,8 @@ export struct File:
         self.read()?
 
     ## What's left in it, `size` bytes at a time, the last chunk shorter: for reading a file far
-    ## bigger than memory, as `blake3(file.chunks(1_000_000))` will.
+    ## bigger than memory, as `blake3(file.chunks(1_000_000)?)` will. A failure to read fails the
+    ## loop, rather than looking like the end of the file.
     def chunks(self, size: int) -> Iterator[bytes] fails IoError:
         while True:
             chunk = self.read_chunk(size)?

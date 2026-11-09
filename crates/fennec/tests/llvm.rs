@@ -9750,6 +9750,28 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     Ok(())
 }
 
+/// Reading a file a chunk or a line at a time fails when reading does, inside the `with` that
+/// opened it, rather than ending the loop as if the file were done: a folder read as a file, and
+/// a line that isn't UTF-8.
+#[test]
+fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id()));
+    std::fs::create_dir_all(place.join("folder"))?;
+    std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
+    std::fs::write(place.join("good.txt"), "one\ntwo\n")?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    match found:\n        case Ok(n):\n            return f\"read {{n}}\"\n        case Err(_):\n            return \"failed\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
+    );
+    let printed = printed_by("iter_fail", &source)?;
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(printed, "failed read 8\nfailed read 8\n");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

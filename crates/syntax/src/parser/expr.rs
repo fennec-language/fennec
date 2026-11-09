@@ -76,30 +76,23 @@ impl Parser {
         Ok(leaving_match(start, vec![Stmt { kind, span }], span))
     }
 
-    /// An `else:` block, which says something and then leaves, as in
-    /// `text = fs.read(path) else:` with `stdout.print(...)` and `return` under it. It's the same
-    /// `match` as `else return`, with more statements in its case. `else as failure:` names what
-    /// failed in the block.
+    /// An `else:` block, which leaves or gives the value, as in `text = fs.read(path) else:` with
+    /// `stdout.print(...)` and `return` under it, or `""` as its last line. It's the same `match`
+    /// as `else return`, with more statements in its case, and the checker sees that it leaves or
+    /// gives a value of the right type. `else as failure:` names what failed in the block.
     fn leaving_block(&mut self, failure: Option<String>) -> Result<Expr, Diagnostic> {
         let start = self.advance().span;
         let indented = self.at(&Tok::Newline);
         let body = self.block()?;
         self.block_ended = indented;
         let span = start.to(self.prev_span());
-        let last = body.last().map(|last| (&last.kind, last.span));
-        match last {
-            Some((StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_), _)) => {
-                let mut leaving = leaving_match(start, body, span);
-                if let (ExprKind::Match { arms, .. }, Some(failure)) = (&mut leaving.kind, failure)
-                    && let Some(arm) = arms.first_mut()
-                {
-                    arm.pattern = Pattern::Bind(failure);
-                }
-                Ok(leaving)
-            }
-            _ => Err(Diagnostic::new("an `else:` block must leave", last.map_or(start, |(_, at)| at))
-                .with_help("end it with `return`, `fail`, `continue` or `break`, or write a value after `else` instead of a block")),
+        let mut block = leaving_match(start, body, span);
+        if let (ExprKind::Match { arms, .. }, Some(failure)) = (&mut block.kind, failure)
+            && let Some(arm) = arms.first_mut()
+        {
+            arm.pattern = Pattern::Bind(failure);
         }
+        Ok(block)
     }
 
     /// `x => body` or `(a, b) => body`.

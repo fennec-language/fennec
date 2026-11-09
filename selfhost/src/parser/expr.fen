@@ -68,22 +68,15 @@ extend Parser:
         span = start.to(self.prev_span())
         leaving_match(start, [Stmt(kind=kind, span=span)], span)
 
-    ## An `else:` block, which says something and then leaves. It's the same `match` as
-    ## `else return`, with more statements in its case.
+    ## An `else:` block, which leaves or gives the value. It's the same `match` as `else return`,
+    ## with more statements in its case, and the checker sees that it leaves or gives a value.
     def leaving_block(ref self, failure: str?) -> Expr fails Diagnostic:
         start = self.advance().span
         indented = self.at(.Newline)
         body = self.block()?
         self.block_ended = indented
         span = start.to(self.prev_span())
-        if body.len() > 0 and leaves_by(body[-1].kind):
-            return leaving_match(start, body, span, failure=failure)
-        at = body[-1].span if body.len() > 0 else start
-        fail Diagnostic(
-            message="an `else:` block must leave",
-            span=at,
-            help="end it with `return`, `fail`, `continue` or `break`, or write a value after `else` instead of a block",
-        )
+        leaving_match(start, body, span, failure=failure)
 
     ## `x => body` or `(a, b) => body`.
     def lambda(ref self) -> Expr? fails Diagnostic:

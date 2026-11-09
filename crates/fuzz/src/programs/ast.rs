@@ -17,11 +17,20 @@ pub(crate) enum Ty {
     Shared,
     /// What `tallied` lends a `with` block.
     Tally,
+    /// `shared Bag`: a list and a dict, reached only through `lock`.
+    Bag,
+    /// `Holder`: a struct holding a list.
+    Holder,
+    /// `dict[str, list[int]]`.
+    Lists,
+    /// `() -> int`: a function that sums the list it captured.
+    Count,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 7] = [Ty::Int, Ty::Bool, Ty::Str, Ty::Ints, Ty::Point, Ty::Shape, Ty::Byte];
+pub(crate) const TYPES: [Ty; 9] =
+    [Ty::Int, Ty::Bool, Ty::Str, Ty::Ints, Ty::Point, Ty::Shape, Ty::Byte, Ty::Holder, Ty::Lists];
 
 /// An arithmetic operator on ints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +116,43 @@ pub(crate) enum Expr {
     SumCounted(Box<Expr>),
     /// `tally.count`, in the `with` block it's lent to.
     Count(String),
+    /// `Holder(items=list, tag=int)`.
+    Holder(Box<Expr>, Box<Expr>),
+    /// `holder.items`.
+    HeldItems(Box<Expr>),
+    /// `holder.tag`.
+    Tag(Box<Expr>),
+    /// A `dict[str, list[int]]` written out.
+    Lists(Vec<(&'static str, Expr)>),
+    /// `lists.get(key) else list[int]()`.
+    ListAt(Box<Expr>, &'static str),
+    /// `() => sum(list)`, capturing a name that can't change.
+    Summing(String),
+    /// `count()`.
+    Called(String),
+}
+
+/// A number written into a lock's body: a literal, or what a task was sent, times something.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Amount {
+    Literal(i64),
+    /// `number * by`, in a task's body.
+    Sent(i64),
+}
+
+/// A change to a `Bag`'s list or dict under `lock bag as ref held:`.
+#[derive(Clone, Debug)]
+pub(crate) enum Op {
+    /// `held.items.append(amount)`.
+    Append(Amount),
+    /// `_ = held.items.pop()`.
+    Pop,
+    /// `held.items[at] = amount`, or `+=` with `add`: a place outside the list crashes.
+    SetItem(i64, Amount, bool),
+    /// `held.counts[key] = amount`, or `+=` with `add`: a key that isn't there crashes then.
+    SetCount(&'static str, Amount, bool),
+    /// `_ = held.counts.remove(key)`.
+    Remove(&'static str),
 }
 
 /// Where an assignment writes.
@@ -162,6 +208,25 @@ pub(crate) enum Stmt {
     Change(String, Expr, Expr),
     /// `lock name as held:` printing it.
     PrintShared(String),
+    /// `shared name = Bag(items=list, counts={...})`.
+    ShareBag(String, Expr, Vec<(&'static str, i64)>),
+    /// `locked<id>(name, refuse=...)`: a function of its own takes the bag's lock, makes each
+    /// change, then fails if asked to, which undoes them all. A failure prints `refused`.
+    Locked {
+        id: usize,
+        name: String,
+        ops: Vec<Op>,
+        refuse: Expr,
+    },
+    /// `sent<id>(name, items=list)`: a launched task makes each change for each number it's sent,
+    /// under the lock each time. One that crashes undoes that round's changes and prints
+    /// `crashed`.
+    Sent {
+        id: usize,
+        name: String,
+        ops: Vec<Op>,
+        items: Expr,
+    },
     /// `tally(name, items=list)`: a launched task takes each item from its inbox and, under the
     /// lock, counts it in `y` and adds it to `x`. A task that overflows crashes, which undoes
     /// that lock's changes and prints `crashed`.
@@ -169,6 +234,14 @@ pub(crate) enum Stmt {
     /// `for name in range(list.len()):` reading `list[name]` first each round, with the body free
     /// to change the list, so a bound worked out once can stop holding.
     Indexed(String, String, Vec<Stmt>),
+    /// `holder.items.append(value)`.
+    HolderAppend(String, Expr),
+    /// `holder.tag += value`.
+    HolderTag(String, Expr),
+    /// `lists[key] = list`, storing a list's value.
+    PutList(String, &'static str, Expr),
+    /// `if key in lists: lists[key].append(value)`.
+    ListAppend(String, &'static str, Expr),
     /// `grow_all(ref list, by)`, adding `by` to each item through a `ref` parameter.
     GrowAll(String, Expr),
     /// `for name in counted(limit):`, over a generator.

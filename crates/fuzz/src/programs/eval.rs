@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Arith, Case, Compare, Expr, Place, Program, Stmt};
+use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Stmt};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +26,12 @@ enum Value {
     Byte(u8),
     /// A `shared Point`, by where it is on the heap.
     Shared(usize),
+    /// A `shared Bag`, by where it is among the bags.
+    Bag(usize),
+    Holder(Vec<i64>, i64),
+    Lists(Vec<(String, Vec<i64>)>),
+    /// A function summing the list it captured.
+    Count(Vec<i64>),
     Tally(i64),
 }
 
@@ -43,7 +49,8 @@ enum Stop {
 /// How a program ran: what it printed, and whether it ran to the end, or None where the evaluator
 /// can't be sure.
 pub(crate) fn run(program: &Program) -> Option<(String, bool)> {
-    let mut machine = Machine { scopes: vec![Vec::new()], out: String::new(), heap: Vec::new() };
+    let mut machine =
+        Machine { scopes: vec![Vec::new()], out: String::new(), heap: Vec::new(), bags: Vec::new() };
     match machine.block(&program.body) {
         Ok(()) => {
             machine.out.push_str("done\n");
@@ -61,6 +68,57 @@ struct Machine {
     out: String,
     /// What each `shared Point` holds.
     heap: Vec<(i64, i64)>,
+    /// What each `shared Bag` holds.
+    bags: Vec<Bag>,
+}
+
+/// What a `Bag` holds: its list, and its dict in the order keys went in.
+#[derive(Clone, Debug, Default)]
+struct Bag {
+    items: Vec<i64>,
+    counts: Vec<(String, i64)>,
+}
+
+impl Bag {
+    /// As `stdout.print` writes it.
+    fn shown(&self) -> String {
+        let items: Vec<String> = self.items.iter().map(ToString::to_string).collect();
+        let counts: Vec<String> = self.counts.iter().map(|(key, n)| format!("\"{key}\": {n}")).collect();
+        format!("Bag(items=[{}], counts={{{}}})", items.join(", "), counts.join(", "))
+    }
+
+    /// Makes each change in turn, with `number` what a task was sent, or None where one crashes.
+    fn changed(mut self, ops: &[Op], number: i64) -> Option<Bag> {
+        let amount = |value: Amount| match value {
+            Amount::Literal(n) => Some(n),
+            Amount::Sent(by) => number.checked_mul(by),
+        };
+        for op in ops {
+            match op {
+                Op::Append(value) => self.items.push(amount(*value)?),
+                Op::Pop => {
+                    self.items.pop();
+                }
+                Op::SetItem(at, value, add) => {
+                    let len = i64::try_from(self.items.len()).ok()?;
+                    let at = if *at < 0 { at + len } else { *at };
+                    let value = amount(*value)?;
+                    let item = self.items.get_mut(usize::try_from(at).ok()?)?;
+                    *item = if *add { item.checked_add(value)? } else { value };
+                }
+                Op::SetCount(key, value, add) => {
+                    let value = amount(*value)?;
+                    match self.counts.iter_mut().find(|(held, _)| held == key) {
+                        Some((_, n)) => *n = if *add { n.checked_add(value)? } else { value },
+                        None if *add => return None,
+                        None => self.counts.push(((*key).to_owned(), value)),
+                    }
+                }
+                Op::Remove(key) => self.counts.retain(|(held, _)| held != key),
+            }
+        }
+        Some(self)
+    }
 }
 
 type Ran<T> = Result<T, Stop>;
@@ -100,6 +158,28 @@ fn place_in(at: i64, len: usize) -> Ran<usize> {
     if (0..len).contains(&at) { usize::try_from(at).map_err(|_| Stop::Unsure) } else { Err(Stop::Failed) }
 }
 
+/// `sum(items)`. Overflowing partway but not at the end could go either way.
+fn sum_of(items: &[i64]) -> Ran<i64> {
+    let mut total: i64 = 0;
+    let mut overflowed = false;
+    for item in items {
+        if let Some(next) = total.checked_add(*item) {
+            total = next;
+        } else {
+            overflowed = true;
+            total = total.wrapping_add(*item);
+        }
+    }
+    let exact: i128 = items.iter().map(|item| i128::from(*item)).sum();
+    if i64::try_from(exact).is_err() {
+        return Err(Stop::Failed);
+    }
+    if overflowed {
+        return Err(Stop::Unsure);
+    }
+    Ok(total)
+}
+
 /// A value as `stdout.print` writes it.
 fn shown(value: &Value) -> String {
     match value {
@@ -117,7 +197,21 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
         Value::Byte(n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
-        Value::Shared(_) => "shared".to_owned(),
+        Value::Shared(_) | Value::Bag(_) | Value::Count(_) => "shared".to_owned(),
+        Value::Holder(items, tag) => {
+            let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+            format!("Holder(items=[{}], tag={tag})", items.join(", "))
+        }
+        Value::Lists(pairs) => {
+            let pairs: Vec<String> = pairs
+                .iter()
+                .map(|(key, items)| {
+                    let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                    format!("\"{key}\": [{}]", items.join(", "))
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
     }
 }
 
@@ -236,6 +330,41 @@ impl Machine {
                     }
                 }
             }
+            Stmt::HolderAppend(name, value) => {
+                let value = int(&self.expr(value)?)?;
+                if let Value::Holder(items, _) = self.slot(name)? {
+                    items.push(value);
+                }
+            }
+            Stmt::HolderTag(name, value) => {
+                let Value::Holder(_, old) = self.get(name)? else { return Err(Stop::Unsure) };
+                let old = *old;
+                let value = int(&self.expr(value)?)?;
+                let new = checked(old.checked_add(value))?;
+                if let Value::Holder(_, tag) = self.slot(name)? {
+                    *tag = new;
+                }
+            }
+            Stmt::PutList(name, key, list) => {
+                let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+                if let Value::Lists(pairs) = self.slot(name)? {
+                    match pairs.iter_mut().find(|(held, _)| held == key) {
+                        Some((_, held)) => *held = items,
+                        None => pairs.push(((*key).to_owned(), items)),
+                    }
+                }
+            }
+            Stmt::ListAppend(name, key, value) => {
+                let Value::Lists(pairs) = self.get(name)? else { return Err(Stop::Unsure) };
+                if pairs.iter().any(|(held, _)| held == key) {
+                    let value = int(&self.expr(value)?)?;
+                    if let Value::Lists(pairs) = self.slot(name)?
+                        && let Some((_, items)) = pairs.iter_mut().find(|(held, _)| held == key)
+                    {
+                        items.push(value);
+                    }
+                }
+            }
             Stmt::GrowAll(list, by) => {
                 let by = int(&self.expr(by)?)?;
                 if let Value::Ints(items) = self.slot(list)? {
@@ -298,10 +427,51 @@ impl Machine {
             }
             Stmt::Change(name, by, refuse) => self.change(name, by, refuse)?,
             Stmt::Tally(name, items) => self.tally(name, items)?,
-            Stmt::PrintShared(name) => {
-                let Value::Shared(at) = self.get(name)? else { return Err(Stop::Unsure) };
-                let (x, y) = self.heap.get(*at).copied().ok_or(Stop::Unsure)?;
-                let _ = writeln!(self.out, "Point(x={x}, y={y})");
+            Stmt::PrintShared(name) => match self.get(name)? {
+                Value::Shared(at) => {
+                    let (x, y) = self.heap.get(*at).copied().ok_or(Stop::Unsure)?;
+                    let _ = writeln!(self.out, "Point(x={x}, y={y})");
+                }
+                Value::Bag(at) => {
+                    let shown = self.bags.get(*at).ok_or(Stop::Unsure)?.shown();
+                    let _ = writeln!(self.out, "{shown}");
+                }
+                _ => return Err(Stop::Unsure),
+            },
+            Stmt::ShareBag(name, items, counts) => {
+                let Value::Ints(items) = self.expr(items)? else { return Err(Stop::Unsure) };
+                let counts = counts.iter().map(|(key, n)| ((*key).to_owned(), *n)).collect();
+                self.bags.push(Bag { items, counts });
+                self.bind(name, Value::Bag(self.bags.len() - 1));
+            }
+            Stmt::Locked { name, ops, refuse, .. } => {
+                let refuse = self.expr(refuse)? == Value::Bool(true);
+                let Value::Bag(at) = self.get(name)? else { return Err(Stop::Unsure) };
+                let at = *at;
+                let bag = self.bags.get(at).cloned().ok_or(Stop::Unsure)?;
+                // A crash inside the lock stops the program; a refusal undoes every change.
+                let changed = bag.changed(ops, 0).ok_or(Stop::Failed)?;
+                if refuse {
+                    self.out.push_str("refused\n");
+                } else if let Some(held) = self.bags.get_mut(at) {
+                    *held = changed;
+                }
+            }
+            Stmt::Sent { name, ops, items, .. } => {
+                let Value::Ints(items) = self.expr(items)? else { return Err(Stop::Unsure) };
+                let Value::Bag(at) = self.get(name)? else { return Err(Stop::Unsure) };
+                let at = *at;
+                for number in items {
+                    let bag = self.bags.get(at).cloned().ok_or(Stop::Unsure)?;
+                    // A round that crashes undoes its own changes and ends the task.
+                    let Some(changed) = bag.changed(ops, number) else {
+                        self.out.push_str("crashed\n");
+                        break;
+                    };
+                    if let Some(held) = self.bags.get_mut(at) {
+                        *held = changed;
+                    }
+                }
             }
             Stmt::EachCounted(name, limit, body) => {
                 let limit = int(&self.expr(limit)?)?;
@@ -521,26 +691,43 @@ impl Machine {
             }
             Expr::Sum(list) => {
                 let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
-                // Overflowing partway but not at the end could go either way.
-                let mut total: i64 = 0;
-                let mut overflowed = false;
-                for item in &items {
-                    if let Some(next) = total.checked_add(*item) {
-                        total = next;
-                    } else {
-                        overflowed = true;
-                        total = total.wrapping_add(*item);
-                    }
-                }
-                let exact: i128 = items.iter().map(|item| i128::from(*item)).sum();
-                if i64::try_from(exact).is_err() {
-                    return Err(Stop::Failed);
-                }
-                if overflowed {
-                    return Err(Stop::Unsure);
-                }
-                Value::Int(total)
+                Value::Int(sum_of(&items)?)
             }
+            Expr::Holder(items, tag) => {
+                let Value::Ints(items) = self.expr(items)? else { return Err(Stop::Unsure) };
+                Value::Holder(items, int(&self.expr(tag)?)?)
+            }
+            Expr::HeldItems(holder) => match self.expr(holder)? {
+                Value::Holder(items, _) => Value::Ints(items),
+                _ => return Err(Stop::Unsure),
+            },
+            Expr::Tag(holder) => match self.expr(holder)? {
+                Value::Holder(_, tag) => Value::Int(tag),
+                _ => return Err(Stop::Unsure),
+            },
+            Expr::Lists(pairs) => {
+                let mut lists = Vec::with_capacity(pairs.len());
+                for (key, list) in pairs {
+                    let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+                    lists.push(((*key).to_owned(), items));
+                }
+                Value::Lists(lists)
+            }
+            Expr::ListAt(lists, key) => match self.expr(lists)? {
+                Value::Lists(pairs) => {
+                    let found = pairs.into_iter().find(|(held, _)| held == key);
+                    Value::Ints(found.map(|(_, items)| items).unwrap_or_default())
+                }
+                _ => return Err(Stop::Unsure),
+            },
+            Expr::Summing(name) => match self.get(name)? {
+                Value::Ints(items) => Value::Count(items.clone()),
+                _ => return Err(Stop::Unsure),
+            },
+            Expr::Called(name) => match self.get(name)? {
+                Value::Count(items) => Value::Int(sum_of(items)?),
+                _ => return Err(Stop::Unsure),
+            },
             Expr::Point(x, y) => {
                 let (x, y) = (int(&self.expr(x)?)?, int(&self.expr(y)?)?);
                 Value::Point(x, y)

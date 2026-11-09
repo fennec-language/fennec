@@ -1378,6 +1378,28 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The same in a program with tasks, where a lock's value is read through the lock's edge: 2,000
+/// pushes under the lock in `main` and 2,000 pushes and pops in a launched task copy nothing a
+/// round. What the program copies is only what starting its task copies, the same program with no
+/// locks at all. A field read under the lock once held owners of what it read, as letting go at the
+/// lock's edge counted as a use, and they made every change copy.
+#[test]
+fn changing_a_list_in_a_shared_value_in_a_task_copies_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let locked =
+        counts_of("shared_queue_in_a_task", include_str!("fixtures/workers/shared_queue_in_a_task.fen"))?;
+    let unlocked = counts_of(
+        "shared_queue_no_locks",
+        include_str!("fixtures/workers/shared_queue_in_a_task_no_locks.fen"),
+    )?;
+    let copies = |counts: &str| counts.split_whitespace().nth(1).map(str::to_owned);
+    assert!(copies(&locked).is_some(), "{locked}");
+    assert_eq!(copies(&locked), copies(&unlocked), "{locked} against {unlocked}");
+    Ok(())
+}
+
 /// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
 /// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
 /// a note of each in the lock's rollback log, but these change what a note of one place can't put

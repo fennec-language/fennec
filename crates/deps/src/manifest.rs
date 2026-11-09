@@ -2,7 +2,7 @@
 //! it depends on.
 //!
 //! This reads only the few keys a kit has so far, with a small reader of its own.
-//! TODO: switch to `std.toml` (`crates/interp/src/formats/toml.rs`) and keep these checks on
+//! TODO: switch to `std.toml` (`crates/rt/src/formats/toml.rs`) and keep these checks on
 //! top of it. It needs a way to use it outside the interpreter, and the span of each key so
 //! errors can still point at their line.
 
@@ -165,6 +165,8 @@ impl Reader {
                 format!("`{text}` can't name a kit"),
                 "a kit's name is lowercase letters, digits and `_`, starting with a letter".to_owned(),
             )),
+            // Whoever works on Fennec itself runs the build they linked: see `fennec toolchain link`.
+            ("fennec", Some(text)) if text == DEV => None,
             ("version" | "fennec", Some(text)) if version_numbers(text).is_none() => Some((
                 format!("`{text}` isn't a version"),
                 "write versions as three numbers, like \"0.1.0\"".to_owned(),
@@ -192,6 +194,9 @@ impl Reader {
     }
 }
 
+/// What `fennec = ...` says for a kit built with a local build of Fennec.
+const DEV: &str = "dev";
+
 const DEPENDENCY_HELP: &str = "write `name = { git = \"https://...\", commit = \"<its whole hash>\" }`, or `name = { path = \"../name\" }`";
 
 /// One line of `[dependencies]`: `physics = { git = "...", commit = "..." }`, with a `folder` when
@@ -201,6 +206,12 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
         return Err((
             format!("`{name}` can't name a kit"),
             "a kit's name is lowercase letters, digits and `_`, starting with a letter".to_owned(),
+        ));
+    }
+    if name == "fennec" {
+        return Err((
+            "the Fennec a kit builds with isn't a dependency".to_owned(),
+            "say which with `fennec = \"0.4.2\"` at the top of kit.toml, before any table".to_owned(),
         ));
     }
     if string(value).is_some() {

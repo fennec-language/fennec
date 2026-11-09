@@ -2098,6 +2098,42 @@ fn write_kit(at: &Path, name: &str, dependencies: &str, files: &[(&str, &str)]) 
     Ok(())
 }
 
+/// Every command run from a folder deep inside a kit works on that kit.
+#[test]
+fn every_command_finds_the_kit_from_a_folder_inside_it() {
+    let dir = scratch("walks-up").unwrap();
+    let kit = dir.join("demo");
+    let main =
+        "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n\ntest \"adds\":\n    assert 1 + 1 == 2\n";
+    write_kit(&kit, "demo", "", &[("main.fen", main)]).unwrap();
+    let inside = kit.join("src/deep/er");
+    std::fs::create_dir_all(&inside).unwrap();
+    let output = dir.join("built");
+    let built = output.to_string_lossy();
+    let commands: [&[&str]; 9] = [
+        &["run"],
+        &["run", "--no-test"],
+        &["build", "-o", &built],
+        &["test"],
+        &["check"],
+        &["lint"],
+        &["fix"],
+        &["fmt", "--check"],
+        &["update"],
+    ];
+    for command in commands {
+        let ran = crate::executables::fennec_command()
+            .args(command)
+            .current_dir(&inside)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{command:?}: {}", text(&ran.stderr));
+    }
+    assert!(output.is_file());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The kits the import test depends on: `physics`, which depends on `maths`.
 fn write_physics_and_maths(dir: &Path) -> std::io::Result<()> {
     write_kit(

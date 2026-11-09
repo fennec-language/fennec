@@ -1364,6 +1364,7 @@ match tok:
 - A kit's version is `fennec = "0.4.2"` at the top of its `kit.toml`, found by walking up from the current folder.
 - A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set. With neither, the command stops and says how to set one. In a kit, `--version` is an error, since `kit.toml` says.
 - `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
+- `fennec toolchain link dev <path>` is for whoever works on Fennec itself: it runs the `fennec` in a folder of their own, like a checkout's `target/release`, with whatever LLVM that build finds, and fetches nothing. A kit asks for it with `fennec = "dev"`, which is never pinned, and `+dev` runs it once. `fennec toolchain remove dev` unlinks it and leaves the build.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.

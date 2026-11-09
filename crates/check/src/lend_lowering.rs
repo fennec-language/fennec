@@ -40,19 +40,27 @@ pub(crate) fn lower(
     if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
     }
-    NEXT.with(|next| next.set(Span::PRELUDE - 1));
-    let mut lowest = u32::MAX;
+    // What an earlier pass wrote in keeps its names and spans: a source written in now, inside one
+    // written in then, gets ones after them, never the same.
+    let (mut lowest, mut written_low, mut made) = (u32::MAX, Span::PRELUDE, 0);
     fennec_syntax::visit::exprs_mut(module, &mut |expr| {
         if expr.span.start >= COPIES_FROM {
             lowest = lowest.min(expr.span.start);
         }
+        if (WRITTEN_FROM..Span::PRELUDE).contains(&expr.span.start) {
+            written_low = written_low.min(expr.span.start);
+        }
+        if let ExprKind::Name(name) = &expr.kind {
+            made = made.max(made_in(name));
+        }
     });
+    NEXT.with(|next| next.set(written_low - 1));
     COPIES.with(|copies| copies.set(lowest));
     let mut lowering = Lowering {
         sources,
         launches,
         ref_matches,
-        made: 0,
+        made,
         returns: Vec::new(),
         failing: Vec::new(),
         instead: None,
@@ -216,6 +224,20 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
             }
         });
     }
+}
+
+/// The lowest a span a lowering writes can be: well above any program's text, and below the
+/// standard library's.
+const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
+
+/// The number a name written in by an earlier pass ends with, like `3` in `conn__lend3`, or 0.
+fn made_in(name: &str) -> usize {
+    ["__lend", "__ref"]
+        .iter()
+        .filter_map(|mark| name.rsplit_once(mark))
+        .filter_map(|(_, number)| number.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Where a lowering writes something of its own: a span covering nothing, its own, so the

@@ -3011,8 +3011,8 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        // Sorting `u64`s isn't built natively yet.
-        let source = "def f() -> int:\n    xs = sorted([u64(2), u64(1)])\n    xs.len()\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+        // Sorting lists of lists isn't built natively yet.
+        let source = "def f() -> int:\n    xs = sorted([[2], [1]])\n    xs.len()\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

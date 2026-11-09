@@ -2728,6 +2728,42 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
+/// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
+/// can be what a key gives.
+#[test]
+fn u64s_and_f32s_sort_by_their_values() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def main(stdout: Stdout):
+    top: u64 = 9223372036854775807
+    big = top * 2 + 1
+    half = top + 1
+    xs = [u64(5), big, u64(0), half, u64(7)]
+    stdout.print(sorted(xs))
+    mut ys = xs
+    ys.sort()
+    stdout.print(ys, xs)
+    stdout.print(sorted(xs, key=(x) => x))
+    stdout.print(sorted([(half + 1, "b"), (u64(1), "a"), (big, "c")]))
+    stdout.print(sorted([f32(2.5), f32(-1.0), f32(0.1), f32(3.0)]))
+    named = ["ccc", "a", "bb"]
+    stdout.print(sorted(named, key=(s) => u64(s.len())), sorted(named, key=(s) => f32(s.len())))
+"#;
+    let printed = printed_by("u64_sort", source)?;
+    let (low, top) = ("0, 5, 7, 9223372036854775808, 18446744073709551615", "9223372036854775809");
+    assert_eq!(
+        printed,
+        format!(
+            "[{low}]\n[{low}] [5, 18446744073709551615, 0, 9223372036854775808, 7]\n[{low}]\n\
+             [(1, \"a\"), ({top}, \"b\"), (18446744073709551615, \"c\")]\n[-1.0, 0.1, 2.5, 3.0]\n\
+             [\"a\", \"bb\", \"ccc\"] [\"a\", \"bb\", \"ccc\"]\n"
+        )
+    );
+    Ok(())
+}
+
 /// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
 /// or an overflow check away can't rest on the local's value from before the call.
 const REF_WRITES: &str = "def neg(ref at: int):

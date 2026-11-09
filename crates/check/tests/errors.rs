@@ -123,6 +123,9 @@ fn a_match_over_a_result_handles_the_value_and_the_failure() {
     assert_eq!(found("        case Ok(value): value\n        case Oops(why): why.len()\n"), empty);
     assert_eq!(found("        case Ok(value): value\n        case _: 0\n"), empty);
     assert_eq!(found("        case Ok(value): value\n        case Err(_): 0\n"), empty);
+    // A name is bound to the value, so it doesn't handle the failure, as `_` does.
+    assert_eq!(found("        case value: value\n"), ["this `match` doesn't handle the failure @ risky(n)"]);
+    assert_eq!(found("        case _: 0\n"), empty);
     // Several errors are handled one by one, an enum's case by case.
     let several = "error Gone:\n    path: str\n\nerror Bad:\n    Empty\n    Long(size: int)\n\n\
         def load(n: int) -> int fails Gone | Bad:\n    if n == 0: fail Gone(path=\"a\")\n    if n == 1: fail .Empty\n    n\n\n\

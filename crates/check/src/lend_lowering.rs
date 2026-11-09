@@ -1495,3 +1495,22 @@ fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// A pass that writes nothing in says so, however many passes came before it: lowering
+    /// stops once nothing's left to write in, rather than checking and lowering again for ever,
+    /// as it did when a standard library source holding a `with` of another stayed in what was
+    /// checked.
+    #[test]
+    fn a_pass_that_writes_nothing_in_says_so() {
+        let source = "error Boom:\n    pass\n\n\
+            def opened(n: int) -> with int fails Boom:\n    lend n else:\n        pass\n\n\
+            def main(stdout: Stdout) fails Boom:\n    with opened(1)? as first:\n        stdout.print(first)\n";
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();
+        let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+        assert!(super::lower(&mut module, &checked.sources, &launches, &matches));
+        assert!(!super::lower(&mut module, &checked.sources, &launches, &matches));
+    }
+}

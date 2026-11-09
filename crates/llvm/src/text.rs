@@ -1533,7 +1533,7 @@ tagged:
                 let temp = self.text_value(&temp);
                 self.assign(dest.ok_or("no result")?, &temp)
             }
-            // The runtime's, running the interpreter's own code: a new block owned once.
+            // The runtime's own code: a new block owned once.
             "str.upper" | "str.lower" | "str.replace" => {
                 let mut texts = Vec::with_capacity(args.len());
                 for arg in args {

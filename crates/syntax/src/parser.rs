@@ -590,7 +590,7 @@ impl Parser {
     }
 
     /// `[T, U: Shape]` after a function or type name. Generic parameters are checked by the
-    /// type checker, so the interpreter only needs to skip them.
+    /// type checker.
     fn generic_params(&mut self) -> Result<Vec<Generic>, Diagnostic> {
         let mut generics = Vec::new();
         if !self.eat_p(Punct::LBracket) {

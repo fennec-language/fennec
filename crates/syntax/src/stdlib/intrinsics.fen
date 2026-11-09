@@ -164,6 +164,16 @@ export def shape_hash[T]() -> int
 @intrinsic
 export def layout[T]() -> str
 
+## Whether the kit's `pack.lock` has a type's layout as it is now, so `std.pack` can leave the
+## layout out of what it writes and a reader still finds it.
+@intrinsic
+export def shape_locked[T]() -> bool
+
+## The kit's `pack.lock`: a line for each layout its types have had, the shape's number in hex,
+## then the layout. Empty when it has none.
+@intrinsic
+export def pack_lock() -> str
+
 ## A number that's the same for equal `Id`s and differs for others, to look one up by.
 @intrinsic
 export def id_key[T](id: Id[T]) -> int
@@ -240,6 +250,15 @@ export def channel_close(channel: int)
 ## Lets go of channel `channel` and what's left in it, at the end of its `with` block.
 @intrinsic
 export def channel_free(channel: int)
+
+## Marks `cleanup`, a function taking nothing, to run if the caller crashes before
+## `crash_cleanup_done(cleanup)`: a `with` source's `else:`, for a block that crashes.
+@intrinsic
+export def crash_cleanup(cleanup: () -> nothing)
+
+## Ends what `crash_cleanup(cleanup)` started, where the block ends or fails another way.
+@intrinsic
+export def crash_cleanup_done(cleanup: () -> nothing)
 
 ## Starts `task` beside the caller, and gives back its handle for `launch_end`. `task` is a
 ## closure taking nothing, which may fail.

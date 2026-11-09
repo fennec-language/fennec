@@ -709,7 +709,7 @@ A server gives each connection its own task the same way. Calls look blocking, a
 from std.net import Connection, NetError
 
 def echo(conn: Connection) fails NetError:
-    for line in conn.lines():
+    for line in conn.lines()?:
         conn.write(f"{line}\n")?
 
 def main(net: Net, stdout: Stdout):
@@ -785,7 +785,7 @@ def save(fs: Fs, path: str, scores: list[int]) fails IoError:
 def load(fs: Fs, path: str) -> list[int] fails IoError:
     mut found = list[int]()
     with fs.open(path)? as file:
-        for line in file.lines():
+        for line in file.lines()?:
             found.append(int(line) else 0)
     found
 ```

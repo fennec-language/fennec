@@ -96,6 +96,9 @@ fn node(item: &Item, is_start: &dyn Fn(&str) -> bool) -> Option<Node> {
         }
         Item::Const { name, ty, value, .. } => {
             node.names.push(name.clone());
+            // A kit's `pack.lock` (see `fennec_kit::PACK_LOCK`) is read by std.pack through an
+            // intrinsic, so no name in the program reaches it.
+            node.root = name == "\0pack_lock";
             if let Some(ty) = ty {
                 node.uses.type_expr(ty);
             }

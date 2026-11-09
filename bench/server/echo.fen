@@ -3,7 +3,7 @@ from std.net import Connection, NetError
 
 def answer(connection: Connection) -> int fails NetError:
     mut count = 0
-    for line in connection.lines():
+    for line in connection.lines()?:
         connection.write(line + "\n")?
         count += 1
     count

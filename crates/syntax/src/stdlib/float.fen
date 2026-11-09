@@ -1,0 +1,7 @@
+## `float`'s methods written in Fennec.
+extend float:
+    def serialize(self, ref out: Serializer):
+        out.float(self)
+
+    def deserialize(ref src: Deserializer) -> float fails ParseError:
+        src.float()?

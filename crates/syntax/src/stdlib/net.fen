@@ -94,11 +94,11 @@ export shared Connection:
     ## The other side's address, like `"127.0.0.1:52811"`.
     peer: str
 
-    ## Each line it's sent, until the other side is done or the connection fails. To tell
-    ## those apart, call `read_line()` instead.
-    def lines(self) -> Iterator[str]:
+    ## Each line it's sent, until the other side is done. A failure of the connection fails the
+    ## loop, rather than looking like the end.
+    def lines(self) -> Iterator[str] fails NetError:
         while True:
-            line = self.read_line() else None
+            line = self.read_line()?
             if line is None: return
             yield line
 

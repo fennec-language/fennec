@@ -29,6 +29,9 @@ impl FnCx<'_> {
         if let Some(ty) = self.sized_literal(expr, expected) {
             return ty;
         }
+        if let Some(ty) = self.sized_collection(expr, expected) {
+            return ty;
+        }
         if let Some(ty) = self.union_literal(expr, expected) {
             return ty;
         }
@@ -90,16 +93,6 @@ impl FnCx<'_> {
                 }
                 Type::Dict(key, value)
             }
-            // `bytes: list[u8] = [1, 2, 255]`: each item goes where a sized number does.
-            ExprKind::List(items)
-                if let Type::List(item) = self.checker.settled(expected).without_none()
-                    && matches!(*item, Type::Sized(_)) =>
-            {
-                for each in items {
-                    self.item_as(each, &item);
-                }
-                Type::List(item)
-            }
             ExprKind::List(_) => {
                 let ty = self.expr_kind(expr);
                 let wanted = self.checker.settled(expected);
@@ -108,6 +101,44 @@ impl FnCx<'_> {
                 if of_optionals && self.checker.fits(&wanted, &ty) { wanted } else { ty }
             }
             _ => self.expr_kind(expr),
+        }
+    }
+
+    /// A list, set, dict or tuple literal written where one holding sized numbers goes: each
+    /// item goes where its sized number does, so it takes that size and is checked to fit, as in
+    /// `bytes: list[u8] = [1, 2, 255]` and `pair: (u8, int) = (3, 1)`. `None` for anything else.
+    fn sized_collection(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
+        let wanted = self.checker.settled(expected).without_none();
+        if !holds_sized(&wanted) {
+            return None;
+        }
+        match (&expr.kind, wanted) {
+            (ExprKind::List(items), Type::List(item)) => {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Some(Type::List(item))
+            }
+            (ExprKind::Set(items), Type::Set(item)) => {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Some(Type::Set(item))
+            }
+            (ExprKind::Dict(pairs), Type::Dict(key, value)) => {
+                for (each_key, each_value) in pairs {
+                    self.item_as(each_key, &key);
+                    self.item_as(each_value, &value);
+                }
+                Some(Type::Dict(key, value))
+            }
+            (ExprKind::Tuple(items), Type::Tuple(types)) if items.len() == types.len() => {
+                for (each, ty) in items.iter().zip(&types) {
+                    self.item_as(each, ty);
+                }
+                Some(Type::Tuple(types))
+            }
+            _ => None,
         }
     }
 
@@ -399,6 +430,17 @@ pub(crate) fn number_literal(expr: &Expr) -> bool {
         ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner } => {
             matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_))
         }
+        _ => false,
+    }
+}
+
+/// Whether a type has a sized number in it, as an item, a key, a value or a tuple's part.
+fn holds_sized(ty: &Type) -> bool {
+    match ty {
+        Type::Sized(_) => true,
+        Type::List(item) | Type::Set(item) => holds_sized(item),
+        Type::Dict(key, value) => holds_sized(key) || holds_sized(value),
+        Type::Tuple(items) => items.iter().any(holds_sized),
         _ => false,
     }
 }

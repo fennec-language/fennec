@@ -1,4 +1,4 @@
-//! Plain structs, tuples and lists, laid out as the runtime and the JIT lay them out.
+//! Plain structs, tuples and lists, laid out as the runtime lays them out.
 
 use std::fmt::Write as _;
 

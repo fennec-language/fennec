@@ -13,8 +13,7 @@
 //!   list too, and puts each item's result at its position, with `parallel.put`.
 //! - `sum(f(x) for x in parallel(xs))` becomes `parallel.sum(xs, range, start)`. The range gives
 //!   back its partial, folded from its first item, and the backend adds them in the runtime's
-//!   fixed tree, so it's the same bit for bit however many threads run, and the same as the
-//!   interpreter.
+//!   fixed tree, so it's the same bit for bit however many threads run.
 //!
 //! `put` and `put_back` write the list in place, never copying it, yet say `changes: false`.
 //! That's sound only because the list is the call's alone before any range runs (the runtime

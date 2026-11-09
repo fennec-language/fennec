@@ -105,11 +105,17 @@ fn pinned(
 }
 
 /// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
+/// A diagnostic gives a file's path as it was given, which on Windows goes on with `\`, so the
+/// separator after `<dir>` is written as `/` there too.
 pub(crate) fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
     let mut folders = vec![dir.to_string_lossy().into_owned()];
     folders.extend(std::fs::canonicalize(dir).ok().map(|real| real.to_string_lossy().into_owned()));
-    let plain =
-        |text: String| folders.iter().fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"));
+    let plain = |text: String| {
+        folders
+            .iter()
+            .fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"))
+            .replace("<dir>\\", "<dir>/")
+    };
     (plain(out), plain(err), code)
 }
 
@@ -124,7 +130,7 @@ fn pinned_in(kind: &str, name: &str, source: &str) -> std::io::Result<Outcome> {
     let read = read_pinned(&text).filter(|(pinned_for, _)| *pinned_for == hash);
     read.map(|(_, outcome)| outcome).ok_or_else(|| {
         std::io::Error::other(format!(
-            "{} is missing or was pinned for other source: check what the program should do, and write it there",
+            "{} is missing or was pinned for other source: check what the program should do, and write it there, for source {hash}",
             file.display()
         ))
     })
@@ -1675,7 +1681,7 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
     if !ready() {
         return Ok(());
     }
-    // The JIT reads the same lowering, so only the interpreter can say this is right.
+    // The JIT read the same lowering, so only the interpreter could say this was right.
     same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
 }
 
@@ -4761,8 +4767,7 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Every program in the repository builds as native code, with nothing left to the JIT or the
-/// interpreter: each example, kit and benchmark, `examples/proof` and `selfhost`. The examples
+/// Every program in the repository builds as native code, with nothing LLVM refuses: each example, kit and benchmark, `examples/proof` and `selfhost`. The examples
 /// that print something are run by the test above, and the rest by their own suites.
 #[test]
 fn every_program_builds_natively() -> std::io::Result<()> {
@@ -6364,8 +6369,7 @@ def main(stdout: Stdout, env: Env):
     Ok(())
 }
 
-/// Skirmish built with LLVM prints its `.out` file, as `cli.rs` checks the interpreter and the
-/// JIT do: a whole kit, saved to JSON and loaded back, cached and as a release.
+/// Skirmish built with LLVM prints its `.out` file: a whole kit, saved to JSON and loaded back, cached and as a release.
 #[test]
 fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()> {
     if !ready() {
@@ -6379,11 +6383,13 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
         let output = executable.to_string_lossy().into_owned();
         let args: Vec<&str> =
             ["build"].into_iter().chain(how.iter().copied()).chain(["-o", &output]).collect();
+        // A whole kit, as a release too: on CI's x86-64 Mac, run under Rosetta, building it once
+        // took past the usual deadline, which is there to catch a hang, not to time a build.
         let built = crate::executables::fennec_command()
             .args(&args)
             .env("FENNEC_HOME", &dir)
             .current_dir(&proof)
-            .output_before(FENNEC_DEADLINE)?;
+            .output_before(FENNEC_DEADLINE * 3)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
         assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
@@ -6457,7 +6463,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     Ok(())
 }
 
-/// What compiled code does through capabilities without the interpreter, failing as well as not.
+/// What compiled code does through capabilities, failing as well as not.
 const NATIVE_CAPABILITIES: &str = "\
 from std.path import Path
 
@@ -6673,9 +6679,9 @@ def hashes(fs: Fs) -> list[str] fails IoError:
             file.write_text(chunk)?
     mut found = list[str]()
     with fs.open(\"big.txt\")? as file:
-        found.append(blake3(file.chunks(1000000)))
+        found.append(blake3(file.chunks(1000000)?))
     with fs.open(\"big.txt\")? as file:
-        found.append(sha256(file.chunks(1000000)))
+        found.append(sha256(file.chunks(1000000)?))
     found
 
 def main(stdout: Stdout, fs: Fs):
@@ -7412,7 +7418,7 @@ def reason[T](found: Result[T, NetError]) -> str:
 
 def lines_of(connection: Connection) -> int fails NetError:
     mut count = 0
-    for line in connection.lines():
+    for line in connection.lines()?:
         count += line.len()
     count
 
@@ -7438,6 +7444,10 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(reason(conn.write(\"gone\")))
     7
 
+def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
+    for line in conn.lines()?:
+        stdout.print(line)
+
 def main(net: Net, stdout: Stdout):
     stdout.print(reason(talk(net, stdout)))
     server = net.listen(0).expect(\"it listens\")
@@ -7445,8 +7455,7 @@ def main(net: Net, stdout: Stdout):
     client.write(\"looped\\n\").expect(\"it writes\")
     client.close()
     for conn in server:
-        for line in conn.lines():
-            stdout.print(line)
+        printed_lines(conn, stdout).expect(\"it reads\")
         break
     port = server.port
     server.close()
@@ -9223,8 +9232,7 @@ def main(stdout: Stdout):
 }
 
 /// A known difference: native code writes a field holding a union tagged with its member, as
-/// the language says, where the JIT's JSON writer, which a plain `fennec build` uses too, leaves
-/// the tag out. The JIT is on its way out, so its side isn't being fixed.
+/// the language says, where the JIT's JSON writer left the tag out.
 #[test]
 fn native_json_tags_a_union_where_the_jit_does_not() -> std::io::Result<()> {
     if !ready() {
@@ -9800,6 +9808,78 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     let sent: Vec<usize> = passwords.iter().map(|sent| sent.recv().unwrap_or(99)).collect();
     assert_eq!(sent[2], 0, "the password went to a server that asked for it as it is");
     assert_eq!(sent[5], 1, "the password wasn't sent when asked to send it as it is");
+    Ok(())
+}
+
+/// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
+/// written without their layout, as short as before layouts, and the next version of the type
+/// reads them by the locked layout's names. Without the lock, they'd be refused.
+#[test]
+fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("pack_lock")?;
+    let kit = dir.join("saver");
+    std::fs::create_dir_all(kit.join("src"))?;
+    std::fs::write(
+        kit.join("kit.toml"),
+        "name = \"saver\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n\n[dependencies]\n",
+    )?;
+    let main = kit.join("src/main.fen");
+    // Run in the kit's folder, as `fennec update` updates the kit it's in.
+    let in_kit = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)
+    };
+    let ran = |source: &str| -> std::io::Result<String> {
+        std::fs::write(&main, source)?;
+        let out = in_kit(&["run", "."])?;
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let first = "from std import pack\n\nstruct Entry:\n    path: str\n    size: int\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    data = pack.dumps(Entry(path=\"a.txt\", size=12))\n    fs.write_bytes(\"entry.pack\", data)?\n    stdout.print(data.len())\n";
+    let long = ran(first)?;
+    let updated = in_kit(&["update"])?;
+    let said = String::from_utf8_lossy(&updated.stdout).into_owned();
+    let lock = std::fs::read_to_string(kit.join("pack.lock"))?;
+    let short = ran(first)?;
+    let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    match pack.loads[Entry](fs.read_bytes(\"entry.pack\")?):\n        case Ok(found):\n            stdout.print(found.path, found.size, found.tags)\n        case Err(error):\n            stdout.print(error.message)\n";
+    let read = ran(next)?;
+    std::fs::remove_file(kit.join("pack.lock"))?;
+    let unlocked = ran(next)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((long.as_str(), short.as_str()), ("37\n", "19\n"));
+    assert!(said.contains("locked 1 layout in pack.lock"), "{said}");
+    assert_eq!(lock.lines().count(), 1, "{lock}");
+    assert!(lock.ends_with(" S 2 path s size i\n"), "{lock}");
+    assert_eq!(read, "a.txt 12.0 []\n");
+    assert_eq!(unlocked, "this was packed from a different `Entry`, at byte 4\n");
+    Ok(())
+}
+
+/// Reading a file a chunk or a line at a time fails when reading does, inside the `with` that
+/// opened it, rather than ending the loop as if the file were done: a folder read as a file, and
+/// a line that isn't UTF-8.
+#[test]
+fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id()));
+    std::fs::create_dir_all(place.join("folder"))?;
+    std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
+    std::fs::write(place.join("good.txt"), "one\ntwo\n")?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    match found:\n        case Ok(n):\n            return f\"read {{n}}\"\n        case Err(_):\n            return \"failed\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
+    );
+    let printed = printed_by("iter_fail", &source)?;
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(printed, "failed read 8\nfailed read 8\n");
     Ok(())
 }
 
@@ -10842,7 +10922,7 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
 
 /// Floats have one equality, order and hash everywhere: `0.0` is `-0.0`, and NaN comes after
 /// everything and is the same as any other NaN, whatever its sign. So this is held to what that
-/// decision says, on LLVM and the interpreter both. The JIT's `==` and keys don't follow it yet.
+/// decision says, as the interpreter pinned it. The JIT's `==` and keys never followed it.
 #[test]
 fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
     if !ready() {
@@ -10984,8 +11064,8 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
 }
 
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
-/// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
-/// both. The JIT's `==` and keys don't follow it yet.
+/// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
+/// it. The JIT's `==` and keys never followed it.
 #[test]
 fn floats_are_equal_as_decided() -> std::io::Result<()> {
     if !ready() {
@@ -12185,7 +12265,7 @@ fn strips_match_the_jit() -> std::io::Result<()> {
     )
 }
 
-/// `upper`, `lower`, `replace`, `find` and `split`, which run the interpreter's own code.
+/// `upper`, `lower`, `replace`, `find` and `split`, which run the runtime's own code.
 #[test]
 fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -13671,7 +13751,7 @@ fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {
     )
 }
 
-/// A failed `assert` says all the JIT does, each side as the interpreter shows it.
+/// A failed `assert` says all the JIT did, each side as the interpreter showed it.
 #[test]
 fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
     if !ready() {
@@ -14068,7 +14148,7 @@ def main(stdout: Stdout):
 }
 
 /// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
-/// interpreter. LLVM refused it once, and the JIT still gets it wrong (#572).
+/// interpreter. LLVM refused it once, and the JIT got it wrong (#572).
 #[test]
 fn a_name_narrowed_to_none_prints_as_the_interpreter_does() -> std::io::Result<()> {
     if !ready() {

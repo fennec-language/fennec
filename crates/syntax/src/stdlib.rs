@@ -1,6 +1,6 @@
 //! The standard library's modules. Each one has its own file here, with the names it
-//! provides and its code written in Fennec, and its own files in the interpreter and the
-//! checker for anything written in Rust. Adding a module adds one line to each list.
+//! provides and its code written in Fennec, and its own files in the runtime and the
+//! checker for anything that isn't. Adding a module adds one line to each list.
 
 use std::collections::{HashMap, HashSet};
 
@@ -82,15 +82,15 @@ pub fn prelude_files() -> impl Iterator<Item = (&'static str, &'static str)> {
     CORE.into_iter().chain(modules)
 }
 
-/// The standard library written in Fennec, loaded before every program by both the
-/// interpreter and the type checker: the core, then each module's code.
+/// The standard library written in Fennec, loaded before every program by the type checker and
+/// the compiler: the core, then each module's code.
 pub fn prelude() -> impl Iterator<Item = &'static str> {
     let modules = MODULES.iter().map(|module| module.source).filter(|source| !source.is_empty());
     CORE.into_iter().map(|(_, source)| source).chain(modules)
 }
 
-/// The prelude's sources parsed, once for the whole process: the checker, the compiler and
-/// the interpreter all read it, and a run uses them all.
+/// The prelude's sources parsed, once for the whole process: the checker and the compiler
+/// both read it, and a run uses them both.
 pub fn prelude_modules() -> Result<&'static [crate::Module], crate::Diagnostic> {
     static PARSED: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
         std::sync::OnceLock::new();

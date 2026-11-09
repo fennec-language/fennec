@@ -639,6 +639,66 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// Lets go of a generator stopped at a `yield` on the way out of a failure, `failure`: a
+    /// failure of its source's cleanup goes on that as a note, and `failure` is still the one
+    /// that leaves.
+    pub(super) fn let_go_noting(
+        &mut self,
+        generator: &Operand,
+        known: Option<String>,
+        failure: LocalId,
+        span: Span,
+    ) {
+        let pc = self.temporary(Type::Int);
+        self.emit(InstKind::GetSlot { dest: pc, generator: generator.clone(), slot: slot::PC }, span);
+        let stopped = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(pc), Operand::Int(0));
+        self.emit(InstKind::Binary { dest: stopped, op: BinOp::Gt, lhs, rhs }, span);
+        let (leave, noting, after) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(stopped), then: leave, otherwise: after });
+        self.current = leave;
+        let leaving = self.temporary(Type::Int);
+        let (lhs, rhs) = (Operand::Int(FAILED), Operand::Local(pc));
+        self.emit(InstKind::Binary { dest: leaving, op: BinOp::Sub, lhs, rhs }, span);
+        self.set_generator_slot(generator, slot::PC, Operand::Local(leaving), span);
+        let more = self.temporary(Type::Bool);
+        self.emit(InstKind::Resume { dest: more, generator: generator.clone(), known }, span);
+        let ended = self.temporary(Type::Int);
+        self.emit(InstKind::GetSlot { dest: ended, generator: generator.clone(), slot: slot::PC }, span);
+        let failed = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(ended), Operand::Int(FAILED));
+        self.emit(InstKind::Binary { dest: failed, op: BinOp::Eq, lhs, rhs }, span);
+        self.finish(Terminator::Branch { cond: Operand::Local(failed), then: noting, otherwise: after });
+        self.current = noting;
+        // One whose error isn't said can't fail: its call needed no `?`.
+        let Some(own) = self.generator_error(generator) else {
+            self.finish(Terminator::Jump(after));
+            self.current = after;
+            return;
+        };
+        let held = self.temporary(own);
+        self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
+        let text = self.temporary(Type::Str);
+        let parts = vec![crate::FormatPart::Value { value: Operand::Local(held), spec: None }];
+        self.emit(InstKind::Format { dest: text, parts }, span);
+        let args = vec![Operand::Local(failure), Operand::Local(text)];
+        self.emit(
+            InstKind::Builtin { dest: None, name: "error.add_note".to_owned(), args, changes: true },
+            span,
+        );
+        self.finish(Terminator::Jump(after));
+        self.current = after;
+    }
+
+    /// A generator's own error, from the result `?` took it out of.
+    fn generator_error(&self, generator: &Operand) -> Option<Type> {
+        let Operand::Local(local) = generator else { return None };
+        match self.local_type(self.taken_from(*local)?) {
+            Type::Result(_, own) => Some(*own),
+            _ => None,
+        }
+    }
+
     fn set_generator_slot(&mut self, generator: &Operand, at: usize, value: Operand, span: Span) {
         self.emit(InstKind::SetSlot { generator: generator.clone(), slot: at, value }, span);
     }
@@ -708,15 +768,7 @@ impl<'a> Lowering<'a> {
             return Ok(());
         };
         // The slot holds the generator's own error, which this function's may hold among others.
-        let own = match generator {
-            Operand::Local(local) => {
-                self.taken_from(*local).and_then(|result| match self.local_type(result) {
-                    Type::Result(_, own) => Some(*own),
-                    _ => None,
-                })
-            }
-            _ => None,
-        };
+        let own = self.generator_error(generator);
         let held = self.temporary(own.unwrap_or_else(|| (*error).clone()));
         self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
         let widened = self.coerce(Operand::Local(held), &error, span)?;

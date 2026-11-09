@@ -6349,8 +6349,9 @@ def main(stdout: Stdout):
 "#;
 
 /// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
-/// failure while it gives an item does: at a `break`, at a `return` out of the loop, and in place
-/// of a failure already leaving through it, as a `with` block's failing cleanup does today.
+/// failure while it gives an item does: at a `break` and at a `return` out of the loop. A failure
+/// already leaving through it is an error with cases here, which can't carry notes natively yet,
+/// so the cleanup's takes its place.
 #[test]
 fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
     if !ready() {
@@ -6364,6 +6365,74 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     );
     Ok(())
 }
+
+/// A failure already leaving through a loop whose generator's cleanup fails too is the one that
+/// leaves, carrying the cleanup's as a note, as a `with` block's failing `else:` does.
+#[test]
+fn a_cleanup_failing_as_a_failure_leaves_a_loop_is_a_note_on_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("cleanup_failing_noted", CLEANUP_FAILING_NOTED)?;
+    assert_eq!(
+        printed,
+        "closing broke\nbroke failed Shut(name=\"broke\")\nclosing returned\nreturned failed Shut(name=\"returned\")\n\
+         closing failing\nfailing failed Other(why=\"in the loop\") [\"Shut(name=\\\"failing\\\")\"]\n"
+    );
+    Ok(())
+}
+
+const CLEANUP_FAILING_NOTED: &str = r#"error Shut:
+    name: str
+
+error Other:
+    why: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broke(stdout: Stdout) fails Shut:
+    for n in held("broke", stdout)?:
+        break
+    stdout.print("not here")
+
+def returned(stdout: Stdout) -> int fails Shut:
+    for n in held("returned", stdout)?:
+        return n
+    0
+
+def failing(stdout: Stdout) fails Shut | Other:
+    for n in held("failing", stdout)?:
+        fail Other(why="in the loop")
+
+def main(stdout: Stdout):
+    match broke(stdout):
+        case Ok(_):
+            stdout.print("broke worked")
+        case Err(why):
+            stdout.print("broke failed", why)
+    match returned(stdout):
+        case Ok(n):
+            stdout.print("returned", n)
+        case Err(why):
+            stdout.print("returned failed", why)
+    match failing(stdout):
+        case Ok(_):
+            stdout.print("failing worked")
+        case Err(why):
+            stdout.print("failing failed", why, why.notes())
+"#;
 
 const CLEANUP_FAILING: &str = r#"error Shut:
     Stuck(name: str)

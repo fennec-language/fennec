@@ -4,6 +4,7 @@
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Pattern, Span, UnaryOp};
 
+use super::places::Leaving;
 use super::{Lowered, Lowering, Options, Tail};
 use crate::validate::fits;
 use crate::{
@@ -285,12 +286,46 @@ impl Lowering<'_> {
     /// Leaves the function with an error, as any way of leaving does: `for mut` loops write their
     /// items back, and `with` blocks clean up.
     pub(super) fn return_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+        // A generator a loop lets go of on the way out may fail closing: that goes on this
+        // failure as a note, so it's kept where a note can be added before it leaves.
+        let ty = type_in(&self.locals, &error).ok_or("a value has no type")?;
+        if self.leaving.iter().any(|entered| matches!(entered, Leaving::Generator { .. }))
+            && self.takes_notes(&ty)
+        {
+            let held = self.temporary(ty);
+            self.emit(InstKind::Copy { dest: held, value: error }, span);
+            let (out, with) = (self.failing_out, self.failing_with);
+            self.failing_out = true;
+            self.failing_with = Some(held);
+            let undone = self.undo_since(0, span);
+            self.failing_out = out;
+            self.failing_with = with;
+            undone?;
+            let dest = self.temporary(self.returns.clone());
+            self.emit(InstKind::MakeErr { dest, error: Operand::Local(held) }, span);
+            self.finish(Terminator::Return(Some(Operand::Local(dest))));
+            return Ok(());
+        }
         let dest = self.temporary(self.returns.clone());
         self.emit(InstKind::MakeErr { dest, error }, span);
         self.failing_out = true;
         let left = self.leave(Some(Operand::Local(dest)), span);
         self.failing_out = false;
         left
+    }
+
+    /// Whether a failure of this type can carry notes natively: an error without cases, or a
+    /// union of those. One with cases can't yet, so a failing cleanup's failure still takes its
+    /// place there.
+    fn takes_notes(&self, ty: &Type) -> bool {
+        let signatures = &self.context.signatures;
+        let plain =
+            |name: &str| signatures.error_type(name).is_some() && signatures.enumeration(name).is_none();
+        match ty {
+            Type::Named(name) => plain(name),
+            Type::Errors(members) => members.iter().all(|member| plain(member)),
+            _ => false,
+        }
     }
 
     /// Leaves with a failure that came from inside what's being called: the `with` block

@@ -172,6 +172,30 @@ MOST_HEADERS = 100
 MOST_HEADER_BYTES = 16384
 MOST_BODY = 10485760
 
+## The most blank lines passed over before a request line.
+MOST_BLANK_LINES = 8
+
+## How much of what a client is still sending is read and dropped before closing: up to this
+## many bytes, in up to this many reads, each waited for up to 200ms.
+MOST_DRAINED_BYTES = 67108864
+MOST_DRAINED_READS = 1024
+
+## Closes a connection without throwing away the answer just written. Closing with what the
+## client sent still unread makes the system reset the connection, and a reset loses what the
+## client hadn't read yet: the answer, and those before it. So what's still coming is read and
+## dropped first, until the client's done, it goes quiet, or the limit is reached.
+def closed_gently(connection: Connection):
+    mut drained = 0
+    for _ in range(MOST_DRAINED_READS):
+        if drained >= MOST_DRAINED_BYTES: break
+        match connection.read(1048576, timeout=200ms):
+            case Ok(more):
+                if more.len() == 0: break
+                drained += more.len()
+            case Err(_):
+                break
+    connection.close()
+
 ## What reading a request gave: one to answer, one the server answers itself, or the end.
 enum RequestRead:
     Got(request: Request, keep: bool)
@@ -189,7 +213,7 @@ def answer_all(
             case .Got(request, keep):
                 write_response(connection, respond(request), keep, request.method == "HEAD")?
                 if not keep:
-                    connection.close()
+                    closed_gently(connection)
                     return
             case .Bad(status, reason):
                 write_response(
@@ -198,7 +222,7 @@ def answer_all(
                     False,
                     False,
                 )?
-                connection.close()
+                closed_gently(connection)
                 return
             case .Done:
                 connection.close()
@@ -206,7 +230,13 @@ def answer_all(
 
 ## The next request on a connection.
 def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
-    first = connection.read_line(timeout=timeout)? else return .Done
+    mut first = connection.read_line(timeout=timeout)? else return .Done
+    # A blank line or two before a request line is passed over, as HTTP/1.1 says a server should:
+    # some clients send one after a body.
+    mut blank = 0
+    while first == "" and blank < MOST_BLANK_LINES:
+        blank += 1
+        first = connection.read_line(timeout=timeout)? else return .Done
     if first == "": return .Done
     parts = first.split(" ")
     if parts.len() != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):

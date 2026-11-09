@@ -884,6 +884,24 @@ fn serving_from_a_launched_task_fails_rather_than_hang() -> std::io::Result<()> 
     Ok(())
 }
 
+/// A launched task can read every constant the program has, not only its strings.
+#[test]
+fn a_task_reads_the_programs_constants() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/constants_in_a_task.fen");
+    let built = build_on_threads(&dir, source, "constants_in_a_task")?;
+    let list = "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]";
+    let wanted =
+        format!("a constant title long enough to live in a block of its own 10 {list}\ndone {list}\n");
+    matches_on_workers(&built, "constants_in_a_task", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a read lock's method makes holding a `shared` value's strings, a list made under it among
 /// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
 #[test]

@@ -1,8 +1,9 @@
-# A map in a cell walked by one name while another changes it: the walk holds what it goes through.
+# A map in a cell walked by one name while another changes it: the walk goes through what it read
+# under the lock, and each change takes the lock again.
 
 from std.collections import Id, Table
 
-shared Log:
+struct Log:
     map = Table[str]()
 
     def add(ref self, name: str):
@@ -11,25 +12,40 @@ shared Log:
     def drop(ref self, id: Id[str]):
         self.map.remove(id)
 
-def through_names(log: Log, other: Log, ref said: list[str]):
-    for id, name in log.map.items():
-        other.drop(id)
-        said.append(f"{name} {log.map.len()} {other.map.len()}")
-    for name in log.map.values():
-        other.add(name + "!")
-        said.append(f"{name} {log.map.len()}")
+def length(log: shared Log) -> int:
+    lock log as held:
+        return held.map.len()
+
+def adding(log: shared Log, name: str):
+    lock log as ref held:
+        held.add(name)
+
+def through_names(log: shared Log, other: shared Log, ref said: list[str]):
+    mut walked = list[(Id[str], str)]()
+    lock log as held:
+        walked = [(id, name) for id, name in held.map.items()]
+    for id, name in walked:
+        lock other as ref changing:
+            changing.drop(id)
+        said.append(f"{name} {length(log)} {length(other)}")
+    mut names = list[str]()
+    lock log as held:
+        names = [name for name in held.map.values()]
+    for name in names:
+        adding(other, name=name + "!")
+        said.append(f"{name} {length(log)}")
 
 def main(stdout: Stdout):
-    log = Log()
-    log.add("a")
-    log.add("b")
-    log.add("c")
+    shared log = Log()
+    adding(log, name="a")
+    adding(log, name="b")
+    adding(log, name="c")
     mut said = list[str]()
     through_names(log, log, ref said)
-    stdout.print(said, log.map.len())
+    stdout.print(said, length(log))
     second = log
-    log.add("x")
-    log.add("y")
+    adding(log, name="x")
+    adding(log, name="y")
     mut more = list[str]()
     through_names(log, second, ref more)
-    stdout.print(more, log.map.len())
+    stdout.print(more, length(log))

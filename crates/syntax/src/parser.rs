@@ -307,10 +307,6 @@ impl Parser {
         // Inside a kit everything is visible: `export` matters only between kits.
         self.eat_pub(true);
         self.eat_kw(Kw::Export);
-        if self.at_kw(Kw::Noalloc) {
-            return Err(Diagnostic::new("`noalloc` is written `@hot` now", self.span())
-                .with_help("write `@hot` on the line above the `def`: the function and what it calls may not allocate or copy"));
-        }
         match self.peek().clone() {
             Tok::Kw(Kw::Def) => Ok(Item::Function(self.def()?)),
             Tok::Kw(Kw::From | Kw::Import) => Ok(Item::Import(self.import()?)),

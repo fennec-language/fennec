@@ -1,4 +1,4 @@
-# `shared` values holding blocks, changed from every worker: by method, by `with`, read, given
+# `shared` values holding blocks, changed from every worker: by method and by field under `lock`, read, given
 # strings and lists from outside, handing them back, through what holds a handle, and with a
 # constant and a long literal stored inside. What crosses a lock's edge is copied, and everything
 # a value holds has to stay readable from every thread, or these come out wrong.
@@ -12,7 +12,7 @@ struct Point:
 struct Unit:
     x: int
 
-shared Log:
+struct Log:
     lines = list[str]()
     count = 0
     name = "a log with a long enough name to have a block"
@@ -26,7 +26,7 @@ shared Log:
     def size(self) -> int:
         self.lines.len()
 
-shared Board:
+struct Board:
     points = [Point(x=0, name="the very first point on this board")]
     best = Point(x=0, name="the best point on this board so far")
 
@@ -38,7 +38,7 @@ shared Board:
     def top(self) -> Point:
         self.best
 
-shared Table:
+struct Table:
     rows = list[str]()
     kept = list[str]()
 
@@ -49,7 +49,7 @@ shared Table:
     def rows_now(self) -> list[str]:
         self.rows
 
-shared Grid:
+struct Grid:
     cells = [[1, 2], [3, 4]]
     maybe: int? = None
 
@@ -58,69 +58,78 @@ shared Grid:
         self.cells[row][0] += by.len()
         self.maybe = self.cells[row].len()
 
-shared Box:
+struct Box:
     items = [1, 2, 3]
     total = 0
 
-shared Purse:
+struct Purse:
     notes = list[str]()
     total = 0
     biggest = Point(x=0, name="the biggest note so far in this purse")
 
 struct Holder:
-    box: Box
+    box: shared Box
     name: str
 
 def touch(holder: Holder, n: int) -> int:
-    with holder.box as ref held:
+    lock holder.box as ref held:
         held.items[0] = n
         held.total += 1
-    holder.box.total * 0 + holder.name.len()
+        return held.total * 0 + holder.name.len()
 
 def units_of(count: int) -> list[Unit]:
     [Unit(n) for n in range(count)]
 
 def logs(stdout: Stdout):
-    log = Log()
+    shared log = Log()
     mut units = units_of(4000)
     for ref unit in parallel(units):
-        log.add(f"unit number {unit.x} with a long line of text here")
-        unit.x = log.size() % 1 + unit.x
-    stdout.print(log.count, log.lines.len(), log.size(), log.seen.len())
-    stdout.print(log.name, sum(unit.x for unit in parallel(units)))
+        lock log as ref held:
+            held.add(f"unit number {unit.x} with a long line of text here")
+            unit.x = held.size() % 1 + unit.x
+    walked = sum(unit.x for unit in parallel(units))
+    lock log as held:
+        stdout.print(held.count, held.lines.len(), held.size(), held.seen.len())
+        stdout.print(held.name, walked)
 
 def boards(stdout: Stdout):
-    board = Board()
+    shared board = Board()
     mut units = units_of(3000)
     for ref unit in parallel(units):
-        board.put(Point(x=unit.x, name=f"point {unit.x} with a long enough name"))
-        kept = board.top()
-        unit.x = kept.x % 1 + unit.x
-    stdout.print(board.points.len(), board.top().x, board.best.name)
+        lock board as ref held:
+            held.put(Point(x=unit.x, name=f"point {unit.x} with a long enough name"))
+            kept = held.top()
+            unit.x = kept.x % 1 + unit.x
+    lock board as held:
+        stdout.print(held.points.len(), held.top().x, held.best.name)
     stdout.print(sum(unit.x for unit in parallel(units)))
 
 def tables(stdout: Stdout):
-    table = Table()
+    shared table = Table()
     mut units = units_of(2000)
     for ref unit in parallel(units):
-        table.fill()
-        unit.x += table.rows_now().len()
-    stdout.print(table.rows, table.kept.len(), DEFAULTS.len())
+        lock table as ref held:
+            held.fill()
+            unit.x += held.rows_now().len()
+    lock table as held:
+        stdout.print(held.rows, held.kept.len(), DEFAULTS.len())
     stdout.print(sum(unit.x for unit in parallel(units)))
 
 def grids(stdout: Stdout):
-    grid = Grid()
+    shared grid = Grid()
     given = [5, 6, 7]
     mut units = units_of(2000)
     for ref unit in parallel(units):
-        grid.bump(unit.x % 2, given)
+        lock grid as ref held:
+            held.bump(unit.x % 2, given)
         unit.x += given.len()
-    stdout.print(grid.cells[0].len(), grid.cells[1].len(), grid.cells[0][0], grid.maybe, given)
+    lock grid as held:
+        stdout.print(held.cells[0].len(), held.cells[1].len(), held.cells[0][0], held.maybe, given)
     stdout.print(sum(unit.x for unit in parallel(units)))
 
 def holders(stdout: Stdout):
-    one = Box()
-    two = Box()
+    shared one = Box()
+    shared two = Box()
     held = [
         Holder(box=one, name="the first holder of them all, quite long"),
         Holder(box=two, name="b"),
@@ -128,15 +137,16 @@ def holders(stdout: Stdout):
     mut units = units_of(2000)
     for ref unit in parallel(units):
         unit.x += touch(held[unit.x % 2], unit.x)
-    stdout.print(one.total, two.total, held[0].box.total)
+    lock one, two as first, second:
+        stdout.print(first.total, second.total, first.total)
     stdout.print(sum(unit.x for unit in parallel(units)))
     mut both = 0
-    with one, two as x, y:
-        both = x.items.len() + y.items.len()
+    lock one, two as first, second:
+        both = first.items.len() + second.items.len()
     stdout.print(both)
 
-def passed_along(from_purse: Purse, to_purse: Purse, n: int):
-    with from_purse, to_purse as ref source, ref target:
+def passed_along(from_purse: shared Purse, to_purse: shared Purse, n: int):
+    lock from_purse, to_purse as ref source, ref target:
         made = f"a note made here, long enough to be a block {n}"
         source.notes.append(made)
         source.total += 1
@@ -147,16 +157,16 @@ def passed_along(from_purse: Purse, to_purse: Purse, n: int):
             target.biggest = source.biggest
         source.notes = [made]
 
-def read_across(mine: Purse, other: Purse) -> int:
+def read_across(mine: shared Purse, other: shared Purse) -> int:
     mut seen = 0
-    with mine, other as ref held, looked:
+    lock mine, other as ref held, looked:
         held.notes = looked.notes
         seen = held.notes.len() % 1
     seen
 
 def purses(stdout: Stdout):
-    one = Purse()
-    two = Purse()
+    shared one = Purse()
+    shared two = Purse()
     mut units = units_of(2000)
     for ref unit in parallel(units):
         if unit.x % 2 == 0:
@@ -164,30 +174,38 @@ def purses(stdout: Stdout):
         else:
             passed_along(two, to_purse=one, n=unit.x)
         unit.x += read_across(one, other=two)
-    stdout.print(one.total + two.total, one.biggest.x, two.biggest.x, one.biggest.name)
-    # How many there are depends on the order the bodies ran in; what each one says doesn't.
-    damaged = [note for note in one.notes + two.notes if note[0:6] != "a note"]
-    stdout.print(damaged, sum(unit.x for unit in parallel(units)))
+    walked = sum(unit.x for unit in parallel(units))
+    lock one, two as first, second:
+        stdout.print(
+            first.total + second.total,
+            first.biggest.x,
+            second.biggest.x,
+            first.biggest.name,
+        )
+        # How many there are depends on the order the bodies ran in; what each one says doesn't.
+        damaged = [note for note in first.notes + second.notes if note[0:6] != "a note"]
+        stdout.print(damaged, walked)
 
-shared Tally:
+struct Tally:
     total = 0
     point = 0.5
 
-def counted_with_text(tally: Tally, log: Log, n: int):
-    with tally, log as ref counting, ref logging:
+def counted_with_text(tally: shared Tally, log: shared Log, n: int):
+    lock tally, log as ref counting, ref logging:
         counting.total += 1
         logging.lines.append(f"line {counting.total % 1} from body number {n % 1} of them all")
         logging.count += 1
 
 def mixed(stdout: Stdout):
-    tally = Tally()
-    log = Log()
+    shared tally = Tally()
+    shared log = Log()
     mut units = units_of(2000)
     for ref unit in parallel(units):
-        counted_with_text(tally, log, unit.x)
-        with log, tally as held, seen:
+        counted_with_text(tally, log=log, n=unit.x)
+        lock log, tally as held, seen:
             unit.x += held.lines.len() % 1 + seen.total % 1
-    stdout.print(tally.total, log.count, log.lines.len(), log.lines[0])
+    lock tally, log as counted, held:
+        stdout.print(counted.total, held.count, held.lines.len(), held.lines[0])
 
 def main(stdout: Stdout):
     logs(stdout)

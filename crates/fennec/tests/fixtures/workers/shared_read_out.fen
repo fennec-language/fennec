@@ -3,7 +3,7 @@
 struct Note:
     id: str
 
-shared Notes:
+struct Notes:
     items = list[Note]()
     tags = list[list[str]]()
 
@@ -21,12 +21,20 @@ shared Notes:
         self.items
 
 def main(stdout: Stdout):
-    notes = Notes()
+    shared notes = Notes()
     for n in parallel([1, 2, 3, 4]):
-        notes.add(Note(id=f"note {n}, long enough to live on the heap"))
-    for note in notes.all():
+        lock notes as ref held:
+            held.add(Note(id=f"note {n}, long enough to live on the heap"))
+    mut every = list[Note]()
+    mut all_tags = list[list[str]]()
+    mut direct = list[Note]()
+    lock notes as held:
+        every = held.all()
+        all_tags = held.all_tags()
+        direct = held.direct()
+    for note in every:
         stdout.print(note.id)
-    for tags in notes.all_tags():
+    for tags in all_tags:
         stdout.print(tags[1])
-    for note in notes.direct():
+    for note in direct:
         stdout.print(note.id, note.id.len())

@@ -221,12 +221,6 @@ struct Parser:
         # Inside a kit everything is visible: `export` matters only between kits.
         _ = self.eat_pub(True)
         _ = self.eat_keyword("export")
-        if self.at_keyword("noalloc"):
-            fail Diagnostic(
-                message="`noalloc` is written `@hot` now",
-                span=self.span(),
-                help="write `@hot` on the line above the `def`: the function and what it calls may not allocate or copy",
-            )
         match self.peek():
             case .Keyword(word):
                 if word == "def":

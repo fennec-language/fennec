@@ -4282,6 +4282,86 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source written in at three levels of one block, each copy with a `?` on a line that names
+/// what it gives, keeps each copy's names apart.
+#[test]
+fn one_source_twice_in_a_block_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_twice",
+        "error Boom:
+    pass
+
+struct Conn:
+    n: int
+
+    def made(self, n: int) -> int fails Boom:
+        if n < 0:
+            fail Boom()
+        n + self.n
+
+    def opened(self, n: int) -> with int fails Boom:
+        got = self.made(n)?
+        lend got else:
+            pass
+
+def main(stdout: Stdout) fails Boom:
+    conn = Conn(n=0)
+    with conn.opened(0)? as outer:
+        with conn.opened(1)? as first:
+            with conn.opened(2)? as second:
+                stdout.print(outer + first + second)
+",
+    )?;
+    assert_eq!(printed, "3\n");
+    Ok(())
+}
+
+/// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
+/// or while finishing. A source can wrap another this way and say only its own error, and the
+/// block's own failures pass up as they are.
+#[test]
+fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "with_else_fail",
+        "error First:
+    Broke(why: str)
+
+error Second:
+    Lost(why: str)
+
+def inner(fine: bool) -> with int fails First:
+    if not fine: fail .Broke(why=\"inner\")
+    lend 1 else:
+        pass
+
+def outer(fine: bool) -> with int fails Second:
+    with inner(fine) else fail .Lost(why=\"outer\") as held:
+        lend held + 1 else:
+            pass
+
+def main(stdout: Stdout):
+    for fine in [True, False]:
+        match used(fine, stdout):
+            case Ok(_):
+                stdout.print(\"worked\")
+            case Err(problem):
+                stdout.print(\"failed\", problem)
+
+def used(fine: bool, stdout: Stdout) fails Second:
+    with outer(fine)? as value:
+        stdout.print(value)
+",
+    )?;
+    assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
@@ -10012,6 +10092,29 @@ def main(stdout: Stdout):
 "#,
     )?;
     assert_eq!(printed, "True True refused\n");
+    Ok(())
+}
+
+/// Only the first U+FEFF of CSV text is its byte order mark: a second is the first field's own
+/// character, which `csv.loads` keeps. Found by fuzzing `std.csv` (`fennec-fuzz run csv`).
+#[test]
+fn csv_reads_only_the_first_byte_order_mark() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "csv_two_marks",
+        r#"from std import csv
+
+def main(stdout: Stdout):
+    match csv.loads("﻿﻿a,b\n﻿c"):
+        case Ok(rows):
+            stdout.print(rows == [["﻿a", "b"], ["﻿c"]])
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "True\n");
     Ok(())
 }
 

@@ -2570,9 +2570,6 @@ fn a_hot_function_and_what_it_calls_cant_allocate() {
     std::fs::write(&program, source.replace("    tagged(ref units[0], \"hit\")\n", "")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "28.0\n", "{}", text(&output.stderr));
-    std::fs::write(&program, "noalloc def f():\n    pass\n").unwrap();
-    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
-    assert!(text(&output.stderr).contains("`noalloc` is written `@hot` now"), "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

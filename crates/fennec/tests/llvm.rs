@@ -8378,8 +8378,13 @@ def said(failure: SqlError) -> str:
 
 ## What a failure says, whichever kind it is.
 def said_of(error: SqlError | Timeout) -> str:
-    if error is SqlError: return error.message()
-    "no connection came free"
+    match error:
+        case Timeout(waited=_):
+            "no connection came free"
+        case Constraint(reason=reason) | Busy(reason=reason) | Failed(reason=reason):
+            reason
+        case Column(name=name, reason=reason):
+            f"column {name}: {reason}"
 
 def rows_in(db: postgres.PgDatabase) -> int fails SqlError:
     db.query[Count](t"select count(*) as total from fennec_entries")?[0].total
@@ -11345,6 +11350,16 @@ from std.concurrent import Timeout
 from std.crypto import Secret
 from std.sql import SqlError
 
+## What a failure says, whichever kind it is.
+def said_of(error: SqlError | Timeout) -> str:
+    match error:
+        case Timeout(waited=_):
+            "no connection came free"
+        case Constraint(reason=reason) | Busy(reason=reason) | Failed(reason=reason):
+            reason
+        case Column(name=name, reason=reason):
+            f"column {name}: {reason}"
+
 def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError | Timeout:
     with postgres.connect(net, entropy, f"postgres://u@127.0.0.1:{port}/d?tls=false", password=Secret.of("pw"), allow_weak_sign_in=weak, pool_size=1)? as db:
         with db.transaction()? as tx:
@@ -11356,7 +11371,7 @@ def main(stdout: Stdout, net: Net, entropy: Entropy):
             case Ok(_):
                 stdout.print("went through")
             case Err(error):
-                stdout.print(error.message() if error is SqlError else "timed out")
+                stdout.print(said_of(error))
 "#;
 
 /// A server can't trick the driver. A commit the server answers with `ROLLBACK` fails. A server

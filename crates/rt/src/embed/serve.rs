@@ -176,6 +176,12 @@ pub struct Conn {
     tls: RefCell<Option<Box<dyn ServerSession>>>,
 }
 
+/// How long a connection ending gracefully reads what the other side still sends.
+const LINGER: Duration = Duration::from_secs(2);
+
+/// How long a connection ending gracefully waits for more once the other side has gone quiet.
+const LINGER_QUIET: Duration = Duration::from_millis(200);
+
 /// How long a connection has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -285,6 +291,35 @@ impl Conn {
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
+            }
+        }
+    }
+
+    /// Ends the connection gracefully: says no more is coming, then reads and throws away what the
+    /// other side still sends, for a while. Closing with what it sent unread would reset the
+    /// connection, and the other side would lose what it hadn't read yet: the answer it was sent.
+    pub fn linger(&self) {
+        let _ = self.stream.borrow().shutdown(std::net::Shutdown::Write);
+        let until = Until::after(Some(LINGER));
+        let mut sink = [0_u8; READ_BYTES];
+        loop {
+            let read = self.stream.borrow_mut().read(&mut sink);
+            match read {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    // A client that's gone quiet has nothing more on the way.
+                    let quiet = Until::after(Some(LINGER_QUIET));
+                    let soonest = match (quiet.deadline, until.deadline) {
+                        (Some(quiet), Some(all)) if all < quiet => until,
+                        _ => quiet,
+                    };
+                    if self.wait(Interest::READABLE, soonest, "read").is_err() {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(_) => return,
             }
         }
     }

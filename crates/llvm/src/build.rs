@@ -299,8 +299,11 @@ pub fn compile(
     let threads = std::thread::available_parallelism().map_or(1, usize::from).min(MOST_THREADS);
     let next = Mutex::new(0_usize);
     let results: Mutex<Vec<(usize, Compiled)>> = Mutex::new(Vec::with_capacity(units.len()));
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
+    // The entry is made fresh each build and needs nothing of the functions, so it's compiled
+    // beside them rather than after.
+    let entry = std::thread::scope(|scope| {
+        let entry = scope.spawn(|| one(tools, entry, work, "entry", false));
+        for _ in 0..threads.saturating_sub(1).max(1) {
             scope.spawn(|| {
                 loop {
                     let at = {
@@ -330,6 +333,7 @@ pub fn compile(
                 }
             });
         }
+        entry.join().unwrap_or_else(|_| Err("compiling the entry stopped unexpectedly".to_owned()))
     });
     let mut results =
         results.into_inner().map_err(|_| "a compiling thread stopped unexpectedly".to_owned())?;
@@ -340,6 +344,6 @@ pub fn compile(
         built.objects.push(bytes);
         built.compiled += usize::from(fresh);
     }
-    built.objects.push(one(tools, entry, work, "entry", false)?);
+    built.objects.push(entry?);
     Ok(built)
 }

@@ -2,9 +2,11 @@ source db7d790e3ccc825735cea6d09c983d218dbc4d8dae204e3d6c9241867a8b0f44
 code 1
 stdout 2
 1
-stderr 131
+stderr 212
 error: `main` failed: Coded(code=2)
-  --> <dir>/several.fen:26:1
+  --> <dir>/several.fen:16:15
    |
-26 | def main(stdout: Stdout):
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+16 |     if n > 1: fail Coded(code=n)
+   |               ^^^^^^^^^^^^^^^^^^
+  = in `coded`
+  = called from `main` at <dir>/several.fen:28:18

@@ -27,7 +27,7 @@ The only exceptions are the primitives, `int`, `float`, `bool` and the raw `Buff
 
 ## Values and memory
 
-**`mut` is a local variable that can change, and `ref` is a link to something else.** `mut` is always your own value, so nothing outside the function sees its changes unless it's returned or handed to a `ref`. `ref` is a loop or a function being handed a place to change, and that includes `ref self`.
+**`mut` is a local variable that can change, and `ref` is a link to something else.** `mut` is always your own value, so nothing outside the function sees its changes unless it's returned or handed to a `ref`. `ref` is a loop, a function or a local being handed a place to change, and that includes `ref self`.
 ```fennec
 mut total = 0
 mut scores_copy = scores                 # your own copy
@@ -41,11 +41,14 @@ for ref unit in units:
 ```
 - A `ref` needs a `mut` source or another `ref`. So the chain always starts at a `mut` local, and a plain name never changes. `heal(ref make_unit())` is an error, since the change would be lost.
 - A `ref` can't be stored, returned or captured by a closure that outlives it, so there are no lifetimes to write.
-- There's no inline `ref x = place` for now. One change is a direct write, `units[unit_id].health -= 1`, and several are a method, `units[unit_id].take_hit(damage, now)`. Adding it later would break nothing.
+- A local `ref name = place` links a name to a place for several changes in a row, as in `ref target = units[target_id]`. It lasts until its last use, and never past the end of its block. While it's alive it's the only way to the container it points into, so nothing else reads or changes that container meanwhile. It's checked at compile time and costs nothing at run time. Chris decided this on 2026-11-09. Not built yet: today `ref first = units[0]` is refused with "there's no inline `ref`". This replaces the rule that `ref` is only for loops and parameters, with no inline `ref x = place`.
 - During the rename, the old `mut x = place` that made a link is a compile error, so nothing silently changes meaning.
 
 Built: the compiler takes `ref` in these places, and `fennec fix --mut-to-ref` rewrites the old `mut` forms. This replaces the rule that `mut x = place` edits a place, along with `mut a, b = xs.pair(i, j)`.
 *Why:* `mut` was doing two opposite jobs with one word. `mut unit = units[unit_id]` was a link and `mut unit = find(units, unit_id)` was a copy, and a write to the second was silently lost. Now a line says which it is.
+
+**The one-line `x if c else y` stays,** as in `kind = "boss" if health > 500 else "minion"`. It's Python's conditional expression, for a value that depends on one condition, and `match` covers more. Chris decided this on 2026-11-09. Built.
+*Why:* A name that can't change is set once, by one expression, and this is the form Python people already write for it.
 
 **A loop can change items, but not how many there are.** There are four forms, and `ids()` and `values()` go away:
 ```fennec
@@ -76,18 +79,18 @@ for ref unit in units:
 **Fennec has no object graphs. Data lives in tables.** A thing that others point at lives in a `Table` or a list, and they hold its `Id`.
 *Why:* Flat tables are what keep memory contiguous, copies cheap and cycles impossible, and they're what game engines and databases already use.
 
-**A copy that can go stale is a compile error.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, needs `copy(x)`:
+**A copy that can go stale gets a lint suggesting `ref`.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, is linted, and the lint asks whether a `ref` was meant:
 ```fennec
-world.selected = world.units[i]          # error: edits to one won't reach the other
-world.selected = copy(world.units[i])    # a separate copy, on purpose
+# lint: edits to one won't reach the other; a `ref` changes the original
+world.selected = world.units[i]
 ```
-Immutable local snapshots stay allowed, and so does sharing that never changes.
-*Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. The error asks which was meant.
+Every copy is already a snapshot, through copy-on-write, so there's no plain `copy(x)` to mark one on purpose. `copy(x, field=...)`, a changed copy as Python's `dataclasses.replace` makes, stays. Immutable local snapshots stay allowed, and so does sharing that never changes. Chris decided this on 2026-11-09. Not built yet: today the line above compiles with no lint, and a plain `copy(x)` is accepted, with a `needless-copy` lint. This replaces the compile error whose fix was `copy(x)`.
+*Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. A snapshot is what a plain assignment already gives, so the useful question is whether a link was meant.
 
 **A write that goes nowhere is a compile error.** That's a local that's changed and then never read, returned or passed on:
 ```fennec
 def heal(hero: Hero):
-    mut healed = copy(hero)
+    mut healed = hero
     healed.health += 10          # error: `healed` is changed, then never read, returned or passed on
 ```
 - `mut unit = world.units[id]` is your own value, so changing it and stopping there is this error. The fix writes directly: `world.units[id].health -= 1`. A write through a `ref` isn't this case, since it reaches the source.
@@ -158,7 +161,7 @@ error: `enemies` is changed while it's being looped over
    |              ------- the loop over `enemies` starts here
 3  |         enemies.append(spawn_child(enemy))
    |         ^^^^^^^ changed here
-   = fix: loop over `copy(enemies)` to work on an explicit snapshot
+   = fix: loop over a snapshot, `snapshot = enemies`, then `for enemy in snapshot:`
    = fix: collect the changes in a list and apply them after the loop
 ```
 Neither fix is applied by `fennec fix`, since each changes what the program does. This replaces any reading where a loop silently works on a snapshot.
@@ -173,7 +176,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 **Copies are visible.** A lint lists every place the compiler had to copy a value, and why: "copied `enemies` because it's used again on line 42".
 *Why:* A hidden copy in a game loop is a frame-time spike nobody can find.
 
-**A copy that would happen on every iteration of a loop is a compile error,** including one in a function the loop calls. The error names the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". The fix is to drop the other holder, restructure, or write `copy(state)` to make it explicit.
+**A copy that would happen on every iteration of a loop is a compile error,** including one in a function the loop calls. The error names the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". The fix is to drop the other holder or restructure.
 - A one-time copy inside a loop, where the first write copies and the value has one owner after that, is only a hint, and the compiler may move the copy before the loop.
 - `@hot` still forbids any copy at all.
 
@@ -181,6 +184,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 **`Table` and `Id[T]` are the way to point at things.** `Table` was called `IdMap`, in `std.game`, until 2026-11-05; both are in `std.collections` now. An `Id[Enemy]` is an index, a generation and a tag for its map, made by a `Table[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
 - `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
+- `map.update(id, value) -> bool` puts a new value at a live ID and says whether it was there, for when the item may be gone. Chris decided this on 2026-11-09. Not built yet.
 - A map reports how many items are live, which makes a forgotten item visible.
 - Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
 - A copy of a `Table` keeps its tag, so an `Id` made before the copy finds its item in both. Generations are unique across copies, so an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Not built yet: today an item added to each copy can get the same `Id`, so one copy's `Id` finds the other's item.
@@ -201,7 +205,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 **Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
 *Why:* Normal programs get the fast hash. An attacker can't work out colliding keys without the seed, and if collisions turn up anyway, that one dict pays for the stronger hash. Iteration follows insertion order, so the seed can't change what a program does.
 
-**Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `copy(a)` gives one that can change separately.
+**Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `mut b = a` gives one that can change separately.
 
 **A `list`, `dict` or `Buffer` is one word: the address of a reference-counted block.** The block holds the length, the capacity and the elements together. Copying bumps the count. The block is copied only on the first write while it's shared, which last-use moves make rare. Elements are stored inline, so a `list[Vec3]` is one contiguous run of floats.
 
@@ -506,7 +510,7 @@ This replaces the earlier rules that return types are inferred, and that recursi
 - The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
 - Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.
 - `int(...)`, `str(...)` and `float(...)` are the types' constructors, not global functions.
-- `copy(x)` is the language's mark for a copy made on purpose, and `copy(x, field=...)` changes fields as it copies. It works on any value and can't be defined by a type.
+- `copy(x, field=...)` changes fields as it copies. It works on any value and can't be defined by a type. There's no plain `copy(x)`, since every copy is already a snapshot.
 ```fennec
 interface Signed:
     def abs(self) -> Self
@@ -625,7 +629,7 @@ def write[T, S: Serializer](x: T, ref out: S):
 - A kit may define its own annotations for fields, like `@column("todo_id")` for a database kit, and generic code reads them through `fields(T)`.
 - A function takes only the language's own: `@hot`, and std's `@intrinsic`. A kit can't define one for functions, so a route is registered in plain code, `router.get("/todos/{id}", show_todo)`, as a function value, and the table it builds is ordinary data.
 - Built: `@skip` and `@serialize` on fields, and refusing any other annotation, on a field or a function, with an error that lists the ones there are. Not built yet: annotations a kit defines, reading a field's annotations through `fields(T)`, and a router in `std`. `for f in fields(T):` is built, with each field's name and value.
-- Chris decided the kit and function rules on 2026-11-07, which settles whether kits can define annotations.
+- Chris decided the kit and function rules on 2026-11-07, which settles whether kits can define annotations, and confirmed on 2026-11-09 that a kit's annotations on fields are data only.
 *Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior. On a field, an annotation only describes data. On a function, it would invite decorators that change what a call does out of sight, and a route list in plain code is already one place to read every route.
 
 **Generic Fennec code compiles to a copy for each type, in every build.** A generic function or type is copied for each set of types a program uses it with, before any backend sees it, so `[T: Shape]` and `shape: Shape` compile the same and every call is direct. Development and release builds lower the same copies, and each is cached by a hash of its text. A program can ask for up to 2,000 copies. The runtime's own list and dict operations are still shared by design, taking an element number, since they're runtime code, not generic Fennec code. This corrects the entry that said generics compile the way Swift's do, with development builds sharing one copy.
@@ -745,8 +749,8 @@ def transaction(self) -> with Transaction fails DbError:
 **A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
 *Why:* The caller's block would run under a lock it can't see, and could wait in it.
 
-**A generator can `lend` each item, closed when that round of the loop ends.** `def clients(server: Server) -> Iterator[with Connection]:` is how `for conn in parallel(server)` works, and each item belongs to its own round's task. Not built yet.
-*Why:* Then a server loop is plain Fennec that any kit could write, not something only the standard library can do.
+**A generator can't `lend` its items: there's no `Iterator[with T]`.** `for conn in parallel(server)` lends each connection to its own round's task, and that's built in. Chris decided this on 2026-11-09. It was never built. This replaces the plan for a generator to `lend` each item, as `def clients(server: Server) -> Iterator[with Connection]:`.
+*Why:* Servers are the one case that needed it, and `parallel(server)` already covers them.
 
 **Tasks started inside a `with` may borrow what it lent.** From many tasks at once, only its read-only methods, like a server's `accept`. `with conn.split() as reader, writer:` gives a connection's two sides, for one task reading while another writes.
 *Why:* Those tasks always end before the block does, so the borrow can't outlive the resource.
@@ -886,7 +890,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`std.sqlite` is SQLite itself, compiled in, under `std.sql`.** `with sqlite.open(fs, path)? as db:` opens a file in WAL mode, `db.execute(t"...")` and `db.query[T](t"...")` take only templates, binding each value as a parameter, and `with db.transaction()? as tx:` commits at the block's end and rolls back in `lend else:`. Rows read into a `T` through the same `deserialize` JSON uses, a struct's fields by the columns' names, and a column that doesn't fit, or a field with no column, fails as `SqlError.Column` with its name. Unknown columns are refused, as unknown JSON keys are. A transaction takes a connection of its own and the database's one writer at its start (`begin immediate`), so `parallel` rounds can share one database. SQLite never waits on a lock itself: a query that finds the writer taken gives its blocking thread back, and its task pauses and tries again for up to 5 seconds, so waiting tasks never hold the threads the writer needs. In a test, each path is a database of the test's own, fresh for each test, kept in a temporary folder that's gone when the test ends, and `--real` uses the path itself. Both are WAL files, so a test sees what a program does: a query outside a transaction reads what was there before the transaction, while it's still going. `std.sql` holds `SqlValue`, `SqlError` and the `Sql` interface, and gives drivers `SqlRows`, which a driver fills with what its database sent back, and `sql.rows_as[T](rows)`, which reads each row into a `T`, so every driver maps rows to types the same way. `std.postgres` is built on it, in Fennec over `std.net`. Its messages have no network of their own, so the same code runs against a socket or against bytes a test wrote. Built: Postgres's messages, signing in with SCRAM-SHA-256 (checked against RFC 7677's own exchange), a query as Parse, Bind, Describe, Execute and Sync, with each value bound apart and rows read by column type, and `postgres.connect` as a `with` source lending a `PgDatabase` with `execute`, `query[T]` and `transaction`, tested against a real Postgres 17. Given a password, a server has to prove it knows it: one that lets the client in with no proof is refused, and one that asks for the password as it is never gets it, unless `allow_weak_sign_in=True` says that's how the server is set up. A commit the server answers with anything but `COMMIT` fails, since that's how it says a failure in the transaction rolled it all back. A connection runs one query at a time and a `lock` can't be held across the network, so one task uses a `PgDatabase` at a time, and tasks in `parallel` each connect for themselves until pools exist. A transaction runs on its database's connection. Its connection is TLS unless `tls=False` says otherwise: it asks with Postgres's `SSLRequest`, reads exactly one byte, and starts TLS over the same socket with `start_tls`, the certificate checked against what the system trusts and the host. A server that won't take TLS is refused, never spoken to in the clear, and there's no mode that falls back. The tests that need a server read `FENNEC_TEST_POSTGRES`, and with none set they check only that the driver builds and reports a refused connection; CI has a Postgres service for them. It lives in `std` until first-party kits have a home. Built, natively: `query` needs native code, as `std.pack` does.
+**`std.sqlite` is SQLite itself, compiled in, under `std.sql`.** `with sqlite.open(fs, path)? as db:` opens a file in WAL mode, `db.execute(t"...")` and `db.query[T](t"...")` take only templates, binding each value as a parameter, and `with db.transaction()? as tx:` commits at the block's end and rolls back in `lend else:`. Rows read into a `T` through the same `deserialize` JSON uses, a struct's fields by the columns' names, and a column that doesn't fit, or a field with no column, fails as `SqlError.Column` with its name. Unknown columns are refused, as unknown JSON keys are. A transaction takes a connection of its own and the database's one writer at its start (`begin immediate`), so `parallel` rounds can share one database. SQLite never waits on a lock itself: a query that finds the writer taken gives its blocking thread back, and its task pauses and tries again for up to 5 seconds, so waiting tasks never hold the threads the writer needs. In a test, each path is a database of the test's own, fresh for each test, kept in a temporary folder that's gone when the test ends, and `--real` uses the path itself. Both are WAL files, so a test sees what a program does: a query outside a transaction reads what was there before the transaction, while it's still going. `std.sql` holds `SqlValue`, `SqlError` and the `Sql` interface, and gives drivers `SqlRows`, which a driver fills with what its database sent back, and `sql.rows_as[T](rows)`, which reads each row into a `T`, so every driver maps rows to types the same way. `std.postgres` is built on it, in Fennec over `std.net`. Its messages have no network of their own, so the same code runs against a socket or against bytes a test wrote. Built: Postgres's messages, signing in with SCRAM-SHA-256 (checked against RFC 7677's own exchange), a query as Parse, Bind, Describe, Execute and Sync, with each value bound apart and rows read by column type, and a connection lending `execute`, `query[T]` and `transaction`, tested against a real Postgres 17. `postgres.connect(net, entropy, url, password=secret)` lends a `PgPool` of `pool_size` connections, 10 unless it's set, kept by the pools of `std.concurrent`, with `transaction()` and `borrow()` waiting up to `wait`, `30s` unless it's set, then failing with `Timeout`. One connects at once, so a wrong URL or password fails at the `with`. The URL may set `pool_size` and `wait`, each in it or as an argument but not both, and a password in the URL is refused: it's `password=`, a `Secret`, so it never shows where a URL is printed. A connection handed back after a block that failed is rolled back and checked with a query of the pool's own, and replaced if the server doesn't answer as it should within 2 seconds. Given a password, a server has to prove it knows it: one that lets the client in with no proof is refused, and one that asks for the password as it is never gets it, unless `allow_weak_sign_in=True` says that's how the server is set up. A commit the server answers with anything but `COMMIT` fails, since that's how it says a failure in the transaction rolled it all back. A connection runs one query at a time and a `lock` can't be held across the network, so one task uses a connection at a time, and tasks in `parallel` each borrow one from the pool. A transaction runs on its database's connection. Its connection is TLS unless `tls=False` says otherwise: it asks with Postgres's `SSLRequest`, reads exactly one byte, and starts TLS over the same socket with `start_tls`, the certificate checked against what the system trusts and the host. A server that won't take TLS is refused, never spoken to in the clear, and there's no mode that falls back. The tests that need a server read `FENNEC_TEST_POSTGRES`, and with none set they check only that the driver builds and reports a refused connection; CI has a Postgres service for them. It lives in `std` until first-party kits have a home. Built, natively: `query` needs native code, as `std.pack` does.
 *Why:* SQLite is the most tested database there is, and porting it isn't realistic, so it's compiled in from its own C source behind a reviewed, safe wrapper whose `unsafe` stays its own, with its handles in a table as sockets' are. Hoard keeps its index in it.
 
 **Postgres picks TLS by its host.** A loopback host, like `localhost`, `127.0.0.1` or `::1`, connects in the clear by default. Any other host needs TLS with the server's certificate verified, and a server that won't take it is refused, with no fallback. The URL's `sslmode=` can say otherwise, as `disable`, `require`, `verify-ca` or `verify-full`. `prefer` and `allow` are refused, since each may fall back to the clear without saying so. Chris decided this. Not built yet: today every host asks for verified TLS unless `tls=False` says otherwise.
@@ -896,6 +900,9 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
+
+**A program's log levels come from `FENNEC_LOG`.** `Log.from_env(env, out=...)` makes a `Log` from it, as in `FENNEC_LOG="info,physics=debug"`: `info` for everything, and `debug` for the part named `physics`. `log.named("physics")` gives a child `Log` with that name, and each child takes its own level from the variable. Chris decided this on 2026-11-09. Not built yet: today a `Log` is made with its `level=` given in code, and has no names. How logging handles its own failures is still open.
+*Why:* Turning up one part's logging without a rebuild is what people reach for when something goes wrong, and the levels come from `env`, so nothing global is read.
 
 **`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000)?)` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
 
@@ -1095,8 +1102,8 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
 **An inbox's enum is its protocol.** You can only send real cases, and the task's `match` must handle every one.
 *Why:* A typed message is checked at both ends at compile time.
 
-**`TaskGroup` holds tasks whose number is known only at run time.** It's in `std.concurrent`, written in plain Fennec, and stops them all when its block ends.
-*Why:* Every task still belongs to a block you can see, whether it's one or a thousand.
+**There's no `TaskGroup`.** Chris cut it on 2026-11-09. It was never built. `to=.Every` and `when_behind=` on channels stay. This replaces `TaskGroup`, in `std.concurrent`, for tasks whose number is known only at run time.
+*Why:* `parallel` and `with launch` cover the programs written so far, and every task still belongs to a block you can see.
 
 **Stopping a task drains it, then cuts it short.** When a `with launch` block ends normally, the task's inbox closes and the task finishes what's in it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once. A wait cut short by a stop ends the task quietly, with no failure reported.
 *Why:* A normal end never loses queued work, which would make tests flaky, and a stuck task can't hang its parent forever.
@@ -1129,7 +1136,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 - Each connection lives inside one keeper task's `with`. The keeper lends it to one block at a time and gets it back when the block ends, so nothing can leak or be used twice. Nothing is sent to the keeper to run: the block uses the connection itself.
 - A block that fails or crashes has its connection reset before the next block gets it. If the keeper can't prove the connection clean, it replaces it, so the pool heals itself and never shrinks.
 - Pools are written in plain Fennec in `std.concurrent`.
-- Chris decided this. Not built yet: `postgres.connect` makes one connection, from `host=`, `user=`, `database=` and `password=`, and tasks in `parallel` each connect for themselves. This replaces pools as keepers that blocks send jobs to.
+- Chris decided this. Built: `pool[T](open=..., size=, wait=)` in `std.concurrent`, its keepers each a task of its own, and `postgres.connect(net, entropy, url, password=)` lending a `PgPool`. A block that fails and one that crashes run the same cleanup, so both have their value reset, and Postgres's reset keeps a connection only when the server proves it clean. This replaces pools as keepers that blocks send jobs to.
 *Why:* No connection ever leaves its keeper's block, so nothing can leak or be used twice, and the pool needs no powers a user's code lacks. A block that uses the connection itself reads like code with one connection, and a pool by default means a server never has to be rewritten when it gets busy.
 
 **Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.** Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.
@@ -1372,6 +1379,9 @@ match tok:
 ## Toolchain
 
 **Windows ships self-contained, after a license check.** `opt`, `llc`, `llvm-link`, `lld` and MinGW's libraries ship with `fennec`, so nothing else needs installing. A person has to check the licenses first.
+
+**Every release ships LLD,** LLVM's linker, beside `fennec`, so building a program needs no system linker. Chris decided this on 2026-11-09. Not built yet: Windows releases ship it, and on macOS and Linux programs still link through the system's `cc`.
+*Why:* A linker that comes with the release links the same way on every machine, and a missing or different system linker can't break a build.
 
 **Editions let syntax change after 1.0.** A kit names its edition in `kit.toml`, as in `edition = "2026"`, and `fennec fix` moves it to the next one.
 
@@ -1628,11 +1638,11 @@ Every build and the language server share one build engine and store, described 
 **Debug info is planned,** so a debugger can step through Fennec code, a stack trace is readable, and a crash maps back to its source line. Not built yet: today no DWARF or stepping information is written. This replaces the rule that builds carry no debug info.
 *Why:* Games and native code need a debugger, even when tests and replay do most of the work.
 
-**Hot reload is on the backlog, and its design is in progress.** It's for changing code while a game or a server runs. The plan so far is all or nothing:
+**Hot reload is deferred, and its design is in progress.** It's for changing code while a game or a server runs. The plan so far is all or nothing:
 - Changed functions are swapped in only at a safe point: the top of a loop, or between requests. The state the main loop owns stays as it was.
 - Before anything changes, the live data is checked against the new code: fields matched by name, new fields taking their defaults, and every `where` rule run again. When a struct's fields change, the state is saved with `std.pack` and loaded back into the new types.
 - If every check passes, the reload applies completely. If any fails, it's refused with a message saying why, and the old code keeps running. A reload is never half-applied.
-- Chris decided this on 2026-11-08, and has since moved it to the backlog while its design is worked out. Not built yet. This replaces the rule that there's no hot reload, and the plan that swapped code between frames without checking first.
+- Chris decided this on 2026-11-08, and deferred it on 2026-11-09 while its design is worked out. Not built yet. This replaces the rule that there's no hot reload, and the plan that swapped code between frames without checking first.
 *Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small. Checking first means a reload that can't work costs nothing, and a half-applied one would leave data the new code can't trust.
 
 **The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.

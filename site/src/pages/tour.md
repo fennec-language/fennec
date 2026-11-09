@@ -49,7 +49,7 @@ def main(stdout: Stdout):
     stdout.print(target.health + 1)
 ```
 
-There's no inline `ref`, so a name never quietly links to something else.
+A plain name never quietly links to something else. **Planned:** a local `ref target = units[1]`, for several changes to one place in a row. It lasts until its last use, and while it's alive nothing else reaches `units`.
 
 ## Names
 
@@ -306,14 +306,11 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health, backup.stats.health)
 ```
 
-**Planned:** a compile error for a copy that can quietly go stale:
+**Planned:** a lint for a copy that can quietly go stale, asking whether a `ref` was meant:
 
 ```fennec planned
-# error: edits to one won't reach the other
+# lint: edits to one won't reach the other; a `ref` changes the original
 world.selected = world.units[i]
-
-# fine: a separate copy, on purpose
-world.selected = copy(world.units[i])
 ```
 
 ## Mistakes the compiler stops
@@ -845,8 +842,8 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
 
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
 - The `?` on the `with launch` line covers the task: its own failures, and `Crashed` if it crashes, come out where the block ends. A crash ends only its own task.
-- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. **Planned:** `to=.Every`, which gives every listener every message.
-- **Planned:** `TaskGroup`, which holds a number of tasks known only at run time and stops them all when its block ends, and pools, like a database's connections, each lent to one block at a time by its keeper, so nothing can leak or be used twice.
+- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. `to=.Every` gives every listener every message.
+- **Planned:** pools, like a database's connections, each lent to one block at a time by its keeper, so nothing can leak or be used twice.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 

@@ -2,7 +2,7 @@ source f4555636d29332194dfcf9073ab0468b4225ed7f2e49a416dfe7508e8da054e3
 code 1
 stdout 2
 3
-stderr 210
+stderr 273
 error: this generator has already been used
  --> <dir>/twice.fen:9:14
   |
@@ -10,3 +10,5 @@ error: this generator has already been used
   |              ^^^^^^^
   |
   = help: a generator can be used once: `list(...)` keeps its items to use again
+  = in `total`
+  = called from `main` at <dir>/twice.fen:16:22

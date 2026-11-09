@@ -2,7 +2,7 @@ source ea14e365b2379f367ded9f5e3f202b13acd293882df288a4c07c23147600d60f
 code 1
 stdout 7
 before
-stderr 148
+stderr 263
 error: calls nested too deeply
  --> <dir>/deep.fen:2:5
   |
@@ -10,3 +10,6 @@ error: calls nested too deeply
   |     ^^^^^^^^
   |
   = help: check for recursion that never stops
+  = in `f`
+  = called from `f` at <dir>/deep.fen:2:5, more than once
+  = called from `main` at <dir>/deep.fen:6:18

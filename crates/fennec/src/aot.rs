@@ -102,10 +102,18 @@ impl Runtime {
             return Ok(Self::Plain);
         }
         let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
+        // `parallel` runs in order on the plain runtime, but a launched task can't run there at
+        // all, so a program that launches one is refused here rather than failing when it's run.
+        let launches = fennec_llvm::uses_launch(lowered);
         match set("FENNEC_THREADS_RUNTIME") {
             Some(true) => Ok(Self::Threads),
-            None if runtime_folder(statically)?.join(Self::Threads.library()).is_file() => {
-                runtime_library(Self::Threads, statically).map(|_| Self::Threads)
+            Some(false) if launches => Err(
+                "`launch` runs its task on the runtime's threads, and FENNEC_THREADS_RUNTIME=0 asks for the runtime without them".to_owned(),
+            ),
+            None if launches || runtime_folder(statically)?.join(Self::Threads.library()).is_file() => {
+                runtime_library(Self::Threads, statically)
+                    .map(|_| Self::Threads)
+                    .map_err(|why| if launches { format!("`launch` runs its task on the runtime's threads: {why}") } else { why })
             }
             Some(false) | None => Ok(Self::Plain),
         }

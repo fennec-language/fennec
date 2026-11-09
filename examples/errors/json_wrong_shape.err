@@ -1,5 +1,5 @@
 error: `main` failed: ParseError(message="`level` should be an int, but it's a str", line=0, column=0)
- --> examples/errors/json_wrong_shape.fen:7:1
+ --> examples/errors/json_wrong_shape.fen:8:12
   |
-7 | def main(stdout: Stdout):
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
+8 |     save = json.loads[Save]("{\"level\": \"three\", \"name\": \"Ash\"}")?
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

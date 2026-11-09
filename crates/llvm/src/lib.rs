@@ -73,7 +73,7 @@ pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use emit::{Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
-pub use parallel::{uses_parallel, uses_tls};
+pub use parallel::{uses_launch, uses_parallel, uses_tls};
 pub use waits::{Waits, Why, may_wait};
 
 /// What a build does with a check the compiler proved can't fail.

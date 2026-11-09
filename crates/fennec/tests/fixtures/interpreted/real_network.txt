@@ -1,13 +1,13 @@
 source 4d00884dfffbb34c05caaff74ede28deeb6f711361956eeeb18739534b188fc4
 code 0
-stdout 211
+stdout 219
 True
 True
 hello
 from a client
 gave up after 0.02s
 gave up after 0.02s
-
+and more
 6
 None
 the other side closed the connection

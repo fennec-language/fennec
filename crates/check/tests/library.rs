@@ -407,3 +407,18 @@ fn a_program_lowering_rewrote_checks_again() {
         assert!(resolved.is_ok(), "{:?}", resolved.err());
     }
 }
+
+/// `read_line` takes `crlf=`, a yes or no, beside `timeout=`, and `write` waits on the network,
+/// so it takes `timeout=` too.
+#[test]
+fn a_connection_reads_lines_ending_in_crlf_and_writes_with_a_timeout() {
+    let good = "from std.net import Connection, NetError\n\n\
+        def use(conn: Connection) fails NetError:\n    \
+        _ = conn.read_line(crlf=True, timeout=1s)?\n    _ = conn.read_line(timeout=1s, crlf=False)?\n    \
+        conn.write(\"hi\", timeout=1s)?\n";
+    let module = fennec_syntax::parse(good).unwrap();
+    assert_eq!(fennec_check::check(&module).err(), None);
+    let bad = "from std.net import Connection, NetError\n\ndef use(conn: Connection) fails NetError:\n    _ = conn.read_line(crlf=1)?\n";
+    let module = fennec_syntax::parse(bad).unwrap();
+    assert!(fennec_check::check(&module).is_err());
+}

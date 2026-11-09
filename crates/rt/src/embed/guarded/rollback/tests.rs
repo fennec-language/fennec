@@ -173,6 +173,29 @@ fn a_normal_end_keeps_the_changes_and_lets_go_of_what_was_taken_out() {
     finish();
 }
 
+/// Writing one place over and over costs one entry, however long the loop: a log entry for each
+/// write once took a program past 4 GB in a few seconds.
+#[test]
+fn a_word_written_again_and_again_is_saved_once() {
+    begin_run();
+    let cell = locked(&["one"]);
+    let held = string("the first");
+    for turn in 0..1000 {
+        save(cell, COUNT_AT.try_into().unwrap(), turn, 0);
+    }
+    assert_eq!(saved_entries(), 1);
+    save(cell, LINES_AT.try_into().unwrap(), held, 1);
+    let later = string("written under the lock");
+    save(cell, LINES_AT.try_into().unwrap(), later, 1);
+    assert_eq!(saved_entries(), 2);
+    // The second write's old value isn't what a crash puts back, so nothing keeps it.
+    assert!(!exists(later));
+    assert!(exists(held));
+    kept();
+    assert_eq!(saved_entries(), 0);
+    finish();
+}
+
 #[test]
 fn a_word_changed_twice_goes_back_to_what_it_was_before_the_lock() {
     begin_run();

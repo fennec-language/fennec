@@ -49,6 +49,8 @@ pub(crate) struct Checker {
     pub(crate) cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     pub(crate) float_sums: BTreeSet<(u32, u32)>,
+    /// The sums of sized numbers with no start written, and whether theirs is a float's zero.
+    pub(crate) sized_sums: BTreeMap<(u32, u32), bool>,
     /// The defaults each call leaves out.
     pub(crate) defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
@@ -173,6 +175,7 @@ impl Checker {
             typed: BTreeMap::new(),
             cases: BTreeMap::new(),
             float_sums: BTreeSet::new(),
+            sized_sums: BTreeMap::new(),
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
@@ -320,6 +323,7 @@ impl Checker {
             types,
             cases: self.cases,
             float_sums: self.float_sums,
+            sized_sums: self.sized_sums,
             defaults: self.defaults,
             generator_types: self.generator_types,
             not_equals: self.not_equals,

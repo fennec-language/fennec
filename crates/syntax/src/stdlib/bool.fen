@@ -1,0 +1,7 @@
+## `bool`'s methods written in Fennec.
+extend bool:
+    def serialize(self, ref out: Serializer):
+        out.bool(self)
+
+    def deserialize(ref src: Deserializer) -> bool fails ParseError:
+        src.bool()?

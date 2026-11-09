@@ -14175,6 +14175,62 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A failure says its call chain under it: the function it failed in, then each call it left on
+/// its way out, as it does in a dev build and with `--release`. An error raised with `fail` is said
+/// where it was raised, each `?` it passed up through in the chain. A runaway recursion's chain
+/// stays short: a call repeated in a row is said once, and two functions calling each other keep
+/// only the ends of the chain, with nothing that depends on how deep the machine let it go.
+#[test]
+fn a_failure_says_its_call_chain() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let raised = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
+                  if name == \"\": fail Missing(name=\"nobody\")\n    name.len()\n\n\
+                  def look(name: str) -> int fails Missing:\n    find(name)? + 1\n\n\
+                  def main(stdout: Stdout) fails Missing:\n    stdout.print(look(\"\")?)\n";
+    let bouncing = "def ping(n: int) -> int:\n    pong(n + 1)\n\ndef pong(n: int) -> int:\n    ping(n + 1)\n\n\
+                    def main(stdout: Stdout):\n    stdout.print(ping(0))\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (_, said, code) = both_built_unpinned("raised_chain", raised, how)?;
+        assert_eq!(code, Some(1));
+        assert!(said.contains(" --> <dir>/raised_chain.fen:5:20\n"), "{how:?}: {said}");
+        assert!(
+            said.ends_with(
+                "  = in `find`\n  = called from `look` at <dir>/raised_chain.fen:9:5\n  \
+                 = called from `main` at <dir>/raised_chain.fen:12:18\n"
+            ),
+            "{how:?}: {said}"
+        );
+        let (_, said, _) = both_built_unpinned("bouncing_chain", bouncing, how)?;
+        let calls = said.lines().filter(|line| line.contains("called from")).count();
+        assert_eq!(calls, 2 * 16, "{how:?}: {said}");
+        assert!(said.contains("  = ... more calls\n"), "{how:?}: {said}");
+        assert!(
+            said.ends_with("  = called from `main` at <dir>/bouncing_chain.fen:8:18\n"),
+            "{how:?}: {said}"
+        );
+    }
+    Ok(())
+}
+
+/// What a program built with these options printed, said and gave back, with its folder written as
+/// `<dir>`, held to nothing pinned.
+fn both_built_unpinned(name: &str, source: &str, how: &[&str]) -> std::io::Result<Outcome> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = executable.to_string_lossy().into_owned();
+    let args: Vec<&str> =
+        ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
+    let built = fennec(&args, &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
+    std::fs::remove_dir_all(&dir)?;
+    Ok(ran)
+}
+
 #[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !ready() {

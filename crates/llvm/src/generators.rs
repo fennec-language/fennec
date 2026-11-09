@@ -210,7 +210,7 @@ impl<'p> Emit<'_, '_, 'p> {
         self.line(&format!("{more} = call swiftcc i1 {target}(ptr {block}, ptr swifterror %err)"));
         self.line(&format!("{held} = load ptr, ptr %err"));
         self.line(&format!("{failed} = icmp ne ptr {held}, null"));
-        self.leave_if(&failed);
+        self.leave_traced(&failed, span);
         self.assign(dest, &more)
     }
 
@@ -223,6 +223,11 @@ impl<'p> Emit<'_, '_, 'p> {
 
     /// Ends the program with a string's text.
     pub(crate) fn stop_with(&mut self, text: &str, span: Span) {
+        self.stop_then(text, span, "");
+    }
+
+    /// Ends the program with a string's text, doing `then` once the failure's set.
+    pub(crate) fn stop_then(&mut self, text: &str, span: Span, then: &str) {
         self.declare("declare void @fennec_stop(ptr, i64, i64) #1");
         let label = self.label("stop");
         let (place, args) = self.span_values(&label, span);
@@ -230,6 +235,9 @@ impl<'p> Emit<'_, '_, 'p> {
             self.line(line.trim_start());
         }
         self.line(&format!("call void @fennec_stop(ptr {text}, {args})"));
+        if !then.is_empty() {
+            self.line(then);
+        }
         // Stopping is what the program says to do, not a check.
         self.next_check(span, None);
         let failed = self.failed_exit();

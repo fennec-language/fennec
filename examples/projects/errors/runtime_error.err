@@ -3,3 +3,5 @@ error: index 5 is out of range for length 2
   |
 2 |     items[slot]
   |     ^^^^^^^^^^^
+  = in `pick`
+  = called from `main` at examples/projects/errors/runtime_error/src/main.fen:6:18

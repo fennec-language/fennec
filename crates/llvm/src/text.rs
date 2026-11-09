@@ -354,8 +354,10 @@ impl Emit<'_, '_, '_> {
         let shown = self.shown_text(&value, &kind)?;
         let start = self.literal("`main` failed: ");
         let text = self.joined(&start, &shown, true);
-        // Its notes go under it, a line each.
-        let text = match self.notes_word(error)? {
+        // Its notes go under it, a line each, and its call chain: where it was raised, and each
+        // `?` it passed up through.
+        let word = self.notes_word(error)?;
+        let text = match &word {
             Some(word) => {
                 self.declare("declare ptr @fennec_notes_shown(i64) nounwind");
                 let notes = self.temp();
@@ -364,7 +366,12 @@ impl Emit<'_, '_, '_> {
             }
             None => text,
         };
-        self.stop_with(&text, span);
+        if let Some(word) = word {
+            self.declare("declare void @fennec_notes_traced(i64) nounwind");
+            self.stop_then(&text, span, &format!("call void @fennec_notes_traced(i64 {word})"));
+        } else {
+            self.stop_with(&text, span);
+        }
         let after = self.label("stopped");
         self.start_block(&after);
         Ok(())

@@ -364,7 +364,29 @@ impl Lowering<'_> {
     /// `fail error`.
     pub(super) fn fail(&mut self, error: &Expr, span: Span) -> Lowered<()> {
         let error = self.expr(error)?;
+        let error = self.traced(error, "error.raised", span)?;
         self.leave_with_error(error, span)
+    }
+
+    /// An error leaving here, by `fail` (`error.raised`) or `?` (`error.passed`), with this place
+    /// put in its call chain, which goes under it if it ends the program. Only an error, which
+    /// has notes to keep it in, carries one.
+    fn traced(&mut self, error: Operand, how: &str, span: Span) -> Lowered<Operand> {
+        let ty = type_in(&self.locals, &error).ok_or("a value has no type")?;
+        if !self.takes_notes(&ty) {
+            return Ok(error);
+        }
+        let held = match error {
+            Operand::Local(local) => local,
+            other => {
+                let held = self.temporary(ty);
+                self.emit(InstKind::Copy { dest: held, value: other }, span);
+                held
+            }
+        };
+        let args = vec![Operand::Local(held)];
+        self.emit(InstKind::Builtin { dest: None, name: how.to_owned(), args, changes: true }, span);
+        Ok(Operand::Local(held))
     }
 
     /// `value?`, and `value? from wrapper`: leaves the function if it's an error, and gives
@@ -397,6 +419,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, span);
             passed = Operand::Local(dest);
         }
+        let passed = self.traced(passed, "error.passed", span)?;
         self.leave_with_error(passed, span)?;
         self.current = present;
         if *ok == Type::Unit {

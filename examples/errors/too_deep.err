@@ -5,3 +5,6 @@ error: calls nested too deeply
   |            ^^^^^^^^^^^
   |
   = help: check for recursion that never stops
+  = in `down`
+  = called from `down` at examples/errors/too_deep.fen:2:12, more than once
+  = called from `main` at examples/errors/too_deep.fen:5:18

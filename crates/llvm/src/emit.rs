@@ -481,6 +481,7 @@ impl<'p> Module<'_, 'p> {
             saving_slots: HashMap::new(),
             rolled_back: HashSet::new(),
             wrote_prop: false,
+            traced_calls: Vec::new(),
             leave_after_crash: None,
         };
         // A function with locks a crash gives back, or that owns anything, leaves on every failure
@@ -492,6 +493,7 @@ impl<'p> Module<'_, 'p> {
             .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
         emit.body()?;
+        emit.write_traced_exit();
         let (allocas, out, cold, failed, needs_prop) =
             (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop && !emit.wrote_prop);
         // Leaving a function that says it can't fail would be undefined, so it's refused here.
@@ -574,6 +576,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) rolled_back: HashSet<usize>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
+    /// The calls a failure can leave by, as the block each is at the end of and where it is from
+    /// the function's start: one way out says which, for the failure's call chain.
+    traced_calls: Vec<(String, u32)>,
     /// How the function leaves on a failure once `prop` has put back what it changed and let go
     /// of what it owns, when every failure goes through `prop`.
     leave_after_crash: Option<String>,
@@ -1150,6 +1155,35 @@ impl Emit<'_, '_, '_> {
         self.needs_prop = true;
         self.line(&format!("br i1 {failed}, label %prop, label %{ok}, !prof !0"));
         self.start_block(&ok);
+    }
+
+    /// As [`Self::leave_if`], after a call into a function of the program: a failure out of it
+    /// says this call is in its call chain on the way, away from the path that doesn't fail.
+    /// Every such call leaves by one block, which a phi tells which call it was: a branch per call
+    /// and nothing more, so the calls' code is what it would be without it.
+    pub(crate) fn leave_traced(&mut self, failed: &str, span: Span) {
+        let ok = self.label("ok");
+        self.needs_prop = true;
+        self.traced_calls.push((self.current.clone(), span.start.saturating_sub(self.start)));
+        self.line(&format!("br i1 {failed}, label %left_traced, label %{ok}, !prof !0"));
+        self.start_block(&ok);
+    }
+
+    /// The way out of the calls [`Self::leave_traced`] left by: it says which call this function
+    /// failed at, then leaves as any failure does.
+    fn write_traced_exit(&mut self) {
+        if self.traced_calls.is_empty() {
+            return;
+        }
+        self.declare("declare void @fennec_trace_frame(i64, i64) nounwind cold");
+        let arms: Vec<String> =
+            self.traced_calls.iter().map(|(block, from)| format!("[ {from}, %{block} ]")).collect();
+        let symbol = self.start_symbol.clone();
+        let _ = writeln!(
+            self.cold,
+            "left_traced:\n  %left_from = phi i64 {}\n  %left_start = load i64, ptr @\"{symbol}\"\n  %left_at = add i64 %left_start, %left_from\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
+            arms.join(", ")
+        );
     }
 
     /// As [`Self::leave_if`], after a call from the program into the standard library: a failure
@@ -2096,7 +2130,7 @@ impl Emit<'_, '_, '_> {
             if !span.in_prelude() && written_in_std(callee) {
                 self.leave_pointing_here(&failed, span);
             } else {
-                self.leave_if(&failed);
+                self.leave_traced(&failed, span);
             }
         }
         for block in lent {
@@ -2213,6 +2247,7 @@ impl Emit<'_, '_, '_> {
             channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
             "intrinsics.launch" | "intrinsics.launch_take" => self.launch_builtin(dest, name, args),
             "error.add_note" | "error.notes" => self.notes_builtin(dest, name, args),
+            "error.raised" | "error.passed" => self.error_frame(name, args, span),
             "lock.roll_back" => {
                 let [handle] = args else { return Err("a lock to put back that isn't one".to_owned()) };
                 self.roll_back_on_failure(handle)

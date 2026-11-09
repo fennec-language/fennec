@@ -17,10 +17,13 @@ use fennec_syntax::Diagnostic;
 use super::{set_failed, threads, with};
 
 /// The crashes held aside while their cleanups run, by the number native code keeps.
-static HELD: Mutex<Option<HashMap<i64, Option<Diagnostic>>>> = Mutex::new(None);
+static HELD: Mutex<Option<HashMap<i64, Held>>> = Mutex::new(None);
 static NEXT: AtomicI64 = AtomicI64::new(1);
 
-fn held<T>(use_it: impl FnOnce(&mut HashMap<i64, Option<Diagnostic>>) -> T) -> T {
+/// A crash held aside: its failure, and its call chain so far.
+type Held = (Option<Diagnostic>, fennec_syntax::Trace);
+
+fn held<T>(use_it: impl FnOnce(&mut HashMap<i64, Held>) -> T) -> T {
     use_it(HELD.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
 }
 
@@ -28,7 +31,7 @@ fn held<T>(use_it: impl FnOnce(&mut HashMap<i64, Option<Diagnostic>>) -> T) -> T
 /// cleared, until `fennec_crash_resume` is given the number this gives back. A stop doesn't cut the
 /// cleanup's waits short until its grace is up (see `serve::launch`).
 pub extern "C" fn crash_hold() -> i64 {
-    let failure = with(|state| state.failure.take());
+    let failure = super::take_failure();
     set_failed(0);
     threads::cleaning(true);
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -39,13 +42,13 @@ pub extern "C" fn crash_hold() -> i64 {
 /// `fennec_crash_resume(held)`: the cleanup's ended, and the crash goes on. If the cleanup crashed
 /// too, that's reported here, and the first crash is the one that goes on.
 pub extern "C" fn crash_resume(number: i64) {
-    let crash = held(|held| held.remove(&number)).flatten();
+    let crash = held(|held| held.remove(&number)).unwrap_or_default();
     threads::cleaning(false);
     if let Some(again) = with(|state| state.failure.take()) {
         super::write_kept_output();
         let _ = writeln!(std::io::stderr(), "error: {} (while cleaning up after a crash)", again.message);
     }
-    with(|state| state.failure = crash);
+    super::put_failure(crash);
     set_failed(1);
 }
 

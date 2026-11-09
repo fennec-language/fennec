@@ -30,7 +30,7 @@ const SYSTEM_LIBRARIES: &[&str] =
 compile_error!("Fennec builds with Rust's gnullvm toolchain on Windows: see CONTRIBUTING.md");
 
 /// What Rust's standard library needs from Windows and MinGW-w64, which the runtime library uses,
-/// in the order LLD reads them.
+/// in the order LLD reads them, and `winmm` for the timer the runtime asks for at startup.
 #[cfg(windows)]
 const WINDOWS_LIBRARIES: &[&str] = &[
     "-lkernel32",
@@ -43,6 +43,7 @@ const WINDOWS_LIBRARIES: &[&str] = &[
     "-lbcrypt",
     "-ladvapi32",
     "-lsynchronization",
+    "-lwinmm",
     "-lunwind",
     "-lmingw32",
     "-lmingwex",

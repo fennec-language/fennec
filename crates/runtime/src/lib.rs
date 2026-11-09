@@ -382,7 +382,24 @@ export! {
 /// Runs a compiled executable's program: its `main` calls this.
 #[unsafe(no_mangle)]
 pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 {
+    #[cfg(windows)]
+    fine_timer();
     aot::run(entry, length, stop)
+}
+
+/// Asks Windows to tick its timer every millisecond while the program runs, as Go's runtime does.
+/// A task's wait gives up when the poll it parks on times out, which Windows ends only on a tick,
+/// every 15.6 ms unless asked: without this, a task's `clock.sleep(1ms)` takes about 15 ms. Windows
+/// puts the timer back as the process ends, so nothing has to ask it to.
+#[cfg(windows)]
+fn fine_timer() {
+    #[link(name = "winmm")]
+    unsafe extern "system" {
+        fn timeBeginPeriod(period: u32) -> u32;
+    }
+    // SAFETY: `timeBeginPeriod` takes any period, and only fails, harmlessly, for one the system
+    // can't give.
+    unsafe { timeBeginPeriod(1) };
 }
 
 /// Ends the process now, for a failure in cleanup that nothing can pass on.

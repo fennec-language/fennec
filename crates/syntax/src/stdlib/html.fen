@@ -19,7 +19,8 @@ export type HtmlValue = str | int | float | bool | Html
 export error HtmlError:
     ## A value where escaping can't keep it from changing what the page does: inside a
     ## `<script>` or `<style>`, an `on...` or `style` attribute, an attribute without quotes, a
-    ## tag's or an attribute's name, or a comment.
+    ## tag's or an attribute's name, or a comment, or one that would make a link anything but
+    ## `http`, `https`, `mailto` or relative.
     Misplaced(expression: str, reason: str)
     ## A value with a format spec, like `{price:.2f}`, which isn't applied yet.
     Formatted(expression: str)
@@ -38,11 +39,12 @@ export error HtmlError:
 ## A page from a template string: `html.render(t"<p>Hello, {name}</p>")`. Each value is put in
 ## for where it is in the page, found from the text written around it:
 ## - Between tags and in a quoted attribute, `& < > " '` are escaped, so it stays text.
-## - In a link's attribute, like `href` or `src`, a value that would make it a URL that isn't
-##   `http`, `https`, `mailto` or relative, like `javascript:`, gives `about:invalid` instead.
 ## - Inside a `<script>` or `<style>`, an `on...`, `style` or `srcdoc` attribute, an attribute
 ##   without quotes, a tag's or an attribute's name, or a comment, escaping isn't enough, so
 ##   the page fails with `Misplaced`. A value for a script goes in a `data-` attribute instead.
+## - In a link's attribute, like `href` or `src`, a value that would make the link anything but
+##   `http`, `https`, `mailto` or relative, like `javascript:`, fails with `Misplaced` too. To
+##   show something else instead, check the URL before rendering.
 ## An `Html` between tags goes in as it is.
 export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
     mut scan = PageScan()
@@ -306,9 +308,12 @@ struct PageScan:
                         expression,
                         reason="a `srcdoc` attribute reads its value as a page",
                     )
-                mut text = text_of(value)
+                text = text_of(value)
                 if name in LINKS and not followed(self.value, next=text):
-                    text = "about:invalid"
+                    fail misplaced(
+                        expression,
+                        reason="a link has to be `http`, `https`, `mailto` or relative",
+                    )
                 self.value += text
                 return escape(text)
             case .Unquoted | .BeforeValue:

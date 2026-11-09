@@ -1,10 +1,10 @@
 # decision: `html.render(t"...")` puts each value where it can't change what the page does.
 #
-# Between tags and in a quoted attribute a value is escaped. A link's value that would make it a
-# `javascript:` URL, or any that isn't `http`, `https`, `mailto` or relative, becomes
-# `about:invalid`. Where escaping isn't enough, in a `<script>`, an `on...` attribute or an
-# attribute without quotes, the page fails, naming the value. Pages are built from pieces: an
-# `Html` goes into another as it is.
+# Between tags and in a quoted attribute a value is escaped. Where escaping isn't enough, in a
+# `<script>`, an `on...` attribute or an attribute without quotes, the page fails, naming the
+# value, and so does a link's value that would make it a `javascript:` URL, or any that isn't
+# `http`, `https`, `mailto` or relative. Pages are built from pieces: an `Html` goes into
+# another as it is.
 from std import html
 from std.html import Html, HtmlError, HtmlValue
 
@@ -43,7 +43,7 @@ test "numbers and yes-or-no are written as text"():
         == "<td>42</td><td>2.5</td><td>True</td>"
     )
 
-test "a link to javascript: becomes about:invalid"():
+test "a link to javascript: fails"():
     for bad in [
         "javascript:alert(1)",
         "JavaScript:alert(1)",
@@ -51,7 +51,7 @@ test "a link to javascript: becomes about:invalid"():
         "data:text/html,x",
         "vbscript:x",
     ]:
-        assert html.render(t"<a href=\"{bad}\">x</a>")?.text() == "<a href=\"about:invalid\">x</a>"
+        assert refusal(t"<a href=\"{bad}\">x</a>") == LINK_REFUSED
 
 test "http, https, mailto and relative links are kept"():
     for good in [
@@ -73,14 +73,16 @@ test "a value after a link's settled start can't change its scheme"():
     made = html.render(t"<a href=\"/users/{tail}\">x</a>")?
     assert made.text() == "<a href=\"/users/javascript:x\">x</a>"
     rest = "script:alert(1)"
-    joined = html.render(t"<img src=\"java{rest}\">")?
-    assert joined.text() == "<img src=\"javaabout:invalid\">"
+    assert (
+        refusal(t"<img src=\"java{rest}\">")
+        == "`{rest}` can't go there: a link has to be `http`, `https`, `mailto` or relative"
+    )
 
 test "pages are built from pieces"():
-    made = page(Visitor(name="<Ann>", site="javascript:x"), ["a & b", "c"])?
+    made = page(Visitor(name="<Ann>", site="/ann"), ["a & b", "c"])?
     assert (
         made.text()
-        == "<p class=\"hello\">Hello, &lt;Ann&gt;</p><a href=\"about:invalid\">site</a><ul><li>a &amp; b</li><li>c</li></ul>"
+        == "<p class=\"hello\">Hello, &lt;Ann&gt;</p><a href=\"/ann\">site</a><ul><li>a &amp; b</li><li>c</li></ul>"
     )
 
 test "a piece in an attribute is escaped like text"():
@@ -90,6 +92,8 @@ test "a piece in an attribute is escaped like text"():
         html.render(t"<p title=\"{bold}\">y</p>")?.text()
         == "<p title=\"&lt;b&gt;x&lt;/b&gt;\">y</p>"
     )
+
+LINK_REFUSED = "`{bad}` can't go there: a link has to be `http`, `https`, `mailto` or relative"
 
 ## Why `page` couldn't be made, in words, or "" if it could.
 def refusal(page: Template[HtmlValue]) -> str:

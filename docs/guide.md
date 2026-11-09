@@ -429,5 +429,5 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:
-- `TaskGroup`, for a number of tasks known only at run time, and pools;
+- pools;
 - `u64` and `f32`, and `wrapping_` and `saturating_` methods: `i8` to `i32` and `u8` to `u32` already run natively;

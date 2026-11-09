@@ -30,6 +30,8 @@ pub(crate) enum Ty {
     Counts,
     /// `Buffer[int]`.
     Buf,
+    /// `shared Outer`: a number and a `shared Bag`.
+    Outer,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
@@ -132,8 +134,10 @@ pub(crate) enum Expr {
     TextLen(Box<Expr>),
     /// A list of ints written out.
     Ints(Vec<Expr>),
-    /// `[item * by + plus for item in list]`.
-    Mapped(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `[item * by + plus for item in list]`, or over `parallel(list)` when the flag says so.
+    Mapped(Box<Expr>, Box<Expr>, Box<Expr>, bool),
+    /// `sum(item * by for item in parallel(list))`.
+    ParallelSum(Box<Expr>, Box<Expr>),
     /// `list.len()`.
     Len(Box<Expr>),
     /// `list[at]`, which fails outside the list.
@@ -227,6 +231,10 @@ pub(crate) enum Op {
     SetCount(&'static str, Amount, bool),
     /// `_ = held.counts.remove(key)`.
     Remove(&'static str),
+    /// `held.add_twice(amount)`, a `ref self` method appending it twice.
+    AddTwice(Amount),
+    /// `grow_all(ref held.items, amount)`, through a `ref` parameter.
+    GrowItems(Amount),
 }
 
 /// A change to a `Buffer[int]`. Each fails where a list's would, and `pop` on an empty one.
@@ -282,6 +290,20 @@ pub(crate) enum Stmt {
     Each(String, Expr, Vec<Stmt>),
     /// `for ref name in list:`, the body adding to each item.
     EachRef(String, String, Expr),
+    /// `for ref name in list:` with `name = name + at_or_zero(list, at)`, reading the list it's
+    /// changing: at a fixed place, or where the item itself says when `at` is None.
+    EachRefRead(String, String, Option<i64>),
+    /// `lock name as held:` printing an `Outer`'s number.
+    PrintOuter(String),
+    /// `shared name = Outer(inner=bag, n=0)`.
+    ShareOuter(String, String),
+    /// `bump_outer(name, by, refuse=...)`: adds to its number under its lock, and a refusal
+    /// undoes it, printing `refused`.
+    OuterBump(String, Expr, Expr),
+    /// `summed_until(limit, stop, stdout)`: sums a generator lending from a source until an item
+    /// is `stop`, letting it go there. The source prints as it opens and closes, and its cleanup
+    /// fails for an even `limit`, which fails the loop: that prints `shut`.
+    Summed(Expr, Expr),
     /// `while counter < limit:`, counting up each round so it ends.
     While(String, i64, Vec<Stmt>),
     /// `if condition: break`.

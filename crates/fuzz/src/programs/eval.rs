@@ -39,6 +39,8 @@ enum Value {
     Counts(Vec<(String, i64)>),
     /// A `Buffer[int]`'s filled slots.
     Buf(Vec<i64>),
+    /// A `shared Outer`, by where its number is.
+    Outer(usize),
 }
 
 /// Why running stopped before the end.
@@ -55,8 +57,13 @@ enum Stop {
 /// How a program ran: what it printed, and whether it ran to the end, or None where the evaluator
 /// can't be sure.
 pub(crate) fn run(program: &Program) -> Option<(String, bool)> {
-    let mut machine =
-        Machine { scopes: vec![Vec::new()], out: String::new(), heap: Vec::new(), bags: Vec::new() };
+    let mut machine = Machine {
+        scopes: vec![Vec::new()],
+        out: String::new(),
+        heap: Vec::new(),
+        bags: Vec::new(),
+        outers: Vec::new(),
+    };
     match machine.block(&program.body) {
         Ok(()) => {
             machine.out.push_str("done\n");
@@ -76,6 +83,8 @@ struct Machine {
     heap: Vec<(i64, i64)>,
     /// What each `shared Bag` holds.
     bags: Vec<Bag>,
+    /// What each `shared Outer`'s number is.
+    outers: Vec<i64>,
 }
 
 /// What a `Bag` holds: its list, and its dict in the order keys went in.
@@ -121,6 +130,16 @@ impl Bag {
                     }
                 }
                 Op::Remove(key) => self.counts.retain(|(held, _)| held != key),
+                Op::AddTwice(value) => {
+                    let value = amount(*value)?;
+                    self.items.extend([value, value]);
+                }
+                Op::GrowItems(value) => {
+                    let value = amount(*value)?;
+                    for item in &mut self.items {
+                        *item = item.checked_add(value)?;
+                    }
+                }
             }
         }
         Some(self)
@@ -261,7 +280,7 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
         Value::Sized(_, n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
-        Value::Shared(_) | Value::Bag(_) | Value::Count(_) => "shared".to_owned(),
+        Value::Shared(_) | Value::Bag(_) | Value::Count(_) | Value::Outer(_) => "shared".to_owned(),
         // A buffer prints as a list does.
         Value::Buf(items) => shown(&Value::Ints(items.clone())),
         Value::Float(bits) => float_text(f64::from_bits(*bits)),
@@ -529,6 +548,47 @@ impl Machine {
                     }
                 }
             }
+            Stmt::EachRefRead(_, list, at) => {
+                let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                // Each read sees the items changed so far.
+                for place in 0..items.len() {
+                    let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                    let item = items.get(place).copied().ok_or(Stop::Unsure)?;
+                    let len = i64::try_from(items.len()).map_err(|_| Stop::Unsure)?;
+                    let read = at.unwrap_or(item);
+                    let read =
+                        items.get(usize::try_from(floor_rem(read, len)?).map_err(|_| Stop::Unsure)?).copied();
+                    let changed = checked(item.checked_add(read.ok_or(Stop::Unsure)?))?;
+                    if let Value::Ints(items) = self.slot(list)?
+                        && let Some(held) = items.get_mut(place)
+                    {
+                        *held = changed;
+                    }
+                }
+            }
+            Stmt::ShareOuter(name, _) => {
+                self.outers.push(0);
+                self.bind(name, Value::Outer(self.outers.len() - 1));
+            }
+            Stmt::OuterBump(name, by, refuse) => {
+                let by = int(&self.expr(by)?)?;
+                let refuse = self.expr(refuse)? == Value::Bool(true);
+                let Value::Outer(at) = self.get(name)? else { return Err(Stop::Unsure) };
+                let at = *at;
+                let n = self.outers.get(at).copied().ok_or(Stop::Unsure)?;
+                let bumped = checked(n.checked_add(by))?;
+                if refuse {
+                    self.out.push_str("refused\n");
+                } else if let Some(held) = self.outers.get_mut(at) {
+                    *held = bumped;
+                }
+            }
+            Stmt::PrintOuter(name) => {
+                let Value::Outer(at) = self.get(name)? else { return Err(Stop::Unsure) };
+                let n = self.outers.get(*at).copied().ok_or(Stop::Unsure)?;
+                let _ = writeln!(self.out, "{n}");
+            }
+            Stmt::Summed(limit, stop) => self.summed(limit, stop)?,
             Stmt::EachRef(_, list, by) => {
                 let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
                 for at in 0..items.len() {
@@ -704,6 +764,30 @@ impl Machine {
         Ok(())
     }
 
+    /// `summed_until(limit, stop, stdout)`: the source opens, the generator gives `at + limit`
+    /// for each `at` below `limit`, the loop sums them until one is `stop`, and the source closes
+    /// as the generator's let go or ends, failing for an even `limit`.
+    fn summed(&mut self, limit: &Expr, stop: &Expr) -> Ran<()> {
+        let limit = int(&self.expr(limit)?)?;
+        let stop = int(&self.expr(stop)?)?;
+        let _ = writeln!(self.out, "opening {limit}");
+        let mut total: i64 = 0;
+        for at in 0..limit.max(0) {
+            let value = checked(at.checked_add(limit))?;
+            if value == stop {
+                break;
+            }
+            total = checked(total.checked_add(value))?;
+        }
+        let _ = writeln!(self.out, "closing {limit}");
+        if floor_rem(limit, 2)? == 0 {
+            self.out.push_str("shut\n");
+        } else {
+            let _ = writeln!(self.out, "{total}");
+        }
+        Ok(())
+    }
+
     fn assign(&mut self, place: &Place, value: &Expr, add: bool) -> Ran<()> {
         // The place first, then what it held, then the new value.
         let at = match place {
@@ -819,7 +903,16 @@ impl Machine {
                 }
                 Value::Ints(values)
             }
-            Expr::Mapped(list, by, plus) => {
+            Expr::ParallelSum(list, by) => {
+                let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+                let mut terms = Vec::with_capacity(items.len());
+                for item in items {
+                    let by = int(&self.expr(by)?)?;
+                    terms.push(checked(item.checked_mul(by))?);
+                }
+                Value::Int(sum_of(&terms)?)
+            }
+            Expr::Mapped(list, by, plus, _) => {
                 let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
                 let mut mapped = Vec::with_capacity(items.len());
                 for item in items {

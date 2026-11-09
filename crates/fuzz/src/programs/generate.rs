@@ -132,7 +132,7 @@ impl Writer<'_> {
             return self.name_of(Ty::Int, false).map_or_else(|| self.small_int(), Expr::Name);
         }
         let next = depth + 1;
-        match self.choice(21) {
+        match self.choice(22) {
             14 => {
                 let size = self.size();
                 Expr::IntOf(Box::new(self.of(Ty::Sized(size), next)))
@@ -149,6 +149,12 @@ impl Writer<'_> {
             19 => {
                 let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
                 Expr::CountOf(Box::new(self.of(Ty::Counts, next)), key)
+            }
+            21 => {
+                let list = self.of(Ty::Ints, next);
+                let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
+                let sum = Expr::ParallelSum(Box::new(list), Box::new(by));
+                self.bounded(sum)
             }
             20 if self.risky => Expr::BufAt(Box::new(self.of(Ty::Buf, next)), Box::new(self.int(next))),
             20 => Expr::BufLen(Box::new(self.of(Ty::Buf, next))),
@@ -277,7 +283,7 @@ impl Writer<'_> {
                     let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
                     let plus = self.int(MOST_DEPTH);
                     let plus = self.bounded(plus);
-                    Expr::Mapped(Box::new(list), Box::new(by), Box::new(plus))
+                    Expr::Mapped(Box::new(list), Box::new(by), Box::new(plus), self.choice(3) == 0)
                 }
                 2 => Expr::Ints(Vec::new()),
                 3 => Expr::HeldItems(Box::new(self.of(Ty::Holder, next))),
@@ -338,7 +344,7 @@ impl Writer<'_> {
                 let pairs = KEYS.iter().take(count).map(|key| (*key, self.int(next))).collect();
                 Expr::Counts(pairs)
             }
-            Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count => Expr::Int(0),
+            Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count | Ty::Outer => Expr::Int(0),
             Ty::Shape => match self.choice(3) {
                 0 => Expr::Shape(Case::Circle, Box::new(self.int(next))),
                 1 => Expr::Shape(Case::Square, Box::new(self.int(next))),
@@ -407,14 +413,18 @@ impl Writer<'_> {
     /// Prints each name declared since `scope`, so the digest has every value, and so no change
     /// goes unread, which the checker refuses.
     fn print_from(&mut self, body: &mut Vec<Stmt>, scope: usize) {
-        for name in self.names.iter().skip(scope).filter(|name| matches!(name.ty, Ty::Shared | Ty::Bag)) {
-            body.push(Stmt::PrintShared(name.name.clone()));
+        for name in self.names.iter().skip(scope) {
+            match name.ty {
+                Ty::Shared | Ty::Bag => body.push(Stmt::PrintShared(name.name.clone())),
+                Ty::Outer => body.push(Stmt::PrintOuter(name.name.clone())),
+                _ => {}
+            }
         }
         let values: Vec<(Expr, Ty)> = self
             .names
             .iter()
             .skip(scope)
-            .filter(|name| !matches!(name.ty, Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count))
+            .filter(|name| !matches!(name.ty, Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count | Ty::Outer))
             .map(|name| (printable(&name.name, name.ty), name.ty))
             .collect();
         for chunk in values.chunks(4) {
@@ -424,12 +434,18 @@ impl Writer<'_> {
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
         self.written += 1;
-        let which = self.choice(28);
+        let which = self.choice(29);
         match which {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
             27 => self.change_buffer(body),
+            28 => {
+                // A generator lending from a source, let go partway or run out.
+                let limit = Expr::Int(i64::from(self.byte() % 6));
+                let stop = Expr::Int(i64::from(self.byte() % 10));
+                body.push(Stmt::Summed(limit, stop));
+            }
             22 => {
                 let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
@@ -458,7 +474,13 @@ impl Writer<'_> {
                 let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
                 let item = self.fresh();
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
-                body.push(Stmt::EachRef(item, list.clone(), by));
+                // Half read the list they're changing, at a fixed place or where the item says.
+                let read = [None, Some(0), Some(-1), Some(2)].get(self.choice(4)).copied().flatten();
+                body.push(if self.choice(2) == 0 {
+                    Stmt::EachRef(item, list.clone(), by)
+                } else {
+                    Stmt::EachRefRead(item, list.clone(), read)
+                });
                 self.read_back(body, &list);
             }
             8 if self.loops > 0 => {
@@ -648,6 +670,24 @@ impl Writer<'_> {
             return;
         }
         let Some(name) = self.name_of(Ty::Bag, false) else { return self.print(body) };
+        // Now and then a `shared Outer` holding it, or a change to one under its own lock.
+        match self.choice(5) {
+            0 => {
+                let outer = self.fresh();
+                body.push(Stmt::ShareOuter(outer.clone(), name));
+                self.names.push(InScope { name: outer, ty: Ty::Outer, changeable: false, held: 0 });
+                return;
+            }
+            1 => {
+                let Some(outer) = self.name_of(Ty::Outer, false) else { return self.print(body) };
+                let by = self.int(1);
+                let by = self.bounded(by);
+                let refuse = self.of(Ty::Bool, 1);
+                body.push(Stmt::OuterBump(outer, by, refuse));
+                return;
+            }
+            _ => {}
+        }
         self.made += 1;
         let id = self.made;
         if which == 17 {
@@ -677,7 +717,9 @@ impl Writer<'_> {
             };
             let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
             let at = PLACES.get(self.choice(PLACES.len())).copied().unwrap_or(0);
-            let op = match self.choice(6) {
+            let op = match self.choice(8) {
+                6 => Op::AddTwice(value),
+                7 => Op::GrowItems(value),
                 0 | 1 => Op::Append(value),
                 2 => Op::Pop,
                 3 if safe => Op::SetCount(key, value, false),

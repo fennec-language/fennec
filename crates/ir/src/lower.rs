@@ -687,6 +687,11 @@ impl<'a> Lowering<'a> {
                 self.finish(Terminator::Jump(target));
             }
             StmtKind::Pass => {}
+            StmtKind::For { names, is_mut: false, iter, body }
+                if fennec_check::fields_of(iter).is_some() && self.lookup("fields").is_none() =>
+            {
+                self.each_field(names, iter, body)?;
+            }
             StmtKind::For { names, is_mut, iter, body } => {
                 let lifted = self
                     .parallel_for((names, *is_mut), iter, body, stmt.span)

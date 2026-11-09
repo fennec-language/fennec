@@ -1,5 +1,5 @@
-//! Every kit in `examples/projects/` runs and prints exactly its `.out` file in the interpreter,
-//! and passes its tests. Every kit in `examples/projects/errors/`
+//! Every kit in `examples/projects/` runs and prints exactly its `.out` file, and passes its
+//! tests. Every kit in `examples/projects/errors/`
 //! fails with exactly its `.err` file, which names the file the problem is in.
 
 use std::fs;

@@ -199,7 +199,7 @@ pub(crate) fn describe(ty: &Type) -> String {
     }
 }
 
-/// An f-string format spec the interpreter would refuse while running, or `None` when it fits.
+/// An f-string format spec that doesn't fit its value, or `None` when it fits.
 /// A spec is an optional `,` for thousands separators, an optional `.N` for decimal places,
 /// and an optional `f` or `d`; only a number takes one.
 pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> {

@@ -2036,6 +2036,34 @@ def main(stdout: Stdout):
     )
 }
 
+/// Each character read twice, as a parser checks one and then takes it, and the few before it
+/// sliced off, in text with characters of each width: a slice of ASCII is found as many bytes
+/// back as it has characters, and one taking in part of a wider character is walked to instead.
+/// Then jumps ahead, from the end, and the last character twice.
+#[test]
+fn reading_again_and_slicing_back_in_text_that_isnt_ascii() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "reading_again_slicing_back",
+        r#"def main(stdout: Stdout):
+    text = "ab日c🦊de é f" + "x" * 8 + "ñ"
+    mut out = []
+    for at in range(text.len()):
+        first = text[at]
+        again = text[at]
+        out.append(f"{first}{again}")
+        for back in range(1, 4):
+            if at >= back:
+                out.append(text[at - back:at])
+    stdout.print("|".join(out))
+    stdout.print(text[0], text[4], text[9], text[3], text[-1], text[-1], text[text.len() - 1], text[2], text[2])
+"#,
+        "aa|bb|a|日日|b|ab|cc|日|b日|ab日|🦊🦊|c|日c|b日c|dd|🦊|c🦊|日c🦊|ee|d|🦊d|c🦊d|  |e|de|🦊de|éé| |e |de |  |é| é|e é|ff| |é | é |xx|f| f|é f|xx|x|fx| fx|xx|x|xx|fxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|ññ|x|xx|xxx\na 🦊   c ñ ñ ñ 日 日\n",
+    )
+}
+
 /// A loop over a string's characters: a text all ASCII takes a byte at a time with nothing to
 /// test, and any other its characters' bytes, whether it's inline or a block's, and the body
 /// breaking, going on, or looping over text of its own.
@@ -4082,6 +4110,27 @@ def main(stdout: Stdout):
 ",
     )?;
     assert_eq!(printed, "-1.0 -1.0 -2.0 1.0 -3.0\n");
+    Ok(())
+}
+
+/// A `sum` of sized numbers is one of their size, starting at its zero: of `f32`s, of `u8`s, of
+/// none, and of a generator's.
+#[test]
+fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_sums",
+        "def main(stdout: Stdout):
+    weights: list[f32] = [1.5, 2.25]
+    counts: list[u8] = [200, 50]
+    small: list[i16] = []
+    total: u8 = sum(counts)
+    stdout.print(sum(weights), total, sum(small), sum(count for count in counts), sum(counts, start=5))
+",
+    )?;
+    assert_eq!(printed, "3.75 250 0 250 255\n");
     Ok(())
 }
 
@@ -7612,6 +7661,69 @@ fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
 }
 
+/// The server's answers reach a client that's still sending when it's refused. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
+/// reset: closing with what the client sent unread resets the connection, which throws away what
+/// the client hadn't read yet, the answers before too. Found by fuzzing the
+/// server (`fennec-fuzz run http-server`).
+#[test]
+fn an_http_server_s_refusal_reaches_a_client_still_sending() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_server_refusals")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let connect = || -> std::io::Result<std::net::TcpStream> {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        Ok(stream)
+    };
+    // Everything the server says, read as it comes until it closes, or what went wrong.
+    let heard = |stream: &mut std::net::TcpStream| -> String {
+        let mut heard = Vec::new();
+        match stream.read_to_end(&mut heard) {
+            Ok(_) => String::from_utf8_lossy(&heard).into_owned(),
+            Err(err) => format!("{}[{err}]", String::from_utf8_lossy(&heard)),
+        }
+    };
+    // A body far bigger than the server takes, still being sent when it answers.
+    let mut big = connect()?;
+    big.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n")?;
+    let _ = big.write_all(&vec![b'x'; 4 << 20]);
+    let too_big = heard(&mut big);
+    // Answers first, then a refusal, with the rest of what was sent unread.
+    let mut pipelined = connect()?;
+    pipelined.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nNOT HTTP\r\n\r\n")?;
+    let _ = pipelined.write_all(&vec![b'y'; 1 << 20]);
+    let refused_after = heard(&mut pipelined);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    // Each closes cleanly once it's answered, with no reset.
+    let wanted = [
+        "HTTP/1.1 413 Content Too Large\r\ncontent-length: 19\r\nconnection: close\r\n\r\nthe body is too big",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/aHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/b\
+         HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
+    ];
+    assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
 /// An HTTP server natively: a handler answers each request, a connection stays open for more
 /// until it asks to close, and what's too big or isn't HTTP is answered without the handler.
 #[test]
@@ -9178,6 +9290,28 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A type's own function, like `Unpacker.of`, can be called through its module's name.
+#[test]
+fn a_static_method_through_a_module_name_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "module_static",
+        r"from std import pack
+
+def main(stdout: Stdout) fails ParseError:
+    mut packer = pack.Packer()
+    packer.add(3)
+    packer.add(4)
+    mut values = pack.Unpacker.of(packer.bytes())
+    stdout.print(values.next[int]()?, values.next[int]()?, values.next[int]()?)
+",
+    )?;
+    assert_eq!(printed, "3 4 None\n");
+    Ok(())
+}
+
 /// A tuple saved only through `std.pack`, with nothing routed through JSON, saves natively: its
 /// saving isn't trimmed away as unreached. And one saved before what holds it is known, `pairs`
 /// here until its `append`, is what it holds once the check is done.
@@ -9582,6 +9716,50 @@ def main(stdout: Stdout):
         printed,
         "loaded refused loaded refused\nPath(text=\"../..\") Path(text=\"a/../..\") Path(text=\"a\")\nPath(text=\"static/a/b.txt\")\nPath(text=\"static/a.txt\")\nrefused\nrefused\nrefused\nrefused\nloaded refused refused refused\nrefused\naxxx xxxa xax\naxyx xyxa xyaxy\n"
     );
+    Ok(())
+}
+
+/// A server can't make the client hold as much as it likes before a response's body: endless
+/// header lines fail, as one endless line does, and so do endless `100 Continue`s. A chunk's data
+/// has to end where its size says, with nothing after it but its line ending.
+#[test]
+fn a_response_cant_make_the_client_hold_without_end() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let answers = [
+        [
+            b"HTTP/1.1 200 OK\r\n".to_vec(),
+            b"X-A: b\r\n".repeat(400_000),
+            b"Content-Length: 2\r\n\r\nok".to_vec(),
+        ]
+        .concat(),
+        [
+            b"HTTP/1.1 100 Continue\r\n\r\n".repeat(200_000),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ]
+        .concat(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nokEXTRA\r\n0\r\n\r\n".to_vec(),
+    ];
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        for answer in answers {
+            let (mut stream, _) = listener.accept()?;
+            let mut asked = [0_u8; 4096];
+            let _ = stream.read(&mut asked)?;
+            // The client may stop reading part of the way through.
+            let _ = stream.write_all(&answer);
+        }
+        Ok(())
+    });
+    let source = format!(
+        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    match net.get(\"http://127.0.0.1:{port}/\", timeout=10s):\n        case Ok(answer):\n            return answer.text()\n        case Err(_):\n            return \"refused\"\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
+    );
+    let printed = printed_by("client_holds", &source)?;
+    server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
+    assert_eq!(printed, "refused refused refused\n");
     Ok(())
 }
 

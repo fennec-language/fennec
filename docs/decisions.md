@@ -349,7 +349,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. Not built yet: today `_ = f()` drops the failure, and `ignore(result, "why")` still compiles. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Built. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -1230,7 +1230,7 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 **`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-# Planned: today the first is `embed("assets/level1.bin")`, and the second doesn't exist
+# Planned: the second doesn't exist yet
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
@@ -1240,7 +1240,7 @@ SHADERS = embed_folder("assets/shaders")
 - The kit's edge is the folder holding the nearest `kit.toml`, and for a lone `.fen` file with no `kit.toml`, the file's own folder. Embedding anything above that folder, or anything a symlink reaches outside it, is a compile error. In Chris's words, it's "wherever the kit.toml is, it cannot be above it", and "only things in that folder". This closes the hole where a lone file's `embed` could follow a symlink out of its folder.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path, a whole path and, in a kit, anything outside it, a symlink included. A lone file's `embed` still follows a symlink out of its folder today; the rule above closes that. This replaces `embed("path")`.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file with no `kit.toml` can still follow a symlink out of its folder today; the rule above closes that. `embed_folder` isn't built yet.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 

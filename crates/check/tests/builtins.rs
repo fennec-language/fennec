@@ -47,7 +47,6 @@ fn removing_from_an_id_map_might_find_nothing() {
 
 #[test]
 fn builtins_give_back_their_types() {
-    plus_one("", "ignore([1].index(1), 'fine')", "can't use `+` on nothing and an int");
     plus_one("", "Ok(1)", "this is the result of something that can fail");
     plus_one("", "Err(IoError('x'))", "this is the result of something that can fail");
     plus_one("", "list(set([1.5]))[0]", "can't mix int and float in `+`");

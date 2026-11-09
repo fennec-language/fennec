@@ -1690,6 +1690,49 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
     );
 }
 
+/// `fennec fix` gives a function that uses a capability it wasn't given the parameter, passes it
+/// at each call, and gives each caller the parameter in turn, across a kit's files, up to the
+/// first that has one, `main`, or a test. A function named other than in a call is left alone.
+#[test]
+fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-threaded", std::process::id()));
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"hello\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        src.join("main.fen"),
+        "from greet import welcome\n\ndef main(out: Stdout):\n    welcome(\"Ann\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("greet.fen"),
+        "export def welcome(name: str):\n    shout(f\"hello {name}\")\n    shout(\"again\")\n\ndef shout(text: str):\n    stdout.print(text)\n\ntest \"welcomes\":\n    welcome(\"Bo\")\n",
+    )
+    .unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let main = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    let greet = std::fs::read_to_string(src.join("greet.fen")).unwrap();
+    let ran = fennec(&["run", "--no-test", &path], "").unwrap();
+    let as_value = "def shout(text: str):\n    stdout.print(text)\n\ndef main(out: Stdout):\n    each = shout\n    each(\"hi\")\n";
+    std::fs::write(src.join("main.fen"), as_value).unwrap();
+    std::fs::remove_file(src.join("greet.fen")).unwrap();
+    let left = fennec(&["fix", &path], "").unwrap();
+    let kept = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(main, "from greet import welcome\n\ndef main(out: Stdout):\n    welcome(out, \"Ann\")\n");
+    assert_eq!(
+        greet,
+        "export def welcome(stdout: Stdout, name: str):\n    shout(stdout, f\"hello {name}\")\n    shout(stdout, \"again\")\n\ndef shout(stdout: Stdout, text: str):\n    stdout.print(text)\n\ntest \"welcomes\"(stdout: Stdout):\n    welcome(stdout, \"Bo\")\n"
+    );
+    assert_eq!(text(&ran.stdout), "hello Ann\nagain\n", "{}", text(&ran.stderr));
+    assert!(!left.status.success());
+    assert_eq!(kept, as_value);
+    assert!(text(&left.stderr).contains("`stdout` doesn't exist"), "{}", text(&left.stderr));
+}
+
 /// `fennec fix` names the fields of a pattern matching another kit's type by position, and a
 /// part that's only `_` goes, so it reads no field.
 #[test]
@@ -1954,6 +1997,33 @@ fn fix_moves_idmap_to_table() {
             .replace("units.insert(", "units.add(")
     );
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
+}
+
+/// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
+/// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
+/// for the `with`, and then it runs.
+#[test]
+fn fix_moves_a_shared_declaration_to_shared_t_and_lock() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-shared-declaration", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("account.fen");
+    let path = program.to_string_lossy().into_owned();
+    let old = "shared Account:\n    total = 0\n\ndef pay(account: Account, amount: int):\n    \
+               with account as ref held:\n        held.total += amount\n\ndef main(stdout: Stdout):\n    \
+               account = Account()\n    pay(account, 5)\n    with account as seen:\n        stdout.print(seen.total)\n";
+    std::fs::write(&program, old).unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        "struct Account:\n    total = 0\n\ndef pay(account: shared Account, amount: int):\n    \
+         lock account as ref held:\n        held.total += amount\n\ndef main(stdout: Stdout):\n    \
+         shared account = Account()\n    pay(account, 5)\n    lock account as seen:\n        stdout.print(seen.total)\n"
+    );
+    assert_eq!(text(&ran.stdout), "5\n", "{}", text(&ran.stderr));
 }
 
 #[test]
@@ -2613,13 +2683,22 @@ fn a_hot_function_keeps_no_checks() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A `shared` value is a handle: every name for it, and every function it's passed to, changes
-/// one cell.
+/// A `shared` value is one value: every name for it, and every function it's passed to, changes
+/// the same one, each inside a `lock`.
 #[test]
 fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();
     let program = dir.join("account.fen");
-    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
+    std::fs::write(
+        &program,
+        "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    \
+         def balance(self) -> int:\n        self.total\n\n\
+         def pay(account: shared Account, amount: int):\n    lock account as ref held:\n        held.add(amount)\n\n\
+         def main(stdout: Stdout):\n    shared account = Account()\n    same = account\n    pay(account, 5)\n    \
+         lock same as ref held:\n        held.add(10)\n    mut through_same = 0\n    lock same as held:\n        \
+         through_same = held.total\n    lock account as held:\n        stdout.print(held.balance(), through_same, held)\n",
+    )
+    .unwrap();
     let output = fennec(&["run", "--no-test", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();

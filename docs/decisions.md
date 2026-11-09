@@ -613,7 +613,7 @@ def write[T, W: Writer](x: T, ref out: W):
         out.field(f.name)
         write(f.get(x), ref out)
 ```
-- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Not built yet: today `fields` doesn't exist, and formats get their fields from the compiler.
+- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Built: `for f in fields(T):`, with `f.name` and `f.get(x)`. The body is checked once, with `f.get(x)` of a type that stands for each field's and goes only where any type can, and it's written out for each field when each copy is made. Not built yet: a field's type, value and annotations beyond those, `cases(T)`, `*Cs` and `if T is int:`, and formats still get their fields from the compiler.
 - Each set of types gets its own specialized copy, whatever the build.
 - There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed_file` and `embed_folder`, which read files that are part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
@@ -1054,13 +1054,13 @@ A big program that wants walls between its own parts splits into local kits in o
 **Four questions, each with its own words:** `mut` and `ref` say whether something can change; `shared` and `lock` say who's touching it; `with` says when it goes back; `launch` and channels say who talks to whom.
 *Why:* Each question gets one answer you can see in the code, and every borrow lives in a block, so there are no lifetimes to write.
 
-**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically, which still compile until `fennec fix` rewrites them. Built.
+**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically: one is refused, and `fennec fix` rewrites what's mechanical of it. Built.
 *Why:* Sharing then shows up in types and signatures, and a search for `shared` finds every place it happens.
 
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking, which is refused, with a fix to `lock`. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:
@@ -1105,7 +1105,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 - Local variables and output aren't rolled back.
 - To keep a change and still fail, decide inside the lock and `fail` after it.
 - A lint may warn when a `fail` follows a write in the same block.
-- Chris decided this on 2026-11-08. Not built yet: today a `fail` or `?` keeps the changes made so far, and only a crash undoes them. This replaces the rule that only crashes roll back.
+- Chris decided this on 2026-11-08. Built. This replaces the rule that only crashes roll back.
 
 *Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
 
@@ -1305,6 +1305,10 @@ struct Ring:
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for` that quietly lost its changes was the bug this replaces.
 
 **`t"..."` makes a `Template`, and injection can't be written.** It's Python 3.14's t-string: a `std` `Template` holding the literal pieces and the values separately, with the values' type coming from where it goes, as in `Template[SqlValue]`. A `str` is never a `Template`, and `db.query`, `html.render` and `process.run` take Templates, so text joined from strings never reaches a database, a page or a shell. There are no per-library string prefixes. Built. This replaces the proposal of `sql"..."` templates and separate escaping types.
+
+**`html.render(t"...")` puts each value where it can't change what the page does.** Escaping alone doesn't keep the promise that injection can't be written: an escaped value is still code inside `<script>` or an `onclick`, and still a `javascript:` link in an `href`. So `render` reads the template's own text as a browser does, to find where each value sits. Between tags and in a quoted attribute it's escaped. Inside `<script>` or `<style>`, an `on...`, `style` or `srcdoc` attribute, an attribute without quotes, a name or a comment, escaping isn't enough, and the page fails with `HtmlError.Misplaced`, naming the value. So does a value in a link's attribute that would make the link anything but `http`, `https`, `mailto` or relative. It gives an `Html`, which goes into another page as it is, so pages are built from pieces, and a template that ends inside a tag fails, so a piece can't open what another closes. An `Html` is never loaded from saved data. Built, natively.
+
+*Why:* The alternatives each leave a hole. Escaping everything the same way leaves scripts, handlers and links open. Refusing every value outside text makes ordinary attributes unwritable. A bad link fails rather than being replaced, as Go's `html/template` replaces one, because Fennec doesn't substitute silently: a program that wants a fallback checks the URL before rendering.
 *Why:* One form covers every kind of injection, it's what Python people already learn, and the type stops the mistake before it compiles.
 
 **`LiteralStr` is a string that came from the source code,** as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only. Built.

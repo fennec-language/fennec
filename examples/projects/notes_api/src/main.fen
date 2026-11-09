@@ -6,7 +6,7 @@ from api import respond
 from notes import Notes
 
 def main(net: Net, args: Args, stdout: Stdout, clock: Clock, entropy: Entropy):
-    notes = Notes()
+    shared notes = Notes()
     if args.len() == 0:
         made = respond(
             notes,
@@ -18,7 +18,8 @@ def main(net: Net, args: Args, stdout: Stdout, clock: Clock, entropy: Entropy):
                 body="{\"title\": \"den\", \"body\": \"by the river\"}".encode(),
             ),
         )
-        stdout.print(made.status, notes.count())
+        lock notes as current:
+            stdout.print(made.status, current.count())
         listed = respond(
             notes,
             clock,

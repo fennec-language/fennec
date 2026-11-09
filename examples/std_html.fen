@@ -1,0 +1,146 @@
+# decision: `html.render(t"...")` puts each value where it can't change what the page does.
+#
+# Between tags and in a quoted attribute a value is escaped. Where escaping isn't enough, in a
+# `<script>`, an `on...` attribute or an attribute without quotes, the page fails, naming the
+# value, and so does a link's value that would make it a `javascript:` URL, or any that isn't
+# `http`, `https`, `mailto` or relative. Pages are built from pieces: an `Html` goes into
+# another as it is.
+from std import html
+from std.html import Html, HtmlError, HtmlValue
+
+struct Visitor:
+    name: str
+    site: str
+
+## One row of a list.
+def row(item: str) -> Html fails HtmlError:
+    html.render(t"<li>{item}</li>")?
+
+## A page greeting `visitor`, with a list made in a loop.
+def page(visitor: Visitor, items: list[str]) -> Html fails HtmlError:
+    rows = [row(item)? for item in items]
+    listed = html.join(rows)
+    html.render(
+        t"<p class=\"hello\">Hello, {visitor.name}</p><a href=\"{visitor.site}\">site</a><ul>{listed}</ul>",
+    )?
+
+test "text between tags is escaped"():
+    script = "<script>alert(1)</script>"
+    made = html.render(t"<p>{script}</p>")?
+    assert made.text() == "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>"
+
+test "a quoted attribute's value can't leave its quotes"():
+    title = "\" onmouseover=\"alert(1)"
+    made = html.render(t"<p title=\"{title}\">hi</p>")?
+    assert made.text() == "<p title=\"&quot; onmouseover=&quot;alert(1)\">hi</p>"
+    quote = "' x='1"
+    single = html.render(t"<p title='{quote}'>hi</p>")?
+    assert single.text() == "<p title='&#39; x=&#39;1'>hi</p>"
+
+test "numbers and yes-or-no are written as text"():
+    assert (
+        html.render(t"<td>{42}</td><td>{2.5}</td><td>{True}</td>")?.text()
+        == "<td>42</td><td>2.5</td><td>True</td>"
+    )
+
+test "a link to javascript: fails"():
+    for bad in [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        " java\tscript:alert(1)",
+        "data:text/html,x",
+        "vbscript:x",
+    ]:
+        assert refusal(t"<a href=\"{bad}\">x</a>") == LINK_REFUSED
+
+test "http, https, mailto and relative links are kept"():
+    for good in [
+        "https://example.com/a?b=1&c=2",
+        "http://example.com",
+        "mailto:a@example.com",
+        "/users/7",
+        "page.html",
+        "#top",
+        "?q=1",
+    ]:
+        assert (
+            html.render(t"<a href=\"{good}\">x</a>")?.text()
+            == f"<a href=\"{html.escape(good)}\">x</a>"
+        )
+
+test "a value after a link's settled start can't change its scheme"():
+    tail = "javascript:x"
+    made = html.render(t"<a href=\"/users/{tail}\">x</a>")?
+    assert made.text() == "<a href=\"/users/javascript:x\">x</a>"
+    rest = "script:alert(1)"
+    assert (
+        refusal(t"<img src=\"java{rest}\">")
+        == "`{rest}` can't go there: a link has to be `http`, `https`, `mailto` or relative"
+    )
+
+test "pages are built from pieces"():
+    made = page(Visitor(name="<Ann>", site="/ann"), ["a & b", "c"])?
+    assert (
+        made.text()
+        == "<p class=\"hello\">Hello, &lt;Ann&gt;</p><a href=\"/ann\">site</a><ul><li>a &amp; b</li><li>c</li></ul>"
+    )
+
+test "a piece in an attribute is escaped like text"():
+    x = "x"
+    bold = html.render(t"<b>{x}</b>")?
+    assert (
+        html.render(t"<p title=\"{bold}\">y</p>")?.text()
+        == "<p title=\"&lt;b&gt;x&lt;/b&gt;\">y</p>"
+    )
+
+LINK_REFUSED = "`{bad}` can't go there: a link has to be `http`, `https`, `mailto` or relative"
+
+## Why `page` couldn't be made, in words, or "" if it could.
+def refusal(page: Template[HtmlValue]) -> str:
+    match html.render(page):
+        case Ok(_):
+            ""
+        case Err(error):
+            error.message()
+
+test "a value inside a script fails"():
+    code = "alert(1)"
+    assert (
+        refusal(t"<script>run({code})</script>")
+        == "`{code}` can't go there: text inside a `<script>` or `<style>` is code; pass it in a `data-` attribute"
+    )
+    assert refusal(t"<STYLE type=\"text/css\">{code}</STYLE>").startswith("`{code}` can't go there")
+    after = html.render(t"<script>go()</script ><p>{code}</p>")?
+    assert after.text() == "<script>go()</script ><p>alert(1)</p>"
+
+test "a value in an on attribute, style or srcdoc fails"():
+    code = "alert(1)"
+    assert refusal(t"<button onclick=\"{code}\">x</button>").endswith("runs its value as a script")
+    assert refusal(t"<p style=\"{code}\">x</p>").endswith("reads its value as CSS")
+    assert refusal(t"<iframe srcdoc=\"{code}\"></iframe>").endswith("reads its value as a page")
+
+test "a value without quotes, in a name or in a comment fails"():
+    value = "x onclick=alert(1)"
+    assert refusal(t"<a href={value}>x</a>").endswith("put it in quotes")
+    assert refusal(t"<a href=x{value}>x</a>").endswith("put it in quotes")
+    assert refusal(t"<p {value}>x</p>").endswith("a tag's or an attribute's name")
+    assert refusal(t"<{value}>").endswith("a tag's or an attribute's name")
+    assert refusal(t"<!-- {value} -->").endswith("at its first `-->`")
+    after = html.render(t"<!-- a > b --><p>{value}</p>")?
+    assert after.text() == "<!-- a > b --><p>x onclick=alert(1)</p>"
+
+test "a template that ends inside a tag fails"():
+    path = "/x"
+    assert refusal(t"<a href=\"{path}") == "the template ends inside an attribute"
+    assert refusal(t"<script>") == "the template ends inside a `<script>` or `<style>`"
+
+test "a format spec fails rather than being dropped"():
+    price = 2.5
+    assert refusal(t"<td>{price:.2f}</td>").startswith("`{price}` has a format spec")
+
+def main(stdout: Stdout):
+    match page(Visitor(name="Ann & Bo", site="https://example.com"), ["one", "<two>"]):
+        case Ok(made):
+            stdout.print(made)
+        case Err(error):
+            stdout.print(error.message())

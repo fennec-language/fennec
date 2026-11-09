@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use fennec_check::{Signature, Type};
 
-use super::{Context, Lowering};
+use super::{Context, Lowered, Lowering};
+use fennec_syntax::{Expr, ExprKind, Stmt};
 
 /// How many copies of generic functions a program can ask for.
 const MOST_COPIES: usize = 2000;
@@ -294,5 +295,63 @@ impl Lowering<'_> {
             return None;
         }
         Some((context.request(&base, subst)?, filled))
+    }
+}
+
+impl Lowering<'_> {
+    /// `for f in fields(T):`, written out once for each of `T`'s fields in this copy: `f.name` as
+    /// the field's name and `f.get(x)` as `x`'s field, of the field's own type. A type with no
+    /// fields, like `int`, gives none.
+    pub(super) fn each_field(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Lowered<()> {
+        let (Some(of), [name]) = (fennec_check::fields_of(iter), names) else {
+            return Err("it loops over `fields` in a way that isn't lowered yet".to_owned());
+        };
+        let ty = match self.subst.get(of) {
+            Some(ty) => ty.clone(),
+            None => Type::Named(of.to_owned()),
+        };
+        let fields = match &ty {
+            Type::Named(owner) => {
+                self.context.signatures.structure(owner).map(|found| found.fields.clone()).unwrap_or_default()
+            }
+            Type::Generic(..) => return Err("it loops over the fields of a generic struct".to_owned()),
+            _ => Vec::new(),
+        };
+        let each = fennec_check::each_field_type(iter.span.start);
+        for (field, field_ty) in fields {
+            let mut written = body.to_vec();
+            fennec_syntax::visit::in_stmts(&mut written, &mut |expr| field_written(expr, name, &field));
+            let outer = self.subst.insert(each.clone(), field_ty);
+            let lowered = self.block(&written, super::Tail::Drop);
+            match outer {
+                Some(outer) => self.subst.insert(each.clone(), outer),
+                None => self.subst.remove(&each),
+            };
+            lowered?;
+        }
+        Ok(())
+    }
+}
+
+/// `f.name` as the field's name, and `f.get(x)` as `x.field`, where `f` is the loop's name for it.
+fn field_written(expr: &mut Expr, held: &str, field: &str) {
+    let named = |object: &Expr| matches!(&object.kind, ExprKind::Name(found) if found == held);
+    match &mut expr.kind {
+        ExprKind::Attr { object, name, .. } if named(object) && name == "name" => {
+            expr.kind = ExprKind::Str(field.to_owned());
+        }
+        ExprKind::Call { callee, args } => {
+            if let ExprKind::Attr { object, name, .. } = &callee.kind
+                && named(object)
+                && name == "get"
+                && let [given] = args.as_mut_slice()
+            {
+                let at = given.value.span;
+                let read = std::mem::replace(&mut given.value, Expr { kind: ExprKind::None, span: at });
+                expr.kind =
+                    ExprKind::Attr { object: Box::new(read), name: field.to_owned(), optional: false };
+            }
+        }
+        _ => {}
     }
 }

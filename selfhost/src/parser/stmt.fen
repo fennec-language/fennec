@@ -238,10 +238,12 @@ extend Parser:
             mut span = value.span
             for name in names:
                 span = span.to(name.span)
+            keyword = "lock" if lock else "with"
+            example = "lock a, b as ref x, ref y:" if lock else "with a as ref x, b as ref y:"
             fail Diagnostic(
-                message=f"this `with` holds {held} values but names {names.len()}",
+                message=f"this `{keyword}` holds {held} values but names {names.len()}",
                 span=span,
-                help="give each value its own name: `with a as ref x, b as ref y:`",
+                help=f"give each value its own name: `{example}`",
             )
         if lock and names.len() == 0:
             fail Diagnostic(

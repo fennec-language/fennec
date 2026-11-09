@@ -1,8 +1,7 @@
 ## The scoreboard: kills, damage and healing by team, and what happened, in order.
 ##
-## The design has a scoreboard be `shared Scoreboard:`, a locked handle every task can update.
-## `shared` isn't built yet, so this is a plain struct the tick passes along as `ref`, and the
-## parallel part of a tick only reads.
+## Every task could update a `shared Scoreboard` inside a `lock`. This keeps it a plain struct
+## the tick passes along as `ref`, and the parallel part of a tick only reads.
 
 from units import Team, World
 

@@ -4,9 +4,7 @@
 //! worker publishes its own every so often and whenever it goes idle, and a thread of its own
 //! writes the sum to `file` a few times a second, replacing what was there. A test drives a program
 //! the same way over and over and checks the counts hold. Unlike the process's memory, they say
-//! what's live, not what's cached for reuse. What is cached, freed blocks kept for reuse and the
-//! pages of the table of blocks, comes on lines of its own starting `cached`, which grow as a
-//! program warms up and then have to stay within their bounds.
+//! what's live, not what's cached for reuse.
 //!
 //! Nothing's counted unless the variable's set, and then only every 100 ms on each thread.
 
@@ -30,12 +28,6 @@ pub(crate) struct Counts {
     pub(crate) tasks: usize,
     /// The connections it's serving.
     pub(crate) connections: usize,
-    /// Words of freed blocks kept for reuse, at most 8 MB's worth on each thread.
-    pub(crate) spare: usize,
-    /// Pages in its table of blocks, at most about twice those with blocks on them.
-    pub(crate) pages: usize,
-    /// How many threads' counts are in the sum.
-    pub(crate) threads: usize,
 }
 
 impl Counts {
@@ -49,25 +41,14 @@ impl Counts {
         self.names += other.names;
         self.tasks += other.tasks;
         self.connections += other.connections;
-        self.spare += other.spare;
-        self.threads += other.threads;
-        self.pages += other.pages;
     }
 
     /// The report's lines: one for each count, and one for each size of block.
     fn lines(&self) -> String {
         let blocks: usize = self.blocks.values().sum();
         let mut text = format!(
-            "blocks {blocks}\ntemps {}\ninputs {}\ntexts {}\nnames {}\ntasks {}\nconnections {}\nthreads {}\ncached spare {}\ncached pages {}\n",
-            self.temps,
-            self.inputs,
-            self.texts,
-            self.names,
-            self.tasks,
-            self.connections,
-            self.threads,
-            self.spare,
-            self.pages
+            "blocks {blocks}\ntemps {}\ninputs {}\ntexts {}\nnames {}\ntasks {}\nconnections {}\n",
+            self.temps, self.inputs, self.texts, self.names, self.tasks, self.connections
         );
         for (words, count) in &self.blocks {
             let _ = writeln!(text, "words {words} {count}");
@@ -143,9 +124,6 @@ pub(crate) fn of_this_thread() -> Counts {
             inputs: state.inputs.len(),
             texts: state.heap.texts.borrow().len(),
             names: state.name_ids.len(),
-            spare: state.heap.spare_words(),
-            pages: state.heap.table_pages(),
-            threads: 1,
             ..Counts::default()
         })
     })
@@ -166,7 +144,7 @@ mod tests {
         assert_eq!(total.blocks, [(4, 3), (6, 1)].into());
         assert_eq!(
             total.lines(),
-            "blocks 4\ntemps 1\ninputs 0\ntexts 0\nnames 0\ntasks 0\nconnections 2\nthreads 0\ncached spare 0\ncached pages 0\nwords 4 3\nwords 6 1\n"
+            "blocks 4\ntemps 1\ninputs 0\ntexts 0\nnames 0\ntasks 0\nconnections 2\nwords 4 3\nwords 6 1\n"
         );
     }
 }

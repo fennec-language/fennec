@@ -2462,8 +2462,9 @@ impl Emit<'_, '_, '_> {
                 self.read_into(*dest, &held, &place, ITEM_ACCESS)
             }
             InstKind::GetTupleItem { dest, value, at } => self.get_field(*dest, value, &format!("_{at}")),
-            InstKind::MakeList { dest, items } => self.make_list(*dest, items, block),
-            InstKind::ConstantList { dest, items } => self.constant_list(*dest, items, block),
+            InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } => {
+                self.make_list(*dest, items, block)
+            }
             InstKind::GetIndex { dest, object, index } => self.get_index(*dest, object, index, span),
             InstKind::SetIndex { object, path, index, value } => {
                 self.set_index(*object, path, index, value, span)

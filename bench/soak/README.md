@@ -48,15 +48,13 @@ First runs, 2026-11-08, on an 18-core M5 MacBook Pro, the native server on 4 wor
 | 10 min, no crashes | 590,871 | 985/s | 0.32 ms | 12.4 ms | 20–29 | 21 → 66 MB |
 | 30 min, no crashes | 1,640,645 | 912/s | 0.31 ms | 14.0 ms | 21–31 | 14 → 66 MB by minute 12, then 76 MB by minute 30 |
 | 10 min, no crashes, after #981 | 357,790 | 596/s | 0.38 ms | 30.3 ms | 21–30 | 22 → 61 MB by minute 5.6, then 62.6 MB by minute 10 |
-| 30 min, full mix, 2026-11-09 | 2,849,438 | 1583/s | 0.27 ms | 6.2 ms | 20–30 | 30 → 128 MB, 1.2 MB a minute through the last 10 |
-| 30 min, full mix, pages given back | 3,574,266 | 1986/s | 0.24 ms | 3.9 ms | 21–30 | 51 → 84 MB by minute 20, then 85.8 MB by minute 30 |
 
 In every run the server never stopped, each crash ended only its own request and connection, and every other request was answered.
 
 **Where it stands:**
 - **No leak is left that the runtime can count.** `live::a_server_holds_no_more_after_thousands_of_requests_of_each_kind` drives each kind of request 1,500 more times after a warm-up and requires the runtime's live count to be the same. Crashes are among them. That count, `FENNEC_LIVE_REPORT`, covers live blocks by size, temporaries, inputs, cached texts, names, parked tasks and connections. Unlike RSS, it doesn't move with caches filling.
 - **Crashes:** what looked like a leak of 1.8 KB a crash was the temporaries leak #981 fixed, since a crash leaves its function without truncating. On main, 90,074 crashes in a minute hold RSS at 7.8 MB.
-- **What RSS still does:** it rises for the first minutes as each worker's cache of freed blocks fills, up to 8 MB a thread, and the allocator's pages with it. The live report shows both on its `cached` lines. The slow rise that was still going at 30 minutes was each worker's table of blocks: it kept a 64 KB page for every place a block had ever been, and file writes' 8 KB bodies land somewhere new each time. Now the table gives back pages with no block on them, and its pages hold at about 240. What's left over the last 10 minutes, 0.18 MB a minute, is the cache of freed blocks still filling, at under half its bound. The live count is the test of a leak; RSS isn't.
+- **What RSS still does:** it rises for the first minutes as each worker's cache of freed blocks fills, up to 8 MB a thread, and the allocator's pages with it. On a loaded machine it was still rising slowly at 10 minutes. The live count is the test of a leak; RSS isn't.
 
 Bisecting, on one worker for 6 minutes each, before #981:
 

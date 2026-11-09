@@ -75,14 +75,15 @@ fn lower_from(
     let library = fennec_syntax::prelude_to_run().unwrap_or_default();
     let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
-    let every: HashMap<String, &FnDef> = library
-        .iter()
-        .flat_map(definitions)
-        .chain(functions.iter().map(|(key, def)| (key.clone(), *def)))
-        .collect();
+    // The library's functions the checker rewrote for this program stand in for its own.
+    let rewritten = module.std_rewritten.iter().map(|(key, def)| (key.clone(), def));
+    let mut every: HashMap<String, &FnDef> =
+        library.iter().flat_map(definitions).chain(rewritten.clone()).collect();
+    every.extend(functions.iter().map(|(key, def)| (key.clone(), *def)));
     let reachable_later: HashMap<String, &FnDef> = library
         .iter()
         .flat_map(definitions)
+        .chain(rewritten)
         .filter(|(key, _)| !functions.iter().any(|(own, _)| own == key))
         .collect();
     let defs = structs::definitions(&modules, signatures);

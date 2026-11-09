@@ -16,12 +16,6 @@ const PLACE_BITS: u32 = 4;
 const PAGES: usize = 1 << (REGION_BITS - PAGE_BITS);
 const PLACES: usize = 1 << (PAGE_BITS - PLACE_BITS);
 
-/// How many pages a table makes before it first looks for empty ones to give back. After that
-/// it looks once it's made as many as it kept the last time, so looking costs a page's worth
-/// of reading for each page made, and a table holds at most about twice the pages its blocks
-/// are on.
-const PAGES_BEFORE_LOOKING: usize = 64;
-
 /// The shortest block, in words, that has a page's place to itself.
 const PLACED_WORDS: usize = 2;
 
@@ -42,11 +36,6 @@ pub(super) struct Table {
     /// The block the heap's kept a place in. A block can't leave while the heap still has one,
     /// as its address could come back as another string, and a wrong place gives no failure.
     place_in: usize,
-    /// Pages made since it last gave back the empty ones, and how many it kept then. A
-    /// long-running program's blocks wander through the allocator's memory, so without giving
-    /// pages back the table would grow by a page for each place they'd ever been.
-    made: usize,
-    kept: usize,
 }
 
 /// What taking an owner off a block found.
@@ -124,12 +113,6 @@ impl Table {
 
     pub(super) fn len(&self) -> usize {
         self.len
-    }
-
-    /// How many pages it holds, for counting what's live.
-    #[cfg(any(test, feature = "threads"))]
-    pub(super) fn pages(&self) -> usize {
-        self.regions.iter().map(|(_, pages)| pages.iter().flatten().count()).sum()
     }
 
     /// How many blocks it holds of each size, in words, for counting what's live.
@@ -210,7 +193,6 @@ impl Table {
         };
         if page.is_none() {
             *page = empty();
-            self.made += 1;
         }
         if let Some(slot) = page.as_mut().and_then(|page| page.get_mut(place)) {
             if slot.is_none() {
@@ -218,27 +200,6 @@ impl Table {
             }
             *slot = Some(block);
         }
-        if self.made >= self.kept.max(PAGES_BEFORE_LOOKING) {
-            self.give_back_empty_pages();
-        }
-    }
-
-    /// Lets go of every page with no block on it.
-    #[cold]
-    #[inline(never)]
-    fn give_back_empty_pages(&mut self) {
-        let mut kept = 0;
-        for (_, pages) in &mut self.regions {
-            for page in pages.iter_mut().filter(|page| page.is_some()) {
-                if page.as_ref().is_some_and(|places| places.iter().all(Option::is_none)) {
-                    *page = None;
-                } else {
-                    kept += 1;
-                }
-            }
-        }
-        self.kept = kept;
-        self.made = 0;
     }
 
     /// Takes one owner off the block at `address`, and takes the block out when that was its last,
@@ -307,25 +268,6 @@ mod tests {
         table.insert(block);
         table.note_place(at);
         table.remove(at);
-    }
-
-    #[test]
-    fn gives_back_pages_whose_blocks_have_all_left() {
-        let mut table = Table::default();
-        // Kept outside the table, so each round's blocks land where no earlier round's did, as a
-        // long-running server's blocks wander through the allocator's memory.
-        let mut elsewhere = Vec::new();
-        for _ in 0..10 {
-            // 64 KB each, so each starts on a page of its own.
-            let blocks: Vec<Box<[u64]>> = (0..50).map(|_| vec![1; 1 << 13].into()).collect();
-            let addresses: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
-            for block in blocks {
-                table.insert(block);
-            }
-            elsewhere.extend(addresses.into_iter().filter_map(|address| table.remove(address)));
-        }
-        assert_eq!(table.len(), 0);
-        assert!(table.pages() < 200, "{} pages kept for no blocks", table.pages());
     }
 
     #[test]

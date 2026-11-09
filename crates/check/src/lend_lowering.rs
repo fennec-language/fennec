@@ -326,13 +326,21 @@ impl Lowering<'_> {
                         _ => value,
                     };
                     let at = (call.span.start, call.span.end);
-                    match (self.sources.get(&at).cloned(), self.launches.get(&at)) {
-                        (Some(source), _) => self.expand(call, names, block, &source, stmt.span),
-                        (None, Some(launch)) => crate::launch::source(launch).and_then(|source| {
-                            let options = crate::launch::options_only(call);
-                            self.expand(&options, names, block, &source, stmt.span)
-                        }),
-                        (None, None) => None,
+                    // A source whose block still holds a `with` waits for that one to be written
+                    // in, as a source just written in holds ones that aren't known till it's
+                    // checked again: so the failures of what's written there run this one's
+                    // `else:` too, and their `?`s stay theirs.
+                    if holds_with(block) {
+                        None
+                    } else {
+                        match (self.sources.get(&at).cloned(), self.launches.get(&at)) {
+                            (Some(source), _) => self.expand(call, names, block, &source, stmt.span),
+                            (None, Some(launch)) => crate::launch::source(launch).and_then(|source| {
+                                let options = crate::launch::options_only(call);
+                                self.expand(&options, names, block, &source, stmt.span)
+                            }),
+                            (None, None) => None,
+                        }
                     }
                 }
                 StmtKind::Expr(value)
@@ -955,6 +963,26 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
             None => at += 1,
         }
     }
+}
+
+/// Whether a block holds a `with` that isn't a `lock`, here or in a block inside, but not in a
+/// function written inside.
+fn holds_with(body: &[Stmt]) -> bool {
+    body.iter().any(|each| match &each.kind {
+        StmtKind::With { lock: false, .. } => true,
+        StmtKind::With { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::OnFailure { body, .. } => holds_with(body),
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, body)| holds_with(body)) || otherwise.as_deref().is_some_and(holds_with)
+        }
+        StmtKind::Expr(value) | StmtKind::Assign { value, .. } => match &value.kind {
+            ExprKind::Match { arms, .. } => arms.iter().any(|arm| holds_with(&arm.body)),
+            _ => false,
+        },
+        _ => false,
+    })
 }
 
 fn stmt_break(span: Span) -> Stmt {

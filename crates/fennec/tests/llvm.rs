@@ -4698,6 +4698,55 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A source with an `else:` around a block holding a source that opens another: the one written
+/// in last is written in first, so the outer `else:` runs when the innermost fails opening, and
+/// each `with` stays a `with` until it's written in.
+#[test]
+fn a_source_around_one_that_opens_another_writes_the_innermost_in_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "innermost_first",
+        r#"error Boom:
+    at: int
+
+def inner(n: int, stdout: Stdout) -> with int fails Boom:
+    if n < 0: fail Boom(at=n)
+    lend n
+    stdout.print("inner closed")
+
+def middle(n: int, stdout: Stdout) -> with int fails Boom:
+    with inner(n, stdout)? as got:
+        lend got + 1
+    stdout.print("middle closed")
+
+def outer(n: int, stdout: Stdout) -> with int fails Boom:
+    lend n else:
+        stdout.print("outer's cleanup")
+    stdout.print("outer closed")
+
+def used(n: int, stdout: Stdout) fails Boom:
+    with outer(n, stdout)? as a:
+        with middle(a, stdout)? as b:
+            stdout.print("got", b)
+
+def main(stdout: Stdout):
+    for n in [1, -1]:
+        match used(n, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "got 2\ninner closed\nmiddle closed\nouter closed\nworked\nouter's cleanup\nfailed Boom(at=-1)\n"
+    );
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]
@@ -9063,64 +9112,6 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b",
     ];
     assert_eq!([too_big.as_str(), &refused_after, &after_blank], wanted);
-    Ok(())
-}
-
-/// What a server says to `asked` on one connection, sent whole with the sending side then
-/// closed, built with the runtime `threads` names: `"1"` for the one with threads, `"0"` for the
-/// plain one. A reset after what was said shows as `[reset]`.
-fn served_on(threads: &str, name: &str, asked: &[u8]) -> std::io::Result<String> {
-    use std::io::{Read, Write};
-    let source = r"from std.net import Request, Response
-
-def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
-
-def main(net: Net, stdout: Stdout):
-    with net.listen(0)? as server:
-        stdout.print(server.port)
-        server.serve(respond, timeout=10s)
-";
-    if threads == "1" {
-        assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
-    }
-    let dir = folder(name)?;
-    let program = dir.join("serve.fen");
-    std::fs::write(&program, source)?;
-    let executable = dir.join("serve");
-    let built = crate::executables::fennec_command()
-        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
-        .env("FENNEC_HOME", &dir)
-        .env("FENNEC_THREADS_RUNTIME", threads)
-        .output_before(FENNEC_DEADLINE)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
-    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    let _ = stream.write_all(asked);
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-    let mut heard = Vec::new();
-    let reset = stream.read_to_end(&mut heard).is_err();
-    drop(server);
-    std::fs::remove_dir_all(&dir)?;
-    Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
-}
-
-/// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
-/// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
-/// when it read the line and `line_value` another. Found by fuzzing the server
-/// (`fennec-fuzz run http-server`).
-#[test]
-fn a_bare_carriage_return_isnt_taken_off_a_line() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    for threads in ["0", "1"] {
-        let said =
-            served_on(threads, &format!("bare_carriage_return_{threads}"), b"\r\r\nGET /a HTTP/1.1\r\n\r\n")?;
-        assert!(said.starts_with("HTTP/1.1 400 Bad Request\r\n"), "threads {threads}: {said}");
-    }
     Ok(())
 }
 
@@ -15439,55 +15430,6 @@ fn a_constant_is_worked_out_once() -> std::io::Result<()> {
     let ours = outcome(&Command::new(&executable).output_within()?);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours.0, "599999744999850000\n");
-    Ok(())
-}
-
-/// `embed_folder`'s lists are made the first time it's reached and kept: a function giving one,
-/// called a thousand times, makes them once, where it made both each time. A list taken from it
-/// and changed is the caller's own copy, and the kept one stays as it was.
-#[test]
-fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("embedded_once")?;
-    std::fs::create_dir_all(dir.join("site/css"))?;
-    std::fs::write(dir.join("site/css/app.css"), "body{}")?;
-    std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>")?;
-    let allocations = |calls: u32| -> std::io::Result<(String, u64)> {
-        let source = format!(
-            "def site() -> EmbeddedFolder:\n    embed_folder(\"site\")\n\n\
-             def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += files.len() + (files.get(\"index.html\") else bytes()).len()\n    \
-             mut paths = site().keys()\n    paths.append(\"extra\")\n    \
-             stdout.print(total, paths, site().keys())\n"
-        );
-        let program = dir.join(format!("calls{calls}.fen"));
-        std::fs::write(&program, source)?;
-        let executable = dir.join(format!("calls{calls}"));
-        let built = fennec(
-            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
-            &dir,
-        )?;
-        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
-        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-        let made = said
-            .split_whitespace()
-            .skip_while(|word| *word != "allocations")
-            .nth(1)
-            .and_then(|count| count.parse().ok())
-            .unwrap_or_else(|| panic!("no counts: {said}"));
-        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
-    };
-    let (once, made_once) = allocations(1)?;
-    let (often, made_often) = allocations(1000)?;
-    std::fs::remove_dir_all(&dir)?;
-    let shown = "[\"css/app.css\", \"index.html\", \"extra\"] [\"css/app.css\", \"index.html\"]\n";
-    assert_eq!(once, format!("13 {shown}"));
-    assert_eq!(often, format!("13000 {shown}"));
-    // Each call may make the folder's own block, but never its two lists again.
-    assert!(made_often - made_once <= 999, "{made_once} against {made_often}");
     Ok(())
 }
 

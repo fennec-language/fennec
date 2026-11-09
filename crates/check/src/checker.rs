@@ -1112,19 +1112,8 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
 /// operator's, a protocol's like `str`, `iter` or `len`, or any of `StrWriter`'s, which a type's
 /// own `str` is given.
 fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
-    const PROTOCOLS: [&str; 11] = [
-        "str",
-        "iter",
-        "len",
-        "is_live",
-        "del",
-        "hash",
-        "serialize",
-        "deserialize",
-        "contains",
-        "in",
-        "own_text",
-    ];
+    const PROTOCOLS: [&str; 10] =
+        ["str", "iter", "len", "is_live", "hash", "serialize", "deserialize", "contains", "in", "own_text"];
     if entry.owner.as_deref() == Some("StrWriter") {
         return true;
     }

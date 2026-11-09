@@ -181,7 +181,7 @@ An `Id` is local to its process's `Table`. To name something across servers, sen
 
 ## Sharing, resources and tasks
 
-Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now, however many calls down it's taken: take them together in one. Not built yet: `TaskGroup`, and pools. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
+Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now, however many calls down it's taken: take them together in one. Not built yet: `TaskGroup`, and pools. Today's `shared Name:` declarations and `with x as ref y:` still compile, and `fennec fix` rewrites them. A `def del` is refused.
 
 Four questions, each with its own words:
 

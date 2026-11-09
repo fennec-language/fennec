@@ -108,31 +108,23 @@ impl Checker {
         found
     }
 
-    /// Reports a `def del` on anything but a `shared` type. A plain value is copied freely, so
-    /// nothing can tell which copy is the last one; a `shared` value is one value, and its `del`
-    /// runs when the last name for it goes away.
+    /// Reports a `def del`, which there isn't: a destructor runs at a moment no line shows and has
+    /// nowhere to report a failure, so what needs cleanup is opened with `with` from a source.
     pub(crate) fn check_dels(&mut self) {
-        let plain: Vec<String> = self
+        let own: Vec<String> = self
             .program
             .types
             .values()
-            .filter(|info| !info.def.shared && !info.prelude)
+            .filter(|info| !info.prelude)
             .map(|info| info.def.name.clone())
             .collect();
-        for name in plain {
+        for name in own {
             let Some((_, entry)) = self.program.method(&name, "del") else { continue };
-            let kind = match self.program.type_info(&name).map(|info| info.kind) {
-                Some(crate::program::TypeKind::Enum) => "an `enum`",
-                Some(crate::program::TypeKind::Error) => "an `error`",
-                _ => "a `struct`",
-            };
-            let message = format!(
-                "`{name}` is {kind}, so it can't have `def del`: a plain value is copied freely, so nothing can tell which copy is the last"
-            );
-            self.diagnostics.push(
-                Diagnostic::new(message, entry.def.span)
-                    .with_help("hold a file or connection, which closes itself, or make this a `shared`"),
-            );
+            let shown = fennec_syntax::rename::shown_type_name(&name);
+            let message = format!("there's no `def del`: nothing runs when a `{shown}` goes away");
+            self.diagnostics.push(Diagnostic::new(message, entry.def.span).with_help(format!(
+                "open what needs cleanup with `with`, from a source: `def opened() -> with {shown}:` makes one, `lend`s it, and cleans up after the `lend`"
+            )));
         }
     }
 

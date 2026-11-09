@@ -2422,6 +2422,166 @@ def all_small(xs: list[int]) -> bool:
     }
 }
 
+/// A `with` source whose cleanup, written after its `lend`, says when it runs.
+const DOOR: &str = "struct Door:
+    name: str
+
+def closed(name: str):
+    pass
+
+def opened(name: str) -> with Door:
+    door = Door(name=name)
+    lend door
+    closed(door.name)
+";
+
+/// `f` below, lowered: each way out of the block reaches `call closed` in `bb6`.
+const LEFT_EVERY_WAY: &str = "fn f(_0) -> int
+  local _0 n: int
+  local _1: bool
+  local _2 name__lend1: str
+  local _3 exit__lend1: int
+  local _4 returned__lend1: int?
+  local _5: Door
+  local _6 door__lend1: Door
+  local _7: bool
+  local _8: bool
+  local _9: str
+  local _10: int
+  local _11: int?
+  local _12: str
+  local _13: bool
+  local _14: bool
+  local _15: bool
+  local _16: int
+  local _17: bool
+  local _18 name__lend2: str
+  local _19: Door
+  local _20 door__lend2: Door
+  local _21: str
+  bb0:
+    jump bb1
+  bb1:
+    _1 = _0 > 0
+    branch _1 bb2 bb3
+  bb2:
+    _2 = \"a\"
+    _3 = 0
+    _4 = none
+    _5 = make Door(_2)
+    _6 = _5
+    jump bb4
+  bb3:
+    _18 = \"b\"
+    _19 = make Door(_18)
+    _20 = _19
+    _21 = _20.name
+    call closed(_21)
+    return 0
+  bb4:
+    jump bb5
+  bb5:
+    _7 = _0 == 1
+    branch _7 bb8 bb9
+  bb6:
+    _12 = _6.name
+    call closed(_12)
+    _13 = _3 == 1
+    branch _13 bb14 bb15
+  bb7:
+    _8 = _0 == 2
+    branch _8 bb11 bb12
+  bb8:
+    _3 = 2
+    jump bb6
+  bb9:
+    jump bb7
+  bb10:
+    jump bb6
+  bb11:
+    _9 = _6.name
+    _10 = builtin str.len(_9)
+    _11 = some _10
+    _4 = _11
+    _3 = 1
+    jump bb6
+  bb12:
+    jump bb10
+  bb13:
+    _17 = _3 == 2
+    branch _17 bb20 bb21
+  bb14:
+    _14 = _4 is none
+    _15 = not _14
+    branch _15 bb17 bb18
+  bb15:
+    jump bb13
+  bb16:
+    jump bb13
+  bb17:
+    _16 = _4 as some
+    return _16
+  bb18:
+    jump bb16
+  bb19:
+    jump bb1
+  bb20:
+    jump bb3
+  bb21:
+    jump bb19
+";
+
+#[test]
+fn a_with_sources_cleanup_runs_however_its_block_is_left() {
+    // `break`, `return` and the block's end all run `closed` where the source's cleanup is
+    // written in, and then leave the way they asked to.
+    let source = format!(
+        "{DOOR}
+def f(n: int) -> int:
+    while n > 0:
+        with opened(\"a\") as door:
+            if n == 1:
+                break
+            if n == 2:
+                return door.name.len()
+    with opened(\"b\") as other:
+        pass
+    0
+"
+    );
+    assert_eq!(printed(&source, "f").unwrap(), LEFT_EVERY_WAY);
+}
+
+#[test]
+fn a_loop_over_a_generator_with_a_source_or_match_still_lowers() {
+    let source = format!(
+        "{DOOR}
+def held(name: str) -> Iterator[int]:
+    with opened(name) as door:
+        yield 1
+    match 2:
+        case 2:
+            yield 2
+        case _:
+            return
+
+def f() -> int:
+    sum(n for n in held(\"a\"))
+"
+    );
+    // What the source lent is kept across the `yield`, and its cleanup runs once the generator
+    // goes on past the block.
+    let resume = printed(&source, "held.resume").unwrap();
+    assert_eq!(resume.matches("call closed").count(), 1, "{resume}");
+    // Abandoned inside the block, it doesn't run the cleanup yet, so it has nothing to close: see
+    // `an_abandoned_generator_runs_its_open_sources_cleanup` in the native tests.
+    let program = lowered(&source).unwrap();
+    let generators: Vec<_> =
+        program.generators.iter().map(|def| (&*def.name, def.abandon.as_deref())).collect();
+    assert_eq!(generators, [("held", None)]);
+    assert!(!printed(&source, "f").unwrap().contains("list.append"));
+}
+
 #[test]
 fn a_generator_passed_around_is_a_state_machine() {
     let source = "def upto(limit: int) -> Iterator[int]:

@@ -5987,8 +5987,7 @@ def main(stdout: Stdout):
 
 /// A generator made for a loop goes when the loop does, letting go of what it's holding right
 /// then, while one with a name lasts as long as the name, and returning out of the loop lets go
-/// of it before the caller goes on. A `shared` type's `del` doesn't run yet, so nothing prints
-/// when the door goes; when it does, this shows each door closing at the right moment.
+/// of it before the caller goes on.
 #[test]
 fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<()> {
     if !ready() {
@@ -5996,12 +5995,9 @@ fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<
     }
     same_as_the_interpreter(
         "generator_left",
-        r#"shared Door:
+        r#"struct Door:
     out: Stdout
     name: str
-
-    def del(self):
-        self.out.print(f"closing {self.name}")
 
 def holding(out: Stdout, name: str) -> Iterator[int]:
     door = Door(out=out, name=name)
@@ -6040,6 +6036,42 @@ def main(stdout: Stdout):
     stdout.print(returns_from_it(stdout))
 "#,
     )
+}
+
+/// A generator abandoned while a `with` source's block is open runs the source's cleanup then, as
+/// a `break` out of the block would, and one run to its end runs it as it goes past.
+#[test]
+#[ignore = "a source's cleanup written in around a `yield` doesn't run yet when the generator is abandoned"]
+fn an_abandoned_generator_runs_its_open_sources_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "abandoned_source",
+        "struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door else:
+        stdout.print(\"failed\", name)
+    stdout.print(\"closed\", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def main(stdout: Stdout):
+    for n in held(\"left early\", stdout):
+        stdout.print(\"got\", n)
+        break
+    stdout.print(\"after the loop\")
+    stdout.print(sum(n for n in held(\"run out\", stdout)))
+",
+    )?;
+    assert_eq!(printed, "got 1\nclosed left early\nafter the loop\nclosed run out\n3\n");
+    Ok(())
 }
 
 /// `list`, `sorted`, `set`, `min` and `max` of a type with an `iter` of its own take what it

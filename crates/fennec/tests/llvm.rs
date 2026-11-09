@@ -4247,6 +4247,41 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `shared` value of a program's own type named like a standard library type, as `Log` is, is
+/// locked in a function of its own. A `ref self` method called under a write lock in a loop
+/// changes the cell where it is, which copies nothing for the handle.
+#[test]
+fn a_lock_on_a_type_named_like_stds_and_in_a_loop_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "lock_named_like_std",
+        "struct Log:
+    count = 0
+
+    def bump(ref self):
+        self.count += 1
+
+def bumped(log: shared Log, times: int):
+    for _ in range(times):
+        lock log as ref held:
+            held.bump()
+
+def length(log: shared Log) -> int:
+    lock log as held:
+        return held.count
+
+def main(stdout: Stdout):
+    shared log = Log()
+    bumped(log, times=3)
+    stdout.print(length(log))
+",
+    )?;
+    assert_eq!(printed, "3\n");
+    Ok(())
+}
+
 /// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
 /// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
 /// what's inside it. A type with no fields gives none.

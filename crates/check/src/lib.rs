@@ -250,7 +250,7 @@ pub fn builtin_method_params(ty: &Type, name: &str) -> Option<Vec<Type>> {
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
     let names = own_types_apart(module);
     let checked = check_typed(module).map_err(|problems| as_written(problems, &names))?;
-    Ok(resolved(module, checked))
+    resolved(module, checked)
 }
 
 /// Makes the calls to `json.dumps`, `json.loads`, `toml.dumps` and `toml.loads` in a checked and
@@ -426,7 +426,7 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     let names = own_types_apart(module);
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
-    Ok(resolved(module, checked))
+    resolved(module, checked)
 }
 
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to
@@ -469,7 +469,7 @@ fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
     }
 }
 
-fn resolved(module: &mut Module, checked: Checked) -> Signatures {
+fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Diagnostic>> {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     if !checked.cases.is_empty()
@@ -539,17 +539,28 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         lend_lowering::lower(module, &checked.sources, &checked.launches, &checked.ref_matches);
     let counted = enumerate_lowering::lower(module);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
-    if (lock_lowering::lower(module, &checked.shared_values)
-        || sources_written
-        || counted
-        || nested
-        || tuples)
-        && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
+    if lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested || tuples
     {
-        return resolved(module, again);
+        // Each `_` has a name of its own, as the first check gave it.
+        fennec_syntax::rename::discards_apart(module);
+        let mut second = checker::Checker::new(module);
+        second.again = true;
+        return match second.run(checker::Scope::Everything) {
+            Ok(again) => resolved(module, again),
+            Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
+        };
     }
     fennec_syntax::fuse::stored_stages(module);
-    checked.into_signatures()
+    Ok(checked.into_signatures())
+}
+
+/// What a program rewritten by lowering doesn't check for: the compiler's mistake, not the
+/// program's, said as one.
+fn not_checked_again(problem: &Diagnostic) -> Diagnostic {
+    let message =
+        format!("internal error: once rewritten for running, this doesn't check: {}", problem.message);
+    Diagnostic::new(message, problem.span)
+        .with_help("this is a mistake in the compiler, not in the program: please report it with the program")
 }
 
 impl Checked {
@@ -561,8 +572,11 @@ impl Checked {
     /// Writes into `module`, a copy of the one checked, what `check_and_resolve` would, and gives
     /// back the signatures lowering takes: a program checked with `check_typed` can then be
     /// lowered without being checked twice.
-    #[must_use]
-    pub fn resolve(&self, module: &mut Module) -> Signatures {
+    ///
+    /// # Errors
+    ///
+    /// When the program as lowering rewrote it doesn't check, which is the compiler's mistake.
+    pub fn resolve(&self, module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
         resolved(module, self.clone())
     }
 }

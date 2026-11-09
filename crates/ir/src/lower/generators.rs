@@ -352,7 +352,9 @@ impl<'a> Lowering<'a> {
                 lowering.finish(Terminator::Jump(*next));
             });
         }
-        self.finish(Terminator::Unreachable);
+        // Told to leave at a `yield` with no source's block open, it just finishes.
+        self.set_slot(slot::PC, Operand::Int(FINISHED), span);
+        self.finish(Terminator::Return(Some(Operand::Bool(false))));
     }
 
     /// When `pc` holds this, does `then`, which ends its block. Otherwise carries on.
@@ -547,13 +549,22 @@ impl<'a> Lowering<'a> {
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
         self.start_generator(&generator, used_at);
+        // One made for this loop goes when the loop does. Left by `return` or a failure, it's
+        // let go on the way out: what it holds closes then, and a cleanup's failure is the
+        // loop's. `break` and the loop's end let it go below.
+        let made_here = matches!(&generator, Operand::Local(local)
+            if self.locals.get(local.0).is_some_and(|held| held.name.is_none()));
+        let entered = self.leaving.len();
+        if made_here {
+            self.leaving.push(Leaving::Generator { generator: generator.clone(), known: known.clone() });
+        }
         let (head, then, done, exit) =
             (self.new_block(), self.new_block(), self.new_block(), self.new_block());
         self.finish(Terminator::Jump(head));
         self.current = head;
         let more = self.temporary(Type::Bool);
         let generator_read = generator.clone();
-        self.emit(InstKind::Resume { dest: more, generator: generator_read, known }, span);
+        self.emit(InstKind::Resume { dest: more, generator: generator_read, known: known.clone() }, span);
         self.finish(Terminator::Branch { cond: Operand::Local(more), then, otherwise: done });
         self.current = then;
         self.scopes.push(HashMap::new());
@@ -564,6 +575,7 @@ impl<'a> Lowering<'a> {
         let lowered = bound.and_then(|()| body(self));
         self.loops.pop();
         self.scopes.pop();
+        self.leaving.truncate(entered);
         lowered?;
         self.finish(Terminator::Jump(head));
         self.current = done;
@@ -571,8 +583,11 @@ impl<'a> Lowering<'a> {
         self.current = exit;
         // One made for this loop goes when the loop does, closing what it's still holding, then
         // and not when the function ends.
+        if made_here {
+            self.let_go_now(&generator, known, span)?;
+        }
         if let Operand::Local(local) = &generator
-            && self.locals.get(local.0).is_some_and(|held| held.name.is_none())
+            && made_here
         {
             let name = "generator.let_go".to_owned();
             self.emit(
@@ -590,6 +605,38 @@ impl<'a> Lowering<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Lets go of a generator stopped at a `yield` now: it's told to leave and goes on once, so
+    /// any source's block open there runs its cleanup, and a failure in that cleanup passes up
+    /// from here, as one while it gives an item does.
+    pub(super) fn let_go_now(
+        &mut self,
+        generator: &Operand,
+        known: Option<String>,
+        span: Span,
+    ) -> Lowered<()> {
+        let pc = self.temporary(Type::Int);
+        self.emit(InstKind::GetSlot { dest: pc, generator: generator.clone(), slot: slot::PC }, span);
+        let stopped = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(pc), Operand::Int(0));
+        self.emit(InstKind::Binary { dest: stopped, op: BinOp::Gt, lhs, rhs }, span);
+        let (leave, after) = (self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(stopped), then: leave, otherwise: after });
+        self.current = leave;
+        let leaving = self.temporary(Type::Int);
+        let (lhs, rhs) = (Operand::Int(FAILED), Operand::Local(pc));
+        self.emit(InstKind::Binary { dest: leaving, op: BinOp::Sub, lhs, rhs }, span);
+        self.set_generator_slot(generator, slot::PC, Operand::Local(leaving), span);
+        let more = self.temporary(Type::Bool);
+        self.emit(InstKind::Resume { dest: more, generator: generator.clone(), known }, span);
+        self.pass_up_failure(generator, after, span)?;
+        self.current = after;
+        Ok(())
+    }
+
+    fn set_generator_slot(&mut self, generator: &Operand, at: usize, value: Operand, span: Span) {
+        self.emit(InstKind::SetSlot { generator: generator.clone(), slot: at, value }, span);
     }
 
     /// The result a local was taken out of, as `?` takes a call's value out of what it gives.
@@ -656,9 +703,20 @@ impl<'a> Lowering<'a> {
             self.finish(Terminator::Stop { message, span });
             return Ok(());
         };
-        let held = self.temporary(*error);
+        // The slot holds the generator's own error, which this function's may hold among others.
+        let own = match generator {
+            Operand::Local(local) => {
+                self.taken_from(*local).and_then(|result| match self.local_type(result) {
+                    Type::Result(_, own) => Some(*own),
+                    _ => None,
+                })
+            }
+            _ => None,
+        };
+        let held = self.temporary(own.unwrap_or_else(|| (*error).clone()));
         self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
-        self.pass_up_error(Operand::Local(held), span)
+        let widened = self.coerce(Operand::Local(held), &error, span)?;
+        self.pass_up_error(widened, span)
     }
 }
 

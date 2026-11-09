@@ -92,6 +92,8 @@ pub(crate) struct Analysis {
     /// Lists such a loop fills with nothing but zeros, one a turn from a count starting at 0:
     /// made whole, already zero, with the appends left out.
     pub(crate) zero_filled: HashSet<usize>,
+    /// For each of those, the loop's count, which is how many it has appended at each turn.
+    pub(crate) zero_counts: HashMap<usize, LocalId>,
     /// Lists such a loop appends to once a turn, at most as many times as the room made for
     /// them, and that nothing else in the loop touches: an append never needs more room, and
     /// the list is never shared while it's filled.
@@ -2308,7 +2310,8 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             .iter()
             .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
-            let zeros = fills_with_zeros(function, block, (header, body), list, known);
+            let zeros_counted = fills_with_zeros(function, block, (header, body), list, known);
+            let zeros = zeros_counted.is_some();
             match appends_within_room(function, (block, header_at.0), then.0, list) {
                 Some(Within::Room) => {
                     known.room_enough.insert(list);
@@ -2323,8 +2326,9 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
                 None => {}
             }
             known.reservations.insert(at, (list, limit));
-            if zeros {
+            if let Some(count) = zeros_counted {
                 known.zero_filled.insert(list);
+                known.zero_counts.insert(list, count);
             }
         }
     }
@@ -2454,31 +2458,31 @@ fn appends_within_room(
 }
 
 /// Whether a loop does nothing but append a zero to `list` each turn, counting up from 0 by 1,
-/// so that it appends exactly as many as its limit says.
+/// so that it appends exactly as many as its limit says: its count, if it does.
 fn fills_with_zeros(
     function: &Function,
     before: &Block,
     (header, body): (&Block, &Block),
     list: usize,
     known: &Analysis,
-) -> bool {
-    let Terminator::Branch { cond: Operand::Local(cond), .. } = &header.end else { return false };
+) -> Option<LocalId> {
+    let Terminator::Branch { cond: Operand::Local(cond), .. } = &header.end else { return None };
     let count = header.insts.iter().find_map(|inst| match &inst.kind {
         InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), .. } if dest == cond => {
             Some(*count)
         }
         _ => None,
     });
-    let Some(count) = count else { return false };
+    let count = count?;
     if !function.counts.iter().any(|found| found.count == count && !found.down) {
-        return false;
+        return None;
     }
     let starts_at_zero = before.insts.iter().rev().find_map(|inst| match &inst.kind {
         InstKind::Copy { dest, value } if *dest == count => Some(*value == Operand::Int(0)),
         _ => None,
     });
     if starts_at_zero != Some(true) || header.insts.len() != 1 {
-        return false;
+        return None;
     }
     let mut appends = 0;
     for inst in &body.insts {
@@ -2492,12 +2496,13 @@ fn fills_with_zeros(
                 appends += 1;
             }
             InstKind::Copy { dest, .. } if known.reads.get(dest.0) == Some(&0) => {}
-            _ => return false,
+            _ => return None,
         }
     }
     // The turn ends by stepping the count and nothing else.
-    let Terminator::Jump(latch) = body.end else { return false };
-    appends == 1 && function.blocks.get(latch.0).is_some_and(|latch| latch.insts.len() == 1)
+    let Terminator::Jump(latch) = body.end else { return None };
+    (appends == 1 && function.blocks.get(latch.0).is_some_and(|latch| latch.insts.len() == 1))
+        .then_some(count)
 }
 
 impl Analysis {
@@ -2531,6 +2536,7 @@ impl Analysis {
             aliases: HashMap::new(),
             reservations: HashMap::new(),
             zero_filled: HashSet::new(),
+            zero_counts: HashMap::new(),
             room_enough: HashSet::new(),
             length_kept: HashMap::new(),
             last_copies: HashSet::new(),

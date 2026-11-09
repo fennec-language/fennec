@@ -487,7 +487,7 @@ pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
     })
 }
 
-/// A list's block as the interpreter holds it: a packed list.
+/// A list's block as a `Value`: a packed list.
 pub(super) fn read(state: &State, block: &[u64]) -> Value {
     let Some(element) = element_of(state, block) else { return Value::None };
     let words = items(block, element.words()).to_vec();
@@ -537,8 +537,8 @@ pub(super) fn shown_where_used(state: &State, held: u64, generations: u64, out: 
     }
 }
 
-/// A new list owned once with a temporary's items, failing like the interpreter when the
-/// temporary isn't a list of the kind of item expected.
+/// A new list owned once with a temporary's items. Fails when the temporary isn't a list of the
+/// kind of item expected.
 pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let wrong = |value: &Value| {
@@ -617,9 +617,8 @@ pub extern "C" fn remove_at(list: i64, item: i64) {
     });
 }
 
-/// Takes over a list's owner and gives back a list only that owner holds with a zeroed item
-/// at `at`, for native code to fill, failing like the interpreter for a place that isn't in
-/// the list or just past its end.
+/// Takes over a list's owner and gives back a list only that owner holds with a zeroed item at
+/// `at`, for native code to fill. Fails for a place that isn't in the list or just past its end.
 pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
     insert_into("list", list, at, (start, end))
 }
@@ -657,7 +656,7 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
     })
 }
 
-/// Whether an item of a word equals a word, as the interpreter compares them.
+/// Whether an item of a word equals a word.
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
         Element::Float | Element::F32 => {
@@ -793,14 +792,14 @@ pub extern "C" fn extend(list: i64, other: i64) -> i64 {
     })
 }
 
-/// Fails with the interpreter's message for `pop` on an empty `Buffer`.
+/// Fails with the language's message for `pop` on an empty `Buffer`.
 pub extern "C" fn pop_empty_buffer(start: i64, end: i64) {
     attempt(|_: &mut State| -> Result<(), Diagnostic> {
         Err(Diagnostic::new("can't pop from an empty Buffer", span(start, end)))
     });
 }
 
-/// Fails with the interpreter's message for `pop` on an empty list.
+/// Fails with the language's message for `pop` on an empty list.
 pub extern "C" fn pop_empty(start: i64, end: i64) {
     attempt(|_: &mut State| -> Result<(), Diagnostic> {
         Err(Diagnostic::new("can't pop from an empty list", span(start, end)))
@@ -871,7 +870,7 @@ pub(super) fn list_of_items(state: &mut State, element: &Rc<Element>, words: &[u
     state.heap.insert(block)
 }
 
-/// `a ** b` on ints, failing like the interpreter.
+/// `a ** b` on ints. Fails for a negative power or an overflow.
 pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
     attempt(|_: &mut State| {
         match crate::ops::binary(fennec_syntax::BinOp::Pow, Value::Int(a), Value::Int(b), span(start, end))? {
@@ -911,7 +910,7 @@ pub extern "C" fn float_power(a: f64, b: f64) -> f64 {
     }
 }
 
-/// Fails with the interpreter's message for an index past either end of a list.
+/// Fails with the language's message for an index past either end of a list.
 pub extern "C" fn out_of_range(at: i64, len: i64, start: i64, end: i64) {
     attempt(|_: &mut State| -> Result<(), Diagnostic> {
         Err(Diagnostic::new(format!("index {at} is out of range for length {len}"), span(start, end)))

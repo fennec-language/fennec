@@ -1,6 +1,6 @@
 //! `std.sqlite`: the methods of a `Database` and a `Transaction` written in Rust, by the handle
-//! each holds, which only these make, as native code calls them and the interpreter does. SQLite itself is compiled in,
-//! through rusqlite, whose `unsafe` stays its own.
+//! each holds, which only these make. SQLite itself is compiled in, through rusqlite, whose
+//! `unsafe` stays its own.
 //!
 //! A database has a connection its own queries run on, one at a time, and each transaction takes
 //! a connection of its own, so two tasks' transactions never mix. Every wait on SQLite runs on

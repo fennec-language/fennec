@@ -15,10 +15,10 @@ pub(crate) enum Value {
     /// Binary data, each byte from 0 to 255.
     Bytes(Rc<[u8]>),
     List(Rc<Vec<Value>>),
-    /// A list native code packed into flat memory. The interpreter unpacks it to use it.
+    /// A list native code packed into flat memory. The runtime unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
     /// A native value, not yet looked inside, as native code's temporaries and cells hold it.
-    /// The interpreter never sees one: temporaries are expanded before it's handed them.
+    /// The runtime expands a temporary before it uses one, so it never looks inside this.
     Lent(Rc<Lent>),
     Tuple(Rc<Vec<Value>>),
     /// A dict keeps insertion order.
@@ -264,7 +264,7 @@ impl Value {
         Value::Tuple(Rc::new(items))
     }
 
-    /// The value as the interpreter uses it: a packed list unpacked, anything else as it is.
+    /// The value as the runtime uses it: a packed list unpacked, anything else as it is.
     pub(crate) fn unpacked(self) -> Value {
         match self {
             Value::Packed(packed) => packed.unpack(),

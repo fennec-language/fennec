@@ -1,8 +1,7 @@
-//! The runtime that native code compiled by `fennec-jit` calls into. Native code keeps ints,
-//! floats and bools in machine registers; every other value lives here, as an interpreter
-//! value, and native code refers to it by a handle: a plain number. Names that hold such
-//! values live in an interpreter frame, exactly as when the interpreter runs the program, so
-//! the two engines share one meaning for every operation.
+//! The runtime that compiled native code calls into. Native code keeps numbers and bools in
+//! registers, and strings, lists, dicts and structs in blocks it reads and changes itself (see
+//! `heap`). What it hands the runtime to format, compare or pass to the standard library becomes a
+//! `Value` here, which native code refers to by a handle: a plain number.
 //!
 //! Handles index a stack of temporaries. A function's temporaries are dropped when it
 //! returns, and a statement's when it finishes, so the stack stays small.
@@ -558,7 +557,7 @@ pub fn fail_with(diagnostic: Diagnostic) {
 }
 
 /// Whether this thread's runtime state is borrowed, as it is all through a call into the
-/// runtime or the interpreter: a task mustn't park then, or the next task on the thread would
+/// runtime: a task mustn't park then, or the next task on the thread would
 /// find it taken.
 #[cfg(any(test, feature = "threads"))]
 fn state_is_borrowed() -> bool {
@@ -614,7 +613,7 @@ impl State {
         handle(self.temps.len() - 1)
     }
 
-    /// A copy of a temporary, as the interpreter holds values.
+    /// A copy of a temporary, as a `Value`.
     fn temp(&self, at: i64) -> Value {
         self.expanded(self.raw(at)).unpacked()
     }
@@ -624,7 +623,7 @@ impl State {
         usize::try_from(at).ok().and_then(|at| self.temps.get(at)).cloned().unwrap_or(Value::Unit)
     }
 
-    /// A value with any native value at its top turned into what the interpreter holds.
+    /// A value with any native value at its top turned into a `Value`.
     fn expanded(&self, value: Value) -> Value {
         match value {
             Value::Lent(lent) => heap::read_block(self, lent.address),
@@ -648,8 +647,8 @@ impl State {
         }
     }
 
-    /// Moves a temporary out, leaving nothing behind, so changing it can't copy it. It's
-    /// unpacked for the interpreter.
+    /// Moves a temporary out, leaving nothing behind, so changing it can't copy it. It comes
+    /// back unpacked.
     fn take(&mut self, at: i64) -> Value {
         let value = self.take_raw(at);
         self.expanded(value).unpacked()
@@ -761,9 +760,9 @@ pub mod temps {
         super::main_exit(code);
     }
 
-    /// Fails the program the way the interpreter does when `main` gives back a failure, and
-    /// keeps the int it gives back otherwise as the exit code. The result is the last temporary,
-    /// so it's dropped, leaving none behind.
+    /// Fails the program with `main`'s failure when it gives back one, and keeps the int it
+    /// gives back otherwise as the exit code. The result is the last temporary, so it's
+    /// dropped, leaving none behind.
     pub extern "C" fn main_result(value: i64, start: i64, end: i64) {
         attempt(|state: &mut State| {
             let result = state.take(value);
@@ -800,8 +799,8 @@ pub mod temps {
     }
 
     /// The value inside a successful result, or the value itself when it isn't a result.
-    /// The `at`th of `count` names a tuple is unpacked into, failing like the interpreter
-    /// when the value can't be unpacked into that many names.
+    /// The `at`th of `count` names a tuple is unpacked into. Fails when the value can't be
+    /// unpacked into that many names.
     pub extern "C" fn unpack(value: i64, at: i64, count: i64, for_loop: i8, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let value = state.temp(value);
@@ -890,7 +889,8 @@ pub mod temps {
     }
 }
 
-/// Running the parts of a program that native code hands to the interpreter.
+/// Inputs native code hands over, failures at a call into the standard library, and a `match`
+/// that no case matches.
 pub mod eval {
     use super::{State, attempt, span, with};
     use fennec_syntax::Diagnostic;
@@ -935,7 +935,7 @@ fn print_handed_over(printed: &[u8]) {
     attempt(|state: &mut State| io::write(state, &String::from_utf8_lossy(printed)));
 }
 
-/// Printing, and the loops native code runs over interpreter values.
+/// Printing, and the loops native code runs over `Value`s.
 pub mod io {
     use super::{Span, State, Value, attempt, format, with};
     use fennec_syntax::Diagnostic;

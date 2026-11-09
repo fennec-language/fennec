@@ -6638,8 +6638,8 @@ def main(stdout: Stdout):
 
 /// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
 /// failure while it gives an item does: at a `break` and at a `return` out of the loop. A failure
-/// already leaving through it is an error with cases here, which can't carry notes natively yet,
-/// so the cleanup's takes its place.
+/// already leaving through it is the one that leaves, an error with cases here, carrying the
+/// cleanup's as a note.
 #[test]
 fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
     if !ready() {
@@ -6649,7 +6649,8 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     assert_eq!(
         printed,
         "closing broke\nbroke failed Shut.Stuck(name=\"broke\")\nclosing returned\n\
-         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\nfailing failed Shut.Stuck(name=\"failing\")\n"
+         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\n\
+         failing failed Other.Inside(why=\"in the loop\") [\"Shut.Stuck(name=\\\"failing\\\")\"]\n"
     );
     Ok(())
 }
@@ -6771,7 +6772,7 @@ def main(stdout: Stdout):
         case Ok(_):
             stdout.print("failing worked")
         case Err(why):
-            stdout.print("failing failed", why)
+            stdout.print("failing failed", why, why.notes())
 "#;
 
 /// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
@@ -15543,7 +15544,7 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
 /// An error's notes natively: none to start with, each `add_note` changing only that error, not
 /// a copy taken before, `==` and printing passing them over, a union of errors noting the error
 /// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
-/// interpreter.
+/// interpreter, for an error with cases as for one without.
 #[test]
 fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
     if !ready() {
@@ -15559,6 +15560,11 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
             "note: while loading a long one\nnote: second line\n  and a third\n",
         ),
         ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+        (
+            "cases",
+            include_str!("fixtures/error_notes_with_cases.fen"),
+            "note: while dialing -3\nnote: second line\n  and a third\n",
+        ),
     ] {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;

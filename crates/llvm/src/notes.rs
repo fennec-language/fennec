@@ -4,6 +4,7 @@
 //! of errors, in whichever member it holds.
 
 use fennec_ir::{LocalId, Operand};
+use fennec_layout::Layout;
 
 use crate::emit::Emit;
 use crate::kinds::Kind;
@@ -91,8 +92,7 @@ impl Emit<'_, '_, '_> {
     fn notes_in(&mut self, place: &str, kind: &Kind, change: bool) -> Result<Option<String>, String> {
         let (Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id)) = *kind else { return Ok(None) };
         let layout = self.layout_of(id)?;
-        let notes = layout.fields.iter().find(|field| field.name == fennec_rt::packed::NOTES);
-        let notes = notes.map(|field| field.offset);
+        let notes = notes_offset(layout);
         let union = layout.cases.is_some();
         if notes.is_none() && !(union && self.is_union_of_errors(id)) {
             return Ok(None);
@@ -121,10 +121,8 @@ impl Emit<'_, '_, '_> {
         let Some(cases) = layouts.get(id).and_then(|layout| layout.cases.as_ref()) else { return false };
         cases.iter().all(|case| match case.fields.as_slice() {
             [field] => match Kind::from_ty(layouts, field.ty) {
-                Some(Kind::Struct(member) | Kind::Boxed(member)) => {
-                    layouts.get(member).is_some_and(|layout| {
-                        layout.fields.iter().any(|field| field.name == fennec_rt::packed::NOTES)
-                    })
+                Some(Kind::Struct(member) | Kind::Enum(member) | Kind::Boxed(member)) => {
+                    layouts.get(member).is_some_and(has_notes)
                 }
                 _ => false,
             },
@@ -170,4 +168,17 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{at} = inttoptr i64 {word} to ptr"));
         Ok(at)
     }
+}
+
+/// Where an error's notes are in its layout: last among an error struct's fields, and first in
+/// every case of an error with cases. `None` when it isn't an error.
+fn notes_offset(layout: &Layout) -> Option<u32> {
+    let is_notes = |field: &&fennec_layout::Field| field.name == fennec_rt::packed::NOTES;
+    let first_in_cases = || layout.cases.as_ref()?.first()?.fields.first().filter(is_notes);
+    layout.fields.iter().find(is_notes).or_else(first_in_cases).map(|field| field.offset)
+}
+
+/// Whether a layout is an error's, with a place for notes.
+pub(crate) fn has_notes(layout: &Layout) -> bool {
+    notes_offset(layout).is_some()
 }

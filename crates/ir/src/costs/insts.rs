@@ -47,6 +47,8 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         | InstKind::SetSlot { .. }
         | InstKind::Lock { .. }
         | InstKind::Unlock { .. }
+        | InstKind::CrashCleanup { .. }
+        | InstKind::CrashCleanupDone { .. }
         | InstKind::LockAll { .. }
         | InstKind::UnlockAll { .. } => None,
     }
@@ -102,7 +104,10 @@ pub(crate) fn operands(inst: &InstKind) -> Vec<&Operand> {
         InstKind::MakeGenerator { args, .. } => args.iter().map(|(_, value)| value).collect(),
         InstKind::GetSlot { generator, .. } | InstKind::Resume { generator, .. } => vec![generator],
         InstKind::SetSlot { generator, value, .. } => vec![generator, value],
-        InstKind::Lock { handle, .. } | InstKind::Unlock { handle } => vec![handle],
+        InstKind::Lock { handle, .. }
+        | InstKind::Unlock { handle }
+        | InstKind::CrashCleanup { cleanup: handle }
+        | InstKind::CrashCleanupDone { cleanup: handle } => vec![handle],
         InstKind::LockAll { handles } => handles.iter().map(|(handle, _)| handle).collect(),
         InstKind::UnlockAll { handles } => handles.iter().collect(),
     }

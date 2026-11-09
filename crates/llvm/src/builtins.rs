@@ -395,7 +395,7 @@ impl Emit<'_, '_, '_> {
         };
         let held = Kind::from_ty(self.module.layouts, item.ty())
             .ok_or("a list item this backend doesn't take yet")?;
-        let list = self.unshared(*local);
+        let list = self.popped_from(*local);
         let length = self.list_length(&list);
         let (empty, fail, ok) = (self.temp(), self.label("empty"), self.label("ok"));
         self.line(&format!("{empty} = icmp eq i64 {length}, 0"));

@@ -593,11 +593,19 @@ export def connect(
     allow_weak_sign_in = False,
     tls = True,
 ) -> with PgDatabase fails SqlError:
-    with net.connect(host, port) else fail SqlError.Failed(reason=f"couldn't connect to {host}:{port}") as conn:
+    with net.connect(host, port) else fail SqlError.Failed(
+        reason=f"couldn't connect to {host}:{port}",
+    ) as conn:
         db = PgDatabase(_conn=conn)
         if tls:
             db._start_tls(host)?
-        db._sign_in(entropy, user=user, database=database, secret=password, weak=allow_weak_sign_in)?
+        db._sign_in(
+            entropy,
+            user=user,
+            database=database,
+            secret=password,
+            weak=allow_weak_sign_in,
+        )?
         lend db else:
             db._goodbye()
         db._goodbye()

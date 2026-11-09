@@ -86,8 +86,13 @@ test "a failure is a case of NetError"(net: Net):
             assert False
 
 test "failures are NetError values"(net: Net):
-    assert reason(connecting(net, host="localhost", port=9001)) == "`localhost` refused a connection on port 9001"
-    assert reason(connecting(net, host="example.com", port=80)).startswith("the test's fake `Net` reaches only")
+    assert (
+        reason(connecting(net, host="localhost", port=9001))
+        == "`localhost` refused a connection on port 9001"
+    )
+    assert reason(connecting(net, host="example.com", port=80)).startswith(
+        "the test's fake `Net` reaches only",
+    )
     with net.listen(9000)? as _:
         assert reason(listening(net, port=9000)) == "port 9000 is already in use"
 

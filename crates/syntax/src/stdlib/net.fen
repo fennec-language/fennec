@@ -102,7 +102,6 @@ export shared Connection:
             if line is None: return
             yield line
 
-
 ## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
 export struct Packet:
     data: bytes
@@ -124,7 +123,6 @@ export shared UdpSocket:
             if packet is None: return
             yield packet
 
-
 ## The network, given to `main` or a test, as `Fs` is. Its methods written in Rust are `get`,
 ## `post` and `request`, and a test's `script` and `requests`. Only `main` and tests are given
 ## one: it can't be made.
@@ -135,7 +133,13 @@ export struct Net:
     ## `with net.connect("example.com", 443, tls=True)? as conn:`. With `tls=True` it's TLS, its
     ## certificate checked against what the system trusts and `host`. Connecting gives up after
     ## `timeout`.
-    def connect(self, host: str, port: int, tls = False, timeout = 30s) -> with Connection fails NetError:
+    def connect(
+        self,
+        host: str,
+        port: int,
+        tls = False,
+        timeout = 30s,
+    ) -> with Connection fails NetError:
         conn = self._connect(host, port, tls=tls, timeout=timeout)?
         lend conn else:
             conn.close()
@@ -190,7 +194,6 @@ export shared Server:
     def serve(self, respond: (Request) -> Response, timeout = 30s):
         for connection in parallel(self):
             _ = answer_all(connection, respond, timeout)
-
 
 ## An HTTP request a server was sent: its method, like `"GET"`, its path without the query, the
 ## query's parameters, its headers by their names in lower case, and its body.

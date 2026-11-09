@@ -1471,35 +1471,6 @@ def h(data: bytes, at: int) -> int:
 }
 
 #[test]
-fn a_loop_over_a_generator_with_a_cleanup_or_match_still_lowers() {
-    // Only a type the standard library ships, like `Connection`, has `def del` on a struct.
-    let source = "from std.net import Connection
-
-def held(door: Connection) -> Iterator[int]:
-    with door as open:
-        yield 1
-    match 2:
-        case 2:
-            yield 2
-        case _:
-            return
-
-def f(door: Connection) -> int:
-    sum(n for n in held(door))
-";
-    assert!(printed(source, "held.resume").is_ok());
-    let closing = printed(source, "held.abandon").unwrap();
-    assert!(closing.contains("call Connection.del"), "{closing}");
-    let module = fennec_syntax::parse(source).unwrap();
-    let checked = fennec_check::check(&module).unwrap();
-    let program = lower(&module, &checked);
-    let generators: Vec<_> =
-        program.generators.iter().map(|def| (&*def.name, def.abandon.as_deref())).collect();
-    assert_eq!(generators, [("held", Some("held.abandon"))]);
-    assert!(!printed(source, "f").unwrap().contains("list.append"));
-}
-
-#[test]
 fn a_loop_over_a_type_goes_through_what_its_iter_gives() {
     let source = "struct Bag:
     all: list[int]
@@ -1813,72 +1784,6 @@ def f() -> int:
     _1[_15] = _14
     _10 = _10 + 1
     jump bb1
-"
-    );
-}
-
-#[test]
-fn with_cleans_up_however_its_block_is_left() {
-    // Only a type the standard library ships, like `Connection`, has `def del` on a struct.
-    let source = "from std.net import Connection
-
-def f(n: int, a: Connection, b: Connection) -> int:
-    while n > 0:
-        with a as file:
-            if n == 1:
-                break
-            if n == 2:
-                return file.peer.len()
-    with b:
-        pass
-    0
-";
-    assert_eq!(
-        printed(source, "f").unwrap(),
-        "fn f(_0, _1, _2) -> int
-  local _0 n: int
-  local _1 a: Connection
-  local _2 b: Connection
-  local _3: bool
-  local _4 file: Connection
-  local _5: bool
-  local _6: bool
-  local _7: str
-  local _8: int
-  local _9: int
-  local _10: Connection
-  bb0:
-    jump bb1
-  bb1:
-    _3 = _0 > 0
-    branch _3 bb2 bb3
-  bb2:
-    _4 = _1
-    _5 = _0 == 1
-    branch _5 bb5 bb6
-  bb3:
-    _10 = _2
-    call Connection.del(_10)
-    return 0
-  bb4:
-    _6 = _0 == 2
-    branch _6 bb8 bb9
-  bb5:
-    call Connection.del(_4)
-    jump bb3
-  bb6:
-    jump bb4
-  bb7:
-    call Connection.del(_4)
-    jump bb1
-  bb8:
-    _7 = _4.peer
-    _8 = builtin str.len(_7)
-    _9 = _8
-    call Connection.del(_4)
-    return _9
-  bb9:
-    jump bb7
 "
     );
 }

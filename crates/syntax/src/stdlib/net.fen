@@ -5,8 +5,8 @@
 ## 30 seconds unless `timeout=` says otherwise.
 ##
 ## `Connection`, `Server` and `UdpSocket` are `shared`: a second name for one is the same socket.
-## Each manages its own sides, so it takes no lock, and `with` on one only closes it at the end of
-## the block.
+## Each manages its own sides, so it takes no lock. Each is lent by a `with`, `net.connect`,
+## `net.listen`, `net.udp` or `server.accept`, and closed when its block ends.
 ##
 ## In a test, `Net` is a fake that never touches the network: the test's own servers are at
 ## `localhost`, and its clients reach them in memory. Nothing else runs while a test waits, so a
@@ -102,9 +102,6 @@ export shared Connection:
             if line is None: return
             yield line
 
-    def del(self):
-        self.close()
-
 ## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
 export struct Packet:
     data: bytes
@@ -126,8 +123,43 @@ export shared UdpSocket:
             if packet is None: return
             yield packet
 
-    def del(self):
-        self.close()
+## The network, given to `main` or a test, as `Fs` is. Its methods written in Rust are `get`,
+## `post` and `request`, and a test's `script` and `requests`. Only `main` and tests are given
+## one: it can't be made.
+export struct Net:
+    _given: int
+
+    ## A connection to `host` on `port`, lent for a `with` block and closed when it ends:
+    ## `with net.connect("example.com", 443, tls=True)? as conn:`. With `tls=True` it's TLS, its
+    ## certificate checked against what the system trusts and `host`. Connecting gives up after
+    ## `timeout`.
+    def connect(
+        self,
+        host: str,
+        port: int,
+        tls = False,
+        timeout = 30s,
+    ) -> with Connection fails NetError:
+        conn = self._connect(host, port, tls=tls, timeout=timeout)?
+        lend conn else:
+            conn.close()
+        conn.close()
+
+    ## A server listening on `port`, or on a port the system picks for 0, lent for a `with` block
+    ## and closed when it ends. With `tls=`, each connection is TLS, shown by that certificate.
+    def listen(self, port: int, tls: Certificate? = None) -> with Server fails NetError:
+        server = listened(self, port=port, tls=tls)?
+        lend server else:
+            server.close()
+        server.close()
+
+    ## A UDP socket on `port`, or on a port the system picks for 0, lent for a `with` block and
+    ## closed when it ends.
+    def udp(self, port = 0) -> with UdpSocket fails NetError:
+        socket = self._udp(port=port)?
+        lend socket else:
+            socket.close()
+        socket.close()
 
 ## A TCP port being listened on. Looping over it gives each connection as it arrives, and
 ## `accept()` waits for the next one.
@@ -136,12 +168,24 @@ export shared Server:
     ## The port it listens on: the one asked for, or the one the system picked for port 0.
     port: int
 
-    ## Each connection as it arrives, until the server is closed or fails.
+    ## The next connection, lent for a `with` block and closed when it ends. It waits for one as
+    ## long as it takes, or up to `timeout`.
+    def accept(self, timeout: Duration? = None) -> with Connection fails NetError:
+        conn = accepted(self, timeout=timeout)?
+        lend conn else:
+            conn.close()
+        conn.close()
+
+    ## Each connection as it arrives, until the server is closed or fails. Each is closed when the
+    ## loop goes on to the next.
     def iter(self) -> Iterator[Connection]:
         while True:
-            conn = self.accept() else None
-            if conn is None: return
-            yield conn
+            match accepted(self, timeout=None):
+                case Ok(conn):
+                    yield conn
+                    conn.close()
+                case Err(_):
+                    return
 
     ## Answers HTTP/1.1 with `respond`, each connection its own task, until the server is closed. A
     ## connection is kept open for more requests unless either side says to close it, and one that
@@ -150,9 +194,6 @@ export shared Server:
     def serve(self, respond: (Request) -> Response, timeout = 30s):
         for connection in parallel(self):
             _ = answer_all(connection, respond, timeout)
-
-    def del(self):
-        self.close()
 
 ## An HTTP request a server was sent: its method, like `"GET"`, its path without the query, the
 ## query's parameters, its headers by their names in lower case, and its body.
@@ -175,27 +216,6 @@ MOST_BODY = 10485760
 ## The most blank lines passed over before a request line.
 MOST_BLANK_LINES = 8
 
-## How much of what a client is still sending is read and dropped before closing: up to this
-## many bytes, in up to this many reads, each waited for up to 200ms.
-MOST_DRAINED_BYTES = 67108864
-MOST_DRAINED_READS = 1024
-
-## Closes a connection without throwing away the answer just written. Closing with what the
-## client sent still unread makes the system reset the connection, and a reset loses what the
-## client hadn't read yet: the answer, and those before it. So what's still coming is read and
-## dropped first, until the client's done, it goes quiet, or the limit is reached.
-def closed_gently(connection: Connection):
-    mut drained = 0
-    for _ in range(MOST_DRAINED_READS):
-        if drained >= MOST_DRAINED_BYTES: break
-        match connection.read(1048576, timeout=200ms):
-            case Ok(more):
-                if more.len() == 0: break
-                drained += more.len()
-            case Err(_):
-                break
-    connection.close()
-
 ## What reading a request gave: one to answer, one the server answers itself, or the end.
 enum RequestRead:
     Got(request: Request, keep: bool)
@@ -209,11 +229,11 @@ def answer_all(
     timeout: Duration,
 ) fails NetError:
     while True:
-        match read_request(connection, timeout)?:
+        match next_request(connection, timeout)?:
             case .Got(request, keep):
                 write_response(connection, respond(request), keep, request.method == "HEAD")?
                 if not keep:
-                    closed_gently(connection)
+                    connection.close()
                     return
             case .Bad(status, reason):
                 write_response(
@@ -222,21 +242,43 @@ def answer_all(
                     False,
                     False,
                 )?
-                closed_gently(connection)
+                connection.close()
                 return
             case .Done:
                 connection.close()
                 return
 
+## The runtime's words for a line it won't read: one too long, and one ended by a bare line feed.
+LONG_LINE = "a line was longer than 1048576 bytes"
+BARE_LINE_FEED = "a line ended without a carriage return"
+
+## The next request, with a line the runtime won't read answered rather than dropped. A line too
+## long gets a 431. One ended by a bare line feed gets a 400: a proxy that takes one and a server
+## that doesn't would read where a request ends differently.
+def next_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
+    match read_request(connection, timeout):
+        case Ok(read):
+            return read
+        case Err(error):
+            match error:
+                case .Other(reason):
+                    if reason == LONG_LINE:
+                        return .Bad(status=431, reason="a line of the request is too long")
+                    if reason == BARE_LINE_FEED:
+                        return .Bad(status=400, reason="a line ended without a carriage return")
+                case _:
+                    pass
+            fail error
+
 ## The next request on a connection.
 def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
-    mut first = connection.read_line(timeout=timeout)? else return .Done
+    mut first = connection.read_line(timeout=timeout, crlf=True)? else return .Done
     # A blank line or two before a request line is passed over, as HTTP/1.1 says a server should:
     # some clients send one after a body.
     mut blank = 0
     while first == "" and blank < MOST_BLANK_LINES:
         blank += 1
-        first = connection.read_line(timeout=timeout)? else return .Done
+        first = connection.read_line(timeout=timeout, crlf=True)? else return .Done
     if first == "": return .Done
     parts = first.split(" ")
     if parts.len() != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
@@ -247,7 +289,7 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
     mut size = first.len()
     mut lines = 0
     while True:
-        line = connection.read_line(timeout=timeout)? else return .Bad(
+        line = connection.read_line(timeout=timeout, crlf=True)? else return .Bad(
             status=400,
             reason="the headers didn't end",
         )
@@ -416,3 +458,13 @@ def reason_phrase(status: int) -> str:
             "Service Unavailable"
         case _:
             "Unknown"
+
+## The next connection a server takes, waiting up to `timeout` when there's one.
+def accepted(server: Server, timeout: Duration?) -> Connection fails NetError:
+    if timeout is None: return server._accept()?
+    server._accept(timeout=timeout)?
+
+## A server listening on `port`, with TLS when there's a certificate.
+def listened(net: Net, port: int, tls: Certificate?) -> Server fails NetError:
+    if tls is None: return net._listen(port)?
+    net._listen(port, tls=tls)?

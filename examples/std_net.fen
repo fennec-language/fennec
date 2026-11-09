@@ -3,7 +3,7 @@
 # `std.net` reaches the network through the `Net` capability. Every call waits until it's
 # done. In a test, `Net` is a fake: the test's own servers are at `localhost`, and its
 # clients reach them in memory, so a test can play both sides.
-from std.net import NetError, Response
+from std.net import Connection, NetError, Response
 from std.time import Duration
 
 def reason[T](found: Result[T, NetError]) -> str:
@@ -12,6 +12,24 @@ def reason[T](found: Result[T, NetError]) -> str:
             error.message()
         case _:
             "it worked"
+
+## The next line a connection is sent, or "" once the other side is done.
+def line_of(conn: Connection) -> str fails NetError:
+    conn.read_line()? else ""
+
+## Every line a connection is sent, until the other side is done.
+def lines_of(conn: Connection) -> list[str] fails NetError:
+    list(conn.lines()?)
+
+## Connects to `host` and hangs up, to see how connecting goes.
+def connecting(net: Net, host: str, port: int) fails NetError:
+    with net.connect(host, port)? as _:
+        pass
+
+## Listens on `port` and stops, to see how listening goes.
+def listening(net: Net, port: int) fails NetError:
+    with net.listen(port)? as _:
+        pass
 
 test "a line goes there and back"(net: Net):
     with net.listen(9000)? as server:
@@ -25,33 +43,31 @@ test "a line goes there and back"(net: Net):
 
 test "lines gives each line until the other side is done"(net: Net):
     with net.listen(9000)? as server:
-        client = net.connect("localhost", 9000)?
-        assert client.peer == "localhost:9000"
-        client.write("one\ntwo\n")?
-        client.close()
+        with net.connect("localhost", 9000)? as client:
+            assert client.peer == "localhost:9000"
+            client.write("one\ntwo\n")?
         with server.accept()? as conn:
             assert list(conn.lines()?) == ["one", "two"]
 
 test "looping over a server gives each connection as it comes"(net: Net):
     with net.listen(0)? as server:
-        first = net.connect("localhost", server.port)?
-        second = net.connect("localhost", server.port)?
-        first.write("first\n")?
-        second.write("second\n")?
-        mut heard = list[str]()
-        for conn in server:
-            heard.append(conn.read_line()? else "")
-            if heard.len() == 2: break
-        assert heard == ["first", "second"]
+        with net.connect("localhost", server.port)? as first:
+            with net.connect("localhost", server.port)? as second:
+                first.write("first\n")?
+                second.write("second\n")?
+                mut heard = list[str]()
+                for conn in server:
+                    heard.append(line_of(conn)?)
+                    if heard.len() == 2: break
+                assert heard == ["first", "second"]
 
 test "a server gives each connection its own task"(net: Net):
     with net.listen(9000)? as server:
         for name in ["ash", "kit"]:
-            client = net.connect("localhost", 9000)?
-            client.write(f"{name}\n")?
-            client.close()
+            with net.connect("localhost", 9000)? as client:
+                client.write(f"{name}\n")?
         # In a test, a server's loop ends once no connection is waiting.
-        heard = [list(conn.lines()?) for conn in parallel(server)]
+        heard = [lines_of(conn) else [] for conn in parallel(server)]
         assert heard == [["ash"], ["kit"]]
 
 test "bytes go as they are"(net: Net):
@@ -63,17 +79,22 @@ test "bytes go as they are"(net: Net):
                 assert conn.read(10)? == bytes([10, 7])
 
 test "a failure is a case of NetError"(net: Net):
-    match net.connect("localhost", 9001):
+    match connecting(net, host="localhost", port=9001):
         case Err(Refused(host=host, port=port)):
             assert host == "localhost" and port == 9001
         case _:
             assert False
 
 test "failures are NetError values"(net: Net):
-    assert reason(net.connect("localhost", 9001)) == "`localhost` refused a connection on port 9001"
-    assert reason(net.connect("example.com", 80)).startswith("the test's fake `Net` reaches only")
+    assert (
+        reason(connecting(net, host="localhost", port=9001))
+        == "`localhost` refused a connection on port 9001"
+    )
+    assert reason(connecting(net, host="example.com", port=80)).startswith(
+        "the test's fake `Net` reaches only",
+    )
     with net.listen(9000)? as _:
-        assert reason(net.listen(9000)) == "port 9000 is already in use"
+        assert reason(listening(net, port=9000)) == "port 9000 is already in use"
 
 test "a packet goes to a port, and an answer goes to who sent it"(net: Net):
     with net.udp(port=9001)? as first:

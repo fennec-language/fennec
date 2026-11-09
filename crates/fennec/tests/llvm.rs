@@ -15572,6 +15572,21 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// In a program with `parallel`, `main` works out each constant before any worker starts, and
+/// throws the value away there: one of a struct type, like a `Duration`, still has its type in
+/// `main`'s module.
+#[test]
+fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = "WAIT = 2s\n\ndef waited(n: int) -> int:\n    int(WAIT.as_millis()) + n\n\n\
+                  def main(stdout: Stdout):\n    mut totals = [0, 1, 2, 3]\n    for ref t in parallel(totals):\n        \
+                  t = waited(t)\n    stdout.print(totals)\n";
+    assert_eq!(printed_by("struct_constant_ahead", source)?, "[2000, 2001, 2002, 2003]\n");
+    Ok(())
+}
+
 /// A constant keeps its value whatever a read does with what it was given.
 #[test]
 fn each_read_of_a_constant_has_its_own_value() -> std::io::Result<()> {

@@ -13,19 +13,19 @@ pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<E
     let mut seen = std::collections::HashSet::new();
     // An error with cases is held like an enum.
     let defs = modules.iter().flat_map(|module| &module.items).filter_map(|item| match item {
-        Item::Enum(def) if def.generics.is_empty() => Some(def),
-        Item::Error(def) if !def.cases.is_empty() => Some(def),
+        Item::Enum(def) if def.generics.is_empty() => Some((def, false)),
+        Item::Error(def) if !def.cases.is_empty() => Some((def, true)),
         _ => None,
     });
-    defs.filter(|def| seen.insert(def.name.as_str()))
-        .filter_map(|def| {
+    defs.filter(|(def, _)| seen.insert(def.name.as_str()))
+        .filter_map(|(def, error)| {
             let found = signatures.enumeration(&def.name).filter(|found| !found.rules)?;
             let cases = found
                 .cases
                 .iter()
                 .map(|(name, fields)| CaseDef { name: name.clone(), fields: fields.clone() })
                 .collect();
-            Some(EnumDef { name: def.name.clone(), cases })
+            Some(EnumDef { name: def.name.clone(), cases, error })
         })
         .collect()
 }

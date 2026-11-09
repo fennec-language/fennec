@@ -561,8 +561,8 @@ fn run_reduce(
     if length == 0 {
         return 0;
     }
-    // A reduction's leaves depend on the length alone, so the interpreter, which doesn't know
-    // native items' sizes, combines in the same order.
+    // A reduction's leaves depend on the length alone, not on its items' sizes, so it combines
+    // in the same order whatever the items are.
     let run = Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting);
     let steps = (body, combine, env);
     let pool = if waiting { pool::for_waiting() } else { pool::for_call(length * words) };

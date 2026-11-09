@@ -58,6 +58,14 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{y} = uitofp i64 {b} to double"));
                 self.line(&format!("{temp} = fdiv double {x}, {y}"));
             }
+            BinOp::Pow => {
+                self.u64_power_helper();
+                let (pair, bad) = (self.temp(), self.temp());
+                self.line(&format!("{pair} = call {{ i64, i1 }} @fen_u64_power(i64 {a}, i64 {b})"));
+                self.line(&format!("{bad} = extractvalue {{ i64, i1 }} {pair}, 1"));
+                self.size_overflow(&bad, fennec_check::Num::U64, span);
+                self.line(&format!("{temp} = extractvalue {{ i64, i1 }} {pair}, 0"));
+            }
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
                 let word = match op {
                     BinOp::BitAnd => "and",
@@ -83,6 +91,53 @@ impl Emit<'_, '_, '_> {
             }
         }
         Ok(temp)
+    }
+
+    /// Defines `@fen_u64_power(a, b)`: `a ** b` on `u64`s, by squaring, and whether it overflowed.
+    /// A square overflowing counts only when more of the exponent's bits follow, as only then is
+    /// it used.
+    fn u64_power_helper(&mut self) {
+        self.declare("declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)");
+        self.module.add_helper(
+            "fen_u64_power",
+            "define internal { i64, i1 } @fen_u64_power(i64 %a, i64 %b) #0 {
+entry:
+  br label %head
+head:
+  %result = phi i64 [ 1, %entry ], [ %result_next, %squared ]
+  %base = phi i64 [ %a, %entry ], [ %base_next, %squared ]
+  %left = phi i64 [ %b, %entry ], [ %rest, %squared ]
+  %over = phi i1 [ false, %entry ], [ %over_next, %squared ]
+  %done = icmp eq i64 %left, 0
+  br i1 %done, label %out, label %step
+step:
+  %bit = and i64 %left, 1
+  %odd = icmp ne i64 %bit, 0
+  %times = call { i64, i1 } @llvm.umul.with.overflow.i64(i64 %result, i64 %base)
+  %times_value = extractvalue { i64, i1 } %times, 0
+  %times_over = extractvalue { i64, i1 } %times, 1
+  %result_next = select i1 %odd, i64 %times_value, i64 %result
+  %times_bad = and i1 %odd, %times_over
+  %rest = lshr i64 %left, 1
+  %more = icmp ne i64 %rest, 0
+  %square = call { i64, i1 } @llvm.umul.with.overflow.i64(i64 %base, i64 %base)
+  %base_next = extractvalue { i64, i1 } %square, 0
+  %square_over = extractvalue { i64, i1 } %square, 1
+  %square_bad = and i1 %more, %square_over
+  %bad = or i1 %times_bad, %square_bad
+  %over_next = or i1 %over, %bad
+  br label %squared
+squared:
+  br label %head
+out:
+  %made = insertvalue { i64, i1 } poison, i64 %result, 0
+  %whole = insertvalue { i64, i1 } %made, i1 %over, 1
+  ret { i64, i1 } %whole
+}
+
+"
+            .to_owned(),
+        );
     }
 
     /// Stops the program when an integer divisor is zero, unless it's a number written out that

@@ -75,7 +75,8 @@ pub(super) fn add_copies(
                         fields: concrete(fields, &copy.subst),
                     })
                     .collect();
-                enums.push(crate::EnumDef { name, cases });
+                // A copy of a generic type is never an error: an error has no type parameters.
+                enums.push(crate::EnumDef { name, cases, error: false });
             }
         }
     }

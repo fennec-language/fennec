@@ -1,0 +1,121 @@
+# Thousands of random changes to two lists in a `shared` value, under `lock ... as ref`, each case
+# failing at a random step or not at all: a failure must leave the lists exactly as they were before
+# the lock, and a case that ends must leave what the same changes make of plain lists. An append and
+# a pop there are made in place and undone from the lock's log; the other changes copy the list.
+error Boom:
+    step: int
+
+struct Holder:
+    words: list[str]
+    numbers: list[int]
+
+struct Random:
+    state: int
+
+    def below(ref self, limit: int) -> int:
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        if limit <= 0:
+            return 0
+        (self.state // 65536) % limit
+
+## One random change to both lists, as a method changes a shared value's fields through `ref`. With
+## `boom`, it crashes once the change is made.
+def change(ref words: list[str], ref numbers: list[int], ref random: Random, boom: bool) fails Boom:
+    what = random.below(8)
+    if what == 0:
+        words.append(f"w{random.below(100)}")
+        numbers.append(random.below(100))
+    elif what == 1:
+        if words.len() > 0:
+            _ = words.pop()
+        if numbers.len() > 0:
+            _ = numbers.pop()
+    elif what == 2:
+        words.extend([f"e{random.below(10)}", "x"])
+        numbers.extend([random.below(10)])
+    elif what == 3:
+        words.insert(random.below(words.len() + 1), "i")
+        numbers.insert(random.below(numbers.len() + 1), 7)
+    elif what == 4:
+        if words.len() > 0:
+            words[random.below(words.len())] = f"s{random.below(10)}"
+        if numbers.len() > 0:
+            numbers[random.below(numbers.len())] = random.below(1000)
+    elif what == 5:
+        if random.below(4) == 0:
+            words.clear()
+            numbers.clear()
+    elif what == 6:
+        words.sort()
+        numbers.sort()
+    else:
+        for _ in range(random.below(5)):
+            words.append("loop")
+            numbers.append(1)
+            if numbers.len() > 3:
+                _ = numbers.pop()
+    if words.len() > 60:
+        words.clear()
+    if boom:
+        fail Boom(step=words.len())
+
+## A case's changes under the lock, failing at step `crash_at` when it's one of them: inside the
+## change at that step, or just before it, by turns.
+def changed(holder: shared Holder, seed: int, steps: int, crash_at: int) fails Boom:
+    mut random = Random(state=seed)
+    lock holder as ref held:
+        for step in range(steps):
+            if step == crash_at and seed % 2 == 0:
+                fail Boom(step=step)
+            if random.below(3) == 0:
+                # Straight on the held value, not through a call.
+                held.words.append("direct")
+                held.numbers.append(random.below(9))
+                if held.words.len() > 1:
+                    _ = held.words.pop()
+            change(ref held.words, ref held.numbers, ref random, boom=step == crash_at)?
+
+## The same changes made to plain lists, for what a case that doesn't crash leaves.
+def modeled(ref words: list[str], ref numbers: list[int], seed: int, steps: int):
+    mut random = Random(state=seed)
+    for _ in range(steps):
+        if random.below(3) == 0:
+            words.append("direct")
+            numbers.append(random.below(9))
+            if words.len() > 1:
+                _ = words.pop()
+        change(ref words, ref numbers, ref random, boom=False) else return
+
+def ran(holder: shared Holder, seed: int, steps: int, crash_at: int) -> bool:
+    match changed(holder, seed=seed, steps=steps, crash_at=crash_at):
+        case Ok(_):
+            return True
+        case Err(_):
+            return False
+
+def main(stdout: Stdout):
+    shared holder = Holder(words=["a", "b"], numbers=[1, 2, 3])
+    mut words = ["a", "b"]
+    mut numbers = [1, 2, 3]
+    mut picker = Random(state=12345)
+    mut wrong = 0
+    mut crashed = 0
+    mut kept = 0
+    for case in range(3000):
+        seed = picker.below(1000000)
+        steps = 1 + picker.below(30)
+        crash_at = picker.below(steps * 2)
+        if ran(holder, seed=seed, steps=steps, crash_at=crash_at):
+            kept += 1
+            modeled(ref words, ref numbers, seed=seed, steps=steps)
+        else:
+            crashed += 1
+        lock holder as held:
+            if held.words != words or held.numbers != numbers:
+                wrong += 1
+                if wrong < 4:
+                    stdout.print("case", case, held.words, words, held.numbers, numbers)
+                # Back in step with what the shared value holds, to find the next.
+                words = list(held.words)
+                numbers = list(held.numbers)
+    stdout.print("wrong", wrong, "crashed", crashed > 1000, "kept", kept > 1000)

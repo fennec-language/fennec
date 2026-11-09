@@ -14,13 +14,20 @@ pub(crate) fn variable(name: &str) -> Value {
     std::env::var_os(name).map_or(Value::None, |value| Value::str(&value.to_string_lossy()))
 }
 
-/// Every environment variable, sorted by name, so the order is the same on every machine.
+/// Every environment variable, sorted by name, so the order is the same on every machine. On
+/// Windows, where names are the same in any case, each is upper case, as `variable` finds `Path`
+/// by `PATH` there: `env.all()["PATH"]` finds what `env.get("PATH")` does.
 pub(crate) fn variables() -> Value {
     let mut all: Vec<(String, String)> = std::env::vars_os()
-        .map(|(name, value)| (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()))
+        .map(|(name, value)| (written(&name.to_string_lossy()), value.to_string_lossy().into_owned()))
         .collect();
     all.sort();
     dict_of(all.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+}
+
+/// A variable's name as `variables` gives it: upper case on Windows, and as it is elsewhere.
+fn written(name: &str) -> String {
+    if cfg!(windows) { name.to_uppercase() } else { name.to_owned() }
 }
 
 /// A `dict[str, str]` of `pairs`, in their order.
@@ -30,4 +37,15 @@ pub(crate) fn dict_of<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> Va
         built.set(Value::str(name), Value::str(value));
     }
     Value::Dict(Rc::new(built))
+}
+
+#[cfg(test)]
+mod tests {
+    /// A name is upper case on Windows, where `Path` and `PATH` are the same variable, and as it
+    /// is elsewhere, where they aren't.
+    #[test]
+    fn names_are_upper_case_only_where_case_doesnt_matter() {
+        let wanted = if cfg!(windows) { "PATH" } else { "Path" };
+        assert_eq!(super::written("Path"), wanted);
+    }
 }

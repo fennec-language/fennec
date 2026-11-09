@@ -186,7 +186,11 @@ impl<'a> Lowering<'a> {
                 .filter_map(|local| slots.get(&local).map(|slot| (local, *slot)))
                 .collect()
         };
-        let abandon = abandon_function(&name, &generating, span);
+        let failure = match returns {
+            Type::Result(_, error) => Some((**error).clone()),
+            _ => None,
+        };
+        let abandon = abandon_function(&name, &generating, failure, span);
         let mut places = vec![(0, body, saved_at(body), false)];
         for (at, stop) in generating.yields.iter().enumerate() {
             let pc = i64::try_from(at).map_err(|_| "too many yields")? + 1;
@@ -352,7 +356,9 @@ impl<'a> Lowering<'a> {
                 lowering.finish(Terminator::Jump(*next));
             });
         }
-        self.finish(Terminator::Unreachable);
+        // Told to leave at a `yield` with no source's block open, it just finishes.
+        self.set_slot(slot::PC, Operand::Int(FINISHED), span);
+        self.finish(Terminator::Return(Some(Operand::Bool(false))));
     }
 
     /// When `pc` holds this, does `then`, which ends its block. Otherwise carries on.
@@ -547,13 +553,22 @@ impl<'a> Lowering<'a> {
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
         self.start_generator(&generator, used_at);
+        // One made for this loop goes when the loop does. Left by `return` or a failure, it's
+        // let go on the way out: what it holds closes then, and a cleanup's failure is the
+        // loop's. `break` and the loop's end let it go below.
+        let made_here = matches!(&generator, Operand::Local(local)
+            if self.locals.get(local.0).is_some_and(|held| held.name.is_none()));
+        let entered = self.leaving.len();
+        if made_here {
+            self.leaving.push(Leaving::Generator { generator: generator.clone(), known: known.clone() });
+        }
         let (head, then, done, exit) =
             (self.new_block(), self.new_block(), self.new_block(), self.new_block());
         self.finish(Terminator::Jump(head));
         self.current = head;
         let more = self.temporary(Type::Bool);
         let generator_read = generator.clone();
-        self.emit(InstKind::Resume { dest: more, generator: generator_read, known }, span);
+        self.emit(InstKind::Resume { dest: more, generator: generator_read, known: known.clone() }, span);
         self.finish(Terminator::Branch { cond: Operand::Local(more), then, otherwise: done });
         self.current = then;
         self.scopes.push(HashMap::new());
@@ -564,6 +579,7 @@ impl<'a> Lowering<'a> {
         let lowered = bound.and_then(|()| body(self));
         self.loops.pop();
         self.scopes.pop();
+        self.leaving.truncate(entered);
         lowered?;
         self.finish(Terminator::Jump(head));
         self.current = done;
@@ -571,8 +587,11 @@ impl<'a> Lowering<'a> {
         self.current = exit;
         // One made for this loop goes when the loop does, closing what it's still holding, then
         // and not when the function ends.
+        if made_here {
+            self.let_go_now(&generator, known, span)?;
+        }
         if let Operand::Local(local) = &generator
-            && self.locals.get(local.0).is_some_and(|held| held.name.is_none())
+            && made_here
         {
             let name = "generator.let_go".to_owned();
             self.emit(
@@ -590,6 +609,98 @@ impl<'a> Lowering<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Lets go of a generator stopped at a `yield` now: it's told to leave and goes on once, so
+    /// any source's block open there runs its cleanup, and a failure in that cleanup passes up
+    /// from here, as one while it gives an item does.
+    pub(super) fn let_go_now(
+        &mut self,
+        generator: &Operand,
+        known: Option<String>,
+        span: Span,
+    ) -> Lowered<()> {
+        let pc = self.temporary(Type::Int);
+        self.emit(InstKind::GetSlot { dest: pc, generator: generator.clone(), slot: slot::PC }, span);
+        let stopped = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(pc), Operand::Int(0));
+        self.emit(InstKind::Binary { dest: stopped, op: BinOp::Gt, lhs, rhs }, span);
+        let (leave, after) = (self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(stopped), then: leave, otherwise: after });
+        self.current = leave;
+        let leaving = self.temporary(Type::Int);
+        let (lhs, rhs) = (Operand::Int(FAILED), Operand::Local(pc));
+        self.emit(InstKind::Binary { dest: leaving, op: BinOp::Sub, lhs, rhs }, span);
+        self.set_generator_slot(generator, slot::PC, Operand::Local(leaving), span);
+        let more = self.temporary(Type::Bool);
+        self.emit(InstKind::Resume { dest: more, generator: generator.clone(), known }, span);
+        self.pass_up_failure(generator, after, span)?;
+        self.current = after;
+        Ok(())
+    }
+
+    /// Lets go of a generator stopped at a `yield` on the way out of a failure, `failure`: a
+    /// failure of its source's cleanup goes on that as a note, and `failure` is still the one
+    /// that leaves.
+    pub(super) fn let_go_noting(
+        &mut self,
+        generator: &Operand,
+        known: Option<String>,
+        failure: LocalId,
+        span: Span,
+    ) {
+        let pc = self.temporary(Type::Int);
+        self.emit(InstKind::GetSlot { dest: pc, generator: generator.clone(), slot: slot::PC }, span);
+        let stopped = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(pc), Operand::Int(0));
+        self.emit(InstKind::Binary { dest: stopped, op: BinOp::Gt, lhs, rhs }, span);
+        let (leave, noting, after) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(stopped), then: leave, otherwise: after });
+        self.current = leave;
+        let leaving = self.temporary(Type::Int);
+        let (lhs, rhs) = (Operand::Int(FAILED), Operand::Local(pc));
+        self.emit(InstKind::Binary { dest: leaving, op: BinOp::Sub, lhs, rhs }, span);
+        self.set_generator_slot(generator, slot::PC, Operand::Local(leaving), span);
+        let more = self.temporary(Type::Bool);
+        self.emit(InstKind::Resume { dest: more, generator: generator.clone(), known }, span);
+        let ended = self.temporary(Type::Int);
+        self.emit(InstKind::GetSlot { dest: ended, generator: generator.clone(), slot: slot::PC }, span);
+        let failed = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(ended), Operand::Int(FAILED));
+        self.emit(InstKind::Binary { dest: failed, op: BinOp::Eq, lhs, rhs }, span);
+        self.finish(Terminator::Branch { cond: Operand::Local(failed), then: noting, otherwise: after });
+        self.current = noting;
+        // One whose error isn't said can't fail: its call needed no `?`.
+        let Some(own) = self.generator_error(generator) else {
+            self.finish(Terminator::Jump(after));
+            self.current = after;
+            return;
+        };
+        let held = self.temporary(own);
+        self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
+        let text = self.temporary(Type::Str);
+        let parts = vec![crate::FormatPart::Value { value: Operand::Local(held), spec: None }];
+        self.emit(InstKind::Format { dest: text, parts }, span);
+        let args = vec![Operand::Local(failure), Operand::Local(text)];
+        self.emit(
+            InstKind::Builtin { dest: None, name: "error.add_note".to_owned(), args, changes: true },
+            span,
+        );
+        self.finish(Terminator::Jump(after));
+        self.current = after;
+    }
+
+    /// A generator's own error, from the result `?` took it out of.
+    fn generator_error(&self, generator: &Operand) -> Option<Type> {
+        let Operand::Local(local) = generator else { return None };
+        match self.local_type(self.taken_from(*local)?) {
+            Type::Result(_, own) => Some(*own),
+            _ => None,
+        }
+    }
+
+    fn set_generator_slot(&mut self, generator: &Operand, at: usize, value: Operand, span: Span) {
+        self.emit(InstKind::SetSlot { generator: generator.clone(), slot: at, value }, span);
     }
 
     /// The result a local was taken out of, as `?` takes a call's value out of what it gives.
@@ -656,9 +767,12 @@ impl<'a> Lowering<'a> {
             self.finish(Terminator::Stop { message, span });
             return Ok(());
         };
-        let held = self.temporary(*error);
+        // The slot holds the generator's own error, which this function's may hold among others.
+        let own = self.generator_error(generator);
+        let held = self.temporary(own.unwrap_or_else(|| (*error).clone()));
         self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
-        self.pass_up_error(Operand::Local(held), span)
+        let widened = self.coerce(Operand::Local(held), &error, span)?;
+        self.pass_up_error(widened, span)
     }
 }
 
@@ -709,10 +823,61 @@ fn make_block_function(
     }
 }
 
+/// Makes the abandon function's second block stop the task with the generator's failure, when
+/// it ended failing: there's nothing to take the failure where its last owner let it go.
+fn stop_on_failure(
+    blocks: &mut Vec<crate::Block>,
+    temporary: &mut impl FnMut(Type) -> LocalId,
+    error: Type,
+    span: Span,
+) {
+    let this = Operand::Local(LocalId(0));
+    let inst = |kind: InstKind| Inst { kind, span };
+    let (ended, failed, held, said) =
+        (temporary(Type::Int), temporary(Type::Bool), temporary(error), temporary(Type::Str));
+    let shown = "a generator's cleanup failed as it was let go by its last owner: ".to_owned();
+    let advice = "loop over the call itself, as `for x in made()?:`, and its failure fails the loop";
+    let (stopped, went_on) = (crate::BlockId(2), crate::BlockId(3));
+    if let Some(block) = blocks.get_mut(1) {
+        block.insts = vec![
+            inst(InstKind::GetSlot { dest: ended, generator: this.clone(), slot: slot::PC }),
+            inst(InstKind::Binary {
+                dest: failed,
+                op: BinOp::Eq,
+                lhs: Operand::Local(ended),
+                rhs: Operand::Int(FAILED),
+            }),
+        ];
+        block.end = Terminator::Branch { cond: Operand::Local(failed), then: stopped, otherwise: went_on };
+    }
+    let parts = vec![
+        crate::FormatPart::Text(shown),
+        crate::FormatPart::Value { value: Operand::Local(held), spec: None },
+        crate::FormatPart::Text(format!("{}{advice}", fennec_syntax::HELP_MARK)),
+    ];
+    let name = "intrinsics.stop".to_owned();
+    blocks.push(crate::Block {
+        insts: vec![
+            inst(InstKind::GetSlot { dest: held, generator: this, slot: slot::FAILURE }),
+            inst(InstKind::Format { dest: said, parts }),
+            inst(InstKind::Builtin { dest: None, name, args: vec![Operand::Local(said)], changes: false }),
+        ],
+        end: Terminator::Return(None),
+    });
+    blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
+}
+
 /// The function the runtime calls for a generator let go partway, if it can be let go inside a
 /// `with` source's block: stopped at such a `yield`, it goes on once more, told to leave, and the
-/// way out runs the source's cleanup, innermost first. The runtime then marks it finished.
-fn abandon_function(name: &str, generating: &Generating, span: Span) -> Option<Function> {
+/// way out runs the source's cleanup, innermost first. The runtime then marks it finished. Let go
+/// by its last owner, nothing's there to take a failure of that cleanup, so the task stops with it,
+/// as for a crash. A generator made for a loop is let go by the loop instead, which fails with it.
+fn abandon_function(
+    name: &str,
+    generating: &Generating,
+    failure: Option<Type>,
+    span: Span,
+) -> Option<Function> {
     if !generating.yields.iter().any(|stop| stop.abandonable) {
         return None;
     }
@@ -729,6 +894,12 @@ fn abandon_function(name: &str, generating: &Generating, span: Span) -> Option<F
         insts: vec![inst(InstKind::GetSlot { dest: pc, generator: this.clone(), slot: slot::PC })],
         end: Terminator::Unreachable,
     }];
+    // Each way it goes on meets here, where a failure is looked for.
+    let checked = crate::BlockId(1);
+    blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
+    if let Some(error) = failure {
+        stop_on_failure(&mut blocks, &mut temporary, error, span);
+    }
     let mut current = 0;
     for (at, _) in generating.yields.iter().enumerate().filter(|(_, stop)| stop.abandonable) {
         let same = temporary(Type::Bool);
@@ -749,7 +920,7 @@ fn abandon_function(name: &str, generating: &Generating, span: Span) -> Option<F
         let block = blocks.get_mut(current)?;
         block.insts.push(inst(compare));
         block.end = Terminator::Branch { cond: Operand::Local(same), then, otherwise: next };
-        blocks.push(crate::Block { insts, end: Terminator::Return(None) });
+        blocks.push(crate::Block { insts, end: Terminator::Jump(checked) });
         blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
         current = next.0;
     }

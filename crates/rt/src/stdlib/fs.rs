@@ -250,7 +250,7 @@ enum Given {
 }
 
 /// A method of a lent `File` by its handle: `write(data)`, `read()`, `read_chunk(size)`,
-/// `read_line()` or `sync()`, as native code calls it and the interpreter does.
+/// `read_line()` or `sync()`.
 pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let Some(file) = shared(handle) else {
         return Ok(io_error("this file was closed when its `with` block ended"));

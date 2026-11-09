@@ -75,6 +75,14 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     if let Some(rounds) = call.as_ref().and_then(|call| crate::replay::taken_at(&call.name(), "accept")) {
         return replayed(rounds, body, env, call.as_ref());
     }
+    // Serving waits for every worker to leave the server, its own worker among them, which can't
+    // while it waits. Until a task can serve, it says so rather than hang.
+    if super::super::parallel::here().is_some() {
+        return fail(
+            "a server can't be served from a launched task or a `parallel` body yet: serve it from `main`"
+                .to_owned(),
+        );
+    }
     let Some((listener, tls)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());
     };

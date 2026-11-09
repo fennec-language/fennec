@@ -628,6 +628,15 @@ pub(crate) mod tls {
         }
     }
 
+    impl<C: Send> SecureStream for Buffered<C>
+    where
+        StreamOwned<C, TcpStream>: Read + Write,
+    {
+        fn socket(&self) -> &TcpStream {
+            &self.0.get_ref().sock
+        }
+    }
+
     impl<C> Write for Buffered<C>
     where
         StreamOwned<C, TcpStream>: Read + Write,

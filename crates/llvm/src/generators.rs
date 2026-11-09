@@ -115,19 +115,6 @@ impl<'p> Emit<'_, '_, 'p> {
         self.release(&held);
     }
 
-    /// Lets go of what a local holds now, rather than when the function returns: the result a
-    /// generator for a loop was taken out of, which would keep it from closing when the loop ends.
-    pub(crate) fn let_go_of_value(&mut self, local: LocalId) {
-        if !self.owns(local) {
-            return;
-        }
-        let Ok(kind) = self.kind_of(local).cloned() else { return };
-        let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
-        self.line(&format!("{held} = load {text}, ptr {slot}"));
-        self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
-        self.release_kind(&held, &kind);
-    }
-
     /// What a generator failed with, from the block its slot holds the address of.
     fn read_failure(&mut self, dest: LocalId, at: &str) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();

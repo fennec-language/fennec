@@ -1,7 +1,7 @@
 from std.concurrent import Crashed
 
 def show(name: str, stdout: Stdout):
-    data = embed("embed_in_tasks.txt")
+    data = embed_file("embed_in_tasks.txt")
     stdout.print(name, data.len(), data.hex().len(), (data + data).len())
 
 def main(stdout: Stdout) fails Crashed:

@@ -1258,7 +1258,7 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
     assert!(found.line.is_some(), "{found:?}");
     assert!(found.message.as_deref().is_some_and(|message| !message.contains("-->")), "{found:?}");
 
-    std::fs::write(&program, "MAP = embed(\"not_there.bin\")\n\ndef main():\n    pass\n").unwrap();
+    std::fs::write(&program, "MAP = embed_file(\"not_there.bin\")\n\ndef main():\n    pass\n").unwrap();
     let found = load_problem(&program).unwrap();
     assert_eq!((found.errors, &found.rule, &found.file), (Some(1), &some("load"), &some("game.fen")));
     assert_eq!((found.line, found.column), (Some(1), Some(7)));

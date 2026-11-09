@@ -255,7 +255,7 @@ fn a_kit_that_moves_keeps_what_passed() {
 fn an_edit_to_an_embedded_file_runs_only_the_tests_that_use_it() {
     let dir = kit_with_tests("kit_embed").unwrap();
     std::fs::write(dir.join("src/data.bin"), [1]).unwrap();
-    let uses = "DATA = embed(\"data.bin\")\n\ntest \"the data\":\n    assert DATA.len() == 1\n";
+    let uses = "DATA = embed_file(\"data.bin\")\n\ntest \"the data\":\n    assert DATA.len() == 1\n";
     std::fs::write(dir.join("src/with_data.fen"), uses).unwrap();
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed\n");
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed (0 run, 3 unchanged)\n");

@@ -6429,8 +6429,9 @@ def main(stdout: Stdout):
 "#;
 
 /// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
-/// failure while it gives an item does: at a `break`, at a `return` out of the loop, and in place
-/// of a failure already leaving through it, as a `with` block's failing cleanup does today.
+/// failure while it gives an item does: at a `break` and at a `return` out of the loop. A failure
+/// already leaving through it is an error with cases here, which can't carry notes natively yet,
+/// so the cleanup's takes its place.
 #[test]
 fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
     if !ready() {
@@ -6444,6 +6445,74 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     );
     Ok(())
 }
+
+/// A failure already leaving through a loop whose generator's cleanup fails too is the one that
+/// leaves, carrying the cleanup's as a note, as a `with` block's failing `else:` does.
+#[test]
+fn a_cleanup_failing_as_a_failure_leaves_a_loop_is_a_note_on_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("cleanup_failing_noted", CLEANUP_FAILING_NOTED)?;
+    assert_eq!(
+        printed,
+        "closing broke\nbroke failed Shut(name=\"broke\")\nclosing returned\nreturned failed Shut(name=\"returned\")\n\
+         closing failing\nfailing failed Other(why=\"in the loop\") [\"Shut(name=\\\"failing\\\")\"]\n"
+    );
+    Ok(())
+}
+
+const CLEANUP_FAILING_NOTED: &str = r#"error Shut:
+    name: str
+
+error Other:
+    why: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broke(stdout: Stdout) fails Shut:
+    for n in held("broke", stdout)?:
+        break
+    stdout.print("not here")
+
+def returned(stdout: Stdout) -> int fails Shut:
+    for n in held("returned", stdout)?:
+        return n
+    0
+
+def failing(stdout: Stdout) fails Shut | Other:
+    for n in held("failing", stdout)?:
+        fail Other(why="in the loop")
+
+def main(stdout: Stdout):
+    match broke(stdout):
+        case Ok(_):
+            stdout.print("broke worked")
+        case Err(why):
+            stdout.print("broke failed", why)
+    match returned(stdout):
+        case Ok(n):
+            stdout.print("returned", n)
+        case Err(why):
+            stdout.print("returned failed", why)
+    match failing(stdout):
+        case Ok(_):
+            stdout.print("failing worked")
+        case Err(why):
+            stdout.print("failing failed", why, why.notes())
+"#;
 
 const CLEANUP_FAILING: &str = r#"error Shut:
     Stuck(name: str)
@@ -6495,6 +6564,80 @@ def main(stdout: Stdout):
             stdout.print("failing worked")
         case Err(why):
             stdout.print("failing failed", why)
+"#;
+
+/// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
+/// failure: the task stops with it, saying so, as for a crash, where the loop over a call it's
+/// made for would fail.
+#[test]
+fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("named_generator_failing")?;
+    let program = dir.join("named.fen");
+    std::fs::write(&program, NAMED_GENERATOR_FAILING)?;
+    let executable = dir.join("named");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(out, "after quiet\nclosing quiet\n");
+    assert!(
+        err.contains(
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"quiet\")"
+        ),
+        "{err}"
+    );
+    assert!(err.contains("help: loop over the call itself"), "{err}");
+    Ok(())
+}
+
+const NAMED_GENERATOR_FAILING: &str = r#"error Shut:
+    Stuck(name: str)
+
+error Other:
+    Inside(why: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+
+def quiet(stdout: Stdout):
+    match held("quiet", stdout):
+        case Ok(walk):
+            for n in walk:
+                break
+        case Err(why):
+            stdout.print("opening failed", why)
+    stdout.print("after quiet")
+
+def kept(stdout: Stdout) fails Shut:
+    walk = held("kept", stdout)?
+    for n in walk:
+        break
+    stdout.print("after kept")
+
+def main(stdout: Stdout):
+    quiet(stdout)
+    match kept(stdout):
+        case Ok(_):
+            stdout.print("kept worked")
+        case Err(why):
+            stdout.print("kept failed", why)
 "#;
 
 /// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,

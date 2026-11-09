@@ -402,6 +402,9 @@ struct Lowering<'a> {
     /// Whether what's being left is left by a failure, which a `lock ... as ref` block doesn't keep
     /// the changes of.
     failing_out: bool,
+    /// The failure leaving, while a loop over a generator lets go of it on the way out: a
+    /// failure of its cleanup goes on this as a note.
+    failing_with: Option<LocalId>,
     /// The `shared` handles the `with` blocks being lowered hold the locks of.
     locked: Vec<LocalId>,
     /// The locals changed so far, for operands read before one of those changes (see `order`).
@@ -456,6 +459,7 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             leaving: Vec::new(),
             failing_out: false,
+            failing_with: None,
             locked: Vec::new(),
             changed: Vec::new(),
             lifted: Vec::new(),

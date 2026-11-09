@@ -764,6 +764,9 @@ impl FnCx<'_> {
             return ty;
         }
         let ty = self.expr(object);
+        if let Some(field) = self.field_attr(&ty, name, span) {
+            return field;
+        }
         if self.outside_lock(object, &ty, span) {
             return Type::Unknown;
         }

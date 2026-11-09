@@ -4247,6 +4247,46 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
+/// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
+/// what's inside it. A type with no fields gives none.
+#[test]
+fn a_generic_function_loops_over_a_types_fields_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "fields_of",
+        "struct Inner:
+    depth: int
+
+struct Outer:
+    name: str
+    inner: Inner
+
+def names[T](value: T, ref found: list[str]):
+    for field in fields(T):
+        found.append(field.name)
+        names(field.get(value), ref found)
+
+def say[V](name: str, value: V, stdout: Stdout):
+    stdout.print(name, value)
+
+def describe[T](value: T, stdout: Stdout):
+    for field in fields(T):
+        say(field.name, value=field.get(value), stdout=stdout)
+
+def main(stdout: Stdout):
+    mut found = list[str]()
+    names(Outer(name=\"a\", inner=Inner(depth=1)), ref found)
+    stdout.print(found)
+    describe(Inner(depth=4), stdout)
+",
+    )?;
+    assert_eq!(printed, "[\"name\", \"inner\", \"depth\"]\ndepth 4\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

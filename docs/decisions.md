@@ -613,7 +613,7 @@ def write[T, W: Writer](x: T, ref out: W):
         out.field(f.name)
         write(f.get(x), ref out)
 ```
-- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Not built yet: today `fields` doesn't exist, and formats get their fields from the compiler.
+- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Built: `for f in fields(T):`, with `f.name` and `f.get(x)`. The body is checked once, with `f.get(x)` of a type that stands for each field's and goes only where any type can, and it's written out for each field when each copy is made. Not built yet: a field's type, value and annotations beyond those, `cases(T)`, `*Cs` and `if T is int:`, and formats still get their fields from the compiler.
 - Each set of types gets its own specialized copy, whatever the build.
 - There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed_file` and `embed_folder`, which read files that are part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
@@ -1105,7 +1105,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 - Local variables and output aren't rolled back.
 - To keep a change and still fail, decide inside the lock and `fail` after it.
 - A lint may warn when a `fail` follows a write in the same block.
-- Chris decided this on 2026-11-08. Not built yet: today a `fail` or `?` keeps the changes made so far, and only a crash undoes them. This replaces the rule that only crashes roll back.
+- Chris decided this on 2026-11-08. Built. This replaces the rule that only crashes roll back.
 
 *Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
 

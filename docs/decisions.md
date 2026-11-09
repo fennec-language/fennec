@@ -79,18 +79,18 @@ for ref unit in units:
 **Fennec has no object graphs. Data lives in tables.** A thing that others point at lives in a `Table` or a list, and they hold its `Id`.
 *Why:* Flat tables are what keep memory contiguous, copies cheap and cycles impossible, and they're what game engines and databases already use.
 
-**A copy that can go stale is a compile error.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, needs `copy(x)`:
+**A copy that can go stale gets a lint suggesting `ref`.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, is linted, and the lint asks whether a `ref` was meant:
 ```fennec
-world.selected = world.units[i]          # error: edits to one won't reach the other
-world.selected = copy(world.units[i])    # a separate copy, on purpose
+# lint: edits to one won't reach the other; a `ref` changes the original
+world.selected = world.units[i]
 ```
-Immutable local snapshots stay allowed, and so does sharing that never changes.
-*Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. The error asks which was meant.
+Every copy is already a snapshot, through copy-on-write, so there's no plain `copy(x)` to mark one on purpose. `copy(x, field=...)`, a changed copy as Python's `dataclasses.replace` makes, stays. Immutable local snapshots stay allowed, and so does sharing that never changes. Chris decided this on 2026-11-09. Not built yet: today the line above compiles with no lint, and a plain `copy(x)` is accepted, with a `needless-copy` lint. This replaces the compile error whose fix was `copy(x)`.
+*Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. A snapshot is what a plain assignment already gives, so the useful question is whether a link was meant.
 
 **A write that goes nowhere is a compile error.** That's a local that's changed and then never read, returned or passed on:
 ```fennec
 def heal(hero: Hero):
-    mut healed = copy(hero)
+    mut healed = hero
     healed.health += 10          # error: `healed` is changed, then never read, returned or passed on
 ```
 - `mut unit = world.units[id]` is your own value, so changing it and stopping there is this error. The fix writes directly: `world.units[id].health -= 1`. A write through a `ref` isn't this case, since it reaches the source.
@@ -161,7 +161,7 @@ error: `enemies` is changed while it's being looped over
    |              ------- the loop over `enemies` starts here
 3  |         enemies.append(spawn_child(enemy))
    |         ^^^^^^^ changed here
-   = fix: loop over `copy(enemies)` to work on an explicit snapshot
+   = fix: loop over a snapshot, `snapshot = enemies`, then `for enemy in snapshot:`
    = fix: collect the changes in a list and apply them after the loop
 ```
 Neither fix is applied by `fennec fix`, since each changes what the program does. This replaces any reading where a loop silently works on a snapshot.
@@ -176,7 +176,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 **Copies are visible.** A lint lists every place the compiler had to copy a value, and why: "copied `enemies` because it's used again on line 42".
 *Why:* A hidden copy in a game loop is a frame-time spike nobody can find.
 
-**A copy that would happen on every iteration of a loop is a compile error,** including one in a function the loop calls. The error names the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". The fix is to drop the other holder, restructure, or write `copy(state)` to make it explicit.
+**A copy that would happen on every iteration of a loop is a compile error,** including one in a function the loop calls. The error names the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". The fix is to drop the other holder or restructure.
 - A one-time copy inside a loop, where the first write copies and the value has one owner after that, is only a hint, and the compiler may move the copy before the loop.
 - `@hot` still forbids any copy at all.
 
@@ -205,7 +205,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 **Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
 *Why:* Normal programs get the fast hash. An attacker can't work out colliding keys without the seed, and if collisions turn up anyway, that one dict pays for the stronger hash. Iteration follows insertion order, so the seed can't change what a program does.
 
-**Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `copy(a)` gives one that can change separately.
+**Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `mut b = a` gives one that can change separately.
 
 **A `list`, `dict` or `Buffer` is one word: the address of a reference-counted block.** The block holds the length, the capacity and the elements together. Copying bumps the count. The block is copied only on the first write while it's shared, which last-use moves make rare. Elements are stored inline, so a `list[Vec3]` is one contiguous run of floats.
 
@@ -510,7 +510,7 @@ This replaces the earlier rules that return types are inferred, and that recursi
 - The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
 - Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.
 - `int(...)`, `str(...)` and `float(...)` are the types' constructors, not global functions.
-- `copy(x)` is the language's mark for a copy made on purpose, and `copy(x, field=...)` changes fields as it copies. It works on any value and can't be defined by a type.
+- `copy(x, field=...)` changes fields as it copies. It works on any value and can't be defined by a type. There's no plain `copy(x)`, since every copy is already a snapshot.
 ```fennec
 interface Signed:
     def abs(self) -> Self

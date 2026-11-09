@@ -78,7 +78,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
-- A compile error for a copy that can go stale, which `copy(x)` makes on purpose.
+- A lint for a copy that can go stale, suggesting `ref`, and a local `ref name = place`.
 - Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.

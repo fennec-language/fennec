@@ -306,14 +306,11 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health, backup.stats.health)
 ```
 
-**Planned:** a compile error for a copy that can quietly go stale:
+**Planned:** a lint for a copy that can quietly go stale, asking whether a `ref` was meant:
 
 ```fennec planned
-# error: edits to one won't reach the other
+# lint: edits to one won't reach the other; a `ref` changes the original
 world.selected = world.units[i]
-
-# fine: a separate copy, on purpose
-world.selected = copy(world.units[i])
 ```
 
 ## Mistakes the compiler stops

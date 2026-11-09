@@ -50,6 +50,13 @@ jobs:
             flags: ""
             target: ""
             only: json-rules toml-rules pack csv url http-server http-client postgres
+          # Random, well-typed programs, each built as a dev build and with --release, which have to
+          # print the same as each other and as a reference evaluator.
+          - name: Programs
+            toolchain: ""
+            flags: ""
+            target: ""
+            only: programs
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

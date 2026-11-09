@@ -4405,6 +4405,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// A launched task runs only on the runtime's threads, which have no way to run it in order the way
+/// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
+/// refused when it's built, saying why, rather than failing at line 1 when it's run.
+#[test]
+fn a_program_that_launches_is_refused_without_the_threads_runtime() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("launch-needs-threads")?;
+    let program = dir.join("launching.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    with launch(() => stdout.print(\"in a task\")):\n        pass\n",
+    )?;
+    let built = crate::executables::fennec_command()
+        .args(["build", &program.to_string_lossy(), "-o", &dir.join("launching").to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", "0")
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr);
+    assert!(!built.status.success(), "{said}");
+    assert!(said.contains("`launch` runs its task on the runtime's threads"), "{said}");
+    assert!(!dir.join("launching").exists(), "nothing's built");
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A type with an operator for each of several types on its right calls the one for the type
 /// that's there, in its own methods, from an extension, and in a function.
 #[test]
@@ -15646,6 +15672,21 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     assert_eq!(often, format!("13000 {shown}"));
     // Each call may make the folder's own block, but never its two lists again.
     assert!(made_often - made_once <= 999, "{made_once} against {made_often}");
+    Ok(())
+}
+
+/// In a program with `parallel`, `main` works out each constant before any worker starts, and
+/// throws the value away there: one of a struct type, like a `Duration`, still has its type in
+/// `main`'s module.
+#[test]
+fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = "WAIT = 2s\n\ndef waited(n: int) -> int:\n    int(WAIT.as_millis()) + n\n\n\
+                  def main(stdout: Stdout):\n    mut totals = [0, 1, 2, 3]\n    for ref t in parallel(totals):\n        \
+                  t = waited(t)\n    stdout.print(totals)\n";
+    assert_eq!(printed_by("struct_constant_ahead", source)?, "[2000, 2001, 2002, 2003]\n");
     Ok(())
 }
 

@@ -205,6 +205,7 @@ dependencies = [
  "fennec-check",
  "fennec-fmt",
  "fennec-ir",
+ "fennec-lint",
  "fennec-parked",
  "fennec-re",
  "fennec-rt",

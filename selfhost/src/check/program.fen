@@ -55,6 +55,9 @@ struct Program:
     ## `from std import json`, `std.json` after `import std.json`.
     modules = list[str]()
     aliases = dict[str, TypeExpr]()
+    ## Standard library types a program's own type of the same name replaced, which the
+    ## library's own declarations still mean, as the Rust checker keeps them apart.
+    shadowed = dict[str, TypeInfo]()
     ## Problems found while adding declarations, like methods that can't be added.
     problems = list[Diagnostic]()
 
@@ -104,7 +107,10 @@ struct Program:
             self.modules.append(imported.alias else ".".join(imported.module))
 
     def add_type(ref self, type_def: TypeDef, kind: TypeKind, prelude: bool):
-        # A program's own type replaces a standard library type of the same name, methods too.
+        # A program's own type replaces a standard library type of the same name, methods too,
+        # where the program names it. The library's own declarations still mean theirs.
+        if not prelude and type_def.name in self.types and self.types[type_def.name].prelude:
+            self.shadowed[type_def.name] = self.types[type_def.name]
         if not prelude:
             methods = f"{type_def.name}."
             for key in copy(self.functions).keys():
@@ -241,6 +247,14 @@ struct Program:
         if owner is not None:
             generics.append(Generic(name="Self", bounds=[], span=entry.function.span))
         generics + entry.inherited + entry.function.generics
+
+    ## The types as the standard library's own declarations see them: its own, where a
+    ## program's type of the same name replaced one.
+    def std_types(self) -> dict[str, TypeInfo]:
+        mut seen = copy(self.types)
+        for name, info in self.shadowed.items():
+            seen[name] = info
+        seen
 
     ## The type a written type means, with these type parameters in scope.
     def resolve_in(self, written: TypeExpr, generics: list[str]) -> Type fails Diagnostic:

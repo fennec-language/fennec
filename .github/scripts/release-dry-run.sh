@@ -25,8 +25,11 @@ target=${2:-}
 (cd "$repo" && cargo build --locked --quiet --release -p fennec-launcher --bins --example dry_run ${target:+--target "$target"})
 built="$repo/target/${target:+$target/}release"
 work=$(mktemp -d)
+# The launcher's folder as bash's own `PATH` takes it, which is `/c/...` on Windows.
+bin="$work/bin"
 # On Windows the programs are Windows' own, which read `C:/...` and not Git Bash's `/tmp/...`.
 if [ -n "$exe" ]; then
+  bin=$(cygpath -u "$work/bin")
   work=$(cygpath -m "$work")
   archive=$(cygpath -m "$archive")
 fi
@@ -40,7 +43,7 @@ within="$repo/.github/scripts/within.sh"
 # What a person has: the system's own tools and the launcher, and nothing of Rust's, Cargo's,
 # llvm-mingw's or Visual Studio's. On macOS and Linux, `cc` is still the system's, which links; on
 # Windows, the archive's own LLD links.
-reach="$work/bin:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup|mingw|visual studio' | paste -sd: -)"
+reach="$bin:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup|mingw|visual studio' | paste -sd: -)"
 run() {
   env -u FENNEC_LLVM_BIN -u FENNEC_THREADS_RUNTIME -u FENNEC_EXPECT_LLVM -u FENNEC_DIST -u CARGO \
     PATH="$reach" RUSTUP_HOME="$work/no-rustup" CARGO_HOME="$work/no-cargo" FENNEC_HOME="$home" "$@"

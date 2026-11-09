@@ -9996,6 +9996,29 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Only the first U+FEFF of CSV text is its byte order mark: a second is the first field's own
+/// character, which `csv.loads` keeps. Found by fuzzing `std.csv` (`fennec-fuzz run csv`).
+#[test]
+fn csv_reads_only_the_first_byte_order_mark() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "csv_two_marks",
+        r#"from std import csv
+
+def main(stdout: Stdout):
+    match csv.loads("﻿﻿a,b\n﻿c"):
+        case Ok(rows):
+            stdout.print(rows == [["﻿a", "b"], ["﻿c"]])
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "True\n");
+    Ok(())
+}
+
 /// A server can't make the client hold as much as it likes before a response's body: endless
 /// header lines fail, as one endless line does, and so do endless `100 Continue`s. A chunk's data
 /// has to end where its size says, with nothing after it but its line ending.

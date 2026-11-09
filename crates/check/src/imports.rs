@@ -143,6 +143,7 @@ impl Uses<'_> {
             ExprKind::Name(name) => self.name(name, expr.span),
             ExprKind::Int(_)
             | ExprKind::Bytes(_)
+            | ExprKind::Folder(_)
             | ExprKind::Duration(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)

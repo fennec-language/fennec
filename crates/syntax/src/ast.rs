@@ -327,6 +327,9 @@ pub enum ExprKind {
     Duration(i64),
     /// A file's bytes, read when the program was loaded: what `embed_file("path")` becomes.
     Bytes(Blob),
+    /// What `embed_folder("path")` becomes: each file under the folder, by its path from it
+    /// written with `/`, in sorted order, with its bytes.
+    Folder(Vec<(String, Blob)>),
     Str(String),
     FStr(Vec<FStrPart>),
     Bool(bool),
@@ -599,6 +602,7 @@ impl Expr {
             | ExprKind::Float(_)
             | ExprKind::Duration(_)
             | ExprKind::Bytes(_)
+            | ExprKind::Folder(_)
             | ExprKind::Str(_)
             | ExprKind::Bool(_)
             | ExprKind::None => true,

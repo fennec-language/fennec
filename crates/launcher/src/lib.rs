@@ -63,14 +63,14 @@ impl Asked {
                     rest = others;
                 }
                 [first, others @ ..]
-                    if asked.pick.is_none() && first.strip_prefix('+').is_some_and(kit::plain_version) =>
+                    if asked.pick.is_none() && first.strip_prefix('+').is_some_and(names_one) =>
                 {
                     asked.pick =
                         first.strip_prefix('+').map(|version| Pick::JustThisOnce(version.to_owned()));
                     rest = others;
                 }
                 [first, version, others @ ..]
-                    if asked.pick.is_none() && first == "--version" && kit::plain_version(version) =>
+                    if asked.pick.is_none() && first == "--version" && names_one(version) =>
                 {
                     asked.pick = Some(Pick::OutsideAKit(version.clone()));
                     rest = others;
@@ -81,6 +81,11 @@ impl Asked {
         asked.command = rest.to_vec();
         asked
     }
+}
+
+/// Whether a word names a toolchain: a release's version, or a linked build's name.
+fn names_one(word: &str) -> bool {
+    kit::plain_version(word) || kit::linked_name(word)
 }
 
 /// What a launcher knows: where toolchains go, where releases come from, and whom it trusts.
@@ -106,10 +111,82 @@ impl Launcher {
         self.toolchains().join(version)
     }
 
-    /// The `fennec` of a toolchain.
+    /// The `fennec` of a toolchain installed from a release.
     #[must_use]
     pub fn command(&self, version: &str) -> PathBuf {
-        self.folder(version).join(format!("fennec{}", std::env::consts::EXE_SUFFIX))
+        self.folder(version).join(fennec_file())
+    }
+
+    /// Where the file naming a linked build's folder is kept.
+    fn link_file(&self, name: &str) -> PathBuf {
+        self.toolchains().join(format!("{name}.link"))
+    }
+
+    /// The folder a linked build's `fennec` is in.
+    #[must_use]
+    pub fn linked(&self, name: &str) -> Option<PathBuf> {
+        if !kit::linked_name(name) {
+            return None;
+        }
+        let text = std::fs::read_to_string(self.link_file(name)).ok()?;
+        Some(PathBuf::from(text.trim_end_matches(['\r', '\n'])))
+    }
+
+    /// Every linked build, by name, in order.
+    #[must_use]
+    pub fn links(&self) -> Vec<(String, PathBuf)> {
+        let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(self.toolchains())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.strip_suffix(".link").map(str::to_owned))
+            .filter_map(|name| Some((name.clone(), self.linked(&name)?)))
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// Links a build of Fennec of your own, in `path` or the folder `path`'s `fennec` is in, as
+    /// `name`. It's run as it is, with whatever LLVM it finds itself, and nothing is fetched, signed
+    /// or pinned for it.
+    ///
+    /// # Errors
+    ///
+    /// When `name` can't name a link, or there's no `fennec` there.
+    pub fn link(&self, name: &str, path: &Path) -> Result<(), String> {
+        if !kit::linked_name(name) {
+            return Err(format!(
+                "`{name}` can't name a linked build: use lowercase letters, digits and `-`, starting with a letter, like `dev`"
+            ));
+        }
+        let path = path.canonicalize().map_err(|err| format!("couldn't find {}: {err}", path.display()))?;
+        let folder = if path.is_dir() { path } else { path.parent().map(Path::to_path_buf).unwrap_or(path) };
+        if !folder.join(fennec_file()).is_file() {
+            return Err(format!(
+                "there's no `{}` in {}: build it first, like `cargo build --release -p fennec -p fennec-runtime`, and link its `target/release`",
+                fennec_file(),
+                folder.display()
+            ));
+        }
+        std::fs::create_dir_all(self.toolchains())
+            .and_then(|()| std::fs::write(self.link_file(name), format!("{}\n", folder.display())))
+            .map_err(|err| format!("couldn't write the link: {err}"))
+    }
+
+    /// The `fennec` of a linked build.
+    fn linked_command(&self, name: &str) -> Result<PathBuf, String> {
+        let folder = self.linked(name).ok_or_else(|| {
+            format!("no build of Fennec is linked as `{name}`: `fennec toolchain link {name} <path>` links one, like a checkout's `target/release`")
+        })?;
+        let command = folder.join(fennec_file());
+        if !command.is_file() {
+            return Err(format!(
+                "the build linked as `{name}` has no `{}` in {} any more: build it again, or link it again",
+                fennec_file(),
+                folder.display()
+            ));
+        }
+        Ok(command)
     }
 
     /// The versions installed, in order.
@@ -132,7 +209,7 @@ impl Launcher {
     pub fn default_version(&self) -> Option<String> {
         let text = std::fs::read_to_string(self.toolchains().join("default")).ok()?;
         let version = text.trim();
-        kit::plain_version(version).then(|| version.to_owned())
+        names_one(version).then(|| version.to_owned())
     }
 
     /// Makes a toolchain the one run outside a kit, installing it if it has to be.
@@ -141,7 +218,7 @@ impl Launcher {
     ///
     /// When it isn't there and can't or mayn't be installed, or the choice can't be written.
     pub fn set_default(&self, version: &str) -> Result<(), String> {
-        self.ensure(version, None)?;
+        self.exactly(version)?;
         std::fs::write(self.toolchains().join("default"), format!("{version}\n"))
             .map_err(|err| format!("couldn't write the default toolchain: {err}"))
     }
@@ -152,6 +229,10 @@ impl Launcher {
     ///
     /// When it isn't installed, or can't be removed.
     pub fn remove(&self, version: &str) -> Result<(), String> {
+        if self.linked(version).is_some() {
+            return std::fs::remove_file(self.link_file(version))
+                .map_err(|err| format!("couldn't unlink `{version}`: {err}"));
+        }
         if !kit::plain_version(version) || !self.folder(version).join("manifest").is_file() {
             return Err(format!("Fennec {version} isn't installed"));
         }
@@ -174,6 +255,10 @@ impl Launcher {
         let read = |name: &str| std::fs::read_to_string(root.join(name));
         let manifest = read("kit.toml").map_err(|err| format!("couldn't read kit.toml: {err}"))?;
         let version = kit::version(&manifest)?;
+        // A linked build is whatever was built last, so there's nothing to pin.
+        if kit::linked_name(&version) {
+            return self.linked_command(&version);
+        }
         let lock = match read("kit.lock") {
             Ok(lock) => lock,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -200,6 +285,9 @@ impl Launcher {
     ///
     /// When it isn't there and can't or mayn't be installed.
     pub fn exactly(&self, version: &str) -> Result<PathBuf, String> {
+        if kit::linked_name(version) {
+            return self.linked_command(version);
+        }
         self.ensure(version, None)?;
         Ok(self.command(version))
     }
@@ -299,6 +387,10 @@ impl Launcher {
         let manifest = std::fs::read_to_string(root.join("kit.toml"))
             .map_err(|err| format!("couldn't read kit.toml: {err}"))?;
         let mut version = kit::version(&manifest)?;
+        if kit::linked_name(&version) && !latest {
+            self.linked_command(&version)?;
+            return Ok(format!("kit.toml asks for the build linked as `{version}`, which isn't pinned\n"));
+        }
         let lock = std::fs::read_to_string(root.join("kit.lock")).unwrap_or_default();
         let pin = kit::pinned(&lock)?;
         if latest {
@@ -401,4 +493,9 @@ impl Launcher {
         placed?;
         self.ensure(version, Some(hash))
     }
+}
+
+/// The name of the `fennec` command on this platform.
+fn fennec_file() -> String {
+    format!("fennec{}", std::env::consts::EXE_SUFFIX)
 }

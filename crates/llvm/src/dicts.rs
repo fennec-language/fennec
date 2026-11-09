@@ -3,10 +3,10 @@
 
 use std::fmt::Write as _;
 
-use fennec_interp::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, LONGEST_PROBE, Word};
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::Ty;
+use fennec_rt::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, LONGEST_PROBE, Word};
+use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_syntax::{BinOp, Span};
 
 use crate::emit::Emit;

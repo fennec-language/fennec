@@ -6,8 +6,8 @@
 //! program from here has no source text, so a failure loads the source to point at it.
 
 use fennec_build::{Cache, KitFile, KitState};
-use fennec_interp::embed::codec::{Decode, Encode, Reader, Writer};
 use fennec_kit::Program;
+use fennec_rt::embed::codec::{Decode, Encode, Reader, Writer};
 use fennec_syntax::{Module, Sources};
 
 const BUILD: &str = env!("FENNEC_BUILD");
@@ -21,8 +21,9 @@ fn image_name(path: &str) -> String {
     format!("{}.image", fennec_blake3::hash(name_of(path).as_bytes()).to_hex())
 }
 
-/// A kit's program as it was cut down last time, if none of its files have changed since.
-pub(crate) fn load(path: &str, cache: &Cache) -> Option<Program> {
+/// A kit's program as it was cut down last time, if none of its files have changed since, and a
+/// hash of it as it was kept, which says it's the same program another run had.
+pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
     let state = cache.kit_state(&name_of(path), BUILD)?;
     let files = crate::verdict::kit_files(path, Some(&state))?;
     if !crate::verdict::same_files(&state, &files) {
@@ -30,14 +31,16 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<Program> {
     }
     let bytes = cache.read("run-image", &image_name(path))?;
     let module = Module::decode(&mut Reader::new(&bytes))?;
-    Some(Program {
+    let kept = fennec_blake3::hash(&bytes).to_hex();
+    let program = Program {
         module,
         sources: Sources::new(),
         manifest: None,
         embedded: Vec::new(),
         kit_src: None,
         dependency_files: std::collections::HashSet::new(),
-    })
+    };
+    Some((program, kept))
 }
 
 /// Keeps a kit's program as it was cut down, before anything was checked. `state` is what the kit

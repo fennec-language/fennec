@@ -111,6 +111,8 @@ pub(crate) struct Checker {
     pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
+    /// Each function that takes a lock itself, with how the first one's written.
+    pub(crate) takes_locks: BTreeMap<String, String>,
     /// The calls made inside lock bodies, judged once every function's waits are known.
     pub(crate) lock_calls: Vec<crate::waits::LockCall>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -193,6 +195,7 @@ impl Checker {
             previous: BTreeMap::new(),
             callers: BTreeMap::new(),
             waits: BTreeMap::new(),
+            takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
             diagnostics,
         }

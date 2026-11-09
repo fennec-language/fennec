@@ -4,9 +4,9 @@
 
 use std::fmt::Write as _;
 
-use fennec_interp::embed::bytes::DATA_OFFSET;
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
+use fennec_rt::embed::bytes::DATA_OFFSET;
 use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, ITEM_ACCESS};

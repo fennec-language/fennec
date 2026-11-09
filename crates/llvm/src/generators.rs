@@ -3,8 +3,8 @@
 //! Every generator's block starts the same way, so a loop reads one without knowing which it is.
 
 use fennec_check::Type;
-use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 use fennec_ir::{GeneratorDef, LocalId, Operand, slot};
+use fennec_rt::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 use fennec_syntax::Span;
 
 use crate::emit::{Emit, symbol};

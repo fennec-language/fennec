@@ -11,7 +11,7 @@ use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
 /// Where a block's fields start.
-const FIELDS: u32 = fennec_interp::embed::layout::FIELDS.unsigned_abs();
+const FIELDS: u32 = fennec_rt::embed::layout::FIELDS.unsigned_abs();
 
 impl Emit<'_, '_, '_> {
     /// A list kind's number, for the runtime to make lists of it.

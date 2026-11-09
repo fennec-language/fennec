@@ -453,6 +453,7 @@ impl<'p> Module<'_, 'p> {
             returns,
             allocas: String::new(),
             kept_lengths: HashMap::new(),
+            zeros_counted: HashMap::new(),
             out: String::new(),
             cold: String::new(),
             next: 0,
@@ -531,6 +532,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where a list a loop fills keeps its length while the loop runs, by the list's local: in
     /// a local of its own, which LLVM holds in a register, written to the list as the loop ends.
     pub(crate) kept_lengths: HashMap<usize, String>,
+    /// In a build that checks proofs, where each list made whole of zeros counts the appends it
+    /// leaves out.
+    pub(crate) zeros_counted: HashMap<usize, String>,
     out: String,
     cold: String,
     next: usize,
@@ -3083,6 +3087,32 @@ def main(stdout: Stdout):
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
         assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
         assert!(text.len() > plain.len());
+        Ok(())
+    }
+
+    /// Checking proofs covers a loop filling a list too: one made whole of zeros gets one append a
+    /// turn, and one whose length is kept aside isn't changed by anything else meanwhile.
+    #[test]
+    fn checking_proofs_covers_a_list_a_loop_fills() -> Result<(), String> {
+        let source = "def made(n: int) -> int:\n    zeros = [0 for i in range(n)]\n    doubled = [i * 2 for i in range(n)]\n    zeros.len() + doubled.len()\n\ndef main(stdout: Stdout):\n    stdout.print(made(5))\n";
+        let program = lowered(source)?;
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (_, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let said: Vec<&String> = shared.literals.values().collect();
+        for proof in ["gets one a turn, from 0", "is as long as its loop", "whose length was kept aside"] {
+            assert!(said.iter().any(|text| text.contains(proof)), "{proof}: {said:?}");
+        }
+        Ok(())
+    }
+
+    /// A `list[str]` a loop fills and that's then joined is kept as the string it becomes, which
+    /// has no list length to keep aside and write back: writing one would write over the string's
+    /// own length, with a value nothing set. The build checking proofs found it.
+    #[test]
+    fn a_string_built_by_a_loop_has_no_length_written_over() -> Result<(), String> {
+        let source = "def repeated(text: str, times: int) -> str:\n    \"\".join([text for _ in range(times)])\n\ndef main(stdout: Stdout):\n    stdout.print(repeated(\"ab\", 3))\n";
+        let text = text_of(source, "repeated")?;
+        assert!(!text.contains("kept_length"), "{text}");
         Ok(())
     }
 

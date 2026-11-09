@@ -152,7 +152,14 @@ fn settled(server: &Server) -> String {
     let mut held_since = Instant::now();
     while started.elapsed() < Duration::from_secs(20) {
         std::thread::sleep(Duration::from_millis(150));
-        let now = std::fs::read_to_string(&server.report).unwrap_or_default();
+        // What's cached for reuse grows as the server warms up, within its bounds: only what's
+        // live has to hold.
+        let report = std::fs::read_to_string(&server.report).unwrap_or_default();
+        let now: String = report
+            .lines()
+            .filter(|line| !line.starts_with("cached "))
+            .map(|line| format!("{line}\n"))
+            .collect();
         if now != last {
             last = now;
             held_since = Instant::now();

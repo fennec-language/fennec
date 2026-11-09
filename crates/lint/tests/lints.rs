@@ -27,7 +27,7 @@ fn alone_as_together(source: &str) {
         [[("game.fen", source), ("beside.fen", BESIDE)], [("beside.fen", BESIDE), ("game.fen", source)]]
     {
         let mut sources = Sources::new();
-        let mut module = Module { items: Vec::new() };
+        let mut module = Module::default();
         for (path, text) in files {
             let base = sources.add(path, text);
             let Ok(parsed) = parse_at(text, base) else { return };

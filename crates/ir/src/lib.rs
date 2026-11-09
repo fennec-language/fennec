@@ -71,6 +71,8 @@ pub struct Program {
     pub not_lowered: Vec<NotLowered>,
     /// The types printed inside other values that write their own text with `def str`.
     pub own_texts: Vec<OwnText>,
+    /// The shape number and layout of each type `std.pack` saves, for `fennec update` to lock.
+    pub layouts: Vec<(i64, String)>,
     /// What the program calls that isn't here or in `not_lowered`. Lowering a whole program
     /// leaves this empty.
     pub external: Vec<String>,

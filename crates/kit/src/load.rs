@@ -136,7 +136,28 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
             loader.visit_own(&module.join("."), &real, shown, None);
         }
     }
-    loader.finish(Some(manifest))
+    let mut program = loader.finish(Some(manifest))?;
+    with_pack_lock(&mut program, &root);
+    Ok(program)
+}
+
+/// The name a kit's `pack.lock` is held under in its program: one no program can write.
+pub const PACK_LOCK: &str = "\0pack_lock";
+
+/// Gives the program its kit's `pack.lock`, the layouts of what it saved in `std.pack` before,
+/// as an embedded file, so a change to it is a change to the program.
+fn with_pack_lock(program: &mut Program, root: &Path) {
+    let path = root.join("pack.lock");
+    let Ok(data) = std::fs::read(&path) else { return };
+    let blob = fennec_syntax::Blob::from(data);
+    let at = Span { start: Span::PRELUDE, end: Span::PRELUDE };
+    program.module.items.push(Item::Const {
+        name: PACK_LOCK.to_owned(),
+        ty: None,
+        value: fennec_syntax::Expr { kind: fennec_syntax::ExprKind::Bytes(blob.clone()), span: at },
+        span: at,
+    });
+    program.embedded.push(Embedded { path, data: blob });
 }
 
 /// The text of every file of a kit, without parsing any of it, by its module name, with the
@@ -162,6 +183,11 @@ pub(crate) fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
         paths.push((module.join("."), path));
     }
     paths.push(("kit.toml".to_owned(), root.join("kit.toml")));
+    // The program holds it, so one appearing or changing changes the program.
+    let lock = root.join("pack.lock");
+    if lock.is_file() {
+        paths.push(("pack.lock".to_owned(), lock));
+    }
     paths.extend(dependency_paths(&root));
     Some(paths)
 }

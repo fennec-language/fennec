@@ -171,7 +171,7 @@ pub(crate) fn tests_executable(
     let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
     })?;
-    finish(&compiled, output, false, false)?;
+    finish(&compiled, output, false)?;
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
@@ -196,7 +196,7 @@ pub(crate) fn tracing_executable(
     let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    finish(&compiled, output, false, false)?;
+    finish(&compiled, output, false)?;
     Ok((emitted.shared.sites, emitted.lowered))
 }
 
@@ -265,12 +265,11 @@ pub(crate) fn executable(
     let started = Instant::now();
     let built = llvm_objects(program, release)?;
     let compiled = started.elapsed();
-    let statically = links_statically();
     // A release built with the runtime's bitcode has its Rust inside already.
-    let runtime_in = release && runtime_bitcode(built.runtime, statically).is_some();
+    let runtime_in = release && runtime_bitcode(built.runtime, built.statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
-    let linked = finish(&built, output, runtime_in, statically)?;
+    let linked = finish(&built, output, runtime_in)?;
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
     Ok(Built { total: built.total, fresh: built.fresh, compiled, linked, root })
 }
@@ -294,12 +293,7 @@ pub(crate) fn dev_build_settings() -> String {
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
 /// objects linked, which then go in the store under it, with the list of its functions' hashes
 /// beside them. Gives back how long linking took, which is nothing for a stored one.
-fn finish(
-    compiled: &Compiled,
-    output: &Path,
-    runtime_in: bool,
-    statically: bool,
-) -> Result<std::time::Duration, String> {
+fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
     let written = |bytes: &[u8]| -> Result<(), String> {
         std::fs::write(output, bytes).map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
         executable_mode(output)
@@ -308,8 +302,14 @@ fn finish(
         written(bytes)?;
         return Ok(std::time::Duration::ZERO);
     }
-    let linked =
-        link_objects(&compiled.objects, output, compiled.runtime, runtime_in, compiled.tls, statically)?;
+    let linked = link_objects(
+        &compiled.objects,
+        output,
+        compiled.runtime,
+        runtime_in,
+        compiled.tls,
+        compiled.statically,
+    )?;
     if let Some(Stored { cache, root, functions, .. }) = &compiled.stored
         && let Ok(bytes) = std::fs::read(output)
     {
@@ -398,6 +398,9 @@ struct Compiled {
     runtime: Runtime,
     /// Whether the program makes requests, so it links what TLS needs.
     tls: bool,
+    /// Whether it links on its own, against the runtime built for musl, which its runtime was
+    /// chosen for, so it's linked that way too.
+    statically: bool,
     /// Its place in the store, when there's one to use.
     stored: Option<Stored>,
 }
@@ -536,7 +539,15 @@ fn compile_emitted(
         Stored { cache, root, functions, program }
     });
     if stored.as_ref().is_some_and(|stored| stored.program.is_some()) {
-        return Ok(Compiled { objects: Vec::new(), total: units.len(), fresh: 0, runtime, tls, stored });
+        return Ok(Compiled {
+            objects: Vec::new(),
+            total: units.len(),
+            fresh: 0,
+            runtime,
+            tls,
+            statically,
+            stored,
+        });
     }
     let work = crate::own_temp("llvm");
     let built = if release {
@@ -555,7 +566,15 @@ fn compile_emitted(
         let _ = std::fs::remove_dir_all(&work);
     }
     let built = built?;
-    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime, tls, stored })
+    Ok(Compiled {
+        objects: built.objects,
+        total: units.len(),
+        fresh: built.compiled,
+        runtime,
+        tls,
+        statically,
+        stored,
+    })
 }
 
 /// Links object files with the runtime library, giving back how long linking took. When the

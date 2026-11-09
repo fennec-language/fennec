@@ -27,8 +27,10 @@ pub(crate) fn version(manifest: &str) -> Result<String, String> {
         let value = value.trim();
         let version = value.strip_prefix('"').and_then(|rest| rest.strip_suffix('"'));
         return match version {
-            Some(version) if plain_version(version) => Ok(version.to_owned()),
-            _ => Err(format!("kit.toml's `fennec = {value}` isn't a version, like `fennec = \"0.4.2\"`")),
+            Some(version) if plain_version(version) || linked_name(version) => Ok(version.to_owned()),
+            _ => Err(format!(
+                "kit.toml's `fennec = {value}` isn't a version, like `fennec = \"0.4.2\"`, or the name of a linked build, like `fennec = \"dev\"`"
+            )),
         };
     }
     Err("kit.toml doesn't say which Fennec it needs: add `fennec = \"0.4.2\"`, with the version".to_owned())
@@ -66,6 +68,14 @@ pub(crate) fn plain_version(version: &str) -> bool {
     version.starts_with(|first: char| first.is_ascii_digit())
         && version.len() <= 64
         && version.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '+'))
+}
+
+/// Whether a word names a build of Fennec linked with `fennec toolchain link`, like `dev`: a
+/// lowercase letter first, then lowercase letters, digits and dashes.
+pub(crate) fn linked_name(name: &str) -> bool {
+    name.starts_with(|first: char| first.is_ascii_lowercase())
+        && name.len() <= 32
+        && name.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 /// What `kit.lock` pins the toolchain to: its version and its manifest's hash, from the line
@@ -122,7 +132,8 @@ mod tests {
                 .unwrap_err()
                 .contains("doesn't say")
         );
-        assert!(version("fennec = \"latest\"\n").unwrap_err().contains("isn't a version"));
+        assert_eq!(version("fennec = \"dev\"\n"), Ok("dev".to_owned()));
+        assert!(version("fennec = \"Dev\"\n").unwrap_err().contains("isn't a version"));
         assert!(version("fennec = \"../0.4.2\"\n").unwrap_err().contains("isn't a version"));
         assert!(version("fennec = 0.4\n").unwrap_err().contains("isn't a version"));
     }

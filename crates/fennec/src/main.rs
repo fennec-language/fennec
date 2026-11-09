@@ -98,7 +98,7 @@ fn arguments() -> Option<Vec<String>> {
 }
 
 fn main() -> ExitCode {
-    fennec_interp::use_tls();
+    fennec_rt::use_tls();
     let Some(args) = arguments() else {
         return ExitCode::FAILURE;
     };
@@ -208,7 +208,7 @@ fn run(engine: run::Engine, path: &str, arguments: &[&str]) -> ExitCode {
 
 /// `fennec run --record log ...`: runs the program as `fennec run ...` does, logging every outside
 /// input it takes into `log`, with what it was run with, for `fennec replay` (see
-/// `fennec_interp::replay`).
+/// `fennec_rt::replay`).
 fn record(log: &str, rest: &[&str]) -> ExitCode {
     let (path, arguments) = match rest {
         [path, arguments @ ..] => {
@@ -220,7 +220,7 @@ fn record(log: &str, rest: &[&str]) -> ExitCode {
     let header =
         ["native".to_owned(), path.clone()].into_iter().chain(arguments.iter().cloned()).collect::<Vec<_>>();
     let log = std::path::PathBuf::from(log);
-    if let Err(err) = fennec_interp::replay::start_log(&log, header.join("\0").as_bytes()) {
+    if let Err(err) = fennec_rt::replay::start_log(&log, header.join("\0").as_bytes()) {
         eprintln!("error: couldn't start the recording at {}: {err}", log.display());
         return ExitCode::FAILURE;
     }
@@ -233,7 +233,7 @@ fn record(log: &str, rest: &[&str]) -> ExitCode {
 /// it was run with, giving it the logged inputs in place of the outside world's.
 fn replay(log: &str) -> ExitCode {
     let log = std::path::PathBuf::from(log);
-    let header = match fennec_interp::replay::header_of(&log) {
+    let header = match fennec_rt::replay::header_of(&log) {
         Ok(header) => String::from_utf8_lossy(&header).into_owned(),
         Err(err) => {
             eprintln!("error: couldn't read the recording at {}: {err}", log.display());

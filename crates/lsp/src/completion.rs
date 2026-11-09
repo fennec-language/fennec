@@ -27,7 +27,7 @@ use crate::text;
 const PLACEHOLDER: &str = "completing_here_";
 
 /// The builtins, as the checker's `BUILTINS` lists them, which no file declares.
-const BUILTINS: [&str; 23] = [
+const BUILTINS: [&str; 22] = [
     "Err",
     "Ok",
     "all",
@@ -36,7 +36,6 @@ const BUILTINS: [&str; 23] = [
     "copy",
     "enumerate",
     "float",
-    "ignore",
     "int",
     "list",
     "max",

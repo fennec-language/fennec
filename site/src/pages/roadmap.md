@@ -64,7 +64,7 @@ description: What Fennec does today, what's being built next, and the design que
 - **The rest of the sized numbers:** `wrapping_` and `saturating_` on a `u64`.
 - **Kit dependencies and [the Den](/den/),** Fennec's registry for kits. Kits from git or a path are already pinned in `kit.lock` by `fennec update`, and importing from them is next.
 - **Cross-compiling and WebAssembly.**
-- **The rest of the concurrency design:** `TaskGroup`, database pools, and lock order checked across the whole program. The [tour](/tour/#sharing-resources-and-tasks) describes it.
+- **The rest of the concurrency design:** Database pools, and lock order checked across the whole program. The [tour](/tour/#sharing-resources-and-tasks) describes it.
 
 ## Next: speed and builds
 
@@ -78,7 +78,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
-- A compile error for a copy that can go stale, which `copy(x)` makes on purpose.
+- A lint for a copy that can go stale, suggesting `ref`, and a local `ref name = place`.
 - Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.
@@ -89,7 +89,7 @@ Each of these is decided and not built.
 
 ## After that
 
-- **Hot reload,** so a running game or server picks up a change. It's on the backlog, and its design is in progress.
+- **Hot reload,** so a running game or server picks up a change. It's deferred, and its design is in progress.
 - The rest of compile-time loops over a type, and `Serializer` and `Deserializer` for every format built on them. A generic function's loop over a type's fields already works. `where` ranges, delta encoding and quantization in `std.pack`.
 - WebSocket in `std.net`.
 - GPU kernels written as plain functions.

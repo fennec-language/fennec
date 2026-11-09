@@ -52,7 +52,7 @@ else
   mkdir -p "$tools"
   # `echo` too, which an example's program runs.
   for tool in bash sh env diff cat sed grep awk sort paste tr mkdir rm cp mv ls find dirname basename uname mktemp head tail sleep kill wc echo; do
-    found=$(command -v "$tool") && ln -s "$found" "$tools/$tool"
+    found=$(type -P "$tool") && ln -s "$found" "$tools/$tool"
   done
   reach="$bin:$tools"
 fi

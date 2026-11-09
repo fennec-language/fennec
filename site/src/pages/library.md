@@ -23,7 +23,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Diagnostics | `log` |
 | Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
 | Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`. Planned: `TaskGroup` and pools |
-| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, written in Fennec over `net`: sign-in, queries and transactions, with no TLS yet |
+| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, written in Fennec over `net`: sign-in, queries and transactions, over TLS. Planned: connecting from a URL, as a pool |
 
 ## Importing what you use
 

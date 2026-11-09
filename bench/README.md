@@ -48,16 +48,11 @@ Targets come from twins built with overflow checks on, because Fennec always che
 
 ## The floor and the ratchet
 
-**The floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup. It was set for the JIT, and LLVM's release builds clear it by far, so it stays as a floor while the JIT goes.
+**The floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup. It was set for the JIT, which is gone. LLVM's release builds clear it by far, so it stays as a floor.
 
 Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of `x86_64.txt`, the only architecture CI measures, and from then on CI fails if it drops below. Reaching the floor on x86-64 says nothing about 64-bit Arm, so that file's marks wait until Arm is measured the same way. A `.std` row is never marked. A failure is fixed in the compiler, never by changing the benchmark.
 
-The target itself is 100%. Each engine aims for its own share of it:
-
-| Engine | Aim |
-|---|---|
-| LLVM's release builds, which the suite measures | 110% of target |
-| The interpreter | 10–30% |
+The target itself is 100%. LLVM's release builds, which the suite measures, aim for 110% of it.
 
 The goal across the suite is 95% of target. Reports show it against both twins: unchecked, which is what's pinned today, and built with overflow checks, as Fennec is. Those checks cost Rust itself about 5% by cycles and 9% by instructions. The checked twins come when the tool adds them.
 
@@ -127,7 +122,7 @@ installed, its column is left out.
 
 ## Pinning targets
 
-The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. The CPU level is fixed, so a target doesn't depend on which machine pinned it, and matches what the JIT uses: `x86-64-v3` on x86-64 and the baseline on 64-bit Arm. Each targets file says which compiler pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
+The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. The CPU level is fixed, so a target doesn't depend on which machine pinned it, and is `x86-64-v3` on x86-64 and the baseline on 64-bit Arm. Each targets file says which compiler pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
 
 Everyday runs don't build or run the twins. They only read the targets.
 
@@ -137,7 +132,7 @@ Re-pin only when a kernel's work or a twin changes, by running the **Pin benchma
 
 The suite is locked, so a new kernel needs a stated reason. Add `name.fen` and `name.rs` to `kernels/`, then re-pin.
 
-- Size the work so that Rust takes between about 10 and 100 ms. Valgrind counts every kernel on every CI run, and a kernel the JIT is still slow on takes far longer than its twin.
+- Size the work so that Rust takes between about 10 and 100 ms. Valgrind counts every kernel on every CI run, and a slow kernel takes far longer than its twin.
 - Print a result that depends on all of the work, so neither side can skip it.
 - In Rust, read the input size through `std::hint::black_box`, so the answer isn't computed at compile time.
 - The Fennec code must be formatted; CI checks it with `fennec fmt --check`.

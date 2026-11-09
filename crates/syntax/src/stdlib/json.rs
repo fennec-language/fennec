@@ -1,5 +1,5 @@
-//! `std.json`: reading and writing JSON, which the interpreter does in Rust. The options it
-//! takes are enums written in Fennec.
+//! `std.json`: reading and writing JSON, written in Fennec, with the options it takes as
+//! enums.
 
 use super::Module;
 

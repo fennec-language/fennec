@@ -96,7 +96,7 @@ fn release_items(state: &mut State, element: &Element, words: &[u64]) {
 fn build(state: &mut State, at: usize, stride: usize, items: &[u64], room: usize) -> Box<[u64]> {
     let count = items.len() / stride.max(1);
     let room = room.max(count).max(MIN_ROOM);
-    let mut block = state.heap.fresh(LIST_HEADER_WORDS + room * stride);
+    let mut block = state.heap.fresh(super::heap::words_for(LIST_HEADER_WORDS, room, stride));
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
     if let Some(header) = block.get_mut(..LIST_HEADER_WORDS) {
         header.copy_from_slice(&[1, shape(state, at), number(count), number(room)]);
@@ -367,6 +367,41 @@ pub(super) fn list_of_strings(state: &mut State, element: i64, strings: &[&str])
     list_of_words(state, element, &words)
 }
 
+/// The places `0..count` in the order `compare` puts them, keeping equal ones in order. A program's
+/// comparison can disagree with itself, or stop answering when it fails, so this mustn't rely on it
+/// being a total order.
+fn sorted_order(count: usize, compare: impl FnMut(usize, usize) -> std::cmp::Ordering) -> Vec<usize> {
+    let mut compare = compare;
+    let mut order: Vec<usize> = (0..count).collect();
+    let mut merged = Vec::with_capacity(count);
+    // Bottom-up merges of runs twice as long each time: each step only asks which of two goes
+    // first, so whatever the answers, every place comes out once.
+    let mut width = 1;
+    while width < count {
+        merged.clear();
+        for start in (0..count).step_by(2 * width) {
+            let middle = (start + width).min(count);
+            let end = (start + 2 * width).min(count);
+            let (mut left, mut right) = (start, middle);
+            while left < middle && right < end {
+                let (Some(&a), Some(&b)) = (order.get(left), order.get(right)) else { break };
+                if compare(b, a) == std::cmp::Ordering::Less {
+                    merged.push(b);
+                    right += 1;
+                } else {
+                    merged.push(a);
+                    left += 1;
+                }
+            }
+            merged.extend(order.get(left..middle).unwrap_or_default());
+            merged.extend(order.get(right..end).unwrap_or_default());
+        }
+        std::mem::swap(&mut order, &mut merged);
+        width *= 2;
+    }
+    order
+}
+
 /// A new list owned once of a list's items in the order `compare` puts them, which stays stable.
 /// `compare` takes the addresses of two items and gives a negative, zero or positive number. It
 /// runs with nothing here borrowed, so it can call back in. Once it has failed it's not asked
@@ -376,12 +411,11 @@ pub extern "C" fn sorted_with(list: i64, compare: extern "C" fn(i64, i64) -> i64
         return 0;
     };
     let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
-    let mut order: Vec<usize> = (0..count).collect();
-    order.sort_by(|a, b| {
+    let order = sorted_order(count, |a, b| {
         if super::failed() {
             return std::cmp::Ordering::Equal;
         }
-        compare(address(*a), address(*b)).cmp(&0)
+        compare(address(a), address(b)).cmp(&0)
     });
     with(|state| {
         let Some(block) = state.heap.block_mut(copy) else { return };
@@ -886,3 +920,34 @@ pub extern "C" fn out_of_range(at: i64, len: i64, start: i64, end: i64) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sorting {
+    use std::cmp::Ordering;
+
+    /// A comparison that contradicts itself still gives back every place once.
+    #[test]
+    fn a_comparison_that_contradicts_itself_still_gives_every_place() {
+        for count in [0, 1, 2, 7, 20, 33, 100, 1000] {
+            let mut turn = 0_u64;
+            let order = super::sorted_order(count, |a, b| {
+                turn = turn.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                match (turn >> 33) % 3 {
+                    0 => Ordering::Less,
+                    1 => Ordering::Greater,
+                    _ => a.cmp(&b).reverse(),
+                }
+            });
+            let mut seen = order.clone();
+            seen.sort_unstable();
+            assert_eq!(seen, (0..count).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn equal_places_stay_in_order() {
+        let keys = [3, 1, 2, 1, 3, 2, 1];
+        let order = super::sorted_order(keys.len(), |a, b| keys[a].cmp(&keys[b]));
+        assert_eq!(order, vec![1, 3, 6, 2, 5, 0, 4]);
+    }
+}

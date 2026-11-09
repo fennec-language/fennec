@@ -395,8 +395,8 @@ fn comparable(native: bool, runs: impl FnOnce() -> bool) -> bool {
     native && runs()
 }
 
-/// Whether the previous `fennec` compiles a kernel as much as this one, by how many places each
-/// leaves to the interpreter.
+/// Whether the previous `fennec` compiles a kernel as much as this one, by how many places in it
+/// each says LLVM doesn't take.
 fn as_native(previous: Option<usize>, ours: Option<usize>) -> bool {
     previous.unwrap_or(0) <= ours.unwrap_or(0)
 }
@@ -419,8 +419,8 @@ fn run_kernel(
     time_together(&[built.clone(), startup.clone()], 1)?;
     let mut programs = vec![built.clone(), startup.clone()];
     let previous = options.previous.as_deref().and_then(|previous| {
-        // A previous `fennec` that can't build a new kernel, or would leave more of it to the
-        // interpreter, just isn't compared on it.
+        // A previous `fennec` that can't build a new kernel, or takes less of it through LLVM,
+        // just isn't compared on it.
         let native = as_native(kernel.not_native(previous), kernel.not_native(&options.fennec));
         let built = native.then(|| kernel.built(previous, out_dir, "previous").ok()).flatten()?;
         comparable(native, || time_together(std::slice::from_ref(&built), 1).is_ok()).then_some(built)
@@ -447,8 +447,6 @@ fn run_kernel(
         not_native: kernel.not_native(&options.fennec),
         target: target.cloned(),
         unchecked,
-        fell_back: built.args.first().is_some_and(|first| first == "run")
-            || ours.notes.contains("using the interpreter"),
     };
     if result.failure().is_some() {
         match (counter, previous) {
@@ -485,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn a_previous_build_that_interprets_more_of_a_kernel_isnt_compared() {
+    fn a_previous_build_that_takes_less_of_a_kernel_through_llvm_isnt_compared() {
         assert!(as_native(Some(0), Some(0)));
         assert!(as_native(Some(1), Some(1)));
         assert!(as_native(Some(0), Some(1)));

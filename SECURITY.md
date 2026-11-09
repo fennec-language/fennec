@@ -21,4 +21,4 @@ This is the goal Fennec is built toward; some of it isn't built yet. The reasoni
 
 Please report security problems privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability**. Don't open a public issue.
 
-Reports about the interpreter, the `fennec` command, the release archives, or the website are all welcome. You'll get a reply within a week.
+Reports about the compiler, the `fennec` command, the release archives, or the website are all welcome. You'll get a reply within a week.

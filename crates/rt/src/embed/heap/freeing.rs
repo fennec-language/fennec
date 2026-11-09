@@ -45,6 +45,11 @@ fn free_waiting(state: &mut State) {
 /// addresses, so freeing it needs none of the looking `free` does. A block that isn't a
 /// string's is freed as `free` would.
 pub extern "C" fn free_text(address: i64) {
+    // Another thread counted it: `free` waits for that.
+    if crate::embed::threads::held_elsewhere(address.cast_unsigned()) {
+        free(address);
+        return;
+    }
     let freed = with(|state| {
         let at = usize::try_from(address).ok()?;
         state.heap.forget_place(u64::try_from(at).unwrap_or(0));

@@ -97,7 +97,28 @@ fn checked(path: &str, json: bool) -> ExitCode {
     {
         return rejected(&run, &diagnostics, json);
     }
+    if diagnostics.is_empty() && !json {
+        for problem in locked_layout_problems(&program) {
+            eprintln!("warning: {problem}");
+        }
+    }
     rejected(&program, &diagnostics, json)
+}
+
+/// Why a type the kit saves in `std.pack` can't load a layout `pack.lock` holds for it: data
+/// saved that way before would fail to load now. A warning, since leaving that data behind can
+/// be what's meant.
+fn locked_layout_problems(program: &fennec_kit::Program) -> Vec<String> {
+    let locked =
+        program.module.items.iter().any(
+            |item| matches!(item, fennec_syntax::Item::Const { name, .. } if name == fennec_kit::PACK_LOCK),
+        );
+    if !locked {
+        return Vec::new();
+    }
+    let mut module = program.module.clone();
+    let Ok(signatures) = fennec_check::check_and_resolve(&mut module) else { return Vec::new() };
+    fennec_ir::lower(&module, &signatures).layout_problems
 }
 
 /// Every lint the linter finds in a program, in the order they're written.

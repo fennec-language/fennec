@@ -17,8 +17,7 @@ use crate::{CheckKind, CheckLeft, Shared};
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
-    /// On x86-64, `x86-64-v3`: AVX2, FMA and BMI, the level the JIT uses and the twins are built
-    /// for. On 64-bit Arm, the baseline already has what's wanted.
+    /// On x86-64, `x86-64-v3`: AVX2, FMA and BMI, the level the twins are built for. On 64-bit Arm, the baseline already has what's wanted.
     #[default]
     Usual,
     /// The first of its architecture, for older machines.
@@ -72,7 +71,7 @@ const ALWAYS_INLINE: usize = 16;
 const COPIED: usize = 64;
 /// How many calls deep what's copied may call other small functions.
 const COPY_DEPTH: usize = 2;
-/// Below this many, a recursive function gets one level of itself inlined, as in the JIT.
+/// Below this many, a recursive function gets one level of itself inlined.
 const SELF_INLINED: usize = 24;
 
 const OVERFLOW: i64 = 1;
@@ -2486,6 +2485,8 @@ impl Emit<'_, '_, '_> {
             }
             InstKind::Lock { handle, write } => self.lock(handle, *write, span),
             InstKind::Unlock { handle } => self.unlock(handle),
+            // A crash doesn't run a `with` source's `else:` natively yet.
+            InstKind::CrashCleanup { .. } | InstKind::CrashCleanupDone { .. } => Ok(()),
             InstKind::LockAll { handles } => self.lock_all(handles, span),
             InstKind::UnlockAll { handles } => self.unlock_all(handles),
         }

@@ -125,3 +125,10 @@ export struct StrWriter:
 def padding(fill: str, count: int) -> str:
     if count <= 0: return ""
     (fill * count)[:count]
+
+extend str:
+    def serialize(self, ref out: Serializer):
+        out.text(self)
+
+    def deserialize(ref src: Deserializer) -> str fails ParseError:
+        src.text()?

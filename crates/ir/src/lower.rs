@@ -895,6 +895,10 @@ impl<'a> Lowering<'a> {
     /// A call that makes its value itself rather than calling a function: `copy(x, field=...)`, a
     /// consumer like `sum(...)`, or `Ok(...)` or `Err(...)` written out.
     fn made_by_name(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
+        // `list[int]()`, `dict[str, int]()` or `set[str]()`: an empty one, its type the call's.
+        if let Some(empty) = typed_empty(expr) {
+            return self.expr(&empty).map(Some);
+        }
         // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
         if let ExprKind::Name(name) = &callee.kind
             && (name == "replace" || name == "copy" && args.len() > 1)
@@ -1126,4 +1130,19 @@ fn shared_types(module: &Module) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// `list[int]()`, `dict[str, int]()` or `set[str]()` as the empty one it makes, with the call's
+/// span, whose type the checker gave: the checker leaves the call as written, so a check of
+/// the program again still knows what it holds.
+fn typed_empty(expr: &Expr) -> Option<Expr> {
+    let ExprKind::Call { callee, args } = &expr.kind else { return None };
+    let ExprKind::Index { object, .. } = &callee.kind else { return None };
+    let ExprKind::Name(name) = &object.kind else { return None };
+    if !args.is_empty() || !matches!(name.as_str(), "list" | "dict" | "set") {
+        return None;
+    }
+    let mut empty = expr.clone();
+    fennec_syntax::visit::empty_collection(&mut empty);
+    Some(empty)
 }

@@ -27,6 +27,147 @@ pub const SORT_INTS: i64 = 0;
 pub const SORT_FLOATS: i64 = 1;
 pub const SORT_STRINGS: i64 = 2;
 
+/// The bit of a list's owner count a lock's rollback log sets when it marks the list, in place of
+/// holding a count of it (see `guarded::rollback`). The count then never reads as 1, so native code
+/// asks the runtime before every change, and the list lives while the log has it. Well below
+/// `heap::IMMORTAL`, which nothing marked comes near.
+pub const MARKED: u64 = 1 << 40;
+
+/// Whether the block at `address` is a list a log can mark: not one already, nor one that lives for
+/// the whole run.
+pub(super) fn markable(state: &State, address: u64) -> bool {
+    state.heap.block(address).is_some_and(|block| {
+        element_of(state, block).is_some()
+            && block.first().is_some_and(|count| count & MARKED == 0 && *count < super::heap::IMMORTAL)
+    })
+}
+
+/// Marks a list for a lock's log.
+pub(super) fn mark(state: &mut State, address: u64) {
+    if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+        *count |= MARKED;
+    }
+}
+
+/// Takes a log's mark off a list. With `owner`, the mark becomes an owner, for the word the log puts
+/// it back in; otherwise the list goes if nothing else holds it.
+pub(super) fn unmark(state: &mut State, address: u64, owner: bool) {
+    let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) else { return };
+    // An owner either way, which letting go of again, without `owner`, frees a list nothing holds.
+    *count = (*count & !MARKED) + 1;
+    if !owner {
+        release(state, address);
+    }
+}
+
+/// Whether a list has the log's mark and, apart from it, one owner: changed in place, a log has it.
+fn marked_alone(block: &[u64]) -> bool {
+    block.first().is_some_and(|count| count & MARKED != 0 && count & !MARKED == 1)
+}
+
+/// `more` items' room on the end of a marked list with one owner and room enough, zeroed, the
+/// append noted for a crash to undo. `None` for any other list, which is grown as one shared is.
+fn marked_append(state: &mut State, list: i64, more: usize) -> Option<i64> {
+    let address = u64::try_from(list).ok()?;
+    let block = state.heap.block(address)?;
+    if !marked_alone(block) {
+        return None;
+    }
+    let stride = element_of(state, block)?.words();
+    let count = usize::try_from(*block.get(2)?).ok()?;
+    let room = usize::try_from(*block.get(3)?).ok()?;
+    let marked = *block.first()?;
+    let address = if count + more > room {
+        // Moved to a block with room, as a list with one owner is, mark and all, and the log told
+        // where it is now.
+        let at = element_number(state, block)?;
+        let old = state.heap.take_out(address)?;
+        let mut grown = build(state, at, stride, items(&old, stride), grown_room(count, more));
+        state.heap.recycle(old);
+        *grown.first_mut()? = marked;
+        let moved = u64::try_from(state.heap.insert(grown)).ok()?;
+        super::guarded::rollback::moved(address, moved);
+        moved
+    } else {
+        address
+    };
+    if !super::guarded::rollback::grew(address, count) {
+        return None;
+    }
+    let block = state.heap.block_mut(address)?;
+    let start = LIST_HEADER_WORDS + count * stride;
+    block.get_mut(start..start + more * stride)?.fill(0);
+    *block.get_mut(2)? = u64::try_from(count + more).ok()?;
+    i64::try_from(address).ok()
+}
+
+/// `fennec_list_pop_unshare(list)`: the list a `pop` takes its last item off, the same when it has
+/// one owner. A marked one stays as it is, and its log holds the item, for a crash to put back; any
+/// other shared list is copied.
+pub extern "C" fn pop_unshare(list: i64) -> i64 {
+    with(|state| marked_pop(state, list).or_else(|| grow_in(state, list, 0)).unwrap_or(list))
+}
+
+fn marked_pop(state: &mut State, list: i64) -> Option<i64> {
+    let address = u64::try_from(list).ok()?;
+    let block = state.heap.block(address)?;
+    if !marked_alone(block) {
+        return None;
+    }
+    let element = element_of(state, block)?;
+    let stride = element.words();
+    let count = usize::try_from(*block.get(2)?).ok()?;
+    // An empty one has nothing to take, and the pop fails.
+    let Some(at) = count.checked_sub(1) else { return Some(list) };
+    let start = LIST_HEADER_WORDS + at * stride;
+    let words = block.get(start..start + stride)?.to_vec();
+    retain_items(state, &element, &words);
+    if !super::guarded::rollback::popped(address, at, words.clone()) {
+        release_items(state, &element, &words);
+        return None;
+    }
+    Some(list)
+}
+
+/// After a crash, a marked list as long as it was before an append: what went on since is let go of.
+pub(super) fn shorten_to(state: &mut State, address: u64, length: usize) {
+    let Some(block) = state.heap.block(address) else { return };
+    let Some(element) = element_of(state, block) else { return };
+    let stride = element.words();
+    let dropped = items(block, stride).get(length * stride..).unwrap_or_default().to_vec();
+    if dropped.is_empty() && items(block, stride).len() == length * stride {
+        return;
+    }
+    if let Some(block) = state.heap.block_mut(address) {
+        let start = LIST_HEADER_WORDS + length * stride;
+        block.get_mut(start..start + dropped.len()).unwrap_or_default().fill(0);
+        if let Some(count) = block.get_mut(2) {
+            *count = u64::try_from(length).unwrap_or(0);
+        }
+    }
+    release_items(state, &element, &dropped);
+}
+
+/// After a crash, a marked list's popped item back at `at`, its last, with the owners the log held:
+/// what went on after it since is let go of.
+pub(super) fn put_back(state: &mut State, address: u64, at: usize, words: &[u64]) {
+    shorten_to(state, address, at);
+    let Some(block) = state.heap.block_mut(address) else { return };
+    let start = LIST_HEADER_WORDS + at * words.len();
+    if let Some(slots) = block.get_mut(start..start + words.len()) {
+        slots.copy_from_slice(words);
+        if let Some(count) = block.get_mut(2) {
+            *count = u64::try_from(at + 1).unwrap_or(0);
+        }
+    }
+}
+
+/// Lets go of the owners a log held of what a popped item's `words` hold, as items of `list`'s kind.
+pub(super) fn let_go_of_words(state: &mut State, list: u64, words: &[u64]) {
+    let Some(element) = state.heap.block(list).and_then(|block| element_of(state, block)) else { return };
+    release_items(state, &element, words);
+}
+
 /// The shape of lists of the element numbered `element`.
 fn shape(state: &State, element: usize) -> u64 {
     state.tables.str_shape + 1 + super::dicts::SHAPES + u64::try_from(element).unwrap_or(0)
@@ -142,7 +283,7 @@ pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
 /// native code to fill: the same block when it had one owner and room, or else a copy
 /// with room to double.
 pub extern "C" fn grow(list: i64) -> i64 {
-    with(|state| grow_in(state, list, 1).unwrap_or(list))
+    with(|state| marked_append(state, list, 1).or_else(|| grow_in(state, list, 1)).unwrap_or(list))
 }
 
 /// Takes over a list's owner and gives back a block only that owner holds, copying the
@@ -781,7 +922,8 @@ pub extern "C" fn extend(list: i64, other: i64) -> i64 {
         let added = items(more, stride).to_vec();
         let count =
             state.heap.block(u64::try_from(list).unwrap_or(0)).map_or(0, |block| items(block, stride).len());
-        let grown = grow_in(state, list, added.len() / stride).unwrap_or(list);
+        let more = added.len() / stride;
+        let grown = marked_append(state, list, more).or_else(|| grow_in(state, list, more)).unwrap_or(list);
         if let Some(block) = u64::try_from(grown).ok().and_then(|at| state.heap.block_mut(at))
             && let Some(slots) =
                 block.get_mut(LIST_HEADER_WORDS + count..LIST_HEADER_WORDS + count + added.len())

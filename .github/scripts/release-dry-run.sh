@@ -40,10 +40,28 @@ cp "$built/examples/dry_run$exe" "$work/dry_run$exe"
 cp -R "$repo/examples" "$work/examples"
 within="$repo/.github/scripts/within.sh"
 
-# What a person has: the system's own tools and the launcher, and nothing of Rust's, Cargo's,
-# llvm-mingw's or Visual Studio's. On macOS and Linux, `cc` is still the system's, which links; on
-# Windows, the archive's own LLD links.
-reach="$bin:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup|mingw|visual studio' | paste -sd: -)"
+# What a person has who's installed nothing but Fennec: the launcher and the shell's own tools,
+# with no C compiler, linker or `ar`, and nothing of Rust's, Cargo's, llvm-mingw's or Visual
+# Studio's. The archive's own LLD links, and its own `llvm-ar` takes a library apart. On Linux and
+# macOS a compiler sits in `/usr/bin` beside everything else, so the tools this script uses are
+# linked into a folder of their own; Git for Windows' folders hold none.
+if [ -n "$exe" ]; then
+  reach="$bin:/usr/bin:/mingw64/bin:$(cygpath -u "$SYSTEMROOT")/System32"
+else
+  tools="$work/tools"
+  mkdir -p "$tools"
+  for tool in bash sh env diff cat sed grep awk sort paste tr mkdir rm cp mv ls find dirname basename uname mktemp head tail sleep kill wc; do
+    found=$(command -v "$tool") && ln -s "$found" "$tools/$tool"
+  done
+  reach="$bin:$tools"
+fi
+unreached=(cc c++ gcc clang ld ld.lld ld64.lld lld ar)
+for linker in "${unreached[@]}"; do
+  if PATH="$reach" command -v "$linker" > /dev/null 2>&1; then
+    echo "::error::$linker is in reach of the dry run: $(PATH="$reach" command -v "$linker")"
+    exit 1
+  fi
+done
 run() {
   env -u FENNEC_LLVM_BIN -u FENNEC_THREADS_RUNTIME -u FENNEC_EXPECT_LLVM -u FENNEC_DIST -u CARGO \
     PATH="$reach" RUSTUP_HOME="$work/no-rustup" CARGO_HOME="$work/no-cargo" FENNEC_HOME="$home" "$@"

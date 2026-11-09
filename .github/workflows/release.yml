@@ -202,7 +202,9 @@ jobs:
             cp "$from/fennec" "$name/"
             tools="$TOOLCHAIN/lib/rustlib/$TARGET"
             mkdir -p "$name/llvm/bin" "$name/llvm/lib"
-            cp "$tools"/bin/{opt,llc,llvm-link} "$name/llvm/bin/"
+            # LLD and LLVM's `ar` link a program and take the runtime's Rust out of its library, so
+            # building needs no C compiler, linker or `ar` from the machine.
+            cp "$tools"/bin/{opt,llc,llvm-link,llvm-ar,rust-lld} "$name/llvm/bin/"
             # The tools share LLVM from a library of their own, which they find in `../lib`.
             cp "$TOOLCHAIN"/lib/libLLVM* "$name/llvm/lib/"
           fi

@@ -265,7 +265,7 @@ pub(crate) fn executable(
     let started = Instant::now();
     let built = llvm_objects(program, release)?;
     let compiled = started.elapsed();
-    let statically = release && links_statically();
+    let statically = links_statically();
     // A release built with the runtime's bitcode has its Rust inside already.
     let runtime_in = release && runtime_bitcode(built.runtime, statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
@@ -522,7 +522,7 @@ fn compile_emitted(
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
-    let statically = release && links_statically();
+    let statically = links_statically();
     let runtime = Runtime::for_program(lowered, statically)?;
     let home = fennec_build::fennec_home();
     let cache = home
@@ -622,11 +622,14 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Comm
 }
 
 /// Whether a build links its program on its own, with musl's C library in it: on Linux, when the
-/// `musl` folder beside `fennec` has the runtime built for musl and musl's own start-up files.
-/// `FENNEC_STATIC=0` asks for a program linked against the system's C library anyway.
+/// `musl` folder beside `fennec` has the runtime built for musl and musl's own start-up files, as
+/// a release's does. Then every build does, so building needs nothing from the machine, not even a
+/// C compiler. `FENNEC_STATIC=0` asks for a program linked against the system's C library anyway,
+/// and so does a sanitizer, whose runtime is the system compiler's.
 fn links_statically() -> bool {
     cfg!(target_os = "linux")
         && std::env::var_os("FENNEC_STATIC").is_none_or(|on| on != "0")
+        && fennec_llvm::sanitize_flag().is_none()
         && musl_folder().is_some_and(|musl| musl.join("self-contained/crt1.o").is_file())
 }
 
@@ -635,31 +638,51 @@ fn musl_folder() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.with_file_name("musl"))
 }
 
-/// The system's linker, set to link objects with a runtime library built for musl, and with musl's
-/// own start-up files and C library, into an executable that needs nothing from the machine it
-/// runs on: no C library, and no loader.
+/// The linker for a program linked on its own, with a runtime library built for musl and with
+/// musl's own start-up files and C library, into an executable that needs nothing from the machine
+/// it runs on: no C library, and no loader. It's LLD, beside LLVM's other tools, so building needs
+/// no C compiler either; where there's none, as in a checkout whose Rust has no `rust-lld`, it's the
+/// system's compiler driving its own linker.
 fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
     let musl = musl_folder().unwrap_or_default().join("self-contained");
-    let mut command = Command::new("cc");
+    let lld = fennec_llvm::Tools::find()
+        .ok()
+        .map(|tools| tools.folder().join("rust-lld"))
+        .filter(|lld| lld.is_file());
+    // musl's C library takes the compiler's helpers, like `__multf3` for a `long double` on arm64,
+    // from the runtime, or, when only the runtime's C parts are linked, from the helpers taken out
+    // of it for that, or the system compiler's `libgcc`.
+    let helpers = musl.join("libcompiler_builtins.a");
+    let (mut command, pass) = if let Some(lld) = &lld {
+        let mut command = Command::new(lld);
+        command.args(["-flavor", "gnu", "-static", "--no-pie"]);
+        (command, "")
+    } else {
+        let mut command = Command::new("cc");
+        command.args(["-static", "-no-pie", "-nostdlib", "-nostartfiles"]);
+        (command, "-Wl,")
+    };
     command
-        .args(["-static", "-no-pie", "-nostdlib", "-nostartfiles"])
         .arg(musl.join("crt1.o"))
         .arg(musl.join("crti.o"))
         .arg(musl.join("crtbegin.o"))
         .args(objects)
-        // musl's C library takes the compiler's helpers, like `__multf3` for a `long double` on
-        // arm64, from the runtime, or from `libgcc` when only the runtime's C parts are linked.
-        .arg("-Wl,--start-group")
+        .arg(format!("{pass}--start-group"))
         .arg(runtime)
         .arg(musl.join("libunwind.a"))
-        .arg(musl.join("libc.a"))
-        .arg("-lgcc")
-        .arg("-Wl,--end-group")
+        .arg(musl.join("libc.a"));
+    if helpers.is_file() {
+        command.arg(&helpers);
+    } else if lld.is_none() {
+        command.arg("-lgcc");
+    }
+    command
+        .arg(format!("{pass}--end-group"))
         .arg(musl.join("crtend.o"))
         .arg(musl.join("crtn.o"))
-        .args(["-Wl,--gc-sections", "-Wl,--eh-frame-hdr"])
+        .args([format!("{pass}--gc-sections"), format!("{pass}--eh-frame-hdr")])
         // Nothing reads the notices, so dropping what's unused would drop them too.
-        .arg(format!("-Wl,--undefined={}", crate::notices::SYMBOL))
+        .arg(format!("{pass}--undefined={}", crate::notices::SYMBOL))
         .arg("-o")
         .arg(output);
     command
@@ -749,12 +772,14 @@ fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
     Ok(copy)
 }
 
-/// What edits an archive: the system's `ar`, or LLVM's on Windows, which doesn't come with one.
+/// What edits an archive: LLVM's, beside its other tools, as a release has it, so building needs
+/// nothing from the machine; or the system's `ar`.
 fn archiver() -> Command {
-    match fennec_llvm::Tools::find() {
-        Ok(tools) if cfg!(windows) => Command::new(tools.folder().join("llvm-ar.exe")),
-        _ => Command::new("ar"),
-    }
+    let shipped = fennec_llvm::Tools::find()
+        .ok()
+        .map(|tools| tools.folder().join(format!("llvm-ar{}", std::env::consts::EXE_SUFFIX)))
+        .filter(|ar| ar.is_file());
+    Command::new(shipped.unwrap_or_else(|| PathBuf::from("ar")))
 }
 
 /// Where the runtime libraries are: next to the `fennec` command, or in the `musl` folder there

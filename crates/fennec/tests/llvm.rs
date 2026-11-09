@@ -4314,6 +4314,49 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A program's own type named like one the library keeps to itself, `std.collections`' `Reached`,
+/// is checked under a name no one can write, but nothing the program does depends on that: it
+/// saves as a dict's key, which goes through functions written in Fennec for its tuples, and what
+/// `pack` writes for it is what it would be for any type of that name and shape, the first word
+/// after `FPK2` the hash of `Reached{x: int, y: int}`.
+#[test]
+fn a_type_named_like_a_private_std_type_saves_as_written() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let collections = Path::new(env!("CARGO_MANIFEST_DIR")).join("../syntax/src/stdlib/collections.fen");
+    assert!(
+        std::fs::read_to_string(collections)?.contains("\nstruct Reached:"),
+        "std no longer has a private `Reached`: name a type here after one it has"
+    );
+    // FNV-1a, as `shape_hash` takes it, of the shape as written.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in "Reached{x: int, y: int}".bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let shape: Vec<String> = hash.to_le_bytes().iter().map(u8::to_string).collect();
+    let wanted = format!("[[{{\"x\": 1, \"y\": 2}}, \"tree\"]]\nTrue\nTrue\nbytes([{}])\n", shape.join(", "));
+    prints_in_both_builds(
+        "named_like_private_std",
+        r#"from std import json, pack
+
+struct Reached:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    spots = {Reached(x=1, y=2): "tree"}
+    text = json.dumps(spots)
+    stdout.print(text)
+    stdout.print((json.loads[dict[Reached, str]](text) else {}) == spots)
+    stdout.print((pack.loads[dict[Reached, str]](pack.dumps(spots)) else {}) == spots)
+    stdout.print(pack.dumps(Reached(x=1, y=2))[4:12])
+"#,
+        &wanted,
+    )
+}
+
 /// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
 /// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
 /// what's inside it. A type with no fields gives none.

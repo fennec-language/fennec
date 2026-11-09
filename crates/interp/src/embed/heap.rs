@@ -167,8 +167,8 @@ fn shared_block(at: usize) -> Option<&'static [u64]> {
     SHARED_STATICS.iter().take(taken).find_map(|shared| shared.get()?.get(at))
 }
 
-/// Moves the strings this thread made to live for the whole run, its string literals among them,
-/// where every thread can read them, once. Native code holds their addresses, which don't change.
+/// Moves the blocks this thread made to live for the whole run, its string literals and constants
+/// among them, where every thread can read them, once. Native code holds their addresses, which don't change.
 /// For the program's own thread, before a task first runs beside it: a parked task elsewhere reads
 /// a literal it prints there.
 #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only launched tasks use it"))]
@@ -181,7 +181,7 @@ pub(super) fn share_statics(state: &mut State) {
     let mut kept = super::table::Table::default();
     let mut moved = 0;
     for block in std::mem::take(&mut state.heap.blocks).into_blocks() {
-        if block.first().is_some_and(|count| *count >= IMMORTAL) && is_text(state, &block) {
+        if block.first().is_some_and(|count| *count >= IMMORTAL) {
             shared.insert(block);
             moved += 1;
         } else {
@@ -205,9 +205,30 @@ pub(super) fn share_statics(state: &mut State) {
     }
 }
 
-/// Whether a block is one of the program's string literals every thread can read.
+/// Whether a block is one of the program's string literals or constants every thread can read.
 pub(super) fn shared_static(address: u64) -> bool {
     usize::try_from(address).is_ok_and(|at| shared_block(at).is_some())
+}
+
+/// `fennec_constant_kept(block)`: a constant's value, worked out once, lives for the whole run, and
+/// so does every block it holds. Marked so, a task on another thread can read it, and nothing frees
+/// or changes it in place.
+pub extern "C" fn constant_kept(address: i64) {
+    with(|state| {
+        let mut waiting = vec![address.cast_unsigned()];
+        while let Some(at) = waiting.pop() {
+            let Some(block) = state.heap.block_mut(at) else { continue };
+            let Some(count) = block.first_mut() else { continue };
+            if *count >= IMMORTAL {
+                continue;
+            }
+            // Its owners now stay above the mark, so letting one go doesn't take it below.
+            *count = count.saturating_add(IMMORTAL);
+            if let Some(block) = state.heap.block(at) {
+                waiting.extend(children(state, block));
+            }
+        }
+    });
 }
 
 /// Has every run from now on count what it allocates.

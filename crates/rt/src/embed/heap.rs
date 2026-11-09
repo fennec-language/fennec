@@ -561,6 +561,8 @@ impl Heap {
             self.forget_place(address);
             if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
             {
+                // Its address can come back holding another string.
+                self.texts.get_mut().remove(&block.as_ptr().addr());
                 handed.push(block);
             }
         }

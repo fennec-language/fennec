@@ -294,7 +294,16 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
         state.heap.enter_table(Box::new(Table::hashed()), GUARDED_OWNER << OWNER_SHIFT);
         for (place, old) in places.iter().zip(&held) {
             if *old != 0 {
-                let new = copied(state, *old)?;
+                // A copy that fails leaves the new table, so whatever runs next isn't in it, and the
+                // block goes back as it was.
+                let new = match copied(state, *old) {
+                    Ok(new) => new,
+                    Err(failure) => {
+                        drop(state.heap.leave_table());
+                        state.heap.blocks.insert(block);
+                        return Err(failure);
+                    }
+                };
                 if let Some(word) = block.get_mut(*place) {
                     *word = new;
                 }

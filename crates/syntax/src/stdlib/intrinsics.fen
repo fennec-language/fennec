@@ -251,6 +251,15 @@ export def channel_close(channel: int)
 @intrinsic
 export def channel_free(channel: int)
 
+## Marks `cleanup`, a function taking nothing, to run if the caller crashes before
+## `crash_cleanup_done(cleanup)`: a `with` source's `else:`, for a block that crashes.
+@intrinsic
+export def crash_cleanup(cleanup: () -> nothing)
+
+## Ends what `crash_cleanup(cleanup)` started, where the block ends or fails another way.
+@intrinsic
+export def crash_cleanup_done(cleanup: () -> nothing)
+
 ## Starts `task` beside the caller, and gives back its handle for `launch_end`. `task` is a
 ## closure taking nothing, which may fail.
 @intrinsic

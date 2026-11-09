@@ -357,10 +357,7 @@ impl Lowering<'_> {
             // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
             let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
             if self.context.intrinsics.contains(intrinsic) {
-                if matches!(
-                    intrinsic,
-                    "intrinsics.channel_receive" | "intrinsics.launch_end" | "intrinsics.launch"
-                ) {
+                if LOWERED.contains(&intrinsic) {
                     return self.lowered_intrinsic(intrinsic, dest, values, write_backs, span);
                 }
                 // One given something by `ref`, like `append_text(ref out, text)`, changes it, and
@@ -400,6 +397,19 @@ impl Lowering<'_> {
             "intrinsics.launch_end" => {
                 let raw = ("intrinsics.launch_take", 3, 2);
                 self.taken_or_none(dest, values, write_backs, raw, span)
+            }
+            "intrinsics.crash_cleanup" | "intrinsics.crash_cleanup_done" => {
+                let [cleanup] = values.as_slice() else {
+                    return Err("a crash's cleanup is one closure".to_owned());
+                };
+                let cleanup = cleanup.clone();
+                let kind = if intrinsic == "intrinsics.crash_cleanup" {
+                    InstKind::CrashCleanup { cleanup }
+                } else {
+                    InstKind::CrashCleanupDone { cleanup }
+                };
+                self.emit(kind, span);
+                Ok(None)
             }
             _ => self.launch_task(dest, &values, span).map(Some),
         }
@@ -495,9 +505,12 @@ impl Lowering<'_> {
             "intrinsics.layout" => {
                 let layout = self.context.layout(ty);
                 let shape = shape_hash(&self.context.signatures.shape(ty));
-                let mut layouts = self.context.layouts.borrow_mut();
-                if !layouts.iter().any(|(known, _)| *known == shape) {
-                    layouts.push((shape, layout.clone()));
+                let name = ty.source().unwrap_or_default().replace(' ', "");
+                let known = self.context.layouts.borrow().iter().any(|saved| saved.shape == shape);
+                if !known {
+                    self.context.check_against_lock(ty, &name, shape);
+                    let saved = crate::SavedLayout { shape, name, layout: layout.clone() };
+                    self.context.layouts.borrow_mut().push(saved);
                 }
                 Some(Operand::Str(layout))
             }
@@ -527,6 +540,14 @@ impl Lowering<'_> {
         }
         match &named.kind {
             ExprKind::Name(owner) if self.names_a_type(owner) => Some(owner),
+            // `pack.Unpacker.of(data)`: a type named through its module's name. `Kind.Empty` is
+            // an enum's case instead.
+            ExprKind::Attr { object, name: owner, optional: false }
+                if matches!(&object.kind, ExprKind::Name(module) if self.lookup(module).is_none() && !self.context.enums.contains_key(module.as_str()))
+                    && self.names_a_type(owner) =>
+            {
+                Some(owner)
+            }
             _ => None,
         }
     }
@@ -920,3 +941,12 @@ fn read_twice(expr: &Expr) -> bool {
 fn gives_a_value(ty: &Type) -> bool {
     !matches!(ty, Type::Unit | Type::Unknown | Type::None)
 }
+
+/// The intrinsics the IR lowers itself, rather than leave to the backend as they are.
+const LOWERED: [&str; 5] = [
+    "intrinsics.channel_receive",
+    "intrinsics.launch_end",
+    "intrinsics.launch",
+    "intrinsics.crash_cleanup",
+    "intrinsics.crash_cleanup_done",
+];

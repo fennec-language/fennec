@@ -17,3 +17,22 @@ extend dict[K: Hashable, V]:
     def remove(ref self, key: K) -> V?:
         if key not in self: return None
         self.pop(key)
+
+extend dict[K: Hashable & Serializable, V: Serializable]:
+    def serialize(self, ref out: Serializer):
+        out.map(self.items())
+
+extend dict[K: Hashable & Deserializable, V: Deserializable]:
+    def deserialize(ref src: Deserializer) -> dict[K, V] fails ParseError:
+        mut found = dict[K, V]()
+        count = src.map_count()?
+        if count >= 0:
+            # Read straight into the dict, with no list of pairs on the way.
+            for _ in range(count):
+                key = src.value[K]()?
+                found[key] = src.value[V]()?
+            src.end_map()
+            return found
+        for key, value in src.map[K, V]()?:
+            found[key] = value
+        found

@@ -185,6 +185,8 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
     match inst {
         // A lock's word is in the cell, so a handle has to last until it's given back.
         InstKind::Lock { handle, .. } | InstKind::Unlock { handle } => read(handle),
+        // A crash's cleanup has to last until a crash could run it.
+        InstKind::CrashCleanup { cleanup } | InstKind::CrashCleanupDone { cleanup } => read(cleanup),
         InstKind::LockAll { handles } => handles.iter().for_each(|(handle, _)| read(handle)),
         InstKind::UnlockAll { handles } => handles.iter().for_each(&mut read),
         InstKind::SetField { object, value, .. } => {
@@ -1264,7 +1266,10 @@ fn may_change(inst: &InstKind, lenders: &[LocalId], changes: &dyn Fn(&str) -> Ve
             InstKind::SetField { object, .. } | InstKind::SetIndex { object, .. } => lenders.contains(object),
             InstKind::Builtin { args, changes: true, .. } => args.first().is_some_and(held),
             InstKind::Call { .. } => !leaves_alone(inst, lenders, changes),
-            InstKind::Lock { .. } | InstKind::Unlock { .. } => true,
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::CrashCleanup { .. }
+            | InstKind::CrashCleanupDone { .. } => true,
             _ => false,
         }
 }

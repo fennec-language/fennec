@@ -2036,6 +2036,34 @@ def main(stdout: Stdout):
     )
 }
 
+/// Each character read twice, as a parser checks one and then takes it, and the few before it
+/// sliced off, in text with characters of each width: a slice of ASCII is found as many bytes
+/// back as it has characters, and one taking in part of a wider character is walked to instead.
+/// Then jumps ahead, from the end, and the last character twice.
+#[test]
+fn reading_again_and_slicing_back_in_text_that_isnt_ascii() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "reading_again_slicing_back",
+        r#"def main(stdout: Stdout):
+    text = "ab日c🦊de é f" + "x" * 8 + "ñ"
+    mut out = []
+    for at in range(text.len()):
+        first = text[at]
+        again = text[at]
+        out.append(f"{first}{again}")
+        for back in range(1, 4):
+            if at >= back:
+                out.append(text[at - back:at])
+    stdout.print("|".join(out))
+    stdout.print(text[0], text[4], text[9], text[3], text[-1], text[-1], text[text.len() - 1], text[2], text[2])
+"#,
+        "aa|bb|a|日日|b|ab|cc|日|b日|ab日|🦊🦊|c|日c|b日c|dd|🦊|c🦊|日c🦊|ee|d|🦊d|c🦊d|  |e|de|🦊de|éé| |e |de |  |é| é|e é|ff| |é | é |xx|f| f|é f|xx|x|fx| fx|xx|x|xx|fxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|ññ|x|xx|xxx\na 🦊   c ñ ñ ñ 日 日\n",
+    )
+}
+
 /// A loop over a string's characters: a text all ASCII takes a byte at a time with nothing to
 /// test, and any other its characters' bytes, whether it's inline or a block's, and the body
 /// breaking, going on, or looping over text of its own.
@@ -4039,6 +4067,186 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost
+/// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
+/// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends
+/// the program.
+#[test]
+fn a_crash_runs_the_cleanups_of_the_blocks_it_leaves() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def lent(stdout: Stdout, name: str) -> with int:
+    lend 1 else:
+        stdout.print(f"cleanup {name}")
+    stdout.print(f"done {name}")
+
+def breaks(stdout: Stdout) -> with int:
+    lend 0 else:
+        stdout.print("cleanup that crashes")
+        xs = [0]
+        stdout.print(xs[7])
+
+def main(stdout: Stdout):
+    with lent(stdout, "ended") as first:
+        stdout.print("first", first)
+    with lent(stdout, "outer") as a:
+        with breaks(stdout) as broken:
+            with lent(stdout, "inner") as b:
+                stdout.print("in")
+                xs = [1]
+                stdout.print(xs[a + b + broken])
+"#;
+    let dir = folder("crash_cleanups")?;
+    let program = dir.join("crash_cleanups.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("crash_cleanups"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            out, "first 1\ndone ended\nin\ncleanup inner\ncleanup that crashes\ncleanup outer\n",
+            "{how:?}: {err}"
+        );
+        assert!(!ran.status.success(), "{how:?}");
+        assert!(
+            err.contains("index 7 is out of range for length 1 (while cleaning up after a crash)"),
+            "{err}"
+        );
+        assert!(err.contains("index 2 is out of range for length 1"), "{err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task that crashes inside a `with` runs the block's `lend x else:` before its crash ends it,
+/// and a task that doesn't runs the rest of the source instead.
+#[test]
+fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "task_crash_cleanup",
+        r#"from std.concurrent import Crashed, Sender, channel
+
+## Says `text` on `done`, whether or not anything's there to hear it.
+def tell(done: Sender[str], text: str):
+    match done.send(text):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
+
+def lent(done: Sender[str]) -> with int:
+    lend 7 else:
+        tell(done, text="crashed")
+    tell(done, text="finished")
+
+def job(done: Sender[str], at: int):
+    with lent(done) as held:
+        values = [1, 2, 3]
+        print_nothing(values[at] + held)
+
+def print_nothing(n: int):
+    pass
+
+## Runs a job in a task of its own, and says how its task ended.
+def ran(done: Sender[str], at: int) -> str:
+    match launched(done, at=at):
+        case Ok(_):
+            return "ended"
+        case Err(_):
+            return "crashed"
+
+def launched(done: Sender[str], at: int) fails Crashed:
+    with launch(() => job(done, at)) as task:
+        pass
+
+def main(stdout: Stdout):
+    with channel[str](size=4) as said:
+        stdout.print(ran(said.sender(), at=1), said.receive() else "none")
+        stdout.print(ran(said.sender(), at=9), said.receive(timeout=1s) else "none")
+"#,
+        "ended finished\ncrashed crashed\n",
+    )
+}
+
+/// A type with an operator for each of several types on its right calls the one for the type
+/// that's there, in its own methods, from an extension, and in a function.
+#[test]
+fn an_operator_is_chosen_by_the_type_on_its_right_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "operators_by_right",
+        "struct Vec2:
+    x: float
+    y: float
+
+struct Mat2:
+    a: float
+    b: float
+    c: float
+    d: float
+
+    def *(self, other: Mat2) -> Mat2:
+        Mat2(
+            a=self.a * other.a + self.b * other.c,
+            b=self.a * other.b + self.b * other.d,
+            c=self.c * other.a + self.d * other.c,
+            d=self.c * other.b + self.d * other.d,
+        )
+
+extend Mat2:
+    def *(self, other: Vec2) -> Vec2:
+        Vec2(x=self.a * other.x + self.b * other.y, y=self.c * other.x + self.d * other.y)
+
+    def *(self, other: float) -> Mat2:
+        Mat2(a=self.a * other, b=self.b * other, c=self.c * other, d=self.d * other)
+
+def main(stdout: Stdout):
+    turn = Mat2(a=0.0, b=-1.0, c=1.0, d=0.0)
+    twice = turn * turn
+    moved = turn * Vec2(x=1.0, y=2.0)
+    big = turn * 3.0
+    stdout.print(twice.a, twice.d, moved.x, moved.y, big.b)
+",
+    )?;
+    assert_eq!(printed, "-1.0 -1.0 -2.0 1.0 -3.0\n");
+    Ok(())
+}
+
+/// A `sum` of sized numbers is one of their size, starting at its zero: of `f32`s, of `u8`s, of
+/// none, and of a generator's.
+#[test]
+fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_sums",
+        "def main(stdout: Stdout):
+    weights: list[f32] = [1.5, 2.25]
+    counts: list[u8] = [200, 50]
+    small: list[i16] = []
+    total: u8 = sum(counts)
+    stdout.print(sum(weights), total, sum(small), sum(count for count in counts), sum(counts, start=5))
+",
+    )?;
+    assert_eq!(printed, "3.75 250 0 250 255\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
@@ -4742,7 +4950,9 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
         if !made.status.success() {
             return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
         }
-        let ran = Command::new(&executable).output_within()?;
+        let ran = Command::new(&executable)
+            .output_within()
+            .map_err(|error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
         // What it printed, or that it failed.
         let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
         Ok(Ok(ran.status.success().then_some(printed)))
@@ -5075,6 +5285,40 @@ fn a_dicts_order_is_the_same_for_every_seed() -> std::io::Result<()> {
     assert_eq!(first, with_seed(Some("987654321"))?);
     assert_eq!(first, with_seed(None)?);
     Ok(())
+}
+
+/// Sets and dicts of sized numbers, which are held as ints: a `set[u8]`, a `dict[str, u8]` whose
+/// value is added to in place, and a `dict[i16, i32]`.
+#[test]
+fn sets_and_dicts_of_sized_numbers() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "sized_sets_dicts",
+        r#"def main(stdout: Stdout):
+    mut small = set[u8]()
+    zero: u8 = 0
+    for n in [1, 2, 255, 2]:
+        small.add(u8.from(n) else zero)
+    two: u8 = 2
+    three: u8 = 3
+    stdout.print(sorted(list(small)), two in small, three in small, small.len())
+    mut counts = dict[str, u8]()
+    a: u8 = 1
+    big: u8 = 200
+    counts["a"] = a
+    counts["b"] = big
+    counts["b"] += 50
+    stdout.print(counts, counts["b"], "z" in counts)
+    mut by = dict[i16, i32]()
+    low: i16 = -300
+    wide: i32 = 70000
+    by[low] = wide
+    stdout.print(by[low], by)
+"#,
+        "[1, 2, 255] True False 3\n{\"a\": 1, \"b\": 250} 250 False\n70000 {-300: 70000}\n",
+    )
 }
 
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
@@ -6333,7 +6577,8 @@ def main(stdout: Stdout):
 }
 
 /// JSON read into dicts, by string, int, plain struct and tuple keys, and a dict a capability
-/// gives back, as the JIT has them.
+/// gives back, as the JIT has them. The variable is looked for by name in any case: Windows calls
+/// it `Path`.
 #[test]
 fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -6359,7 +6604,7 @@ def main(stdout: Stdout, env: Env):
     stdout.print(json.loads[dict[(int, int), str]](json.dumps(corners)) else {}, corners)
     placed = {(Spot(x=1, y=2), "a"): 1}
     stdout.print((json.loads[dict[(Spot, str), int]](json.dumps(placed)) else {}) == placed)
-    stdout.print(env.all().get("PATH") is not None)
+    stdout.print("PATH" in [name.upper() for name in env.all().keys()])
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
     {
@@ -7195,7 +7440,7 @@ struct Server:
     secret: Secret[str]
 
 def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port)? as db:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port, tls=False)? as db:
         # A temporary table is this connection's own, so runs at once can't meet.
         _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
         for at in range(3):
@@ -7250,7 +7495,7 @@ def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy)
             return error.message()
 
 def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port)? as db:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port, tls=False)? as db:
         _ = db.execute(t"select 1")?
 
 def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
@@ -7530,6 +7775,69 @@ fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
+}
+
+/// The server's answers reach a client that's still sending when it's refused. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
+/// reset: closing with what the client sent unread resets the connection, which throws away what
+/// the client hadn't read yet, the answers before too. Found by fuzzing the
+/// server (`fennec-fuzz run http-server`).
+#[test]
+fn an_http_server_s_refusal_reaches_a_client_still_sending() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_server_refusals")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let connect = || -> std::io::Result<std::net::TcpStream> {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        Ok(stream)
+    };
+    // Everything the server says, read as it comes until it closes, or what went wrong.
+    let heard = |stream: &mut std::net::TcpStream| -> String {
+        let mut heard = Vec::new();
+        match stream.read_to_end(&mut heard) {
+            Ok(_) => String::from_utf8_lossy(&heard).into_owned(),
+            Err(err) => format!("{}[{err}]", String::from_utf8_lossy(&heard)),
+        }
+    };
+    // A body far bigger than the server takes, still being sent when it answers.
+    let mut big = connect()?;
+    big.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n")?;
+    let _ = big.write_all(&vec![b'x'; 4 << 20]);
+    let too_big = heard(&mut big);
+    // Answers first, then a refusal, with the rest of what was sent unread.
+    let mut pipelined = connect()?;
+    pipelined.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nNOT HTTP\r\n\r\n")?;
+    let _ = pipelined.write_all(&vec![b'y'; 1 << 20]);
+    let refused_after = heard(&mut pipelined);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    // Each closes cleanly once it's answered, with no reset.
+    let wanted = [
+        "HTTP/1.1 413 Content Too Large\r\ncontent-length: 19\r\nconnection: close\r\n\r\nthe body is too big",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/aHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/b\
+         HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
+    ];
+    assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
 }
 
 /// An HTTP server natively: a handler answers each request, a connection stays open for more
@@ -8365,6 +8673,24 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A program's resident memory in KB: `ps` gives it on Unix, and `tasklist` on Windows, as
+/// `"leaks.exe","1234","Console","1","12,345 K"`. No reading fails the test, so a check of it can't
+/// pass by reading nothing.
+fn resident_kb(id: u32) -> std::io::Result<u64> {
+    let id = id.to_string();
+    let said = if cfg!(windows) {
+        Command::new("tasklist").args(["/FI", &format!("PID eq {id}"), "/FO", "CSV", "/NH"]).output()?
+    } else {
+        Command::new("ps").args(["-o", "rss=", "-p", &id]).output()?
+    };
+    let said = String::from_utf8_lossy(&said.stdout);
+    let kb = said.trim().rsplit("\",\"").next().unwrap_or("");
+    let digits: String = kb.chars().filter(char::is_ascii_digit).collect();
+    let kb = digits.parse().unwrap_or(0);
+    assert!(kb > 0, "no memory reading for the program: {said}");
+    Ok(kb)
+}
+
 /// A round that crashes lets go of everything its functions own on the way out, as a failure
 /// does: 10,000 crashing rounds, each holding a string, a list and a dict, leave the server's
 /// memory where it was. A crash once left them all behind, about 1.8 KB a round.
@@ -8442,15 +8768,14 @@ def main(net: Net, stdout: Stdout) fails NetError:
             clients.into_iter().try_for_each(|client| client.join().unwrap_or(Ok(())))
         })
     };
-    let resident = || -> std::io::Result<u64> {
-        let said = Command::new("ps").args(["-o", "rss=", "-p", &server.0.id().to_string()]).output()?;
-        Ok(String::from_utf8_lossy(&said.stdout).trim().parse().unwrap_or(0))
-    };
+    let resident = || resident_kb(server.0.id());
     // What the first rounds make for good, like the runtime's pools, is there before the count.
     crash(2_000)?;
     let before = resident()?;
     crash(10_000)?;
     let after = resident()?;
+    // Windows can't remove a program while it runs.
+    drop(server);
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
@@ -9081,6 +9406,28 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A type's own function, like `Unpacker.of`, can be called through its module's name.
+#[test]
+fn a_static_method_through_a_module_name_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "module_static",
+        r"from std import pack
+
+def main(stdout: Stdout) fails ParseError:
+    mut packer = pack.Packer()
+    packer.add(3)
+    packer.add(4)
+    mut values = pack.Unpacker.of(packer.bytes())
+    stdout.print(values.next[int]()?, values.next[int]()?, values.next[int]()?)
+",
+    )?;
+    assert_eq!(printed, "3 4 None\n");
+    Ok(())
+}
+
 /// A tuple saved only through `std.pack`, with nothing routed through JSON, saves natively: its
 /// saving isn't trimmed away as unreached. And one saved before what holds it is known, `pairs`
 /// here until its `append`, is what it holds once the check is done.
@@ -9112,6 +9459,48 @@ def main(stdout: Stdout):
     let ran = Command::new(&executable).output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "[(1, \"a\")] True True\n");
+    Ok(())
+}
+
+/// The reading half: a list of tuples saved through `std.pack` reads back as itself natively,
+/// empty or not, with negative numbers and text that isn't ASCII, and bytes of another type
+/// fail to read rather than reading as something. It's a program of its own, since `loads`
+/// names its type and would settle what the program above leaves to be settled.
+#[test]
+fn a_list_of_tuples_reads_back_through_pack_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-loaded")?;
+    let program = dir.join("loaded.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import pack
+
+def main(stdout: Stdout):
+    pairs: list[(int, str)] = [(1, \"a\"), (-7, \"fén\"), (0, \"\")]
+    empty: list[(int, str)] = []
+    back = pack.loads[list[(int, str)]](pack.dumps(pairs)) else []
+    stdout.print(back, back == pairs)
+    stdout.print((pack.loads[list[(int, str)]](pack.dumps(empty)) else pairs) == empty)
+    stdout.print((pack.loads[list[(int, str)]](pack.dumps([1, 2])) else empty) == empty)
+",
+    )?;
+    let executable = dir.join("loaded");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[(1, \"a\"), (-7, \"fén\"), (0, \"\")] True\nTrue\nTrue\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
     Ok(())
 }
 
@@ -9446,6 +9835,50 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A server can't make the client hold as much as it likes before a response's body: endless
+/// header lines fail, as one endless line does, and so do endless `100 Continue`s. A chunk's data
+/// has to end where its size says, with nothing after it but its line ending.
+#[test]
+fn a_response_cant_make_the_client_hold_without_end() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let answers = [
+        [
+            b"HTTP/1.1 200 OK\r\n".to_vec(),
+            b"X-A: b\r\n".repeat(400_000),
+            b"Content-Length: 2\r\n\r\nok".to_vec(),
+        ]
+        .concat(),
+        [
+            b"HTTP/1.1 100 Continue\r\n\r\n".repeat(200_000),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ]
+        .concat(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nokEXTRA\r\n0\r\n\r\n".to_vec(),
+    ];
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        for answer in answers {
+            let (mut stream, _) = listener.accept()?;
+            let mut asked = [0_u8; 4096];
+            let _ = stream.read(&mut asked)?;
+            // The client may stop reading part of the way through.
+            let _ = stream.write_all(&answer);
+        }
+        Ok(())
+    });
+    let source = format!(
+        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    match net.get(\"http://127.0.0.1:{port}/\", timeout=10s):\n        case Ok(answer):\n            return answer.text()\n        case Err(_):\n            return \"refused\"\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
+    );
+    let printed = printed_by("client_holds", &source)?;
+    server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
+    assert_eq!(printed, "refused refused refused\n");
+    Ok(())
+}
+
 /// A response's headers are a real dict, however many times a header came. Those that can be
 /// joined are, as HTTP says, and `Set-Cookie`, which can't, has all its values in `set_cookies`.
 #[test]
@@ -9482,8 +9915,10 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     }
     let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
     let path = place.to_string_lossy().into_owned();
+    // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
+    let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{path}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {
@@ -9746,7 +10181,7 @@ from std.crypto import Secret
 from std.sql import SqlError
 
 def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak)? as db:
+    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak, tls=False)? as db:
         with db.transaction()? as tx:
             _ = tx.execute(t"select 1")?
 
@@ -9813,7 +10248,8 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
 
 /// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
 /// written without their layout, as short as before layouts, and the next version of the type
-/// reads them by the locked layout's names. Without the lock, they'd be refused.
+/// reads them by the locked layout's names. Without the lock, they'd be refused. `fennec check`
+/// warns about a version that couldn't load what was locked, and is quiet about one that can.
 #[test]
 fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io::Result<()> {
     if !ready() {
@@ -9849,13 +10285,27 @@ fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io
     let short = ran(first)?;
     let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    match pack.loads[Entry](fs.read_bytes(\"entry.pack\")?):\n        case Ok(found):\n            stdout.print(found.path, found.size, found.tags)\n        case Err(error):\n            stdout.print(error.message)\n";
     let read = ran(next)?;
+    // A version that can't load what was locked says so as it's checked, without failing.
+    let breaking = "from std import pack\n\nstruct Entry:\n    path: str\n    size: str\n    rank: int\n    note = \"\"\n\ndef main(stdout: Stdout):\n    stdout.print(pack.dumps(Entry(path=\"a\", size=\"1\", rank=2)).len())\n";
+    std::fs::write(&main, breaking)?;
+    let checked = in_kit(&["check", "."])?;
+    let warned = String::from_utf8_lossy(&checked.stderr).into_owned();
+    std::fs::write(&main, next)?;
+    let quiet = in_kit(&["check", "."])?;
     std::fs::remove_file(kit.join("pack.lock"))?;
     let unlocked = ran(next)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!((long.as_str(), short.as_str()), ("37\n", "19\n"));
     assert!(said.contains("locked 1 layout in pack.lock"), "{said}");
     assert_eq!(lock.lines().count(), 1, "{lock}");
-    assert!(lock.ends_with(" S 2 path s size i\n"), "{lock}");
+    assert!(lock.ends_with(" Entry S 2 path s size i\n"), "{lock}");
+    assert!(checked.status.success(), "{warned}");
+    assert_eq!(
+        warned,
+        "warning: `Entry.size` was saved as an int, which it can't load as now\n\
+         warning: `Entry.rank` has no default, and data saved before it doesn't have one\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&quiet.stderr), "");
     assert_eq!(read, "a.txt 12.0 []\n");
     assert_eq!(unlocked, "this was packed from a different `Entry`, at byte 4\n");
     Ok(())
@@ -9873,13 +10323,50 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     std::fs::create_dir_all(place.join("folder"))?;
     std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
     std::fs::write(place.join("good.txt"), "one\ntwo\n")?;
-    let folder = place.to_string_lossy().into_owned();
+    // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
+    let folder = place.to_string_lossy().replace('\\', "\\\\");
     let source = format!(
         "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    match found:\n        case Ok(n):\n            return f\"read {{n}}\"\n        case Err(_):\n            return \"failed\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
     );
     let printed = printed_by("iter_fail", &source)?;
     std::fs::remove_dir_all(&place)?;
     assert_eq!(printed, "failed read 8\nfailed read 8\n");
+    Ok(())
+}
+
+/// A server on a port of its own that reads the 8 bytes of a TLS request, answers `answer`, and
+/// hangs up.
+fn postgres_tls_answering(answer: &'static [u8]) -> std::io::Result<u16> {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut asked = [0_u8; 8];
+        if stream.read_exact(&mut asked).is_ok() && asked == [0, 0, 0, 8, 4, 210, 22, 47] {
+            let _ = stream.write_all(answer);
+        }
+    });
+    Ok(port)
+}
+
+/// `postgres.connect` asks for TLS unless told not to, and never falls back to the clear: a server
+/// that says no is refused, and so is one that says yes and then sends plain bytes, as someone
+/// in the middle would to have them read as if they came over TLS.
+#[test]
+fn postgres_asks_for_tls_and_never_falls_back_to_the_clear() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let refused = postgres_tls_answering(b"N")?;
+    let injected = postgres_tls_answering(b"SR\0\0\0\x08\0\0\0\0")?;
+    let source = format!(
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, host=\"localhost\", user=\"u\", database=\"d\", password=Secret.of(\"pw\"), port=port)? as db:\n        _ = db.execute(t\"select 1\")?\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        match run(port, net=net, entropy=entropy):\n            case Ok(_):\n                stdout.print(\"went through\")\n            case Err(error):\n                stdout.print(error.message())\n"
+    );
+    let printed = printed_by("postgres_tls", &source)?;
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines.first().copied(), Some("the server doesn't take TLS: `tls=False` connects without it"));
+    assert!(lines.get(1).is_some_and(|line| line.starts_with("TLS with the server failed: ")), "{printed}");
     Ok(())
 }
 

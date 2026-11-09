@@ -2602,6 +2602,17 @@ fn a_hot_function_keeps_no_checks() {
     std::fs::write(&program, "@hot\ndef add(a: int, b: int) -> int:\n    a + b\n\ndef main(stdout: Stdout):\n    stdout.print(add(1, b=2))\n").unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "3\n", "{}", text(&output.stderr));
+    // So does a float divide check, and an integer one doesn't.
+    std::fs::write(&program, "@hot\ndef ratio(a: float, b: float) -> float:\n    a / b\n\ndef main(stdout: Stdout):\n    stdout.print(ratio(1.0, b=4.0))\n").unwrap();
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "0.25\n", "{}", text(&output.stderr));
+    std::fs::write(&program, "@hot\ndef parts(a: int, b: int) -> int:\n    a // b\n\ndef main(stdout: Stdout):\n    stdout.print(parts(9, b=4))\n").unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&output.stderr).contains("this may divide by zero, so it keeps its check"),
+        "{}",
+        text(&output.stderr)
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 

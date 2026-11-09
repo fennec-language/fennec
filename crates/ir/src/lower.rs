@@ -110,6 +110,7 @@ fn lower_from(
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
         layouts: std::cell::RefCell::default(),
+        layout_problems: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
         generators: those_where(&every, |def| fuse::has_yield(&def.body)),
         mut_forms: those_where(&every, |def| def.name == "[]mut"),
@@ -173,6 +174,7 @@ fn take_what_was_found(program: &mut Program, context: &Context<'_>) {
     program.generators = context.generator_defs.take();
     program.own_texts = context.own_texts.take();
     program.layouts = context.layouts.take();
+    program.layout_problems = context.layout_problems.take();
 }
 
 fn those_where<'a>(
@@ -213,10 +215,19 @@ fn generic_types<'a>(modules: &[&'a Module]) -> HashMap<&'a str, &'a fennec_synt
 }
 
 /// Every function and method in a module, by its key in the typed tree.
-fn definitions(module: &Module) -> Vec<(String, &FnDef)> {
+fn definitions<'m>(module: &'m Module) -> Vec<(String, &'m FnDef)> {
     let mut found = Vec::new();
-    let methods = |owner: &str, defs: &'_ [FnDef]| -> Vec<String> {
-        defs.iter().map(|def| format!("{owner}.{}", def.name)).collect()
+    // The first of each name a type has, as the checker keys a method defined again.
+    let mut first: HashMap<String, &'m FnDef> = HashMap::new();
+    let mut methods = |owner: &str, defs: &'m [FnDef]| -> Vec<String> {
+        defs.iter()
+            .map(|def| {
+                let plain = format!("{owner}.{}", def.name);
+                let key = fennec_check::method_key(owner, def, first.get(&plain).copied());
+                first.entry(plain).or_insert(def);
+                key
+            })
+            .collect()
     };
     for item in &module.items {
         match item {
@@ -305,7 +316,9 @@ struct Context<'a> {
     /// The types whose own text is asked for by printing something that holds them.
     own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
     /// The layout of each type `std.pack` saves, as `layout[T]()` gives them.
-    layouts: std::cell::RefCell<Vec<(i64, String)>>,
+    layouts: std::cell::RefCell<Vec<crate::SavedLayout>>,
+    /// Why a type can't load a layout its kit's `pack.lock` holds for it.
+    layout_problems: std::cell::RefCell<Vec<String>>,
     /// The standard library's `@intrinsic` functions, which have no body: a call to one is an
     /// [`InstKind::Builtin`] of its key, which each engine provides.
     intrinsics: HashSet<String>,

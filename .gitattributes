@@ -4,3 +4,6 @@
 *.fen linguist-language=Python
 *.png binary
 *.webp binary
+# Fuzz inputs are bytes as they were found, line endings and all.
+crates/fuzz/seeds/** -text
+crates/fuzz/found/** -text

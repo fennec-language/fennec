@@ -37,7 +37,18 @@ impl FnCx<'_> {
             );
         }
         let item = self.item_type(items, *at);
-        let start = plain.get(1);
+        // A number written out as the start of a sum of sized numbers takes their size.
+        let sized_start =
+            match (self.checker.settled(&item), args.iter().find(|arg| arg.name.as_deref() == Some("start")))
+            {
+                (Type::Sized(_), Some(start))
+                    if matches!(start.value.kind, ExprKind::Int(_) | ExprKind::Float(_)) =>
+                {
+                    Some((self.expr_as(&start.value, &item), start.value.span))
+                }
+                _ => None,
+            };
+        let start = sized_start.as_ref().or_else(|| plain.get(1));
         let start_fits = start.is_none_or(|(start, _)| self.checker.fits(&item, start));
         let written = match args.first().map(|arg| &arg.value.kind) {
             Some(ExprKind::Name(name)) => name.clone(),
@@ -95,6 +106,10 @@ impl FnCx<'_> {
             Type::Float => {
                 self.checker.float_sums.insert((call.span.start, call.span.end));
             }
+            // Numbers of a size start at that size's zero, written in the same way.
+            Type::Sized(num) => {
+                self.checker.sized_sums.insert((call.span.start, call.span.end), num.range().is_none());
+            }
             other => {
                 let start = self.start_hint(&other);
                 let message =
@@ -107,7 +122,7 @@ impl FnCx<'_> {
     /// Whether the items can be added with `+`, which has to give back another item.
     fn sum_adds(&mut self, item: &Type, span: Span) -> bool {
         let has_plus = match item {
-            Type::Int | Type::Float | Type::Str | Type::Bytes | Type::List(_) => true,
+            Type::Int | Type::Float | Type::Sized(_) | Type::Str | Type::Bytes | Type::List(_) => true,
             Type::Param(name) => self.bound_method(name, "+").is_some(),
             other => {
                 other.method_owner().is_some_and(|owner| self.checker.program.method(owner, "+").is_some())

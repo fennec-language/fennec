@@ -72,6 +72,8 @@ pub(crate) const MODULE: Module = Module {
         "channel_free",
         "launch",
         "launch_end",
+        "crash_cleanup",
+        "crash_cleanup_done",
     ],
     source: include_str!("intrinsics.fen"),
     gives: &[],

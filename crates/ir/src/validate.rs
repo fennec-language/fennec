@@ -116,11 +116,25 @@ impl<'p> Check<'p> {
                 self.make_closure(*dest, function, captures);
             }
             InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args),
+            InstKind::CrashCleanup { cleanup } | InstKind::CrashCleanupDone { cleanup } => {
+                self.crash_cleanup(inst, cleanup);
+            }
             InstKind::Lock { .. }
             | InstKind::Unlock { .. }
             | InstKind::LockAll { .. }
             | InstKind::UnlockAll { .. } => self.lock_inst(inst),
             _ => self.failure_inst(inst),
+        }
+    }
+
+    /// What a crash runs, which is a closure taking nothing.
+    fn crash_cleanup(&mut self, inst: &InstKind, cleanup: &Operand) {
+        let held = match cleanup {
+            Operand::Local(local) => self.local(*local),
+            _ => None,
+        };
+        if !matches!(held, Some(Type::Arrow(params, _)) if params.is_empty()) {
+            self.problems.push(format!("`{inst}` is on something other than a closure taking nothing"));
         }
     }
 

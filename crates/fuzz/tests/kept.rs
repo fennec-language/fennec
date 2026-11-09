@@ -53,10 +53,42 @@ fn a_short_run_of_every_target_finds_nothing() {
     let printed = String::from_utf8_lossy(&output.stdout).into_owned();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(output.status.success(), "{printed}");
-    let targets = ["lexer", "parser", "formatter", "checker", "json", "toml", "regex", "runtime", "utf8"];
+    let targets = [
+        "lexer",
+        "parser",
+        "formatter",
+        "checker",
+        "csv",
+        "json",
+        "json-rules",
+        "pack",
+        "toml",
+        "toml-rules",
+        "http-client",
+        "http-server",
+        "postgres",
+        "regex",
+        "url",
+        "runtime",
+        "utf8",
+    ];
     // Those that run natively are left out, saying so, where nothing can be built.
-    let native = ["json", "toml", "utf8"];
-    let left_out = printed.contains("json, toml, utf8: left out");
+    let native = [
+        "csv",
+        "http-client",
+        "http-server",
+        "json",
+        "json-rules",
+        "pack",
+        "postgres",
+        "toml",
+        "toml-rules",
+        "url",
+        "utf8",
+    ];
+    let left_out = printed.contains(
+        "csv, http-client, http-server, json, json-rules, pack, postgres, toml, toml-rules, url, utf8: left out",
+    );
     for target in targets {
         if left_out && native.contains(&target) {
             continue;

@@ -1,0 +1,8 @@
+HEAD / HTTP/1.0
+Connection: keep-alive
+
+GET /a HTTP/1.1
+Connection: close
+
+GET /never HTTP/1.1
+

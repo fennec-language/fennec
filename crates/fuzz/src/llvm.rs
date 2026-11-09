@@ -164,6 +164,15 @@ pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
     let Some(release) = outcome(&source, &work, true).map_err(with_program)? else {
         return Err(with_program("it builds as a dev build but not with --release".to_owned()));
     };
+    // Built checking proofs (`FENNEC_CHECK_PROOFS=1`), a stop on one is a false proof, whether
+    // or not both builds stop the same way.
+    for (how, (_, said, _)) in [("dev", &dev), ("--release", &release)] {
+        if said.contains("proof broken") {
+            return Err(with_program(format!(
+                "a proof the compiler made is false, in the {how} build: {said}"
+            )));
+        }
+    }
     if dev != release {
         return Err(with_program(format!(
             "the dev build and the --release build disagree:\n--- dev\n{}\n--- release\n{}",

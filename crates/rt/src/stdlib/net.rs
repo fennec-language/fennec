@@ -213,15 +213,15 @@ impl Fake {
     ) -> Result<Value, Diagnostic> {
         let lost = || Diagnostic::new("the native code lost a method's name", span);
         let (kind, method) = name.split_once('.').ok_or_else(lost)?;
-        let (method, args, _) = timed(method, args, span)?;
+        let (method, args, timeout) = timed(method, args, span)?;
         let done = match (kind, method, args) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
-                self.read(handle, Some(count), span)?
+                self.read_by(handle, Some(count), timeout, span)?
                     .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
             ("Connection", "read_line", []) => {
-                self.read(handle, None, span)?.map(|line| line_value(line.as_deref()))
+                self.read_by(handle, None, timeout, span)?.map(|line| line_value(line.as_deref()))
             }
             ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
@@ -381,6 +381,21 @@ impl Fake {
                 "no connection is waiting for the test's fake server on port {port}, and none can come while a test waits"
             ))
         })
+    }
+
+    /// A read in a test that's given `timeout=`. Nothing can arrive while a test waits, so one that
+    /// would wait forever gives up at once, as a real one would once its time ran out.
+    fn read_by(
+        &mut self,
+        handle: i64,
+        count: Option<usize>,
+        timeout: Option<Duration>,
+        span: Span,
+    ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
+        match (self.read(handle, count, span), timeout) {
+            (Err(_), Some(after)) => Ok(Err(Failure::TimedOut(after))),
+            (read, _) => read,
+        }
     }
 
     /// The next `count` bytes, or with no count the next line, of a connection in a test.

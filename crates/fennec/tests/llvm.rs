@@ -9066,6 +9066,64 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// What a server says to `asked` on one connection, sent whole with the sending side then
+/// closed, built with the runtime `threads` names: `"1"` for the one with threads, `"0"` for the
+/// plain one. A reset after what was said shows as `[reset]`.
+fn served_on(threads: &str, name: &str, asked: &[u8]) -> std::io::Result<String> {
+    use std::io::{Read, Write};
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    if threads == "1" {
+        assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
+    }
+    let dir = folder(name)?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("serve");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", threads)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let _ = stream.write_all(asked);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut heard = Vec::new();
+    let reset = stream.read_to_end(&mut heard).is_err();
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
+}
+
+/// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
+/// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
+/// when it read the line and `line_value` another. Found by fuzzing the server
+/// (`fennec-fuzz run http-server`).
+#[test]
+fn a_bare_carriage_return_isnt_taken_off_a_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for threads in ["0", "1"] {
+        let said =
+            served_on(threads, &format!("bare_carriage_return_{threads}"), b"\r\r\nGET /a HTTP/1.1\r\n\r\n")?;
+        assert!(said.starts_with("HTTP/1.1 400 Bad Request\r\n"), "threads {threads}: {said}");
+    }
+    Ok(())
+}
+
 /// A failure leaving `lock ... as ref`, by `fail` or `?`, puts back everything the block changed,
 /// as a crash does: one value, or all those locked together, and on `parallel`'s threads too. What
 /// the failure says keeps what the block saw. A local changed in the block keeps its change, and

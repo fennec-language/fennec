@@ -7195,7 +7195,7 @@ struct Server:
     secret: Secret[str]
 
 def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port)? as db:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port, tls=False)? as db:
         # A temporary table is this connection's own, so runs at once can't meet.
         _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
         for at in range(3):
@@ -7250,7 +7250,7 @@ def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy)
             return error.message()
 
 def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port)? as db:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port, tls=False)? as db:
         _ = db.execute(t"select 1")?
 
 def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
@@ -9115,6 +9115,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// The reading half: a list of tuples saved through `std.pack` reads back as itself natively,
+/// empty or not, with negative numbers and text that isn't ASCII, and bytes of another type
+/// fail to read rather than reading as something. It's a program of its own, since `loads`
+/// names its type and would settle what the program above leaves to be settled.
+#[test]
+fn a_list_of_tuples_reads_back_through_pack_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-loaded")?;
+    let program = dir.join("loaded.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import pack
+
+def main(stdout: Stdout):
+    pairs: list[(int, str)] = [(1, \"a\"), (-7, \"fén\"), (0, \"\")]
+    empty: list[(int, str)] = []
+    back = pack.loads[list[(int, str)]](pack.dumps(pairs)) else []
+    stdout.print(back, back == pairs)
+    stdout.print((pack.loads[list[(int, str)]](pack.dumps(empty)) else pairs) == empty)
+    stdout.print((pack.loads[list[(int, str)]](pack.dumps([1, 2])) else empty) == empty)
+",
+    )?;
+    let executable = dir.join("loaded");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[(1, \"a\"), (-7, \"fén\"), (0, \"\")] True\nTrue\nTrue\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 /// Native JSON and TOML write and read what the JIT does, and fail with the same messages: a
 /// field left out, a value of the wrong type, a key no field has, inside and outside, and text
 /// that isn't JSON.
@@ -9746,7 +9788,7 @@ from std.crypto import Secret
 from std.sql import SqlError
 
 def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError:
-    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak)? as db:
+    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak, tls=False)? as db:
         with db.transaction()? as tx:
             _ = tx.execute(t"select 1")?
 
@@ -9813,7 +9855,8 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
 
 /// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
 /// written without their layout, as short as before layouts, and the next version of the type
-/// reads them by the locked layout's names. Without the lock, they'd be refused.
+/// reads them by the locked layout's names. Without the lock, they'd be refused. `fennec check`
+/// warns about a version that couldn't load what was locked, and is quiet about one that can.
 #[test]
 fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io::Result<()> {
     if !ready() {
@@ -9849,13 +9892,27 @@ fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io
     let short = ran(first)?;
     let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    match pack.loads[Entry](fs.read_bytes(\"entry.pack\")?):\n        case Ok(found):\n            stdout.print(found.path, found.size, found.tags)\n        case Err(error):\n            stdout.print(error.message)\n";
     let read = ran(next)?;
+    // A version that can't load what was locked says so as it's checked, without failing.
+    let breaking = "from std import pack\n\nstruct Entry:\n    path: str\n    size: str\n    rank: int\n    note = \"\"\n\ndef main(stdout: Stdout):\n    stdout.print(pack.dumps(Entry(path=\"a\", size=\"1\", rank=2)).len())\n";
+    std::fs::write(&main, breaking)?;
+    let checked = in_kit(&["check", "."])?;
+    let warned = String::from_utf8_lossy(&checked.stderr).into_owned();
+    std::fs::write(&main, next)?;
+    let quiet = in_kit(&["check", "."])?;
     std::fs::remove_file(kit.join("pack.lock"))?;
     let unlocked = ran(next)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!((long.as_str(), short.as_str()), ("37\n", "19\n"));
     assert!(said.contains("locked 1 layout in pack.lock"), "{said}");
     assert_eq!(lock.lines().count(), 1, "{lock}");
-    assert!(lock.ends_with(" S 2 path s size i\n"), "{lock}");
+    assert!(lock.ends_with(" Entry S 2 path s size i\n"), "{lock}");
+    assert!(checked.status.success(), "{warned}");
+    assert_eq!(
+        warned,
+        "warning: `Entry.size` was saved as an int, which it can't load as now\n\
+         warning: `Entry.rank` has no default, and data saved before it doesn't have one\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&quiet.stderr), "");
     assert_eq!(read, "a.txt 12.0 []\n");
     assert_eq!(unlocked, "this was packed from a different `Entry`, at byte 4\n");
     Ok(())
@@ -9880,6 +9937,42 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     let printed = printed_by("iter_fail", &source)?;
     std::fs::remove_dir_all(&place)?;
     assert_eq!(printed, "failed read 8\nfailed read 8\n");
+    Ok(())
+}
+
+/// A server on a port of its own that reads the 8 bytes of a TLS request, answers `answer`, and
+/// hangs up.
+fn postgres_tls_answering(answer: &'static [u8]) -> std::io::Result<u16> {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut asked = [0_u8; 8];
+        if stream.read_exact(&mut asked).is_ok() && asked == [0, 0, 0, 8, 4, 210, 22, 47] {
+            let _ = stream.write_all(answer);
+        }
+    });
+    Ok(port)
+}
+
+/// `postgres.connect` asks for TLS unless told not to, and never falls back to the clear: a server
+/// that says no is refused, and so is one that says yes and then sends plain bytes, as someone
+/// in the middle would to have them read as if they came over TLS.
+#[test]
+fn postgres_asks_for_tls_and_never_falls_back_to_the_clear() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let refused = postgres_tls_answering(b"N")?;
+    let injected = postgres_tls_answering(b"SR\0\0\0\x08\0\0\0\0")?;
+    let source = format!(
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, host=\"localhost\", user=\"u\", database=\"d\", password=Secret.of(\"pw\"), port=port)? as db:\n        _ = db.execute(t\"select 1\")?\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        match run(port, net=net, entropy=entropy):\n            case Ok(_):\n                stdout.print(\"went through\")\n            case Err(error):\n                stdout.print(error.message())\n"
+    );
+    let printed = printed_by("postgres_tls", &source)?;
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines.first().copied(), Some("the server doesn't take TLS: `tls=False` connects without it"));
+    assert!(lines.get(1).is_some_and(|line| line.starts_with("TLS with the server failed: ")), "{printed}");
     Ok(())
 }
 

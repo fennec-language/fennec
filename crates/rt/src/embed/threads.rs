@@ -499,6 +499,28 @@ mod tests {
         finish();
     }
 
+    /// What a thread kept of a string's text goes with the string when the string's handed over: the
+    /// same address can come back holding another.
+    #[test]
+    fn handing_a_string_over_forgets_its_text() {
+        let kept = std::thread::spawn(|| {
+            let _ = super::take_index();
+            begin();
+            let name = with(|state| heap::text_address(state, "a string long enough for a block"));
+            assert_eq!(text_of(name), Value::str("a string long enough for a block"));
+            let at = usize::try_from(name).unwrap();
+            assert!(with(|state| state.heap.texts.borrow().contains_key(&at)));
+            let handed = super::hand_over(0);
+            let kept = with(|state| state.heap.texts.borrow().contains_key(&at));
+            drop(handed);
+            finish();
+            kept
+        })
+        .join()
+        .unwrap();
+        assert!(!kept);
+    }
+
     #[test]
     fn a_block_another_thread_still_holds_waits_and_its_owner_frees_it_after() {
         let owner = super::take_index();

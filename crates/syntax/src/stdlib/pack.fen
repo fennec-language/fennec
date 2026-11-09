@@ -323,7 +323,11 @@ def layout_unless_locked[T]() -> str:
 def locked_layout(shape: int) -> bytes:
     wanted = shape_text(shape)
     for line in pack_lock().split("\n"):
-        if line.startswith(wanted + " "): return line[wanted.len() + 1:].encode()
+        if line.startswith(wanted + " "):
+            # The type's name, then its layout.
+            rest = line[wanted.len() + 1:]
+            space = rest.find(" ") else return bytes([])
+            return rest[space + 1:].encode()
     bytes([])
 
 ## A shape's number as `pack.lock` writes it: 16 hex digits, the highest first.

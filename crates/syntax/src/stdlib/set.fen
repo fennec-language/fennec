@@ -31,3 +31,14 @@ extend set[T: Hashable]:
     ## Whether the sets have no items in common.
     def is_disjoint(self, other: set[T]) -> bool:
         not any(item in other for item in self)
+
+extend set[T: Hashable & Serializable]:
+    def serialize(self, ref out: Serializer):
+        out.sequence([item for item in self])
+
+extend set[T: Hashable & Deserializable]:
+    def deserialize(ref src: Deserializer) -> set[T] fails ParseError:
+        mut found = set[T]()
+        for item in src.sequence[T]()?:
+            found.add(item)
+        found

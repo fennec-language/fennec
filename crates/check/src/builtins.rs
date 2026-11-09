@@ -258,7 +258,7 @@ fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
         ("Net", "connect")
-            | ("Connection", "read" | "read_line" | "start_tls")
+            | ("Connection", "read" | "read_line" | "start_tls" | "write")
             | ("Server", "accept")
             | ("UdpSocket", "receive")
     )
@@ -387,6 +387,8 @@ impl FnCx<'_> {
             _ if name == "sort" => &["key"],
             Some("Net") if name == "connect" => &["timeout", "tls"],
             Some("Net") if name == "listen" => &["tls"],
+            // `crlf=True` takes a line as ending only at `\r\n`, as HTTP and SMTP do.
+            Some("Connection") if name == "read_line" => &["crlf", "timeout"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
@@ -511,6 +513,11 @@ impl FnCx<'_> {
                     }
                 }
                 Some("tls") if named.contains(&"tls") => self.tls_option(name, &ty, arg.value.span),
+                Some("crlf") if named.contains(&"crlf") => {
+                    if !self.checker.fits(&Type::Bool, &ty) {
+                        self.error(mismatch("`crlf`", &Type::Bool, &ty, arg.value.span));
+                    }
+                }
                 Some("port") if named.contains(&"port") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));

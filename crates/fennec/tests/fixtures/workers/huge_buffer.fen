@@ -1,0 +1,13 @@
+struct Point:
+    first: int
+    second: int
+    third: int
+    fourth: int
+
+def main(stdout: Stdout):
+    mut points = Buffer[Point]()
+    points.reserve(1 << 62)
+    stdout.print(points.capacity())
+    for at in range(100000):
+        points.push(Point(first=at, second=2, third=3, fourth=4))
+    stdout.print(points.len())

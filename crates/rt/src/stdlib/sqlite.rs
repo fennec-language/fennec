@@ -275,7 +275,7 @@ mod real {
     /// What a query found, or, for text that isn't UTF-8, its column's name.
     fn query(conn: &Connection, query: &Query) -> rusqlite::Result<Result<Found, String>> {
         let mut statement = prepared(conn, query)?;
-        let columns: Vec<String> = statement.column_names().into_iter().map(str::to_owned).collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let width = columns.len();
         let mut found = Found { columns, ..Found::default() };
         let mut rows = statement.raw_query();

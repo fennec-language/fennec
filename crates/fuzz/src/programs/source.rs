@@ -368,7 +368,7 @@ impl Writer {
                 format!("({} {symbol} {})", self.expr(left, false), self.expr(right, false))
             }
             Expr::Small(value) => format!("({} % 1009)", self.expr(value, false)),
-            Expr::Compare(compare, left, right) => {
+            Expr::Compare(compare, left, right) | Expr::FloatCompare(compare, left, right) => {
                 let symbol = match compare {
                     Compare::Less => "<",
                     Compare::LessEq => "<=",
@@ -442,6 +442,18 @@ impl Writer {
             }
             Expr::Summing(name) => format!("() => sum({name})"),
             Expr::Called(name) => format!("{name}()"),
+            Expr::Float(x) => super::eval::float_text(*x),
+            Expr::FloatArith(operator, left, right) => {
+                let symbol = match operator {
+                    Arith::Add => "+",
+                    Arith::Sub => "-",
+                    Arith::Mul => "*",
+                    Arith::Div | Arith::Rem => "/",
+                };
+                format!("({} {symbol} {})", self.expr(left, false), self.expr(right, false))
+            }
+            Expr::FloatOf(value) => format!("float({})", self.expr(value, false)),
+            Expr::Truncated(value) => format!("int({})", self.expr(value, false)),
         }
     }
 }

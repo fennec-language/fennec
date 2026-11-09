@@ -114,6 +114,7 @@ impl Writer<'_> {
                 Expr::SumCounted(Box::new(limit))
             }
             16 => self.name_of(Ty::Tally, false).map_or_else(|| self.small_int(), Expr::Count),
+            17 if self.risky => Expr::Truncated(Box::new(self.float(next))),
             17 => Expr::Tag(Box::new(self.of(Ty::Holder, next))),
             18 => {
                 let called = self.name_of(Ty::Count, false).map(Expr::Called);
@@ -183,8 +184,20 @@ impl Writer<'_> {
         match ty {
             Ty::Int => self.int(depth),
             Ty::Bool if depth >= MOST_DEPTH => Expr::Bool(self.choice(2) == 0),
-            Ty::Bool => match self.choice(4) {
+            Ty::Bool => match self.choice(5) {
                 0 => Expr::Bool(self.choice(2) == 0),
+                4 => {
+                    const COMPARES: [Compare; 5] =
+                        [Compare::Less, Compare::LessEq, Compare::Equal, Compare::NotEqual, Compare::Greater];
+                    let compare = COMPARES.get(self.choice(COMPARES.len())).copied().unwrap_or(Compare::Less);
+                    let (left, right) = (self.float(next), self.float(next));
+                    // A float compared with itself is refused, since NaN equals NaN.
+                    let right = match (&left, right) {
+                        (Expr::Name(a), Expr::Name(b)) if *a == b => Expr::Float(0.5),
+                        (_, right) => right,
+                    };
+                    Expr::FloatCompare(compare, Box::new(left), Box::new(right))
+                }
                 1 => Expr::And(Box::new(self.of(Ty::Bool, next)), Box::new(self.of(Ty::Bool, next))),
                 2 => Expr::Not(Box::new(self.of(Ty::Bool, next))),
                 _ => {
@@ -264,12 +277,43 @@ impl Writer<'_> {
                 let pairs = KEYS.iter().take(count).map(|key| (*key, self.of(Ty::Ints, next))).collect();
                 Expr::Lists(pairs)
             }
+            Ty::Float => self.float(depth),
             Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count => Expr::Int(0),
             Ty::Shape => match self.choice(3) {
                 0 => Expr::Shape(Case::Circle, Box::new(self.int(next))),
                 1 => Expr::Shape(Case::Square, Box::new(self.int(next))),
                 _ => Expr::Shape(Case::Empty, Box::new(Expr::Int(0))),
             },
+        }
+    }
+
+    /// A float: written out, worked out, or from an int.
+    fn float(&mut self, depth: usize) -> Expr {
+        const FLOATS: [f64; 9] = [0.5, 1.5, -2.25, 1e10, 0.1, 3.0, -0.0, 1e300, 2.5e-5];
+        const DIVISORS: [f64; 4] = [0.5, 3.0, -2.25, 1e-300];
+        let literal =
+            |at: usize, from: &[f64]| Expr::Float(from.get(at % from.len()).copied().unwrap_or(1.0));
+        if depth >= MOST_DEPTH {
+            return self
+                .name_of(Ty::Float, false)
+                .map_or_else(|| literal(self.choice(9), &FLOATS), Expr::Name);
+        }
+        let next = depth + 1;
+        match self.choice(6) {
+            0 | 1 => literal(self.choice(9), &FLOATS),
+            2 => {
+                let operator =
+                    [Arith::Add, Arith::Sub, Arith::Mul].get(self.choice(3)).copied().unwrap_or(Arith::Add);
+                Expr::FloatArith(operator, Box::new(self.float(next)), Box::new(self.float(next)))
+            }
+            3 => {
+                // A divisor written out is never zero, which could be refused as the program's
+                // compiled; one worked out may be, in a risky program, and fails as it runs.
+                let divisor = if self.risky { self.float(next) } else { literal(self.choice(4), &DIVISORS) };
+                Expr::FloatArith(Arith::Div, Box::new(self.float(next)), Box::new(divisor))
+            }
+            4 => Expr::FloatOf(Box::new(self.int(next))),
+            _ => self.name_of(Ty::Float, false).map_or_else(|| literal(self.choice(9), &FLOATS), Expr::Name),
         }
     }
 
@@ -385,7 +429,8 @@ impl Writer<'_> {
                 let ty = self.ty();
                 let Some(name) = self.name_of(ty, true) else { return self.print(body) };
                 let value = self.of(ty, 1);
-                body.push(Stmt::Assign { place: Place::Name(name.clone()), value, add: false });
+                let add = ty == Ty::Float && self.choice(2) == 0;
+                body.push(Stmt::Assign { place: Place::Name(name.clone()), value, add });
                 self.read_back(body, &name);
             }
             _ => self.print(body),

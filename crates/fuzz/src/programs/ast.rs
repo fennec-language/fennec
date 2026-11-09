@@ -25,12 +25,13 @@ pub(crate) enum Ty {
     Lists,
     /// `() -> int`: a function that sums the list it captured.
     Count,
+    Float,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 9] =
-    [Ty::Int, Ty::Bool, Ty::Str, Ty::Ints, Ty::Point, Ty::Shape, Ty::Byte, Ty::Holder, Ty::Lists];
+pub(crate) const TYPES: [Ty; 10] =
+    [Ty::Int, Ty::Bool, Ty::Str, Ty::Ints, Ty::Point, Ty::Shape, Ty::Byte, Ty::Holder, Ty::Lists, Ty::Float];
 
 /// An arithmetic operator on ints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +131,16 @@ pub(crate) enum Expr {
     Summing(String),
     /// `count()`.
     Called(String),
+    /// A float written out.
+    Float(f64),
+    /// `left + - * / right` on floats: `/` by zero fails.
+    FloatArith(Arith, Box<Expr>, Box<Expr>),
+    /// `float(int)`.
+    FloatOf(Box<Expr>),
+    /// `int(float)`, which fails outside the ints, and for infinity and NaN.
+    Truncated(Box<Expr>),
+    /// A comparison between floats.
+    FloatCompare(Compare, Box<Expr>, Box<Expr>),
 }
 
 /// A number written into a lock's body: a literal, or what a task was sent, times something.

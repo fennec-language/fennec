@@ -32,6 +32,7 @@ enum Value {
     Lists(Vec<(String, Vec<i64>)>),
     /// A function summing the list it captured.
     Count(Vec<i64>),
+    Float(u64),
     Tally(i64),
 }
 
@@ -158,6 +159,52 @@ fn place_in(at: i64, len: usize) -> Ran<usize> {
     if (0..len).contains(&at) { usize::try_from(at).map_err(|_| Stop::Unsure) } else { Err(Stop::Failed) }
 }
 
+/// A float as Fennec writes it, which is as Python's `repr` does: the fewest digits that read
+/// back as the same float, written out in full from 1e-4 up to 1e16, and with an exponent of at
+/// least two digits past that.
+pub(crate) fn float_text(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".to_owned();
+    }
+    if x.is_infinite() {
+        return (if x < 0.0 { "-inf" } else { "inf" }).to_owned();
+    }
+    // Rust's shortest digits, as `d.ddde<exponent>`.
+    let scientific = format!("{:e}", x.abs());
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let sign = if x.is_sign_negative() { "-" } else { "" };
+    if (-4..16).contains(&exponent) {
+        let point = exponent + 1;
+        let written = if point <= 0 {
+            format!("0.{}{digits}", "0".repeat(usize::try_from(-point).unwrap_or(0)))
+        } else {
+            let point = usize::try_from(point).unwrap_or(0);
+            if digits.len() <= point {
+                format!("{digits}{}.0", "0".repeat(point - digits.len()))
+            } else {
+                format!("{}.{}", digits.get(..point).unwrap_or(""), digits.get(point..).unwrap_or(""))
+            }
+        };
+        return format!("{sign}{written}");
+    }
+    let (first, rest) = digits.split_at(1.min(digits.len()));
+    let fraction = if rest.is_empty() { String::new() } else { format!(".{rest}") };
+    let exponent = if exponent < 0 { format!("-{:02}", -exponent) } else { format!("+{exponent:02}") };
+    format!("{sign}{first}{fraction}e{exponent}")
+}
+
+/// Floats in Fennec's order: NaN equals itself and comes after everything, and `-0.0` is `0.0`.
+fn float_order(left: f64, right: f64) -> std::cmp::Ordering {
+    match (left.is_nan(), right.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => left.partial_cmp(&right).unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
 /// `sum(items)`. Overflowing partway but not at the end could go either way.
 fn sum_of(items: &[i64]) -> Ran<i64> {
     let mut total: i64 = 0;
@@ -198,6 +245,7 @@ fn shown(value: &Value) -> String {
         Value::Byte(n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
         Value::Shared(_) | Value::Bag(_) | Value::Count(_) => "shared".to_owned(),
+        Value::Float(bits) => float_text(f64::from_bits(*bits)),
         Value::Holder(items, tag) => {
             let items: Vec<String> = items.iter().map(ToString::to_string).collect();
             format!("Holder(items=[{}], tag={tag})", items.join(", "))
@@ -216,6 +264,13 @@ fn shown(value: &Value) -> String {
 }
 
 impl Machine {
+    fn float_of(&mut self, expr: &Expr) -> Ran<f64> {
+        match self.expr(expr)? {
+            Value::Float(bits) => Ok(f64::from_bits(bits)),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
     fn byte_of(&mut self, expr: &Expr) -> Ran<u8> {
         match self.expr(expr)? {
             Value::Byte(n) => Ok(n),
@@ -572,7 +627,12 @@ impl Machine {
         };
         let mut new = self.expr(value)?;
         if add {
-            new = Value::Int(checked(int(&old)?.checked_add(int(&new)?))?);
+            new = match (&old, &new) {
+                (Value::Float(old), Value::Float(by)) => {
+                    Value::Float((f64::from_bits(*old) + f64::from_bits(*by)).to_bits())
+                }
+                _ => Value::Int(checked(int(&old)?.checked_add(int(&new)?))?),
+            };
         }
         match place {
             Place::Name(name) => *self.slot(name)? = new,
@@ -724,6 +784,47 @@ impl Machine {
                 Value::Ints(items) => Value::Count(items.clone()),
                 _ => return Err(Stop::Unsure),
             },
+            Expr::Float(x) => Value::Float(x.to_bits()),
+            Expr::FloatArith(operator, left, right) => {
+                let (left, right) = (self.float_of(left)?, self.float_of(right)?);
+                let result = match operator {
+                    Arith::Add => left + right,
+                    Arith::Sub => left - right,
+                    Arith::Mul => left * right,
+                    Arith::Div | Arith::Rem => {
+                        if right == 0.0 {
+                            return Err(Stop::Failed);
+                        }
+                        left / right
+                    }
+                };
+                Value::Float(result.to_bits())
+            }
+            Expr::FloatOf(value) => {
+                #[expect(clippy::cast_precision_loss, reason = "float(int) rounds to the nearest float")]
+                let x = int(&self.expr(value)?)? as f64;
+                Value::Float(x.to_bits())
+            }
+            Expr::Truncated(value) => {
+                let x = self.float_of(value)?.trunc();
+                // `i64::MAX` itself isn't a float, so the largest float below 2^63 is the edge.
+                if x.is_nan() || !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&x) {
+                    return Err(Stop::Failed);
+                }
+                #[expect(clippy::cast_possible_truncation, reason = "it's in range and has no fraction")]
+                let n = x as i64;
+                Value::Int(n)
+            }
+            Expr::FloatCompare(compare, left, right) => {
+                let order = float_order(self.float_of(left)?, self.float_of(right)?);
+                Value::Bool(match compare {
+                    Compare::Less => order.is_lt(),
+                    Compare::LessEq => order.is_le(),
+                    Compare::Equal => order.is_eq(),
+                    Compare::NotEqual => order.is_ne(),
+                    Compare::Greater => order.is_gt(),
+                })
+            }
             Expr::Called(name) => match self.get(name)? {
                 Value::Count(items) => Value::Int(sum_of(items)?),
                 _ => return Err(Stop::Unsure),
@@ -782,5 +883,40 @@ impl Machine {
                 Value::Int(checked(bumped.checked_mul(10))?)
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::float_text;
+
+    /// What `stdout.print` wrote for each of these floats, built natively.
+    #[test]
+    fn floats_print_as_fennec_prints_them() {
+        let cases = [
+            (1.0 / 3.0, "0.3333333333333333"),
+            (100.0, "100.0"),
+            (1e16, "1e+16"),
+            (1e15, "1000000000000000.0"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (-1.5e-10, "-1.5e-10"),
+            (1_152_921_504_606_846_976.0, "1.152921504606847e+18"),
+            (123_456_789_012_345_680.0, "1.2345678901234568e+17"),
+            (0.1 + 0.7, "0.7999999999999999"),
+            (1e22, "1e+22"),
+            (5e-324, "5e-324"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (9_007_199_254_740_992.0, "9007199254740992.0"),
+            (-0.0, "-0.0"),
+            (0.0, "0.0"),
+            (123_456_789.125, "123456789.125"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (f64::NAN, "nan"),
+        ];
+        for (x, written) in cases {
+            assert_eq!(float_text(x), written, "{x:e}");
+        }
     }
 }

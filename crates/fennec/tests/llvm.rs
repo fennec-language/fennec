@@ -4649,6 +4649,55 @@ def main(stdout: Stdout) fails Crashed:
     Ok(())
 }
 
+/// `with src else fail E` on a source whose body has an `x else fail` and a `with launch(...)?`:
+/// both fail with `E` once it's written in, and the launch stays one.
+#[test]
+fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_failing_instead",
+        r#"from std.concurrent import Crashed
+
+error Outer:
+    why: str
+
+error Inner:
+    why: str
+
+def work():
+    pass
+
+def given(bad: bool) -> int?:
+    None if bad else 1
+
+def inner_source(bad: bool) -> with int fails Inner | Crashed:
+    first = given(bad) else fail Inner(why="none")
+    with launch(() => work())?:
+        lend first
+
+def outer_source(bad: bool) -> with int fails Outer:
+    with inner_source(bad) else fail Outer(why="the inner source failed") as n:
+        lend n + 1
+
+def run(bad: bool, stdout: Stdout) fails Outer:
+    with outer_source(bad)? as n:
+        stdout.print("got", n)
+
+def main(stdout: Stdout):
+    for bad in [False, True]:
+        match run(bad, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(printed, "got 2\nworked\nfailed Outer(why=\"the inner source failed\")\n");
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]

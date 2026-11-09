@@ -57,8 +57,9 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
 
 impl Uses<'_> {
     fn name(&mut self, name: &str, span: Span) {
-        // A standard library source written in where it's used names its own types.
-        if span.in_prelude() {
+        // A standard library source written in where it's used names its own types, and what
+        // lowering writes in names the types the checker found, like a source's `T`.
+        if span.in_prelude() || crate::lend_lowering::written_in(span) {
             return;
         }
         let defined_here = self.program.type_info(name).is_some_and(|info| !info.prelude);

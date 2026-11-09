@@ -6610,7 +6610,11 @@ def main(net: Net, stdout: Stdout):
             stdout.print(error.message())
         case Ok(_):
             stdout.print(\"done\")
-    _ = net.udp(port=99999)
+    match net.udp(port=99999):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
 ";
 
 #[test]

@@ -180,7 +180,8 @@ export def pool[T: Pooled, E: Explained](
 ) -> with Pool[T] fails PoolError | Crashed:
     if size < 1: fail PoolError.Open(reason=f"a pool needs at least one value, not {size}")
     mut started = first
-    if started is None: started = opened(open)?
+    if started is None:
+        started = opened(open)?
     begun = started else fail PoolError.Closed
     with channel[PoolNote[T]](size=size * 4 + 16) as notes:
         inbox = notes.inbox()
@@ -346,7 +347,8 @@ def keep[T: Pooled, E: Explained](
     first: T,
 ):
     mut held: T? = None
-    if number == 0: held = first
+    if number == 0:
+        held = first
     with channel[Order[T]](size=1) as orders, channel[Given[T]](size=1) as given:
         told(notes, PoolNote[T](kind=HELLO, keeper=number, orders=orders.sender()))
         for order in orders:
@@ -372,4 +374,5 @@ def keep[T: Pooled, E: Explained](
                     # The borrower stopped waiting, so the value goes to the next.
                     pass
             told(notes, PoolNote[T](kind=FREE if held is not None else EMPTY, keeper=number))
-    if held is not None: held.close()
+    if held is not None:
+        held.close()

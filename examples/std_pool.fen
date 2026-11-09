@@ -155,5 +155,5 @@ def main(stdout: Stdout) fails PoolError | Crashed:
             with links.take()? as second:
                 stdout.print("two at once:", first.number, second.number)
         with links.take()? as again:
-            stdout.print("then the first again:", again.number)
+            stdout.print("then one of them again:", again.number)
     stdout.print("opened", opens(count))

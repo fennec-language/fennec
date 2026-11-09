@@ -21,13 +21,13 @@
 ## own, so the same code runs against a socket or against bytes a test wrote.
 
 from std import base64, crypto
+from std.concurrent import Borrowed, Pool, Timeout, pool
 from std.crypto import Secret
 from std.intrinsics import bytes_text
-from std.concurrent import Borrowed, Pool, Timeout, pool
 from std.net import Connection, NetError
+from std.sql import SqlError, SqlRows, SqlValue, rows_as
 from std.time import Duration
 from std.url import parse, unquote
-from std.sql import SqlError, SqlRows, SqlValue, rows_as
 
 ## The protocol's version, 3.0, as a startup message gives it.
 PROTOCOL = 196608
@@ -611,10 +611,12 @@ export def settings(
             reason="the database URL has a password in it: pass it as `password=`, a `Secret`, so it never shows where the URL does",
         )
     user = unquote(read.user)
-    if user == "": fail SqlError.Failed(reason="the database URL needs a user, as in `postgres://user@host`")
+    if user == "":
+        fail SqlError.Failed(reason="the database URL needs a user, as in `postgres://user@host`")
     if read.host == "": fail SqlError.Failed(reason="the database URL needs a host")
     mut database = unquote(read.path[1:] if read.path.startswith("/") else read.path)
-    if database == "": database = user
+    if database == "":
+        database = user
     for name in read.query.keys():
         if name != "pool_size" and name != "wait":
             fail SqlError.Failed(
@@ -651,13 +653,12 @@ def set_twice(name: str) -> SqlError:
 
 ## A wait written in a URL: whole milliseconds, seconds or minutes, like `500ms`, `5s` or `2m`.
 def duration_of(text: str) -> Duration fails SqlError:
-    wrong = SqlError.Failed(reason=f"the database URL's `wait` is like `5s`, `500ms` or `2m`, not `{text}`")
-    if text.endswith("ms"):
-        return Duration.millis(int(text[:-2]) else fail wrong)
-    if text.endswith("s"):
-        return Duration.millis((int(text[:-1]) else fail wrong) * 1000)
-    if text.endswith("m"):
-        return Duration.minutes(int(text[:-1]) else fail wrong)
+    wrong = SqlError.Failed(
+        reason=f"the database URL's `wait` is like `5s`, `500ms` or `2m`, not `{text}`",
+    )
+    if text.endswith("ms"): return Duration.millis(int(text[:-2]) else fail wrong)
+    if text.endswith("s"): return Duration.millis((int(text[:-1]) else fail wrong) * 1000)
+    if text.endswith("m"): return Duration.minutes(int(text[:-1]) else fail wrong)
     fail wrong
 
 ## A pool of connections to the database at `url`, lent for a `with` block: `with
@@ -920,10 +921,11 @@ export struct PgDatabase:
         mut marked = False
         while True:
             # A server that doesn't answer soon isn't kept waiting for: the connection's replaced.
-            message = next_message(self._conn, ref reader, wait=RESET_WAIT)?
+            message = next_message(self._conn, ref reader, wait=Duration.millis(RESET_WAIT_MS))?
             match message:
                 case .Row(cells=cells, present=_):
-                    if cells.len() == 1 and cells[0] == RESET_MARK.encode(): marked = True
+                    if cells.len() == 1 and cells[0] == RESET_MARK.encode():
+                        marked = True
                 case .Ready(status=status):
                     if marked: return status == "I"
                 case _:
@@ -978,8 +980,9 @@ def changed(tag: str) -> int:
 ## no query a program sends gives it back.
 RESET_MARK = "fennec pool reset 7c1e"
 
-## How long a reset waits for the server's answer before giving up on the connection.
-RESET_WAIT = 2s
+## How long a reset waits for the server's answer before giving up on the connection, in
+## milliseconds.
+RESET_WAIT_MS = 2000
 
 ## A query in the simple protocol: `Q`, its length, and its text ending with a zero byte.
 def simple_query(text: str) -> bytes:
@@ -1000,7 +1003,11 @@ def more_from(conn: Connection, wait: Duration?) -> bytes fails NetError:
     conn.read(65536, timeout=wait)?
 
 ## The next whole message from the server, waiting for it, for at most `wait` when it's given.
-def next_message(conn: Connection, ref reader: PgReader, wait: Duration? = None) -> PgMessage fails SqlError:
+def next_message(
+    conn: Connection,
+    ref reader: PgReader,
+    wait: Duration? = None,
+) -> PgMessage fails SqlError:
     while True:
         found = reader.next()?
         if found is not None: return found

@@ -1,4 +1,5 @@
-//! `fennec update`: pins a kit's dependencies from git in `kit.lock`. See `fennec-deps`.
+//! `fennec update`: pins a kit's dependencies from git in `kit.lock`, see `fennec-deps`, and
+//! adds the layouts of what the kit saves in `std.pack` to `pack.lock`.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -22,11 +23,55 @@ pub(crate) fn update(path: &str) -> ExitCode {
     match kits.update(&root) {
         Ok(said) => {
             print!("{said}");
-            ExitCode::SUCCESS
+            match lock_layouts(&root) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(message) => {
             eprintln!("error: {message}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Adds the layout of each type the kit's program saves in `std.pack` to `pack.lock`, unless it's
+/// there already. Nothing is ever taken out: data written with an old layout still needs it.
+fn lock_layouts(root: &Path) -> Result<String, String> {
+    let shown = root.to_string_lossy();
+    let mut program = fennec_kit::load(root, &shown, fennec_kit::Entry::Main)?;
+    let signatures = fennec_check::check_and_resolve(&mut program.module)
+        .map_err(|problems| program.sources.render_all(&problems))?;
+    let lowered = fennec_ir::lower(&program.module, &signatures);
+    if lowered.layouts.is_empty() {
+        return Ok(String::new());
+    }
+    let path = root.join("pack.lock");
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut added = 0;
+    for (shape, layout) in &lowered.layouts {
+        let key = format!("{:016x} ", shape.cast_unsigned());
+        if text.lines().any(|line| line.starts_with(&key)) {
+            continue;
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&key);
+        text.push_str(layout);
+        text.push('\n');
+        added += 1;
+    }
+    if added == 0 {
+        return Ok(String::new());
+    }
+    std::fs::write(&path, text).map_err(|err| format!("couldn't write pack.lock: {err}"))?;
+    let what = if added == 1 { "1 layout".to_owned() } else { format!("{added} layouts") };
+    Ok(format!("locked {what} in pack.lock\n"))
 }

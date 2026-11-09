@@ -1690,6 +1690,49 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
     );
 }
 
+/// `fennec fix` gives a function that uses a capability it wasn't given the parameter, passes it
+/// at each call, and gives each caller the parameter in turn, across a kit's files, up to the
+/// first that has one, `main`, or a test. A function named other than in a call is left alone.
+#[test]
+fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-threaded", std::process::id()));
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"hello\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        src.join("main.fen"),
+        "from greet import welcome\n\ndef main(out: Stdout):\n    welcome(\"Ann\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("greet.fen"),
+        "export def welcome(name: str):\n    shout(f\"hello {name}\")\n    shout(\"again\")\n\ndef shout(text: str):\n    stdout.print(text)\n\ntest \"welcomes\":\n    welcome(\"Bo\")\n",
+    )
+    .unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let main = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    let greet = std::fs::read_to_string(src.join("greet.fen")).unwrap();
+    let ran = fennec(&["run", "--no-test", &path], "").unwrap();
+    let as_value = "def shout(text: str):\n    stdout.print(text)\n\ndef main(out: Stdout):\n    each = shout\n    each(\"hi\")\n";
+    std::fs::write(src.join("main.fen"), as_value).unwrap();
+    std::fs::remove_file(src.join("greet.fen")).unwrap();
+    let left = fennec(&["fix", &path], "").unwrap();
+    let kept = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(main, "from greet import welcome\n\ndef main(out: Stdout):\n    welcome(out, \"Ann\")\n");
+    assert_eq!(
+        greet,
+        "export def welcome(stdout: Stdout, name: str):\n    shout(stdout, f\"hello {name}\")\n    shout(stdout, \"again\")\n\ndef shout(stdout: Stdout, text: str):\n    stdout.print(text)\n\ntest \"welcomes\"(stdout: Stdout):\n    welcome(stdout, \"Bo\")\n"
+    );
+    assert_eq!(text(&ran.stdout), "hello Ann\nagain\n", "{}", text(&ran.stderr));
+    assert!(!left.status.success());
+    assert_eq!(kept, as_value);
+    assert!(text(&left.stderr).contains("`stdout` doesn't exist"), "{}", text(&left.stderr));
+}
+
 /// `fennec fix` names the fields of a pattern matching another kit's type by position, and a
 /// part that's only `_` goes, so it reads no field.
 #[test]
@@ -1954,6 +1997,33 @@ fn fix_moves_idmap_to_table() {
             .replace("units.insert(", "units.add(")
     );
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
+}
+
+/// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
+/// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
+/// for the `with`, and then it runs.
+#[test]
+fn fix_moves_a_shared_declaration_to_shared_t_and_lock() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-shared-declaration", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("account.fen");
+    let path = program.to_string_lossy().into_owned();
+    let old = "shared Account:\n    total = 0\n\ndef pay(account: Account, amount: int):\n    \
+               with account as ref held:\n        held.total += amount\n\ndef main(stdout: Stdout):\n    \
+               account = Account()\n    pay(account, 5)\n    with account as seen:\n        stdout.print(seen.total)\n";
+    std::fs::write(&program, old).unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        "struct Account:\n    total = 0\n\ndef pay(account: shared Account, amount: int):\n    \
+         lock account as ref held:\n        held.total += amount\n\ndef main(stdout: Stdout):\n    \
+         shared account = Account()\n    pay(account, 5)\n    lock account as seen:\n        stdout.print(seen.total)\n"
+    );
+    assert_eq!(text(&ran.stdout), "5\n", "{}", text(&ran.stderr));
 }
 
 #[test]
@@ -2570,9 +2640,6 @@ fn a_hot_function_and_what_it_calls_cant_allocate() {
     std::fs::write(&program, source.replace("    tagged(ref units[0], \"hit\")\n", "")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "28.0\n", "{}", text(&output.stderr));
-    std::fs::write(&program, "noalloc def f():\n    pass\n").unwrap();
-    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
-    assert!(text(&output.stderr).contains("`noalloc` is written `@hot` now"), "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -2616,13 +2683,22 @@ fn a_hot_function_keeps_no_checks() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A `shared` value is a handle: every name for it, and every function it's passed to, changes
-/// one cell.
+/// A `shared` value is one value: every name for it, and every function it's passed to, changes
+/// the same one, each inside a `lock`.
 #[test]
 fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();
     let program = dir.join("account.fen");
-    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
+    std::fs::write(
+        &program,
+        "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    \
+         def balance(self) -> int:\n        self.total\n\n\
+         def pay(account: shared Account, amount: int):\n    lock account as ref held:\n        held.add(amount)\n\n\
+         def main(stdout: Stdout):\n    shared account = Account()\n    same = account\n    pay(account, 5)\n    \
+         lock same as ref held:\n        held.add(10)\n    mut through_same = 0\n    lock same as held:\n        \
+         through_same = held.total\n    lock account as held:\n        stdout.print(held.balance(), through_same, held)\n",
+    )
+    .unwrap();
     let output = fennec(&["run", "--no-test", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
@@ -2789,5 +2865,49 @@ fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
     // Inside a kit's folder, the kit's is the edge, and what's above the file but in the kit is fine.
     std::fs::write(dir.join("kit.toml"), "name = \"edge\"\nversion = \"0.1.0\"\n").unwrap();
     assert!(checked("../secret.txt").0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `embed_folder` bakes in a folder's files by their paths from it, sorted, leaving hidden ones
+/// out, as a read-only map from path to `bytes`. It refuses a missing folder, a file, and a link
+/// that leads out of the file's folder.
+#[test]
+#[cfg(unix)]
+fn embed_folder_gives_a_folders_files_by_path() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-embed-folder-{}", std::process::id()));
+    let site = dir.join("game/site");
+    std::fs::create_dir_all(site.join("css")).unwrap();
+    std::fs::create_dir_all(site.join(".git")).unwrap();
+    std::fs::write(site.join("css/app.css"), "body{}").unwrap();
+    std::fs::write(site.join("index.html"), "<h1>hi</h1>").unwrap();
+    std::fs::write(site.join(".env"), "secret").unwrap();
+    std::fs::write(site.join(".git/HEAD"), "ref").unwrap();
+    std::fs::write(dir.join("outside.txt"), "above").unwrap();
+    let game = dir.join("game/main.fen");
+    let source = "SITE = embed_folder(\"site\")\n\ndef main(stdout: Stdout):\n    \
+        stdout.print(SITE.len(), SITE.keys())\n    stdout.print(SITE.get(\"css/app.css\"))\n    \
+        stdout.print(SITE.get(\"missing\") is None)\n    for path, data in SITE.items():\n        stdout.print(path, data.len())\n";
+    std::fs::write(&game, source).unwrap();
+    let ran = fennec(&["run", "--no-test", &game.to_string_lossy()], "").unwrap();
+    assert_eq!(
+        text(&ran.stdout),
+        "2 [\"css/app.css\", \"index.html\"]\nbytes([98, 111, 100, 121, 123, 125])\nTrue\ncss/app.css 6\nindex.html 11\n",
+        "{}",
+        text(&ran.stderr)
+    );
+    let refused = |path: &str| {
+        std::fs::write(
+            &game,
+            format!("def main(stdout: Stdout):\n    stdout.print(embed_folder({path:?}).len())\n"),
+        )
+        .unwrap();
+        let output = fennec(&["check", &game.to_string_lossy()], "").unwrap();
+        assert!(!output.status.success(), "{path}");
+        text(&output.stderr)
+    };
+    assert!(refused("nowhere").contains("there's no folder `nowhere` to embed"));
+    assert!(refused("site/index.html").contains("`site/index.html` is a file"));
+    std::os::unix::fs::symlink(dir.join("outside.txt"), site.join("link.txt")).unwrap();
+    assert!(refused("site").contains("`site/link.txt` is outside this file's folder"));
     std::fs::remove_dir_all(&dir).unwrap();
 }

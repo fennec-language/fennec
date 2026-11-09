@@ -700,7 +700,9 @@ pub(crate) fn default_problem(
         ExprKind::Dict(pairs) => pairs.is_empty(),
         _ => false,
     };
-    if empty {
+    // A `list[shared T]()` can't be written, since `shared T` is a type and not a value, so
+    // `= []` is how one starts empty.
+    if empty && !holds_shared(ty) {
         let made = format!("{}()", written(ty));
         let message = format!("`{name}`'s default is written as `{made}`");
         let help = format!("write `{name} = {made}`, which says its type");
@@ -786,4 +788,9 @@ fn union_of(written: &TypeExpr, members: Vec<Type>) -> Result<Type, Diagnostic> 
 
 fn written_type(ty: &TypeExpr) -> String {
     written(ty)
+}
+
+/// Whether `ty` has a `shared` type anywhere in it.
+fn holds_shared(ty: &TypeExpr) -> bool {
+    ty.name == crate::lock::SHARED || ty.args.iter().any(holds_shared)
 }

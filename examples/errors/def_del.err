@@ -1,0 +1,7 @@
+error: there's no `def del`: nothing runs when a `Door` goes away
+ --> examples/errors/def_del.fen:4:5
+  |
+4 |     def del(self):
+  |     ^^^^^^^^^^^^^
+  |
+  = help: open what needs cleanup with `with`, from a source: `def opened() -> with Door:` makes one, `lend`s it, and cleans up after the `lend`

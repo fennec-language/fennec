@@ -196,23 +196,25 @@ fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Re
 
 const SERVER: &str = "from std.net import NetError
 
-shared Total:
+struct Total:
     bytes = 0
 
     def add(ref self, count: int):
         self.bytes += count
 
 def main(net: Net, stdout: Stdout) fails NetError:
-    total = Total()
+    shared total = Total()
     with net.listen(0)? as server:
         stdout.print(server.port)
         for conn in parallel(server):
             line = conn.read_line()? else \"\"
             if line == \"stop\":
                 break
-            total.add(line.len())
+            lock total as ref held:
+                held.add(line.len())
             conn.write(f\"{line.len()}\\n\")?
-    stdout.print(total.bytes)
+    lock total as held:
+        stdout.print(held.bytes)
 ";
 
 /// Asked to record or replay and unable to, a program says so and stops, rather than run live as if

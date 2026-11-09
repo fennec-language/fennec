@@ -23,6 +23,9 @@ struct Lowering<'d> {
     changed: bool,
 }
 
+/// What ends the name a lowered `lock` gives what it holds: `s__lock` for `lock x as ref s:`.
+pub(crate) const HELD: &str = "__lock";
+
 /// Lowers every `shared T`, `shared s = e` and `lock` in `module`, saying whether there were any.
 pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) -> bool {
     let mut lowering = Lowering { declared, made: BTreeMap::new(), changed: false };
@@ -84,10 +87,23 @@ pub(crate) fn made_name(held: &str) -> String {
 }
 
 /// A type written as its text says, like `dict[str, int]`.
+/// A program's own type named like one of the standard library's is checked under a hidden name,
+/// `Log'`, which isn't written that way, so it's parsed as a name and given back.
 fn type_from(text: &str) -> Option<TypeExpr> {
-    let module = fennec_syntax::parse(&format!("def held(value: {text}):\n    pass\n")).ok()?;
+    const STANDS_IN: &str = "hidden__mark__";
+    let written = text.replace(fennec_syntax::visit::HIDDEN, STANDS_IN);
+    let module = fennec_syntax::parse(&format!("def held(value: {written}):\n    pass\n")).ok()?;
     let Some(Item::Function(def)) = module.items.into_iter().next() else { return None };
-    def.params.into_iter().next().and_then(|param| param.ty)
+    let mut ty = def.params.into_iter().next().and_then(|param| param.ty)?;
+    hidden_again(&mut ty, STANDS_IN);
+    Some(ty)
+}
+
+fn hidden_again(ty: &mut TypeExpr, stands_in: &str) {
+    ty.name = ty.name.replace(stands_in, &fennec_syntax::visit::HIDDEN.to_string());
+    for arg in &mut ty.args {
+        hidden_again(arg, stands_in);
+    }
 }
 
 impl Lowering<'_> {
@@ -166,7 +182,7 @@ impl Lowering<'_> {
                     self.changed = true;
                     let renamed: Vec<(String, String)> = names
                         .iter()
-                        .map(|held| (held.name.clone(), format!("{}__lock", held.name)))
+                        .map(|held| (held.name.clone(), format!("{}{HELD}", held.name)))
                         .collect();
                     for (held, (_, handle)) in names.iter_mut().zip(&renamed) {
                         held.name.clone_from(handle);

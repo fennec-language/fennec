@@ -221,12 +221,6 @@ struct Parser:
         # Inside a kit everything is visible: `export` matters only between kits.
         _ = self.eat_pub(True)
         _ = self.eat_keyword("export")
-        if self.at_keyword("noalloc"):
-            fail Diagnostic(
-                message="`noalloc` is written `@hot` now",
-                span=self.span(),
-                help="write `@hot` on the line above the `def`: the function and what it calls may not allocate or copy",
-            )
         match self.peek():
             case .Keyword(word):
                 if word == "def":
@@ -652,8 +646,9 @@ struct Parser:
                 if not self.eat_punct(","):
                     break
             _ = self.expect_punct(")")?
-            # `(Circle | Square)?`: a union in parentheses is the union, so it can be optional.
-            if args.len() == 1 and args[0].name == "|" and not self.at_punct("->"):
+            # `(Circle | Square)?`: a union in parentheses is the union, so it can be optional, as
+            # is `(shared Scores)?`.
+            if args.len() == 1 and (args[0].name == "|" or args[0].name == "shared") and not self.at_punct("->"):
                 optional = self.eat_punct("?")
                 return copy(args[0], optional=optional, span=start.to(self.prev_span()))
             # `(int, str) -> bool`: a function type, its return type last. One that can fail

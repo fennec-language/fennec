@@ -191,8 +191,8 @@ fn a_local_that_does_more_than_hold_isnt_lost() {
         )),
         NONE
     );
-    let handle = "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
-                  def main(stdout: Stdout):\n    mut held = Account()\n    held.add(1)\n";
+    let handle = "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
+                  def main(stdout: Stdout):\n    shared held = Account()\n    lock held as ref account:\n        account.add(1)\n";
     assert_eq!(problems(handle), NONE);
 }
 

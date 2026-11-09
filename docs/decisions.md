@@ -234,7 +234,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 **The compiler places short-lived values itself.** A temporary that never leaves its function or loop body goes on the stack or in a bump region, with no call to the allocator. This is limited to values that provably don't escape. Full automatic region inference is known to leak memory.
 
-**`@hot` on a function means prove it or don't compile.** The compiler must prove the function and everything it calls does no allocation, makes no copies and has no leftover count checks, or it's a compile error that names the line. A lint suggests it where profiling shows heavy allocation. This replaces `with noalloc():` and the `noalloc def` prefix. Built, apart from the lint that suggests it, which waits for a profile to read: `noalloc` is refused, saying to write `@hot`, and each check native code keeps (bounds, a missing key, dividing by zero, a shift's range, a builtin that can fail) is an error. An overflow check stays: wherever the compiler can show a number can't overflow, hot or not, the check goes, and where it can't, the check stays as a safety net. Chris decided this on 2026-11-06.
+**`@hot` on a function means prove it or don't compile.** The compiler must prove the function and everything it calls does no allocation, makes no copies and has no leftover count checks, or it's a compile error that names the line. A lint suggests it where profiling shows heavy allocation. This replaces `with noalloc():` and the `noalloc def` prefix. Built, apart from the lint that suggests it, which waits for a profile to read: each check native code keeps (bounds, a missing key, dividing by zero, a shift's range, a builtin that can fail) is an error. An overflow check stays: wherever the compiler can show a number can't overflow, hot or not, the check goes, and where it can't, the check stays as a safety net. Chris decided this on 2026-11-06. `noalloc` is no longer a keyword, so it's an ordinary name (2026-11-09).
 *Why:* It's a claim about a function, and nothing opens or closes, so it doesn't belong in `with`. Speed in a hot path becomes something the compiler checks rather than something people hope for.
 
 **`@arena` is cut for now,** along with `with arena():`. It's expected back at function level for tree-heavy allocation, after measurement. There are no allocator parameters, now or then.
@@ -613,7 +613,7 @@ def write[T, W: Writer](x: T, ref out: W):
         out.field(f.name)
         write(f.get(x), ref out)
 ```
-- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Not built yet: today `fields` doesn't exist, and formats get their fields from the compiler.
+- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Built: `for f in fields(T):`, with `f.name` and `f.get(x)`. The body is checked once, with `f.get(x)` of a type that stands for each field's and goes only where any type can, and it's written out for each field when each copy is made. Not built yet: a field's type, value and annotations beyond those, `cases(T)`, `*Cs` and `if T is int:`, and formats still get their fields from the compiler.
 - Each set of types gets its own specialized copy, whatever the build.
 - There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed_file` and `embed_folder`, which read files that are part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
@@ -724,7 +724,7 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 **`with` lends you something for the length of a block, and it can't escape.** What a `with` gives can't be returned, stored outside the block or put in a `shared`. A second name for it inside the block is fine, and a struct holding something borrowed is borrowed too, so wrappers work. Built for sources a program writes.
 *Why:* A file, socket or transaction then closes exactly once, at a line you can see, and nobody can use it after.
 
-**There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
+**There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Built for the standard library: `net.connect`, `net.listen`, `net.udp` and `server.accept()` are `with` sources, and a `for` over a server closes each connection when the loop moves on. `def del` is out of the language: one is refused, with how to write a source instead. Built. A generator abandoned while a source's block is open doesn't run that source's cleanup yet.
 *Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
 
 **A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note, and with several handles every one runs its cleanup, innermost first. Several handles in one `with` are built. The note isn't yet: today a failing `else:` replaces the block's failure. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
@@ -1054,13 +1054,13 @@ A big program that wants walls between its own parts splits into local kits in o
 **Four questions, each with its own words:** `mut` and `ref` say whether something can change; `shared` and `lock` say who's touching it; `with` says when it goes back; `launch` and channels say who talks to whom.
 *Why:* Each question gets one answer you can see in the code, and every borrow lives in a block, so there are no lifetimes to write.
 
-**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically, which still compile until `fennec fix` rewrites them. Built.
+**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically: one is refused, and `fennec fix` rewrites what's mechanical of it. Built.
 *Why:* Sharing then shows up in types and signatures, and a search for `shared` finds every place it happens.
 
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking, which is refused, with a fix to `lock`. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:
@@ -1105,7 +1105,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 - Local variables and output aren't rolled back.
 - To keep a change and still fail, decide inside the lock and `fail` after it.
 - A lint may warn when a `fail` follows a write in the same block.
-- Chris decided this on 2026-11-08. Not built yet: today a `fail` or `?` keeps the changes made so far, and only a crash undoes them. This replaces the rule that only crashes roll back.
+- Chris decided this on 2026-11-08. Built. This replaces the rule that only crashes roll back.
 
 *Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
 
@@ -1150,7 +1150,7 @@ for ref particle in parallel(particles):
 total = sum(e.mass for e in parallel(enemies))
 hits = [check(b) for b in parallel(bullets, limit=8)]
 
-with net.listen(8080) as server:
+with net.listen(8080)? as server:
     for conn in parallel(server):
         handle(conn, app)
 ```
@@ -1230,7 +1230,6 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 **`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-# Planned: the second doesn't exist yet
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
@@ -1240,7 +1239,7 @@ SHADERS = embed_folder("assets/shaders")
 - The kit's edge is the folder holding the nearest `kit.toml`, and for a lone `.fen` file with no `kit.toml`, the file's own folder. Embedding anything above that folder, or anything a symlink reaches outside it, is a compile error. In Chris's words, it's "wherever the kit.toml is, it cannot be above it", and "only things in that folder". This closes the hole where a lone file's `embed` could follow a symlink out of its folder.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file with no `kit.toml` can still follow a symlink out of its folder today; the rule above closes that. `embed_folder` isn't built yet.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file stops at its own folder, as the rule above says. `embed_folder` is built: an `EmbeddedFolder`, with `get(path) -> bytes?`, `len()`, and `keys()`, `values()` and `items()` in path order. A file or folder added or taken away is seen at the next build. Native code makes each file once, the first time it's reached, until it holds them in the program's read-only data.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 
@@ -1306,6 +1305,10 @@ struct Ring:
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for` that quietly lost its changes was the bug this replaces.
 
 **`t"..."` makes a `Template`, and injection can't be written.** It's Python 3.14's t-string: a `std` `Template` holding the literal pieces and the values separately, with the values' type coming from where it goes, as in `Template[SqlValue]`. A `str` is never a `Template`, and `db.query`, `html.render` and `process.run` take Templates, so text joined from strings never reaches a database, a page or a shell. There are no per-library string prefixes. Built. This replaces the proposal of `sql"..."` templates and separate escaping types.
+
+**`html.render(t"...")` puts each value where it can't change what the page does.** Escaping alone doesn't keep the promise that injection can't be written: an escaped value is still code inside `<script>` or an `onclick`, and still a `javascript:` link in an `href`. So `render` reads the template's own text as a browser does, to find where each value sits. Between tags and in a quoted attribute it's escaped. Inside `<script>` or `<style>`, an `on...`, `style` or `srcdoc` attribute, an attribute without quotes, a name or a comment, escaping isn't enough, and the page fails with `HtmlError.Misplaced`, naming the value. So does a value in a link's attribute that would make the link anything but `http`, `https`, `mailto` or relative. It gives an `Html`, which goes into another page as it is, so pages are built from pieces, and a template that ends inside a tag fails, so a piece can't open what another closes. An `Html` is never loaded from saved data. Built, natively.
+
+*Why:* The alternatives each leave a hole. Escaping everything the same way leaves scripts, handlers and links open. Refusing every value outside text makes ordinary attributes unwritable. A bad link fails rather than being replaced, as Go's `html/template` replaces one, because Fennec doesn't substitute silently: a program that wants a fallback checks the URL before rendering.
 *Why:* One form covers every kind of injection, it's what Python people already learn, and the type stops the mistake before it compiles.
 
 **`LiteralStr` is a string that came from the source code,** as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only. Built.

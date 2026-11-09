@@ -687,6 +687,11 @@ impl<'a> Lowering<'a> {
                 self.finish(Terminator::Jump(target));
             }
             StmtKind::Pass => {}
+            StmtKind::For { names, is_mut: false, iter, body }
+                if fennec_check::fields_of(iter).is_some() && self.lookup("fields").is_none() =>
+            {
+                self.each_field(names, iter, body)?;
+            }
             StmtKind::For { names, is_mut, iter, body } => {
                 let lifted = self
                     .parallel_for((names, *is_mut), iter, body, stmt.span)
@@ -916,6 +921,7 @@ impl<'a> Lowering<'a> {
             ExprKind::Float(value) => Ok(Operand::Float(*value)),
             ExprKind::Duration(nanos) => self.duration(*nanos, expr),
             ExprKind::Bytes(data) => Ok(Operand::Bytes(data.clone())),
+            ExprKind::Folder(files) => Ok(self.folder(files, expr.span)),
             ExprKind::Bool(value) => Ok(Operand::Bool(*value)),
             ExprKind::Str(value) => Ok(Operand::Str(value.clone())),
             ExprKind::None => Ok(Operand::None),

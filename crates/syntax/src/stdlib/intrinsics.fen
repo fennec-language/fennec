@@ -164,6 +164,16 @@ export def shape_hash[T]() -> int
 @intrinsic
 export def layout[T]() -> str
 
+## Whether the kit's `pack.lock` has a type's layout as it is now, so `std.pack` can leave the
+## layout out of what it writes and a reader still finds it.
+@intrinsic
+export def shape_locked[T]() -> bool
+
+## The kit's `pack.lock`: a line for each layout its types have had, the shape's number in hex,
+## then the layout. Empty when it has none.
+@intrinsic
+export def pack_lock() -> str
+
 ## A number that's the same for equal `Id`s and differs for others, to look one up by.
 @intrinsic
 export def id_key[T](id: Id[T]) -> int

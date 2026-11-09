@@ -480,13 +480,34 @@ impl Lowering<'_> {
     /// `shape_hash[T]()`, a number for its shape that a format saving no names writes and checks,
     /// and `layout[T]()`, what its values save as, with every field's name.
     fn type_called(&self, callee: &Expr) -> Option<Operand> {
+        // `pack_lock()`: the kit's `pack.lock`, the same for every copy.
+        if let ExprKind::Name(name) = &callee.kind
+            && name == "intrinsics.pack_lock"
+        {
+            return Some(Operand::Str(self.context.pack_lock()));
+        }
         let ExprKind::Index { object, index } = &callee.kind else { return None };
         let (ExprKind::Name(name), ExprKind::Name(param)) = (&object.kind, &index.kind) else { return None };
         let ty = self.subst.get(param)?;
         match name.as_str() {
             "intrinsics.type_name" => ty.source().map(Operand::Str),
             "intrinsics.shape_hash" => Some(Operand::Int(shape_hash(&self.context.signatures.shape(ty)))),
-            "intrinsics.layout" => Some(Operand::Str(self.context.layout(ty))),
+            "intrinsics.layout" => {
+                let layout = self.context.layout(ty);
+                let shape = shape_hash(&self.context.signatures.shape(ty));
+                let mut layouts = self.context.layouts.borrow_mut();
+                if !layouts.iter().any(|(known, _)| *known == shape) {
+                    layouts.push((shape, layout.clone()));
+                }
+                Some(Operand::Str(layout))
+            }
+            // Whether the kit's `pack.lock` has this type's layout as it is now, so `dumps` can
+            // leave it out of what it writes.
+            "intrinsics.shape_locked" => {
+                let shape = shape_hash(&self.context.signatures.shape(ty));
+                let wanted = format!("{:016x} ", shape.cast_unsigned());
+                Some(Operand::Bool(self.context.pack_lock().lines().any(|line| line.starts_with(&wanted))))
+            }
             _ => None,
         }
     }

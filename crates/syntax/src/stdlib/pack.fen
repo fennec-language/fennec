@@ -24,7 +24,7 @@
 ## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, layout, new_tag, shape_hash, text_byte, text_size, type_name
+from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, layout, new_tag, pack_lock, shape_hash, shape_locked, text_byte, text_size, type_name
 from std.json import IdsSeen, found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
@@ -41,13 +41,13 @@ export struct Limits:
 ## saved slot for slot.
 export def dumps[T: Serializable](value: T, exact = False) -> bytes:
     mut out = PackWriter(_exact=exact)
-    out._header(shape_hash[T](), layout[T]())
+    out._header(shape_hash[T](), layout_unless_locked[T]())
     value.serialize(ref out)
     if not out._wants_tables: return out._done()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     found = found_tables(value, exact)
     mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
-    again._header(shape_hash[T](), layout[T]())
+    again._header(shape_hash[T](), layout_unless_locked[T]())
     value.serialize(ref again)
     again._done()
 
@@ -63,7 +63,9 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
         _most_empty=held.empty,
     )
     if not src._header(shape_hash[T](), type_name[T]())?:
-        layout = data[src._layout_at:src._layout_end]
+        mut layout = data[src._layout_at:src._layout_end]
+        if src._locked.len() > 0:
+            layout = src._locked
         return by_name[T](src, layout=layout, at=src._layout_at)?
     match read_value[T](ref src):
         case Ok(value):
@@ -311,6 +313,27 @@ def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fai
             )
             read_value[T](ref again)?
 
+## `T`'s layout to write beside a value, or "" when the kit's `pack.lock` has it, which a reader
+## finds there instead. A value is then as small as it was before layouts.
+def layout_unless_locked[T]() -> str:
+    if shape_locked[T](): return ""
+    layout[T]()
+
+## The layout `pack.lock` holds for the shape number `shape`, or nothing.
+def locked_layout(shape: int) -> bytes:
+    wanted = shape_text(shape)
+    for line in pack_lock().split("\n"):
+        if line.startswith(wanted + " "): return line[wanted.len() + 1:].encode()
+    bytes([])
+
+## A shape's number as `pack.lock` writes it: 16 hex digits, the highest first.
+def shape_text(shape: int) -> str:
+    digits = "0123456789abcdef"
+    mut out = ""
+    for at in range(16):
+        out += digits[(shape >> (60 - 4 * at)) & 15]
+    out
+
 ## A `T` from data saved from another shape of it, by the names in `layout`, the one saved with it,
 ## which starts at byte `at`.
 def by_name[T: Deserializable](raw: PackReader, layout: bytes, at: int) -> T fails ParseError:
@@ -357,12 +380,18 @@ export struct PackWriter:
     def _done(self) -> bytes:
         self._out[0:self._out.len()]
 
+    ## The header: `FPK2` and the shape's number, then the layout. With no layout, as when the
+    ## kit's `pack.lock` has it, it's `FPK1` and the number alone, as before layouts.
     def _header(ref self, shape: int, layout: str):
-        # `FPK2`, or `FPKX` for `Table`s slot for slot.
-        for b in [70, 80, 75, 88 if self._exact else 50]:
+        # `FPK2`, or `FPKX` for `Table`s slot for slot, and `FPK1` and `FPKE` with no layout.
+        mut mode = 88 if self._exact else 50
+        if layout == "":
+            mode = 69 if self._exact else 49
+        for b in [70, 80, 75, mode]:
             bytes_push(ref self._out, b)
         self._word(shape)
-        self.text(layout)
+        if layout != "":
+            self.text(layout)
 
     ## A whole word, low byte first.
     def _word(ref self, bits: int):
@@ -513,6 +542,8 @@ export struct PackReader:
     ## Where the layout the data was saved with starts and ends, in a version that has one.
     _layout_at = 0
     _layout_end = 0
+    ## The layout `pack.lock` has for data written without one.
+    _locked = bytes([])
 
     def _fail(self, message: str) -> ParseError:
         self._fail_at(self._at, message)
@@ -535,7 +566,8 @@ export struct PackReader:
             fail self._fail("these aren't bytes `std.pack` wrote")
         self._exact = mode == 69 or mode == 88
         self._at = 4
-        same = self._word()? == shape
+        saved = self._word()?
+        same = saved == shape
         if mode == 50 or mode == 88:
             # The layout is held to what the data holds, not to the limit on one text: it's read
             # only for data from another shape, a word at a time, as deep as `Limits.depth` allows.
@@ -546,6 +578,9 @@ export struct PackReader:
             self._at += n
             return same
         if not same:
+            # Written with no layout, it's read by the one the kit's `pack.lock` has for it.
+            self._locked = locked_layout(saved)
+            if self._locked.len() > 0: return False
             self._at = 4
             fail self._fail(f"this was packed from a different `{name}`")
         True

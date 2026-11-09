@@ -589,9 +589,10 @@ export struct PgSettings:
     wait: Duration
     tls: bool
 
-## The settings in `url`, `postgres://user@host:port/database?pool_size=20&wait=5s&tls=false`,
-## with `pool_size`, `wait` and `tls` given beside it. Each of those three may be in the URL or an
-## argument, not both, and is 10, `30s` and `True` when neither has it. The port is 5432 and the
+## The settings in `url`, `postgres://user@host:port/database?pool_size=20&wait=5s`, with
+## `pool_size`, `wait` and `tls` given beside it. `pool_size` and `wait` may be in the URL or an
+## argument, not both, and are 10 and `30s` when neither has it. `tls` is `True` unless it's
+## given. The port is 5432 and the
 ## database is the user's name unless the URL says. A password in the URL is refused: it goes in
 ## `password=`, as a `Secret`, so it never shows in a URL that's printed or logged.
 export def settings(
@@ -615,9 +616,9 @@ export def settings(
     mut database = unquote(read.path[1:] if read.path.startswith("/") else read.path)
     if database == "": database = user
     for name in read.query.keys():
-        if name != "pool_size" and name != "wait" and name != "tls":
+        if name != "pool_size" and name != "wait":
             fail SqlError.Failed(
-                reason=f"the database URL's `{name}` isn't a setting: `pool_size`, `wait` and `tls` are",
+                reason=f"the database URL's `{name}` isn't a setting: `pool_size` and `wait` are",
             )
     mut size = 10
     if "pool_size" in read.query:
@@ -634,15 +635,7 @@ export def settings(
         waiting = duration_of(read.query["wait"])?
     elif wait is not None:
         waiting = wait
-    mut secure = True
-    if "tls" in read.query:
-        if tls is not None: fail set_twice("tls")
-        written = read.query["tls"]
-        if written != "true" and written != "false":
-            fail SqlError.Failed(reason="the database URL's `tls` is `true` or `false`")
-        secure = written == "true"
-    elif tls is not None:
-        secure = tls
+    secure = tls else True
     PgSettings(
         host=read.host,
         port=read.port if read.port > 0 else 5432,

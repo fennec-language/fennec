@@ -232,6 +232,11 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
 /// standard library's.
 const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
 
+/// Whether lowering wrote what's at `span` in, rather than a program or the standard library.
+pub(crate) fn written_in(span: Span) -> bool {
+    (WRITTEN_FROM..Span::PRELUDE).contains(&span.start)
+}
+
 /// The number a name written in by an earlier pass ends with, like `3` in `conn__lend3`, or 0.
 fn made_in(name: &str) -> usize {
     ["__lend", "__ref"]
@@ -1258,11 +1263,26 @@ fn fail_instead(body: &mut [Stmt], instead: &Expr) {
     instead_of_fails(body, instead);
     let leaving = Box::new(instead.clone());
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
-        if let ExprKind::Try { value, context: None } = &expr.kind {
-            let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
-            expr.kind = kind;
+        match &mut expr.kind {
+            ExprKind::Try { value, context: None } => {
+                let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
+                expr.kind = kind;
+            }
+            // `value else fail E` fails as the source does, so with what's said instead.
+            ExprKind::Else { default, .. } if fails_out(default) => default.clone_from(&leaving),
+            _ => {}
         }
     });
+}
+
+/// Whether an `else`'s default is `fail E`: it leaves, with a `fail`.
+fn fails_out(default: &Expr) -> bool {
+    let ExprKind::Match { arms, .. } = &default.kind else { return false };
+    default.leaves()
+        && arms
+            .first()
+            .and_then(|arm| arm.body.last())
+            .is_some_and(|last| matches!(last.kind, StmtKind::Fail(_)))
 }
 
 /// Each `fail` in a source's body, inside what's in it but not a function of its own, made to do

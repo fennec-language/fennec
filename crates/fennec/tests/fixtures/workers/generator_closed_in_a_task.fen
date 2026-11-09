@@ -1,0 +1,43 @@
+# A generator that can fail, held in a name and let go partway, closes what it has open, in a task as
+# in `main`: what closes it is known on every thread.
+from std.concurrent import Crashed
+
+error Boom:
+    pass
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Boom:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def named(stdout: Stdout, name: str) fails Boom:
+    walk = held(name, stdout)?
+    for n in walk:
+        break
+    stdout.print("after", name)
+
+def looped(stdout: Stdout, name: str) fails Boom:
+    for n in held(name, stdout)?:
+        break
+    stdout.print("after", name)
+
+def worker(stdout: Stdout):
+    named(stdout, "named in a task") else stdout.print("failed")
+    looped(stdout, "looped in a task") else stdout.print("failed")
+
+def started(stdout: Stdout) fails Crashed:
+    with launch(() => worker(stdout))?:
+        pass
+
+def main(stdout: Stdout) fails Crashed | Boom:
+    named(stdout, "named in main")?
+    started(stdout)?
+    stdout.print("main goes on")

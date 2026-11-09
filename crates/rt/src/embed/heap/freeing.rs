@@ -71,22 +71,69 @@ pub extern "C" fn free_text(address: i64) {
 }
 
 /// Says what closes what's open in a generator with this shape that's let go partway. Only
-/// shapes given here are treated specially when they're freed.
+/// shapes given here are treated specially when they're freed. The program says it once, as it
+/// starts, on the thread `main` runs on; every other thread's runtime, started from the program
+/// before that, takes it up from `ABANDONS` when it next frees something.
 pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {
+    let shape = u64::try_from(shape).unwrap_or(u64::MAX);
+    if SHARES_ABANDONS.get() {
+        let mut all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.get_or_insert_with(HashMap::new).insert(shape, abandon);
+        ABANDONS_SET.store(all.as_ref().map_or(0, HashMap::len), std::sync::atomic::Ordering::Release);
+    }
     with(|state| {
-        state.tables.abandons.insert(u64::try_from(shape).unwrap_or(u64::MAX), abandon);
+        state.tables.abandons.insert(shape, abandon);
     });
 }
 
+/// What closes each generator shape let go partway, for every thread: what `set_abandon` was told.
+static ABANDONS: std::sync::Mutex<Option<HashMap<u64, extern "C" fn(i64)>>> = std::sync::Mutex::new(None);
+/// How many `ABANDONS` holds, read without the lock on every free.
+static ABANDONS_SET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    /// Whether this thread's runtime runs the process's program, as `main`'s thread and the
+    /// workers started from it do, and so shares what closes its generators. A runtime started
+    /// any other way, as a test's is, has shapes of its own.
+    static SHARES_ABANDONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread's runtime runs the process's program: see `SHARES_ABANDONS`.
+pub(in crate::embed) fn share_abandons() {
+    SHARES_ABANDONS.set(true);
+}
+
+/// Brings this thread's runtime up to date with what closes generators, if the program has said
+/// more since it last looked: a worker started before `main`'s thread said it.
+fn take_up_abandons(state: &mut State) {
+    if !SHARES_ABANDONS.get()
+        || state.tables.abandons.len() >= ABANDONS_SET.load(std::sync::atomic::Ordering::Acquire)
+    {
+        return;
+    }
+    let all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(all) = all.as_ref() {
+        state.tables.abandons.extend(all.iter().map(|(shape, abandon)| (*shape, *abandon)));
+    }
+}
+
 /// Runs what closes the generators let go of, each only once nothing here is borrowed, since
-/// it's program code calling back in. A failure then ends the program on the spot: whatever
-/// released the generator isn't expecting one.
+/// it's program code calling back in. One that crashes stops what let the generator go, which
+/// isn't expecting a failure there. The rest are closed first, with the crash held aside, as a
+/// crash's cleanup holds one; a later one that crashes too is said, and the first goes on. In a
+/// launched task it stops only that task, as any crash does: the crash stays this thread's,
+/// which the task's code finds at its next check. Anywhere else it ends the program on the spot.
 pub(in crate::embed) fn run_abandons() {
+    let mut held = None;
     while let Some((address, abandon)) = with(next_abandoned) {
         // It reads where the generator stopped to know what's open.
         abandon(i64::try_from(address).unwrap_or(0));
         if crate::embed::failed() {
-            crate::embed::aot::stop_for_failure();
+            if let Some(first) = held {
+                // Said, with the first put back, which is held aside again.
+                crate::embed::cleanup::crash_resume(first);
+            }
+            held = Some(crate::embed::cleanup::crash_hold());
         }
         with(|state| {
             if let Some(pc) = state.heap.block_mut(address).and_then(|block| block.get_mut(GENERATOR_PC)) {
@@ -94,6 +141,12 @@ pub(in crate::embed) fn run_abandons() {
             }
             release(state, address);
         });
+    }
+    if let Some(first) = held {
+        crate::embed::cleanup::crash_resume(first);
+        if !crate::embed::threads::in_a_task() {
+            crate::embed::aot::stop_for_failure();
+        }
     }
 }
 
@@ -114,6 +167,7 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
 /// way down.
 fn free_block(state: &mut State, address: u64) {
+    take_up_abandons(state);
     let mut pending = std::mem::take(&mut state.heap.pending);
     let mut taken = std::mem::take(&mut state.heap.taken);
     pending.push(address);

@@ -999,7 +999,6 @@ impl FnCx<'_> {
         if !ty.is_known() {
             return ty;
         }
-        self.checker.empty_collections.insert((span.start, span.end));
         ty
     }
 

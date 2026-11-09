@@ -103,10 +103,11 @@ fn take_up_abandons(state: &mut State) {
 }
 
 /// Runs what closes the generators let go of, each only once nothing here is borrowed, since
-/// it's program code calling back in. One that crashes crashes the task that let the generator go,
-/// and only that task, as any crash does: its crash stays this thread's, which the task's code
-/// finds at its next check. The rest are closed first, with it held aside, as a crash's cleanup
-/// holds one; a later one that crashes too is said, and the first is the one that goes on.
+/// it's program code calling back in. One that crashes stops what let the generator go, which
+/// isn't expecting a failure there. The rest are closed first, with the crash held aside, as a
+/// crash's cleanup holds one; a later one that crashes too is said, and the first goes on. In a
+/// launched task it stops only that task, as any crash does: the crash stays this thread's,
+/// which the task's code finds at its next check. Anywhere else it ends the program on the spot.
 pub(in crate::embed) fn run_abandons() {
     let mut held = None;
     while let Some((address, abandon)) = with(next_abandoned) {
@@ -128,6 +129,9 @@ pub(in crate::embed) fn run_abandons() {
     }
     if let Some(first) = held {
         crate::embed::cleanup::crash_resume(first);
+        if !crate::embed::threads::in_a_task() {
+            crate::embed::aot::stop_for_failure();
+        }
     }
 }
 

@@ -38,6 +38,7 @@ modules! {
     crypto,
     csv,
     fs,
+    html,
     intrinsics,
     json,
     layout,

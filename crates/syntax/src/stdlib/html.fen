@@ -1,0 +1,379 @@
+## A page made by `render`, safe to send: each value in it went where it can't change what the
+## page does. One `Html` inside another's template goes in as it is, so pages are built from
+## pieces. It's never loaded from saved data, which would let text in that `render` never saw.
+export struct Html:
+    _text = ""
+
+    ## The page as text, to send.
+    def text(self) -> str:
+        self._text
+
+    def str(self, ref out: StrWriter):
+        out.write(self._text)
+
+## What a page's template can hold: text, numbers and yes-or-no, each escaped, and pieces made
+## by `render`.
+export type HtmlValue = str | int | float | bool | Html
+
+## Why a page couldn't be made. Each names the value by how it's written in its `{}`.
+export error HtmlError:
+    ## A value where escaping can't keep it from changing what the page does: inside a
+    ## `<script>` or `<style>`, an `on...` or `style` attribute, an attribute without quotes, a
+    ## tag's or an attribute's name, or a comment, or one that would make a link anything but
+    ## `http`, `https`, `mailto` or relative.
+    Misplaced(expression: str, reason: str)
+    ## A value with a format spec, like `{price:.2f}`, which isn't applied yet.
+    Formatted(expression: str)
+    ## The template ends inside a tag, an attribute or a comment, so it can't go into another.
+    Unfinished(reason: str)
+
+    def message(self) -> str:
+        match self:
+            case .Misplaced(expression, reason):
+                f"`{{{expression}}}` can't go there: {reason}"
+            case .Formatted(expression):
+                f"`{{{expression}}}` has a format spec, which a page doesn't apply yet: format it first"
+            case .Unfinished(reason):
+                reason
+
+## A page from a template string: `html.render(t"<p>Hello, {name}</p>")`. Each value is put in
+## for where it is in the page, found from the text written around it:
+## - Between tags and in a quoted attribute, `& < > " '` are escaped, so it stays text.
+## - Inside a `<script>` or `<style>`, an `on...`, `style` or `srcdoc` attribute, an attribute
+##   without quotes, a tag's or an attribute's name, or a comment, escaping isn't enough, so
+##   the page fails with `Misplaced`. A value for a script goes in a `data-` attribute instead.
+## - In a link's attribute, like `href` or `src`, a value that would make the link anything but
+##   `http`, `https`, `mailto` or relative, like `javascript:`, fails with `Misplaced` too. To
+##   show something else instead, check the URL before rendering.
+## An `Html` between tags goes in as it is.
+export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
+    mut scan = PageScan()
+    mut out = ""
+    for at, piece in enumerate(page.strings):
+        for c in piece:
+            scan.step(c)
+        out += piece
+        if at < page.values.len():
+            expression = page.expressions[at]
+            if page.format_specs[at] != "": fail .Formatted(expression=expression)
+            out += scan.put(page.values[at], expression)?
+    if scan.spot != .Text: fail .Unfinished(reason=f"the template ends {where(scan.spot)}")
+    Html(_text=out)
+
+## Pieces of a page one after another, like the rows of a list made in a loop.
+export def join(pieces: list[Html]) -> Html:
+    mut out = ""
+    for piece in pieces:
+        out += piece._text
+    Html(_text=out)
+
+## `text` with `& < > " '` escaped, so it reads as text between tags and in a quoted attribute.
+export def escape(text: str) -> str:
+    mut out = ""
+    for c in text:
+        match c:
+            case "&":
+                out += "&amp;"
+            case "<":
+                out += "&lt;"
+            case ">":
+                out += "&gt;"
+            case "\"":
+                out += "&quot;"
+            case "'":
+                out += "&#39;"
+            case _:
+                out += c
+    out
+
+## Where in a page the text written so far has reached, as a browser reads it.
+enum PageSpot:
+    Text
+    ## Just after `<`.
+    TagOpen
+    ## Just after `</`.
+    EndTagOpen
+    TagName
+    BeforeAttribute
+    AttributeName
+    AfterAttributeName
+    BeforeValue
+    DoubleQuoted
+    SingleQuoted
+    Unquoted
+    ## Just after `<!`, before it's known whether it's a comment.
+    MarkupOpen
+    Comment
+    ## `<!DOCTYPE ...>`, `<?...>` and the like.
+    Declaration
+    ## Inside a `<script>` or `<style>`, read as code until its end tag.
+    RawText
+
+## Where `spot` is, in words.
+def where(spot: PageSpot) -> str:
+    match spot:
+        case .Text:
+            "between tags"
+        case .TagOpen | .EndTagOpen | .TagName:
+            "in a tag's name"
+        case .BeforeAttribute | .AttributeName | .AfterAttributeName | .BeforeValue:
+            "inside a tag"
+        case .DoubleQuoted | .SingleQuoted | .Unquoted:
+            "inside an attribute"
+        case .MarkupOpen | .Comment | .Declaration:
+            "inside a comment"
+        case .RawText:
+            "inside a `<script>` or `<style>`"
+
+## The attributes whose value is a URL that a browser follows or loads.
+LINKS = [
+    "action", "archive", "background", "cite", "classid", "codebase", "data", "formaction", "href",
+    "icon", "longdesc", "manifest", "ping", "poster", "profile", "src", "srcset", "usemap",
+    "xlink:href",
+]
+
+## Reads a page's text a character at a time, keeping where it's reached.
+struct PageScan:
+    spot = PageSpot.Text
+    ## The tag being read, in lower case, and whether it's an end tag.
+    tag = ""
+    closing = False
+    ## The attribute being read, in lower case, and its value so far.
+    attribute = ""
+    value = ""
+    ## The element a `RawText` ends with, and what's been read toward its end tag.
+    raw = ""
+    ending = ""
+    ## The last characters of a comment, to find its `-->`, or of `<!`, to find `<!--`.
+    tail = ""
+
+    def step(ref self, c: str):
+        match self.spot:
+            case .Text:
+                if c == "<":
+                    self.spot = .TagOpen
+            case .TagOpen:
+                if c == "/":
+                    self.spot = .EndTagOpen
+                elif c == "!":
+                    self.spot = .MarkupOpen
+                    self.tail = ""
+                elif c == "?":
+                    self.spot = .Declaration
+                elif is_letter(c):
+                    self.start_tag(c, False)
+                else:
+                    self.spot = .Text
+            case .EndTagOpen:
+                if is_letter(c):
+                    self.start_tag(c, True)
+                elif c == ">":
+                    self.spot = .Text
+                else:
+                    self.spot = .Declaration
+            case .TagName:
+                if is_space(c):
+                    self.spot = .BeforeAttribute
+                elif c == "/":
+                    self.spot = .BeforeAttribute
+                elif c == ">":
+                    self.end_tag()
+                else:
+                    self.tag += c.lower()
+            case .BeforeAttribute:
+                if c == ">":
+                    self.end_tag()
+                elif not is_space(c) and c != "/":
+                    self.spot = .AttributeName
+                    self.attribute = c.lower()
+            case .AttributeName:
+                if c == "=":
+                    self.spot = .BeforeValue
+                elif is_space(c):
+                    self.spot = .AfterAttributeName
+                elif c == "/":
+                    self.spot = .BeforeAttribute
+                elif c == ">":
+                    self.end_tag()
+                else:
+                    self.attribute += c.lower()
+            case .AfterAttributeName:
+                if c == "=":
+                    self.spot = .BeforeValue
+                elif c == ">":
+                    self.end_tag()
+                elif c == "/":
+                    self.spot = .BeforeAttribute
+                elif not is_space(c):
+                    self.spot = .AttributeName
+                    self.attribute = c.lower()
+            case .BeforeValue:
+                self.value = ""
+                if c == "\"":
+                    self.spot = .DoubleQuoted
+                elif c == "'":
+                    self.spot = .SingleQuoted
+                elif c == ">":
+                    self.end_tag()
+                elif not is_space(c):
+                    self.spot = .Unquoted
+                    self.value = c
+            case .DoubleQuoted:
+                if c == "\"":
+                    self.spot = .BeforeAttribute
+                else:
+                    self.value += c
+            case .SingleQuoted:
+                if c == "'":
+                    self.spot = .BeforeAttribute
+                else:
+                    self.value += c
+            case .Unquoted:
+                if is_space(c):
+                    self.spot = .BeforeAttribute
+                elif c == ">":
+                    self.end_tag()
+                else:
+                    self.value += c
+            case .MarkupOpen:
+                self.tail += c
+                if self.tail == "--":
+                    self.spot = .Comment
+                    self.tail = ""
+                elif c == ">":
+                    self.spot = .Text
+                elif not "--".startswith(self.tail):
+                    self.spot = .Declaration
+            case .Comment:
+                self.tail = (self.tail + c)[-3:]
+                if self.tail == "-->":
+                    self.spot = .Text
+            case .Declaration:
+                if c == ">":
+                    self.spot = .Text
+            case .RawText:
+                self.read_raw(c)
+
+    def start_tag(ref self, c: str, closing: bool):
+        self.spot = .TagName
+        self.tag = c.lower()
+        self.closing = closing
+
+    ## A tag's `>`: a `<script>` or `<style>` starts text read as code, until its end tag.
+    def end_tag(ref self):
+        if not self.closing and (self.tag == "script" or self.tag == "style"):
+            self.spot = .RawText
+            self.raw = self.tag
+            self.ending = ""
+        else:
+            self.spot = .Text
+
+    ## A character inside a `<script>` or `<style>`, watching for `</script` or `</style`
+    ## followed by a space, `/` or `>`, in any case.
+    def read_raw(ref self, c: str):
+        wanted = "</" + self.raw
+        if self.ending.len() == wanted.len():
+            if is_space(c) or c == "/" or c == ">":
+                self.closing = True
+                self.tag = self.raw
+                if c == ">":
+                    self.spot = .Text
+                else:
+                    self.spot = .BeforeAttribute
+                return
+            self.ending = ""
+        grown = self.ending + c.lower()
+        if wanted.startswith(grown):
+            self.ending = grown
+        else:
+            self.ending = "<" if c == "<" else ""
+
+    ## What a value becomes where the text has reached, or why it can't go there.
+    def put(ref self, value: HtmlValue, expression: str) -> str fails HtmlError:
+        match self.spot:
+            case .Text:
+                text = text_of(value)
+                return text if value is Html else escape(text)
+            case .DoubleQuoted | .SingleQuoted:
+                name = self.attribute
+                if name.startswith("on"):
+                    fail misplaced(
+                        expression,
+                        reason="an `on...` attribute runs its value as a script",
+                    )
+                if name == "style":
+                    fail misplaced(expression, reason="a `style` attribute reads its value as CSS")
+                if name == "srcdoc":
+                    fail misplaced(
+                        expression,
+                        reason="a `srcdoc` attribute reads its value as a page",
+                    )
+                text = text_of(value)
+                if name in LINKS and not followed(self.value, next=text):
+                    fail misplaced(
+                        expression,
+                        reason="a link has to be `http`, `https`, `mailto` or relative",
+                    )
+                self.value += text
+                return escape(text)
+            case .Unquoted | .BeforeValue:
+                fail misplaced(
+                    expression,
+                    reason="an attribute's value without quotes ends at a space; put it in quotes",
+                )
+            case .RawText:
+                fail misplaced(
+                    expression,
+                    reason="text inside a `<script>` or `<style>` is code; pass it in a `data-` attribute",
+                )
+            case .MarkupOpen | .Comment | .Declaration:
+                fail misplaced(expression, reason="a comment would end at its first `-->`")
+            case _:
+                fail misplaced(
+                    expression,
+                    reason="it would be part of a tag's or an attribute's name",
+                )
+
+def misplaced(expression: str, reason: str) -> HtmlError:
+    HtmlError.Misplaced(expression=expression, reason=reason)
+
+## A value's text, before escaping.
+def text_of(value: HtmlValue) -> str:
+    # Text is what's none of the others.
+    mut found = ""
+    if value is Html:
+        found = value._text
+    if value is str:
+        found = value
+    if value is int:
+        found = str(value)
+    if value is float:
+        found = str(value)
+    if value is bool:
+        found = "True" if value else "False"
+    found
+
+## Whether a link whose value so far is `before`, with `next` after it, is one a browser can follow
+## safely: relative, or `http`, `https` or `mailto`. Once the value so far has a `:`, `/`, `?`
+## or `#`, its scheme is settled by what came before, and nothing after can change it.
+def followed(before: str, next: str) -> bool:
+    for c in before:
+        if c == ":" or c == "/" or c == "?" or c == "#": return True
+    # A browser passes over spaces and control characters at the start, and tabs and line breaks
+    # anywhere in a URL, so they're passed over here too.
+    mut scheme = ""
+    for c in before + next:
+        if c == ":":
+            lowered = scheme.lower()
+            return lowered == "http" or lowered == "https" or lowered == "mailto"
+        if c == "/" or c == "?" or c == "#": return True
+        if c == "\t" or c == "\n" or c == "\r": continue
+        if scheme == "" and c <= " ": continue
+        scheme += c
+    True
+
+def is_letter(c: str) -> bool:
+    (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
+
+def is_space(c: str) -> bool:
+    c == " " or c == "\t" or c == "\n" or c == "\r" or c == "\x0c"

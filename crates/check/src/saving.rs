@@ -15,10 +15,10 @@ use crate::types::Type;
 const SAVING_MODULES: [&str; 5] = ["json", "toml", "pack", "sql", "sqlite"];
 
 /// The standard library's types that are never saved, though their fields could be: a `Secret`,
-/// whose text mustn't leave the program that way, and an `Instant`, which means nothing outside
-/// the run that read it.
+/// whose text mustn't leave the program that way, an `Instant`, which means nothing outside
+/// the run that read it, and an `Html`, which loading would make from text `html.render` never saw.
 /// Each is named as a message says it, with what to save instead.
-const NEVER_SAVED: [(&str, &str, &str); 2] = [
+const NEVER_SAVED: [(&str, &str, &str); 3] = [
     (
         "Secret",
         "a `Secret`",
@@ -28,6 +28,11 @@ const NEVER_SAVED: [(&str, &str, &str); 2] = [
         "Instant",
         "an `Instant`",
         "an `Instant` means nothing outside this run: save a `Time`, from `clock.time()`",
+    ),
+    (
+        "Html",
+        "an `Html`",
+        "a page loaded from saved text wasn't made by `html.render`: save what it's made from, and render it again",
     ),
 ];
 

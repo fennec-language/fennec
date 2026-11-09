@@ -419,6 +419,7 @@ fn expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::Float(_)
         | ExprKind::Duration(_)
         | ExprKind::Bytes(_)
+        | ExprKind::Folder(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
         | ExprKind::None

@@ -159,7 +159,7 @@ impl fmt::Display for InstKind {
             InstKind::GetCaseField { dest, value, case, field } => {
                 write!(f, "{dest} = {value}.{case}.{field}")
             }
-            InstKind::MakeList { dest, items } => {
+            InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 write!(f, "{dest} = [{}]", items.join(", "))
             }

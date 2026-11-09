@@ -342,6 +342,7 @@ fn walk_expr(value: &Expr, visit: &mut dyn FnMut(&Expr)) {
         }
         ExprKind::Int(_)
         | ExprKind::Bytes(_)
+        | ExprKind::Folder(_)
         | ExprKind::Duration(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)

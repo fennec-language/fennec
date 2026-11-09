@@ -2783,3 +2783,47 @@ fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
     assert!(checked("../secret.txt").0);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `embed_folder` bakes in a folder's files by their paths from it, sorted, leaving hidden ones
+/// out, as a read-only map from path to `bytes`. It refuses a missing folder, a file, and a link
+/// that leads out of the file's folder.
+#[test]
+#[cfg(unix)]
+fn embed_folder_gives_a_folders_files_by_path() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-embed-folder-{}", std::process::id()));
+    let site = dir.join("game/site");
+    std::fs::create_dir_all(site.join("css")).unwrap();
+    std::fs::create_dir_all(site.join(".git")).unwrap();
+    std::fs::write(site.join("css/app.css"), "body{}").unwrap();
+    std::fs::write(site.join("index.html"), "<h1>hi</h1>").unwrap();
+    std::fs::write(site.join(".env"), "secret").unwrap();
+    std::fs::write(site.join(".git/HEAD"), "ref").unwrap();
+    std::fs::write(dir.join("outside.txt"), "above").unwrap();
+    let game = dir.join("game/main.fen");
+    let source = "SITE = embed_folder(\"site\")\n\ndef main(stdout: Stdout):\n    \
+        stdout.print(SITE.len(), SITE.keys())\n    stdout.print(SITE.get(\"css/app.css\"))\n    \
+        stdout.print(SITE.get(\"missing\") is None)\n    for path, data in SITE.items():\n        stdout.print(path, data.len())\n";
+    std::fs::write(&game, source).unwrap();
+    let ran = fennec(&["run", "--no-test", &game.to_string_lossy()], "").unwrap();
+    assert_eq!(
+        text(&ran.stdout),
+        "2 [\"css/app.css\", \"index.html\"]\nbytes([98, 111, 100, 121, 123, 125])\nTrue\ncss/app.css 6\nindex.html 11\n",
+        "{}",
+        text(&ran.stderr)
+    );
+    let refused = |path: &str| {
+        std::fs::write(
+            &game,
+            format!("def main(stdout: Stdout):\n    stdout.print(embed_folder({path:?}).len())\n"),
+        )
+        .unwrap();
+        let output = fennec(&["check", &game.to_string_lossy()], "").unwrap();
+        assert!(!output.status.success(), "{path}");
+        text(&output.stderr)
+    };
+    assert!(refused("nowhere").contains("there's no folder `nowhere` to embed"));
+    assert!(refused("site/index.html").contains("`site/index.html` is a file"));
+    std::os::unix::fs::symlink(dir.join("outside.txt"), site.join("link.txt")).unwrap();
+    assert!(refused("site").contains("`site/link.txt` is outside this file's folder"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

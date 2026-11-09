@@ -893,6 +893,7 @@ impl<'a> Lowering<'a> {
             ExprKind::Float(value) => Ok(Operand::Float(*value)),
             ExprKind::Duration(nanos) => self.duration(*nanos, expr),
             ExprKind::Bytes(data) => Ok(Operand::Bytes(data.clone())),
+            ExprKind::Folder(files) => Ok(self.folder(files, expr.span)),
             ExprKind::Bool(value) => Ok(Operand::Bool(*value)),
             ExprKind::Str(value) => Ok(Operand::Str(value.clone())),
             ExprKind::None => Ok(Operand::None),

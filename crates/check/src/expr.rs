@@ -49,6 +49,7 @@ impl FnCx<'_> {
             ExprKind::Float(_) => Type::Float,
             ExprKind::Duration(_) => Type::named("Duration"),
             ExprKind::Bytes(_) => Type::Bytes,
+            ExprKind::Folder(_) => Type::named("EmbeddedFolder"),
             ExprKind::Str(_) => Type::Str,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::None => Type::None,

@@ -418,6 +418,7 @@ impl Uses {
             }
             ExprKind::Int(_)
             | ExprKind::Bytes(_)
+            | ExprKind::Folder(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)
             | ExprKind::Bool(_)

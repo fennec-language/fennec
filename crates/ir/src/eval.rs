@@ -268,7 +268,9 @@ impl<'p> Machine<'p> {
                 let at = self.place_of(&key, field)?;
                 found.fields.get(at).cloned().ok_or(Stop::NotHere("a missing field".to_owned()))?
             }
-            InstKind::MakeList { items, .. } => Value::list(reads(locals, items)),
+            InstKind::MakeList { items, .. } | InstKind::ConstantList { items, .. } => {
+                Value::list(reads(locals, items))
+            }
             InstKind::MakeSet { items, .. } => Value::set(reads(locals, items)),
             InstKind::MakeDict { pairs, .. } => Value::Dict(Rc::new(
                 pairs.iter().map(|(key, value)| (read(locals, key), read(locals, value))).collect(),

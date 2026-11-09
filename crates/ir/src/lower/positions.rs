@@ -153,7 +153,7 @@ impl Lowering<'_> {
 }
 
 /// A `mut` form's asserts and the place it names, when that's all it does. Anything else, which
-/// might change `self` on the way, is left to run in the interpreter.
+/// might change `self` on the way, gives `None`.
 fn names_a_place(body: &[Stmt]) -> Option<(&[Stmt], &Expr)> {
     let (last, checks) = body.split_last()?;
     let StmtKind::Return(Some(named)) = &last.kind else { return None };

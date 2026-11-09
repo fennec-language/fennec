@@ -156,8 +156,7 @@ const KERNEL_MAIN: &str = "def main(stdout: Stdout):\n";
 /// A kernel that takes `--time` as its twins do, written to `out_dir`: its `main` also takes
 /// the clock and the arguments, notes when it starts, and with any argument prints
 /// `kernel-ns N` last, from the clock. It's added here rather than written in the kernel, so
-/// the kernel stays exactly the code its targets and the JIT's fallback check hold it to: the
-/// clock and the arguments aren't native under the JIT. None for a kernel whose `main` isn't
+/// the kernel stays exactly the code its targets hold it to. None for a kernel whose `main` isn't
 /// written that way, or isn't last, which is then timed only as a whole run.
 fn timed_copy(source: &str, out_dir: &Path, name: &str) -> Option<String> {
     let text = std::fs::read_to_string(source).ok()?;

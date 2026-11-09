@@ -659,9 +659,13 @@ impl<'c> FnCx<'c> {
         self.bind(binding);
     }
 
-    /// A name from around a nested function, which it can read.
+    /// A name from around a nested function, which it can read. What a crash runs for a `with`
+    /// block can change its own copy of one too, as the `else:` it's written from does.
     fn capture(&mut self, binding: Binding) {
-        self.bind(Binding { is_mut: false, origin: Origin::Captured, ..binding });
+        let crash =
+            self.key.rsplit('.').next().is_some_and(|own| own.starts_with(crate::lend_lowering::ON_CRASH));
+        let is_mut = binding.is_mut && crash;
+        self.bind(Binding { is_mut, origin: Origin::Captured, ..binding });
     }
 
     /// `name`, just declared by unpacking, which `mut` can't be written before.

@@ -357,10 +357,7 @@ impl Lowering<'_> {
             // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
             let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
             if self.context.intrinsics.contains(intrinsic) {
-                if matches!(
-                    intrinsic,
-                    "intrinsics.channel_receive" | "intrinsics.launch_end" | "intrinsics.launch"
-                ) {
+                if LOWERED.contains(&intrinsic) {
                     return self.lowered_intrinsic(intrinsic, dest, values, write_backs, span);
                 }
                 // One given something by `ref`, like `append_text(ref out, text)`, changes it, and
@@ -400,6 +397,19 @@ impl Lowering<'_> {
             "intrinsics.launch_end" => {
                 let raw = ("intrinsics.launch_take", 3, 2);
                 self.taken_or_none(dest, values, write_backs, raw, span)
+            }
+            "intrinsics.crash_cleanup" | "intrinsics.crash_cleanup_done" => {
+                let [cleanup] = values.as_slice() else {
+                    return Err("a crash's cleanup is one closure".to_owned());
+                };
+                let cleanup = cleanup.clone();
+                let kind = if intrinsic == "intrinsics.crash_cleanup" {
+                    InstKind::CrashCleanup { cleanup }
+                } else {
+                    InstKind::CrashCleanupDone { cleanup }
+                };
+                self.emit(kind, span);
+                Ok(None)
             }
             _ => self.launch_task(dest, &values, span).map(Some),
         }
@@ -480,13 +490,37 @@ impl Lowering<'_> {
     /// `shape_hash[T]()`, a number for its shape that a format saving no names writes and checks,
     /// and `layout[T]()`, what its values save as, with every field's name.
     fn type_called(&self, callee: &Expr) -> Option<Operand> {
+        // `pack_lock()`: the kit's `pack.lock`, the same for every copy.
+        if let ExprKind::Name(name) = &callee.kind
+            && name == "intrinsics.pack_lock"
+        {
+            return Some(Operand::Str(self.context.pack_lock()));
+        }
         let ExprKind::Index { object, index } = &callee.kind else { return None };
         let (ExprKind::Name(name), ExprKind::Name(param)) = (&object.kind, &index.kind) else { return None };
         let ty = self.subst.get(param)?;
         match name.as_str() {
             "intrinsics.type_name" => ty.source().map(Operand::Str),
             "intrinsics.shape_hash" => Some(Operand::Int(shape_hash(&self.context.signatures.shape(ty)))),
-            "intrinsics.layout" => Some(Operand::Str(self.context.layout(ty))),
+            "intrinsics.layout" => {
+                let layout = self.context.layout(ty);
+                let shape = shape_hash(&self.context.signatures.shape(ty));
+                let name = ty.source().unwrap_or_default().replace(' ', "");
+                let known = self.context.layouts.borrow().iter().any(|saved| saved.shape == shape);
+                if !known {
+                    self.context.check_against_lock(ty, &name, shape);
+                    let saved = crate::SavedLayout { shape, name, layout: layout.clone() };
+                    self.context.layouts.borrow_mut().push(saved);
+                }
+                Some(Operand::Str(layout))
+            }
+            // Whether the kit's `pack.lock` has this type's layout as it is now, so `dumps` can
+            // leave it out of what it writes.
+            "intrinsics.shape_locked" => {
+                let shape = shape_hash(&self.context.signatures.shape(ty));
+                let wanted = format!("{:016x} ", shape.cast_unsigned());
+                Some(Operand::Bool(self.context.pack_lock().lines().any(|line| line.starts_with(&wanted))))
+            }
             _ => None,
         }
     }
@@ -899,3 +933,12 @@ fn read_twice(expr: &Expr) -> bool {
 fn gives_a_value(ty: &Type) -> bool {
     !matches!(ty, Type::Unit | Type::Unknown | Type::None)
 }
+
+/// The intrinsics the IR lowers itself, rather than leave to the backend as they are.
+const LOWERED: [&str; 5] = [
+    "intrinsics.channel_receive",
+    "intrinsics.launch_end",
+    "intrinsics.launch",
+    "intrinsics.crash_cleanup",
+    "intrinsics.crash_cleanup_done",
+];

@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::generate::printing_plainly;
-use crate::supervise::{STUCK, watch};
+use crate::supervise::{MOST_KILOBYTES, STUCK, watch};
 
 /// `fennec`: where `FENNEC` says, or beside this program.
 fn fennec() -> PathBuf {
@@ -78,6 +78,20 @@ fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, St
 /// What an executable printed, what it said on standard error, and whether it succeeded. One
 /// that crashes, gets stuck or holds too much memory is stopped and said so.
 fn ran(executable: &Path, args: &[&std::ffi::OsStr], work: &Path) -> Result<(Vec<u8>, String, bool), String> {
+    ran_holding(executable, args, work, MOST_KILOBYTES)
+}
+
+/// The most memory a reader may hold. Inputs are small, so one that holds more was asked by its
+/// bytes for far more than they are.
+const READER_KILOBYTES: u64 = 512 * 1024;
+
+/// `ran`, stopping the executable if it holds more than `most_kilobytes`.
+fn ran_holding(
+    executable: &Path,
+    args: &[&std::ffi::OsStr],
+    work: &Path,
+    most_kilobytes: u64,
+) -> Result<(Vec<u8>, String, bool), String> {
     let (out, err) = (work.join("stdout"), work.join("stderr"));
     let file = |path: &Path| File::create(path).map_err(|err| format!("{}: {err}", path.display()));
     let mut child = Command::new(executable)
@@ -86,7 +100,7 @@ fn ran(executable: &Path, args: &[&std::ffi::OsStr], work: &Path) -> Result<(Vec
         .stderr(file(&err)?)
         .spawn()
         .map_err(|err| format!("couldn't run what LLVM built: {err}"))?;
-    let failure = watch(&mut child, STUCK, None, || false);
+    let failure = watch(&mut child, STUCK, None, most_kilobytes, || false);
     let printed = std::fs::read(&out).unwrap_or_default();
     let said = String::from_utf8_lossy(&std::fs::read(&err).unwrap_or_default()).into_owned();
     match (failure, child.wait()) {
@@ -171,7 +185,13 @@ pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
 
 /// The programs the targets that read an input natively run it through, each reading the file
 /// it's given. A program here may fail, but never crash or get stuck.
-const READERS: [(&str, &str); 3] = [
+const READERS: [(&str, &str); 9] = [
+    ("postgres", crate::postgres_rules::READER),
+    ("http-client", crate::http_rules::CLIENT),
+    ("http-server", crate::http_rules::SERVER),
+    ("url", crate::url_rules::READER),
+    ("csv", crate::csv_rules::READER),
+    ("json-rules", crate::json_rules::READER),
     (
         "json",
         "from std import json\n\ndef main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
@@ -205,12 +225,77 @@ fn reader(name: &str) -> Result<PathBuf, String> {
     if let Some((_, executable)) = built.iter().find(|(made, _)| made == name) {
         return Ok(executable.clone());
     }
-    let source = READERS.iter().find(|(named, _)| *named == name).map(|(_, source)| *source);
+    let source = READERS.iter().find(|(named, _)| *named == name).map(|(_, source)| (*source).to_owned());
+    let source = source.or_else(|| match name {
+        "pack" => Some(crate::pack_rules::reader()),
+        "toml-rules" => Some(crate::toml_rules::reader()),
+        _ => None,
+    });
     let source = source.ok_or_else(|| format!("there's no reader for `{name}`"))?;
-    let executable = build(source, &work().join(name), false)?
-        .ok_or_else(|| format!("LLVM doesn't take the `{name}` reader"))?;
+    // Built once for every process, by what it's built from, since cutting a failure down runs a
+    // process for each try.
+    let readers = std::env::temp_dir().join("fennec-fuzz-readers");
+    let folder = readers.join(built_from(&source));
+    let kept = folder.join("program");
+    if !kept.exists() {
+        forget_old(&readers);
+    }
+    let executable = if kept.exists() {
+        kept
+    } else {
+        let made = build(&source, &work().join(name), false)?
+            .ok_or_else(|| format!("LLVM doesn't take the `{name}` reader"))?;
+        std::fs::create_dir_all(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
+        // Moved into place whole, so another process never runs half of one.
+        let copying = folder.join(format!("program.{}", std::process::id()));
+        std::fs::copy(&made, &copying).map_err(|err| format!("{}: {err}", copying.display()))?;
+        std::fs::rename(&copying, &kept).map_err(|err| format!("{}: {err}", kept.display()))?;
+        kept
+    };
     built.push((name.to_owned(), executable.clone()));
     Ok(executable)
+}
+
+/// Removes readers built more than a day ago, which a rebuilt `fennec` no longer uses.
+fn forget_old(readers: &Path) {
+    let day = std::time::Duration::from_hours(24);
+    for entry in std::fs::read_dir(readers).into_iter().flatten().flatten() {
+        let changed = entry.metadata().and_then(|meta| meta.modified()).ok();
+        if changed.and_then(|changed| changed.elapsed().ok()).is_some_and(|age| age > day) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// A name for what a reader's built from: its source, and the `fennec` and runtime that build it.
+fn built_from(source: &str) -> String {
+    let mut hasher = fennec_blake3::Hasher::new();
+    hasher.update(source.as_bytes());
+    let fennec = fennec();
+    for made in [fennec.clone(), fennec.with_file_name("libfennec_runtime.a")] {
+        let changed = std::fs::metadata(&made).and_then(|meta| meta.modified()).ok();
+        let since = changed.and_then(|changed| changed.duration_since(std::time::UNIX_EPOCH).ok());
+        hasher.update(&since.unwrap_or_default().as_nanos().to_le_bytes());
+    }
+    let hex = hasher.finalize().to_hex();
+    hex.get(..16).unwrap_or(&hex).to_owned()
+}
+
+/// The program built for `name`, or None where nothing can be built here.
+pub(crate) fn built_reader(name: &str) -> Result<Option<PathBuf>, String> {
+    if ready().is_err() {
+        return Ok(None);
+    }
+    reader(name).map(Some)
+}
+
+/// What the program built for `name` printed, run with `args`, or None where nothing can be built
+/// here. It may fail, but must not crash, get stuck or hold too much.
+pub(crate) fn run_reader(name: &str, args: &[&std::ffi::OsStr]) -> Result<Option<Vec<u8>>, String> {
+    let Some(executable) = built_reader(name)? else { return Ok(None) };
+    let work = work().join(name);
+    std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
+    ran_holding(&executable, args, &work, READER_KILOBYTES).map(|(printed, _, _)| Some(printed))
 }
 
 /// Runs `input` through the reader for `name`, giving what it printed, or None where nothing can
@@ -221,7 +306,9 @@ pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>,
     }
     let executable = reader(name)?;
     let work = work().join(name);
+    std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
     let file = work.join("input");
     std::fs::write(&file, input).map_err(|err| format!("{}: {err}", file.display()))?;
-    ran(&executable, &[file.as_os_str()], &work).map(|(printed, _, _)| Some(printed))
+    ran_holding(&executable, &[file.as_os_str()], &work, READER_KILOBYTES)
+        .map(|(printed, _, _)| Some(printed))
 }

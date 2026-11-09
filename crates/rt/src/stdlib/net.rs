@@ -40,6 +40,8 @@ struct Stream {
     peer: String,
     socket: TcpStream,
     reader: Mutex<Reading>,
+    /// What a line read that timed out had got, for the next to go on from.
+    partial_line: Mutex<Vec<u8>>,
     writing: Mutex<()>,
 }
 
@@ -605,6 +607,9 @@ pub(crate) fn real_connection(
             read(handle, bytes_asked(*count, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
         }
         ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
+        ("read_line.crlf", [Value::Bool(crlf)]) => {
+            read_line_crlf(handle, timeout, *crlf).map(|line| line_value(line.as_deref()))
+        }
         ("start_tls", [Value::Str(host)]) => {
             start_tls(handle, host, timeout.unwrap_or(CONNECT_TIMEOUT)).map(|()| Value::Unit)
         }
@@ -960,7 +965,13 @@ fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Res
             socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?,
         )),
     };
-    let stream = Stream { peer, socket, reader: Mutex::new(reading), writing: Mutex::new(()) };
+    let stream = Stream {
+        peer,
+        socket,
+        reader: Mutex::new(reading),
+        partial_line: Mutex::new(Vec::new()),
+        writing: Mutex::new(()),
+    };
     Ok(open(|open| {
         let handle = fresh_handle(open);
         open.insert(handle, Socket::Stream(Arc::new(stream)));
@@ -1014,11 +1025,31 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
 }
 
 fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+    read_line_crlf(handle, timeout, false)
+}
+
+/// `read_line`, which with `crlf` fails on a line ended by a bare `\n`. A line longer than
+/// `MOST_LINE_BYTES` fails too.
+fn read_line_crlf(handle: i64, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut line = Vec::new();
-    // What a read cut short by having to wait got is kept in `line`, and the next adds to it.
-    reading(&stream.socket, &mut reader, timeout, |reader| reader.read_until(b'\n', &mut line))?;
+    let mut partial = stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut line = std::mem::take(&mut *partial);
+    // What a read cut short by having to wait got is kept in `line`, and the next adds to it. It
+    // reads at most what's left of the most a line may hold, and one more to tell it's too long.
+    let read = reading(&stream.socket, &mut reader, timeout, |reader| {
+        let left = (MOST_LINE_BYTES + 1).saturating_sub(line.len());
+        let mut limited = reader.take(u64::try_from(left).unwrap_or(u64::MAX));
+        limited.read_until(b'\n', &mut line)
+    });
+    if matches!(read, Err(Failure::TimedOut(_))) {
+        *partial = line;
+        return read.map(|_| None);
+    }
+    read?;
+    if let Some(why) = line_refused(&line, crlf) {
+        return Err(Failure::Other(why));
+    }
     Ok((!line.is_empty()).then_some(line))
 }
 
@@ -1526,6 +1557,52 @@ pub(crate) mod tests {
         assert!(matches!(wrote, Err(Failure::TimedOut(_))), "{wrote:?}");
         close(handle);
         drop(server);
+    }
+
+    /// A read of a line that times out keeps what it got, for the next read to go on from.
+    #[test]
+    fn a_line_read_that_times_out_keeps_what_it_got() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        server.write_all(b"hel").unwrap();
+        let short = Some(std::time::Duration::from_millis(50));
+        assert!(matches!(super::read_line(handle, short), Err(Failure::TimedOut(_))));
+        server.write_all(b"lo\n").unwrap();
+        let line = super::read_line(handle, Some(std::time::Duration::from_secs(10)));
+        assert_eq!(line.ok().flatten().as_deref(), Some(&b"hello\n"[..]));
+        close(handle);
+    }
+
+    /// A client's line read refuses what a served one does: a line past the most a line may hold,
+    /// and with `crlf` one ended by a bare `\n`.
+    #[test]
+    fn a_clients_line_read_refuses_long_lines_and_bare_line_feeds() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        let wait = Some(std::time::Duration::from_secs(10));
+        let writing = std::thread::spawn(move || {
+            server.write_all(b"good\r\nbad\n").unwrap();
+            let _ = server.write_all(&vec![b'x'; MOST_LINE_BYTES + 10]);
+            server
+        });
+        assert_eq!(
+            super::read_line_crlf(handle, wait, true).ok().flatten().as_deref(),
+            Some(&b"good\r\n"[..])
+        );
+        let bare = super::read_line_crlf(handle, wait, true);
+        assert!(matches!(&bare, Err(Failure::Other(why)) if why.contains("carriage return")), "{bare:?}");
+        let long = super::read_line(handle, wait);
+        assert!(matches!(&long, Err(Failure::Other(why)) if why.contains("longer than")), "{long:?}");
+        close(handle);
+        drop(writing.join());
     }
 
     /// UDP has no `shutdown`, so a read on another thread has to find out for itself.

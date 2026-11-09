@@ -737,19 +737,23 @@ fn set_ty(layouts: &Layouts, item: &Type) -> Ty {
     key_word(layouts, item).map_or(Ty::Obj, |key| Ty::Dict(key, Word::Nothing))
 }
 
-/// Whether a sized number is held as an int, as all but `u64` and `f32` are: a dict holds those
-/// two as words of their own, which it doesn't have yet, as an int word would print a `u64` past
-/// `int`'s top as negative.
-fn held_as_int(num: fennec_check::Num) -> bool {
-    !matches!(num, fennec_check::Num::U64 | fennec_check::Num::F32)
+/// The word a dict holds a sized number as: an int's, but for a `u64`, shown unsigned, and an `f32`,
+/// shown as one.
+fn sized_word(num: fennec_check::Num) -> Word {
+    match num {
+        fennec_check::Num::U64 => Word::U64,
+        fennec_check::Num::F32 => Word::F32,
+        _ => Word::Int,
+    }
 }
 
 /// How a dict holds keys of a type: ints, strings, and plain structs and enums.
 fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
     match key {
         Type::Int => Some(Word::Int),
-        // A sized number held as an int is a key as an int is.
-        Type::Sized(num) if held_as_int(*num) => Some(Word::Int),
+        // A sized number is a key as an int is, but a `u64` and an `f32`, which have words of their
+        // own, as they're shown differently.
+        Type::Sized(num) => Some(sized_word(*num)),
         Type::Float if layouts.native_buffers => Some(Word::Float),
         // A string key is held in the entry as its header, when strings are headers.
         Type::Str if layouts.text_headers() => Some(Word::Text),
@@ -769,7 +773,7 @@ fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
 fn dict_ty(layouts: &Layouts, key: &Type, value: &Type, held: &dyn Fn(&Type) -> Ty) -> Ty {
     let word = match value {
         Type::Int => Some(Word::Int),
-        Type::Sized(num) if held_as_int(*num) => Some(Word::Int),
+        Type::Sized(num) => Some(sized_word(*num)),
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
         Type::Str => Some(Word::Str),

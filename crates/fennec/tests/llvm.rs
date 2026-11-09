@@ -5553,6 +5553,47 @@ fn sets_and_dicts_of_sized_numbers() -> std::io::Result<()> {
     )
 }
 
+/// Sets and dicts of `u64`s and `f32`s, keys and values, which have words of their own: a `u64` past
+/// `int`'s top is shown unsigned, and an `f32` as the shortest text that reads back as it, `0.1`
+/// rather than a double's `0.10000000149011612`.
+#[test]
+fn sets_and_dicts_of_u64s_and_f32s() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "u64_f32_sets_dicts",
+        r#"def main(stdout: Stdout):
+    one: u64 = 1
+    five: u64 = 5
+    big: u64 = (one << 63) + five
+    mut seen = set[u64]()
+    seen.add(big)
+    seen.add(one)
+    seen.add(big)
+    stdout.print(seen.len(), big in seen, seen)
+    mut names = dict[u64, str]()
+    names[big] = "top"
+    names[one] = "one"
+    stdout.print(names[big], names)
+    tenth: f32 = 0.1
+    half: f32 = 0.5
+    mut weights = dict[str, f32]()
+    weights["a"] = tenth
+    weights["b"] = half
+    stdout.print(weights, weights["a"])
+    mut fs = set[f32]()
+    fs.add(tenth)
+    fs.add(tenth)
+    stdout.print(fs, tenth in fs, half in fs)
+    mut counts = dict[f32, u64]()
+    counts[tenth] = big
+    stdout.print(counts)
+"#,
+        "2 True {9223372036854775813, 1}\ntop {9223372036854775813: \"top\", 1: \"one\"}\n{\"a\": 0.1, \"b\": 0.5} 0.1\n{0.1} True False\n{0.1: 9223372036854775813}\n",
+    )
+}
+
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
 fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {

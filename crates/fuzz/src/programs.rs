@@ -61,7 +61,26 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate, source};
+    use super::{eval, generate, source};
+
+    /// The evaluator is sure what nearly every program does, or the comparison with it would say
+    /// little: it's unsure only where the language doesn't promise an outcome.
+    #[test]
+    fn the_evaluator_is_sure_of_nearly_every_program() {
+        let mut sure = 0;
+        let mut failed = 0;
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            if let Some((_, succeeded)) = eval::run(&generate::program(&bytes)) {
+                sure += 1;
+                failed += usize::from(!succeeded);
+            }
+        }
+        assert!(sure > 240, "sure of only {sure} of 256");
+        assert!(failed > 0, "no program failed, so failures are never compared");
+    }
 
     #[test]
     fn what_it_writes_is_a_program_that_builds() {

@@ -1,5 +1,5 @@
 # The file is there, but outside the kit, so the kit wouldn't build once it's shared.
-NOTES = embed("../../cycle.err")
+NOTES = embed_file("../../cycle.err")
 
 def main(stdout: Stdout):
     stdout.print(NOTES.len())

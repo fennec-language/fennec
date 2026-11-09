@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 31] = [
+const BUILTINS: [(&str, usize, usize); 30] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -29,7 +29,6 @@ const BUILTINS: [(&str, usize, usize); 31] = [
     ("u32", 1, 1),
     ("u64", 1, 1),
     ("f32", 1, 1),
-    ("ignore", 2, 2),
     ("copy", 1, 1),
     ("int", 1, 1),
     ("list", 1, 1),
@@ -699,12 +698,6 @@ impl FnCx<'_> {
                     self.error(mismatch("`bytes`'s argument", &Type::list(Type::Int), items, *at));
                 }
                 Type::Bytes
-            }
-            "ignore" => {
-                if !plain.get(1).is_some_and(|(reason, _)| self.checker.fits(&Type::Str, reason)) {
-                    self.error(wrong_args(name, span));
-                }
-                Type::Unit
             }
             name if let Some(num) = crate::types::Num::named(name) => self.sized_conversion(num, &first, at),
             "int" | "float" => {

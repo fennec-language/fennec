@@ -3986,6 +3986,59 @@ def main(stdout: Stdout):
             stdout.print(\"failed\", problem.at, problem.notes(), clicks_of(kind))
 ";
 
+/// Over a result, an undotted name is the failure's when it's an error type or a case of one the
+/// call fails with, and the value's otherwise: a struct's name, as `Circle(radius)`, looks
+/// through `Ok`. The checker and native code read each `case` the same way.
+#[test]
+fn a_case_over_a_result_is_on_the_side_its_name_says() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "result_case_sides",
+        "error Boom:
+    at: int
+
+error Missing:
+    NotFound(path: str)
+    Denied
+
+struct Circle:
+    radius: int
+
+def made(flag: int) -> Circle fails Boom:
+    if flag == 0:
+        fail Boom(at=flag)
+    Circle(radius=flag)
+
+def opened(flag: int) -> int fails Missing:
+    if flag == 0:
+        fail .NotFound(path=\"a\")
+    if flag == 1:
+        fail .Denied
+    flag
+
+def main(stdout: Stdout):
+    for flag in [0, 3]:
+        match made(flag):
+            case Circle(radius):
+                stdout.print(\"circle\", radius)
+            case Err(problem):
+                stdout.print(\"failed\", problem.at)
+    for flag in [0, 1, 2]:
+        match opened(flag):
+            case Ok(value):
+                stdout.print(\"ok\", value)
+            case NotFound(path):
+                stdout.print(\"not found\", path)
+            case Denied:
+                stdout.print(\"denied\")
+",
+    )?;
+    assert_eq!(printed, "failed 0\ncircle 3\nnot found a\ndenied\nok 2\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
@@ -7463,7 +7516,11 @@ def main(net: Net, stdout: Stdout):
             stdout.print(error.message())
         case Ok(_):
             stdout.print(\"done\")
-    _ = net.udp(port=99999)
+    match net.udp(port=99999):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
 ";
 
 #[test]
@@ -7593,6 +7650,20 @@ fn a_failure_out_of_a_lock_puts_back_every_kind_of_write() -> std::io::Result<()
     prints_in_both_builds(
         "lock_failure_every_write",
         include_str!("fixtures/lock_failure_every_write.fen"),
+        "kinds that kept a change: 0\n",
+    )
+}
+
+/// A whole field holding an enum with blocks in it, or a struct, optional or tuple holding one, is
+/// put back when the block fails, whichever case it held and whichever it was given.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_enum_fields",
+        include_str!("fixtures/lock_failure_enum_fields.fen"),
         "kinds that kept a change: 0\n",
     )
 }
@@ -11283,7 +11354,7 @@ def main(stdout: Stdout):
     _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
-    ignore(numbers.remove(gone), "it's fine if it's gone")
+    _ = numbers.remove(gone)
     stdout.print(numbers.len())
 "#,
     )

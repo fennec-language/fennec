@@ -105,11 +105,17 @@ fn pinned(
 }
 
 /// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
+/// A diagnostic gives a file's path as it was given, which on Windows goes on with `\`, so the
+/// separator after `<dir>` is written as `/` there too.
 pub(crate) fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
     let mut folders = vec![dir.to_string_lossy().into_owned()];
     folders.extend(std::fs::canonicalize(dir).ok().map(|real| real.to_string_lossy().into_owned()));
-    let plain =
-        |text: String| folders.iter().fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"));
+    let plain = |text: String| {
+        folders
+            .iter()
+            .fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"))
+            .replace("<dir>\\", "<dir>/")
+    };
     (plain(out), plain(err), code)
 }
 
@@ -6377,11 +6383,13 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
         let output = executable.to_string_lossy().into_owned();
         let args: Vec<&str> =
             ["build"].into_iter().chain(how.iter().copied()).chain(["-o", &output]).collect();
+        // A whole kit, as a release too: on CI's x86-64 Mac, run under Rosetta, building it once
+        // took past the usual deadline, which is there to catch a hang, not to time a build.
         let built = crate::executables::fennec_command()
             .args(&args)
             .env("FENNEC_HOME", &dir)
             .current_dir(&proof)
-            .output_before(FENNEC_DEADLINE)?;
+            .output_before(FENNEC_DEADLINE * 3)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
         assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));

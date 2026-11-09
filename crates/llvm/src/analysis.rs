@@ -237,6 +237,7 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
         InstKind::Make { dest, fields: items, .. }
         | InstKind::MakeCase { dest, fields: items, .. }
         | InstKind::MakeList { dest, items }
+        | InstKind::ConstantList { dest, items }
         | InstKind::MakeTuple { dest, items }
         | InstKind::MakeClosure { dest, captures: items, .. }
         | InstKind::MakeSet { dest, items } => {
@@ -486,6 +487,7 @@ fn analyze(
             InstKind::Make { fields: items, .. }
             | InstKind::MakeCase { fields: items, .. }
             | InstKind::MakeList { items, .. }
+            | InstKind::ConstantList { items, .. }
             | InstKind::MakeTuple { items, .. }
             | InstKind::MakeSet { items, .. }
             | InstKind::MakeClosure { captures: items, .. } => {
@@ -1616,6 +1618,7 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     // Making something else, from neither of them.
                     other @ (InstKind::Make { .. }
                     | InstKind::MakeList { .. }
+                    | InstKind::ConstantList { .. }
                     | InstKind::MakeTuple { .. }
                     | InstKind::MakeCase { .. }
                     | InstKind::Copy { .. })
@@ -2251,7 +2254,7 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
         let made_here = block
             .insts
             .iter()
-            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
+            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
             let zeros = fills_with_zeros(function, block, (header, body), list, known);
             match appends_within_room(function, (block, header_at.0), then.0, list) {

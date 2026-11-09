@@ -4,4 +4,4 @@ error: `embed_file` takes one path, written out as a string
 4 |     stdout.print(embed_file(name).len())
   |                             ^^^^
   |
-  = help: the file is read when the program is built, before anything has run; to choose a file while it runs, read it with `std.fs`
+  = help: what it names is read when the program is built, before anything has run; to choose a file while it runs, read it with `std.fs`

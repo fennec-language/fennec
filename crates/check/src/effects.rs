@@ -131,6 +131,7 @@ pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
         ExprKind::Match { subject, .. } => vec![subject],
         ExprKind::Int(_)
         | ExprKind::Bytes(_)
+        | ExprKind::Folder(_)
         | ExprKind::Duration(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)

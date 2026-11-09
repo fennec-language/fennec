@@ -844,6 +844,64 @@ fn asking_for_more_room_than_can_exist_stops_with_a_message() -> std::io::Result
     Ok(())
 }
 
+/// A `parallel` body that waits for a task it launched runs as a parked task, so its worker can run
+/// that task meanwhile. It once ran straight on the worker, which then waited for work only it
+/// could do, and a few thousand items hung the program.
+#[test]
+fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-ranges-launch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/ranges_that_launch.fen");
+    let built = build_on_threads(&dir, source, "ranges_that_launch")?;
+    matches_on_workers(&built, "ranges_that_launch", Some(0), "5000 12497500\n")?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A launched task that tries to serve says it can't, rather than wait forever for its own worker.
+#[test]
+fn serving_from_a_launched_task_fails_rather_than_hang() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-serve-task-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/serve_from_a_task.fen");
+    let built = build_on_threads(&dir, source, "serve_from_a_task")?;
+    for threads in ["1", "2"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        let printed = String::from_utf8_lossy(&ran.stdout);
+        assert!(printed.starts_with("failed: Crashed"), "on {threads} threads: {printed}");
+        assert!(
+            String::from_utf8_lossy(&ran.stderr).contains("can't be served from a launched task"),
+            "on {threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A launched task can read every constant the program has, not only its strings.
+#[test]
+fn a_task_reads_the_programs_constants() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/constants_in_a_task.fen");
+    let built = build_on_threads(&dir, source, "constants_in_a_task")?;
+    let list = "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]";
+    let wanted =
+        format!("a constant title long enough to live in a block of its own 10 {list}\ndone {list}\n");
+    matches_on_workers(&built, "constants_in_a_task", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a read lock's method makes holding a `shared` value's strings, a list made under it among
 /// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
 #[test]
@@ -942,17 +1000,17 @@ def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails
         count += 1
     count
 
-def main(net: Net, stdout: Stdout):
+def main(net: Net, stdout: Stdout) fails NetError:
     greeting = \"hello from \" + str(1 + 1)
     marks = [\"!\"]
-    server = net.listen(0).expect(\"it listens\")
-    stdout.print(server.port)
-    for connection in parallel(server):
-        match answer(connection, greeting, marks):
-            case Ok(count):
-                stdout.print(\"answered\", count, connection.peer != \"\")
-            case Err(error):
-                stdout.print(\"failed\", error.message())
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for connection in parallel(server):
+            match answer(connection, greeting, marks):
+                case Ok(count):
+                    stdout.print(\"answered\", count, connection.peer != \"\")
+                case Err(error):
+                    stdout.print(\"failed\", error.message())
 ";
 
 /// One client's whole talk with a server: each line sent, what came back, and the end.
@@ -1042,16 +1100,16 @@ def answer(connection: Connection, counter: Counter) -> int fails NetError:
             connection.write(f\"{counter.total}\\n\")?
     0
 
-def main(net: Net, stdout: Stdout):
+def main(net: Net, stdout: Stdout) fails NetError:
     counter = Counter()
-    server = net.listen(0).expect(\"it listens\")
-    stdout.print(server.port)
-    for connection in parallel(server):
-        match answer(connection, counter):
-            case Ok(_):
-                stdout.print(\"answered\")
-            case Err(error):
-                stdout.print(\"failed\", error.message())
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for connection in parallel(server):
+            match answer(connection, counter):
+                case Ok(_):
+                    stdout.print(\"answered\")
+                case Err(error):
+                    stdout.print(\"failed\", error.message())
 ";
 
 /// A connection's task that fails while it holds a lock ends the whole program, rather than only

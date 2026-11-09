@@ -4247,6 +4247,121 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `shared` value of a program's own type named like a standard library type, as `Log` is, is
+/// locked in a function of its own. A `ref self` method called under a write lock in a loop
+/// changes the cell where it is, which copies nothing for the handle.
+#[test]
+fn a_lock_on_a_type_named_like_stds_and_in_a_loop_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "lock_named_like_std",
+        "struct Log:
+    count = 0
+
+    def bump(ref self):
+        self.count += 1
+
+def bumped(log: shared Log, times: int):
+    for _ in range(times):
+        lock log as ref held:
+            held.bump()
+
+def length(log: shared Log) -> int:
+    lock log as held:
+        return held.count
+
+def main(stdout: Stdout):
+    shared log = Log()
+    bumped(log, times=3)
+    stdout.print(length(log))
+",
+    )?;
+    assert_eq!(printed, "3\n");
+    Ok(())
+}
+
+/// A source written in at three levels of one block, each copy with a `?` on a line that names
+/// what it gives, keeps each copy's names apart.
+#[test]
+fn one_source_twice_in_a_block_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_twice",
+        "error Boom:
+    pass
+
+struct Conn:
+    n: int
+
+    def made(self, n: int) -> int fails Boom:
+        if n < 0:
+            fail Boom()
+        n + self.n
+
+    def opened(self, n: int) -> with int fails Boom:
+        got = self.made(n)?
+        lend got else:
+            pass
+
+def main(stdout: Stdout) fails Boom:
+    conn = Conn(n=0)
+    with conn.opened(0)? as outer:
+        with conn.opened(1)? as first:
+            with conn.opened(2)? as second:
+                stdout.print(outer + first + second)
+",
+    )?;
+    assert_eq!(printed, "3\n");
+    Ok(())
+}
+
+/// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
+/// or while finishing. A source can wrap another this way and say only its own error, and the
+/// block's own failures pass up as they are.
+#[test]
+fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "with_else_fail",
+        "error First:
+    Broke(why: str)
+
+error Second:
+    Lost(why: str)
+
+def inner(fine: bool) -> with int fails First:
+    if not fine: fail .Broke(why=\"inner\")
+    lend 1 else:
+        pass
+
+def outer(fine: bool) -> with int fails Second:
+    with inner(fine) else fail .Lost(why=\"outer\") as held:
+        lend held + 1 else:
+            pass
+
+def main(stdout: Stdout):
+    for fine in [True, False]:
+        match used(fine, stdout):
+            case Ok(_):
+                stdout.print(\"worked\")
+            case Err(problem):
+                stdout.print(\"failed\", problem)
+
+def used(fine: bool, stdout: Stdout) fails Second:
+    with outer(fine)? as value:
+        stdout.print(value)
+",
+    )?;
+    assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
+    Ok(())
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
@@ -7652,7 +7767,8 @@ fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> 
 
 /// The real network, with no interpreter behind it: a server and a client on this machine, each
 /// way a call can come out, and looping over each.
-const REAL_NETWORK: &str = "from std.net import NetError, Connection
+const REAL_NETWORK: &str = "from std.net import NetError, Connection, Server
+from std.time import Duration
 
 def reason[T](found: Result[T, NetError]) -> str:
     match found:
@@ -7677,7 +7793,7 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(conn.read_line()?)
                 stdout.print(conn.read_line()?)
                 stdout.print(reason(conn.read_line(timeout=20ms)))
-                stdout.print(reason(server.accept(timeout=20ms)))
+                stdout.print(reason(accepting(server, wait=20ms)))
                 client.write(\"\\n\")?
                 stdout.print(conn.read_line()?)
                 client.write(\"one\\ntwo\\n\")?
@@ -7693,19 +7809,33 @@ def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
     for line in conn.lines()?:
         stdout.print(line)
 
+## Takes the next connection, waiting up to `wait`, and hangs up, to see how taking one goes.
+def accepting(server: Server, wait: Duration) fails NetError:
+    with server.accept(timeout=wait)? as _:
+        pass
+
+## Connects and hangs up, to see how connecting goes.
+def connecting(net: Net, host: str, port: int) fails NetError:
+    with net.connect(host, port)? as _:
+        pass
+
+def looped(net: Net, stdout: Stdout) -> int fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port)? as client:
+            client.write(\"looped\\n\")?
+        for conn in server:
+            printed_lines(conn, stdout)?
+            break
+        port = server.port
+        server.close()
+        stdout.print(reason(accepting(server, wait=1s)))
+        return port
+    0
+
 def main(net: Net, stdout: Stdout):
     stdout.print(reason(talk(net, stdout)))
-    server = net.listen(0).expect(\"it listens\")
-    client = net.connect(\"127.0.0.1\", server.port).expect(\"it connects\")
-    client.write(\"looped\\n\").expect(\"it writes\")
-    client.close()
-    for conn in server:
-        printed_lines(conn, stdout).expect(\"it reads\")
-        break
-    port = server.port
-    server.close()
-    stdout.print(reason(server.accept()))
-    stdout.print(reason(net.connect(\"127.0.0.1\", port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+    port = looped(net, stdout) else 0
+    stdout.print(reason(connecting(net, host=\"127.0.0.1\", port=port)) == f\"`127.0.0.1` refused a connection on port {port}\")
 ";
 
 #[test]
@@ -7720,6 +7850,11 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
 /// at the end, a packet's sender, timing out, a bad address and port, and looping over a socket.
 const NETWORK_BYTES: &str = "\
 from std.net import NetError
+
+## A UDP socket on `port`, closed at once, to see how binding one goes.
+def bound(net: Net, port: int) fails NetError:
+    with net.udp(port=port)? as _:
+        pass
 
 def talk(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
@@ -7762,7 +7897,7 @@ def main(net: Net, stdout: Stdout):
             stdout.print(error.message())
         case Ok(_):
             stdout.print(\"done\")
-    match net.udp(port=99999):
+    match bound(net, port=99999):
         case Ok(_):
             pass
         case Err(_):
@@ -7904,6 +8039,76 @@ def main(net: Net, stdout: Stdout):
     assert!(not_http?.starts_with("HTTP/1.1 400 Bad Request\r\n"));
     assert!(too_big?.starts_with("HTTP/1.1 413 Content Too Large\r\n"));
     assert!(many_headers?.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
+    Ok(())
+}
+
+/// The server's answers reach a client that's still sending when it's refused, and a blank line
+/// between requests is passed over, as HTTP/1.1 says a server should (RFC 9112, 2.2), rather than
+/// closing. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
+/// reset: closing with what the client sent unread resets the connection, which throws away what
+/// the client hadn't read yet, the answers before too. Found by fuzzing the
+/// server (`fennec-fuzz run http-server`).
+#[test]
+fn an_http_server_answers_what_it_refuses_and_passes_over_blank_lines() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_server_blank_lines")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let connect = || -> std::io::Result<std::net::TcpStream> {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        Ok(stream)
+    };
+    // Everything the server says, read as it comes until it closes, or what went wrong.
+    let heard = |stream: &mut std::net::TcpStream| -> String {
+        let mut heard = Vec::new();
+        match stream.read_to_end(&mut heard) {
+            Ok(_) => String::from_utf8_lossy(&heard).into_owned(),
+            Err(err) => format!("{}[{err}]", String::from_utf8_lossy(&heard)),
+        }
+    };
+    // A body far bigger than the server takes, still being sent when it answers.
+    let mut big = connect()?;
+    big.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n")?;
+    let _ = big.write_all(&vec![b'x'; 4 << 20]);
+    let too_big = heard(&mut big);
+    // Answers first, then a refusal, with the rest of what was sent unread.
+    let mut pipelined = connect()?;
+    pipelined.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nNOT HTTP\r\n\r\n")?;
+    let _ = pipelined.write_all(&vec![b'y'; 1 << 20]);
+    let refused_after = heard(&mut pipelined);
+    let mut blank = connect()?;
+    blank.write_all(b"GET /a HTTP/1.1\r\n\r\n\r\nGET /b HTTP/1.1\r\nConnection: close\r\n\r\n")?;
+    let after_blank = heard(&mut blank);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    // Each closes cleanly once it's answered, with no reset.
+    let wanted = [
+        "HTTP/1.1 413 Content Too Large\r\ncontent-length: 19\r\nconnection: close\r\n\r\nthe body is too big",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/aHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/b\
+         HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/a\
+         HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b",
+    ];
+    assert_eq!([too_big.as_str(), &refused_after, &after_blank], wanted);
     Ok(())
 }
 
@@ -8411,10 +8616,9 @@ fn fetches_in_parallel_wait_at_once_on_a_few_threads() -> std::io::Result<()> {
             "from std.net import NetError
 
 def fetch(net: Net, port: int) -> str fails NetError:
-    conn = net.connect(\"127.0.0.1\", port)?
-    line = conn.read_line()? else \"nothing\"
-    conn.close()
-    line
+    with net.connect(\"127.0.0.1\", port)? as conn:
+        return conn.read_line()? else \"nothing\"
+    \"nothing\"
 
 def main(net: Net, stdout: Stdout):
     items = [i for i in range(16)]
@@ -9748,6 +9952,34 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Rows read into a struct refuse two columns of the same name, as JSON and TOML refuse a field
+/// given twice, rather than one silently taking the other's place.
+#[test]
+fn rows_refuse_two_columns_for_one_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sql_twice",
+        r#"from std import sql
+from std.sql import SqlRows
+
+struct Entry:
+    size: int
+
+def main(stdout: Stdout):
+    rows = SqlRows(columns=["size", "size"], kinds=[1, 1], at=[0, 1], ints=[1, 2], floats=[], texts=[], blobs=[])
+    match sql.rows_as[Entry](rows):
+        case Ok(found):
+            stdout.print("read", found)
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "refused\n");
+    Ok(())
+}
+
 /// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
 /// written in the source. A value is part of one argument however much it holds, so it can't add
 /// an argument or start a command. Text written beside a value is that argument too.
@@ -9832,6 +10064,57 @@ def main(stdout: Stdout):
         printed,
         "loaded refused loaded refused\nPath(text=\"../..\") Path(text=\"a/../..\") Path(text=\"a\")\nPath(text=\"static/a/b.txt\")\nPath(text=\"static/a.txt\")\nrefused\nrefused\nrefused\nrefused\nloaded refused refused refused\nrefused\naxxx xxxa xax\naxyx xyxa xyaxy\n"
     );
+    Ok(())
+}
+
+/// CSV that `csv.dumps` writes reads back as the rows it was given: a first field starting with
+/// a byte order mark keeps it, rather than `loads` taking it for the text's, and a row with no
+/// fields, which CSV can't write, is refused rather than lost. Found by fuzzing `std.csv` (`fennec-fuzz run csv`).
+#[test]
+fn csv_dumps_writes_what_loads_reads_back_as_the_same_rows() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "csv_round_trip",
+        r#"from std import csv
+
+def back(rows: list[list[str]]) -> str:
+    text = csv.dumps(rows) else return "refused"
+    match csv.loads(text):
+        case Ok(read):
+            return str(read == rows)
+        case Err(_):
+            return "False"
+
+def main(stdout: Stdout):
+    stdout.print(back([["﻿a", "b"]]), back([["﻿"]]), back([["a"], [], ["b"]]))
+"#,
+    )?;
+    assert_eq!(printed, "True True refused\n");
+    Ok(())
+}
+
+/// Only the first U+FEFF of CSV text is its byte order mark: a second is the first field's own
+/// character, which `csv.loads` keeps. Found by fuzzing `std.csv` (`fennec-fuzz run csv`).
+#[test]
+fn csv_reads_only_the_first_byte_order_mark() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "csv_two_marks",
+        r#"from std import csv
+
+def main(stdout: Stdout):
+    match csv.loads("﻿﻿a,b\n﻿c"):
+        case Ok(rows):
+            stdout.print(rows == [["﻿a", "b"], ["﻿c"]])
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "True\n");
     Ok(())
 }
 
@@ -10243,6 +10526,50 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     let sent: Vec<usize> = passwords.iter().map(|sent| sent.recv().unwrap_or(99)).collect();
     assert_eq!(sent[2], 0, "the password went to a server that asked for it as it is");
     assert_eq!(sent[5], 1, "the password wasn't sent when asked to send it as it is");
+    Ok(())
+}
+
+/// A Postgres server's messages are read as the protocol writes them, and anything else fails
+/// rather than reading as something: a count below zero, a cell's size below -1, an error with
+/// no zero byte ending its fields, a `ReadyForQuery` that isn't one byte, and bytes left over in
+/// a message. A `bool` cell is `t` or `f`, and anything else fails rather than reading as false.
+/// Found by fuzzing `PgReader` (`fennec-fuzz run postgres`).
+#[test]
+fn postgres_refuses_messages_a_server_never_sends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "postgres_strict",
+        r#"from std import postgres
+from std.postgres import PgMessage, PgReader
+
+def read(data: bytes) -> str:
+    mut reader = PgReader()
+    reader.feed(data)
+    match reader.next():
+        case Ok(_):
+            return "read"
+        case Err(_):
+            return "refused"
+
+def main(stdout: Stdout):
+    stdout.print(read(bytes([84, 0, 0, 0, 6, 255, 255])))
+    stdout.print(read(bytes([68, 0, 0, 0, 6, 255, 255])))
+    stdout.print(read(bytes([68, 0, 0, 0, 10, 0, 1, 255, 255, 255, 254])))
+    stdout.print(read(bytes([69, 0, 0, 0, 11, 83, 69, 82, 82, 79, 82, 0])))
+    stdout.print(read(bytes([90, 0, 0, 0, 4])), read(bytes([90, 0, 0, 0, 6, 73, 73])))
+    stdout.print(read(bytes([75, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3])))
+    stdout.print(read(bytes([49, 0, 0, 0, 5, 120])))
+    rows = [PgMessage.Row(cells=[bytes([120])], present=[True])]
+    match postgres.rows_of(["flag"], types=[16], rows=rows):
+        case Ok(found):
+            stdout.print("read", found.ints)
+        case Err(_):
+            stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(printed, "refused\nrefused\nrefused\nrefused\nrefused refused\nrefused\nrefused\nrefused\n");
     Ok(())
 }
 
@@ -11251,7 +11578,21 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(_):\n            stdout.print(\"failed\")\n";
+    let source = "\
+from std.net import NetError
+
+def listening(net: Net) -> bool fails NetError:
+    with net.listen(0)? as server:
+        return server.port > 0
+    False
+
+def main(stdout: Stdout, net: Net):
+    match listening(net):
+        case Ok(up):
+            stdout.print(\"listening\", up)
+        case Err(_):
+            stdout.print(\"failed\")
+";
     same_as_the_jit("net_kind", source)
 }
 
@@ -15361,6 +15702,8 @@ fn tests_that_take_capabilities_run_through_llvm() -> std::io::Result<()> {
     std::fs::write(
         &program,
         "\
+from std.net import NetError
+
 test \"files are its own\"(fs: Fs):
     assert not fs.exists(\"a\")
     fs.write_text(\"a\", \"one\")?
@@ -15374,8 +15717,13 @@ test \"what it prints is kept\"(stdout: Stdout, clock: Clock):
     stdout.print(\"at\", clock.now().nanos)
     assert stdout.captured() == \"at 0\\n\"
 
+## Connects and hangs up, to see how connecting goes.
+def connecting(net: Net, host: str, port: int) fails NetError:
+    with net.connect(host, port)? as _:
+        pass
+
 test \"a failure comes back as its case\"(net: Net):
-    match net.connect(\"localhost\", 9001):
+    match connecting(net, host=\"localhost\", port=9001):
         case Err(Refused(host=host, port=port)):
             assert host == \"localhost\" and port == 9001
         case _:

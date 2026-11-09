@@ -1,9 +1,9 @@
-# A `shared` value is one cell that every name for it reaches. Its methods take its lock, so a
-# call can't race another. To change several together, `with` locks them all for the block, in
-# an order every block agrees on, and the block changes them through the names it gives them:
-# `ref` ones to write, the rest to read.
+# A `shared` value is one cell that every name for it reaches. It's reached only inside `lock`:
+# `lock x as ref y:` changes it and `lock x as y:` reads it. To change several together, one
+# `lock` takes them all, in an order every block agrees on, and the block changes them through the
+# names it gives them: `ref` ones to write, the rest to read.
 
-shared Account:
+struct Account:
     total = 0
 
     def add(ref self, amount: int):
@@ -12,23 +12,24 @@ shared Account:
     def balance(self) -> int:
         self.total
 
-def transfer(source: Account, target: Account, amount: int) -> bool:
-    with source as ref paying, target as ref paid:
+def transfer(source: shared Account, target: shared Account, amount: int) -> bool:
+    lock source, target as ref paying, ref paid:
         if paying.total < amount: return False
         paying.total -= amount
         paid.add(amount)
     True
 
 def main(stdout: Stdout):
-    savings = Account(total=100)
-    checking = Account()
+    shared savings = Account(total=100)
+    shared checking = Account()
     same = checking
     stdout.print(
         transfer(savings, target=checking, amount=30),
         transfer(checking, target=savings, amount=50),
     )
-    same.add(5)
+    lock same as ref held:
+        held.add(5)
     mut summary = ""
-    with savings, checking as seen, other:
+    lock savings, checking as seen, other:
         summary = f"{seen.total} and {other.balance()}"
     stdout.print(summary)

@@ -188,7 +188,7 @@ fn what_can_cost(inst: &InstKind) -> Option<String> {
         InstKind::Make { .. } | InstKind::MakeCase { .. } | InstKind::MakeTuple { .. } => {
             "making a value".to_owned()
         }
-        InstKind::MakeList { .. } => "making a list".to_owned(),
+        InstKind::MakeList { .. } | InstKind::ConstantList { .. } => "making a list".to_owned(),
         InstKind::MakeSet { .. } => "making a set".to_owned(),
         InstKind::MakeDict { .. } => "making a dict".to_owned(),
         InstKind::Format { .. } => "making a string".to_owned(),
@@ -2462,7 +2462,9 @@ impl Emit<'_, '_, '_> {
                 self.read_into(*dest, &held, &place, ITEM_ACCESS)
             }
             InstKind::GetTupleItem { dest, value, at } => self.get_field(*dest, value, &format!("_{at}")),
-            InstKind::MakeList { dest, items } => self.make_list(*dest, items, block),
+            InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } => {
+                self.make_list(*dest, items, block)
+            }
             InstKind::GetIndex { dest, object, index } => self.get_index(*dest, object, index, span),
             InstKind::SetIndex { object, path, index, value } => {
                 self.set_index(*object, path, index, value, span)
@@ -2683,6 +2685,11 @@ impl Emit<'_, '_, '_> {
             self.retain_inline(&returns, &kept);
         } else if returns.counted() {
             self.retain_value(held, &returns);
+        }
+        // A constant held in a block lives for the whole run, so a task anywhere can read it.
+        if matches!(returns, Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) | Kind::Bytes) {
+            self.declare("declare void @fennec_constant_kept(ptr) nounwind");
+            self.line(&format!("call void @fennec_constant_kept(ptr {held})"));
         }
     }
 

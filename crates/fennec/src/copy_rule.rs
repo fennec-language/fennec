@@ -201,6 +201,7 @@ fn is_literal(value: &fennec_syntax::Expr) -> bool {
         | ExprKind::Duration(_)
         | ExprKind::Str(_)
         | ExprKind::Bytes(_)
+        | ExprKind::Folder(_)
         | ExprKind::Bool(_)
         | ExprKind::None => true,
         ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr } => {

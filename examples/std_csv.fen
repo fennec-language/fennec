@@ -5,10 +5,12 @@ from std import csv
 SCORES = "name,score\nash,12\n\"vex, the third\",7\n"
 
 test "rows come back as written" for rows: list[list[str]]:
-    # A row with no fields has no text to come back from.
+    # A row with no fields has no text to come back from, so `dumps` refuses it.
     written = [row for row in rows if row.len() > 0]
-    assert csv.loads(csv.dumps(written))? == written
-    assert csv.loads(csv.dumps(written, delimiter="\t"), delimiter="\t")? == written
+    assert csv.loads(csv.dumps(written)?)? == written
+    assert csv.loads(csv.dumps(written, delimiter="\t")?, delimiter="\t")? == written
+    if written.len() < rows.len():
+        assert problem_of(csv.dumps(rows)) != ""
 
 test "a field can hold anything in quotes":
     assert (
@@ -16,7 +18,7 @@ test "a field can hold anything in quotes":
         == [["a,b", "say \"hi\"", "two\nlines", ""]]
     )
     assert (
-        csv.dumps([["a,b", "say \"hi\"", "two\nlines", "x\ry", "plain"]])
+        csv.dumps([["a,b", "say \"hi\"", "two\nlines", "x\ry", "plain"]])?
         == "\"a,b\",\"say \"\"hi\"\"\",\"two\nlines\",\"x\ry\",plain\n"
     )
 
@@ -31,18 +33,20 @@ test "blank lines aren't rows, and empty fields are fields":
     assert csv.loads("\"\"\n")? == [[""]]
     assert csv.loads("\"\"")? == [[""]]
     assert csv.loads("a,")? == [["a", ""]]
-    assert csv.dumps([[""], ["", ""]]) == "\"\"\n,\n"
-    assert csv.dumps([]) == ""
+    assert csv.dumps([[""], ["", ""]])? == "\"\"\n,\n"
+    assert csv.dumps([])? == ""
 
 test "a mark at the start of the text isn't part of it":
     mark = str.from_code(65279)?
     assert csv.loads(mark + "a,b\n")? == [["a", "b"]]
     assert csv.loads("a" + mark)? == [["a" + mark]]
     assert csv.loads("a\n" + mark + "b")? == [["a"], [mark + "b"]]
+    # A first field that starts with one is written in quotes, so it isn't taken for the text's.
+    assert csv.loads(csv.dumps([[mark + "a", "b"]])?)? == [[mark + "a", "b"]]
 
 test "the delimiter can be another character":
     assert csv.loads("a;b,c\n", delimiter=";")? == [["a", "b,c"]]
-    assert csv.dumps([["a", "b;c", "d,e"]], delimiter=";") == "a;\"b;c\";d,e\n"
+    assert csv.dumps([["a", "b;c", "d,e"]], delimiter=";")? == "a;\"b;c\";d,e\n"
 
 test "records use the first row's names":
     assert csv.records("")? == []
@@ -50,8 +54,8 @@ test "records use the first row's names":
     assert csv.records("a;b\n1;2\n", delimiter=";")? == [{"a": "1", "b": "2"}]
     records = csv.records(SCORES)?
     assert records == [{"name": "ash", "score": "12"}, {"name": "vex, the third", "score": "7"}]
-    assert csv.dumps_records(["name", "score"], records) == SCORES
-    assert csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";") == "b;a\n;1\n"
+    assert csv.dumps_records(["name", "score"], records)? == SCORES
+    assert csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";")? == "b;a\n;1\n"
 
 def problem[T](found: Result[T, ParseError]) -> str:
     match found:
@@ -92,4 +96,11 @@ def main(stdout: Stdout):
     for record in records:
         stdout.print(record["name"], int(record["score"]) else 0)
     stdout.print(csv.loads("a,b\n1,2\n") else [])
-    stdout.write(csv.dumps([["name", "note"], ["ash", "likes, commas"]]))
+    stdout.write(csv.dumps([["name", "note"], ["ash", "likes, commas"]]) else "")
+
+def problem_of[T](found: Result[T, InvalidValue]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            ""

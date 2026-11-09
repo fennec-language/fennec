@@ -105,6 +105,7 @@ fn expr(value: &Expr, change: &mut dyn FnMut(&Expr)) {
         | ExprKind::Float(_)
         | ExprKind::Duration(_)
         | ExprKind::Bytes(_)
+        | ExprKind::Folder(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
         | ExprKind::None

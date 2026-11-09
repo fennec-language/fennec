@@ -234,7 +234,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 **The compiler places short-lived values itself.** A temporary that never leaves its function or loop body goes on the stack or in a bump region, with no call to the allocator. This is limited to values that provably don't escape. Full automatic region inference is known to leak memory.
 
-**`@hot` on a function means prove it or don't compile.** The compiler must prove the function and everything it calls does no allocation, makes no copies and has no leftover count checks, or it's a compile error that names the line. A lint suggests it where profiling shows heavy allocation. This replaces `with noalloc():` and the `noalloc def` prefix. Built, apart from the lint that suggests it, which waits for a profile to read: `noalloc` is refused, saying to write `@hot`, and each check native code keeps (bounds, a missing key, dividing by zero, a shift's range, a builtin that can fail) is an error. An overflow check stays: wherever the compiler can show a number can't overflow, hot or not, the check goes, and where it can't, the check stays as a safety net. Chris decided this on 2026-11-06.
+**`@hot` on a function means prove it or don't compile.** The compiler must prove the function and everything it calls does no allocation, makes no copies and has no leftover count checks, or it's a compile error that names the line. A lint suggests it where profiling shows heavy allocation. This replaces `with noalloc():` and the `noalloc def` prefix. Built, apart from the lint that suggests it, which waits for a profile to read: each check native code keeps (bounds, a missing key, dividing by zero, a shift's range, a builtin that can fail) is an error. An overflow check stays: wherever the compiler can show a number can't overflow, hot or not, the check goes, and where it can't, the check stays as a safety net. Chris decided this on 2026-11-06. `noalloc` is no longer a keyword, so it's an ordinary name (2026-11-09).
 *Why:* It's a claim about a function, and nothing opens or closes, so it doesn't belong in `with`. Speed in a hot path becomes something the compiler checks rather than something people hope for.
 
 **`@arena` is cut for now,** along with `with arena():`. It's expected back at function level for tree-heavy allocation, after measurement. There are no allocator parameters, now or then.
@@ -724,7 +724,7 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 **`with` lends you something for the length of a block, and it can't escape.** What a `with` gives can't be returned, stored outside the block or put in a `shared`. A second name for it inside the block is fine, and a struct holding something borrowed is borrowed too, so wrappers work. Built for sources a program writes.
 *Why:* A file, socket or transaction then closes exactly once, at a line you can see, and nobody can use it after.
 
-**There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
+**There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Built for the standard library: `net.connect`, `net.listen`, `net.udp` and `server.accept()` are `with` sources, and a `for` over a server closes each connection when the loop moves on. Taking `def del` out of the language isn't built yet.
 *Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
 
 **A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note, and with several handles every one runs its cleanup, innermost first. Several handles in one `with` are built. The note isn't yet: today a failing `else:` replaces the block's failure. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
@@ -847,7 +847,7 @@ There's no per-format override, like a `def json` method on a type; one `def ser
 
 *Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
 
-**HTTP is read strictly, so nothing in front of a server can read a request differently.** A second `content-length`, `host` or `transfer-encoding`, a length that isn't only digits, a space before a header's `:`, a folded header, a version other than 1.0 or 1.1, and a control character in a method, target or header each get a 400. A response header that would break its line makes the response a 500, and the client refuses a line break or control character in a URL, a method or a header before it connects. Built, in `examples/http_strict.fen`. A bare line feed ending a line is still accepted, until reading a line can tell.
+**HTTP is read strictly, so nothing in front of a server can read a request differently.** A second `content-length`, `host` or `transfer-encoding`, a length that isn't only digits, a space before a header's `:`, a folded header, a version other than 1.0 or 1.1, and a control character in a method, target or header each get a 400. A response header that would break its line makes the response a 500, and the client refuses a line break or control character in a URL, a method or a header before it connects. Built, in `examples/http_strict.fen`. A blank line or two before a request line is passed over, as RFC 9112 says a server should. Before closing a connection, the server reads and drops what the client is still sending, up to 64 MB, so the system doesn't reset the connection and lose the answer just written, and those before it. A bare line feed ending a line is still accepted, until reading a line can tell.
 
 **A protocol is a union of message types.** `net.connect` stays about bytes, and `conn.messages[GameMsg]()?` puts a typed message layer on any byte stream: TCP, later QUIC, the test fake or a file. It sends in `std.pack` and checks fingerprints when it starts.
 ```fennec
@@ -1150,7 +1150,7 @@ for ref particle in parallel(particles):
 total = sum(e.mass for e in parallel(enemies))
 hits = [check(b) for b in parallel(bullets, limit=8)]
 
-with net.listen(8080) as server:
+with net.listen(8080)? as server:
     for conn in parallel(server):
         handle(conn, app)
 ```
@@ -1230,7 +1230,6 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 **`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-# Planned: the second doesn't exist yet
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
@@ -1240,7 +1239,7 @@ SHADERS = embed_folder("assets/shaders")
 - The kit's edge is the folder holding the nearest `kit.toml`, and for a lone `.fen` file with no `kit.toml`, the file's own folder. Embedding anything above that folder, or anything a symlink reaches outside it, is a compile error. In Chris's words, it's "wherever the kit.toml is, it cannot be above it", and "only things in that folder". This closes the hole where a lone file's `embed` could follow a symlink out of its folder.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file with no `kit.toml` can still follow a symlink out of its folder today; the rule above closes that. `embed_folder` isn't built yet.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A lone `.fen` file stops at its own folder, as the rule above says. `embed_folder` is built: an `EmbeddedFolder`, with `get(path) -> bytes?`, `len()`, and `keys()`, `values()` and `items()` in path order. A file or folder added or taken away is seen at the next build. Native code makes each file once, the first time it's reached, until it holds them in the program's read-only data.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 

@@ -1,11 +1,11 @@
-# A list in a `shared` value changed where it is, under the lock, with its own value read while it
+# A list in a `shared` value changed where it is, under its lock, with its own value read while it
 # changes, and with something else still holding the list as it was, which mustn't see the change.
 
 struct Row:
     tags: list[int]
     name = "a row"
 
-shared Queue:
+struct Queue:
     items = [1, 2, 3]
     total = 0
     rows = [Row(tags=[1, 2, 3]), Row(tags=[4])]
@@ -43,24 +43,33 @@ def grow(ref numbers: list[int], by: int):
     numbers[0] += by
 
 def main(stdout: Stdout):
-    queue = Queue()
-    queue.reading_itself()
-    stdout.print(queue.items, queue.total, queue.rows[0].tags, queue.rows[1].tags)
-    queue.through_a_call()
-    stdout.print(queue.items, queue.rows[1].tags)
-    out = queue.keeping_it()
-    stdout.print(out, queue.items, queue.kept)
-    mine = queue.handing_out()
-    queue.reading_itself()
-    stdout.print(mine, queue.items)
-    row = queue.row_kept()
-    stdout.print(row.tags, row.name, queue.rows[0].tags, queue.rows[0].name)
-    with queue as ref held:
+    shared queue = Queue()
+    lock queue as ref held:
+        held.reading_itself()
+        stdout.print(held.items, held.total, held.rows[0].tags, held.rows[1].tags)
+    lock queue as ref held:
+        held.through_a_call()
+        stdout.print(held.items, held.rows[1].tags)
+    lock queue as ref held:
+        out = held.keeping_it()
+        stdout.print(out, held.items, held.kept)
+    mut mine = list[int]()
+    lock queue as held:
+        mine = held.handing_out()
+    lock queue as ref held:
+        held.reading_itself()
+        stdout.print(mine, held.items)
+    lock queue as ref held:
+        row = held.row_kept()
+        stdout.print(row.tags, row.name, held.rows[0].tags, held.rows[0].name)
+    lock queue as ref held:
         before = held.items
         held.items.append(held.items.len())
         held.items.extend(before)
         held.total += before.len()
-    stdout.print(queue.items, queue.total)
+        stdout.print(held.items, held.total)
     second = queue
-    second.reading_itself()
-    stdout.print(queue.items, queue.total)
+    lock second as ref held:
+        held.reading_itself()
+    lock queue as held:
+        stdout.print(held.items, held.total)

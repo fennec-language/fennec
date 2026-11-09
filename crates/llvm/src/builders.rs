@@ -66,7 +66,7 @@ pub(crate) fn builders<'p>(
             }
             for inst in function.blocks.iter().flat_map(|block| &block.insts) {
                 let allowed: Vec<usize> = match &inst.kind {
-                    InstKind::MakeList { dest, items }
+                    InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items }
                         if items.iter().all(|item| is_text(function, item)) =>
                     {
                         vec![dest.0]

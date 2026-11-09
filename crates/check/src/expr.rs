@@ -240,9 +240,7 @@ impl FnCx<'_> {
             return Some(diagnostic.with_help(help).with_fix(span, held));
         }
         let to_add = self.give_it(&format!("{name}: {ty}"));
-        Some(diagnostic.with_help(format!(
-            "a function reaches outside itself only through what's in its signature, {to_add}"
-        )))
+        Some(diagnostic.with_help(format!("{}, {to_add}", crate::threading::NOT_GIVEN)))
     }
 
     /// How to give the function being checked a parameter, written as `param`: in `main`'s
@@ -765,6 +763,9 @@ impl FnCx<'_> {
             return ty;
         }
         let ty = self.expr(object);
+        if let Some(field) = self.field_attr(&ty, name, span) {
+            return field;
+        }
         if self.outside_lock(object, &ty, span) {
             return Type::Unknown;
         }

@@ -359,6 +359,9 @@ impl FnCx<'_> {
     }
 
     fn for_stmt(&mut self, names: &[String], is_mut: bool, iter: &Expr, body: &[Stmt], span: Span) {
+        if !is_mut && self.fields_loop(names, iter, body, span).is_some() {
+            return;
+        }
         let parallel = crate::parallel::parallel_items(iter).filter(|_| self.lookup("parallel").is_none());
         if is_mut {
             let what = "`for ref` changes each item, so loop over something held in a mut name";

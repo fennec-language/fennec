@@ -454,6 +454,13 @@ impl FnCx<'_> {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);
         }
+        if let ExprKind::Name(held) = &object.kind
+            && let Some((ty, _)) = self.lookup(held)
+            && let Some(field) = self.field_get(&ty, method, args, span)
+        {
+            self.expr(object);
+            return field;
+        }
         // `u8.from(x)`: a function on a sized number type, from the standard library.
         if let ExprKind::Name(size) = &object.kind
             && self.lookup(size).is_none()

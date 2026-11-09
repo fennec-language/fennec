@@ -5,7 +5,7 @@
 use crate::ast::{Expr, ExprKind, FStrPart, FnDef, Item, Module, Pattern, Stmt, StmtKind, TypeDef};
 
 /// Calls `look` on every expression in `module`, outer ones before the ones inside them.
-pub fn exprs(module: &Module, look: &mut dyn FnMut(&Expr)) {
+pub fn exprs<'a>(module: &'a Module, look: &mut dyn FnMut(&'a Expr)) {
     for item in &module.items {
         match item {
             Item::Function(def) => function(def, look),
@@ -21,21 +21,21 @@ pub fn exprs(module: &Module, look: &mut dyn FnMut(&Expr)) {
 }
 
 /// Calls `look` on every expression in a function's body.
-pub fn in_function(def: &FnDef, look: &mut dyn FnMut(&Expr)) {
+pub fn in_function<'a>(def: &'a FnDef, look: &mut dyn FnMut(&'a Expr)) {
     function(def, look);
 }
 
 /// Calls `look` on an expression and every expression inside it.
-pub fn in_expr(value: &Expr, look: &mut dyn FnMut(&Expr)) {
+pub fn in_expr<'a>(value: &'a Expr, look: &mut dyn FnMut(&'a Expr)) {
     expr(value, look);
 }
 
 /// Calls `look` on every expression in some statements.
-pub fn in_stmts(body: &[Stmt], look: &mut dyn FnMut(&Expr)) {
+pub fn in_stmts<'a>(body: &'a [Stmt], look: &mut dyn FnMut(&'a Expr)) {
     stmts(body, look);
 }
 
-fn type_def(def: &TypeDef, change: &mut dyn FnMut(&Expr)) {
+fn type_def<'a>(def: &'a TypeDef, change: &mut dyn FnMut(&'a Expr)) {
     let fields = def.fields.iter().chain(def.cases.iter().flat_map(|case| case.fields.iter()));
     for field in fields {
         for value in field.default.iter().chain(field.rule.iter()) {
@@ -45,23 +45,23 @@ fn type_def(def: &TypeDef, change: &mut dyn FnMut(&Expr)) {
     functions(&def.methods, change);
 }
 
-fn functions(defs: &[FnDef], change: &mut dyn FnMut(&Expr)) {
+fn functions<'a>(defs: &'a [FnDef], change: &mut dyn FnMut(&'a Expr)) {
     for def in defs {
         function(def, change);
     }
 }
 
-fn function(def: &FnDef, change: &mut dyn FnMut(&Expr)) {
+fn function<'a>(def: &'a FnDef, change: &mut dyn FnMut(&'a Expr)) {
     stmts(&def.body, change);
 }
 
-fn stmts(body: &[Stmt], change: &mut dyn FnMut(&Expr)) {
+fn stmts<'a>(body: &'a [Stmt], change: &mut dyn FnMut(&'a Expr)) {
     for stmt in body {
         self::stmt(stmt, change);
     }
 }
 
-fn stmt(stmt: &Stmt, change: &mut dyn FnMut(&Expr)) {
+fn stmt<'a>(stmt: &'a Stmt, change: &mut dyn FnMut(&'a Expr)) {
     match &stmt.kind {
         StmtKind::Expr(value)
         | StmtKind::Fail(value)
@@ -98,7 +98,7 @@ fn stmt(stmt: &Stmt, change: &mut dyn FnMut(&Expr)) {
     }
 }
 
-fn expr(value: &Expr, change: &mut dyn FnMut(&Expr)) {
+fn expr<'a>(value: &'a Expr, change: &mut dyn FnMut(&'a Expr)) {
     change(value);
     match &value.kind {
         ExprKind::Int(_)
@@ -179,7 +179,7 @@ fn expr(value: &Expr, change: &mut dyn FnMut(&Expr)) {
     }
 }
 
-fn pattern(pattern: &Pattern, change: &mut dyn FnMut(&Expr)) {
+fn pattern<'a>(pattern: &'a Pattern, change: &mut dyn FnMut(&'a Expr)) {
     match pattern {
         Pattern::Literal(value) => expr(value, change),
         Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {

@@ -1230,7 +1230,7 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 **`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-# Planned: today the first is `embed("assets/level1.bin")`, and the second doesn't exist
+# Planned: the second doesn't exist yet
 MAP = embed_file("assets/level1.bin")
 SHADERS = embed_folder("assets/shaders")
 ```
@@ -1239,7 +1239,7 @@ SHADERS = embed_folder("assets/shaders")
 - The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
 - `embed_folder` leaves out hidden files, and nothing is compressed.
 - No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
-- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path and, in a kit, anything outside it, a symlink included. This replaces `embed("path")`.
+- Chris locked this on 2026-11-08. `embed_file` is built, and `fennec fix` renames an old `embed(...)` to it. It refuses a missing path and, in a kit, anything outside it, a symlink included. A single `.fen` file with no kit has no kit folder to stay inside yet. `embed_folder` isn't built yet.
 
 *Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 

@@ -861,6 +861,7 @@ pub(crate) fn line_value(line: Option<&[u8]>) -> Value {
 
 /// `line_value`, for a line whose ending's already been taken off, as a served connection reads
 /// one: taking off another `\r` would make a line holding a bare `\r` look blank.
+#[cfg(any(test, feature = "threads"))]
 pub(crate) fn trimmed_line_value(line: Option<&[u8]>) -> Value {
     line.map_or(Value::None, |line| Value::str(String::from_utf8_lossy(line).as_ref()))
 }

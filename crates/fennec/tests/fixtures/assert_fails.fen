@@ -1,0 +1,28 @@
+# `assert value fails Pattern`: one that holds, one that failed some other way, and one that gave
+# a value, each failed one saying what really happened.
+
+error Oops:
+    line: int
+    why = ""
+
+struct Config:
+    size: int
+
+def load(text: str) -> Config fails Oops:
+    if text == "bad":
+        fail Oops(line=3)
+    if text == "worse":
+        fail Oops(line=4, why="worse")
+    Config(size=text.len())
+
+test "fails as it should":
+    assert load("bad") fails Oops(line=3)
+    assert load("worse") fails Oops()
+    expected = 4
+    assert load("worse") fails Oops(line=expected, why="worse")
+
+test "fails some other way":
+    assert load("worse") fails Oops(line=3)
+
+test "gives a value":
+    assert load("good") fails Oops()

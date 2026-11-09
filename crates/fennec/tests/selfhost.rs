@@ -227,6 +227,11 @@ test \"any list\" for items: list[int], n: int:
         "if_over_lines_gives_no_value",
         "def f(n: int) -> int:\n    x = if n > 2:\n        1\n    else:\n        2\n    x\n",
     ),
+    (
+        "assert_fails",
+        "test \"load\":\n    assert load(\"bad\") fails Oops(line=3)\n    assert load(\"x\") fails .Missing | Oops()\n",
+    ),
+    ("fails_only_in_assert", "def f():\n    if load(\"bad\") fails Oops():\n        pass\n"),
 ];
 
 /// Small programs that reach the checker's errors about written types, and the places

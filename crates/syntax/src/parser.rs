@@ -769,7 +769,7 @@ impl Parser {
 
     /// Whether `fails` comes next. It's a word only after a function's parameters and any
     /// return type.
-    fn at_fails(&self) -> bool {
+    pub(super) fn at_fails(&self) -> bool {
         matches!(self.peek(), Tok::Name(word) if word == "fails")
     }
 

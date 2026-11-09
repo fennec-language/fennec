@@ -160,6 +160,7 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("assert.said", [happened], _) => self.assert_said(happened, span),
             ("generator.let_go", [Operand::Local(generator)], _) => {
                 self.let_go_of_generator(*generator);
                 Ok(())

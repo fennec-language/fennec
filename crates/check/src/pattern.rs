@@ -205,6 +205,27 @@ impl FnCx<'_> {
         }
     }
 
+    /// `assert load(text) fails Oops(line=3)`: what's asserted can fail, and the pattern is a case
+    /// of what it fails with, its names seen only in it.
+    pub(crate) fn assert_fails(&mut self, value: &Expr, pattern: &Pattern, span: Span) {
+        let ty = self.expr(value);
+        let error = match self.checker.settled(&ty) {
+            Type::Result(_, error) => *error,
+            Type::Unknown => Type::Unknown,
+            other => {
+                let message = "this can't fail, so `assert ... fails` has nothing to check";
+                self.error(
+                    Diagnostic::new(message, value.span)
+                        .with_help(format!("it gives {}: compare it with `==` instead", a(&other))),
+                );
+                Type::Unknown
+            }
+        };
+        self.push(false);
+        self.bind_pattern(pattern, &error, span);
+        self.pop();
+    }
+
     fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
         let subject = &self.checker.settled(subject);
         let (value, error) = match subject {

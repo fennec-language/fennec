@@ -113,7 +113,10 @@ impl FnCx<'_> {
             }
             StmtKind::Yield(value) => self.yield_stmt(value, stmt.span),
             StmtKind::Assert(cond) => {
-                self.condition(cond, "assert");
+                match cond.asserted_failure() {
+                    Some((value, pattern)) => self.assert_fails(value, pattern, stmt.span),
+                    None => self.condition(cond, "assert"),
+                }
                 Flow::unit()
             }
             StmtKind::OnFailure { name, cleanup, body } => {

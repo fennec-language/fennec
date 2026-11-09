@@ -291,6 +291,17 @@ fn test_fails_when_a_test_fails() {
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
 }
 
+/// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
+/// failed one says what really happened: what it failed with instead, or what it gave.
+#[test]
+fn an_assert_that_something_fails_says_what_really_happened() {
+    let output = fennec(&["test", "crates/fennec/tests/fixtures/assert_fails.fen"], "").unwrap();
+    assert_eq!(text(&output.stdout), "  ✗ fails some other way\n  ✗ gives a value\n1 passed, 2 failed\n");
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("= help: it failed with Oops(line=4, why=\"worse\")"), "{stderr}");
+    assert!(stderr.contains("= help: it gave Config(size=4)"), "{stderr}");
+}
+
 #[test]
 fn test_shrinks_and_replays_property_failures() {
     let output = fennec(&["test", "crates/fennec/tests/fixtures/failing_properties.fen"], "").unwrap();

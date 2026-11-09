@@ -464,6 +464,9 @@ impl Lowering<'_> {
     /// `assert cond`. One that compares two values says what they were when it fails.
     pub(super) fn assert(&mut self, cond: &Expr) -> Lowered<()> {
         let span = cond.span;
+        if let Some((value, pattern)) = cond.asserted_failure() {
+            return self.assert_fails(value, pattern, span);
+        }
         let (test, sides) = self.asserted(cond)?;
         let (then, failed) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: test, then, otherwise: failed });
@@ -475,6 +478,69 @@ impl Lowering<'_> {
         self.finish(Terminator::Stop { message: "this assertion failed".to_owned(), span });
         self.current = then;
         Ok(())
+    }
+
+    /// `assert load(text) fails Oops(line=3)`: it fails, with what the pattern matches. If not,
+    /// the assertion fails saying what happened instead: what it gave, or what it failed with.
+    fn assert_fails(&mut self, value: &Expr, pattern: &fennec_syntax::Pattern, span: Span) -> Lowered<()> {
+        let held = self.expr(value)?;
+        let Some(Type::Result(ok, error)) = crate::type_in(&self.locals, &held) else {
+            return Err("it asserts a failure of something that can't fail".to_owned());
+        };
+        let failed = self.temporary(Type::Bool);
+        self.emit(InstKind::IsErr { dest: failed, value: held.clone() }, span);
+        let (failing, gave, mismatched, done) =
+            (self.new_block(), self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(failed), then: failing, otherwise: gave });
+        self.current = gave;
+        let shown = if *ok == Type::Unit {
+            Operand::Str("it gave nothing, and didn't fail".to_owned())
+        } else {
+            let got = self.temporary(*ok.clone());
+            self.emit(InstKind::GetOk { dest: got, value: held.clone() }, span);
+            self.said("it gave ", Operand::Local(got), span)
+        };
+        self.emit(
+            InstKind::Builtin {
+                dest: None,
+                name: "assert.said".to_owned(),
+                args: vec![shown],
+                changes: false,
+            },
+            span,
+        );
+        self.finish(Terminator::Stop { message: "this assertion failed".to_owned(), span });
+        self.current = failing;
+        let why = self.temporary(*error.clone());
+        self.emit(InstKind::GetErr { dest: why, value: held }, span);
+        self.scopes.push(std::collections::HashMap::new());
+        let matched = self.pattern(pattern, &Operand::Local(why), &error, mismatched, span);
+        self.scopes.pop();
+        matched?;
+        self.finish(Terminator::Jump(done));
+        self.current = mismatched;
+        let shown = self.said("it failed with ", Operand::Local(why), span);
+        self.emit(
+            InstKind::Builtin {
+                dest: None,
+                name: "assert.said".to_owned(),
+                args: vec![shown],
+                changes: false,
+            },
+            span,
+        );
+        self.finish(Terminator::Stop { message: "this assertion failed".to_owned(), span });
+        self.current = done;
+        Ok(())
+    }
+
+    /// `said` and then a value, as an f-string writes it.
+    fn said(&mut self, said: &str, value: Operand, span: Span) -> Operand {
+        let dest = self.temporary(Type::Str);
+        let parts =
+            vec![crate::FormatPart::Text(said.to_owned()), crate::FormatPart::Value { value, spec: None }];
+        self.emit(InstKind::Format { dest, parts }, span);
+        Operand::Local(dest)
     }
 
     /// What an `assert` tests, and the two sides of a comparison.

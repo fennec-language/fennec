@@ -446,6 +446,11 @@ impl Latch {
         }
     }
 
+    /// Whether every job has finished.
+    pub(in crate::embed) fn is_done(&self) -> bool {
+        *self.finished.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub(in crate::embed) fn wait(&self) {
         let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
         while !*finished {

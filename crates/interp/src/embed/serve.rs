@@ -689,12 +689,14 @@ impl Io {
             here.tasks.insert(task);
             self.owners.insert(task, id);
             // In a recording, the round is named by the order its connection was taken in.
-            if let Some(call) = &here.server.replay {
+            let named = here.server.replay.as_ref().map(|call| {
                 let n = here.server.accepted.fetch_add(1, Ordering::Relaxed);
                 crate::replay::log_at(call, "accept", n);
-                let named = crate::replay::task_named(&format!("{call}.{n}"));
-                self.temporaries.insert(task, super::Temporaries::of_task(named));
-            }
+                crate::replay::task_named(&format!("{call}.{n}"))
+            });
+            // A round reads what its own server lent, whatever other server this worker serves.
+            let lent = here.server.lent.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            self.temporaries.insert(task, super::Temporaries::of_round(named, lent));
             self.ready.push_back((task, Wake::Ready(READY)));
         }
     }
@@ -974,6 +976,21 @@ impl Io {
         }
     }
 }
+
+/// Waits for each worker to leave a server. A task parks meanwhile, looking again now and then, as
+/// its own worker is one of those it waits for. Anything else blocks.
+fn wait_for_every_worker(left: &Latch) {
+    if !can_park() {
+        left.wait();
+        return;
+    }
+    while !left.is_done() {
+        let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false);
+    }
+}
+
+/// How often a task serving looks to see whether its server has ended.
+const SERVER_END_LOOKS: Duration = Duration::from_millis(2);
 
 /// How long to wait before accepting again, having run out of something.
 const ACCEPT_AGAIN: Duration = Duration::from_millis(100);
@@ -1274,7 +1291,7 @@ pub(super) fn serve(
         pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, given)));
     }
     started(Stopper { server: Arc::clone(&server), pool });
-    server.left.wait();
+    wait_for_every_worker(&server.left);
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

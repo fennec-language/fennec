@@ -2325,7 +2325,7 @@ def main(stdout: Stdout):
             break
         unit.hp = 100
     stdout.print(c)
-    # The list read in the body sees the item as it is now.
+    # The list read in the body sees what was written back so far.
     mut d = make()
     for ref unit in d:
         unit.tags.append(d[0].tags.len())

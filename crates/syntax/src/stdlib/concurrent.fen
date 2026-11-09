@@ -132,3 +132,241 @@ def received[T](channel: int, timeout: Duration?) -> T fails Closed | Timeout:
     got = channel_receive[T](channel, nanos_of(timeout), ref why)
     if why == 2: fail Timeout(waited=timeout else Duration())
     got else fail Closed()
+
+## A value a pool keeps: one it can put back as it was after a block that failed with it, and
+## close.
+export interface Pooled:
+    ## Puts the value back as it was before a block that failed or crashed with it, or says it
+    ## can't, and the pool opens another in its place.
+    def reset(self) -> bool
+
+    ## Closes it, when the pool ends or replaces it.
+    def close(self)
+
+## A failure that can say what went wrong, as every error in `std` can.
+export interface Explained:
+    def message(self) -> str
+
+## Why a pool couldn't lend a value.
+export error PoolError:
+    ## None came free within the pool's `wait`.
+    Timeout(waited: Duration)
+    ## Opening one failed, saying why.
+    Open(reason: str)
+    ## The pool has ended.
+    Closed
+
+    def message(self) -> str:
+        match self:
+            case .Timeout(waited):
+                f"no value came free in {waited.as_seconds()}s"
+            case .Open(reason):
+                reason
+            case .Closed:
+                "the pool has ended"
+
+## A pool of up to `size` values, each kept by a task of its own and lent to one `with` block at a
+## time by `take()`: `with pool[Db](size=10, open=() => connected(net))? as dbs:`. One value is
+## opened now, so a pool that can't open any fails here, and the rest when they're first needed.
+## Given `first`, an open value, the pool starts with it rather than opening one. A borrower
+## waits up to `wait` for one to come free, first come first served. A block that
+## fails or crashes hands its value back to be `reset()`, and one that can't be reset is closed
+## and opened again when it's next needed, so the pool never shrinks.
+export def pool[T: Pooled, E: Explained](
+    open: () -> T fails E,
+    size = 10,
+    wait = 30s,
+    first: T? = None,
+) -> with Pool[T] fails PoolError | Crashed:
+    if size < 1: fail PoolError.Open(reason=f"a pool needs at least one value, not {size}")
+    mut started = first
+    if started is None: started = opened(open)?
+    begun = started else fail PoolError.Closed
+    with channel[PoolNote[T]](size=size * 4 + 16) as notes:
+        inbox = notes.inbox()
+        sender = notes.sender()
+        with launch(() => run_pool(inbox, sender, size, open, begun))?:
+            made = Pool[T](_notes=sender, _wait=wait)
+            lend made else:
+                told(sender, PoolNote[T](kind=STOP))
+            told(sender, PoolNote[T](kind=STOP))
+
+## Lends one value at a time from the pool, by `take()`.
+export struct Pool[T]:
+    _notes: Sender[PoolNote[T]]
+    _wait: Duration
+
+    ## A value from the pool for a `with` block, waiting up to the pool's `wait` for one to come
+    ## free. It goes back when the block ends; after a block that failed or crashed, it's reset
+    ## first, or replaced.
+    def take(self) -> with T fails PoolError:
+        borrowed = self.borrowed()?
+        lend borrowed.value else:
+            borrowed.give_back(False)
+        borrowed.give_back(True)
+
+    ## A value from the pool, waiting as `take()` does, for a library's own `with` source to lend
+    ## and then `give_back`, as `take()` does. Prefer `take()`.
+    def borrowed(self) -> Borrowed[T] fails PoolError:
+        with channel[Lent[T]](size=1) as reply:
+            match self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())):
+                case Ok(_):
+                    pass
+                case Err(_):
+                    fail .Closed
+            mut lent = Lent[T](value=None, back=None, failure="")
+            match reply.receive(timeout=self._wait):
+                case Ok(got):
+                    lent = got
+                case Err(_):
+                    fail .Timeout(waited=self._wait)
+            if lent.failure != "": fail .Open(reason=lent.failure)
+            value = lent.value else fail .Closed
+            back = lent.back else fail .Closed
+            return Borrowed[T](value=value, _back=back)
+        fail .Closed
+
+## A value `Pool.borrowed()` gave, until it's given back.
+export struct Borrowed[T]:
+    value: T
+    _back: Sender[Given[T]]
+
+    ## Hands the value back to its keeper, saying whether the block that had it succeeded: one
+    ## that didn't has it reset, or replaced.
+    def give_back(self, succeeded: bool):
+        told(self._back, Given[T](value=self.value, succeeded=succeeded))
+
+## What a borrower is lent: the value and where to give it back, or why it couldn't be opened.
+struct Lent[T]:
+    value: T?
+    back: Sender[Given[T]]?
+    failure: str
+
+## A value given back to its keeper, and whether the block that had it succeeded.
+struct Given[T]:
+    value: T
+    succeeded: bool
+
+## What a keeper is told: lend your value to `reply`, or stop when there's none.
+struct Order[T]:
+    reply: Sender[Lent[T]]?
+
+## What the pool's dispatcher hears, of the kinds below.
+struct PoolNote[T]:
+    kind: int
+    keeper = 0
+    reply: Sender[Lent[T]]? = None
+    orders: Sender[Order[T]]? = None
+
+## A borrower wants a value.
+WANT = 0
+## A keeper has started, and here's where to send it orders.
+HELLO = 1
+## A keeper's value is open and free.
+FREE = 2
+## A keeper is free, with no value open.
+EMPTY = 3
+## The pool has ended.
+STOP = 4
+
+## What `open` gives, or its failure as a `PoolError`.
+def opened[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
+    match open():
+        case Ok(value):
+            return value
+        case Err(failure):
+            fail PoolError.Open(reason=failure.message())
+
+## Sends `message` if `to` still takes it: the other side may have gone, which is fine.
+def told[T](to: Sender[T], message: T):
+    match to.send(message):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
+
+## The pool's tasks: a keeper for each value, and the dispatcher that hands them out.
+def run_pool[T: Pooled, E: Explained](
+    notes: Inbox[PoolNote[T]],
+    to: Sender[PoolNote[T]],
+    size: int,
+    open: () -> T fails E,
+    first: T,
+):
+    for number in parallel(range(size + 1)):
+        if number == size:
+            dispatch(notes, size)
+        else:
+            keep(number, to, open, first)
+
+## Hands each borrower a keeper, first come first served: one whose value is open if there's one,
+## or else one that'll open its value, or else the next that comes free.
+def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
+    mut keepers: dict[int, Sender[Order[T]]] = {}
+    mut open_free: list[int] = []
+    mut empty_free: list[int] = []
+    mut waiting: list[Sender[Lent[T]]] = []
+    mut stopping = False
+    for note in notes:
+        if note.kind == STOP:
+            stopping = True
+        elif note.kind == WANT:
+            reply = note.reply else continue
+            if open_free.len() > 0:
+                told(keepers[open_free.pop(0)], Order[T](reply=reply))
+            elif empty_free.len() > 0:
+                told(keepers[empty_free.pop(0)], Order[T](reply=reply))
+            else:
+                waiting.append(reply)
+        else:
+            keeper = note.keeper
+            if note.kind == HELLO:
+                keepers[keeper] = note.orders else continue
+            if waiting.len() > 0 and not stopping:
+                told(keepers[keeper], Order[T](reply=waiting.pop(0)))
+            elif note.kind == EMPTY or (note.kind == HELLO and keeper != 0):
+                empty_free.append(keeper)
+            else:
+                open_free.append(keeper)
+        # Every keeper has to have started to be told to stop.
+        if stopping and keepers.len() == size:
+            for _, orders in keepers.items():
+                told(orders, Order[T](reply=None))
+            return
+
+## Keeper `number`: keeps one value, opening it when it's first needed, and lends it to each
+## borrower it's sent in turn. The first keeper starts with the value the pool opened.
+def keep[T: Pooled, E: Explained](
+    number: int,
+    notes: Sender[PoolNote[T]],
+    open: () -> T fails E,
+    first: T,
+):
+    mut held: T? = None
+    if number == 0: held = first
+    with channel[Order[T]](size=1) as orders, channel[Given[T]](size=1) as given:
+        told(notes, PoolNote[T](kind=HELLO, keeper=number, orders=orders.sender()))
+        for order in orders:
+            reply = order.reply else break
+            if held is None:
+                match open():
+                    case Ok(value):
+                        held = value
+                    case Err(failure):
+                        told(reply, Lent[T](value=None, back=None, failure=failure.message()))
+                        told(notes, PoolNote[T](kind=EMPTY, keeper=number))
+                        continue
+            value = held else continue
+            match reply.send(Lent[T](value=value, back=given.sender(), failure="")):
+                case Ok(_):
+                    back = given.receive() else Given[T](value=value, succeeded=False)
+                    if back.succeeded or back.value.reset():
+                        held = back.value
+                    else:
+                        back.value.close()
+                        held = None
+                case Err(_):
+                    # The borrower stopped waiting, so the value goes to the next.
+                    pass
+            told(notes, PoolNote[T](kind=FREE if held is not None else EMPTY, keeper=number))
+    if held is not None: held.close()

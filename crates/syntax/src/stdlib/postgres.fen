@@ -3,16 +3,18 @@
 ## text, as a parameter. Rows read into any type that loads, by the columns' names.
 ##
 ## ```fennec
-## with postgres.connect(net, entropy, host="localhost", user="hoard", database="hoard", password=secret)? as db:
-##     _ = db.execute(t"insert into entries values ({path}, {size})")?
-##     rows = db.query[Entry](t"select path, size from entries where size > {least}")?
+## with postgres.connect(net, entropy, "postgres://hoard@localhost/hoard", password=secret)? as db:
 ##     with db.transaction()? as tx:
-##         _ = tx.execute(t"delete from entries where path = {path}")?
+##         _ = tx.execute(t"insert into entries values ({path}, {size})")?
+##         rows = tx.query[Entry](t"select path, size from entries where size > {least}")?
+##     with db.borrow()? as conn:
+##         _ = conn.execute(t"delete from entries where path = {path}")?
 ## ```
 ##
-## A connection runs one query at a time, so one task uses a `PgDatabase` at a time: tasks in
-## `parallel` each connect for themselves. Its connection is TLS unless `tls=False` says
-## otherwise.
+## `connect` lends a pool of connections, 10 unless `pool_size=` says, each kept by a task of its
+## own in `std.concurrent`. A connection runs one query at a time, so `transaction()` and
+## `borrow()` each lend one to a block, waiting up to `wait=`, `30s` unless it's set, for one to
+## come free. Its connections are TLS unless `tls=False` says otherwise.
 ##
 ## Underneath, `startup`, `password` and `terminate` give the bytes a client sends, and a `PgReader`
 ## is fed the bytes a server sends and gives back each whole message, with no network of their
@@ -21,7 +23,10 @@
 from std import base64, crypto
 from std.crypto import Secret
 from std.intrinsics import bytes_text
+from std.concurrent import Borrowed, Pool, Timeout, pool
 from std.net import Connection
+from std.time import Duration
+from std.url import parse, unquote
 from std.sql import SqlError, SqlRows, SqlValue, rows_as
 
 ## The protocol's version, 3.0, as a startup message gives it.
@@ -573,42 +578,179 @@ export def failure_of(fields: dict[str, str]) -> SqlError:
     if code == "40001" or code == "40P01": return SqlError.Busy(reason=reason)
     SqlError.Failed(reason=reason)
 
-## Connects to the database, signs in, and lends a `PgDatabase` for a `with` block, closing it at the
-## end. The connection is TLS, its certificate checked against what the system trusts and `host`,
+## What `postgres.connect` reads from its URL, `postgres://user@host:5432/database`, and the
+## arguments beside it.
+export struct PgSettings:
+    host: str
+    port: int
+    user: str
+    database: str
+    pool_size: int
+    wait: Duration
+    tls: bool
+
+## The settings in `url`, `postgres://user@host:port/database?pool_size=20&wait=5s&tls=false`,
+## with `pool_size`, `wait` and `tls` given beside it. Each of those three may be in the URL or an
+## argument, not both, and is 10, `30s` and `True` when neither has it. The port is 5432 and the
+## database is the user's name unless the URL says. A password in the URL is refused: it goes in
+## `password=`, as a `Secret`, so it never shows in a URL that's printed or logged.
+export def settings(
+    url: str,
+    pool_size: int? = None,
+    wait: Duration? = None,
+    tls: bool? = None,
+) -> PgSettings fails SqlError:
+    read = parse(url) else fail SqlError.Failed(
+        reason="the database URL isn't one, like `postgres://user@host:5432/database`",
+    )
+    if read.scheme != "postgres" and read.scheme != "postgresql":
+        fail SqlError.Failed(reason=f"a database URL starts `postgres://`, not `{read.scheme}://`")
+    if read.user.find(":") is not None:
+        fail SqlError.Failed(
+            reason="the database URL has a password in it: pass it as `password=`, a `Secret`, so it never shows where the URL does",
+        )
+    user = unquote(read.user)
+    if user == "": fail SqlError.Failed(reason="the database URL needs a user, as in `postgres://user@host`")
+    if read.host == "": fail SqlError.Failed(reason="the database URL needs a host")
+    mut database = unquote(read.path[1:] if read.path.startswith("/") else read.path)
+    if database == "": database = user
+    for name in read.query.keys():
+        if name != "pool_size" and name != "wait" and name != "tls":
+            fail SqlError.Failed(
+                reason=f"the database URL's `{name}` isn't a setting: `pool_size`, `wait` and `tls` are",
+            )
+    mut size = 10
+    if "pool_size" in read.query:
+        if pool_size is not None: fail set_twice("pool_size")
+        size = int(read.query["pool_size"]) else fail SqlError.Failed(
+            reason="the database URL's `pool_size` isn't a whole number",
+        )
+    elif pool_size is not None:
+        size = pool_size
+    if size < 1: fail SqlError.Failed(reason=f"a pool needs at least one connection, not {size}")
+    mut waiting = 30s
+    if "wait" in read.query:
+        if wait is not None: fail set_twice("wait")
+        waiting = duration_of(read.query["wait"])?
+    elif wait is not None:
+        waiting = wait
+    mut secure = True
+    if "tls" in read.query:
+        if tls is not None: fail set_twice("tls")
+        written = read.query["tls"]
+        if written != "true" and written != "false":
+            fail SqlError.Failed(reason="the database URL's `tls` is `true` or `false`")
+        secure = written == "true"
+    elif tls is not None:
+        secure = tls
+    PgSettings(
+        host=read.host,
+        port=read.port if read.port > 0 else 5432,
+        user=user,
+        database=database,
+        pool_size=size,
+        wait=waiting,
+        tls=secure,
+    )
+
+def set_twice(name: str) -> SqlError:
+    SqlError.Failed(reason=f"`{name}` is set in the database URL and as an argument: set it in one")
+
+## A wait written in a URL: whole milliseconds, seconds or minutes, like `500ms`, `5s` or `2m`.
+def duration_of(text: str) -> Duration fails SqlError:
+    wrong = SqlError.Failed(reason=f"the database URL's `wait` is like `5s`, `500ms` or `2m`, not `{text}`")
+    if text.endswith("ms"):
+        return Duration.millis(int(text[:-2]) else fail wrong)
+    if text.endswith("s"):
+        return Duration.millis((int(text[:-1]) else fail wrong) * 1000)
+    if text.endswith("m"):
+        return Duration.minutes(int(text[:-1]) else fail wrong)
+    fail wrong
+
+## A pool of connections to the database at `url`, lent for a `with` block: `with
+## postgres.connect(net, entropy, "postgres://app@db.internal/shop", password=secret)? as db:`.
+## Each connection is TLS, its certificate checked against what the system trusts and the host,
 ## and a server that won't take TLS is refused rather than spoken to in the clear, since that's
 ## what someone in the middle would answer. `tls=False` connects in the clear, for a server on this
-## machine or a private network. `password` is needed if the server asks for one, and goes through SCRAM-SHA-256, which never
-## puts it on the wire and makes the server prove it knows it too. Given a password, a server that
-## lets the client in with no proof, or asks for the password as it is, is refused, since anything
-## on the way could be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server
-## set up that way. `entropy` makes SCRAM's nonce.
+## machine or a private network. `password` goes through SCRAM-SHA-256, which never puts it on the
+## wire and makes the server prove it knows it too. Given a password, a server that lets the client
+## in with no proof, or asks for the password as it is, is refused, since anything on the way could
+## be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server set up that
+## way. `entropy` makes SCRAM's nonce.
+##
+## The pool has up to `pool_size` connections, 10 unless the URL or an argument says, and
+## `pool_size=1` for one. One connects now, so a wrong URL or password fails here, and the rest
+## when they're first needed. `db.transaction()` and `db.borrow()` wait up to `wait`, `30s`
+## unless it's set, for a connection to come free.
 export def connect(
     net: Net,
     entropy: Entropy,
-    host: str,
-    user: str,
-    database: str,
+    url: str,
     password: Secret[str]? = None,
-    port = 5432,
+    pool_size: int? = None,
+    wait: Duration? = None,
+    tls: bool? = None,
     allow_weak_sign_in = False,
-    tls = True,
-) -> with PgDatabase fails SqlError:
-    with net.connect(host, port) else fail SqlError.Failed(
-        reason=f"couldn't connect to {host}:{port}",
-    ) as conn:
-        db = PgDatabase(_conn=conn)
-        if tls:
-            db._start_tls(host)?
-        db._sign_in(
-            entropy,
-            user=user,
-            database=database,
-            secret=password,
-            weak=allow_weak_sign_in,
-        )?
-        lend db else:
-            db._goodbye()
-        db._goodbye()
+) -> with PgPool fails SqlError:
+    found = settings(url, pool_size=pool_size, wait=wait, tls=tls)?
+    # The first connects here, so a wrong URL or password fails with what went wrong.
+    first = signed_in(net, entropy, found, password, allow_weak_sign_in)?
+    with pool[PgDatabase, SqlError](
+        open=() => signed_in(net, entropy, found, password, allow_weak_sign_in),
+        size=found.pool_size,
+        wait=found.wait,
+        first=first,
+    ) else fail SqlError.Failed(reason="the pool's tasks crashed") as connections:
+        lend PgPool(_pool=connections) else:
+            pass
+
+## One connection to the database, signed in.
+def signed_in(
+    net: Net,
+    entropy: Entropy,
+    found: PgSettings,
+    password: Secret[str]?,
+    weak: bool,
+) -> PgDatabase fails SqlError:
+    conn = net._connect(found.host, found.port, tls=False, timeout=30s) else fail SqlError.Failed(
+        reason=f"couldn't connect to {found.host}:{found.port}",
+    )
+    db = PgDatabase(_conn=conn)
+    match db._opened(entropy, found, password, weak):
+        case Ok(_):
+            return db
+        case Err(failure):
+            conn.close()
+            fail failure
+
+## Connections to a database, lent one block at a time, made by `postgres.connect`.
+export struct PgPool:
+    _pool: Pool[PgDatabase]
+
+    ## A transaction for a `with` block, on a connection of its own: it commits when the block
+    ## ends, and rolls back if the block fails or crashes. Waits up to the pool's `wait` for a
+    ## connection, then fails with `Timeout`.
+    def transaction(self) -> with PgTransaction fails SqlError | Timeout:
+        with self.borrow()? as db:
+            with db.transaction()? as tx:
+                lend tx else:
+                    pass
+
+    ## A connection of its own for a `with` block, for queries that go together without a
+    ## transaction. Waits up to the pool's `wait` for one, then fails with `Timeout`.
+    def borrow(self) -> with PgDatabase fails SqlError | Timeout:
+        mut taken: Borrowed[PgDatabase]? = None
+        match self._pool.borrowed():
+            case Ok(got):
+                taken = got
+            case Err(.Timeout(waited)):
+                fail Timeout(waited=waited)
+            case Err(failure):
+                fail SqlError.Failed(reason=failure.message())
+        borrowed = taken else fail SqlError.Failed(reason="the pool has ended")
+        lend borrowed.value else:
+            borrowed.give_back(False)
+        borrowed.give_back(True)
 
 ## A connection to a database, lent by `postgres.connect`.
 export struct PgDatabase:
@@ -740,7 +882,7 @@ export struct PgDatabase:
             case Err(error):
                 fail SqlError.Failed(reason=f"TLS with the server failed: {error.message()}")
 
-    ## Tells the server this is the end. The connection itself closes where its `with` ends.
+    ## Tells the server this is the end.
     def _goodbye(self):
         # Closing goes ahead whether or not the server hears it.
         match self._conn.write(terminate()):
@@ -748,6 +890,56 @@ export struct PgDatabase:
                 pass
             case Err(_):
                 pass
+
+    ## Starts TLS when the settings ask for it, and signs in.
+    def _opened(
+        self,
+        entropy: Entropy,
+        found: PgSettings,
+        password: Secret[str]?,
+        weak: bool,
+    ) fails SqlError:
+        if found.tls:
+            self._start_tls(found.host)?
+        self._sign_in(
+            entropy,
+            user=found.user,
+            database=found.database,
+            secret=password,
+            weak=weak,
+        )?
+
+    ## After a block that failed or crashed with it, as its pool asks: rolls back anything left
+    ## open, and says whether the connection is fit to use again. It is only once the server has
+    ## answered a query asked for here, so whatever an interrupted query left unread is passed
+    ## over first, and the server is idle, in no transaction.
+    def reset(self) -> bool:
+        match self._settled():
+            case Ok(settled):
+                settled
+            case Err(_):
+                False
+
+    def _settled(self) -> bool fails SqlError:
+        send(self._conn, simple_query("rollback"))?
+        send(self._conn, simple_query(f"select '{RESET_MARK}'"))?
+        mut reader = PgReader()
+        mut marked = False
+        while True:
+            message = next_message(self._conn, ref reader)?
+            match message:
+                case .Row(cells=cells, present=_):
+                    if cells.len() == 1 and cells[0] == RESET_MARK.encode(): marked = True
+                case .Ready(status=status):
+                    if marked: return status == "I"
+                case _:
+                    pass
+        False
+
+    ## Says goodbye to the server and closes the connection, when its pool ends or replaces it.
+    def close(self):
+        self._goodbye()
+        self._conn.close()
 
 ## A transaction, lent by `db.transaction()`. Its queries see what it's changed so far, and the
 ## rest of the program sees none of it until it's kept.
@@ -787,6 +979,16 @@ def cleartext(secret: Secret[str]) -> bytes:
 def changed(tag: str) -> int:
     words = tag.split(" ")
     int(words[words.len() - 1]) else 0
+
+## What a reset asks the server for, to know it has read everything up to the server's answer:
+## no query a program sends gives it back.
+RESET_MARK = "fennec pool reset 7c1e"
+
+## A query in the simple protocol: `Q`, its length, and its text ending with a zero byte.
+def simple_query(text: str) -> bytes:
+    mut out = PgWriter()
+    out.text(text)
+    out.done(81)
 
 def send(conn: Connection, data: bytes) fails SqlError:
     match conn.write(data):

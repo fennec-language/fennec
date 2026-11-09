@@ -5287,6 +5287,40 @@ fn a_dicts_order_is_the_same_for_every_seed() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Sets and dicts of sized numbers, which are held as ints: a `set[u8]`, a `dict[str, u8]` whose
+/// value is added to in place, and a `dict[i16, i32]`.
+#[test]
+fn sets_and_dicts_of_sized_numbers() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "sized_sets_dicts",
+        r#"def main(stdout: Stdout):
+    mut small = set[u8]()
+    zero: u8 = 0
+    for n in [1, 2, 255, 2]:
+        small.add(u8.from(n) else zero)
+    two: u8 = 2
+    three: u8 = 3
+    stdout.print(sorted(list(small)), two in small, three in small, small.len())
+    mut counts = dict[str, u8]()
+    a: u8 = 1
+    big: u8 = 200
+    counts["a"] = a
+    counts["b"] = big
+    counts["b"] += 50
+    stdout.print(counts, counts["b"], "z" in counts)
+    mut by = dict[i16, i32]()
+    low: i16 = -300
+    wide: i32 = 70000
+    by[low] = wide
+    stdout.print(by[low], by)
+"#,
+        "[1, 2, 255] True False 3\n{\"a\": 1, \"b\": 250} 250 False\n70000 {-300: 70000}\n",
+    )
+}
+
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
 fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {

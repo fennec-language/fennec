@@ -523,8 +523,8 @@ fn failing_tests_say_why_through_llvm_as_they_did_on_the_jit_and_run_once() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A property test that fails through LLVM makes what it failed for as simple as it can there, as
-/// the interpreter does, and says the same: ints, words, lists, bools, two inputs at once, and a
+/// A property test that fails through LLVM makes what it failed for as simple as it can, as the
+/// interpreter did, and says the same: ints, words, lists, bools, two inputs at once, and a
 /// test with capabilities, which gets new fakes for each attempt.
 #[test]
 fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
@@ -555,13 +555,13 @@ fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
 }
 
 #[test]
-fn a_test_llvm_cannot_build_runs_another_way() {
+fn a_test_reaching_a_dict_of_lists_passes() {
     if !llvm_here() {
         return;
     }
     let dir = scratch("llvm-tests-refused").unwrap();
     let game = dir.join("game.fen");
-    // LLVM doesn't take a dict of lists yet. When it does, this still has to pass.
+    // LLVM once refused a dict of lists, and the test ran another way. Now it's built.
     let text = "def lengths() -> dict[str, list[int]]:\n    {\"a\": [1, 2]}\n\ntest \"plain\":\n    assert 1 + 1 == 2\n\n\
                 test \"a dict of lists\":\n    assert lengths()[\"a\"].len() == 2\n";
     std::fs::write(&game, text).unwrap();
@@ -585,24 +585,9 @@ fn tested(program: &Path, args: &[&str], home: &Path) -> std::io::Result<(String
     ))
 }
 
-/// How many tests `--verbose` says left LLVM for the interpreter, taken out of what it
-/// printed. Only a run through LLVM says so, which the other way has to match.
-fn left_llvm(said: &mut (String, String)) -> usize {
-    let mut left = 0;
-    let mut kept = String::new();
-    for line in said.1.split_inclusive('\n') {
-        if let Some(counts) = line
-            .strip_prefix("note: ")
-            .and_then(|note| note.trim_end().strip_suffix(" tests ran through LLVM"))
-        {
-            let (passed, wanted) = counts.split_once(" of ").unwrap_or_default();
-            left += wanted.parse::<usize>().unwrap_or(0).saturating_sub(passed.parse().unwrap_or(0));
-        } else if !line.starts_with("note: some tests run another way") {
-            kept.push_str(line);
-        }
-    }
-    said.1 = kept;
-    left
+/// What `--verbose` printed, without its notes on how many tests LLVM took.
+fn without_notes(said: &mut (String, String)) {
+    said.1 = said.1.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
 }
 
 /// The functions each test ran, as `fennec test` kept them for a program.
@@ -615,38 +600,8 @@ fn kept_ran(
     Ok(records.into_iter().map(|(name, record)| (name, record.ran)).collect())
 }
 
-/// What's wrong with `fixtures/tests-off-llvm.txt`, given how many tests each example left LLVM
-/// with: nothing when it says just that.
-fn off_llvm_differs(left: &[(String, usize)]) -> Option<String> {
-    let listed = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tests-off-llvm.txt");
-    let written = match std::fs::read_to_string(&listed) {
-        Ok(written) => written,
-        Err(err) => return Some(format!("{}: {err}", listed.display())),
-    };
-    let mut allowed = Vec::new();
-    for line in written.lines().filter(|line| !line.starts_with('#') && !line.is_empty()) {
-        let parsed =
-            line.split_once(' ').and_then(|(name, count)| Some((name.to_owned(), count.parse().ok()?)));
-        let Some(entry) = parsed else {
-            return Some(format!("fixtures/tests-off-llvm.txt: `{line}` isn't a name and a count"));
-        };
-        allowed.push(entry);
-    }
-    if left == allowed {
-        return None;
-    }
-    let shown: Vec<String> = left.iter().map(|(name, count)| format!("{name} {count}")).collect();
-    Some(format!(
-        "fixtures/tests-off-llvm.txt is out of date. A count that went up means LLVM stopped taking tests \
-         it took; see `fennec test --verbose`. One that went down should be lowered there. Now:\n{}",
-        shown.join("\n")
-    ))
-}
-
 /// Every example's tests pass through LLVM, which keeps what most of them ran, for running them
-/// again only when that changes. How many of each example's tests leave LLVM can only go down:
-/// `fixtures/tests-off-llvm.txt` holds them. While the JIT was here, what it said each test ran
-/// had to be among what LLVM kept, and every example said the same both ways.
+/// again only when that changes. A test LLVM can't build fails, so this fails too.
 /// The examples are tested on every core, up to 8, each worker with a Fennec home of its own: one
 /// at a time took 34 seconds.
 #[test]
@@ -673,7 +628,7 @@ fn every_example_tested_through_llvm_passes_and_keeps_what_it_ran() {
     let found = crate::executables::at_once(&paths, |worker, path| {
         let home = home.join(format!("worker-{worker}"));
         let mut through_llvm = tested(path, &["--all", "--verbose"], &home)?;
-        let left = left_llvm(&mut through_llvm);
+        without_notes(&mut through_llvm);
         let llvm = kept_ran(&home, path)?;
         let mut wrong = Vec::new();
         if through_llvm.0.contains("  ✗") {
@@ -681,22 +636,14 @@ fn every_example_tested_through_llvm_passes_and_keeps_what_it_ran() {
         }
         let compared = llvm.len();
         let traced = llvm.values().filter(|ran| ran.is_some()).count();
-        Ok((compared, traced, left, wrong))
+        Ok((compared, traced, wrong))
     })
     .unwrap();
     let programs = paths.len();
     let compared: usize = found.iter().map(|(compared, ..)| compared).sum();
     let traced: usize = found.iter().map(|(_, traced, ..)| traced).sum();
-    let left: Vec<(String, usize)> = paths
-        .iter()
-        .zip(&found)
-        .filter(|(_, (_, _, left, _))| *left > 0)
-        .map(|(path, (_, _, left, _))| (path.file_stem().unwrap().to_string_lossy().into_owned(), *left))
-        .collect();
-    let mut wrong: Vec<String> = found.into_iter().flat_map(|(.., wrong)| wrong).collect();
-    wrong.extend(off_llvm_differs(&left));
-    let off: usize = left.iter().map(|(_, count)| count).sum();
-    println!("{programs} examples, {traced} of {compared} tests' traces kept, {off} tests off LLVM");
+    let wrong: Vec<String> = found.into_iter().flat_map(|(.., wrong)| wrong).collect();
+    println!("{programs} examples, {traced} of {compared} tests' traces kept");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     assert!(programs > 20, "only {programs} examples have tests");
     assert!(traced > 20, "only {traced} of {compared} tests kept what they ran");

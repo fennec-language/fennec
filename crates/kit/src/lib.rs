@@ -2,8 +2,7 @@
 //! `src/main.fen` holds `main` and the module `enemies.ai` is the file `src/enemies/ai.fen`.
 //!
 //! Loading reads a file and everything it imports, checks the imports, and merges the files
-//! into one module that the checker, the interpreter and the JIT run as they run a single
-//! file. Every file is parsed at its own byte offset, so `Program::sources` can say which
+//! into one module that the checker and the compiler take as they take a single file. Every file is parsed at its own byte offset, so `Program::sources` can say which
 //! file a diagnostic is in.
 
 mod embed;

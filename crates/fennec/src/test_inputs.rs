@@ -1,7 +1,7 @@
 //! Inputs for property tests through LLVM, as ordinary Fennec functions a test calls, so building
-//! them takes nothing but what any program takes. They draw the same values from the same seed as
-//! `generate` in the interpreter's `testing.rs`, in the same order: a test that fails here runs
-//! again there, which shrinks what it failed for.
+//! them takes nothing but what any program takes. They draw the same values from the same seed, in
+//! the same order, as the interpreter's `generate` did, so a test fails on the inputs it failed on
+//! there.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -56,8 +56,8 @@ impl<'m> Inputs<'m> {
         &self.source
     }
 
-    /// The function that makes a value of `ty`, written if it hasn't been, or None for a type only
-    /// the interpreter can make yet.
+    /// The function that makes a value of `ty`, written if it hasn't been, or None for a type whose
+    /// values can't be made here yet.
     pub(crate) fn function_for(&mut self, ty: &TypeExpr) -> Option<String> {
         let shown = written(ty);
         if let Some(name) = self.made.get(&shown) {
@@ -78,8 +78,8 @@ impl<'m> Inputs<'m> {
         Some(name)
     }
 
-    /// The function giving a value's simpler values to try, in the order `simpler` in the
-    /// interpreter's `testing.rs` gives them, written if it hasn't been, or None for a type whose
+    /// The function giving a value's simpler values to try, in the order the interpreter's
+    /// `simpler` gave them, written if it hasn't been, or None for a type whose
     /// values can't be made here.
     pub(crate) fn simpler_for(&mut self, ty: &TypeExpr) -> Option<String> {
         let shown = written(ty);
@@ -100,8 +100,8 @@ impl<'m> Inputs<'m> {
             }
             // Toward 0, as a whole number first.
             ("float", [], false) => "    if value == 0.0:\n        return []\n    if value % 1.0 == 0.0:\n        return [0.0]\n    whole = value - value % 1.0\n    if value < 0.0:\n        return [0.0, whole + 1.0]\n    [0.0, whole]\n".to_owned(),
-            // Tuples, structs and optionals have nothing simpler, as the interpreter has it.
-            // Shrinking structs by their fields comes once the interpreter is gone.
+            // Tuples, structs and optionals have nothing simpler yet. Shrinking structs by their
+            // fields is still to come.
             _ => {
                 self.function_for(ty)?;
                 "    []\n".to_owned()
@@ -147,7 +147,7 @@ impl<'m> Inputs<'m> {
     }
 
     /// A struct's fields, or one of an enum's cases with its fields. A `where` rule can refuse what
-    /// comes out, which only the interpreter tries again after.
+    /// comes out, which isn't tried again here.
     fn body_of_type(&mut self, name: &str) -> Option<String> {
         let module = self.module;
         let def: &TypeDef = module.items.iter().find_map(|item| match item {

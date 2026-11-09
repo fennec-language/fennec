@@ -1,5 +1,5 @@
 //! Imports of the standard library's modules, which are listed in `stdlib`. The checker and
-//! the interpreter both read imports through here, so they agree on what an import brings in.
+//! the compiler both read imports through here, so they agree on what an import brings in.
 
 use crate::ast::{Expr, ExprKind, Import};
 use crate::diagnostic::Diagnostic;

@@ -1,8 +1,8 @@
 //! `fennec dev trace [--json] [path]`: builds a program through LLVM, runs it, and says each place
 //! in its source that allocated or copied in the run, how often, how much, and why. The place that
 //! did it most comes first, since that's where it costs the most. What the program prints is left
-//! out. Blocks the runtime makes are all counted, but what the interpreter holds for a program
-//! isn't, until nothing crosses into it.
+//! out. Blocks the runtime makes are all counted, but what it holds as a `fennec_rt::Value`
+//! isn't.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;

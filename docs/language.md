@@ -588,7 +588,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 - The launcher runs the toolchain a kit asks for, `fennec = "0.4.2"` in `kit.toml`, pinned by its signed manifest's hash in `kit.lock`. It fetches one only when it's missing, and never with `--offline`, and only `fennec update` moves a pin. Built, as `fennec-launcher` for now. No release keys are made yet, so nothing it fetches verifies today.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest. CI builds each platform twice and compares them. Built.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
-- `embed_file("path")` gives a file's `bytes`, and `embed_folder("path")` a read-only map from relative path, always with `/`, to `bytes`, in sorted path order. Both are views into the program's read-only data, with no copy and nothing loaded at startup, and need no capability. A missing path or anything outside the kit, symlinks included, is a compile error, hidden files are left out, and nothing is compressed. Not built yet: today it's `embed("path")`, for one file.
+- `embed_file("path")` gives a file's `bytes`, and `embed_folder("path")` a read-only map from relative path, always with `/`, to `bytes`, in sorted path order. Both are views into the program's read-only data, with no copy and nothing loaded at startup, and need no capability. A missing path or anything outside the kit, symlinks included, is a compile error, hidden files are left out, and nothing is compressed. `embed_file` is built, and `embed_folder` isn't yet.
 
 ## Checks
 

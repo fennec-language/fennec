@@ -503,7 +503,7 @@ pub enum Operand {
     Float(f64),
     Bool(bool),
     Str(String),
-    /// Bytes written into the program, as `embed("path")` gives: a constant blob, shared rather
+    /// Bytes written into the program, as `embed_file("path")` gives: a constant blob, shared rather
     /// than copied, since a file can be big.
     Bytes(fennec_syntax::Blob),
     None,

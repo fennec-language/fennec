@@ -541,3 +541,16 @@ fn a_ref_case_changes_a_field_of_a_place() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].starts_with("a `match` with a `ref` case gives back nothing"), "{found:?}");
 }
+
+/// `embed` is now `embed_file`, and `fennec fix` renames it.
+#[test]
+fn embed_is_renamed_to_embed_file() {
+    let module =
+        fennec_syntax::parse("def main(stdout: Stdout):\n    stdout.print(embed(\"data.bin\").len())\n")
+            .unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    let [diagnostic] = diagnostics.as_slice() else { panic!("{diagnostics:?}") };
+    assert_eq!(diagnostic.message, "`embed` doesn't exist");
+    let fixed: Vec<&str> = diagnostic.fixes.iter().map(|fix| fix.text.as_str()).collect();
+    assert_eq!(fixed, ["embed_file"]);
+}

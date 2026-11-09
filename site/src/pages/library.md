@@ -22,7 +22,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC, comparing secrets, and `Secret`, which can't be printed, logged or saved; `uuid`; `Template`, which every t-string makes. Secure random bytes come from the `Entropy` capability |
 | Diagnostics | `log` |
 | Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
-| Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`. Planned: `TaskGroup` and pools |
+| Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`. Planned: pools |
 | Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, written in Fennec over `net`: sign-in, queries and transactions, over TLS. Planned: connecting from a URL, as a pool |
 
 ## Importing what you use

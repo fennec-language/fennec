@@ -6112,6 +6112,42 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator abandoned while a `with` source's block is open runs the source's cleanup then, as
+/// a `break` out of the block would, and one run to its end runs it as it goes past.
+#[test]
+#[ignore = "a source's cleanup written in around a `yield` doesn't run yet when the generator is abandoned"]
+fn an_abandoned_generator_runs_its_open_sources_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "abandoned_source",
+        "struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door else:
+        stdout.print(\"failed\", name)
+    stdout.print(\"closed\", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def main(stdout: Stdout):
+    for n in held(\"left early\", stdout):
+        stdout.print(\"got\", n)
+        break
+    stdout.print(\"after the loop\")
+    stdout.print(sum(n for n in held(\"run out\", stdout)))
+",
+    )?;
+    assert_eq!(printed, "got 1\nclosed left early\nafter the loop\nclosed run out\n3\n");
+    Ok(())
+}
+
 /// `list`, `sorted`, `set`, `min` and `max` of a type with an `iter` of its own take what it
 /// gives, as a `for` loop does: the program's own type, and the standard library's, which write
 /// themselves with `list(self)`.

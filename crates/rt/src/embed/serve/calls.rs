@@ -231,7 +231,7 @@ pub(in crate::embed) fn served_call(
     timeout: Option<Duration>,
     at: Span,
 ) -> Option<Result<Value, Diagnostic>> {
-    use crate::stdlib::net::{bytes_asked, data_of, done_or_failed, line_value};
+    use crate::stdlib::net::{bytes_asked, data_of, done_or_failed, trimmed_line_value};
     if !CONNS.with_borrow(|conns| conns.contains_key(&handle)) {
         return None;
     }
@@ -243,11 +243,11 @@ pub(in crate::embed) fn served_call(
             Err(wrong) => return Some(Err(wrong)),
         },
         ("read_line", []) => {
-            on_conn(handle, |conn| conn.read_line(timeout)).map(|line| line_value(line.as_deref()))
+            on_conn(handle, |conn| conn.read_line(timeout)).map(|line| trimmed_line_value(line.as_deref()))
         }
         ("read_line.crlf", [Value::Bool(crlf)]) => {
             on_conn(handle, |conn| conn.read_line_crlf(timeout, *crlf))
-                .map(|line| line_value(line.as_deref()))
+                .map(|line| trimmed_line_value(line.as_deref()))
         }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)

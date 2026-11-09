@@ -321,7 +321,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 **There are ten sized number types: `i8` to `i64`, `u8` to `u64`, `f32` and `f64`.** `int` is `i64` and `float` is `f64`, and they stay the everyday types. There's no 128-bit type and no platform-sized one. Built in the checker, all ten, with `i64` as `int` and `f64` as `float`. Built natively, all ten, apart from a few gaps `docs/language.md` names, like a `u64` literal above the largest `int`.
 *Why:* Game math, file formats, GPUs and hashes need exact sizes, and `int` already covers indexes.
 
-**A literal takes the type it's going into, and is checked to fit at compile time.** `speed: f32 = 1.5` needs nothing more, and `pixel: u8 = 300` is a compile error. With nothing to go by, a literal is an `int` or a `float`, as today. Built, for names, parameters, returns, the other side of an operator and list items. Not built yet: set, dict and tuple literals.
+**A literal takes the type it's going into, and is checked to fit at compile time.** `speed: f32 = 1.5` needs nothing more, and `pixel: u8 = 300` is a compile error. With nothing to go by, a literal is an `int` or a `float`, as today. Built, for names, parameters, returns, the other side of an operator, and the items of list, set, dict and tuple literals. Native code doesn't hold sets and dicts of sized numbers yet.
 *Why:* There's nothing new to write, and a value that can't fit is caught before the program runs.
 
 **Conversions are always written, in two forms.** `u8(x)` stops the program if `x` doesn't fit, since that's a bug. `u8.from(x)?` and `u8.parse(text)?` fail cleanly, for anything from outside, and the standard library's decoders use only those. Mixing types, like `i32 + i64`, is a compile error that says to convert one side, and widening, like `i64(small)`, is written too. Built: the mixing errors, `u8(x)`, and `u8.from(x)?` and `u8.parse(text)?`, written in Fennec, for the sizes that run.
@@ -452,7 +452,7 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
-**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves as any `else:` block must. Chris decided this on 2026-11-08. Not built yet: today it's a syntax error, and a block that needs the failure uses `match`.
+**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves as any `else:` block must. Chris decided this on 2026-11-08. Built.
 ```fennec
 # Planned: `else as` doesn't parse yet
 score = load_score(path) else as failure:
@@ -560,7 +560,7 @@ extend list[T: Ordered]:
 `count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written, apart from an operator defined for different right-hand types, as below. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
 *Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin and Go all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
 
-**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They need no new syntax: a unit is a struct holding its number, and its operators say what each combination gives, using one operator for each right-hand type. Chris decided this on 2026-11-07, which settles the syntax. Built: a unit struct with one operator of each kind, like `Meters + Meters`. Not built yet: a second operator of the same kind, like `Meters / float` beside `Meters / Seconds`, which waits for operators chosen by their right-hand type; today it's refused as a duplicate method.
+**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They need no new syntax: a unit is a struct holding its number, and its operators say what each combination gives, using one operator for each right-hand type. Chris decided this on 2026-11-07, which settles the syntax. Built: a unit struct with one operator of each kind, like `Meters + Meters`. A second operator of the same kind, like `Meters / float` beside `Meters / Seconds`, is built too.
 ```fennec
 # Planned: the second `def /` is refused today
 struct Meters:
@@ -667,7 +667,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 
 **`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply. A type with its own `def str` still satisfies `Format`.
 
-**A type may define each operator once for each right-hand type.** `Mat4 * Mat4` and `Mat4 * Vec4` can both exist, and so can `Time - Time -> Duration` and `Time - Duration -> Time`. The types must match exactly, with no conversions, and it's for operators only: a named function still has one meaning. Not built yet: today a type can have only one of each.
+**A type may define each operator once for each right-hand type.** `Mat4 * Mat4` and `Mat4 * Vec4` can both exist, and so can `Time - Time -> Duration` and `Time - Duration -> Time`. The types must match exactly, with no conversions, and it's for operators only: a named function still has one meaning. Built.
 *Why:* `m * v` and `deadline - now` read like the math, and exact matching keeps it simple to check, unlike overloading in languages with conversions, whose best-match rules give confusing errors and slow compiles.
 
 **`in` is an operator a type defines,** like `def +`, `def <` and `def []`.

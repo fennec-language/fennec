@@ -40,6 +40,8 @@ struct Stream {
     peer: String,
     socket: TcpStream,
     reader: Mutex<Reading>,
+    /// What a line read that timed out had got, for the next to go on from.
+    partial_line: Mutex<Vec<u8>>,
     writing: Mutex<()>,
 }
 
@@ -917,7 +919,13 @@ fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Res
             socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?,
         )),
     };
-    let stream = Stream { peer, socket, reader: Mutex::new(reading), writing: Mutex::new(()) };
+    let stream = Stream {
+        peer,
+        socket,
+        reader: Mutex::new(reading),
+        partial_line: Mutex::new(Vec::new()),
+        writing: Mutex::new(()),
+    };
     Ok(open(|open| {
         let handle = fresh_handle(open);
         open.insert(handle, Socket::Stream(Arc::new(stream)));
@@ -973,9 +981,15 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
 fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut line = Vec::new();
+    let mut partial = stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut line = std::mem::take(&mut *partial);
     // What a read cut short by having to wait got is kept in `line`, and the next adds to it.
-    reading(&stream.socket, &mut reader, timeout, |reader| reader.read_until(b'\n', &mut line))?;
+    let read = reading(&stream.socket, &mut reader, timeout, |reader| reader.read_until(b'\n', &mut line));
+    if matches!(read, Err(Failure::TimedOut(_))) {
+        *partial = line;
+        return read.map(|_| None);
+    }
+    read?;
     Ok((!line.is_empty()).then_some(line))
 }
 
@@ -1382,6 +1396,24 @@ pub(crate) mod tests {
             Some((_, Value::Int(handle))) => *handle,
             _ => -1,
         }
+    }
+
+    /// A read of a line that times out keeps what it got, for the next read to go on from.
+    #[test]
+    fn a_line_read_that_times_out_keeps_what_it_got() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        server.write_all(b"hel").unwrap();
+        let short = Some(std::time::Duration::from_millis(50));
+        assert!(matches!(super::read_line(handle, short), Err(Failure::TimedOut(_))));
+        server.write_all(b"lo\n").unwrap();
+        let line = super::read_line(handle, Some(std::time::Duration::from_secs(10)));
+        assert_eq!(line.ok().flatten().as_deref(), Some(&b"hello\n"[..]));
+        close(handle);
     }
 
     /// UDP has no `shutdown`, so a read on another thread has to find out for itself.

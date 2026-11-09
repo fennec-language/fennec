@@ -479,33 +479,31 @@ impl Lowering<'_> {
                 ExprKind::Name(place) => (place.clone(), None),
                 _ => (lent_as.clone(), Some(assign(&lent_as, value, true, None))),
             };
-            if split {
-                let targets = names.iter().map(|named| name(&named.name, named.span)).collect();
-                let target = Expr { kind: ExprKind::Tuple(targets), span: here(at) };
-                let kind = StmtKind::Assign {
-                    target,
-                    op: None,
-                    value: name(&place, at),
-                    declare_mut: true,
-                    ty: None,
-                };
-                block.insert(0, stmt(kind, at));
-            } else {
-                rename(&mut block, &[(held.name.clone(), place)]);
-            }
+            given_as(&mut block, (split, names), &held.name, &place, at);
+            // A crash runs the `else:` too: it's a function of its own, marked where the block
+            // starts and unmarked wherever the block ends or fails, before any cleanup runs.
+            let crash = on_crash(otherwise, at);
+            let unmarked = unmarked_first(crash.as_ref(), otherwise);
             if !otherwise.is_empty() {
-                fail_through(&mut block, otherwise);
+                fail_through(&mut block, &unmarked);
             }
             caller.ways = Ways::default();
             exits(&mut block, &mut caller, false);
-            let mut block = self.on_failure(otherwise, block, at);
+            let mut block = self.on_failure(&unmarked, block, at);
             let mut lent: Vec<Stmt> = binding.into_iter().collect();
+            if let Some((made, marked, _)) = &crash {
+                lent.push(made.clone());
+                lent.push(marked.clone());
+            }
             if caller.ways.any() {
                 block.push(stmt(StmtKind::Break, at));
                 let always = Expr { kind: ExprKind::Bool(true), span: here(at) };
                 lent.push(stmt(StmtKind::While { cond: always, body: block }, at));
             } else {
                 lent.extend(block);
+            }
+            if let Some((_, _, done)) = crash {
+                lent.push(done);
             }
             Some(lent)
         }) {
@@ -1092,6 +1090,116 @@ fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
         }
     }
     written
+}
+
+/// The block the caller wrote, given what's lent: by its name, or split into several names.
+fn given_as(block: &mut Vec<Stmt>, (split, names): (bool, &[WithName]), held: &str, place: &str, at: Span) {
+    if split {
+        let targets = names.iter().map(|named| name(&named.name, named.span)).collect();
+        let target = Expr { kind: ExprKind::Tuple(targets), span: here(at) };
+        let kind = StmtKind::Assign { target, op: None, value: name(place, at), declare_mut: true, ty: None };
+        block.insert(0, stmt(kind, at));
+    } else {
+        rename(block, &[(held.to_owned(), place.to_owned())]);
+    }
+}
+
+/// A cleanup that unmarks what a crash runs before it runs, when there's one.
+fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec<Stmt> {
+    match crash {
+        Some((_, _, done)) => std::iter::once(done.clone()).chain(otherwise.iter().cloned()).collect(),
+        None => otherwise.to_vec(),
+    }
+}
+
+/// What starts the name of the function a crash in a `with` block runs.
+pub(crate) const ON_CRASH: &str = "crash__cleanup";
+
+/// What a crash in a `with` block runs: the source's `else:` as a function taking nothing, the
+/// call that marks it to run, and the call that unmarks it. On a crash there's no failure to pass
+/// up, so a whole line's `?` in it only runs, and a `fail` ends it. `None` with no `else:`, or
+/// with an `else:` that passes a failure up some other way.
+fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
+    if otherwise.is_empty() {
+        return None;
+    }
+    let body = quietly(otherwise)?;
+    let held = format!("{ON_CRASH}{}", here(at).start);
+    let def = FnDef {
+        name: held.clone(),
+        generics: Vec::new(),
+        params: Vec::new(),
+        ret: None,
+        arrow: None,
+        fails: None,
+        body,
+        annotations: Vec::new(),
+        span: here(at),
+    };
+    let call = |intrinsic: &str| {
+        let callee = Box::new(name(&format!("intrinsics.{intrinsic}"), at));
+        let given = fennec_syntax::Arg { name: None, is_mut: false, value: name(&held, at) };
+        stmt_value(Expr { kind: ExprKind::Call { callee, args: vec![given] }, span: here(at) })
+    };
+    Some((stmt(StmtKind::Def(def), at), call("crash_cleanup"), call("crash_cleanup_done")))
+}
+
+/// A cleanup as a crash runs it, with nothing to pass up: a whole line that's a `?` runs and its
+/// failure is dropped, and a `fail` ends it. `None` when a failure passes up any other way.
+fn quietly(cleanup: &[Stmt]) -> Option<Vec<Stmt>> {
+    let mut quiet = Vec::new();
+    for each in cleanup {
+        let kind = match &each.kind {
+            StmtKind::Fail(_) => StmtKind::Return(None),
+            StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) => {
+                let pattern = Pattern::Wildcard;
+                let pass = stmt(StmtKind::Pass, each.span);
+                let arm = MatchArm { pattern, guard: None, body: vec![pass], span: each.span };
+                let kind = ExprKind::Match { subject: value.clone(), arms: vec![arm] };
+                StmtKind::Expr(Expr { kind, span: here(each.span) })
+            }
+            StmtKind::If { branches, otherwise } => {
+                let branches = branches
+                    .iter()
+                    .map(|(cond, body)| Some((cond.clone(), quietly(body)?)))
+                    .collect::<Option<Vec<_>>>()?;
+                let otherwise = match otherwise {
+                    Some(body) => Some(quietly(body)?),
+                    None => None,
+                };
+                StmtKind::If { branches, otherwise }
+            }
+            _ if passes_up(each) => return None,
+            other => other.clone(),
+        };
+        quiet.push(Stmt { kind, span: each.span });
+    }
+    Some(quiet)
+}
+
+/// Whether a statement has a `?` or a `fail` anywhere in it.
+fn passes_up(each: &Stmt) -> bool {
+    let mut found = false;
+    let mut held = vec![each.clone()];
+    fennec_syntax::visit::in_stmts(&mut held, &mut |expr| {
+        if matches!(expr.kind, ExprKind::Try { .. }) {
+            found = true;
+        }
+    });
+    found
+        || blocks_of(each).iter().any(|block| block.iter().any(passes_up))
+        || matches!(each.kind, StmtKind::Fail(_))
+}
+
+/// The blocks directly inside a statement.
+fn blocks_of(each: &Stmt) -> Vec<&[Stmt]> {
+    match &each.kind {
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().map(|(_, body)| body.as_slice()).chain(otherwise.as_deref()).collect()
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => vec![body],
+        _ => Vec::new(),
+    }
 }
 
 fn stmt_value(value: Expr) -> Stmt {

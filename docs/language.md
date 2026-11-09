@@ -388,7 +388,7 @@ moved = model * point
 remaining = deadline - now
 ```
 
-- A type may define each operator once for each right-hand type, so `Mat4 * Mat4` and `Mat4 * Vec4` can both exist. Not built yet: today a type has one `def *`, and the checker lane builds this next.
+- A type may define each operator once for each right-hand type, so `Mat4 * Mat4` and `Mat4 * Vec4` can both exist. Built.
 - Types must match exactly, with no conversions, so there's never a best match to choose. `now + now` is a compile error that lists the `+` that `Time` has.
 - It's for operators only. A named function still has one meaning, so `load(path)` is always the same `load`.
 - A user type gets this exactly as `std`'s types do.
@@ -417,7 +417,7 @@ stream = fs.open(filename) else:
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
 - A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. `return Err(...)`, and a function that says it gives back a `Result`, give back a value. Built for `def`s; a lambda's body still passes one up as it is.
 - `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
-- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built. On a call that can fail, `_ = f()` will be a compile error, so a failure must always be handled, and `ignore` goes. Not built yet: today `_ = f()` drops the failure.
+- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built. On a call that can fail, `_ = f()` is a compile error, so a failure must always be handled, and there's no `ignore`. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Built in the checker and natively, where an error's notes are a hidden word of its own, 0 until one is added.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
@@ -595,7 +595,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 - Every check stays, unless the compiler proves it can't fail: overflow, bounds, missing keys and divide by zero. A proven check is removed in every function, not only in `@hot` ones. Built.
 - `x / 0.0` stops the program, as Python's `ZeroDivisionError` does, and so does integer division by zero. Built. The compiler removes the check where it proves the divisor isn't zero.
 - A broken `where` rule stops the program in code, and a load that breaks one fails cleanly. Built.
-- `@hot` allows a leftover overflow check, and refuses any leftover bounds, key or integer divide check as a compile error that says why. Built. It will allow a leftover float divide check too, as it does overflow. Not built yet.
+- `@hot` allows a leftover overflow check, and refuses any leftover bounds, key or integer divide check as a compile error that says why. Built. It allows a leftover float divide check too, as it does overflow. Built.
 - Speed never comes from dropping a check: there's no unchecked arithmetic and no switch that turns checks off. There's no `@fast_math` either: a float result is the same bits on every machine and every build, which replays and lockstep games depend on.
 
 ## Speed

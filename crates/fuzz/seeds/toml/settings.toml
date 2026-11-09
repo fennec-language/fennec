@@ -1,0 +1,10 @@
+name = "fox"
+on = true
+tags = ["a", "b"]
+
+[window]
+title = "main"
+size = 3
+
+[limits]
+x = 1

@@ -23,6 +23,7 @@ mod enumerate_lowering;
 mod expect;
 mod expr;
 mod extend;
+pub use extend::method_key;
 mod function;
 mod generic;
 mod imports;
@@ -775,6 +776,16 @@ impl Signatures {
 
     pub fn get(&self, name: &str) -> Option<&Signature> {
         self.functions.get(name)
+    }
+
+    /// Each other definition of an operator, `key` being its first's, like `Mat4.*`: the ones for
+    /// other types on its right, as `Mat4.*@Vec4`.
+    pub fn operator_again<'s>(&'s self, key: &str) -> impl Iterator<Item = (&'s str, &'s Signature)> + 's {
+        let again = format!("{key}{}", extend::OTHER_RIGHT);
+        self.functions
+            .range(again.clone()..)
+            .take_while(move |(found, _)| found.starts_with(&again))
+            .map(|(found, signature)| (found.as_str(), signature))
     }
 
     /// A struct's fields, the standard library's included.

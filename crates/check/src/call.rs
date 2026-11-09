@@ -395,6 +395,34 @@ impl FnCx<'_> {
         signature.returns
     }
 
+    /// Which of a type's definitions of an operator a use of it calls: the one defined for exactly
+    /// the type on the right, when the type has one again for another, or else its first, `key`.
+    pub(crate) fn operator_for(&mut self, receiver: &Type, key: String, right: &Type) -> String {
+        let again = format!("{key}{}", crate::extend::OTHER_RIGHT);
+        let others: Vec<String> = self
+            .checker
+            .program
+            .functions
+            .range(again.clone()..)
+            .map(|(found, _)| found)
+            .take_while(|found| found.starts_with(&again))
+            .cloned()
+            .collect();
+        if others.is_empty() {
+            return key;
+        }
+        let right = self.checker.settled(right);
+        for each in std::iter::once(key.clone()).chain(others) {
+            let takes = self
+                .method_signature(receiver, &each)
+                .and_then(|signature| signature.params.get(1).map(|param| param.ty.clone()));
+            if takes.is_some_and(|takes| self.checker.settled(&takes) == right) {
+                return each;
+            }
+        }
+        key
+    }
+
     /// An operator on a value of a type parameter, from one of its interfaces, like `def +`
     /// in `T: Addable`. `None` when none of them has it.
     pub(crate) fn interface_operator(

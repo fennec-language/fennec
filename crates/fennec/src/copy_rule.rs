@@ -40,17 +40,20 @@ pub(crate) fn implicit_copies(
 
 /// Each check native code keeps in a `@hot` function or what it calls: one the compiler couldn't
 /// show can't fail, like an index it can't place inside its list. An overflow check it couldn't
-/// prove away stays, as the safety net it is everywhere else.
+/// prove away stays, as the safety net it is everywhere else, and so does a float divide check.
 fn checks_kept(checks: &[fennec_llvm::CheckLeft], reach: &fennec_ir::HotReach) -> Vec<Diagnostic> {
     use fennec_llvm::CheckKind;
     let key = |name: &str| name.split_once('[').map_or(name, |(key, _)| key).to_owned();
     checks
         .iter()
-        .filter(|check| !check.span.in_prelude() && check.what != CheckKind::Overflow)
+        .filter(|check| {
+            !check.span.in_prelude()
+                && !matches!(check.what, CheckKind::Overflow | CheckKind::FloatDivideByZero)
+        })
         .filter_map(|check| {
             let (_, root) = reach.reached.iter().find(|(name, _)| *name == check.function)?;
             let (what, help) = match &check.what {
-                CheckKind::Overflow => return None,
+                CheckKind::Overflow | CheckKind::FloatDivideByZero => return None,
                 CheckKind::Bounds => (
                     "this index may be outside what it indexes, so it keeps its bounds check".to_owned(),
                     "index with a loop's count over the length, as in `for i in range(items.len())`",

@@ -411,6 +411,11 @@ impl Lowering<'_> {
                 self.emit(kind, span);
                 Ok(None)
             }
+            "intrinsics.abandoning" => {
+                let dest = dest.ok_or("whether it's let go is kept")?;
+                self.abandoning(dest, span)?;
+                Ok(Some(dest))
+            }
             _ => self.launch_task(dest, &values, span).map(Some),
         }
     }
@@ -499,13 +504,18 @@ impl Lowering<'_> {
         let ExprKind::Index { object, index } = &callee.kind else { return None };
         let (ExprKind::Name(name), ExprKind::Name(param)) = (&object.kind, &index.kind) else { return None };
         let ty = self.subst.get(param)?;
+        // A program's own type checked under another name, as one named like a library type is,
+        // is named and shaped as it's written: what a program saves never depends on what the
+        // library happens to name its own types.
+        let source = || ty.source().map(|source| fennec_syntax::rename::shown_key(&source));
+        let shape = || shape_hash(&fennec_syntax::rename::shown_key(&self.context.signatures.shape(ty)));
         match name.as_str() {
-            "intrinsics.type_name" => ty.source().map(Operand::Str),
-            "intrinsics.shape_hash" => Some(Operand::Int(shape_hash(&self.context.signatures.shape(ty)))),
+            "intrinsics.type_name" => source().map(Operand::Str),
+            "intrinsics.shape_hash" => Some(Operand::Int(shape())),
             "intrinsics.layout" => {
-                let layout = self.context.layout(ty);
-                let shape = shape_hash(&self.context.signatures.shape(ty));
-                let name = ty.source().unwrap_or_default().replace(' ', "");
+                let layout = fennec_syntax::rename::shown_key(&self.context.layout(ty));
+                let shape = shape();
+                let name = source().unwrap_or_default().replace(' ', "");
                 let known = self.context.layouts.borrow().iter().any(|saved| saved.shape == shape);
                 if !known {
                     self.context.check_against_lock(ty, &name, shape);
@@ -517,7 +527,7 @@ impl Lowering<'_> {
             // Whether the kit's `pack.lock` has this type's layout as it is now, so `dumps` can
             // leave it out of what it writes.
             "intrinsics.shape_locked" => {
-                let shape = shape_hash(&self.context.signatures.shape(ty));
+                let shape = shape();
                 let wanted = format!("{:016x} ", shape.cast_unsigned());
                 Some(Operand::Bool(self.context.pack_lock().lines().any(|line| line.starts_with(&wanted))))
             }
@@ -943,7 +953,8 @@ fn gives_a_value(ty: &Type) -> bool {
 }
 
 /// The intrinsics the IR lowers itself, rather than leave to the backend as they are.
-const LOWERED: [&str; 5] = [
+const LOWERED: [&str; 6] = [
+    "intrinsics.abandoning",
     "intrinsics.channel_receive",
     "intrinsics.launch_end",
     "intrinsics.launch",

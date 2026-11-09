@@ -522,6 +522,9 @@ impl Lowering<'_> {
                 _ => (lent_as.clone(), Some(assign(&lent_as, value, true, None))),
             };
             given_as(&mut block, (split, names), &held.name, &place, at);
+            // A generator let go at a `yield` in the block goes on once, to leave by `return`,
+            // so the source's cleanup runs as it does for any other way out.
+            leave_when_abandoned(&mut block, at);
             // A crash runs the `else:` too: it's a function of its own, marked where the block
             // starts and unmarked wherever the block ends or fails, before any cleanup runs.
             let crash = on_crash(otherwise, at);
@@ -1288,6 +1291,57 @@ fn blocks_of(each: &Stmt) -> Vec<&[Stmt]> {
         _ => Vec::new(),
     }
 }
+
+/// Writes `if intrinsics.abandoning(): return` after each `yield` in `body`, but not in what's
+/// defined there, and not twice, as a source inside another's block asks too.
+fn leave_when_abandoned(body: &mut Vec<Stmt>, at: Span) {
+    let asks = |stmt: &Stmt| {
+        matches!(&stmt.kind, StmtKind::If { branches, .. } if branches.first().is_some_and(|(cond, _)| {
+            matches!(&cond.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Name(called) if called == ABANDONING))
+        }))
+    };
+    let mut index = 0;
+    while index < body.len() {
+        if let Some(stmt) = body.get_mut(index) {
+            match &mut stmt.kind {
+                StmtKind::If { branches, otherwise } => {
+                    for (_, block) in branches {
+                        leave_when_abandoned(block, at);
+                    }
+                    if let Some(block) = otherwise {
+                        leave_when_abandoned(block, at);
+                    }
+                }
+                StmtKind::While { body: block, .. }
+                | StmtKind::For { body: block, .. }
+                | StmtKind::With { body: block, .. }
+                | StmtKind::OnFailure { body: block, .. } => leave_when_abandoned(block, at),
+                StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+                    for arm in arms {
+                        leave_when_abandoned(&mut arm.body, at);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let yielded = body.get(index).is_some_and(|stmt| matches!(stmt.kind, StmtKind::Yield(_)));
+        if yielded && !body.get(index + 1).is_some_and(asks) {
+            let callee = Box::new(name(ABANDONING, at));
+            let asked = Expr { kind: ExprKind::Call { callee, args: Vec::new() }, span: here(at) };
+            let leave = vec![stmt(StmtKind::Return(None), at)];
+            body.insert(
+                index + 1,
+                stmt(StmtKind::If { branches: vec![(asked, leave)], otherwise: None }, at),
+            );
+            index += 1;
+        }
+        index += 1;
+    }
+}
+
+/// What a generator asks after a `yield` in a source's block: whether it was let go there.
+const ABANDONING: &str = "intrinsics.abandoning";
 
 fn stmt_value(value: Expr) -> Stmt {
     let span = value.span;

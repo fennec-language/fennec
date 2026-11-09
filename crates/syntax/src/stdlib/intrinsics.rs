@@ -74,6 +74,7 @@ pub(crate) const MODULE: Module = Module {
         "launch_end",
         "crash_cleanup",
         "crash_cleanup_done",
+        "abandoning",
     ],
     source: include_str!("intrinsics.fen"),
     gives: &[],

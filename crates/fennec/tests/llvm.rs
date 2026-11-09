@@ -4369,6 +4369,49 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A program's own type named like one the library keeps to itself, `std.collections`' `Reached`,
+/// is checked under a name no one can write, but nothing the program does depends on that: it
+/// saves as a dict's key, which goes through functions written in Fennec for its tuples, and what
+/// `pack` writes for it is what it would be for any type of that name and shape, the first word
+/// after `FPK2` the hash of `Reached{x: int, y: int}`.
+#[test]
+fn a_type_named_like_a_private_std_type_saves_as_written() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let collections = Path::new(env!("CARGO_MANIFEST_DIR")).join("../syntax/src/stdlib/collections.fen");
+    assert!(
+        std::fs::read_to_string(collections)?.contains("\nstruct Reached:"),
+        "std no longer has a private `Reached`: name a type here after one it has"
+    );
+    // FNV-1a, as `shape_hash` takes it, of the shape as written.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in "Reached{x: int, y: int}".bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let shape: Vec<String> = hash.to_le_bytes().iter().map(u8::to_string).collect();
+    let wanted = format!("[[{{\"x\": 1, \"y\": 2}}, \"tree\"]]\nTrue\nTrue\nbytes([{}])\n", shape.join(", "));
+    prints_in_both_builds(
+        "named_like_private_std",
+        r#"from std import json, pack
+
+struct Reached:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    spots = {Reached(x=1, y=2): "tree"}
+    text = json.dumps(spots)
+    stdout.print(text)
+    stdout.print((json.loads[dict[Reached, str]](text) else {}) == spots)
+    stdout.print((pack.loads[dict[Reached, str]](pack.dumps(spots)) else {}) == spots)
+    stdout.print(pack.dumps(Reached(x=1, y=2))[4:12])
+"#,
+        &wanted,
+    )
+}
+
 /// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
 /// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
 /// what's inside it. A type with no fields gives none.
@@ -6165,6 +6208,201 @@ def main(stdout: Stdout):
     stdout.print(returns_from_it(stdout))
 "#,
     )
+}
+
+/// A generator abandoned while a `with` source's block is open runs the source's cleanup then, as
+/// a `break` out of the block would, and one run to its end runs it as it goes past.
+#[test]
+fn an_abandoned_generator_runs_its_open_sources_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "abandoned_source",
+        "struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door else:
+        stdout.print(\"failed\", name)
+    stdout.print(\"closed\", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def main(stdout: Stdout):
+    for n in held(\"left early\", stdout):
+        stdout.print(\"got\", n)
+        break
+    stdout.print(\"after the loop\")
+    stdout.print(sum(n for n in held(\"run out\", stdout)))
+",
+    )?;
+    assert_eq!(printed, "got 1\nclosed left early\nafter the loop\nclosed run out\n3\n");
+    Ok(())
+}
+
+/// Each source a generator holds open where it's let go closes then, innermost first and once:
+/// not its `else:`, which is for a block that fails, and nothing for a block that already ended
+/// or a generator that never started. A `return` out of the loop lets go of it too.
+#[test]
+fn an_abandoned_generator_closes_each_open_source_once_innermost_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("abandoned_sources", ABANDONED_SOURCES)?;
+    assert_eq!(
+        printed,
+        "got 0\nclosed inner 0\ngot 1\nclosed inner 1\nclosed outer\n--\ngot 1\nclosed short\ngot 2\n--\n\
+         closed inner 0\nclosed inner 1\nclosed outer\nkept 1\n--\nnever started\n"
+    );
+    Ok(())
+}
+
+const ABANDONED_SOURCES: &str = r#"struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door else:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def nested(stdout: Stdout) -> Iterator[int]:
+    with opened("outer", stdout) as outer:
+        for n in range(3):
+            with opened(f"inner {n}", stdout) as inner:
+                yield n
+    yield 99
+
+def after_the_block(stdout: Stdout) -> Iterator[int]:
+    with opened("short", stdout) as door:
+        yield 1
+    yield 2
+
+def kept(stdout: Stdout) -> int:
+    walk = nested(stdout)
+    for n in walk:
+        if n == 1:
+            return n
+    0
+
+def main(stdout: Stdout):
+    for n in nested(stdout):
+        stdout.print("got", n)
+        if n == 1:
+            break
+    stdout.print("--")
+    for n in after_the_block(stdout):
+        stdout.print("got", n)
+        if n == 2:
+            break
+    stdout.print("--")
+    stdout.print("kept", kept(stdout))
+    stdout.print("--")
+    never = nested(stdout)
+    stdout.print("never started")
+"#;
+
+/// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
+/// as one that can't fail does, closing what it holds then and not when the function ends.
+#[test]
+fn a_failing_generator_for_a_loop_closes_when_the_loop_ends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "failing_generator_closed",
+        r#"error Boom:
+    pass
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door
+    stdout.print("closed", name)
+
+def plain(stdout: Stdout) -> Iterator[int]:
+    with opened("plain", stdout) as door:
+        yield 1
+        yield 2
+
+def failing(stdout: Stdout, bad: bool) -> Iterator[int] fails Boom:
+    if bad:
+        fail Boom()
+    with opened("failing", stdout) as door:
+        yield 1
+        yield 2
+
+def main(stdout: Stdout) fails Boom:
+    for n in plain(stdout):
+        break
+    stdout.print("after plain")
+    for n in failing(stdout, bad=False)?:
+        break
+    stdout.print("after failing")
+"#,
+    )?;
+    assert_eq!(printed, "closed plain\nafter plain\nclosed failing\nafter failing\n");
+    Ok(())
+}
+
+/// A generator over a file, let go by `break`, closes the file: one written takes its path's
+/// place right then, and 200 read and let go stay under a limit of 64 open files.
+#[cfg(unix)]
+#[test]
+fn a_generator_over_a_file_let_go_by_break_closes_the_file() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generator_files")?;
+    let program = dir.join("files.fen");
+    std::fs::write(
+        &program,
+        r#"def numbered(fs: Fs, path: str) -> Iterator[int] fails IoError:
+    with fs.create(path)? as file:
+        for n in range(10):
+            file.write_line(str(n))?
+            yield n
+
+def first_lines(fs: Fs, path: str) -> Iterator[str] fails IoError:
+    with fs.open(path)? as file:
+        for line in file.lines()?:
+            yield line
+
+def main(stdout: Stdout, fs: Fs) fails IoError:
+    for n in numbered(fs, "numbers.txt")?:
+        if n == 2:
+            break
+    with fs.open("numbers.txt")? as file:
+        stdout.print(file.read_text()?.split("\n"))
+    # Each loop lets go of a generator holding a file open: 200 of them run out of file
+    # handles under a limit of 64 if any stays open.
+    mut read = 0
+    for _ in range(200):
+        for line in first_lines(fs, "numbers.txt")?:
+            read += 1
+            break
+    stdout.print(read)
+"#,
+    )?;
+    let executable = dir.join("files");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new("/bin/sh")
+        .args(["-c", "ulimit -n 64 && exec \"$0\"", &executable.to_string_lossy()])
+        .current_dir(&dir)
+        .output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[\"0\", \"1\", \"2\", \"\"]\n200\n");
+    Ok(())
 }
 
 /// `list`, `sorted`, `set`, `min` and `max` of a type with an `iter` of its own take what it

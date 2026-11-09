@@ -5,5 +5,5 @@ struct Door:
         pass
 
 def main(stdout: Stdout):
-    with Door() as door:
-        stdout.print(door.open)
+    door = Door()
+    stdout.print(door.open)

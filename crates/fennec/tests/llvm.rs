@@ -7365,6 +7365,53 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
     Ok(())
 }
 
+/// A file whose block ends without it taking its path's place fails the `with`, and leaves nothing
+/// behind: the end of the block is where what was written is flushed, synced and renamed, and any
+/// of those failing is the block's failure. Here the path has become a folder by then.
+#[test]
+fn a_file_that_cant_take_its_place_fails_its_with_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("finish-fails")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+## Writes a file whose path becomes a folder before the block ends, so it can't take its place.
+def blocked(fs: Fs) fails IoError:
+    with fs.create(\"taken.txt\")? as file:
+        file.write_text(\"never seen\")?
+        fs.make_dir(\"taken.txt\")?
+        fs.write_text(\"taken.txt/inside.txt\", \"here first\")?
+
+def main(fs: Fs, stdout: Stdout):
+    match blocked(fs):
+        case Ok(_):
+            stdout.print(\"the block succeeded\")
+        case Err(problem):
+            stdout.print(\"the block failed:\", problem.reason != \"\")
+    stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
+    # The file written beside the path, to take its place, is gone.
+    names = fs.list_dir(\".\") else []
+    stdout.print([name for name in names if str(name).endswith(\".fennec-partial\")].len())
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "the block failed: True\nhere first\n0\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 /// Writes `megabytes` through `fs.create`, a megabyte at a time. The file takes its name only
 /// when the block ends, synced, and what's written goes straight to the disk, so the program
 /// holds next to nothing however big the file grows.

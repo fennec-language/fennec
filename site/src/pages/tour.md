@@ -846,7 +846,7 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
 - The `?` on the `with launch` line covers the task: its own failures, and `Crashed` if it crashes, come out where the block ends. A crash ends only its own task.
 - Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. **Planned:** `to=.Every`, which gives every listener every message.
-- **Planned:** `TaskGroup`, which holds a number of tasks known only at run time and stops them all when its block ends, and pools, like a database's connections, written in plain Fennec so nothing can leak or be used twice.
+- **Planned:** `TaskGroup`, which holds a number of tasks known only at run time and stops them all when its block ends, and pools, like a database's connections, each lent to one block at a time by its keeper, so nothing can leak or be used twice.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 
@@ -930,7 +930,7 @@ def main(stdout: Stdout):
 **Planned:** compile-time loops over a type, which serialization will be built on, instead of macros or `derive`. `fields(T)` gives a struct's fields and `cases(T)` an enum's cases. There's no I/O at compile time, so a kit can't run anything on your machine while it compiles.
 
 ```fennec planned
-def write[T, W: Writer](x: T, ref out: W):
+def write[T, S: Serializer](x: T, ref out: S):
     for f in fields(T):
         out.field(f.name)
         write(f.get(x), ref out)

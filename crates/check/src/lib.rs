@@ -481,7 +481,6 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
-        || !checked.empty_collections.is_empty()
         || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
@@ -522,9 +521,6 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
             }
             if let Some(zero) = checked.array_zeros.get(&span) {
                 fennec_syntax::visit::filled_array(expr, zero);
-            }
-            if checked.empty_collections.contains(&span) {
-                fennec_syntax::visit::empty_collection(expr);
             }
             if checked.not_equals.contains(&span) {
                 fennec_syntax::visit::not_of_equals(expr);
@@ -686,8 +682,6 @@ pub struct Checked {
     optional_steps: BTreeSet<(u32, u32)>,
     /// Those read from something that can fail, which is written in as `value else None`.
     failing_steps: BTreeSet<(u32, u32)>,
-    /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
-    empty_collections: BTreeSet<(u32, u32)>,
     /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
     array_zeros: BTreeMap<(u32, u32), Expr>,
 }

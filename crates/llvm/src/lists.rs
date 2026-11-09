@@ -725,8 +725,12 @@ impl Emit<'_, '_, '_> {
                 _ => Err("an optional string with no string".to_owned()),
             };
         }
-        let (number, written) = self.case_of(&kind, case)?;
-        if let (Kind::Boxed(id), true) = (&kind, written.is_empty()) {
+        let (number, mut written) = self.case_of(&kind, case)?;
+        // An error's notes start as 0, where the case's words are zero.
+        written.retain(|(name, _, _)| !fennec_rt::packed::hidden(name));
+        if let (Kind::Boxed(id), true) = (&kind, written.is_empty())
+            && !crate::notes::has_notes(self.layout_of(*id)?)
+        {
             let shared = self.shared_case(*id, number)?;
             self.retain_value(&shared, &kind);
             return self.assign(dest, &shared);
@@ -1206,9 +1210,11 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i1 {same_tag}, ptr {result}"));
         let done = self.label("compared");
         for (number, case) in cases.iter().enumerate().filter(|(_, case)| !case.fields.is_empty()) {
+            // An error's notes aren't compared.
             let fields: Vec<(u32, Kind)> = case
                 .fields
                 .iter()
+                .filter(|field| !fennec_rt::packed::hidden(&field.name))
                 .map(|field| {
                     Kind::from_ty(self.module.layouts, field.ty)
                         .map(|kind| (field.offset, kind))

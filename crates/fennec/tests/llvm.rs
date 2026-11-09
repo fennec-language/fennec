@@ -4649,6 +4649,55 @@ def main(stdout: Stdout) fails Crashed:
     Ok(())
 }
 
+/// `with src else fail E` on a source whose body has an `x else fail` and a `with launch(...)?`:
+/// both fail with `E` once it's written in, and the launch stays one.
+#[test]
+fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "source_failing_instead",
+        r#"from std.concurrent import Crashed
+
+error Outer:
+    why: str
+
+error Inner:
+    why: str
+
+def work():
+    pass
+
+def given(bad: bool) -> int?:
+    None if bad else 1
+
+def inner_source(bad: bool) -> with int fails Inner | Crashed:
+    first = given(bad) else fail Inner(why="none")
+    with launch(() => work())?:
+        lend first
+
+def outer_source(bad: bool) -> with int fails Outer:
+    with inner_source(bad) else fail Outer(why="the inner source failed") as n:
+        lend n + 1
+
+def run(bad: bool, stdout: Stdout) fails Outer:
+    with outer_source(bad)? as n:
+        stdout.print("got", n)
+
+def main(stdout: Stdout):
+    for bad in [False, True]:
+        match run(bad, stdout):
+            case Ok(_):
+                stdout.print("worked")
+            case Err(why):
+                stdout.print("failed", why)
+"#,
+    )?;
+    assert_eq!(printed, "got 2\nworked\nfailed Outer(why=\"the inner source failed\")\n");
+    Ok(())
+}
+
 /// On a result that fails with a union, `case Err(Shut.Stuck(...))` says which error's case, and a
 /// later `case Err(error)` holds what the earlier cases left: a `Shut` once `Late` is taken.
 #[test]
@@ -6528,6 +6577,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator that can fail, held in a name and let go partway in a launched task, closes its
+/// open source as it does in `main`. What closes a generator is said once, on the thread `main`
+/// runs on, and the task's worker started its runtime before that, so it once let the generator go
+/// with its source left open. What's printed is compared line by line, sorted, as the task's lines
+/// and `main`'s may come in either order.
+#[test]
+fn a_generator_let_go_in_a_task_closes_what_it_has_open() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("generator_closed_in_a_task")?;
+    let program = dir.join("closed.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/generator_closed_in_a_task.fen"))?;
+    let executable = dir.join("closed");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "after looped in a task",
+            "after named in a task",
+            "after named in main",
+            "closing looped in a task",
+            "closing named in a task",
+            "closing named in main",
+            "main goes on",
+        ],
+        "{printed}"
+    );
+    Ok(())
+}
+
 /// Each source a generator holds open where it's let go closes then, innermost first and once:
 /// not its `else:`, which is for a block that fails, and nothing for a block that already ended
 /// or a generator that never started. A `return` out of the loop lets go of it too.
@@ -6592,8 +6683,8 @@ def main(stdout: Stdout):
 
 /// A source's cleanup that fails while a generator for a loop is let go fails the loop, as a
 /// failure while it gives an item does: at a `break` and at a `return` out of the loop. A failure
-/// already leaving through it is an error with cases here, which can't carry notes natively yet,
-/// so the cleanup's takes its place.
+/// already leaving through it is the one that leaves, an error with cases here, carrying the
+/// cleanup's as a note.
 #[test]
 fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Result<()> {
     if !ready() {
@@ -6603,7 +6694,8 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     assert_eq!(
         printed,
         "closing broke\nbroke failed Shut.Stuck(name=\"broke\")\nclosing returned\n\
-         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\nfailing failed Shut.Stuck(name=\"failing\")\n"
+         returned failed Shut.Stuck(name=\"returned\")\nclosing failing\n\
+         failing failed Other.Inside(why=\"in the loop\") [\"Shut.Stuck(name=\\\"failing\\\")\"]\n"
     );
     Ok(())
 }
@@ -6725,7 +6817,7 @@ def main(stdout: Stdout):
         case Ok(_):
             stdout.print("failing worked")
         case Err(why):
-            stdout.print("failing failed", why)
+            stdout.print("failing failed", why, why.notes())
 "#;
 
 /// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
@@ -15155,6 +15247,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list[int]()`, `dict[str, int]()` and `set[str]()` keep what they hold when the program's
+/// checked again: once trimmed to build, after a `with` is written in, and as a constant.
+#[test]
+fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "typed_empty_list",
+        "def main(stdout: Stdout):\n    stdout.print(list[int](), list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] 0\n");
+    let printed = printed_by(
+        "typed_empty_in_a_with",
+        "def opened() -> with int:\n    lend 1\n\ndef main(stdout: Stdout):\n    with opened() as n:\n        stdout.print(list[int](), n)\n",
+    )?;
+    assert_eq!(printed, "[] 1\n");
+    let printed = printed_by(
+        "typed_empties",
+        "EMPTY = list[int]()\n\ndef main(stdout: Stdout):\n    mut d = dict[str, int]()\n    d[\"a\"] = 1\n    s = set[str]()\n    \
+         stdout.print(EMPTY, d, s, [1].len() > list[int]().len())\n",
+    )?;
+    assert_eq!(printed, "[] {\"a\": 1} set() True\n");
+    Ok(())
+}
+
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
 /// by a call, which is read once.
@@ -15471,7 +15589,7 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
 /// An error's notes natively: none to start with, each `add_note` changing only that error, not
 /// a copy taken before, `==` and printing passing them over, a union of errors noting the error
 /// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
-/// interpreter.
+/// interpreter, for an error with cases as for one without.
 #[test]
 fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
     if !ready() {
@@ -15487,6 +15605,11 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
             "note: while loading a long one\nnote: second line\n  and a third\n",
         ),
         ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+        (
+            "cases",
+            include_str!("fixtures/error_notes_with_cases.fen"),
+            "note: while dialing -3\nnote: second line\n  and a third\n",
+        ),
     ] {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;

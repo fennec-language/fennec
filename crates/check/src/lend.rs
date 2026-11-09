@@ -132,7 +132,8 @@ impl FnCx<'_> {
         );
     }
 
-    /// The values a `with` takes, where a source may be called: each one, and what's in a `?`.
+    /// The values a `with` takes, where a source may be called: each one, and what's in a `?` or
+    /// an `else` that leaves, as in `with launch(...) else fail E:`.
     pub(crate) fn with_values_of(value: &Expr) -> Vec<(u32, u32)> {
         let items: Vec<&Expr> = match &value.kind {
             ExprKind::Tuple(items) => items.iter().collect(),
@@ -141,8 +142,12 @@ impl FnCx<'_> {
         let mut spans = vec![(value.span.start, value.span.end)];
         for item in items {
             spans.push((item.span.start, item.span.end));
-            if let ExprKind::Try { value: inner, .. } = &item.kind {
-                spans.push((inner.span.start, inner.span.end));
+            match &item.kind {
+                ExprKind::Try { value: inner, .. } => spans.push((inner.span.start, inner.span.end)),
+                ExprKind::Else { value: inner, default } if default.leaves() => {
+                    spans.push((inner.span.start, inner.span.end));
+                }
+                _ => {}
             }
         }
         spans

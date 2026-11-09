@@ -307,9 +307,15 @@ impl Conn {
     }
 
     /// Writes all of `data`.
-    pub fn write(&self, mut data: &[u8]) -> Result<(), Failure> {
+    pub fn write(&self, data: &[u8]) -> Result<(), Failure> {
+        self.write_within(data, None)
+    }
+
+    /// `write`, giving up once `timeout` passes, as for a client that never reads.
+    pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+        let until = Until::after(timeout);
         if self.tls.borrow().is_some() {
-            return self.write_securely(data);
+            return self.write_securely(data, until);
         }
         while !data.is_empty() {
             let wrote = self.stream.borrow_mut().write(data);
@@ -317,7 +323,7 @@ impl Conn {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    self.wait(Interest::WRITABLE, until, "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -327,7 +333,7 @@ impl Conn {
     }
 
     /// Writes all of `data` through TLS, waiting whenever what it holds can't go yet.
-    fn write_securely(&self, mut data: &[u8]) -> Result<(), Failure> {
+    fn write_securely(&self, mut data: &[u8], until: Until) -> Result<(), Failure> {
         loop {
             let wrote = {
                 let mut tls = self.tls.borrow_mut();
@@ -340,13 +346,13 @@ impl Conn {
                 Ok((taken, wants_write)) => {
                     data = data.get(taken..).unwrap_or_default();
                     if wants_write {
-                        self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                        self.wait(Interest::WRITABLE, until, "write")?;
                     } else if data.is_empty() {
                         return Ok(());
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    self.wait(Interest::WRITABLE, until, "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),

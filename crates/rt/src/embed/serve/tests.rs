@@ -782,3 +782,23 @@ fn a_line_with_no_carriage_return_fails_when_one_is_asked_for() {
     let read = conn.read_line_crlf(wait, true);
     assert!(matches!(&read, Err(Failure::Other(why)) if why.contains("carriage return")), "{read:?}");
 }
+
+/// A write to a client that never reads gives up once its `timeout=` passes, rather than hold its
+/// round forever.
+#[test]
+fn a_write_nobody_reads_times_out() {
+    let (listener, address) = listener();
+    let client = std::net::TcpStream::connect(address).unwrap();
+    let accepted = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    let conn = Conn::new(accepted);
+    let started = std::time::Instant::now();
+    let wrote = conn.write_within(&vec![b'x'; 64 << 20], Some(Duration::from_millis(200)));
+    assert!(matches!(wrote, Err(Failure::TimedOut(_))), "{wrote:?}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+    drop(client);
+}

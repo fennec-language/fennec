@@ -216,7 +216,7 @@ pub(in crate::embed) fn served_call(
                 .map(|line| line_value(line.as_deref()))
         }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            on_conn(handle, |conn| conn.write(data_of(data))).map(|()| Value::Unit)
+            on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }
         ("close", []) => {
             CONNS.with_borrow_mut(|conns| conns.remove(&handle));

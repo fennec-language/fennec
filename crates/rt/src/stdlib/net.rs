@@ -609,7 +609,7 @@ pub(crate) fn real_connection(
             start_tls(handle, host, timeout.unwrap_or(CONNECT_TIMEOUT)).map(|()| Value::Unit)
         }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            write(handle, data_of(data)).map(|()| Value::Unit)
+            write_within(handle, data_of(data), timeout).map(|()| Value::Unit)
         }
         ("close", []) => {
             close(handle);
@@ -1022,23 +1022,46 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
     Ok((!line.is_empty()).then_some(line))
 }
 
-fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
+#[cfg(test)]
+fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
+    write_within(handle, data, None)
+}
+
+/// `write`, giving up once `timeout` passes, as for a server that never reads.
+fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
     let stream = stream(handle)?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
     if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
-        return secured
+        stream.socket.set_write_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
+        let wrote = secured
             .write_all(data)
             .and_then(|()| secured.flush())
-            .map_err(|error| Failure::of(&error, None));
+            .map_err(|error| Failure::of(&error, timeout));
+        let _ = stream.socket.set_write_timeout(None);
+        return wrote;
     }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
     // buffer says so here, and this waits for room.
     while !data.is_empty() {
-        match socket.write(data) {
+        // A socket that blocks is given what's left of the time, so its write can't outlast it.
+        if let Some(deadline) = deadline {
+            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+            let _ = socket.set_write_timeout(Some(left));
+        }
+        let wrote = socket.write(data);
+        if deadline.is_some() {
+            let _ = socket.set_write_timeout(None);
+        }
+        match wrote {
             Ok(0) => return Err(Failure::Closed),
             Ok(written) => data = data.get(written..).unwrap_or_default(),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => wait_to_write(socket),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if wait_to_write(socket, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                }
+            }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => return Err(Failure::of(&error, None)),
         }
@@ -1168,15 +1191,20 @@ fn park_until_readable(_socket: &TcpStream, _deadline: Option<Instant>) -> bool 
 
 /// Waits until `socket` may take more to write: parked in a task that can, and otherwise a moment,
 /// as only a socket another task made not block gets here.
-fn wait_to_write(socket: &TcpStream) {
+/// Waits for room to write, or until `deadline` passes: true once it has.
+fn wait_to_write(socket: &TcpStream, deadline: Option<Instant>) -> bool {
+    if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        return true;
+    }
     #[cfg(all(unix, any(test, feature = "threads")))]
     if socket_parks() {
         let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-        let _ = crate::embed::serve::park_on_fd(fd, mio::Interest::WRITABLE, None);
-        return;
+        let _ = crate::embed::serve::park_on_fd(fd, mio::Interest::WRITABLE, deadline);
+        return deadline.is_some_and(|deadline| deadline <= Instant::now());
     }
     let _ = socket;
     std::thread::sleep(Duration::from_millis(1));
+    false
 }
 
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
@@ -1483,6 +1511,21 @@ pub(crate) mod tests {
             Some((_, Value::Int(handle))) => *handle,
             _ => -1,
         }
+    }
+
+    /// A write to a server that never reads gives up once its `timeout=` passes.
+    #[test]
+    fn a_write_nobody_reads_times_out() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        let wrote =
+            super::write_within(handle, &vec![b'x'; 64 << 20], Some(std::time::Duration::from_millis(200)));
+        assert!(matches!(wrote, Err(Failure::TimedOut(_))), "{wrote:?}");
+        close(handle);
+        drop(server);
     }
 
     /// UDP has no `shutdown`, so a read on another thread has to find out for itself.

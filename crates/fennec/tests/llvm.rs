@@ -1339,7 +1339,6 @@ fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
 /// A list in a `shared` value, changed in place under its lock: a queue would otherwise copy the whole
 /// list on every call that changes it, and take time in proportion to its length squared.
 #[test]
-#[ignore = "a `lock ... as ref` saves the list for a crash to put back, and the saved one makes the append copy it"]
 fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -1359,14 +1358,9 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
             "    for n in range(2000):\n        lock queue as ref held:\n            held.push(n)\n    \
              for n in range(2000):\n        lock queue as ref held:\n            seen += held.pop()\n",
         ),
-        ("insert", "    for n in range(500):\n        lock queue as ref held:\n            held.first(n)\n"),
         (
             "extend",
             "    for n in range(2000):\n        lock queue as ref held:\n            held.more([n])\n",
-        ),
-        (
-            "nested",
-            "    for n in range(2000):\n        lock queue as ref held:\n            held.nested(n)\n",
         ),
         (
             "called",
@@ -1382,6 +1376,67 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
         assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
     }
     Ok(())
+}
+
+/// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
+/// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
+/// a note of each in the lock's rollback log, but these change what a note of one place can't put
+/// back, so the log keeps the list as it was, and the change copies it. `insert(0, x)` takes time
+/// in proportion to the list's length anyway.
+#[test]
+#[ignore = "a crash puts back only appends and pops from notes; an insert, or a change inside an item, under a `lock ... as ref` copies the list"]
+fn changes_inside_a_list_in_a_shared_value_copy_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Row:\n    tags: list[int]\n\nstruct Queue:\n    items = list[int]()\n    rows = [Row(tags=[1])]\n\n    \
+                 def first(ref self, item: int):\n        self.items.insert(0, item)\n\n    \
+                 def nested(ref self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n\
+                 def main(stdout: Stdout):\n    shared queue = Queue()\n";
+    for (name, body) in [
+        ("insert", "    for n in range(500):\n        lock queue as ref held:\n            held.first(n)\n"),
+        (
+            "nested",
+            "    for n in range(2000):\n        lock queue as ref held:\n            held.nested(n)\n",
+        ),
+    ] {
+        let counts = counts_of(
+            &format!("shared_place_copies_{name}"),
+            &format!("{types}{body}    stdout.print(0)\n"),
+        )?;
+        assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
+    }
+    Ok(())
+}
+
+/// Random changes to lists in a `shared` value under `lock ... as ref`, failing at a random step:
+/// appends and pops made in place are undone from the lock's log, and the rest copy, and either way
+/// a failure leaves the lists as they were, and an end leaves what plain lists get. Three thousand
+/// cases, in dev and release.
+#[test]
+fn random_changes_under_a_lock_are_undone_by_a_failure() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_by_failure",
+        include_str!("fixtures/lock_undo_by_failure.fen"),
+        "wrong 0 crashed True kept True\n",
+    )
+}
+
+/// The same random changes in a task, crashing at a random step: a crash leaves the lists as they
+/// were. Three thousand cases, in dev and release.
+#[test]
+fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_by_crash",
+        include_str!("fixtures/workers/lock_undo_by_crash.fen"),
+        "wrong 0 crashed True kept True\n",
+    )
 }
 
 /// What's changed in place stays right when it's read while changing, and when something still holds

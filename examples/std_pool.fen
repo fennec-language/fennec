@@ -148,12 +148,5 @@ def pool_that_cant_open() fails PoolError | Crashed:
 def refused() -> Link fails Refused:
     fail Refused(why="the server's away")
 
-def main(stdout: Stdout) fails PoolError | Crashed:
-    shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=2)? as links:
-        with links.take()? as first:
-            with links.take()? as second:
-                stdout.print("two at once:", first.number, second.number)
-        with links.take()? as again:
-            stdout.print("then one of them again:", again.number)
-    stdout.print("opened", opens(count))
+def main(stdout: Stdout):
+    stdout.print("run with `fennec test`")

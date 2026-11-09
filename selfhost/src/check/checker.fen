@@ -30,12 +30,19 @@ struct Checker:
             for input in test.inputs:
                 self.check_written(input.ty, [])
             self.check_body(test.body, [])
-        for name, info in self.program.types.items():
+        # A standard library type's fields mean its library's types, though the program has
+        # one of the same name.
+        own = copy(self.program.types)
+        library = self.program.std_types()
+        for name, info in own.items():
             if info.kind == .StructKind or not info.prelude:
+                if info.prelude:
+                    self.program.types = copy(library)
                 generics = self.program.type_params(name)
                 self.check_fields(info.type_def.fields, generics)
                 for case in info.type_def.cases:
                     self.check_fields(case.fields, generics)
+                self.program.types = copy(own)
 
     ## Reports types written in signatures and interfaces that don't mean anything, and
     ## type parameters bound to something that isn't an interface.

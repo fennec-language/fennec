@@ -18,7 +18,9 @@
 //! `pack`, `csv`, `url`, `http-server`, `http-client` and `postgres`, hold what they read to the
 //! format's own rules, each in its own module, not only to not crashing. Running with no targets
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
-//! leaves out the other native ones, saying so, where nothing can be built.
+//! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
+//! when named too: random, well-typed programs built both ways and checked against a reference
+//! evaluator written here, which `fennec-fuzz show programs <file>` writes out.
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
@@ -33,6 +35,7 @@ mod mutate;
 mod pack_rules;
 mod parked;
 mod postgres_rules;
+mod programs;
 mod supervise;
 mod targets;
 mod toml_rules;
@@ -55,6 +58,7 @@ fn main() -> ExitCode {
         ["one", name, file] => one(name, Path::new(file)),
         ["show", file] => show(Path::new(file), generate::program),
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
+        ["show", "programs", file] => show(Path::new(file), programs::written),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["run", rest @ ..] => run(rest),
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]"
@@ -176,8 +180,11 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     } else {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
-    if chosen.iter().any(|target| target.name == targets::LLVM.name || targets::NATIVE.contains(&target.name))
-    {
+    let native = |target: &&Target| {
+        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name].contains(&target.name)
+            || targets::NATIVE.contains(&target.name)
+    };
+    if chosen.iter().any(native) {
         llvm::ready()?;
     }
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;

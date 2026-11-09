@@ -1007,7 +1007,14 @@ impl FnCx<'_> {
             Some((failure, block)) => {
                 let given = self.else_block(failure, block, &value, written);
                 leaves |= given.is_none();
-                given.unwrap_or(Type::Unit)
+                let given = given.unwrap_or(Type::Unit);
+                // The block is an expression too, typed as what it gives, over the value nothing
+                // wrote that it's written in with.
+                self.record(default.span, &given);
+                if let ExprKind::Match { subject, .. } = &default.kind {
+                    self.record(subject.span, &Type::Bool);
+                }
+                given
             }
             None => self.expr(default),
         };

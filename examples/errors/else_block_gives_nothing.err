@@ -1,0 +1,7 @@
+error: this `else` block must give an `int` or leave; its last line `stdout.print(...)` gives nothing
+ --> examples/errors/else_block_gives_nothing.fen:4:9
+  |
+4 |         stdout.print("no price for the fig")
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: add a value, or `return`, `fail`, `break` or `continue`

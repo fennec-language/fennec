@@ -212,15 +212,14 @@ impl Fake {
         let lost = || Diagnostic::new("the native code lost a method's name", span);
         let (kind, method) = name.split_once('.').ok_or_else(lost)?;
         let (method, args, _) = timed(method, args, span)?;
-        let done = match (kind, method, args) {
+        let done = match (kind, method.as_str(), args.as_slice()) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
                 self.read(handle, Some(count), span)?
                     .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("Connection", "read_line", []) => {
-                self.read(handle, None, span)?.map(|line| line_value(line.as_deref()))
-            }
+            ("Connection", "read_line", []) => self.read_line(handle, false, span)?,
+            ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => self.read_line(handle, *crlf, span)?,
             ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
@@ -234,7 +233,7 @@ impl Fake {
                 self.close(handle);
                 return Ok(Value::Unit);
             }
-            ("Connection" | "UdpSocket" | "Server", _, _) => return Err(wrong(method, span)),
+            ("Connection" | "UdpSocket" | "Server", _, _) => return Err(wrong(&method, span)),
             _ => return Err(lost()),
         };
         Ok(done_or_failed(done))
@@ -412,6 +411,26 @@ impl Fake {
             ),
             span,
         ))
+    }
+
+    /// A line from a test's connection, refused as a real one is: too long, or a bare `\n` with `crlf`.
+    fn read_line(
+        &mut self,
+        handle: i64,
+        crlf: bool,
+        span: Span,
+    ) -> Result<Result<Value, Failure>, Diagnostic> {
+        if let Some(stream) = self.streams.get(&handle)
+            && stream.inbox.len() > MOST_LINE_BYTES
+            && !stream.inbox.iter().take(MOST_LINE_BYTES + 1).any(|byte| *byte == b'\n')
+        {
+            return Ok(Err(Failure::Other(format!("a line was longer than {MOST_LINE_BYTES} bytes"))));
+        }
+        let line = self.read(handle, None, span)?;
+        Ok(line.and_then(|line| match line.as_deref().and_then(|line| line_refused(line, crlf)) {
+            Some(why) => Err(Failure::Other(why)),
+            None => Ok(line_value(line.as_deref())),
+        }))
     }
 
     pub(crate) fn write(&mut self, handle: i64, data: &[u8]) -> Result<(), Failure> {
@@ -738,7 +757,7 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         return Ok(done_or_failed(http::send(&request).map(answer_value)));
     }
     let (method, args, timeout) = timed(name, args, span)?;
-    real_net(method, args, timeout, span)
+    real_net(&method, &args, timeout, span)
 }
 
 /// A `Net` method native code names, with its arguments in the order its parameters are, and
@@ -767,16 +786,26 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
 }
 
 /// A method native code names, its arguments and how long it may wait: `read_line.timeout` is
-/// `read_line` with `timeout=` given last.
-pub(crate) fn timed<'a>(
-    method: &'a str,
-    args: &'a [Value],
+/// `read_line` with `timeout=` given last. Named arguments are on the name in the order they were
+/// written, so `timeout=` can come before another, as in `read_line.timeout.crlf`, which is
+/// `read_line.crlf` with what `crlf=` was given.
+pub(crate) fn timed(
+    method: &str,
+    args: &[Value],
     span: Span,
-) -> Result<(&'a str, &'a [Value], Option<Duration>), Diagnostic> {
-    let (Some(method), Some((timeout, args))) = (method.strip_suffix(".timeout"), args.split_last()) else {
-        return Ok((method, args, None));
+) -> Result<(String, Vec<Value>, Option<Duration>), Diagnostic> {
+    const NAMED: [&str; 5] = ["timeout", "crlf", "tls", "port", "host"];
+    let parts: Vec<&str> = method.split('.').collect();
+    let named = parts.iter().rev().take_while(|part| NAMED.contains(part)).count().min(args.len());
+    let first_named = parts.len() - named;
+    let Some(at) = parts.iter().skip(first_named).position(|part| *part == "timeout") else {
+        return Ok((method.to_owned(), args.to_vec(), None));
     };
-    Ok((method, args, Some(duration_of(timeout, span)?)))
+    let mut args = args.to_vec();
+    let timeout = args.remove(args.len() - named + at);
+    let mut parts = parts;
+    parts.remove(first_named + at);
+    Ok((parts.join("."), args, Some(duration_of(&timeout, span)?)))
 }
 
 pub(crate) fn bytes_asked(count: i64, span: Span) -> Result<usize, Diagnostic> {
@@ -789,6 +818,20 @@ pub(crate) fn data_of(data: &Value) -> &[u8] {
         Value::Bytes(data) => data,
         _ => &[],
     }
+}
+
+/// The most bytes a line read from a connection may hold, its ending included. A line longer
+/// than this fails, rather than take as much memory as whoever's sending it likes.
+pub(crate) const MOST_LINE_BYTES: usize = 1 << 20;
+
+/// Why a line read fails: it's too long, or, with `crlf`, it ended with no `\r` before its `\n`.
+pub(crate) fn line_refused(line: &[u8], crlf: bool) -> Option<String> {
+    if line.len() > MOST_LINE_BYTES {
+        return Some(format!("a line was longer than {MOST_LINE_BYTES} bytes"));
+    }
+    let bare =
+        line.last() == Some(&b'\n') && line.len().checked_sub(2).and_then(|at| line.get(at)) != Some(&b'\r');
+    (crlf && bare).then(|| "a line ended without a carriage return".to_owned())
 }
 
 pub(crate) fn line_value(line: Option<&[u8]>) -> Value {
@@ -1309,7 +1352,9 @@ fn trim_line(line: &[u8]) -> &[u8] {
 pub(crate) mod tests {
     use fennec_syntax::Span;
 
-    use super::{Failure, Fake, Made, close, receive, udp};
+    use std::rc::Rc;
+
+    use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
 
     /// Native code keeps `tls=` on the method's name.
@@ -1369,6 +1414,62 @@ pub(crate) mod tests {
         };
         assert!(matches!(fake.write(other_end, b"Sinjected"), Ok(())));
         refused(start(&mut fake, second));
+    }
+
+    /// A test's connection refuses the lines a real one does: too long, or ended by a bare `\n` when
+    /// `crlf=True` asks for `\r\n`. Native code keeps `crlf=` on the method's name, before or after
+    /// `timeout=`.
+    #[test]
+    fn a_tests_read_line_refuses_long_lines_and_bare_line_feeds() {
+        let span = Span::default();
+        let refused = |got: Value, why: &str| {
+            let Value::Err(error) = &got else { panic!("it wasn't refused: {got:?}") };
+            assert!(format!("{error:?}").contains(why), "{error:?}");
+        };
+        let mut fake = Fake::default();
+        let Ok((_, server)) = fake.listen(0, false) else { panic!("it didn't listen") };
+        let Some((_, Value::Int(port))) = server.get(1).cloned() else { panic!("no port") };
+        let Ok((_, client)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(client))) = client.first().cloned() else { panic!("no handle") };
+        let Some(other_end) = fake.streams.get(&client).map(|stream| stream.peer) else {
+            panic!("no other end")
+        };
+        assert!(matches!(fake.write(other_end, b"good\r\nbad\n"), Ok(())));
+        let crlf = Value::Bool(true);
+        let good = fake
+            .socket_method(client, "Connection.read_line.crlf", std::slice::from_ref(&crlf), span)
+            .unwrap();
+        assert_eq!(good, Value::Ok(Rc::new(Value::str("good"))));
+        refused(
+            fake.socket_method(client, "Connection.read_line.crlf", &[crlf], span).unwrap(),
+            "carriage return",
+        );
+        assert!(matches!(fake.write(other_end, &vec![b'x'; MOST_LINE_BYTES + 1]), Ok(())));
+        refused(fake.socket_method(client, "Connection.read_line", &[], span).unwrap(), "longer than");
+    }
+
+    /// `timeout=` comes off a method's name wherever it is among the named arguments.
+    #[test]
+    fn timeout_comes_off_wherever_it_was_written() {
+        let span = Span::default();
+        let wait = Value::made("Duration", vec![("nanos", Value::Int(5))]);
+        let (method, args, timeout) =
+            super::timed("Connection.read_line.timeout.crlf", &[wait.clone(), Value::Bool(true)], span)
+                .unwrap();
+        assert_eq!(
+            (method.as_str(), args, timeout),
+            ("Connection.read_line.crlf", vec![Value::Bool(true)], Some(std::time::Duration::from_nanos(5)))
+        );
+        let (method, args, timeout) =
+            super::timed("read_line.crlf.timeout", &[Value::Bool(true), wait], span).unwrap();
+        assert_eq!(
+            (method.as_str(), args, timeout),
+            ("read_line.crlf", vec![Value::Bool(true)], Some(std::time::Duration::from_nanos(5)))
+        );
+        let (method, args, timeout) = super::timed("read_line", &[], span).unwrap();
+        assert_eq!((method.as_str(), args, timeout), ("read_line", vec![], None));
     }
 
     #[test]

@@ -262,11 +262,23 @@ impl Conn {
 
     /// The next line, without its line ending, or `None` at the end.
     pub fn read_line(&self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+        self.read_line_crlf(timeout, false)
+    }
+
+    /// `read_line`, which with `crlf` fails on a line ended by a bare `\n`.
+    pub fn read_line_crlf(&self, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
+        let most = crate::stdlib::net::MOST_LINE_BYTES;
         let until = Until::after(timeout);
         loop {
             let found = self.ahead.borrow().iter().position(|byte| *byte == b'\n');
+            if found.is_none() && self.ahead.borrow().len() > most {
+                return Err(Failure::Other(format!("a line was longer than {most} bytes")));
+            }
             if let Some(end) = found {
                 let mut line: Vec<u8> = self.ahead.borrow_mut().drain(..=end).collect();
+                if let Some(why) = crate::stdlib::net::line_refused(&line, crlf) {
+                    return Err(Failure::Other(why));
+                }
                 line.pop();
                 if line.last() == Some(&b'\r') {
                     line.pop();

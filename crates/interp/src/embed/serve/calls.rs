@@ -211,6 +211,10 @@ pub(in crate::embed) fn served_call(
         ("read_line", []) => {
             on_conn(handle, |conn| conn.read_line(timeout)).map(|line| line_value(line.as_deref()))
         }
+        ("read_line.crlf", [Value::Bool(crlf)]) => {
+            on_conn(handle, |conn| conn.read_line_crlf(timeout, *crlf))
+                .map(|line| line_value(line.as_deref()))
+        }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on_conn(handle, |conn| conn.write(data_of(data))).map(|()| Value::Unit)
         }

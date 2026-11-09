@@ -546,10 +546,12 @@ pub(crate) fn real_net(
         }
         ("_listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
         // `tls=Certificate(...)`, or `None`, which native code keeps on the method's name.
-        ("_listen.tls" | "_listen", [Value::Int(port), certificate]) => match tls_server(certificate, span)? {
-            Ok(tls) => listen(port_of(*port, span)?, tls),
-            Err(failure) => Err(failure),
-        },
+        ("_listen.tls" | "_listen", [Value::Int(port), certificate]) => {
+            match tls_server(certificate, span)? {
+                Ok(tls) => listen(port_of(*port, span)?, tls),
+                Err(failure) => Err(failure),
+            }
+        }
         ("_udp", []) => udp(0),
         // Native code keeps a named argument on the method's name.
         ("_udp" | "_udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),

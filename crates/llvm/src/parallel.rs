@@ -930,7 +930,7 @@ def main(stdout: Stdout, clock: Clock):
         }
         // A body reading a connection waits, and one doing arithmetic beside it doesn't.
         let reads = "\
-from std.net import Connection
+from std.net import Connection, NetError
 
 def heard(conn: Connection, x: int) -> int:
     match conn.read(1):
@@ -939,13 +939,11 @@ def heard(conn: Connection, x: int) -> int:
         case _:
             x
 
-def main(stdout: Stdout, net: Net):
+def main(stdout: Stdout, net: Net) fails NetError:
     xs = [1, 2, 3]
-    match net.connect(\"localhost\", 9000):
-        case Ok(conn):
-            stdout.print([heard(conn, x) for x in parallel(xs)])
-        case _:
-            stdout.print([x * 2 for x in parallel(xs)])
+    with net.connect(\"localhost\", 9000)? as conn:
+        stdout.print([heard(conn, x) for x in parallel(xs)])
+    stdout.print([x * 2 for x in parallel(xs)])
 ";
         let text = texts(reads)?;
         assert!(text.contains("@fennec_parallel_map_waiting(ptr"), "{text}");

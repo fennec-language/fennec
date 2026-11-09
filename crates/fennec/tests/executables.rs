@@ -49,22 +49,41 @@ impl Within for Command {
 }
 
 /// What `child` printed and how it ended, once it ends within `deadline`. Both pipes are read
-/// while it runs, so a program printing a lot isn't stopped by a full one.
+/// while it runs, so a program printing a lot isn't stopped by a full one. One that runs past
+/// `deadline` is killed, and the error says what it printed by then, which shows where it stopped.
 fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Output> {
-    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (send, read) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut all = Vec::new();
             if let Some(mut pipe) = pipe {
                 let _ = pipe.read_to_end(&mut all);
             }
-            all
-        })
+            let _ = send.send(all);
+        });
+        read
     }
     let stdout = read_all(child.stdout.take());
     let stderr = read_all(child.stderr.take());
-    let status = wait_before(&mut child, deadline)?;
-    let joined = |reader: std::thread::JoinHandle<Vec<u8>>| reader.join().unwrap_or_default();
-    Ok(Output { status, stdout: joined(stdout), stderr: joined(stderr) })
+    match wait_before(&mut child, deadline) {
+        Ok(status) => {
+            let joined = |reader: std::sync::mpsc::Receiver<Vec<u8>>| reader.recv().unwrap_or_default();
+            Ok(Output { status, stdout: joined(stdout), stderr: joined(stderr) })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            // A program it started may still hold the pipes open, so this waits only a moment.
+            let so_far = |reader: std::sync::mpsc::Receiver<Vec<u8>>| {
+                let printed = reader.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+                let printed = String::from_utf8_lossy(&printed).into_owned();
+                let start = printed.char_indices().rev().nth(2_000).map_or(0, |(at, _)| at);
+                printed[start..].to_owned()
+            };
+            let why =
+                format!("{error}, having printed:\n{}\nand to stderr:\n{}", so_far(stdout), so_far(stderr));
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// How `child` ended, once it ends within `deadline`. One still running then is killed.
@@ -94,6 +113,17 @@ fn a_program_past_its_deadline_is_killed() {
     let ran = Command::new("sleep").arg("600").output_before(Duration::from_secs(1));
     assert_eq!(ran.map_err(|error| error.kind()).err(), Some(std::io::ErrorKind::TimedOut));
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// A program killed at its deadline says what it printed by then, so a test's failure shows where
+/// the program stopped.
+#[test]
+fn a_program_past_its_deadline_says_what_it_printed() {
+    let ran = Command::new("sh")
+        .args(["-c", "echo got this far; exec sleep 600"])
+        .output_before(Duration::from_secs(1));
+    let why = ran.err().map(|error| error.to_string()).unwrap_or_default();
+    assert!(why.contains("having printed:\ngot this far\n"), "{why}");
 }
 
 /// A program a test started and talks to, like a server, killed once the test ends however it

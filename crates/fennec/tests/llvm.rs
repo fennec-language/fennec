@@ -4683,7 +4683,9 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
         if !made.status.success() {
             return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
         }
-        let ran = Command::new(&executable).output_within()?;
+        let ran = Command::new(&executable)
+            .output_within()
+            .map_err(|error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
         // What it printed, or that it failed.
         let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
         Ok(Ok(ran.status.success().then_some(printed)))

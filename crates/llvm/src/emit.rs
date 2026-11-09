@@ -2027,6 +2027,9 @@ impl Emit<'_, '_, '_> {
         let mut shown = Vec::with_capacity(args.len() + 2);
         let mut lent = Vec::new();
         let returned_at = if returns.in_memory() {
+            // What nothing here keeps, like a constant `main` works out ahead in a program with
+            // `parallel`, has no local to have its type defined for.
+            self.module.define_types(&returns);
             let at = self.label("%ret");
             let text = self.text_of(&returns);
             let _ = writeln!(self.allocas, "  {at} = alloca {text}");

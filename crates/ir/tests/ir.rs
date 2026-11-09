@@ -3124,3 +3124,42 @@ fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
     assert_eq!(function.matches("on crash run ").count(), 1, "{function}");
     assert!(function.matches("on crash no longer run ").count() >= 2, "{function}");
 }
+
+/// A standard library function rewritten for a program, as one holding a `with` source is,
+/// stands in for the library's own: the check reads it and the IR lowers it.
+#[test]
+fn a_rewritten_std_function_stands_in_for_the_librarys() {
+    let mut module = fennec_syntax::parse(
+        "from std import base64\n\ndef main(stdout: Stdout):\n    stdout.print(base64.encode(\"hi\".encode()))\n",
+    )
+    .unwrap();
+    let mut rewritten = fennec_syntax::parse("def encode(data: bytes) -> str:\n    \"rewritten\"\n").unwrap();
+    let Some(fennec_syntax::Item::Function(mut def)) = rewritten.items.pop() else { panic!("no function") };
+    // Its text is the library's, as a rewritten one's is.
+    let moved = |span: Span| Span {
+        start: span.start + Span::PRELUDE + (1 << 29),
+        end: span.end + Span::PRELUDE + (1 << 29),
+    };
+    def.span = moved(def.span);
+    for param in &mut def.params {
+        param.span = moved(param.span);
+        if let Some(ty) = &mut param.ty {
+            ty.span = moved(ty.span);
+        }
+    }
+    if let Some(ret) = &mut def.ret {
+        ret.span = moved(ret.span);
+    }
+    for stmt in &mut def.body {
+        stmt.span = moved(stmt.span);
+    }
+    fennec_syntax::visit::in_function(&mut def, &mut |expr| expr.span = moved(expr.span));
+    def.name = "base64.encode".to_owned();
+    module.std_rewritten.push(("base64.encode".to_owned(), def));
+    let checked = fennec_check::check_and_resolve(&mut module).unwrap();
+    let program = lower(&module, &checked);
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+    let encode =
+        program.functions.iter().find(|function| function.name == "base64.encode").map(ToString::to_string);
+    assert!(encode.as_deref().is_some_and(|text| text.contains("\"rewritten\"")), "{encode:?}");
+}

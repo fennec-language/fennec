@@ -89,7 +89,7 @@ pub fn within_files(
 ) -> Vec<Lint> {
     let facts = Facts::of(module, sources);
     let taken = |item: &&Item| sources.file_at(item_span(item)).is_some_and(|(path, ..)| wanted(path));
-    let part = Module { items: module.items.iter().filter(taken).cloned().collect() };
+    let part = Module { items: module.items.iter().filter(taken).cloned().collect(), ..Default::default() };
     let mut found = in_each_file(&part, &sources.only(wanted), &facts);
     if kit {
         found.extend(asserts::in_kit(&part, facts.declares_expect));

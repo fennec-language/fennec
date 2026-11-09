@@ -271,3 +271,9 @@ export def launch[F](task: F) -> int
 ## gives back.
 @intrinsic
 export def launch_end[E](task: int, stop_after_ns: int, failed: bool, ref why: int) -> E?
+
+## Whether the generator asking was let go right after the `yield` before this, and goes on
+## only to leave: written in after each `yield` in a `with` source's block, so leaving runs the
+## source's cleanup. Outside a generator, it's `False`.
+@intrinsic
+export def abandoning() -> bool

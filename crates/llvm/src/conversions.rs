@@ -164,6 +164,10 @@ impl Emit<'_, '_, '_> {
                 self.let_go_of_generator(*generator);
                 Ok(())
             }
+            ("value.let_go", [Operand::Local(local)], _) => {
+                self.let_go_of_value(*local);
+                Ok(())
+            }
             ("sorted", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| {
                 self.dict_list(dest, set, "keys")?;
                 self.sorted(dest, &Operand::Local(dest))

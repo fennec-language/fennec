@@ -239,10 +239,7 @@ impl Emit<'_, '_, '_> {
         let (number, at, code) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{number} = call i64 @fennec_crash_hold()"));
         self.line("store ptr null, ptr %err");
-        self.line(&format!(
-            "{at} = getelementptr inbounds i8, ptr {closure}, i64 {}",
-            crate::closures::CODE
-        ));
+        self.line(&format!("{at} = getelementptr inbounds i8, ptr {closure}, i64 {}", crate::closures::CODE));
         self.line(&format!("{code} = load ptr, ptr {at}, !invariant.load !1"));
         self.line(&format!("call swiftcc void {code}(ptr {closure}, ptr swifterror %err)"));
         self.line(&format!("call void @fennec_crash_resume(i64 {number})"));

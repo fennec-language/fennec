@@ -282,9 +282,15 @@ impl Writer<'_> {
     }
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
-        let which = self.choice(21);
+        let which = self.choice(23);
         match which {
-            3..=5 | 7 | 19 | 20 if depth < MOST_BLOCKS => self.nested(body, depth, which),
+            3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
+            22 => {
+                let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
+                let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
+                body.push(Stmt::GrowAll(list.clone(), by));
+                self.read_back(body, &list);
+            }
             16..=18 => self.sharing(body, which),
             0..=2 => {
                 let ty = self.ty();
@@ -389,15 +395,17 @@ impl Writer<'_> {
                 let inner = self.round(&name, Ty::Int, depth);
                 body.push(Stmt::EachCounted(name, limit, inner));
             }
+            21 => {
+                // The list may change in the body: that's the point.
+                let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
+                let name = self.fresh();
+                let inner = self.round(&name, Ty::Int, depth);
+                body.push(Stmt::Indexed(name, list, inner));
+            }
             _ => {
                 let name = self.fresh();
                 let start = self.int(1);
-                self.names.push(InScope {
-                    name: name.clone(),
-                    ty: Ty::Tally,
-                    changeable: false,
-                    held: 0,
-                });
+                self.names.push(InScope { name: name.clone(), ty: Ty::Tally, changeable: false, held: 0 });
                 let inner = self.block(depth + 1);
                 self.names.pop();
                 body.push(Stmt::With(name, start, inner));

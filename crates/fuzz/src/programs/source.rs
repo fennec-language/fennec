@@ -57,6 +57,10 @@ def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeo
         for item in items:
             sends.send(item)?
 
+def grow_all(ref items: list[int], by: int):
+    for ref item in items:
+        item += by
+
 def counted(limit: int) -> Iterator[int]:
     for at in range(limit):
         yield at * 3
@@ -169,25 +173,27 @@ impl Writer {
                 let by = self.expr(by, false);
                 self.line(indent, &format!("{name}.moved({by})"));
             }
-            Stmt::Grow(..) => self.held_or_lent(stmt, indent),
-            Stmt::Share(..)
-            | Stmt::Change(..)
-            | Stmt::Tally(..)
-            | Stmt::PrintShared(_)
-            | Stmt::EachCounted(..)
-            | Stmt::With(..) => {
-                self.held_or_lent(stmt, indent);
-            }
             Stmt::Print(values) => {
                 let values: Vec<String> = values.iter().map(|(value, _)| self.expr(value, false)).collect();
                 self.line(indent, &format!("stdout.print({})", values.join(", ")));
             }
+            _ => self.held_or_lent(stmt, indent),
         }
     }
 
-    /// The statements about sharing, generators, `with` and `match`: what `stmt` writes for them.
+    /// The statements about sharing, generators, `with`, `match` and lists changed while they're
+    /// counted through: what `stmt` writes for them.
     fn held_or_lent(&mut self, stmt: &Stmt, indent: usize) {
         match stmt {
+            Stmt::Indexed(name, list, body) => {
+                self.line(indent, &format!("for {name} in range({list}.len()):"));
+                self.line(indent + 1, &format!("stdout.print({list}[{name}])"));
+                self.block(body, indent + 1);
+            }
+            Stmt::GrowAll(list, by) => {
+                let by = self.expr(by, false);
+                self.line(indent, &format!("grow_all(ref {list}, {by})"));
+            }
             Stmt::Grow(name, by) => {
                 let by = self.expr(by, false);
                 self.line(indent, &format!("match {name}:"));

@@ -219,6 +219,31 @@ impl Machine {
                     }
                 }
             }
+            Stmt::Indexed(name, list, body) => {
+                let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                // The range is worked out once, from the length the list had then.
+                let rounds = items.len();
+                for at in 0..rounds {
+                    let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                    let item = items.get(at).copied().ok_or(Stop::Failed)?;
+                    let _ = writeln!(self.out, "{item}");
+                    let at = i64::try_from(at).map_err(|_| Stop::Unsure)?;
+                    self.scopes.push(vec![(name.clone(), Value::Int(at))]);
+                    let more = self.round(body);
+                    self.scopes.pop();
+                    if !more? {
+                        break;
+                    }
+                }
+            }
+            Stmt::GrowAll(list, by) => {
+                let by = int(&self.expr(by)?)?;
+                if let Value::Ints(items) = self.slot(list)? {
+                    for item in items.iter_mut() {
+                        *item = checked(item.checked_add(by))?;
+                    }
+                }
+            }
             Stmt::EachRef(_, list, by) => {
                 let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
                 for at in 0..items.len() {

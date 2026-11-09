@@ -166,6 +166,11 @@ pub(crate) enum Stmt {
     /// lock, counts it in `y` and adds it to `x`. A task that overflows crashes, which undoes
     /// that lock's changes and prints `crashed`.
     Tally(String, Expr),
+    /// `for name in range(list.len()):` reading `list[name]` first each round, with the body free
+    /// to change the list, so a bound worked out once can stop holding.
+    Indexed(String, String, Vec<Stmt>),
+    /// `grow_all(ref list, by)`, adding `by` to each item through a `ref` parameter.
+    GrowAll(String, Expr),
     /// `for name in counted(limit):`, over a generator.
     EachCounted(String, Expr, Vec<Stmt>),
     /// `with tallied(start, stdout) as name:`, which prints when it opens, when it closes and

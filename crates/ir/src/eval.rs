@@ -389,6 +389,8 @@ impl<'p> Machine<'p> {
             }
             InstKind::Lock { .. }
             | InstKind::Unlock { .. }
+            | InstKind::CrashCleanup { .. }
+            | InstKind::CrashCleanupDone { .. }
             | InstKind::LockAll { .. }
             | InstKind::UnlockAll { .. } => {
                 return not_here("a `shared` value");

@@ -282,6 +282,8 @@ fn generator(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         InstKind::Lock { handle, write: true } => write!(f, "lock {handle} to write"),
         InstKind::Lock { handle, write: false } => write!(f, "lock {handle} to read"),
         InstKind::Unlock { handle } => write!(f, "unlock {handle}"),
+        InstKind::CrashCleanup { cleanup } => write!(f, "on crash run {cleanup}"),
+        InstKind::CrashCleanupDone { cleanup } => write!(f, "on crash no longer run {cleanup}"),
         InstKind::LockAll { handles } => {
             let each: Vec<String> = handles
                 .iter()

@@ -1690,6 +1690,49 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
     );
 }
 
+/// `fennec fix` gives a function that uses a capability it wasn't given the parameter, passes it
+/// at each call, and gives each caller the parameter in turn, across a kit's files, up to the
+/// first that has one, `main`, or a test. A function named other than in a call is left alone.
+#[test]
+fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-threaded", std::process::id()));
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"hello\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        src.join("main.fen"),
+        "from greet import welcome\n\ndef main(out: Stdout):\n    welcome(\"Ann\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("greet.fen"),
+        "export def welcome(name: str):\n    shout(f\"hello {name}\")\n    shout(\"again\")\n\ndef shout(text: str):\n    stdout.print(text)\n\ntest \"welcomes\":\n    welcome(\"Bo\")\n",
+    )
+    .unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let main = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    let greet = std::fs::read_to_string(src.join("greet.fen")).unwrap();
+    let ran = fennec(&["run", "--no-test", &path], "").unwrap();
+    let as_value = "def shout(text: str):\n    stdout.print(text)\n\ndef main(out: Stdout):\n    each = shout\n    each(\"hi\")\n";
+    std::fs::write(src.join("main.fen"), as_value).unwrap();
+    std::fs::remove_file(src.join("greet.fen")).unwrap();
+    let left = fennec(&["fix", &path], "").unwrap();
+    let kept = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(main, "from greet import welcome\n\ndef main(out: Stdout):\n    welcome(out, \"Ann\")\n");
+    assert_eq!(
+        greet,
+        "export def welcome(stdout: Stdout, name: str):\n    shout(stdout, f\"hello {name}\")\n    shout(stdout, \"again\")\n\ndef shout(stdout: Stdout, text: str):\n    stdout.print(text)\n\ntest \"welcomes\"(stdout: Stdout):\n    welcome(stdout, \"Bo\")\n"
+    );
+    assert_eq!(text(&ran.stdout), "hello Ann\nagain\n", "{}", text(&ran.stderr));
+    assert!(!left.status.success());
+    assert_eq!(kept, as_value);
+    assert!(text(&left.stderr).contains("`stdout` doesn't exist"), "{}", text(&left.stderr));
+}
+
 /// `fennec fix` names the fields of a pattern matching another kit's type by position, and a
 /// part that's only `_` goes, so it reads no field.
 #[test]

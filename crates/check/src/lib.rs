@@ -54,6 +54,8 @@ mod shared;
 mod stdlib;
 mod stmt;
 mod sum;
+mod threading;
+pub use threading::add_capability_fixes;
 mod tuple_lowering;
 mod types;
 mod waits;

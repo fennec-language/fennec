@@ -307,6 +307,12 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
 pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
     if let ExprKind::Call { args, .. } = &mut call.kind {
         for (name, default) in defaults {
+            // A source of the program's own, written in where it's used, keeps its text's places,
+            // so a default found for the copy is found for the text it came from too, which has
+            // it already.
+            if args.iter().any(|arg| arg.name.as_deref() == Some(name.as_str())) {
+                continue;
+            }
             args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value: default.clone() });
         }
     }

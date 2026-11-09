@@ -497,12 +497,7 @@ impl Lowering<'_> {
         if let Some(instead) = self.instead.take() {
             fail_instead(&mut body, &instead);
         }
-        // A generic source's body names its type parameters, which are this call's types here.
-        let given = given_types(def, &source.generics, &source.gives)?;
-        if !given.is_empty() {
-            retype(&mut written, &given);
-            retype(&mut body, &given);
-        }
+        typed_for_call(source, &mut written, &mut body)?;
         // Types are found by span, and each call gives the body types of its own, as `None` for a
         // parameter one call leaves out and another gives, so each written-in copy of a source's
         // text gets spans of its own.
@@ -684,6 +679,54 @@ fn retype_written(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>)
                 retype_written(body, given);
             }
             StmtKind::Lend { otherwise, .. } => retype_written(otherwise, given),
+            _ => {}
+        }
+    }
+}
+
+/// A generic source's text, written in at a call: its type parameters are the call's types here.
+/// One named only in a parameter's type, like `E` in `make: () -> T fails E`, isn't in what the
+/// source gives, so isn't known here: a name with such a type takes its value's.
+fn typed_for_call(source: &Source, written: &mut [Stmt], body: &mut [Stmt]) -> Option<()> {
+    let given = given_types(source.def.as_ref(), &source.generics, &source.gives)?;
+    if !given.is_empty() {
+        retype(written, &given);
+        retype(body, &given);
+    }
+    let unknown: Vec<&str> =
+        source.generics.iter().map(String::as_str).filter(|name| !given.contains_key(*name)).collect();
+    if !unknown.is_empty() {
+        untyped_where_unknown(written, &unknown);
+        untyped_where_unknown(body, &unknown);
+    }
+    Some(())
+}
+
+/// Drops the written type of each name whose type names one of `unknown`, so it takes its value's.
+fn untyped_where_unknown(body: &mut [Stmt], unknown: &[&str]) {
+    fn names(ty: &TypeExpr, unknown: &[&str]) -> bool {
+        unknown.contains(&ty.name.as_str()) || ty.args.iter().any(|arg| names(arg, unknown))
+    }
+    for each in body {
+        match &mut each.kind {
+            StmtKind::Assign { ty, .. } => {
+                if ty.as_ref().is_some_and(|ty| names(ty, unknown)) {
+                    *ty = None;
+                }
+            }
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    untyped_where_unknown(body, unknown);
+                }
+                if let Some(body) = otherwise {
+                    untyped_where_unknown(body, unknown);
+                }
+            }
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. }
+            | StmtKind::Lend { otherwise: body, .. } => untyped_where_unknown(body, unknown),
             _ => {}
         }
     }

@@ -4452,6 +4452,101 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A program's own source with a call that leaves out a default, written in twice: each copy
+/// takes the default once, and so does the source it's written from.
+#[test]
+fn a_default_left_out_in_a_source_written_in_twice_is_given_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "default_given_once",
+            r"struct Counter:
+    start: int
+
+    def opened(self) -> with int:
+        lend added(self.start)
+
+def added(n: int, more = 1) -> int:
+    n + more
+
+def main(stdout: Stdout):
+    counter = Counter(start=1)
+    with counter.opened() as first:
+        with counter.opened() as second:
+            stdout.print(first + second)
+"
+        )?,
+        "4\n"
+    );
+    Ok(())
+}
+
+/// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
+/// generic source written in where it's used doesn't know it, and a call to a generic function
+/// learns it from the function it's given.
+#[test]
+fn a_type_parameter_only_in_a_function_parameter_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "source_with_e",
+            r#"error Nope:
+    why: str
+
+struct Held[T]:
+    value: T
+
+def holding[T, E](make: () -> T fails E) -> with Held[T] fails Nope:
+    value = make() else fail Nope(why="no")
+    lend Held[T](value=value) else:
+        pass
+
+def one() -> int fails Nope:
+    1
+
+def main(stdout: Stdout) fails Nope:
+    with holding(one)? as held:
+        stdout.print(held.value)
+"#
+        )?,
+        "1\n"
+    );
+    assert_eq!(
+        printed_by(
+            "call_with_e",
+            r#"from std.concurrent import Crashed
+
+error Nope:
+    why: str
+
+def started[T, E](make: () -> T fails E) fails Crashed:
+    with launch(() => ran(make))?:
+        pass
+
+def ran[T, E](make: () -> T fails E):
+    match make():
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
+
+def one() -> int fails Nope:
+    1
+
+def main(stdout: Stdout) fails Crashed:
+    started(one)?
+    stdout.print("ok")
+"#
+        )?,
+        "ok\n"
+    );
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]

@@ -29,7 +29,7 @@ mod tests;
 #[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
-pub(super) use freeing::{release, run_abandons};
+pub(super) use freeing::{release, run_abandons, share_abandons};
 pub(super) use named::packable;
 pub use shown::{own_text, own_text_written};
 
@@ -593,8 +593,14 @@ impl Heap {
     /// Takes over blocks, as this thread's own and as made since it last handed any over: what a
     /// launched task was given to start with, or left when it ended, for whoever runs next to hand
     /// over in turn.
+    /// How many pages its table of blocks holds.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn table_pages(&self) -> usize {
+        self.blocks.pages()
+    }
+
     /// How many words of freed blocks it's keeping for reuse.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "threads"))]
     pub(crate) fn spare_words(&self) -> usize {
         self.spare_words
     }

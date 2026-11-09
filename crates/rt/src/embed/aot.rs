@@ -92,6 +92,7 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
         if let Some(Image { sources, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
             super::start(tables, live_inputs());
+            heap::share_abandons();
             // A worker can end the program itself, and has to say where.
             SOURCES.set(Some(sources));
         }
@@ -281,6 +282,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
         return (Vec::new(), "error: this executable's program is damaged\n".to_owned());
     };
     super::start(tables, live_inputs());
+    heap::share_abandons();
     LITERALS.set(literals);
     SOURCES.set(Some(sources.clone()));
     let here = 0_u8;

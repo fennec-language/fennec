@@ -321,7 +321,14 @@ impl Conn {
             *self.ahead.borrow_mut() = ahead;
             match filled {
                 Ok(0) if self.ahead.borrow().is_empty() => return Ok(None),
-                Ok(0) => return Ok(Some(self.ahead.take())),
+                Ok(0) => {
+                    // A last line with no `\n` loses a `\r` it ends with, as one with a `\n` does.
+                    let mut line = self.ahead.take();
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    return Ok(Some(line));
+                }
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
                     self.wait(self.read_interest(), until, "read_line")?;

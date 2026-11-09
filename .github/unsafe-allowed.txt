@@ -5,5 +5,5 @@
 # word in test programs, and the one in the lexer is the word in its list of reserved words.
 crates/fennec/tests/selfhost.rs: 2
 crates/parked/src/current.rs: 1
-crates/runtime/src/lib.rs: 4
+crates/runtime/src/lib.rs: 6
 crates/syntax/src/token.rs: 1

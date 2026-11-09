@@ -725,8 +725,12 @@ impl Emit<'_, '_, '_> {
                 _ => Err("an optional string with no string".to_owned()),
             };
         }
-        let (number, written) = self.case_of(&kind, case)?;
-        if let (Kind::Boxed(id), true) = (&kind, written.is_empty()) {
+        let (number, mut written) = self.case_of(&kind, case)?;
+        // An error's notes start as 0, where the case's words are zero.
+        written.retain(|(name, _, _)| !fennec_rt::packed::hidden(name));
+        if let (Kind::Boxed(id), true) = (&kind, written.is_empty())
+            && !crate::notes::has_notes(self.layout_of(*id)?)
+        {
             let shared = self.shared_case(*id, number)?;
             self.retain_value(&shared, &kind);
             return self.assign(dest, &shared);
@@ -1206,9 +1210,11 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i1 {same_tag}, ptr {result}"));
         let done = self.label("compared");
         for (number, case) in cases.iter().enumerate().filter(|(_, case)| !case.fields.is_empty()) {
+            // An error's notes aren't compared.
             let fields: Vec<(u32, Kind)> = case
                 .fields
                 .iter()
+                .filter(|field| !fennec_rt::packed::hidden(&field.name))
                 .map(|field| {
                     Kind::from_ty(self.module.layouts, field.ty)
                         .map(|kind| (field.offset, kind))
@@ -1814,6 +1820,52 @@ impl Emit<'_, '_, '_> {
             let at = self.item_address(&list, &memory, &position.to_string());
             self.fill(&held, value, &at, ITEM_ACCESS)?;
         }
+        self.assign(dest, &list)
+    }
+
+    /// A list of constants, like `embed_folder`'s paths and files: made the first time it's
+    /// reached and kept for the whole run, as a constant's value is, and handed out with one more
+    /// owner each time after. Nothing changes one in place, as it can't be changed. In a program
+    /// with tasks it's made each time instead, since a task's thread can't make a block every
+    /// thread reads once they've started.
+    pub(crate) fn constant_list(
+        &mut self,
+        dest: LocalId,
+        items: &[Operand],
+        block: usize,
+    ) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        if self.module.threads || !matches!(kind, Kind::List(_)) || self.array_shape(&kind).is_some() {
+            return self.make_list(dest, items, block);
+        }
+        let site = self.label("list");
+        let global = format!("@\"f_{}.{site}\"", self.function.name);
+        // One for every module, as another module may have a copy of this function to inline.
+        self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
+        let (kept, none) = (self.temp(), self.temp());
+        self.line(&format!("{kept} = load ptr, ptr {global}, align 8"));
+        self.line(&format!("{none} = icmp eq ptr {kept}, null"));
+        let (first, ready) = (self.label("list_first"), self.label("list_ready"));
+        let before = self.current.clone();
+        self.line(&format!("br i1 {none}, label %{first}, label %{ready}, !prof !0"));
+        self.start_block(&first);
+        let item = list_item(&kind)?;
+        let held = self.item_kind(item)?;
+        let made = self.new_list(item, &items.len().to_string());
+        let memory = held.memory(self.module.layouts);
+        for (position, value) in items.iter().enumerate() {
+            let at = self.item_address(&made, &memory, &position.to_string());
+            self.fill(&held, value, &at, ITEM_ACCESS)?;
+        }
+        self.declare("declare void @fennec_constant_kept(ptr) nounwind");
+        self.line(&format!("call void @fennec_constant_kept(ptr {made})"));
+        self.line(&format!("store ptr {made}, ptr {global}, align 8"));
+        let made_end = self.current.clone();
+        self.line(&format!("br label %{ready}"));
+        self.start_block(&ready);
+        let list = self.temp();
+        self.line(&format!("{list} = phi ptr [ {kept}, %{before} ], [ {made}, %{made_end} ]"));
+        self.retain_value(&list, &kind);
         self.assign(dest, &list)
     }
 

@@ -53,9 +53,11 @@ enum Reading {
 
 /// A connection with TLS over it, read and written as a plain one is. Only the TLS module makes
 /// one, so a program that never asks for TLS links none of it.
-pub(crate) trait SecureStream: BufRead + Write + Send {}
-
-impl<T: BufRead + Write + Send> SecureStream for T {}
+pub(crate) trait SecureStream: BufRead + Write + Send {
+    /// The socket it reads through. It's a copy of the connection's own, and on Windows a copy
+    /// keeps its own timeouts, so a read's timeout goes on this one.
+    fn socket(&self) -> &TcpStream;
+}
 
 /// What a TLS session reads from and writes to: a socket that doesn't block.
 #[cfg_attr(
@@ -857,6 +859,13 @@ pub(crate) fn line_value(line: Option<&[u8]>) -> Value {
     line.map_or(Value::None, |line| Value::str(String::from_utf8_lossy(trim_line(line)).as_ref()))
 }
 
+/// `line_value`, for a line whose ending's already been taken off, as a served connection reads
+/// one: taking off another `\r` would make a line holding a bare `\r` look blank.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn trimmed_line_value(line: Option<&[u8]>) -> Value {
+    line.map_or(Value::None, |line| Value::str(String::from_utf8_lossy(line).as_ref()))
+}
+
 fn connection_made((connection, peer): (i64, String)) -> Made {
     ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))])
 }
@@ -1226,8 +1235,19 @@ fn reading<T>(
         }
     };
     if !socket_parks() {
-        wait_at_most(&stream.socket, timeout)?;
-        return attempt().map_err(|error| Failure::of(&error, timeout));
+        let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        // The reader reads through a copy of the socket, and on Windows a copy keeps its own
+        // timeouts: one set on the connection's own socket leaves a read on the copy waiting.
+        let socket = match &*reader {
+            Reading::Plain(plain) => plain.get_ref(),
+            Reading::Tls(secured) => secured.socket(),
+        };
+        wait_at_most(socket, timeout)?;
+        let done = match &mut *reader {
+            Reading::Plain(plain) => read(plain),
+            Reading::Tls(secured) => read(&mut **secured),
+        };
+        return done.map_err(|error| Failure::of(&error, timeout));
     }
     let socket = &stream.socket;
     socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;

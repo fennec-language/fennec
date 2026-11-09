@@ -75,6 +75,10 @@ jobs:
         run: |
           if [ -n "$ONLY" ]; then
             cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
+            # The runtime with threads, beside `fennec` as a release has it, which a program
+            # running `parallel`, like the HTTP server, is built with.
+            cargo build --release --locked -p fennec-runtime --features threads --target-dir target/threads
+            cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
             cp target/release/fennec-fuzz fennec-fuzz
             echo "FENNEC=$PWD/target/release/fennec" >> "$GITHUB_ENV"
           elif [ -n "$BUILD_FOR" ]; then

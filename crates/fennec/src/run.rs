@@ -52,13 +52,13 @@ pub(crate) fn run_logged(
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
     // standard error.
     eprint!("{}", crate::lint::errors_remembered(path));
-    let (program, _) = match reached(path) {
+    let (program, _, kept) = match reached(path) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
     // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
     // says it.
-    match built_and_run(&program, path, arguments, logged) {
+    match built_and_run((&program, kept.as_deref()), path, arguments, logged) {
         Ok(code) => code,
         Err(why) => {
             eprintln!("error: {why}");
@@ -70,11 +70,49 @@ pub(crate) fn run_logged(
 /// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
 /// this process's input and output, and its exit code.
 fn built_and_run(
-    program: &fennec_kit::Program,
+    (program, kept): (&fennec_kit::Program, Option<&str>),
     path: &str,
     arguments: &[String],
     logged: Option<&Logged>,
 ) -> Result<ExitCode, String> {
+    let executable = crate::own_temp("run").with_extension(std::env::consts::EXE_EXTENSION);
+    // A program the same as a run before had, kept as an image, starts from what that run built,
+    // with nothing lowered or compiled to find it again.
+    let started_from = kept.zip(cache()).map(|(kept, cache)| {
+        let name = format!(
+            "{}.root",
+            fennec_blake3::hash(
+                format!("{kept} {} {}", env!("FENNEC_BUILD"), crate::aot::dev_build_settings()).as_bytes()
+            )
+            .to_hex()
+        );
+        (cache, name)
+    });
+    let ready = started_from.as_ref().is_some_and(|(cache, name)| {
+        cache
+            .read(RUN_ROOTS, name)
+            .and_then(|root| String::from_utf8(root).ok())
+            .is_some_and(|root| crate::aot::stored_executable(cache, &root, &executable).is_some())
+    });
+    if !ready {
+        let built = build_for_run(program, path, &executable)?;
+        if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
+            // A store that can't be written only means building it again next time.
+            let _ = cache.write(RUN_ROOTS, name, root.as_bytes());
+        }
+    }
+    started(&executable, path, arguments, logged)
+}
+
+/// Where the root of what a kept image built is kept, by the image and what else the build read.
+const RUN_ROOTS: &str = "run-roots";
+
+/// Builds the program to `executable` through LLVM's cached dev build.
+fn build_for_run(
+    program: &fennec_kit::Program,
+    path: &str,
+    executable: &std::path::Path,
+) -> Result<crate::aot::Built, String> {
     // A program started from a kept image doesn't have its source, which an executable keeps
     // to point a failure at. Its files haven't changed since, so reading them again matches.
     let whole;
@@ -93,9 +131,17 @@ fn built_and_run(
     } else {
         program
     };
-    let executable = crate::own_temp("run").with_extension(std::env::consts::EXE_EXTENSION);
-    crate::aot::executable(program, &executable, false)?;
-    let mut command = std::process::Command::new(&executable);
+    crate::aot::executable(program, executable, false)
+}
+
+/// Runs what was built at `executable` as the program at `path`, then lets go of it.
+fn started(
+    executable: &std::path::Path,
+    path: &str,
+    arguments: &[String],
+    logged: Option<&Logged>,
+) -> Result<ExitCode, String> {
+    let mut command = std::process::Command::new(executable);
     // `args.program` is the program it ran, not where it was built to for this run.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::arg0(&mut command, path);
@@ -106,7 +152,7 @@ fn built_and_run(
         command.env(variable, log);
     }
     let ran = command.args(arguments).status();
-    let _ = std::fs::remove_file(&executable);
+    let _ = std::fs::remove_file(executable);
     let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
     // A program stopped by a signal has no code of its own.
     Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
@@ -125,12 +171,14 @@ fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), 
 /// with everything else in its kit. All of it is checked the first time, and again whenever
 /// its text changes; the cache remembers the text that passed. The cut-down program is what
 /// always runs, so its machine code is reused from the very first run.
-fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
-    let Some(cache) = cache() else { return whole(path) };
-    if let Some(mut program) = crate::image::load(path, &cache)
+fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures, Option<String>), ExitCode> {
+    let Some(cache) = cache() else {
+        return whole(path).map(|(program, signatures)| (program, signatures, None));
+    };
+    if let Some((mut program, kept)) = crate::image::load(path, &cache)
         && let Ok(signatures) = fennec_check::check_to_run(&mut program.module)
     {
-        return Ok((program, signatures));
+        return Ok((program, signatures, Some(kept)));
     }
     let files = crate::image::files_now(path, &cache);
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
@@ -169,9 +217,9 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
         crate::image::store(path, &cache, files, &program);
     }
     match fennec_check::check_to_run(&mut program.module) {
-        Ok(signatures) => Ok((program, signatures)),
+        Ok(signatures) => Ok((program, signatures, None)),
         // Cutting it down missed something the whole program has.
-        Err(_) => whole(path),
+        Err(_) => whole(path).map(|(program, signatures)| (program, signatures, None)),
     }
 }
 

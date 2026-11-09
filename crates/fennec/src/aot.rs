@@ -214,6 +214,8 @@ pub(crate) struct Built {
     fresh: usize,
     compiled: std::time::Duration,
     linked: std::time::Duration,
+    /// Its place in the store, when there's one: what a run of the same program can start from.
+    pub(crate) root: Option<String>,
 }
 
 /// Whether there's a linker to find. Windows doesn't come with one, so LLD and the libraries it
@@ -261,7 +263,24 @@ pub(crate) fn executable(
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
     let linked = finish(&built, output, runtime_in, statically)?;
-    Ok(Built { total: built.total, fresh: built.fresh, compiled, linked })
+    let root = built.stored.as_ref().map(|stored| stored.root.clone());
+    Ok(Built { total: built.total, fresh: built.fresh, compiled, linked, root })
+}
+
+/// Puts the finished program in the store under `root` at `output`, if it's there.
+pub(crate) fn stored_executable(cache: &fennec_build::Cache, root: &str, output: &Path) -> Option<()> {
+    let bytes = cache.read(PROGRAMS, root)?;
+    std::fs::write(output, bytes).ok()?;
+    executable_mode(output).ok()
+}
+
+/// What a dev build depends on besides the program: which runtime it links, as far as anything
+/// outside the program chooses that, and what `--cpu` asked for.
+pub(crate) fn dev_build_settings() -> String {
+    let threads = std::env::var_os("FENNEC_THREADS_RUNTIME").map(|on| on.to_string_lossy().into_owned());
+    let found = runtime_folder(false).is_ok_and(|folder| folder.join(Runtime::Threads.library()).is_file());
+    let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
+    format!("threads={threads:?} found={found} baseline={baseline}")
 }
 
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the

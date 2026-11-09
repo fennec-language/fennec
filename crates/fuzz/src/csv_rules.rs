@@ -4,7 +4,8 @@
 //! is compared with what that reader reads, and what it can't read has to fail.
 //!
 //! Then the input is taken as rows, split at `\u{1e}` and fields at `\u{1f}`, and those rows go
-//! through `csv.dumps` and back through `csv.loads`, which has to give the same rows.
+//! through `csv.dumps` and back through `csv.loads`, which has to give the same rows. Split that
+//! way, every row has a field, so `dumps` never has a reason to refuse them.
 
 use crate::json_rules::{Json, parse};
 
@@ -20,12 +21,15 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
         case Err(_):
             stdout.print(\"err\")
     rows = [part.split(\"\\u001f\") for part in text.split(\"\\u001e\")]
-    written = csv.dumps(rows)
-    match csv.loads(written):
-        case Ok(back):
-            stdout.print(\"ok \" + json.dumps(back))
+    match csv.dumps(rows):
+        case Ok(written):
+            match csv.loads(written):
+                case Ok(back):
+                    stdout.print(\"ok \" + json.dumps(back))
+                case Err(_):
+                    stdout.print(\"err\")
         case Err(_):
-            stdout.print(\"err\")
+            stdout.print(\"unwritten\")
     stdout.print(json.dumps(rows))
 ";
 
@@ -117,10 +121,9 @@ pub(crate) fn csv(input: &[u8]) -> Result<(), String> {
         _ => {}
     }
     let given = printed_rows(given).ok_or_else(|| format!("the reader printed {given:?}"))?;
-    // Reported: a first field starting with a byte order mark loses it. Take this out once
-    // `csv_dumps_writes_what_loads_reads_back_as_the_same_rows` passes.
-    if given.first().and_then(|row| row.first()).is_some_and(|field| field.starts_with('\u{feff}')) {
-        return Ok(());
+    // Rows split from text always have a field each, which CSV can write.
+    if *written == "unwritten" {
+        return Err(format!("`dumps` refused {given:?}"));
     }
     match written.strip_prefix("ok ").map(printed_rows) {
         None => Err(format!("`dumps` of {given:?} wrote what `loads` can't read")),

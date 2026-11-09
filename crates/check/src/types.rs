@@ -178,7 +178,7 @@ impl Type {
         }
     }
 
-    /// The short name the interpreter uses for a value of this type, as in "this is a list".
+    /// The short name messages use for a value of this type, as in "this is a list".
     pub(crate) fn kind(&self) -> String {
         match self {
             Type::Unknown | Type::Var(_) => "value".to_owned(),

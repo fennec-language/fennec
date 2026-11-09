@@ -393,6 +393,10 @@ struct Reader<'s> {
     timeout: Duration,
     /// Whether TLS ended with no word from the other side that it was finished.
     cut_off: bool,
+    /// How much of what's been read was heads and trailers, which together have a most.
+    head_bytes: usize,
+    /// How many bytes the last line took, its ending included.
+    last_line: usize,
 }
 
 impl Reader<'_> {
@@ -400,6 +404,11 @@ impl Reader<'_> {
     fn more(&mut self) -> Result<bool, Failure> {
         let mut chunk = [0; 16 * 1024];
         let read = self.stream.read_by(&mut chunk, (self.deadline, self.timeout), &mut self.cut_off)?;
+        // What's been taken goes, once there's a good deal of it, so a long answer isn't all held.
+        if self.at > 1 << 16 && self.at * 2 > self.held.len() {
+            self.held.drain(..self.at);
+            self.at = 0;
+        }
         self.held.extend_from_slice(chunk.get(..read).unwrap_or_default());
         Ok(read > 0)
     }
@@ -415,6 +424,7 @@ impl Reader<'_> {
                 let line = self.rest().get(..end).unwrap_or_default();
                 let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line)).into_owned();
                 self.at += end + 1;
+                self.last_line = end + 1;
                 return Ok(line);
             }
             if self.rest().len() > MOST_IN_HEADERS {
@@ -424,6 +434,16 @@ impl Reader<'_> {
                 return Err(Failure::Closed);
             }
         }
+    }
+
+    /// The next line of a head or trailer, counted against the most they may come to together.
+    fn head_line(&mut self) -> Result<String, Failure> {
+        let line = self.line()?;
+        self.head_bytes += self.last_line;
+        if self.head_bytes > MOST_IN_HEADERS {
+            return Err(Failure::Other("the server sent too much before the response's body".to_owned()));
+        }
+        Ok(line)
     }
 
     /// The next `count` bytes.
@@ -457,11 +477,13 @@ impl Reader<'_> {
             let size = usize::from_str_radix(digits, 16)
                 .map_err(|_| Failure::Other(format!("`{digits}` isn't the size of a chunk")))?;
             if size == 0 {
-                while !self.line()?.is_empty() {}
+                while !self.head_line()?.is_empty() {}
                 return Ok(body);
             }
             body.extend(self.take(size)?);
-            self.line()?;
+            if !self.line()?.is_empty() {
+                return Err(Failure::Other("a chunk ran past the size it gave".to_owned()));
+            }
         }
     }
 }
@@ -472,7 +494,16 @@ fn read_answer(
     deadline: Instant,
     timeout: Duration,
 ) -> Result<Answer, Failure> {
-    let mut reader = Reader { stream, held: Vec::new(), at: 0, deadline, timeout, cut_off: false };
+    let mut reader = Reader {
+        stream,
+        held: Vec::new(),
+        at: 0,
+        deadline,
+        timeout,
+        cut_off: false,
+        head_bytes: 0,
+        last_line: 0,
+    };
     let (status, headers) = loop {
         let (status, headers) = read_head(&mut reader)?;
         // `100 Continue` and the like say something's coming.
@@ -501,7 +532,7 @@ fn read_answer(
 }
 
 fn read_head(reader: &mut Reader<'_>) -> Result<(i64, Vec<(String, String)>), Failure> {
-    let status_line = reader.line()?;
+    let status_line = reader.head_line()?;
     let status = status_line
         .strip_prefix("HTTP/")
         .and_then(|rest| rest.split_whitespace().nth(1))
@@ -509,7 +540,7 @@ fn read_head(reader: &mut Reader<'_>) -> Result<(i64, Vec<(String, String)>), Fa
         .ok_or_else(|| Failure::Other(format!("the server answered `{status_line}`, which isn't HTTP")))?;
     let mut headers = Vec::new();
     loop {
-        let line = reader.line()?;
+        let line = reader.head_line()?;
         if line.is_empty() {
             return Ok((status, headers));
         }
@@ -854,6 +885,8 @@ mod tests {
             deadline: std::time::Instant::now() + timeout,
             timeout,
             cut_off: false,
+            head_bytes: 0,
+            last_line: 0,
         };
         assert!(matches!(reader.all(), Err(Failure::Tls(_))));
     }

@@ -30,12 +30,15 @@ def lags(hits: Channel[int], replies: Sender[int], gate: Channel[int], when_behi
             total += hit
     replies.send(total)?
 
-# Pings until `listeners` have answered.
+# Pings until `listeners` have answered. A listener starts at its loop's first step, so it can't
+# say it's listening before it hears something. Each ping waits a while for an answer: a listener
+# that's started but not read yet falls behind only if it misses as many pings as the channel holds,
+# which a quick ping would make happen whenever its thread waits a few milliseconds.
 def until_heard(hits: Channel[int], replies: Channel[int], listeners: int) fails Closed | Timeout:
     mut answered = 0
     while answered < listeners:
         hits.send(-1)?
-        match replies.receive(timeout=Duration(nanos=1_000_000)):
+        match replies.receive(timeout=Duration(nanos=250_000_000)):
             case Ok(_):
                 answered += 1
             case Err(_):

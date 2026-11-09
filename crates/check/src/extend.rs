@@ -94,13 +94,22 @@ impl Program {
         prelude: bool,
         extension: &[Generic],
     ) {
-        let key = format!("{type_name}.{}", method.name);
+        let plain = format!("{type_name}.{}", method.name);
+        let first = self.functions.get(&plain).map(|existing| existing.def.clone());
+        let key = method_key(type_name, method, first.as_deref());
         if let Some(existing) = self.functions.get(&key) {
-            let problem = Diagnostic::new(
-                format!("`{type_name}` already has a method called `{}`", method.name),
-                method.span,
-            )
-            .with_help("rename one of them")
+            let problem = match operator_right(method) {
+                Some(right) => Diagnostic::new(
+                    format!("`{type_name}` already has a `{}` taking {right} on its right", method.name),
+                    method.span,
+                )
+                .with_help("an operator is defined once for each type on its right: take another type, or remove one"),
+                None => Diagnostic::new(
+                    format!("`{type_name}` already has a method called `{}`", method.name),
+                    method.span,
+                )
+                .with_help("rename one of them"),
+            }
             .also_at(existing.def.span);
             self.problems.push(problem);
             return;
@@ -115,6 +124,32 @@ impl Program {
         };
         self.functions.insert(key, entry);
     }
+}
+
+/// What starts the end of the key of an operator defined again for another type on its right.
+pub(crate) const OTHER_RIGHT: &str = "@";
+
+/// The key a method of `owner` is known by, `first` being the method of its name it has already,
+/// if any. An operator may be defined again for another type on its right, as in `Mat4 * Mat4`
+/// and `Mat4 * Vec4`: the first has the operator's own key, and each other one's ends with the
+/// type it takes, `Mat4.*@Vec4`.
+#[must_use]
+pub fn method_key(owner: &str, method: &FnDef, first: Option<&FnDef>) -> String {
+    let key = format!("{owner}.{}", method.name);
+    match (first, operator_right(method)) {
+        (Some(first), Some(other)) if operator_right(first).is_some_and(|right| right != other) => {
+            format!("{key}{OTHER_RIGHT}{other}")
+        }
+        _ => key,
+    }
+}
+
+/// The type an operator method takes on its right, as written, if it's an operator.
+fn operator_right(method: &FnDef) -> Option<String> {
+    let operator = method.name.chars().next().is_some_and(|first| !first.is_alphanumeric() && first != '_')
+        && !method.name.starts_with('[');
+    let right = method.params.get(1)?.ty.as_ref()?;
+    operator.then(|| crate::program::written(right))
 }
 
 /// An extension of a type that isn't one of the program's own.

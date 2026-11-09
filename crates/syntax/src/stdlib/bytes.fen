@@ -1,0 +1,7 @@
+## `bytes`'s methods written in Fennec.
+extend bytes:
+    def serialize(self, ref out: Serializer):
+        out.bytes(self)
+
+    def deserialize(ref src: Deserializer) -> bytes fails ParseError:
+        src.bytes()?

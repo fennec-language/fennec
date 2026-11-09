@@ -43,6 +43,18 @@ const STACK: usize = 1024 * 1024;
 const RANGE_STACK: usize = 64 << 20;
 const RANGE_STACKS_KEPT: usize = 8;
 
+/// The most ranges of `parallel` calls a worker runs at once. Each has a stack of its own, and past
+/// a few thousand there's no room left for more, nor for the tasks they launch, which they wait for.
+const MOST_RANGES: usize = 1024;
+
+/// A range or task waiting for a stack: the work, its accounts, and what's told its number once it
+/// starts.
+struct Deferred {
+    run: Box<dyn FnOnce() -> i64>,
+    accounts: Box<super::threads::Accounts>,
+    started: Option<Box<dyn FnOnce(TaskId)>>,
+}
+
 /// What a task parks with to let the others on its thread run, and be resumed after them: a lock
 /// that's taken, or a test of tasks taking turns.
 pub(in crate::embed) const YIELD: u64 = u64::MAX;
@@ -176,6 +188,12 @@ pub struct Conn {
     tls: RefCell<Option<Box<dyn ServerSession>>>,
 }
 
+/// How long a connection ending gracefully reads what the other side still sends.
+const LINGER: Duration = Duration::from_secs(2);
+
+/// How long a connection ending gracefully waits for more once the other side has gone quiet.
+const LINGER_QUIET: Duration = Duration::from_millis(200);
+
 /// How long a connection has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -262,11 +280,36 @@ impl Conn {
 
     /// The next line, without its line ending, or `None` at the end.
     pub fn read_line(&self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+        self.read_line_crlf(timeout, false)
+    }
+
+    /// `read_line`, which with `crlf` fails on a line ended by a bare `\n`.
+    pub fn read_line_crlf(&self, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
+        let most = crate::stdlib::net::MOST_LINE_BYTES;
         let until = Until::after(timeout);
+        // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
+        // once however slowly the line comes.
+        let mut looked = 0;
         loop {
-            let found = self.ahead.borrow().iter().position(|byte| *byte == b'\n');
+            let found = {
+                let ahead = self.ahead.borrow();
+                let from = looked.min(ahead.len());
+                looked = ahead.len();
+                ahead
+                    .get(from..)
+                    .unwrap_or_default()
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map(|at| from + at)
+            };
+            if found.is_none() && self.ahead.borrow().len() > most {
+                return Err(Failure::Other(format!("a line was longer than {most} bytes")));
+            }
             if let Some(end) = found {
                 let mut line: Vec<u8> = self.ahead.borrow_mut().drain(..=end).collect();
+                if let Some(why) = crate::stdlib::net::line_refused(&line, crlf) {
+                    return Err(Failure::Other(why));
+                }
                 line.pop();
                 if line.last() == Some(&b'\r') {
                     line.pop();
@@ -289,15 +332,50 @@ impl Conn {
         }
     }
 
+    /// Ends the connection gracefully: says no more is coming, then reads and throws away what the
+    /// other side still sends, for a while. Closing with what it sent unread would reset the
+    /// connection, and the other side would lose what it hadn't read yet: the answer it was sent.
+    pub fn linger(&self) {
+        let _ = self.stream.borrow().shutdown(std::net::Shutdown::Write);
+        let until = Until::after(Some(LINGER));
+        let mut sink = [0_u8; READ_BYTES];
+        loop {
+            let read = self.stream.borrow_mut().read(&mut sink);
+            match read {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    // A client that's gone quiet has nothing more on the way.
+                    let quiet = Until::after(Some(LINGER_QUIET));
+                    let soonest = match (quiet.deadline, until.deadline) {
+                        (Some(quiet), Some(all)) if all < quiet => until,
+                        _ => quiet,
+                    };
+                    if self.wait(Interest::READABLE, soonest, "read").is_err() {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+        }
+    }
+
     /// The other side's address.
     pub fn peer(&self) -> String {
         self.stream.borrow().peer_addr().map(|peer| peer.to_string()).unwrap_or_default()
     }
 
     /// Writes all of `data`.
-    pub fn write(&self, mut data: &[u8]) -> Result<(), Failure> {
+    pub fn write(&self, data: &[u8]) -> Result<(), Failure> {
+        self.write_within(data, None)
+    }
+
+    /// `write`, giving up once `timeout` passes, as for a client that never reads.
+    pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+        let until = Until::after(timeout);
         if self.tls.borrow().is_some() {
-            return self.write_securely(data);
+            return self.write_securely(data, until);
         }
         while !data.is_empty() {
             let wrote = self.stream.borrow_mut().write(data);
@@ -305,7 +383,7 @@ impl Conn {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    self.wait(Interest::WRITABLE, until, "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -315,7 +393,7 @@ impl Conn {
     }
 
     /// Writes all of `data` through TLS, waiting whenever what it holds can't go yet.
-    fn write_securely(&self, mut data: &[u8]) -> Result<(), Failure> {
+    fn write_securely(&self, mut data: &[u8], until: Until) -> Result<(), Failure> {
         loop {
             let wrote = {
                 let mut tls = self.tls.borrow_mut();
@@ -328,13 +406,13 @@ impl Conn {
                 Ok((taken, wants_write)) => {
                     data = data.get(taken..).unwrap_or_default();
                     if wants_write {
-                        self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                        self.wait(Interest::WRITABLE, until, "write")?;
                     } else if data.is_empty() {
                         return Ok(());
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    self.wait(Interest::WRITABLE, until, "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -535,6 +613,10 @@ pub(in crate::embed) struct Io {
     /// the connections' tasks share `ready` and `waiting`.
     ranges: Scheduler,
     accounts: HashMap<TaskId, super::threads::Accounts>,
+    /// Ranges, and launched tasks, waiting for a stack, which they get as others end. Launched tasks
+    /// go first: ranges may be waiting for them.
+    deferred_ranges: VecDeque<Deferred>,
+    deferred_tasks: VecDeque<Deferred>,
     /// The runtime's temporaries and inputs each parked task holds, kept apart while it's parked:
     /// tasks take turns on the thread, so one's can't be left where another's truncating would
     /// cut them off, and an ended task's go with it.
@@ -557,6 +639,8 @@ impl Io {
             owners: HashMap::new(),
             servers: HashMap::new(),
             ranges: Scheduler::keeping(RANGE_STACK, RANGE_STACKS_KEPT),
+            deferred_ranges: VecDeque::new(),
+            deferred_tasks: VecDeque::new(),
             accounts: HashMap::new(),
             temporaries: HashMap::new(),
         }
@@ -565,36 +649,91 @@ impl Io {
     /// Starts a range as a parked task on this worker, so it can park when it waits. If there's no
     /// stack for it, it runs here and now, as a range whose body can't wait does.
     pub(in crate::embed) fn start_range(&mut self, range: Box<dyn FnOnce() -> i64>) {
-        self.start_task(range, super::threads::Accounts::default());
+        let deferred = Deferred { run: range, accounts: Box::default(), started: None };
+        if self.ranges.len() >= MOST_RANGES || !self.deferred_ranges.is_empty() {
+            self.deferred_ranges.push_back(deferred);
+            return;
+        }
+        if let Err(deferred) = self.try_start(deferred) {
+            self.defer_or_run(deferred, false);
+        }
     }
 
-    /// Starts `run` as a parked task on this worker with `accounts` its own, giving back its number.
-    /// If there's no stack for it, it runs here and now, and there's none.
+    /// Starts `run` as a parked task on this worker with `accounts` its own, telling `started` its
+    /// number. With no stack for it now, it waits for one, which it gets as another task here ends.
     pub(in crate::embed) fn start_task(
         &mut self,
         run: Box<dyn FnOnce() -> i64>,
-        mut accounts: super::threads::Accounts,
-    ) -> Option<TaskId> {
+        accounts: super::threads::Accounts,
+        started: Box<dyn FnOnce(TaskId)>,
+    ) {
+        if let Err(deferred) =
+            self.try_start(Deferred { run, accounts: Box::new(accounts), started: Some(started) })
+        {
+            self.defer_or_run(deferred, true);
+        }
+    }
+
+    /// Starts a task, or gives it back when there's no stack for it.
+    fn try_start(&mut self, deferred: Deferred) -> Result<TaskId, Deferred> {
+        let Deferred { run, accounts, started } = deferred;
+        let mut accounts = *accounts;
         // The task runs it from its first resume, so it's kept here until then in case it can't.
         let run = Rc::new(Cell::new(Some(run)));
         let held = Rc::clone(&run);
-        let made = self.ranges.spawn(move || held.take().map_or(0, |run| run()));
-        if let Ok(task) = made {
-            accounts.set_task(task);
-            // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
-            if let Some(named) = accounts.take_replay() {
-                self.temporaries.insert(task, super::Temporaries::of_task(named));
+        let Ok(task) = self.ranges.spawn(move || held.take().map_or(0, |run| run())) else {
+            // A task that was never made never took its work, so it's still here.
+            return match run.take() {
+                Some(run) => Err(Deferred { run, accounts: Box::new(accounts), started }),
+                None => Err(Deferred { run: Box::new(|| 0), accounts: Box::new(accounts), started }),
+            };
+        };
+        accounts.set_task(task);
+        // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
+        if let Some(named) = accounts.take_replay() {
+            self.temporaries.insert(task, super::Temporaries::of_task(named));
+        }
+        self.accounts.insert(task, accounts);
+        self.ready.push_back((task, Wake::Ready(READY)));
+        if let Some(started) = started {
+            started(task);
+        }
+        Ok(task)
+    }
+
+    /// What has no stack waits for one while other tasks here can end and free theirs. With none,
+    /// nothing would, so it runs here and now, as it always could.
+    fn defer_or_run(&mut self, deferred: Deferred, launched: bool) {
+        if !self.ranges.is_empty() {
+            if launched {
+                self.deferred_tasks.push_back(deferred);
+            } else {
+                self.deferred_ranges.push_back(deferred);
             }
-            self.accounts.insert(task, accounts);
-            self.ready.push_back((task, Wake::Ready(READY)));
-            return Some(task);
+            return;
         }
-        if let Some(run) = run.take() {
-            super::threads::swap_accounts(&mut accounts);
-            run();
-            super::threads::swap_accounts(&mut accounts);
+        let Deferred { run, mut accounts, .. } = deferred;
+        super::threads::swap_accounts(&mut accounts);
+        run();
+        super::threads::swap_accounts(&mut accounts);
+    }
+
+    /// Starts what's waiting for a stack, now that a task here has ended: launched tasks first.
+    fn start_deferred(&mut self) {
+        while let Some(deferred) = self.deferred_tasks.pop_front() {
+            if let Err(deferred) = self.try_start(deferred) {
+                self.deferred_tasks.push_front(deferred);
+                return;
+            }
         }
-        None
+        while self.ranges.len() < MOST_RANGES
+            && let Some(deferred) = self.deferred_ranges.pop_front()
+        {
+            if let Err(deferred) = self.try_start(deferred) {
+                self.deferred_ranges.push_front(deferred);
+                return;
+            }
+        }
     }
 
     /// Cuts short the wait `task` is parked in, if it's parked here.
@@ -793,6 +932,7 @@ impl Io {
             }
             Step::Done(_) | Step::Unknown => {
                 debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
+                self.start_deferred();
             }
         }
     }

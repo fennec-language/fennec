@@ -822,6 +822,45 @@ fn long_strings_made_on_different_threads_are_equal() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A list or buffer asked for more room than can exist stops the program with a message, rather
+/// than wrap around to a small block and write past it.
+#[test]
+fn asking_for_more_room_than_can_exist_stops_with_a_message() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-huge-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    for (name, source) in [
+        ("huge_list", include_str!("fixtures/workers/huge_list.fen")),
+        ("huge_buffer", include_str!("fixtures/workers/huge_buffer.fen")),
+    ] {
+        let built = build_on_threads(&dir, source, name)?;
+        let ran = Command::new(&built).output_within()?;
+        assert_eq!(ran.status.code(), Some(1), "{name}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert!(String::from_utf8_lossy(&ran.stderr).contains("too big"), "{name}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A `parallel` body that waits for a task it launched runs as a parked task, so its worker can run
+/// that task meanwhile. It once ran straight on the worker, which then waited for work only it
+/// could do, and a few thousand items hung the program.
+#[test]
+fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-ranges-launch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/ranges_that_launch.fen");
+    let built = build_on_threads(&dir, source, "ranges_that_launch")?;
+    matches_on_workers(&built, "ranges_that_launch", Some(0), "5000 12497500\n")?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can serve: its rounds read what it gave them, and other tasks on its worker go on
 /// meanwhile.
 #[test]
@@ -950,7 +989,7 @@ def waited(connection: Connection) -> str:
 def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails NetError:
     connection.write(greeting + \"\\n\")?
     mut count = 0
-    for line in connection.lines():
+    for line in connection.lines()?:
         if line == \"divide\":
             connection.write(\"dividing\\n\")?
             count += 1 // (count - count)
@@ -1056,7 +1095,7 @@ shared Counter:
 
 def answer(connection: Connection, counter: Counter) -> int fails NetError:
     connection.write(\"ready\\n\")?
-    for line in connection.lines():
+    for line in connection.lines()?:
         if line == \"fail\":
             with counter as ref held:
                 held.total = 1 // (held.total - held.total)

@@ -101,10 +101,15 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         let handle = next_handle();
         CONNS.with_borrow_mut(|conns| conns.insert(handle, Rc::new(conn)));
         let result = body(env, handle, i64::from(threads::index()));
-        // Its task is done with it: dropping it closes it.
-        CONNS.with_borrow_mut(|conns| conns.remove(&handle));
-        if result == super::ROUND_FAILED {
-            pass_up(&passing);
+        // The failure it handed over is taken at once: lingering may park this task, and another
+        // task on the thread, a task launched in a round say, starts by clearing what's handed over.
+        let failure = if result == super::ROUND_FAILED { super::launch::take_failed_with() } else { None };
+        // Its task is done with it: it ends gracefully, and dropping it closes it.
+        if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
+            conn.linger();
+        }
+        if let Some(failure) = failure {
+            pass_up(&passing, failure);
         }
         result
     });
@@ -153,8 +158,10 @@ fn replayed(rounds: u64, body: ConnBody, env: i64, call: Option<&crate::replay::
     let passing = Arc::clone(&passed);
     let replayed: super::Replayed = Arc::new(move |handle: i64| {
         let result = body(env, handle, i64::from(threads::index()));
-        if result == super::ROUND_FAILED {
-            pass_up(&passing);
+        if result == super::ROUND_FAILED
+            && let Some(failure) = super::launch::take_failed_with()
+        {
+            pass_up(&passing, failure);
         }
         result
     });
@@ -188,8 +195,7 @@ pub extern "C" fn net_serve_failure() -> i64 {
 
 /// Copies the failure a round handed over out of its worker's runtime, for the code serving: the
 /// first round to fail is the one whose failure passes up.
-fn pass_up(passed: &Passed) {
-    let Some(failure) = super::launch::take_failed_with() else { return };
+fn pass_up(passed: &Passed, failure: u64) {
     attempt(|state: &mut State| {
         let mut slot = passed.lock().unwrap_or_else(PoisonError::into_inner);
         let copy =
@@ -239,11 +245,17 @@ pub(in crate::embed) fn served_call(
         ("read_line", []) => {
             on_conn(handle, |conn| conn.read_line(timeout)).map(|line| line_value(line.as_deref()))
         }
+        ("read_line.crlf", [Value::Bool(crlf)]) => {
+            on_conn(handle, |conn| conn.read_line_crlf(timeout, *crlf))
+                .map(|line| line_value(line.as_deref()))
+        }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            on_conn(handle, |conn| conn.write(data_of(data))).map(|()| Value::Unit)
+            on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }
         ("close", []) => {
-            CONNS.with_borrow_mut(|conns| conns.remove(&handle));
+            if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
+                conn.linger();
+            }
             return Some(Ok(Value::Unit));
         }
         ("peer", []) => {

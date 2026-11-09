@@ -13,6 +13,7 @@
 //! socket getting ready, a job pushed, or work sent to it in particular (`run_on`) wakes it.
 
 use std::cell::{Cell, RefCell};
+use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
@@ -176,8 +177,20 @@ impl Pool {
                 .name(format!("fennec-worker-{at}"))
                 .stack_size(WORKER_STACK_BYTES)
                 .spawn(move || pool.work(at, deque, poll, setup.as_deref()));
-            if started.is_err() && at == 0 {
-                return None;
+            match started {
+                Ok(_) => {}
+                // With no worker at all, there's no pool, and what wanted one says so.
+                Err(_) if at == 0 => return None,
+                // Work is already sent to every worker by number, so one missing would leave its
+                // share waiting forever: the program stops and says why instead.
+                Err(error) => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "error: couldn't start worker thread {} of {threads}: {error}",
+                        at + 1
+                    );
+                    crate::embed::aot::stop_now(1);
+                }
             }
         }
         Some(pool)

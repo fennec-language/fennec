@@ -59,7 +59,7 @@ pub struct Layouts {
     /// list can hold lists, dicts and those optionals.
     one_word_optionals: bool,
     /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
-    /// methods. Otherwise it's an object the interpreter holds.
+    /// methods. Otherwise it's an object the runtime holds.
     native_buffers: bool,
     /// What's held in place rather than by a block's address.
     in_place: InPlace,
@@ -321,7 +321,7 @@ impl Layouts {
     }
 
     /// Lays out the boxed types: every struct and enum that isn't plain and has no `where`
-    /// rules. A field native code can't hold is an interpreter value in a cell of its own.
+    /// rules. A field native code can't hold is a runtime `Value` in a cell of its own.
     fn add_boxed(&mut self, sources: &Sources<'_>, names: &[String]) {
         let candidates: BTreeMap<String, Written> = names
             .iter()
@@ -737,10 +737,19 @@ fn set_ty(layouts: &Layouts, item: &Type) -> Ty {
     key_word(layouts, item).map_or(Ty::Obj, |key| Ty::Dict(key, Word::Nothing))
 }
 
+/// Whether a sized number is held as an int, as all but `u64` and `f32` are: a dict holds those
+/// two as words of their own, which it doesn't have yet, as an int word would print a `u64` past
+/// `int`'s top as negative.
+fn held_as_int(num: fennec_check::Num) -> bool {
+    !matches!(num, fennec_check::Num::U64 | fennec_check::Num::F32)
+}
+
 /// How a dict holds keys of a type: ints, strings, and plain structs and enums.
 fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
     match key {
         Type::Int => Some(Word::Int),
+        // A sized number held as an int is a key as an int is.
+        Type::Sized(num) if held_as_int(*num) => Some(Word::Int),
         Type::Float if layouts.native_buffers => Some(Word::Float),
         // A string key is held in the entry as its header, when strings are headers.
         Type::Str if layouts.text_headers() => Some(Word::Text),
@@ -760,6 +769,7 @@ fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
 fn dict_ty(layouts: &Layouts, key: &Type, value: &Type, held: &dyn Fn(&Type) -> Ty) -> Ty {
     let word = match value {
         Type::Int => Some(Word::Int),
+        Type::Sized(num) if held_as_int(*num) => Some(Word::Int),
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
         Type::Str => Some(Word::Str),

@@ -66,7 +66,6 @@ pub(crate) enum Kw {
     Import,
     From,
     Export,
-    Noalloc,
     Assert,
     /// A keyword the language has planned but this version doesn't support yet.
     Reserved(&'static str),
@@ -102,7 +101,6 @@ impl Kw {
             "import" => Kw::Import,
             "from" => Kw::From,
             "export" => Kw::Export,
-            "noalloc" => Kw::Noalloc,
             "assert" => Kw::Assert,
             _ => {
                 return RESERVED
@@ -142,7 +140,6 @@ impl Kw {
             Kw::Import => "import",
             Kw::From => "from",
             Kw::Export => "export",
-            Kw::Noalloc => "noalloc",
             Kw::Assert => "assert",
             Kw::Reserved(word) => word,
         }

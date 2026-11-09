@@ -380,7 +380,13 @@ impl Lowering<'_> {
                 if let Some(at) = at {
                     self.leaving.truncate(at);
                 }
-                let let_go = self.let_go_now(generator, known.clone(), span);
+                let let_go = match self.failing_with {
+                    Some(failure) => {
+                        self.let_go_noting(generator, known.clone(), failure, span);
+                        Ok(())
+                    }
+                    None => self.let_go_now(generator, known.clone(), span),
+                };
                 self.leaving = all;
                 let_go
             }

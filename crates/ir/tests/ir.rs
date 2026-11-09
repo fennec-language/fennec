@@ -2947,8 +2947,15 @@ def described(port: int) -> str:
 fn an_error_with_cases_is_held_like_an_enum() {
     let program = lowered(DIAL_ERROR).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
-    let held = program.enums.iter().find(|def| def.name == "DialError").map(|def| def.cases.len());
-    assert_eq!(held, Some(3));
+    let held = program.enums.iter().find(|def| def.name == "DialError");
+    assert_eq!(held.map(|def| def.cases.len()), Some(3));
+    // It says it's an error, which carries notes, as a plain enum doesn't.
+    assert_eq!(held.map(|def| def.error), Some(true));
+    let plain =
+        lowered("enum Kind:\n    One\n    Two\n\ndef main(stdout: Stdout):\n    stdout.print(Kind.One)\n")
+            .unwrap();
+    let kind = plain.enums.iter().find(|def| def.name == "Kind").map(|def| def.error);
+    assert_eq!(kind, Some(false));
     assert!(!program.errors.iter().any(|def| def.name == "DialError"));
     assert_eq!(
         printed(DIAL_ERROR, "connect").unwrap(),

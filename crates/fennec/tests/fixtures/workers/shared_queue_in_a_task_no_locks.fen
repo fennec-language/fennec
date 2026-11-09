@@ -1,0 +1,24 @@
+# The same program as shared_queue_in_a_task.fen, with no locks: what starting its task copies.
+from std.concurrent import Crashed
+
+struct Queue:
+    items = list[int]()
+
+    def push(ref self, item: int):
+        self.items.append(item)
+
+    def pop(ref self) -> int:
+        self.items.pop() else 0
+
+def worker(queue: shared Queue):
+    pass
+
+def run(queue: shared Queue) fails Crashed:
+    with launch(() => worker(queue)) as task:
+        pass
+
+def main(stdout: Stdout) fails Crashed:
+    shared queue = Queue()
+    run(queue)?
+    lock queue as held:
+        stdout.print(held.items.len())

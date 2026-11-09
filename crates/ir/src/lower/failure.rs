@@ -128,6 +128,13 @@ impl Lowering<'_> {
                 self.emit(InstKind::GetMember { dest, value, member }, expr.span);
                 Ok(Operand::Local(dest))
             }
+            // An error from a set the checker narrowed to one, as a `match` whose earlier cases
+            // took the others.
+            (Type::Errors(members), Type::Named(read)) if members.contains(&read) => {
+                let dest = self.temporary(Type::Named(read));
+                self.emit(InstKind::AsError { dest, value }, expr.span);
+                Ok(Operand::Local(dest))
+            }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
     }

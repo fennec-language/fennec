@@ -742,6 +742,14 @@ impl Resolver<'_> {
         if self.std_modules.contains(module) {
             return;
         }
+        // `Kind.One` or `SqlError.Failed` in a `case`: a type this file declares or imports, and
+        // one of its cases, which the checker reads.
+        if !module.contains('.')
+            && !self.modules.contains_key(module)
+            && (self.bound.contains(module) || self.kit.defines(self.file, module))
+        {
+            return;
+        }
         match self.modules.get(module) {
             Some(&owner) if self.kit.provides(self.file, owner, member) => {
                 *name = self.kit.merged(owner, member);

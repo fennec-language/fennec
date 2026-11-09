@@ -25,10 +25,16 @@ impl FnCx<'_> {
         let before = self.snapshot();
         let mut paths = Vec::new();
         let mut values = Vec::new();
+        // The errors earlier cases took all of, which a later `case Err(name)` can't hold.
+        let mut taken: Vec<String> = Vec::new();
         for arm in arms {
             self.push(false);
             self.note_undotted_case(&arm.pattern, &ty, arm.span);
-            self.bind_pattern(&arm.pattern, &ty, arm.span);
+            let left = self.without_taken(&ty, &taken);
+            self.bind_pattern(&arm.pattern, &left, arm.span);
+            if arm.guard.is_none() {
+                taken.extend(self.error_taken(&arm.pattern, &ty));
+            }
             if let Some(guard) = &arm.guard {
                 self.guard(guard);
             }
@@ -131,12 +137,58 @@ impl FnCx<'_> {
         self.checker.ref_matches.insert((span.start, span.end), cases);
     }
 
+    /// A result's type with the errors `taken` by earlier cases left out of its error, when that
+    /// leaves one: `case Err(error)` after `case Err(Timeout(...))` on `fails SqlError | Timeout`
+    /// holds a `SqlError`.
+    fn without_taken(&self, subject: &Type, taken: &[String]) -> Type {
+        let settled = self.checker.settled(subject);
+        let Type::Result(value, error) = &settled else { return subject.clone() };
+        let Type::Errors(members) = error.as_ref() else { return subject.clone() };
+        let left: Vec<String> = members.iter().filter(|member| !taken.contains(member)).cloned().collect();
+        let [one] = left.as_slice() else { return subject.clone() };
+        let error = Type::Named(one.clone());
+        Type::Result(value.clone(), Box::new(error))
+    }
+
+    /// The error a `case Err(X(...))` takes all of: a plain error `X` of the result's union, with
+    /// nothing but names and `_` inside.
+    fn error_taken(&self, pattern: &Pattern, subject: &Type) -> Option<String> {
+        let Type::Result(_, error) = self.checker.settled(subject) else { return None };
+        let Type::Errors(members) = *error else { return None };
+        let Pattern::Variant { name, dotted: false, args, .. } = pattern else { return None };
+        let [Pattern::Variant { name: taken, dotted: false, args: inner, .. }] = args.as_slice() else {
+            return None;
+        };
+        let plain = self.checker.program.type_info(taken).is_some_and(|info| info.def.cases.is_empty());
+        (name == "Err" && plain && members.contains(taken) && inner.iter().all(always_matches))
+            .then(|| taken.clone())
+    }
+
     /// Notes a `case` that names a case of the enum or error being matched without its dot. On a
     /// result, a name with no dot means a case of the error and a dot means one of the value, so
     /// a dot wouldn't mean the same there, and nothing's noted.
     fn note_undotted_case(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
         let Pattern::Variant { name, dotted: false, .. } = pattern else { return };
         let Type::Named(owner) = self.checker.settled(subject) else { return };
+        // `case Kind.One:` where the type is known is written `case .One:`.
+        if let Some((written, case)) = name.rsplit_once('.') {
+            let shown = fennec_syntax::rename::shown_type_name(&owner);
+            if written != shown && written != owner {
+                return;
+            }
+            if span.in_prelude() {
+                return;
+            }
+            let start = span.start + 5;
+            let prefix = u32::try_from(written.len()).unwrap_or(0) + 1;
+            let message = format!("the type here is known, so write this case as `.{case}`");
+            self.error(
+                Diagnostic::new(message, span)
+                    .with_help("`fennec fix` makes this change")
+                    .with_fix(Span { start, end: start + prefix }, "."),
+            );
+            return;
+        }
         let info = self.checker.program.type_info(&owner);
         if info.is_some_and(|info| info.def.cases.iter().any(|case| case.name == *name)) {
             if span.in_prelude() {
@@ -366,6 +418,16 @@ impl FnCx<'_> {
         subject: &Type,
         span: Span,
     ) -> Option<(String, Option<String>)> {
+        // `case Err(SqlError.Failed(reason))`: the type and its case, written out.
+        if let Some((written, case)) = name.rsplit_once('.')
+            && self
+                .checker
+                .program
+                .type_info(written)
+                .is_some_and(|info| info.def.cases.iter().any(|known| known.name == case))
+        {
+            return Some((written.to_owned(), Some(case.to_owned())));
+        }
         // `case Err(.Bad(text))` on a result that fails with `ParseError | RangeError`.
         if let Type::Errors(owners) = subject {
             let having: Vec<String> = owners

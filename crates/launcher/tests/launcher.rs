@@ -448,6 +448,39 @@ mod launcher {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A build of your own, linked as `dev`, runs for a kit asking for it, and for `+dev`, with
+    /// nothing fetched or pinned; unlinking it leaves the build where it is.
+    #[test]
+    fn a_linked_build_runs_as_it_is() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("link");
+        let home = dir.join("home");
+        let build = dir.join("checkout/target/release");
+        std::fs::create_dir_all(&build).unwrap();
+        let kit = kit(&dir, "dev");
+        let (_, why, code) = run_in(&kit, &home, &["run"]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("`fennec toolchain link dev <path>`"), "{why}");
+        let (_, why, code) = run_in(&dir, &home, &["toolchain", "link", "dev", &build.to_string_lossy()]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("there's no `fennec`"), "{why}");
+        std::fs::write(build.join("fennec"), script("dev")).unwrap();
+        std::fs::set_permissions(build.join("fennec"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fennec = build.join("fennec").to_string_lossy().into_owned();
+        assert_eq!(run_in(&dir, &home, &["toolchain", "link", "dev", &fennec]).2, Some(0));
+        assert_eq!(run_in(&kit, &home, &["run", "x"]).0, "fennec dev: run x\n");
+        assert!(!kit.join("kit.lock").exists());
+        assert_eq!(run_in(&dir, &home, &["+dev", "build"]).0, "fennec dev: build\n");
+        let listed = run_in(&dir, &home, &["toolchain", "list"]).0;
+        assert_eq!(listed, format!("dev → {}\n", build.display()));
+        assert_eq!(run_in(&dir, &home, &["toolchain", "remove", "dev"]).2, Some(0));
+        assert!(build.join("fennec").is_file());
+        assert_eq!(run_in(&kit, &home, &["run"]).2, Some(1));
+        let (_, why, _) = run_in(&dir, &home, &["toolchain", "link", "Dev", &fennec]);
+        assert!(why.contains("can't name a linked build"), "{why}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The release workflow makes its archives with `tar czf`, which on macOS adds headers for
     /// files' attributes and `._` files, and on Linux GNU's long names.
     #[test]

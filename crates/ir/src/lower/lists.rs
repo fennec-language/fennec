@@ -160,6 +160,21 @@ impl Lowering<'_> {
         Ok(Operand::Local(dest))
     }
 
+    /// What `embed_folder` gave: its paths and its files, each a list of constants, in an
+    /// `EmbeddedFolder`.
+    pub(super) fn folder(&mut self, files: &[(String, fennec_syntax::Blob)], span: Span) -> Operand {
+        let paths = self.temporary(Type::List(Box::new(Type::Str)));
+        let items = files.iter().map(|(path, _)| Operand::Str(path.clone())).collect();
+        self.emit(InstKind::ConstantList { dest: paths, items }, span);
+        let data = self.temporary(Type::List(Box::new(Type::Bytes)));
+        let items = files.iter().map(|(_, data)| Operand::Bytes(data.clone())).collect();
+        self.emit(InstKind::ConstantList { dest: data, items }, span);
+        let dest = self.temporary(Type::Named("EmbeddedFolder".to_owned()));
+        let fields = vec![Operand::Local(paths), Operand::Local(data)];
+        self.emit(InstKind::Make { dest, type_name: "EmbeddedFolder".to_owned(), fields }, span);
+        Operand::Local(dest)
+    }
+
     /// `object[index]`. A tuple's item at a position written as a number is known here.
     pub(super) fn get_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Lowered<Operand> {
         let ty = self.ty(expr)?;

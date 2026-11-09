@@ -14,6 +14,7 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         | InstKind::IsCase { dest, .. }
         | InstKind::GetCaseField { dest, .. }
         | InstKind::MakeList { dest, .. }
+        | InstKind::ConstantList { dest, .. }
         | InstKind::MakeSet { dest, .. }
         | InstKind::MakeDict { dest, .. }
         | InstKind::MakeTuple { dest, .. }
@@ -85,6 +86,7 @@ pub(crate) fn operands(inst: &InstKind) -> Vec<&Operand> {
         InstKind::Make { fields: items, .. }
         | InstKind::MakeCase { fields: items, .. }
         | InstKind::MakeList { items, .. }
+        | InstKind::ConstantList { items, .. }
         | InstKind::MakeSet { items, .. }
         | InstKind::MakeTuple { items, .. }
         | InstKind::MakeClosure { captures: items, .. }

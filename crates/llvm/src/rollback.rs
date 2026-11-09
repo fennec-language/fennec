@@ -317,51 +317,110 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Saves each word of the value at `place`, inside `block`, keeping a count of each block in it
-    /// for the log. A value that's an enum holding blocks is the one kind this can't save, as
-    /// which words hold them depends on its case: that's `Err`.
+    /// for the log. An enum holding blocks is saved by its case, read where it's written: which of
+    /// its words hold blocks depends on it.
     fn save_words(&mut self, block: &str, place: &str, kind: &Kind) -> Result<(), String> {
-        let mut words = Vec::new();
-        self.words_of(kind, 0, &mut words)?;
-        for (offset, word) in words {
-            let at = self.offset(place, offset);
-            let (from, index) = self.word_in(block, &at);
-            match word {
-                Word::Plain => {
-                    self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
-                    let old = self.temp();
-                    self.line(&format!("{old} = load i64, ptr {at}"));
-                    self.line(&format!(
-                        "call void @fennec_lock_save(i64 {from}, i64 {index}, i64 {old}, i64 0)"
-                    ));
+        match kind {
+            Kind::Struct(id) => {
+                let fields: Vec<(u32, Option<Kind>)> = self
+                    .layout_of(*id)?
+                    .fields
+                    .iter()
+                    .map(|field| (field.offset, Kind::from_ty(self.module.layouts, field.ty)))
+                    .collect();
+                for (offset, field) in fields {
+                    let field = field.ok_or("a field this backend doesn't take yet")?;
+                    let at = self.offset(place, offset);
+                    self.save_words(block, &at, &field)?;
                 }
-                Word::Block => {
-                    self.declare("declare void @fennec_lock_save_ref(i64, i64, i64) nounwind");
-                    let old = self.temp();
-                    self.line(&format!("{old} = load i64, ptr {at}"));
-                    self.line(&format!(
-                        "call void @fennec_lock_save_ref(i64 {from}, i64 {index}, i64 {old})"
-                    ));
+                Ok(())
+            }
+            Kind::Enum(id) if self.holds_inline(kind) => self.save_case_words(block, place, *id),
+            _ => {
+                let mut words = Vec::new();
+                self.words_of(kind, 0, &mut words)?;
+                for (offset, word) in words {
+                    let at = self.offset(place, offset);
+                    self.save_word(block, &at, word);
                 }
-                Word::Header => {
-                    self.declare("declare void @fennec_lock_save_text(i64, i64, i64, i64, i64) nounwind");
-                    let header = self.temp();
-                    self.line(&format!("{header} = load {}, ptr {at}", crate::headers::HEADER));
-                    // The log takes over a count of its block, so it has one of its own.
-                    self.retain_value(&header, &Kind::Str);
-                    let mut held = Vec::with_capacity(3);
-                    for part in 0..3_u32 {
-                        let (part_at, old) = (self.offset(&at, part * 8), self.temp());
-                        self.line(&format!("{old} = load i64, ptr {part_at}"));
-                        held.push(old);
-                    }
-                    let [w0, w1, w2] = [0, 1, 2].map(|part| held.get(part).cloned().unwrap_or_default());
-                    self.line(&format!(
-                        "call void @fennec_lock_save_text(i64 {from}, i64 {index}, i64 {w0}, i64 {w1}, i64 {w2})"
-                    ));
-                }
+                Ok(())
             }
         }
+    }
+
+    /// Saves an enum held in place that holds blocks: its tag, then the words of the case it's in.
+    fn save_case_words(&mut self, block: &str, place: &str, id: u32) -> Result<(), String> {
+        let cases: Vec<Vec<(u32, Option<Kind>)>> = self
+            .layout_of(id)?
+            .cases
+            .as_ref()
+            .ok_or("an enum with no cases")?
+            .iter()
+            .map(|case| {
+                case.fields
+                    .iter()
+                    .map(|field| (field.offset, Kind::from_ty(self.module.layouts, field.ty)))
+                    .collect()
+            })
+            .collect();
+        self.save_word(block, place, Word::Plain);
+        let tag = self.temp();
+        self.line(&format!("{tag} = load i64, ptr {place}"));
+        let done = self.label("saved_case");
+        let labels: Vec<String> = cases.iter().map(|_| self.label("save_case")).collect();
+        let arms: Vec<String> = labels
+            .iter()
+            .enumerate()
+            .map(|(number, label)| format!("i64 {number}, label %{label}"))
+            .collect();
+        self.line(&format!("switch i64 {tag}, label %{done} [ {} ]", arms.join(" ")));
+        for (fields, label) in cases.iter().zip(&labels) {
+            self.start_block(label);
+            for (offset, field) in fields {
+                let field = field.clone().ok_or("a field this backend doesn't take yet")?;
+                let at = self.offset(place, *offset);
+                self.save_words(block, &at, &field)?;
+            }
+            self.line(&format!("br label %{done}"));
+        }
+        self.start_block(&done);
         Ok(())
+    }
+
+    /// Saves one word of what a lock holds, at `at` inside `block`, as `word` says it's held.
+    fn save_word(&mut self, block: &str, at: &str, word: Word) {
+        let (from, index) = self.word_in(block, at);
+        match word {
+            Word::Plain => {
+                self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
+                let old = self.temp();
+                self.line(&format!("{old} = load i64, ptr {at}"));
+                self.line(&format!("call void @fennec_lock_save(i64 {from}, i64 {index}, i64 {old}, i64 0)"));
+            }
+            Word::Block => {
+                self.declare("declare void @fennec_lock_save_ref(i64, i64, i64) nounwind");
+                let old = self.temp();
+                self.line(&format!("{old} = load i64, ptr {at}"));
+                self.line(&format!("call void @fennec_lock_save_ref(i64 {from}, i64 {index}, i64 {old})"));
+            }
+            Word::Header => {
+                self.declare("declare void @fennec_lock_save_text(i64, i64, i64, i64, i64) nounwind");
+                let header = self.temp();
+                self.line(&format!("{header} = load {}, ptr {at}", crate::headers::HEADER));
+                // The log takes over a count of its block, so it has one of its own.
+                self.retain_value(&header, &Kind::Str);
+                let mut held = Vec::with_capacity(3);
+                for part in 0..3_u32 {
+                    let (part_at, old) = (self.offset(at, part * 8), self.temp());
+                    self.line(&format!("{old} = load i64, ptr {part_at}"));
+                    held.push(old);
+                }
+                let [w0, w1, w2] = [0, 1, 2].map(|part| held.get(part).cloned().unwrap_or_default());
+                self.line(&format!(
+                    "call void @fennec_lock_save_text(i64 {from}, i64 {index}, i64 {w0}, i64 {w1}, i64 {w2})"
+                ));
+            }
+        }
     }
 
     /// Before a write reaches along `path` from a local into what a `lock ... as ref` block's value

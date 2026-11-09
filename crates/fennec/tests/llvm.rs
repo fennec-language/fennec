@@ -7455,7 +7455,11 @@ def main(net: Net, stdout: Stdout):
             stdout.print(error.message())
         case Ok(_):
             stdout.print(\"done\")
-    _ = net.udp(port=99999)
+    match net.udp(port=99999):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
 ";
 
 #[test]
@@ -7585,6 +7589,20 @@ fn a_failure_out_of_a_lock_puts_back_every_kind_of_write() -> std::io::Result<()
     prints_in_both_builds(
         "lock_failure_every_write",
         include_str!("fixtures/lock_failure_every_write.fen"),
+        "kinds that kept a change: 0\n",
+    )
+}
+
+/// A whole field holding an enum with blocks in it, or a struct, optional or tuple holding one, is
+/// put back when the block fails, whichever case it held and whichever it was given.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_enum_fields",
+        include_str!("fixtures/lock_failure_enum_fields.fen"),
         "kinds that kept a change: 0\n",
     )
 }
@@ -11275,7 +11293,7 @@ def main(stdout: Stdout):
     _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
-    ignore(numbers.remove(gone), "it's fine if it's gone")
+    _ = numbers.remove(gone)
     stdout.print(numbers.len())
 "#,
     )

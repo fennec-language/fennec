@@ -96,7 +96,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/check`: the type checker, which also infers every function's signature.
 - `crates/ir`: the typed intermediate representation the backends compile.
 - `crates/llvm`: the LLVM backend, behind `fennec run` and `fennec build`.
-- `crates/interp`: the runtime's code, which `crates/runtime` builds into a library.
+- `crates/rt`: the runtime's code, which `crates/runtime` builds into a library.
 - `crates/runtime` and `crates/layout`: the runtime library compiled programs link against, and how values are laid out in memory.
 - `crates/build`: content hashes, so a run rebuilds and retests only what changed.
 - `crates/kit`: kits: `kit.toml`, and loading a kit's files as one program.

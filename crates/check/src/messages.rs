@@ -28,9 +28,10 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "abs" => diagnostic.with_help("a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"),
         "len" => diagnostic.with_help("a length is a method: write `x.len()`, or `x => x.len()` to pass it"),
         "chr" => diagnostic.with_help("make a character from its code with `str.from_code(n)`"),
-        "embed" => {
-            diagnostic.with_help("`embed` reads a file beside the source, and this source isn't in a file")
+        "embed_file" => {
+            diagnostic.with_help("`embed_file` reads a file beside the source, and this source isn't in a file")
         }
+        "embed" => diagnostic.with_help("`embed` is now `embed_file`: `fennec fix` makes this change").with_fix(span, "embed_file"),
         _ => match crate::builtins::modules_with(name).as_slice() {
             [] => diagnostic,
             modules @ [module, ..] => diagnostic.with_help(format!(
@@ -102,6 +103,11 @@ pub(crate) fn missing_step(span: Span) -> Diagnostic {
 pub(crate) fn unhandled_result(span: Span) -> Diagnostic {
     Diagnostic::new("this is the result of something that can fail", span)
         .with_help("get the value out with `?`, `else`, or `match` first")
+}
+
+pub(crate) fn dropped_failure(span: Span) -> Diagnostic {
+    Diagnostic::new("`_ =` would drop this failure", span)
+        .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")
 }
 
 pub(crate) fn unhandled(span: Span) -> Diagnostic {

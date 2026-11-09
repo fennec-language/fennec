@@ -1,9 +1,9 @@
 //! Conversions and small builtins: floats turned into ints, `PI`, `range` and `reversed` as
 //! lists, a dict's or set's keys as a list, and new sets.
 
-use fennec_interp::embed::checks::{NOT_AN_INT, ZERO_STEP};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
+use fennec_rt::embed::checks::{NOT_AN_INT, ZERO_STEP};
 use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, ITEM_ACCESS, float_text, symbol};
@@ -160,8 +160,6 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
-            // What's ignored has been worked out already.
-            ("ignore", [_, _], _) => Ok(()),
             ("generator.let_go", [Operand::Local(generator)], _) => {
                 self.let_go_of_generator(*generator);
                 Ok(())
@@ -568,7 +566,7 @@ impl Emit<'_, '_, '_> {
             let list = emit.chars_list(&block);
             emit.declare("declare ptr @fennec_list_sorted(ptr, i64) nounwind");
             let sorted = emit.temp();
-            let how = fennec_interp::embed::lists::SORT_STRINGS;
+            let how = fennec_rt::embed::lists::SORT_STRINGS;
             emit.line(&format!("{sorted} = call ptr @fennec_list_sorted(ptr {list}, i64 {how})"));
             emit.release(&list);
             emit.assign(dest, &sorted)

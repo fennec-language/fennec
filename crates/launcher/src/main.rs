@@ -7,7 +7,9 @@
 //! fennec default [<version>]            says or sets the version for scripts outside a kit
 //! fennec toolchain list                 the toolchains installed, and the default
 //! fennec toolchain install <version>
-//! fennec toolchain remove <version>
+//! fennec toolchain remove <version>     or unlinks a linked build, leaving it where it is
+//! fennec toolchain link <name> <path>   runs the `fennec` in a folder of your own, like a checkout's
+//!                                       `target/release`, as `<name>`: `fennec = "dev"` in a kit
 //! fennec update [--latest]              pins the kit to the version kit.toml asks for, or the newest,
 //!                                       then has that toolchain pin the kit's dependencies
 //! fennec --latest                       the newest release, the only thing that asks
@@ -18,7 +20,7 @@
 #![expect(clippy::print_stdout, reason = "the launcher lists toolchains")]
 #![expect(clippy::print_stderr, reason = "and says why it couldn't run one")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fennec_launcher::{Asked, Launcher, Pick, RELEASES, TARGET};
@@ -62,12 +64,16 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
     match words.as_slice() {
         ["toolchain", "list"] => {
             let default = launcher.default_version();
+            let mark = |name: &str| if default.as_deref() == Some(name) { " (default)" } else { "" };
             for version in launcher.installed() {
-                let mark = if default.as_deref() == Some(version.as_str()) { " (default)" } else { "" };
-                println!("{version}{mark}");
+                println!("{version}{}", mark(&version));
+            }
+            for (name, folder) in launcher.links() {
+                println!("{name} → {}{}", folder.display(), mark(&name));
             }
             Ok(ExitCode::SUCCESS)
         }
+        ["toolchain", "link", name, path] => launcher.link(name, Path::new(path)).map(|()| ExitCode::SUCCESS),
         ["toolchain", "install", version] => launcher.ensure(version, None).map(|_| ExitCode::SUCCESS),
         ["toolchain", "remove", version] => launcher.remove(version).map(|()| ExitCode::SUCCESS),
         ["default", version] => launcher.set_default(version).map(|()| ExitCode::SUCCESS),
@@ -85,7 +91,8 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
             hand_off(&launcher.toolchain_for(&here)?, &["update".to_owned()], offline)
         }
         ["toolchain", ..] => {
-            Err("`fennec toolchain` takes `list`, `install <version>` or `remove <version>`".to_owned())
+            Err("`fennec toolchain` takes `list`, `install <version>`, `remove <version>` or `link <name> <path>`"
+                .to_owned())
         }
         _ => hand_off(&launcher.toolchain_for(&here()?)?, args, offline),
     }
@@ -93,7 +100,7 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
 
 /// Runs the toolchain's `fennec` in place of this process, with the same arguments.
 #[cfg(unix)]
-fn hand_off(command: &std::path::Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
+fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
     use std::os::unix::process::CommandExt as _;
     let err = toolchain(command, args, offline).exec();
     Err(format!("couldn't run {}: {err}", command.display()))
@@ -101,7 +108,7 @@ fn hand_off(command: &std::path::Path, args: &[String], offline: bool) -> Result
 
 /// Runs the toolchain's `fennec`, with the same arguments, and exits as it does.
 #[cfg(not(unix))]
-fn hand_off(command: &std::path::Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
+fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
     let status = toolchain(command, args, offline)
         .status()
         .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
@@ -109,7 +116,7 @@ fn hand_off(command: &std::path::Path, args: &[String], offline: bool) -> Result
 }
 
 /// The toolchain's `fennec` with the arguments, told to fetch nothing when the launcher was.
-fn toolchain(command: &std::path::Path, args: &[String], offline: bool) -> std::process::Command {
+fn toolchain(command: &Path, args: &[String], offline: bool) -> std::process::Command {
     let mut toolchain = std::process::Command::new(command);
     toolchain.args(args);
     if offline {

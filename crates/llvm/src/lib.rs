@@ -64,9 +64,9 @@ mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_interp::embed::dicts::Word;
 use fennec_ir::{EnumDef, Program};
 use fennec_layout::{ListItem, Written, generator_definition};
+use fennec_rt::embed::dicts::Word;
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
@@ -204,7 +204,7 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         let ty = fennec_check::Type::Optional(Box::new(fennec_check::Type::List(Box::new(
             fennec_check::Type::Str,
         ))));
-        (fennec_interp::packed::NOTES.to_owned(), kinds::canon_in(blocks, &ty), None)
+        (fennec_rt::packed::NOTES.to_owned(), kinds::canon_in(blocks, &ty), None)
     };
     let errors = program.errors.iter().map(|def| {
         let mut written = fields(&def.fields);

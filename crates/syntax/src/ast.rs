@@ -325,7 +325,7 @@ pub enum ExprKind {
     Float(f64),
     /// A duration literal, like `30s`, in nanoseconds: a `Duration` from `std.time`.
     Duration(i64),
-    /// A file's bytes, read when the program was loaded: what `embed("path")` becomes.
+    /// A file's bytes, read when the program was loaded: what `embed_file("path")` becomes.
     Bytes(Blob),
     Str(String),
     FStr(Vec<FStrPart>),

@@ -325,11 +325,10 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
 }
 
 /// Error examples whose native program fails otherwise than the interpreter does, with what
-/// differs. Each must still differ, so the list only shrinks. The first two are a check native
+/// differs. Each must still differ, so the list only shrinks. The first is a check native
 /// code doesn't make yet: it runs on, where the interpreter stops.
 const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
     ("expect_without_reason.fen", "native code doesn't check `expect`'s reason isn't blank, and runs on"),
-    ("ignore_without_reason.fen", "native code doesn't check `ignore`'s reason isn't blank, and runs on"),
     (
         "change_missing_key.fen",
         "native code underlines all of `+=`, as `llvm.rs` notes, and adds a help line",

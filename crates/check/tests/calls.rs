@@ -277,7 +277,6 @@ fn builtins_take_the_right_arguments() {
         _ = set()
         _ = round(1.5, 2)
         _ = any([1])
-        ignore(1)
     ";
     assert_eq!(
         in_main(program),
@@ -290,7 +289,6 @@ fn builtins_take_the_right_arguments() {
             "an int has no method `len` @ 5.len()",
             "`zip` was called with the wrong arguments @ zip([1])",
             "`any` needs bools, but got an int @ any([1])",
-            "`ignore` was called with the wrong arguments @ ignore(1)",
         ]
     );
 }

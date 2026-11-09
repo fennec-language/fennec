@@ -219,6 +219,14 @@ test \"any list\" for items: list[int], n: int:
     assert items.len() >= 0
 ",
     ),
+    (
+        "lock_gives_a_value",
+        "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    total\n",
+    ),
+    (
+        "if_over_lines_gives_no_value",
+        "def f(n: int) -> int:\n    x = if n > 2:\n        1\n    else:\n        2\n    x\n",
+    ),
 ];
 
 /// Small programs that reach the checker's errors about written types, and the places

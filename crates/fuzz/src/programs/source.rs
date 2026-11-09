@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Stmt};
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Stmt};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
@@ -62,6 +62,12 @@ def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeo
 def grow_all(ref items: list[int], by: int):
     for ref item in items:
         item += by
+
+def buffer_of(made: Buffer[int], items: list[int]) -> Buffer[int]:
+    mut buffer = made
+    for item in items:
+        buffer.push(item)
+    buffer
 
 def counted(limit: int) -> Iterator[int]:
     for at in range(limit):
@@ -238,6 +244,24 @@ impl Writer {
                 self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
             }
             Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
+            Stmt::Buffered(name, op) => {
+                let line = match op {
+                    BufOp::Push(value) => format!("{name}.push({})", self.expr(value, false)),
+                    BufOp::Pop => format!("_ = {name}.pop()"),
+                    BufOp::Set(at, value) => {
+                        let (at, value) = (self.expr(at, false), self.expr(value, false));
+                        format!("{name}[{at}] = {value}")
+                    }
+                    BufOp::Insert(at, value) => {
+                        let (at, value) = (self.expr(at, false), self.expr(value, false));
+                        format!("{name}.insert({at}, {value})")
+                    }
+                    BufOp::Remove(at) => format!("_ = {name}.remove({})", self.expr(at, false)),
+                    BufOp::Truncate(count) => format!("{name}.truncate({})", self.expr(count, false)),
+                    BufOp::Extend(other) => format!("{name}.extend({other})"),
+                };
+                self.line(indent, &line);
+            }
             Stmt::HolderAppend(name, value) => {
                 let value = self.expr(value, false);
                 self.line(indent, &format!("{name}.items.append({value})"));
@@ -465,6 +489,23 @@ impl Writer {
             }
             Expr::CountOf(counts, key) => format!("({}.get(\"{key}\") else 0)", self.expr(counts, false)),
             Expr::Has(counts, key) => format!("(\"{key}\" in {})", self.expr(counts, false)),
+            Expr::Buffer(capacity, items) => {
+                let made = capacity
+                    .map_or_else(|| "Buffer[int]()".to_owned(), |n| format!("Buffer[int](capacity={n})"));
+                if items.is_empty() {
+                    return made;
+                }
+                // Filled through a function, since a buffer has no literal.
+                let items: Vec<String> = items.iter().map(|item| self.expr(item, false)).collect();
+                format!("buffer_of({made}, [{}])", items.join(", "))
+            }
+            Expr::BufItems(buffer) => {
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                format!("[{item} for {item} in {}]", self.expr(buffer, false))
+            }
+            Expr::BufLen(buffer) => format!("{}.len()", self.expr(buffer, false)),
+            Expr::BufAt(buffer, at) => format!("{}[{}]", self.expr(buffer, false), self.expr(at, false)),
             Expr::Float(x) => super::eval::float_text(*x),
             Expr::FloatArith(operator, left, right) => {
                 let symbol = match operator {

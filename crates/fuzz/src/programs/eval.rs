@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Size, Stmt};
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +37,8 @@ enum Value {
     Tally(i64),
     /// A `dict[str, int]`, in the order its keys went in.
     Counts(Vec<(String, i64)>),
+    /// A `Buffer[int]`'s filled slots.
+    Buf(Vec<i64>),
 }
 
 /// Why running stopped before the end.
@@ -259,7 +261,7 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
         Value::Sized(_, n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
-        Value::Shared(_) | Value::Bag(_) | Value::Count(_) => "shared".to_owned(),
+        Value::Shared(_) | Value::Bag(_) | Value::Count(_) | Value::Buf(_) => "shared".to_owned(),
         Value::Float(bits) => float_text(f64::from_bits(*bits)),
         Value::Counts(pairs) => {
             let pairs: Vec<String> = pairs.iter().map(|(key, n)| format!("\"{key}\": {n}")).collect();
@@ -283,6 +285,62 @@ fn shown(value: &Value) -> String {
 }
 
 impl Machine {
+    fn buffer_of(&mut self, expr: &Expr) -> Ran<Vec<i64>> {
+        match self.expr(expr)? {
+            Value::Buf(items) => Ok(items),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
+    /// A change to the buffer `name`, its arguments worked out left to right first.
+    fn buffered(&mut self, name: &str, op: &BufOp) -> Ran<()> {
+        let place = |at: i64| usize::try_from(at).map_err(|_| Stop::Unsure);
+        let other = match op {
+            BufOp::Extend(other) => match self.get(other)? {
+                Value::Buf(items) => items.clone(),
+                _ => return Err(Stop::Unsure),
+            },
+            _ => Vec::new(),
+        };
+        let (first, second) = match op {
+            BufOp::Push(value) | BufOp::Remove(value) | BufOp::Truncate(value) => {
+                (Some(int(&self.expr(value)?)?), None)
+            }
+            BufOp::Set(at, value) | BufOp::Insert(at, value) => {
+                (Some(int(&self.expr(at)?)?), Some(int(&self.expr(value)?)?))
+            }
+            BufOp::Pop | BufOp::Extend(_) => (None, None),
+        };
+        let Value::Buf(items) = self.slot(name)? else { return Err(Stop::Unsure) };
+        match (op, first, second) {
+            (BufOp::Push(_), Some(value), _) => items.push(value),
+            (BufOp::Pop, ..) => {
+                items.pop().ok_or(Stop::Failed)?;
+            }
+            (BufOp::Set(..), Some(at), Some(value)) => {
+                *items.get_mut(place(at)?).ok_or(Stop::Failed)? = value;
+            }
+            (BufOp::Insert(..), Some(at), Some(value)) => {
+                let at = place(at)?;
+                if at > items.len() {
+                    return Err(Stop::Failed);
+                }
+                items.insert(at, value);
+            }
+            (BufOp::Remove(_), Some(at), _) => {
+                let at = place(at)?;
+                if at >= items.len() {
+                    return Err(Stop::Failed);
+                }
+                items.remove(at);
+            }
+            (BufOp::Truncate(_), Some(count), _) => items.truncate(place(count)?),
+            (BufOp::Extend(_), ..) => items.extend(other),
+            _ => return Err(Stop::Unsure),
+        }
+        Ok(())
+    }
+
     fn float_of(&mut self, expr: &Expr) -> Ran<f64> {
         match self.expr(expr)? {
             Value::Float(bits) => Ok(f64::from_bits(bits)),
@@ -425,6 +483,7 @@ impl Machine {
                     pairs.retain(|(held, _)| held != key);
                 }
             }
+            Stmt::Buffered(name, op) => self.buffered(name, op)?,
             Stmt::HolderAppend(name, value) => {
                 let value = int(&self.expr(value)?)?;
                 if let Value::Holder(items, _) = self.slot(name)? {
@@ -841,6 +900,24 @@ impl Machine {
                 Value::Counts(pairs) => Value::Bool(pairs.iter().any(|(held, _)| held == key)),
                 _ => return Err(Stop::Unsure),
             },
+            Expr::Buffer(_, items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(int(&self.expr(item)?)?);
+                }
+                Value::Buf(values)
+            }
+            Expr::BufItems(buffer) => Value::Ints(self.buffer_of(buffer)?),
+            Expr::BufLen(buffer) => {
+                Value::Int(i64::try_from(self.buffer_of(buffer)?.len()).map_err(|_| Stop::Unsure)?)
+            }
+            Expr::BufAt(buffer, at) => {
+                let items = self.buffer_of(buffer)?;
+                let at = int(&self.expr(at)?)?;
+                // Counting from the end isn't said for a buffer.
+                let at = usize::try_from(at).map_err(|_| Stop::Unsure)?;
+                Value::Int(items.get(at).copied().ok_or(Stop::Failed)?)
+            }
             Expr::Float(x) => Value::Float(x.to_bits()),
             Expr::FloatArith(operator, left, right) => {
                 let (left, right) = (self.float_of(left)?, self.float_of(right)?);

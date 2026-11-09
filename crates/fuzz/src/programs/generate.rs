@@ -12,12 +12,18 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
-use super::ast::{Amount, Arith, Case, Compare, Expr, Op, Place, Program, Size, Stmt, TYPES, Ty};
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt, TYPES, Ty};
 
 /// How deep expressions nest.
 const MOST_DEPTH: usize = 3;
 /// How deep blocks nest.
 const MOST_BLOCKS: usize = 3;
+/// What prints the value `name` holds: a buffer, which can't be printed whole, by its items.
+fn printable(name: &str, ty: Ty) -> Expr {
+    let value = Expr::Name(name.to_owned());
+    if ty == Ty::Buf { Expr::BufItems(Box::new(value)) } else { value }
+}
+
 /// `n` made to fit `size`, for a literal, which has to.
 fn literal_in(size: Size, n: i64) -> i64 {
     match size {
@@ -38,6 +44,9 @@ const fn inside(size: Size) -> i64 {
 
 /// The keys a `Bag`'s dict holds.
 const KEYS: [&str; 3] = ["a", "b", "c"];
+/// The most statements a program has, past which a block gets none: `if` and `else` in each
+/// other could otherwise make one too big to build in a minute.
+const MOST_IN_ALL: usize = 250;
 /// The most statements a block has.
 const MOST_STATEMENTS: u8 = 6;
 
@@ -50,6 +59,8 @@ struct Writer<'b> {
     risky: bool,
     /// How many loops the statement being written is inside.
     loops: usize,
+    /// How many statements have been written.
+    written: usize,
 }
 
 /// A name in scope.
@@ -66,9 +77,9 @@ struct InScope {
 pub(crate) fn program(bytes: &[u8]) -> Program {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
-    let mut writer = Writer { bytes: bytes.iter(), names: Vec::new(), made: 0, risky, loops: 0 };
+    let mut writer = Writer { bytes: bytes.iter(), names: Vec::new(), made: 0, risky, loops: 0, written: 0 };
     let mut body = Vec::new();
-    while writer.bytes.len() > 0 && body.len() < 64 {
+    while writer.bytes.len() > 0 && body.len() < 64 && writer.written <= MOST_IN_ALL {
         writer.statement(&mut body, 0);
     }
     writer.print_from(&mut body, 0);
@@ -121,7 +132,7 @@ impl Writer<'_> {
             return self.name_of(Ty::Int, false).map_or_else(|| self.small_int(), Expr::Name);
         }
         let next = depth + 1;
-        match self.choice(20) {
+        match self.choice(21) {
             14 => {
                 let size = self.size();
                 Expr::IntOf(Box::new(self.of(Ty::Sized(size), next)))
@@ -139,6 +150,8 @@ impl Writer<'_> {
                 let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
                 Expr::CountOf(Box::new(self.of(Ty::Counts, next)), key)
             }
+            20 if self.risky => Expr::BufAt(Box::new(self.of(Ty::Buf, next)), Box::new(self.int(next))),
+            20 => Expr::BufLen(Box::new(self.of(Ty::Buf, next))),
             17 if self.risky => Expr::Truncated(Box::new(self.float(next))),
             17 => Expr::Tag(Box::new(self.of(Ty::Holder, next))),
             18 => {
@@ -254,7 +267,7 @@ impl Writer<'_> {
                 _ => Expr::Str(String::new()),
             },
             Ty::Ints if depth >= MOST_DEPTH => Expr::Ints(vec![Expr::Int(1), Expr::Int(2)]),
-            Ty::Ints => match self.choice(6) {
+            Ty::Ints => match self.choice(7) {
                 0 => {
                     let count = self.choice(4);
                     Expr::Ints((0..count).map(|_| self.int(next)).collect())
@@ -268,6 +281,7 @@ impl Writer<'_> {
                 }
                 2 => Expr::Ints(Vec::new()),
                 3 => Expr::HeldItems(Box::new(self.of(Ty::Holder, next))),
+                6 => Expr::BufItems(Box::new(self.of(Ty::Buf, next))),
                 4 => {
                     let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
                     Expr::ListAt(Box::new(self.of(Ty::Lists, next)), key)
@@ -314,6 +328,11 @@ impl Writer<'_> {
                 Expr::Lists(pairs)
             }
             Ty::Float => self.float(depth),
+            Ty::Buf => {
+                let capacity = if self.choice(2) == 0 { None } else { Some(i64::from(self.byte() % 9)) };
+                let count = self.choice(4);
+                Expr::Buffer(capacity, (0..count).map(|_| self.int(next)).collect())
+            }
             Ty::Counts => {
                 let count = self.choice(4);
                 let pairs = KEYS.iter().take(count).map(|key| (*key, self.int(next))).collect();
@@ -376,7 +395,7 @@ impl Writer<'_> {
     fn block(&mut self, depth: usize) -> Vec<Stmt> {
         let scope = self.names.len();
         let mut body = Vec::new();
-        let count = 1 + self.byte() % MOST_STATEMENTS;
+        let count = if self.written > MOST_IN_ALL { 0 } else { 1 + self.byte() % MOST_STATEMENTS };
         for _ in 0..count {
             self.statement(&mut body, depth);
         }
@@ -396,7 +415,7 @@ impl Writer<'_> {
             .iter()
             .skip(scope)
             .filter(|name| !matches!(name.ty, Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count))
-            .map(|name| (Expr::Name(name.name.clone()), name.ty))
+            .map(|name| (printable(&name.name, name.ty), name.ty))
             .collect();
         for chunk in values.chunks(4) {
             body.push(Stmt::Print(chunk.to_vec()));
@@ -404,11 +423,13 @@ impl Writer<'_> {
     }
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
-        let which = self.choice(27);
+        self.written += 1;
+        let which = self.choice(28);
         match which {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
+            27 => self.change_buffer(body),
             22 => {
                 let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
@@ -744,6 +765,57 @@ impl Writer<'_> {
         self.read_back(body, &counts);
     }
 
+    /// A change to a `Buffer[int]`, kept from failing unless the program is risky.
+    fn change_buffer(&mut self, body: &mut Vec<Stmt>) {
+        let Some(buffer) = self.name_of(Ty::Buf, true) else { return self.print(body) };
+        let length = Expr::BufLen(Box::new(Expr::Name(buffer.clone())));
+        let any = Expr::Compare(Compare::Greater, Box::new(length.clone()), Box::new(Expr::Int(0)));
+        // A place in the buffer: as it comes in a risky program, else kept inside it, where
+        // there's anything.
+        let at = self.int(2);
+        let inside = Expr::Arith(Arith::Rem, Box::new(at.clone()), Box::new(length.clone()));
+        let at = if self.risky { at } else { inside };
+        let guarded = |risky: bool, op: BufOp| {
+            let change = Stmt::Buffered(buffer.clone(), op);
+            if risky { change } else { Stmt::If(any.clone(), vec![change], Vec::new()) }
+        };
+        let change = match self.choice(7) {
+            0 | 1 => Stmt::Buffered(buffer.clone(), BufOp::Push(self.int(1))),
+            2 => guarded(self.risky, BufOp::Pop),
+            3 => {
+                let value = self.int(1);
+                guarded(self.risky, BufOp::Set(at, value))
+            }
+            4 => {
+                let place = if self.risky {
+                    self.int(2)
+                } else if self.choice(2) == 0 {
+                    length
+                } else {
+                    Expr::Int(0)
+                };
+                Stmt::Buffered(buffer.clone(), BufOp::Insert(place, self.int(1)))
+            }
+            5 => guarded(self.risky, BufOp::Remove(at)),
+            _ => {
+                let others: Vec<String> = self
+                    .names
+                    .iter()
+                    .filter(|name| name.ty == Ty::Buf && name.name != buffer)
+                    .map(|name| name.name.clone())
+                    .collect();
+                match others.get(self.choice(others.len().max(1))) {
+                    Some(other) => Stmt::Buffered(buffer.clone(), BufOp::Extend(other.clone())),
+                    None => {
+                        Stmt::Buffered(buffer.clone(), BufOp::Truncate(Expr::Int(i64::from(self.byte() % 4))))
+                    }
+                }
+            }
+        };
+        body.push(change);
+        self.read_back(body, &buffer);
+    }
+
     fn change_int(&mut self, body: &mut Vec<Stmt>) {
         let Some(name) = self.name_of(Ty::Int, true) else { return self.print(body) };
         let value = self.int(0);
@@ -775,7 +847,7 @@ impl Writer<'_> {
     /// refuses, and every write is in the digest.
     fn read_back(&self, body: &mut Vec<Stmt>, name: &str) {
         if let Some(found) = self.names.iter().rev().find(|held| held.name == name) {
-            body.push(Stmt::Print(vec![(Expr::Name(found.name.clone()), found.ty)]));
+            body.push(Stmt::Print(vec![(printable(&found.name, found.ty), found.ty)]));
         }
     }
 

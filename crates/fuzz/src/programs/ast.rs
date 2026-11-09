@@ -28,11 +28,13 @@ pub(crate) enum Ty {
     Float,
     /// `dict[str, int]`.
     Counts,
+    /// `Buffer[int]`.
+    Buf,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 13] = [
+pub(crate) const TYPES: [Ty; 14] = [
     Ty::Int,
     Ty::Bool,
     Ty::Str,
@@ -46,6 +48,7 @@ pub(crate) const TYPES: [Ty; 13] = [
     Ty::Sized(Size::I32),
     Ty::Sized(Size::U64),
     Ty::Counts,
+    Ty::Buf,
 ];
 
 /// A sized integer type.
@@ -183,6 +186,14 @@ pub(crate) enum Expr {
     CountOf(Box<Expr>, &'static str),
     /// `key in counts`.
     Has(Box<Expr>, &'static str),
+    /// `Buffer[int]()`, or with `capacity=`, then each item pushed.
+    Buffer(Option<i64>, Vec<Expr>),
+    /// `[item for item in buffer]`.
+    BufItems(Box<Expr>),
+    /// `buffer.len()`.
+    BufLen(Box<Expr>),
+    /// `buffer[at]`, which fails outside what's filled.
+    BufAt(Box<Expr>, Box<Expr>),
     /// A float written out.
     Float(f64),
     /// `left + - * / right` on floats: `/` by zero fails.
@@ -216,6 +227,24 @@ pub(crate) enum Op {
     SetCount(&'static str, Amount, bool),
     /// `_ = held.counts.remove(key)`.
     Remove(&'static str),
+}
+
+/// A change to a `Buffer[int]`. Each fails where a list's would, and `pop` on an empty one.
+#[derive(Clone, Debug)]
+pub(crate) enum BufOp {
+    Push(Expr),
+    /// `_ = buffer.pop()`.
+    Pop,
+    /// `buffer[at] = value`.
+    Set(Expr, Expr),
+    /// `buffer.insert(at, value)`, which fails past the end.
+    Insert(Expr, Expr),
+    /// `_ = buffer.remove(at)`.
+    Remove(Expr),
+    /// `buffer.truncate(count)`.
+    Truncate(Expr),
+    /// `buffer.extend(other)`, another buffer.
+    Extend(String),
 }
 
 /// Where an assignment writes.
@@ -301,6 +330,8 @@ pub(crate) enum Stmt {
     SetKey(String, &'static str, Expr, bool),
     /// `_ = counts.remove(key)`.
     RemoveKey(String, &'static str),
+    /// A change to a `Buffer[int]`.
+    Buffered(String, BufOp),
     /// `holder.items.append(value)`.
     HolderAppend(String, Expr),
     /// `holder.tag += value`.

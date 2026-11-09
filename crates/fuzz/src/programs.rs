@@ -97,6 +97,8 @@ mod tests {
             let bytes: Vec<u8> =
                 (0_u8..96).map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(3))).collect();
             let source = source::source(&generate::program(&bytes));
+            // Small enough to build well inside a minute, however the bytes go.
+            assert!(source.lines().count() < 2000, "{} lines", source.lines().count());
             let module =
                 fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
             let checked = fennec_check::check(&module);

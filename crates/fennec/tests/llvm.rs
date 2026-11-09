@@ -4649,6 +4649,51 @@ def main(stdout: Stdout) fails Crashed:
     Ok(())
 }
 
+/// On a result that fails with a union, `case Err(Shut.Stuck(...))` says which error's case, and a
+/// later `case Err(error)` holds what the earlier cases left: a `Shut` once `Late` is taken.
+#[test]
+fn a_case_names_a_unions_error_and_later_cases_hold_what_is_left() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "union_cases",
+        r#"error Shut:
+    Stuck(name: str)
+    Jammed
+
+    def said(self) -> str:
+        match self:
+            case .Stuck(name):
+                f"stuck {name}"
+            case .Jammed:
+                "jammed"
+
+error Late:
+    waited: int
+
+def run(n: int) fails Shut | Late:
+    if n == 0: fail Shut.Stuck(name="door")
+    if n == 1: fail Late(waited=1)
+    if n == 2: fail Shut.Jammed
+
+def main(stdout: Stdout):
+    for n in [0, 1, 2, 3]:
+        match run(n):
+            case Ok(_):
+                stdout.print("went through")
+            case Err(Late(waited=_)):
+                stdout.print("late")
+            case Err(Shut.Stuck(name=name)):
+                stdout.print("named", name)
+            case Err(error):
+                stdout.print(error.said())
+"#,
+    )?;
+    assert_eq!(printed, "named door\nlate\njammed\nwent through\n");
+    Ok(())
+}
+
 /// A source written in at three levels of one block, each copy with a `?` on a line that names
 /// what it gives, keeps each copy's names apart.
 #[test]

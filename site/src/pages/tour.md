@@ -930,7 +930,7 @@ def main(stdout: Stdout):
 **Planned:** compile-time loops over a type, which serialization will be built on, instead of macros or `derive`. `fields(T)` gives a struct's fields and `cases(T)` an enum's cases. There's no I/O at compile time, so a kit can't run anything on your machine while it compiles.
 
 ```fennec planned
-def write[T, W: Writer](x: T, ref out: W):
+def write[T, S: Serializer](x: T, ref out: S):
     for f in fields(T):
         out.field(f.name)
         write(f.get(x), ref out)

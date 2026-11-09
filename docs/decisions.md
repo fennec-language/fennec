@@ -609,7 +609,7 @@ An interface inside another type, like `list[Shape]`, stays an error, as above.
 
 **A generic function can loop over a type at compile time, and that's the whole of compile-time generation.**
 ```fennec
-def write[T, W: Writer](x: T, ref out: W):
+def write[T, S: Serializer](x: T, ref out: S):
     for f in fields(T):
         out.field(f.name)
         write(f.get(x), ref out)
@@ -756,7 +756,7 @@ def transaction(self) -> with Transaction fails DbError:
 **`SortedMap`, `SortedSet`, `Heap`, `Grid` and `Packed` are in `std`,** with `SortedMap` and `SortedSet` on B-trees. All of them hide their internals.
 *Why:* These are the structures people would otherwise reach for stored references to build. Written once in `std`, no program has to rebuild them, and their layout can improve without breaking anyone.
 
-**Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code.
+**Each serialization format implements a `Serializer` and `Deserializer` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code.
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
 
 **`def serialize(self, ref out: Serializer)` and `def deserialize(ref src: Deserializer) -> Self fails ParseError` are the serialization protocol,** shaped like `def str`.

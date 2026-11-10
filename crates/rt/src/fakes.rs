@@ -396,8 +396,10 @@ impl TestWorld {
     ) -> Option<Result<Value, Diagnostic>> {
         Some(match (method, args) {
             (run, _) if run == "run" || run.starts_with("run.") => {
-                crate::stdlib::process::run_of(run, args, span)
-                    .map(|(program, arguments, _)| self.run(&program, arguments))
+                crate::stdlib::process::run_of(run, args, span).map(|ran| match ran {
+                    Ok((program, arguments, _)) => self.run(&program, arguments),
+                    Err(refused) => refused,
+                })
             }
             ("script", [Value::Str(program), output @ Value::Instance(_)]) => {
                 self.scripts.insert(program.to_string(), output.clone());

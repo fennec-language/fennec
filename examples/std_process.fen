@@ -28,14 +28,45 @@ test "a failing program is its status, not an error"(process: Process):
 test "a program nothing scripted can't run"(process: Process):
     problem = failure_of(() => process.run("cargo", ["build"]))
     assert problem is not None
-    assert problem.program == "cargo"
-    assert problem.message.startswith("the test's fake Process has nothing scripted for `cargo`")
+    assert problem.program() == "cargo"
+    assert problem.message().startswith("the test's fake Process has nothing scripted for `cargo`")
     assert process.ran() == [["cargo", "build"]]
 
 test "an argument with spaces or quotes is one argument"(process: Process):
     process.script("echo", Output(stdout="ok"))
     _ = process.run("echo", ["a b", "'c'", "$(rm -rf /)"])?
     assert process.ran() == [["echo", "a b", "'c'", "$(rm -rf /)"]]
+
+test "a value can't start an argument with a dash, so it can't be read as an option"(
+    process: Process,
+):
+    process.script("git", Output())
+    remote = "--upload-pack=evil"
+    _ = process.run(t"git fetch {remote}") else as why:
+        match why:
+            case .LooksLikeAnOption(program=program, expression=expression):
+                assert program == "git"
+                assert expression == "remote"
+            case _:
+                assert False
+        Output()
+    # Nothing ran.
+    assert process.ran() == []
+    name = "-rf"
+    assert failure_of(() => process.run(t"git rm {name}.txt")) is not None
+
+test "a value inside an argument, or a dash in the template's own text, runs"(process: Process):
+    process.script("git", Output())
+    depth = "1"
+    remote = "origin"
+    _ = process.run(t"git fetch --depth={depth} -q {remote}")?
+    # After an argument the template writes as `--`, a value is what the template says it is.
+    path = "-odd-name.txt"
+    _ = process.run(t"git rm -- {path}")?
+    assert (
+        process.ran()
+        == [["git", "fetch", "--depth=1", "-q", "origin"], ["git", "rm", "--", "-odd-name.txt"]]
+    )
 
 ## How many lines of `text` say `word`, as grep counts them.
 def count_lines(process: Process, text: str, word: str) -> int:
@@ -50,6 +81,6 @@ test "grep is given the text to read"(process: Process):
 def main(stdout: Stdout, process: Process):
     # A program that isn't installed fails with a `ProcessError` value.
     _ = process.run("fennec-no-such-program", []) else as why:
-        stdout.print(f"couldn't run {why.program}")
+        stdout.print(f"couldn't run {why.program()}")
         return
     stdout.print("ran")

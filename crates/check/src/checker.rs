@@ -501,10 +501,24 @@ impl Checker {
             live.extend(crate::ref_lowering::live_loops(self, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
             problems.extend(crate::once::check_function(self, key, &entry.def));
+            // What lowering writes reads a failure its own way; the program as written is held
+            // to `?` and `else`.
+            if !self.again {
+                let passes = entry
+                    .def
+                    .fails
+                    .as_ref()
+                    .map_or(crate::plain::Passes::Nowhere, crate::plain::Passes::Declared);
+                problems.extend(crate::plain::check_body(self, key, &entry.def.body, passes));
+            }
         }
         self.live_refs.extend(live);
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));
+            if !self.again {
+                let key = format!("test \"{}\"", test.name);
+                problems.extend(crate::plain::check_body(self, &key, &test.body, crate::plain::Passes::Test));
+            }
         }
         // A change that's lost matters only once what's written is otherwise right. What's about
         // to be emitted has been checked as written and rewritten since: a `with` function's body

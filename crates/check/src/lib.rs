@@ -712,7 +712,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    if sources_copied(module, checked) {
+    if sources_copied(module, checked) || widened_values(module, &checked.widened_values) {
         return Round::Again;
     }
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
@@ -733,6 +733,41 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// Writes each function named where one failing more ways goes as an arrow calling it, as
+/// `either(load)` becomes `either(() => load()?)`, saying whether there were any. The arrow is
+/// checked again as failing each of the ways the function type it's given for says.
+fn widened_values(module: &mut Module, widened: &BTreeMap<(u32, u32), usize>) -> bool {
+    if widened.is_empty() {
+        return false;
+    }
+    let mut wrote = false;
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        let Some(count) = widened.get(&(expr.span.start, expr.span.end)) else { return };
+        let ExprKind::Name(_) = &expr.kind else { return };
+        let at = expr.span;
+        let params: Vec<String> = (0..*count).map(|number| format!("widened__{number}")).collect();
+        let args = params
+            .iter()
+            .map(|param| fennec_syntax::Arg {
+                name: None,
+                is_mut: false,
+                value: lend_lowering::name(param, at),
+            })
+            .collect();
+        let function = Expr { kind: expr.kind.clone(), span: lend_lowering::here(at) };
+        let call =
+            Expr { kind: ExprKind::Call { callee: Box::new(function), args }, span: lend_lowering::here(at) };
+        let passed = Expr {
+            kind: ExprKind::Try { value: Box::new(call), context: None },
+            span: lend_lowering::here(at),
+        };
+        expr.kind = ExprKind::Lambda { params, body: Box::new(passed) };
+        expr.span = lend_lowering::here(at);
+        wrote = true;
+    });
+    wrote
 }
 
 /// Copies what calls a `with` source that isn't known until the program runs, saying whether
@@ -854,6 +889,8 @@ pub struct Checked {
     shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, which lowering writes in where it's used.
     sources: BTreeMap<(u32, u32), lend_lowering::Source>,
+    /// Each function named where one failing more ways goes, written in as an arrow calling it.
+    widened_values: BTreeMap<(u32, u32), usize>,
     /// Each generic function that calls a `with` source an interface gives its type parameter.
     generic_sources: BTreeSet<String>,
     /// Each call to a generic function, with the types its type parameters are there.

@@ -79,6 +79,9 @@ pub(crate) struct Checker {
     pub(crate) shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, by the call's span.
     pub(crate) sources: BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    /// Each name of a function passed where one failing more ways goes, by its span, with how many
+    /// parameters it takes: it's written in as an arrow calling it, which fails all those ways.
+    pub(crate) widened_values: BTreeMap<(u32, u32), usize>,
     /// Each generic function that calls a `with` source an interface gives its type parameter,
     /// which is copied for each type it's called with, where that type's own source is written in.
     pub(crate) generic_sources: BTreeSet<String>,
@@ -204,6 +207,7 @@ impl Checker {
             named_patterns: BTreeMap::new(),
             shared_values: BTreeMap::new(),
             sources: BTreeMap::new(),
+            widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
             union_sources: BTreeMap::new(),
@@ -360,6 +364,7 @@ impl Checker {
             named_patterns: self.named_patterns,
             shared_values: self.shared_values,
             sources,
+            widened_values: self.widened_values,
             generic_sources: self.generic_sources,
             generic_calls,
             union_sources: self.union_sources,

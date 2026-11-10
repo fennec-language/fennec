@@ -94,9 +94,6 @@ struct Writer<'b> {
     digest_only: bool,
     /// How many more names of trees the expression being written can hold.
     tree_names: usize,
-    /// Whether the expression being written is kept, in a name, a list or a struct, where in a
-    /// loop a name it holds is copied each round, which has to be said with `copy`.
-    storing: bool,
 }
 
 /// A name in scope.
@@ -124,7 +121,6 @@ pub(crate) fn program(bytes: &[u8]) -> Program {
         stream: seeded(bytes),
         digest_only,
         tree_names: 1,
-        storing: false,
     };
     let mut body = Vec::new();
     while (writer.bytes.len() > 0 || writer.written < MOST_FROM_STREAM)
@@ -284,9 +280,7 @@ impl Writer<'_> {
             if is_tree(ty) {
                 self.tree_names -= 1;
             }
-            if self.storing && self.loops > 0 {
-                return Expr::Copy(name);
-            }
+            // Stored in a loop, it's copied each round, which is a hint, not a mistake.
             return Expr::Name(name);
         }
         let next = depth + 1;
@@ -484,14 +478,6 @@ impl Writer<'_> {
         }
     }
 
-    /// A value of `ty` that's kept: in a loop, the names it holds are copied on purpose.
-    fn stored(&mut self, ty: Ty, depth: usize) -> Expr {
-        let was = std::mem::replace(&mut self.storing, true);
-        let value = self.of(ty, depth);
-        self.storing = was;
-        value
-    }
-
     fn ty(&mut self) -> Ty {
         TYPES.get(self.choice(TYPES.len())).copied().unwrap_or(Ty::Int)
     }
@@ -573,13 +559,9 @@ impl Writer<'_> {
             16..=18 => self.sharing(body, which),
             0..=2 => {
                 let ty = self.ty();
-                let value = self.stored(ty, 0);
                 // In a loop, holding a name's value while the name changes copies it each round,
-                // which is refused unless it's said on purpose.
-                let value = match value {
-                    Expr::Name(other) if self.loops > 0 => Expr::Copy(other),
-                    value => value,
-                };
+                // which is a hint, not a mistake.
+                let value = self.of(ty, 0);
                 let name = self.fresh();
                 let changeable = self.choice(2) == 0;
                 body.push(Stmt::Let { name: name.clone(), value, changeable });
@@ -647,7 +629,7 @@ impl Writer<'_> {
             13 => {
                 let ty = self.ty();
                 let Some(name) = self.name_of(ty, true) else { return self.print(body) };
-                let value = self.stored(ty, 1);
+                let value = self.of(ty, 1);
                 let add = ty == Ty::Float && self.choice(2) == 0;
                 body.push(Stmt::Assign { place: Place::Name(name.clone()), value, add });
                 self.read_back(body, &name);
@@ -897,7 +879,7 @@ impl Writer<'_> {
                 let Some(lists) = self.name_of(Ty::Lists, true) else { return self.print(body) };
                 let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
                 if self.choice(2) == 0 {
-                    let list = self.stored(Ty::Ints, 1);
+                    let list = self.of(Ty::Ints, 1);
                     body.push(Stmt::PutList(lists.clone(), key, list));
                 } else {
                     let value = self.int(1);
@@ -1034,7 +1016,7 @@ impl Writer<'_> {
         match self.choice(7) {
             0 => {
                 let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
-                let node = self.stored(Ty::Node, 1);
+                let node = self.of(Ty::Node, 1);
                 body.push(Stmt::NodesAppend(nodes.clone(), node));
                 self.read_back(body, &nodes);
             }
@@ -1046,7 +1028,7 @@ impl Writer<'_> {
             2 => {
                 let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
                 let at = self.int(1);
-                let node = self.stored(Ty::Node, 1);
+                let node = self.of(Ty::Node, 1);
                 body.push(Stmt::NodesSet(nodes.clone(), at, node));
                 self.read_back(body, &nodes);
             }
@@ -1097,14 +1079,13 @@ impl Writer<'_> {
                 let ty = if self.choice(2) == 0 { Ty::Node } else { Ty::Nodes };
                 let Some(first) = self.name_of(ty, true) else { return self.print(body) };
                 let kept = self.fresh();
-                let value =
-                    if self.loops > 0 { Expr::Copy(first.clone()) } else { Expr::Name(first.clone()) };
+                let value = Expr::Name(first.clone());
                 body.push(Stmt::Let { name: kept.clone(), value, changeable: false });
                 self.names.push(InScope { name: kept.clone(), ty, changeable: false, held: 0 });
                 if ty == Ty::Node {
                     self.reshape(body, &first);
                 } else {
-                    let node = self.stored(Ty::Node, 1);
+                    let node = self.of(Ty::Node, 1);
                     body.push(Stmt::NodesAppend(first.clone(), node));
                     self.read_back(body, &first);
                 }
@@ -1204,7 +1185,7 @@ impl Writer<'_> {
     fn reshape(&mut self, body: &mut Vec<Stmt>, node: &str) {
         let text = self.of(Ty::Str, 2);
         self.tree_names = 0;
-        let child = self.stored(Ty::Node, 1);
+        let child = self.of(Ty::Node, 1);
         body.push(Stmt::Reshape(node.to_owned(), text, child));
         self.read_back(body, node);
     }

@@ -782,7 +782,7 @@ fn inlay_hints_show_inferred_types_and_parameter_names() {
 }
 
 #[test]
-fn a_copy_each_time_round_a_loop_is_a_mistake_and_copies_in_loops_are_marked() {
+fn copies_in_loops_are_marked_and_none_is_a_mistake() {
     let mut editor = Editor::new("inlay-copies").unwrap();
     let once = format!(
         "{MAIN}\ndef once(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    for at in range(n):\n        \
@@ -807,8 +807,8 @@ fn a_copy_each_time_round_a_loop_is_a_mistake_and_copies_in_loops_are_marked() {
     let found = for_file(&published, "main.fen").unwrap();
     let mistakes: Vec<&Json> =
         found.iter().filter(|diagnostic| diagnostic.get("severity") == Some(&Json::number(1))).collect();
-    assert_eq!(mistakes.len(), 1, "{:?}", messages(found));
-    assert!(messages(found)[0].contains("`xs` is copied each time round the loop"), "{:?}", messages(found));
+    // A copy each time round is a hint now: every copy is a snapshot, as the program says.
+    assert!(mistakes.is_empty(), "{:?}", messages(found));
     let hints = inlays(&mut editor, "src/main.fen");
     assert!(hints.iter().any(|(label, ..)| label == "copies each pass"), "{hints:?}");
 }

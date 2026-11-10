@@ -70,7 +70,9 @@ use fennec_rt::embed::dicts::Word;
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
-pub use emit::{Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs};
+pub use emit::{
+    Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, trust_native_blocks,
+};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_launch, uses_parallel, uses_tls};
@@ -85,6 +87,19 @@ pub enum Proofs {
     /// Writes it anyway, as an assertion that the proof held: a build to find false proofs with,
     /// which `FENNEC_CHECK_PROOFS=1` asks for. One that didn't hold says "proof broken" and which.
     Checked,
+}
+
+/// Whether a build tells the runtime of each native block it makes and frees (see `native`). The
+/// runtime must never be given one, and does nothing with a block it doesn't hold, so a mistake
+/// there would otherwise leak or corrupt what it holds, silently; told, it stops the program
+/// saying so instead.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NativeBlocks {
+    /// Says nothing of them: a release build, which pays nothing for the watching.
+    Trusted,
+    /// Tells the runtime of each: a dev build, and one checking proofs.
+    #[default]
+    Watched,
 }
 
 /// What functions' text leaves to the module made fresh each build.
@@ -128,6 +143,8 @@ pub struct Shared {
     pub noting_checks: bool,
     /// Whether checks left out because of a proof are, or are written anyway as assertions.
     pub proofs: Proofs,
+    /// Whether native blocks are made known to the runtime, for it to stop if it's ever given one.
+    pub native_blocks: NativeBlocks,
     /// The checks written, when they're noted: the same one more than once if its function is
     /// copied into callers.
     pub checks: Vec<CheckLeft>,

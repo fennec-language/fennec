@@ -157,19 +157,15 @@ mod tests {
             assert!(source.lines().count() < 2000, "{} lines", source.lines().count());
             let module =
                 fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
-            let signatures =
-                fennec_check::check(&module).unwrap_or_else(|err| unreachable!("{source}\n{err:?}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
             // `fennec build` refuses positional arguments that are easy to get backwards.
             let mut sources = fennec_syntax::Sources::new();
             sources.add("program.fen", source.clone());
             let found = fennec_lint::positional_arguments(&module, &sources);
             let said: Vec<String> =
                 found.iter().map(|lint| format!("{}: {}", lint.rule, lint.message())).collect();
-            assert!(said.is_empty(), "{source}\n{said:#?}");
-            // It refuses a copy made each time round a loop that isn't said with `copy`, too.
-            let copies =
-                fennec_lint::implicit_copies(&fennec_ir::costs(&fennec_ir::lower(&module, &signatures)));
-            let said: Vec<&str> = copies.iter().map(|copy| copy.message.as_str()).collect();
             assert!(said.is_empty(), "{source}\n{said:#?}");
         }
     }

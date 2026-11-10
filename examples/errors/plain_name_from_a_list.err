@@ -4,4 +4,4 @@ error: `target` isn't mut
 7 |     target.health -= 10
   |     ^^^^^^^^^^^^^
   |
-  = help: to change `units`: write to `units[0].health`
+  = help: to change `units`: write to `units[0].health`, or name the place with `ref target = units[0]`

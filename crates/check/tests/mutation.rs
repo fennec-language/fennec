@@ -460,10 +460,22 @@ fn a_plain_name_read_from_a_place_says_where_to_write() {
         helps(&format!("{types}\ndef main(stdout: Stdout):\n    {lines}\n"))
     };
     for (body, said) in [
-        ("target = units[at]\ntarget.health -= 10\n", "to change `units`: write to `units[at].health`"),
-        ("target = units[0]\ntarget.stats.mana = 2\n", "to change `units`: write to `units[0].stats.mana`"),
-        ("target = units[at]\ntarget.heal()\n", "to change `units`: write to `units[at]`"),
-        ("stats = units[at].stats\nstats.mana += 1\n", "to change `units`: write to `units[at].stats.mana`"),
+        (
+            "target = units[at]\ntarget.health -= 10\n",
+            "to change `units`: write to `units[at].health`, or name the place with `ref target = units[at]`",
+        ),
+        (
+            "target = units[0]\ntarget.stats.mana = 2\n",
+            "to change `units`: write to `units[0].stats.mana`, or name the place with `ref target = units[0]`",
+        ),
+        (
+            "target = units[at]\ntarget.heal()\n",
+            "to change `units`: write to `units[at]`, or name the place with `ref target = units[at]`",
+        ),
+        (
+            "stats = units[at].stats\nstats.mana += 1\n",
+            "to change `units`: write to `units[at].stats.mana`, or name the place with `ref stats = units[at].stats`",
+        ),
     ] {
         assert_eq!(help(body), [said], "{body}");
     }

@@ -255,11 +255,8 @@ impl Writer {
     fn stmt(&mut self, stmt: &Stmt, indent: usize) {
         match stmt {
             Stmt::Let { name, value, changeable, .. } => {
-                let written = match value {
-                    // A second changeable name for a value is a copy, said so.
-                    Expr::Name(other) if *changeable => format!("copy({other})"),
-                    _ => self.expr(value, false),
-                };
+                // A second changeable name for a value is a value of its own, as any `=` makes.
+                let written = self.expr(value, false);
                 let word = if *changeable { "mut " } else { "" };
                 self.line(indent, &format!("{word}{name} = {written}"));
             }
@@ -572,7 +569,6 @@ impl Writer {
             Expr::Bool(value) => (if *value { "True" } else { "False" }).to_owned(),
             Expr::Str(text) => format!("\"{text}\""),
             Expr::Name(name) => name.clone(),
-            Expr::Copy(name) => format!("copy({name})"),
             Expr::Arith(operator, left, right) => {
                 let symbol = match operator {
                     Arith::Add => "+",

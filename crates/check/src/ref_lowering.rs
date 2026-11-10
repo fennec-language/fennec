@@ -19,6 +19,11 @@
 //! read once. An index in the place, like `r` in `for ref cell in grid[r]`, is worked out once
 //! ahead of the loop, as it was. A loop that never reads what it goes over is left alone, since
 //! nothing can tell the two apart.
+//!
+//! `ref unit = world.units[actor]` is written in the same way, always: its indexes are held in
+//! names where it's declared, and each use of `unit` after it in its block is the place itself,
+//! `world.units[unit__place9_0]`. Nothing else changes what it's in while it's in use, as `loops`
+//! sees to, so it costs nothing a program writing the place out wouldn't.
 
 use std::collections::BTreeMap;
 
@@ -185,12 +190,9 @@ fn pattern_binds(pattern: &Pattern, held: &str) -> bool {
     }
 }
 
-/// Writes in each `for ref` loop the check found reading what it loops over, and says whether
-/// there was one.
+/// Writes in each `ref name = place`, and each `for ref` loop the check found reading what it
+/// loops over, and says whether there was one.
 pub(crate) fn lower(module: &mut Module, live: &BTreeMap<(u32, u32), Through>) -> bool {
-    if live.is_empty() {
-        return false;
-    }
     let mut written = false;
     fennec_syntax::visit::functions_mut(module, &mut |def| stmts(&mut def.body, live, &mut written));
     written
@@ -201,6 +203,16 @@ fn stmts(body: &mut Vec<Stmt>, live: &BTreeMap<(u32, u32), Through>, written: &m
     while at < body.len() {
         let Some(each) = body.get_mut(at) else { return };
         inner(each, live, written);
+        if let Some((held, rest)) = named_place(body, at) {
+            *written = true;
+            let count = held.len();
+            body.splice(at..=at, held);
+            at += count;
+            body.truncate(at);
+            body.extend(rest);
+            continue;
+        }
+        let Some(each) = body.get_mut(at) else { return };
         let through = live.get(&(each.span.start, each.span.end)).copied();
         match through.and_then(|through| by_place(each, through)) {
             Some(lowered) => {
@@ -240,6 +252,23 @@ fn inner(each: &mut Stmt, live: &BTreeMap<(u32, u32), Through>, written: &mut bo
             }
         }
     });
+}
+
+/// `ref unit = units[at]` at `at` in a block, written in as what holds its indexes, and the
+/// rest of the block with each use of `unit` the place itself.
+fn named_place(body: &[Stmt], at: usize) -> Option<(Vec<Stmt>, Vec<Stmt>)> {
+    let each = body.get(at)?;
+    let (name, place) = each.kind.local_ref()?;
+    let tag = format!("{name}__place{}", each.span.start);
+    let mut held = Vec::new();
+    let named = indexes_held(place, &tag, &mut held);
+    let mut rest = body.get(at + 1..).unwrap_or_default().to_vec();
+    fennec_syntax::visit::in_stmts(&mut rest, &mut |expr| {
+        if matches!(&expr.kind, ExprKind::Name(used) if used == name) {
+            *expr = respanned(&named);
+        }
+    });
+    Some((held, rest))
 }
 
 /// `for ref item in items:` written in as a loop by position or `Id`, the indexes `items` is

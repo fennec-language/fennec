@@ -77,6 +77,33 @@ fn a_loop_cant_change_what_it_goes_over() {
     );
 }
 
+/// `ref first = names[0]` has its place to itself from the `ref` to the last line that uses it:
+/// nothing else may change what it's in, and it's one `ref` into it at a time. Reads are fine,
+/// and so is a change once its last use is past, or to another field.
+#[test]
+fn a_local_ref_has_its_place_to_itself_while_its_in_use() {
+    let empty: [&str; 0] = [];
+    assert_eq!(changes("ref first = names[0]\nfirst = first.upper()\nnames.append(\"z\")\n"), empty);
+    assert_eq!(changes("ref first = names[0]\nfirst += names[1]\n"), empty);
+    assert_eq!(changes("ref wins = team.wins\nteam.names.append(\"z\")\nwins += 1\n"), empty);
+    assert_eq!(
+        changes("ref first = names[0]\nnames.append(\"z\")\nfirst += \"!\"\n"),
+        vec!["this changes `names` while `first` is a `ref` to `names[0]` @ names.append(\"z\")"]
+    );
+    assert_eq!(
+        changes("ref first = names[0]\nif first == \"ash\":\n    grow(ref names)\nfirst += \"!\"\n"),
+        vec!["this changes `names` while `first` is a `ref` to `names[0]` @ names"]
+    );
+    assert_eq!(
+        changes("ref first = names[0]\nref second = names[1]\nfirst += second\n"),
+        vec!["`second` is a second `ref` into `names[...]` while `first` is still in use @ names[1]"]
+    );
+    assert_eq!(
+        changes("for name in names:\n    ref first = names[0]\n    first += name\n"),
+        vec!["you can't change `names` while looping over it @ names[0]"]
+    );
+}
+
 #[test]
 fn writing_through_a_collection_changes_it_for_a_loop_over_it() {
     let problem = ["you can't change `names` while looping over it @ names"];

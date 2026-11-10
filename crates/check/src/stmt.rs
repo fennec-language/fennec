@@ -76,6 +76,14 @@ impl FnCx<'_> {
                 if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
             }
             StmtKind::Assign { target, value, ty: Some(written), .. }
+                if written.name == fennec_syntax::REF && written.args.is_empty() =>
+            {
+                if let ExprKind::Name(name) = &target.kind {
+                    self.local_ref(name, value, target.span);
+                }
+                Flow::unit()
+            }
+            StmtKind::Assign { target, value, ty: Some(written), .. }
                 if written.name == crate::lock::SHARED && written.args.is_empty() =>
             {
                 if let ExprKind::Name(name) = &target.kind {

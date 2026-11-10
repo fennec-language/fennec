@@ -581,6 +581,33 @@ def main(stdout: Stdout):
     stdout.print(found.size)
 "#;
 
+/// `total = lock scores as current:` gives the block's last line, read or after a change, as
+/// `mut` or not, with lines before it that do something.
+#[test]
+fn a_lock_block_gives_its_last_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("lock_block_value", LOCK_BLOCK_VALUE, "7 4\nlong\n1\n")
+}
+
+const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
+    shared scores = [1, 2]
+    total = lock scores as ref current:
+        current.append(4)
+        sum(current)
+    mut count = lock scores as current:
+        current.len()
+    count += 1
+    stdout.print(total, count)
+    kept = lock scores as ref current:
+        current.append(9)
+        if current.len() > 3:
+            stdout.print("long")
+        current[0]
+    stdout.print(kept)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -2552,6 +2579,61 @@ def main(stdout: Stdout):
     for unit in table:
         stdout.print(unit.seen)
 ";
+
+/// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
+/// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
+/// through it, as it undoes a write made directly.
+#[test]
+fn a_local_ref_in_a_lock_reads_and_is_rolled_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "local_ref_in_lock",
+        LOCAL_REF_IN_LOCK,
+        "Bag(items=[2, 2], counts={})\n5\nfailed: stop\nBag(items=[4, 2], counts={})\n",
+    )
+}
+
+const LOCAL_REF_IN_LOCK: &str = r#"error Nope:
+    why: str
+
+struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+def changed(box: shared Bag):
+    lock box as ref held:
+        ref slot = held.items[0]
+        slot = slot * 2
+
+def read_after(box: shared Bag) -> int:
+    lock box as ref held:
+        ref items = held.items
+        items[0] = items[1] * 2
+        ref slot = held.items[0]
+        x = slot + 1
+        x
+
+def undone(box: shared Bag) fails Nope:
+    lock box as ref held:
+        ref slot = held.items[1]
+        slot = slot * 10
+        ref items = held.items
+        items.append(9)
+        fail Nope("stop")
+
+def main(stdout: Stdout):
+    shared b = Bag(items=[1, 2], counts=dict[str, int]())
+    changed(b)
+    lock b as held:
+        stdout.print(held)
+    stdout.print(read_after(b))
+    undone(b) else as why:
+        stdout.print("failed:", why.why)
+    lock b as held:
+        stdout.print(held)
+"#;
 
 /// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
 /// read back through the list and through the name, its index worked out once at the `ref`, and
@@ -8102,16 +8184,17 @@ from std.path import Path
 
 def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entropy):
     folder = \"native-capabilities\"
-    stdout.print(fs.exists(folder))
+    stdout.print(fs.exists(folder).expect(\"it works\"))
     fs.make_dir(folder).expect(\"it works\")
     file = folder + \"/a.txt\"
     fs.write_text(file, \"one\\ntwo\\n\").expect(\"it works\")
-    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)))
+    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)).expect(\"it works\"))
     stdout.print(fs.metadata(file).expect(\"it works\").size, fs.metadata(file).expect(\"it works\").is_file)
     stdout.print(fs.list_dir(folder).expect(\"it works\"))
     only = fs.only(folder)
     stdout.print(only.read_text(file).expect(\"it works\"))
-    stdout.print(only.exists(\"/\"))
+    # Outside its folder it can't look at all, which fails rather than saying no.
+    stdout.print(only.exists(\"/\") else True)
     match only.read_text(\"/etc/hosts\"):
         case Ok(_):
             stdout.print(\"read it\")
@@ -8227,6 +8310,36 @@ fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::i
     send(&running, "TERM")?;
     assert_eq!(wait(&mut running)?.signal(), Some(15));
     drop(running);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a program writes to `Stderr` goes out at once, after what it printed before, so the two read
+/// in order where they're shown together, as on a terminal.
+#[cfg(unix)]
+#[test]
+fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stderr_in_order")?;
+    let program = dir.join("warn.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, stderr: Stderr):
+    stdout.print(\"first\")
+    stderr.write_line(\"then a warning\")?
+    stdout.print(\"last\")
+",
+    )?;
+    let executable = dir.join("warn");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Both to one pipe, as a terminal shows them.
+    let ran =
+        Command::new("sh").arg("-c").arg("\"$0\" 2>&1").arg(&executable).output_before(FENNEC_DEADLINE)?;
+    assert!(ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "first\nthen a warning\nlast\n");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -8459,7 +8572,7 @@ def main(stdout: Stdout, fs: Fs):
     match write(only, path=\"outside.txt\", text=\"no\"):
         case Ok(_): stdout.print(\"wrote outside\")
         case Err(problem): stdout.print(\"outside what this Fs can reach\" in problem.reason)
-    stdout.print(fs.exists(\"outside.txt\"))
+    stdout.print(fs.exists(\"outside.txt\").expect(\"it works\"))
     fs.remove(folder + \"/a.txt\").expect(\"it works\")
     fs.remove(folder + \"/b.txt\").expect(\"it works\")
     fs.remove(folder).expect(\"it works\")
@@ -8949,7 +9062,7 @@ test "a database is a file"(fs: Fs):
         _ = db.execute(t"delete from notes")?
         word = "fox"
         _ = db.execute(t"insert into notes values ({word})")?
-    assert fs.exists("real.db")
+    assert fs.exists("real.db")?
     with sqlite.open(fs, "real.db")? as db:
         assert db.query[str](t"select text from notes")? == ["fox"]
     fs.remove("real.db")?
@@ -8957,7 +9070,7 @@ test "a database is a file"(fs: Fs):
 test "its file is there to see"(fs: Fs):
     with sqlite.open(fs, "memory.db")? as db:
         _ = db.execute(t"create table if not exists notes (text text)")?
-    assert fs.exists("memory.db")
+    assert fs.exists("memory.db")?
     fs.remove("memory.db")?
 
 def opened(fs: Fs, path: str) fails SqlError:
@@ -17651,12 +17764,12 @@ fn tests_that_take_capabilities_run_through_llvm() -> std::io::Result<()> {
 from std.net import NetError
 
 test \"files are its own\"(fs: Fs):
-    assert not fs.exists(\"a\")
+    assert not fs.exists(\"a\")?
     fs.write_text(\"a\", \"one\")?
     assert fs.read_text(\"a\")? == \"one\"
 
 test \"files are its own, again\"(fs: Fs):
-    assert not fs.exists(\"a\")
+    assert not fs.exists(\"a\")?
     fs.write_text(\"a\", \"two\")?
 
 test \"what it prints is kept\"(stdout: Stdout, clock: Clock):

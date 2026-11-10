@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Stmt};
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Stmt};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -216,7 +216,7 @@ fn amount(amount: Amount) -> String {
 fn ops_written(ops: &[Op], indent: usize) -> String {
     let mut out = String::new();
     let pad = "    ".repeat(indent);
-    for op in ops {
+    for (number, op) in ops.iter().enumerate() {
         let line = match op {
             Op::Append(value) => format!("held.items.append({})", amount(*value)),
             Op::Pop => "_ = held.items.pop()".to_owned(),
@@ -229,6 +229,9 @@ fn ops_written(ops: &[Op], indent: usize) -> String {
             Op::Remove(key) => format!("_ = held.counts.remove(\"{key}\")"),
             Op::AddTwice(value) => format!("held.add_twice({})", amount(*value)),
             Op::GrowItems(value) => format!("grow_all(ref held.items, {})", amount(*value)),
+            Op::RefItem(at, value) => {
+                format!("ref slot{number} = held.items[{at}]\n{pad}slot{number} += {}", amount(*value))
+            }
         };
         let _ = writeln!(out, "{pad}{line}");
     }
@@ -347,6 +350,20 @@ impl Writer {
                 self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
             }
             Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
+            Stmt::LocalRef(name, place, body) => {
+                let place = match place {
+                    RefPlace::Item(list, at) => format!("{list}[{}]", self.expr(at, false)),
+                    RefPlace::Field(point, x) => format!("{point}.{}", if *x { "x" } else { "y" }),
+                    RefPlace::HeldItem(holder, at) => format!("{holder}.items[{}]", self.expr(at, false)),
+                    RefPlace::HeldList(holder) => format!("{holder}.items"),
+                    RefPlace::Tag(holder) => format!("{holder}.tag"),
+                    RefPlace::NodeItem(nodes, at) => format!("{nodes}[{}]", self.expr(at, false)),
+                };
+                self.line(indent, &format!("ref {name} = {place}"));
+                for stmt in body {
+                    self.stmt(stmt, indent);
+                }
+            }
             Stmt::NodesAppend(name, node) => {
                 let node = self.expr(node, false);
                 self.line(indent, &format!("{name}.append({node})"));

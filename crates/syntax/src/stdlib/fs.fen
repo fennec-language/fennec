@@ -37,7 +37,8 @@ export struct Fs:
         self._finish(file)?
 
 ## A file lent by `fs.create`, to write, or by `fs.open`, to read, for the length of a `with`
-## block. Its methods written in Rust: `write(data)` writes `bytes` or a `str`'s UTF-8; `sync()`
+## block. It's a `Writer` and a `Reader`, from `std.io`. Its methods written in Rust: `write(data)`
+## writes `bytes` or a `str`'s UTF-8; `flush()` sends what's held back on to the file; `sync()`
 ## puts what's been written on the disk now; `read()` gives what's left as `bytes`;
 ## `read_chunk(size)` gives up to `size` bytes, and empty bytes at the end; and `read_line()` gives
 ## the next line without its ending, or `None` at the end. Each fails with an `IoError`, as a read

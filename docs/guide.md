@@ -95,7 +95,8 @@ def save(fs: Fs, data: bytes) -> str fails IoError:
 ## Reads back what `save` stored under `hash`.
 def load(fs: Fs, hash: str) -> bytes fails StoreError:
     path = f".hoard/objects/{hash}"
-    if not fs.exists(path):
+    there = fs.exists(path) else fail .Unreadable(path)
+    if not there:
         fail .Missing(hash)
     fs.read_bytes(path) else fail .Unreadable(path)
 ```
@@ -127,7 +128,7 @@ Everything on disk goes through `fs`:
 |---|---|
 | `fs.read_text(path)?`, `fs.read_bytes(path)?` | Read a whole file |
 | `fs.write_text(path, text)?`, `fs.write_bytes(path, data)?` | Write a whole file |
-| `fs.exists(path)` | Whether it's there |
+| `fs.exists(path)?` | Whether it's there, failing when it can't look |
 | `fs.metadata(path)?` | Its `size`, `is_file` and `is_dir` |
 | `fs.list_dir(path)?` | What's in a folder, sorted by name |
 | `fs.walk(path)?` | Everything under a folder, at any depth |

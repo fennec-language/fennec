@@ -6,7 +6,9 @@
 //! the same way over and over and checks the counts hold. Unlike the process's memory, they say
 //! what's live, not what's cached for reuse. What is cached, freed blocks kept for reuse and the
 //! pages of the table of blocks, comes on lines of its own starting `cached`, which grow as a
-//! program warms up and then have to stay within their bounds.
+//! program warms up and then have to stay within their bounds. So do blocks that are never freed:
+//! each is made once, the first time its literal, constant, capability or case is asked for, so
+//! how many there are says when the program first went that way, not what it holds on to.
 //!
 //! Nothing's counted unless the variable's set, and then only every 100 ms on each thread.
 
@@ -34,6 +36,8 @@ pub(crate) struct Counts {
     pub(crate) spare: usize,
     /// Pages in its table of blocks, at most about twice those with blocks on them.
     pub(crate) pages: usize,
+    /// Blocks never freed, one for each literal, constant, capability or case made so far.
+    pub(crate) constants: usize,
     /// How many threads' counts are in the sum.
     pub(crate) threads: usize,
 }
@@ -52,13 +56,14 @@ impl Counts {
         self.spare += other.spare;
         self.threads += other.threads;
         self.pages += other.pages;
+        self.constants += other.constants;
     }
 
     /// The report's lines: one for each count, and one for each size of block.
     fn lines(&self) -> String {
         let blocks: usize = self.blocks.values().sum();
         let mut text = format!(
-            "blocks {blocks}\ntemps {}\ninputs {}\ntexts {}\nnames {}\ntasks {}\nconnections {}\nthreads {}\ncached spare {}\ncached pages {}\n",
+            "blocks {blocks}\ntemps {}\ninputs {}\ntexts {}\nnames {}\ntasks {}\nconnections {}\nthreads {}\ncached spare {}\ncached pages {}\ncached constants {}\n",
             self.temps,
             self.inputs,
             self.texts,
@@ -67,7 +72,8 @@ impl Counts {
             self.connections,
             self.threads,
             self.spare,
-            self.pages
+            self.pages,
+            self.constants
         );
         for (words, count) in &self.blocks {
             let _ = writeln!(text, "words {words} {count}");
@@ -137,8 +143,10 @@ fn write_every(path: &PathBuf) {
 /// This thread's runtime's own counts, without a worker's tasks.
 pub(crate) fn of_this_thread() -> Counts {
     super::with(|state| {
+        let (blocks, constants) = state.heap.live_by_size();
         Some(Counts {
-            blocks: state.heap.live_by_size(),
+            blocks,
+            constants,
             temps: state.temps.len(),
             inputs: state.inputs.len(),
             texts: state.heap.texts.borrow().len(),
@@ -166,7 +174,7 @@ mod tests {
         assert_eq!(total.blocks, [(4, 3), (6, 1)].into());
         assert_eq!(
             total.lines(),
-            "blocks 4\ntemps 1\ninputs 0\ntexts 0\nnames 0\ntasks 0\nconnections 2\nthreads 0\ncached spare 0\ncached pages 0\nwords 4 3\nwords 6 1\n"
+            "blocks 4\ntemps 1\ninputs 0\ntexts 0\nnames 0\ntasks 0\nconnections 2\nthreads 0\ncached spare 0\ncached pages 0\ncached constants 0\nwords 4 3\nwords 6 1\n"
         );
     }
 }

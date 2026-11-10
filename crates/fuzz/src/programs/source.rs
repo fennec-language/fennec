@@ -117,6 +117,16 @@ struct Holder:
     items: list[int]
     tag: int
 
+    def grown_by(ref self, more: list[int]):
+        for item in more:
+            self.items.append(item)
+
+def regrown(seed: int) -> int:
+    mut holder = Holder(items=[seed, seed + 1], tag=seed)
+    own = holder.items
+    holder.grown_by(own)
+    sum(holder.items) + own.len()
+
 enum Node:
     Leaf(name: str)
     Number(value: int)
@@ -404,6 +414,12 @@ impl Writer {
                 self.line(indent + 1, "case .Leaf(ref name):");
                 self.line(indent + 2, &format!("name += {text}"));
             }
+            Stmt::GrownBy(holder, own) => {
+                self.line(indent, &format!("if {holder}.items.len() < 64:"));
+                self.line(indent + 1, &format!("{own} = {holder}.items"));
+                self.line(indent + 1, &format!("{holder}.grown_by({own})"));
+                self.line(indent + 1, &format!("stdout.print({holder}, {own})"));
+            }
             Stmt::LocalRef(name, place, body) => {
                 let place = match place {
                     RefPlace::Item(list, at) => format!("{list}[{}]", self.expr(at, false)),
@@ -650,6 +666,11 @@ impl Writer {
                 let (by, plus, list) = (self.expr(by, false), self.expr(plus, false), self.expr(list, false));
                 let list = if *parallel { format!("parallel({list})") } else { list };
                 format!("[{item} * {by} + {plus} for {item} in {list}]")
+            }
+            Expr::Regrown(list) => {
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                format!("sum(regrown({item}) for {item} in parallel({}))", self.expr(list, false))
             }
             Expr::ParallelSum(list, by) => {
                 self.made += 1;

@@ -150,6 +150,9 @@ pub(crate) enum Expr {
     Mapped(Box<Expr>, Box<Expr>, Box<Expr>, bool),
     /// `sum(item * by for item in parallel(list))`.
     ParallelSum(Box<Expr>, Box<Expr>),
+    /// `sum(regrown(item) for item in parallel(list))`: each round makes a holder, reads its list
+    /// and passes it to a `ref self` method on the same holder.
+    Regrown(Box<Expr>),
     /// `list.len()`.
     Len(Box<Expr>),
     /// `list[at]`, which fails outside the list.
@@ -446,6 +449,9 @@ pub(crate) enum Stmt {
     /// `match named:` changing it through `ref`: a pair's label grows by `text`, its tags gain
     /// the new label, and its left side becomes `left`; a leaf's name grows by `text`.
     Rename(String, Expr, Expr),
+    /// `own = holder.items` then `holder.grown_by(own)`, a `ref self` method given a value read
+    /// from the list it grows, and both printed, under `if holder.items.len() < 64:`.
+    GrownBy(String, String),
     /// `ref name = place`, then the statements that use it, the last of them its last use.
     LocalRef(String, RefPlace, Vec<Stmt>),
     /// `holder.items.append(value)`.

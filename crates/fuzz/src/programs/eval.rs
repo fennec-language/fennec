@@ -807,6 +807,16 @@ impl Machine {
             Stmt::Reshape(name, text, child) => self.reshape(name, text, child)?,
             Stmt::Rename(name, text, left) => self.rename(name, text, left)?,
             Stmt::LocalRef(name, place, body) => self.local_ref(name, place, body)?,
+            Stmt::GrownBy(holder, _) => {
+                if let Value::Holder(items, _) = self.slot(holder)?
+                    && items.len() < 64
+                {
+                    let own = items.clone();
+                    items.extend_from_slice(&own);
+                    let shown_holder = shown(self.get(holder)?);
+                    let _ = writeln!(self.out, "{shown_holder} {}", shown(&Value::Ints(own)));
+                }
+            }
             Stmt::Pop(name) => {
                 if let Value::Ints(items) = self.slot(name)? {
                     items.pop();
@@ -1316,6 +1326,20 @@ impl Machine {
                     values.push(int(&self.expr(item)?)?);
                 }
                 Value::Ints(values)
+            }
+            Expr::Regrown(list) => {
+                let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+                let mut terms = Vec::with_capacity(items.len());
+                for seed in items {
+                    let next = checked(seed.checked_add(1))?;
+                    let grown = [seed, next, seed, next];
+                    let mut total: i64 = 0;
+                    for item in grown {
+                        total = checked(total.checked_add(item))?;
+                    }
+                    terms.push(checked(total.checked_add(2))?);
+                }
+                Value::Int(sum_of(&terms)?)
             }
             Expr::ParallelSum(list, by) => {
                 let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };

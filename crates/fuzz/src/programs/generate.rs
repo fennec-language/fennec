@@ -216,7 +216,12 @@ impl Writer<'_> {
             21 if !self.threadless => {
                 let list = self.of(Ty::Ints, next);
                 let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
-                let sum = Expr::ParallelSum(Box::new(list), Box::new(by));
+                // Half pass each item's holder a list read from itself, on the threads.
+                let sum = if self.choice(2) == 0 {
+                    Expr::Regrown(Box::new(list))
+                } else {
+                    Expr::ParallelSum(Box::new(list), Box::new(by))
+                };
                 self.bounded(sum)
             }
             20 if self.risky => Expr::BufAt(Box::new(self.of(Ty::Buf, next)), Box::new(self.int(next))),
@@ -891,6 +896,10 @@ impl Writer<'_> {
                     changeable: false,
                 });
                 self.names.push(InScope { name, ty: Ty::Count, changeable: false, held: 0 });
+            }
+            24 if self.choice(3) == 0 => {
+                let Some(holder) = self.name_of(Ty::Holder, true) else { return self.print(body) };
+                body.push(Stmt::GrownBy(holder, self.fresh()));
             }
             24 => {
                 let Some(holder) = self.name_of(Ty::Holder, true) else { return self.print(body) };

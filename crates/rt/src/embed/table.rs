@@ -282,10 +282,16 @@ impl Table {
 
     /// Takes the block at `address` out when `wanted` says so of it, finding it once. `None`,
     /// having changed nothing, when it isn't here or isn't wanted.
-    pub(super) fn take_if(&mut self, address: usize, wanted: impl FnOnce(&[u64]) -> bool) -> Option<Box<[u64]>> {
+    pub(super) fn take_if(
+        &mut self,
+        address: usize,
+        wanted: impl FnOnce(&[u64]) -> bool,
+    ) -> Option<Box<[u64]>> {
         let taken = match slot_mut(&mut self.regions, address) {
             Some(slot) => slot.take_if(|block| wanted(block)),
-            None if self.short.get(&address).is_some_and(|block| wanted(block)) => self.short.remove(&address),
+            None if self.short.get(&address).is_some_and(|block| wanted(block)) => {
+                self.short.remove(&address)
+            }
             None => None,
         };
         if taken.is_some() {

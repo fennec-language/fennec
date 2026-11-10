@@ -42,7 +42,8 @@ fn free_plain_list(state: &mut State, address: u64) -> bool {
         return false;
     }
     let first_list = crate::embed::lists::first_list_shape(state);
-    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list)) else {
+    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list))
+    else {
         return false;
     };
     state.heap.recycle(block);

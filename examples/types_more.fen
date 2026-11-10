@@ -89,7 +89,9 @@ def main(stdout: Stdout):
     stdout.print({"a": 1}, {1, 2}, [1], (1,))
 
     # A function can return a result it made itself.
-    stdout.print(parse("12") else -1, failure_of(() => parse("twelve")?))
+    _ = parse("twelve") else as why:
+        stdout.print(parse("12") else -1, why)
+        -1
 
     # `and` and `or` stop as soon as they know the answer.
     stdout.print(True or 1 // 0 == 0, False and 1 // 0 == 0, True and False, False or True)

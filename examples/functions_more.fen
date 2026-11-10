@@ -31,7 +31,9 @@ def countdown(n: int) -> Iterator[int]:
 
 def main(stdout: Stdout, fs: Fs):
     stdout.print(load_scores(["3", "14", "15"]) else [])
-    stdout.print(failure_of(() => load_scores(["3", "x", "15"])?))
+    _ = load_scores(["3", "x", "15"]) else as why:
+        stdout.print(why)
+        []
     stdout.print(Score(value=5))
     stdout.print(counter_from(10))
     stdout.print(list(countdown(3)), sum(countdown(4)))

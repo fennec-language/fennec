@@ -341,7 +341,7 @@ mod tests {
             "print(tried(() => capped(",
             "print(tried_twice(() => capped(",
             "print(tried_each(",
-            "print(failure_of(() => capped(",
+            "print(ran_fine(() => capped(",
             "print(either(() => paired(capped(",
             "dict[Gauge, int]()",
             "dict[Gauge32, int]()",

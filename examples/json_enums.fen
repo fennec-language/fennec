@@ -25,9 +25,9 @@ struct Level:
     scores: SortedMap[str, int]
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "cases are their names, or objects of their fields":
     orders = [Order.Hold, Order.Move(to=(2, 3)), Order.Guard(around=(1, 1), range=4)]

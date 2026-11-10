@@ -12,9 +12,9 @@ struct Squad:
     units: list[Unit]
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "a value that keeps its rules loads":
     squad = json.loads[Squad]("{\"units\": [{\"name\": \"ash\", \"health\": 3}]}")?

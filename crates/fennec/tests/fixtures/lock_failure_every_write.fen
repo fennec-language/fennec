@@ -106,7 +106,10 @@ def main(stdout: Stdout):
     mut bad = 0
     for which in range(22):
         shared c = made()
-        if failure_of(() => fails_after(c, which)?) is None:
+        mut failed = False
+        fails_after(c, which) else:
+            failed = True
+        if not failed:
             stdout.print("it didn't fail", which)
         mut now = ""
         lock c as held:

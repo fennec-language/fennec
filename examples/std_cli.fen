@@ -10,9 +10,9 @@ def greet() -> Cli:
     cli.positional("names", help="who to greet", required=False, many=True)
 
 def problem(run: () -> CliArgs fails CliError) -> str:
-    error = failure_of(run) else:
-        return "no problem"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "no problem"
 
 test "flags and options are read in any order":
     given = greet().parse(["ash", "--loud", "--times", "3", "vex", "--to=kit"])?

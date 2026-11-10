@@ -1316,7 +1316,7 @@ impl Machine {
     /// `summed_until(limit, stop, stdout)`: the source opens, the generator gives `at + limit`
     /// for each `at` below `limit`, the loop sums them until one is `stop`, and the source closes
     /// as the generator's let go or ends, failing for an even `limit`.
-    /// What `tried`, `tried_twice`, `tried_each`, `failure_of` or `either` prints, given an arrow
+    /// What `tried`, `tried_twice`, `tried_each`, `ran_fine` or `either` prints, given an arrow
     /// calling `capped(n, limit)?`, which fails with `n` when it's over `limit`.
     fn arrowed(&mut self, how: &Arrow, n: &Expr, limit: i64) -> Ran<()> {
         let line = if let Arrow::Each(list) = how {
@@ -1336,7 +1336,7 @@ impl Machine {
                 Arrow::Tried => format!("refused {n}"),
                 Arrow::Twice if fine => format!("{n} {n}"),
                 Arrow::Twice => "refused".to_owned(),
-                Arrow::FailureOf => shown(&Value::Bool(fine)),
+                Arrow::RanFine => shown(&Value::Bool(fine)),
                 Arrow::Either(_) if !fine => format!("refused {n}"),
                 Arrow::Either(other) => {
                     // The second call is reached only once the first gave its value.

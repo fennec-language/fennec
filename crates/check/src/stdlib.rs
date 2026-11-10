@@ -57,6 +57,7 @@ modules! {
     process,
     random,
     re,
+    signals,
     sqlite,
     toml,
     unicode,

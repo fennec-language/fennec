@@ -269,6 +269,11 @@ pub(crate) fn swap(task: &mut Option<Task>) {
     TASK.with_borrow_mut(|running| std::mem::swap(running, task));
 }
 
+/// Whether this run is a replay, whose outside inputs all come from its recording.
+pub(crate) fn replaying() -> bool {
+    matches!(mode(), Mode::Replay(_))
+}
+
 /// Whether this run is being recorded or replayed.
 pub(crate) fn active() -> bool {
     !matches!(mode(), Mode::Off)

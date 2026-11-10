@@ -228,6 +228,8 @@ fn next_to_free(
         // A `shared` value's handle: its count is the runtime's, wherever its block is.
         if crate::embed::guarded::is_handle(address) {
             crate::embed::guarded::release_handle(state, address);
+        } else {
+            super::not_native(address, "free");
         }
     }
     None
@@ -400,6 +402,8 @@ fn release_planned_child(
         *lent_owners.entry(child).or_default() -= 1;
     } else if crate::embed::guarded::is_handle(child) {
         freeing.pending.push(child);
+    } else {
+        super::not_native(child, "free, a block a freed one held");
     }
 }
 
@@ -449,8 +453,11 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
         }
         Some(_) => true,
         None => {
-            if !state.heap.change_lent_owners(address, -1) && crate::embed::guarded::is_handle(address) {
+            if state.heap.change_lent_owners(address, -1) {
+            } else if crate::embed::guarded::is_handle(address) {
                 crate::embed::guarded::release_handle(state, address);
+            } else {
+                super::not_native(address, "release");
             }
             false
         }
@@ -476,6 +483,21 @@ mod tests {
                 state.heap.recycle(block);
             }
         });
+    }
+
+    /// A block generated code made, handed to the runtime anyway, stops the program saying so,
+    /// rather than being let go of with nothing done. An address it holds no block for that
+    /// generated code didn't make is let go of with nothing done, as before.
+    #[test]
+    #[should_panic(expected = "the runtime was handed a native block it doesn't own: release")]
+    fn a_native_block_handed_to_the_runtime_stops_the_program() {
+        start(Tables::default(), crate::Inputs::default());
+        let made = Box::new([1_u64, 0, 0]);
+        let address = i64::try_from(std::ptr::from_ref(&made[0]).addr()).unwrap();
+        // Not one of generated code's: nothing happens.
+        with(|state| super::release(state, address.cast_unsigned() + 64));
+        super::super::native_made(address);
+        with(|state| super::release(state, address.cast_unsigned()));
     }
 
     #[test]

@@ -128,6 +128,8 @@ export! {
     fennec_fail(a0: i64, a1: i64, a2: i64) => checks::fail(a0, a1, a2);
     fennec_at_call(a0: i64, a1: i64) => eval::at_call(a0, a1);
     fennec_trace_frame(a0: i64, a1: i64) => eval::trace_frame(a0, a1);
+    fennec_native_made(a0: i64) => heap::native_made(a0);
+    fennec_native_freed(a0: i64) => heap::native_freed(a0);
     fennec_notes_frame(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => notes::frame(a0, a1, a2, a3);
     fennec_notes_traced(a0: i64) => notes::traced(a0);
     fennec_mark() -> i64 => temps::mark();

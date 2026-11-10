@@ -7,10 +7,10 @@ use crate::span::Span;
 use crate::stdlib::MODULES;
 
 /// Names that a module provides but that are available everywhere too. `Clock`, `Env`, `Fs`,
-/// `Net` and `Process` are capabilities, which `main` names like `Stdout`. `ParseError` and
+/// `Net`, `Process` and `Signals` are capabilities, which `main` names like `Stdout`. `ParseError` and
 /// `Missing` are errors, like `IoError`, that code matches on without importing where they came
 /// from.
-const EVERYWHERE: [&str; 7] = ["Clock", "Env", "Fs", "Net", "Process", "ParseError", "Missing"];
+const EVERYWHERE: [&str; 8] = ["Clock", "Env", "Fs", "Net", "Process", "Signals", "ParseError", "Missing"];
 
 /// The module a type or constant that has to be imported comes from, like `collections`
 /// for `Deque`. Functions are named `module.function` and are imported apart.

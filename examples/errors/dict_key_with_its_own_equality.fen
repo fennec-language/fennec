@@ -1,0 +1,9 @@
+struct Name:
+    text: str
+
+    def ==(self, other: Name) -> bool:
+        self.text.lower() == other.text.lower()
+
+def main(stdout: Stdout):
+    seen = {Name(text="Ash"): 1}
+    stdout.print(seen.len())

@@ -1,3 +1,20 @@
+## `std.io`: what any stream of bytes can do. A `Writer` takes bytes and text, and a `Reader` gives
+## them back, a chunk or a line at a time. Files, connections and a `MemoryStream` are both,
+## standard error is a `Writer`, and standard output is one through `stdout.writer()`, so code
+## written for one works on all of them:
+##
+## ```fennec
+## def report[W: Writer](ref out: W, lines: list[str]) fails IoError:
+##     for line in lines:
+##         out.write_line(line)?
+##     out.flush()?
+## ```
+##
+## Every failure is an `IoError`, whatever the stream: a connection's `NetError` comes through
+## `conn.writer()` and `conn.reader()` as an `IoError` with the network's own words in a note.
+## Readers are buffered already, so `read_line` reads only as far as it needs.
+from std.intrinsics import bytes_builder, bytes_push_bytes, bytes_push_text
+
 ## Standard output, given to `main` or a test: what the program says. Its methods written in Rust
 ## are `print(...)`, which writes what it's given with spaces between and a new line after, and
 ## `write(...)`, which writes it with no new line. What's written is held and goes out in pieces.
@@ -5,6 +22,10 @@
 ## and tests are given one: it can't be made.
 export struct Stdout:
     _given: int
+
+    ## Standard output as a `Writer`, for code written for any stream: `stdout.writer()`.
+    def writer(self) -> StdoutWriter:
+        StdoutWriter(_out=self)
 
 ## Standard input, given to `main`: what's typed or piped in. Its method written in Rust is
 ## `lines()`, every line to the end. Only `main` is given one: it can't be made.
@@ -16,6 +37,129 @@ export struct Stdin:
 ## `write_line(text)`, which adds a new line, and `flush()`. Each goes out at once, after what's
 ## been printed to standard output, and fails with an `IoError` when standard error is closed. A
 ## test's `Stderr` is a fake that keeps what's written, for the test's `captured()`. Only `main`
-## and tests are given one: it can't be made.
+## and tests are given one: it can't be made. It's a `Writer` as it is.
 export struct Stderr:
     _given: int
+
+## Standard output as a `Writer`, from `stdout.writer()`. What's written goes out as `print` and
+## `write` send it, so `flush` has nothing it can do sooner.
+export struct StdoutWriter:
+    _out: Stdout
+
+    ## Writes `data`, which has to be UTF-8 text: standard output takes text.
+    def write(self, data: bytes) fails IoError:
+        text = data.decode() else fail IoError(
+            reason="standard output takes text, and these bytes aren't UTF-8",
+        )
+        self._out.write(text)
+
+    def write_text(self, text: str) fails IoError:
+        self._out.write(text)
+
+    def write_line(self, text: str) fails IoError:
+        self._out.print(text)
+
+    def flush(self) fails IoError:
+        pass
+
+## Something bytes and text can be written to.
+export interface Writer:
+    ## Writes `data` as it is.
+    def write(ref self, data: bytes) fails IoError
+
+    ## Writes `text` as UTF-8.
+    def write_text(ref self, text: str) fails IoError
+
+    ## Writes `text`, then a line break.
+    def write_line(ref self, text: str) fails IoError
+
+    ## Sends on whatever's been held back to be written together. A stream that holds nothing
+    ## back does nothing.
+    def flush(ref self) fails IoError
+
+## Something bytes and lines can be read from, buffered, so a line reads only as far as its end.
+export interface Reader:
+    ## Up to `size` bytes, and empty bytes once there's nothing left.
+    def read_chunk(ref self, size: int) -> bytes fails IoError
+
+    ## The next line without its line break, or `None` once there's nothing left.
+    def read_line(ref self) -> str? fails IoError
+
+    ## Each line left, without its line break. A failure to read fails the loop, rather than
+    ## looking like the end.
+    def lines(ref self) -> Iterator[str] fails IoError
+
+## Bytes in memory, written to and read back: `MemoryStream()` to write and then take
+## `bytes()` or `text()`, or `MemoryStream.of(data)` to read `data` as a stream. Reading starts at
+## the beginning and goes on from where it got to, whatever's written after.
+export struct MemoryStream:
+    _data = bytes_builder()
+    _at = 0
+
+    ## A stream to read `data` from.
+    def of(data: bytes) -> MemoryStream:
+        mut made = MemoryStream()
+        bytes_push_bytes(ref made._data, data)
+        made
+
+    def write(ref self, data: bytes) fails IoError:
+        bytes_push_bytes(ref self._data, data)
+
+    def write_text(ref self, text: str) fails IoError:
+        bytes_push_text(ref self._data, text)
+
+    def write_line(ref self, text: str) fails IoError:
+        bytes_push_text(ref self._data, text)
+        bytes_push_text(ref self._data, "\n")
+
+    ## Nothing's held back in memory, so there's nothing to send on.
+    def flush(ref self) fails IoError:
+        pass
+
+    def read_chunk(ref self, size: int) -> bytes fails IoError:
+        if size < 0: fail IoError(reason=f"can't read {size} bytes")
+        end = min(self._at + size, self._data.len())
+        chunk = self._data[self._at:end]
+        self._at = end
+        chunk
+
+    def read_line(ref self) -> str? fails IoError:
+        if self._at >= self._data.len(): return None
+        mut end = self._at
+        while end < self._data.len() and self._data[end] != 10:
+            end += 1
+        mut line = self._data[self._at:end]
+        self._at = min(end + 1, self._data.len())
+        if line.len() > 0 and line[line.len() - 1] == 13:
+            line = line[:line.len() - 1]
+        line.decode() else fail IoError(reason="a line isn't UTF-8 text")
+
+    ## Each line left, without moving where reading has got to.
+    def lines(self) -> Iterator[str] fails IoError:
+        mut at = self._at
+        while at < self._data.len():
+            mut end = at
+            while end < self._data.len() and self._data[end] != 10:
+                end += 1
+            mut line = self._data[at:end]
+            at = end + 1
+            if line.len() > 0 and line[line.len() - 1] == 13:
+                line = line[:line.len() - 1]
+            yield line.decode() else fail IoError(reason="a line isn't UTF-8 text")
+
+    ## Everything written, as bytes.
+    def bytes(self) -> bytes:
+        self._data[:]
+
+    ## Everything written, as text.
+    def text(self) -> str fails IoError:
+        self._data.decode() else fail IoError(reason="what was written isn't UTF-8 text")
+
+## Everything left in `src`, read a chunk at a time.
+export def read_all[R: Reader](ref src: R) -> bytes fails IoError:
+    mut all = bytes_builder()
+    while True:
+        chunk = src.read_chunk(65536)?
+        if chunk.len() == 0: return all
+        bytes_push_bytes(ref all, chunk)
+    all

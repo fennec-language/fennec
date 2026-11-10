@@ -228,6 +228,7 @@ pub extern "C" fn constant_kept(address: i64) {
             }
             // Its owners now stay above the mark, so letting one go doesn't take it below.
             *count = count.saturating_add(IMMORTAL);
+            mark_never_freed(block);
             if let Some(block) = state.heap.block(at) {
                 waiting.extend(children(state, block));
             }
@@ -301,6 +302,17 @@ pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn task_mark(task: u64) -> u64 {
     ((task % (TASK_BITS >> TASK_SHIFT)) + 1) << TASK_SHIFT
+}
+
+/// The owner in the shape word of a block that's never freed, like a string literal's or a
+/// constant's: no thread's. Only a block's own thread may read or change its count, which it does
+/// without atomics, so another thread can't read the count to see that it's never freed: it reads
+/// this, in the shape word, which doesn't change once the block's in use.
+pub const NEVER_FREED_OWNER: u64 = 0xFFFD;
+
+/// Marks a block as never freed, by its owner.
+pub(super) fn mark_never_freed(block: &mut [u64]) {
+    mark_owner(block, NEVER_FREED_OWNER << OWNER_SHIFT);
 }
 
 /// Sets the thread and task a block was made by, in its shape word.
@@ -604,7 +616,10 @@ impl Heap {
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
-        if self.owner_bits >> OWNER_SHIFT != 0 {
+        if block.first().is_some_and(|count| *count >= IMMORTAL) {
+            // It's no thread's to count, and never handed over.
+            mark_never_freed(&mut block);
+        } else if self.owner_bits >> OWNER_SHIFT != 0 {
             mark_owner(&mut block, self.owner_bits);
             // What's made under a lock stays with what the lock guards, and a server's tasks hand
             // nothing over.

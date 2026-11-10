@@ -291,7 +291,7 @@ fn finish(hash: u64) -> u64 {
 }
 
 /// Whether a plain key is hashed by what it holds rather than by its words.
-fn by_what_it_holds(element: &Element) -> bool {
+pub(super) fn by_what_it_holds(element: &Element) -> bool {
     match element {
         Element::Float | Element::F32 => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| by_what_it_holds(field)),
@@ -345,8 +345,15 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
     }
     if let Word::Plain(_) = key_word {
         let block = state.heap.block(first).unwrap_or_default();
-        // Blocks or floats in a key go by what they hold, not by their words.
-        if super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element)) {
+        // Blocks or floats in a key go by what they hold, not by their words: worked out for each
+        // of the program's shapes as it starts.
+        let known = shape_word(block)
+            .and_then(|shape| state.keys_by_value.get(usize::try_from(shape).ok()?))
+            .copied();
+        let by_value = known.unwrap_or_else(|| {
+            super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element))
+        });
+        if by_value {
             let value = super::heap::read_block(state, first);
             return match how {
                 Hashing::Fast => {
@@ -443,25 +450,6 @@ fn live_entries<const N: usize>(words: &[u64], live: &mut Vec<u64>) {
     }
 }
 
-/// Copies an entry's words, a few moves for the widths dicts have. Gives back whether the two
-/// were the same width, as every caller's are; nothing is copied when they aren't.
-fn copy_entry(to: &mut [u64], from: &[u64]) -> bool {
-    fn fixed<const N: usize>(to: &mut [u64], from: &[u64]) -> bool {
-        match (<&mut [u64; N]>::try_from(to), <&[u64; N]>::try_from(from)) {
-            (Ok(to), Ok(from)) => {
-                *to = *from;
-                true
-            }
-            _ => false,
-        }
-    }
-    let copied = fixed::<3>(to, from) || fixed::<4>(to, from) || fixed::<5>(to, from) || fixed::<6>(to, from);
-    if !copied && to.len() == from.len() {
-        to.copy_from_slice(from);
-    }
-    to.len() == from.len()
-}
-
 /// A block holding `entries`, each `width` words, owned once, with room for at least `room`
 /// keys.
 fn build(
@@ -473,30 +461,28 @@ fn build(
 ) -> Box<[u64]> {
     let live = entries.len() / width;
     let (mut block, slots) = with_room(state, width, live, room);
-    fill(state, &mut block, (shape, slots, how), width, live, entries.chunks_exact(width));
+    fill(state, &mut block, (shape, slots, how), width, entries);
     block
 }
 
 /// Fills in a new block, as `place_entries` does. Should a probe get too long, it starts over with
 /// the strong hash.
-fn fill<'e>(
+fn fill(
     state: &State,
     block: &mut [u64],
     (shape, slots, how): (u64, usize, Hashing),
     width: usize,
-    live: usize,
-    entries: impl Iterator<Item = &'e [u64]> + Clone,
+    entries: &[u64],
 ) {
-    if place_entries(block, (shape, slots, how), width, live, entries.clone()) {
+    if place_entries(block, (shape, slots, how), width, entries) {
         return;
     }
     let Some(layout) = shape_layout(state, shape) else { return };
-    let strong = strongly_hashed(state, layout, entries.flatten().copied().collect());
+    let strong = strongly_hashed(state, layout, entries.to_vec());
     if let Some(taken) = block.get_mut(DICT_HEADER_WORDS..DICT_HEADER_WORDS + slots) {
         taken.fill(0);
     }
-    let placed =
-        place_entries(block, (shape, slots, Hashing::Strong), width, live, strong.chunks_exact(width));
+    let placed = place_entries(block, (shape, slots, Hashing::Strong), width, &strong);
     debug_assert!(placed, "the strong hash places everything");
 }
 
@@ -520,14 +506,7 @@ fn strengthen(state: &mut State, at: u64, layout: Layout) -> Option<()> {
     let strong = strongly_hashed(state, layout, live);
     let block = state.heap.block_mut(at)?;
     block.get_mut(DICT_HEADER_WORDS..DICT_HEADER_WORDS + slots)?.fill(0);
-    let count = strong.len() / layout.width;
-    place_entries(
-        block,
-        (shape, slots, Hashing::Strong),
-        layout.width,
-        count,
-        strong.chunks_exact(layout.width),
-    );
+    place_entries(block, (shape, slots, Hashing::Strong), layout.width, &strong);
     Some(())
 }
 
@@ -543,35 +522,36 @@ fn with_room(state: &mut State, width: usize, live: usize, room: usize) -> (Box<
     (state.heap.fresh(super::heap::words_for(DICT_HEADER_WORDS + slots, capacity(slots), width)), slots)
 }
 
-/// Fills in a new block with its header and `live` entries, finding each one's slot by its hash.
-/// False if a dict hashed the fast way got a probe too long, stopping there.
-fn place_entries<'e>(
+/// Fills in a new block with its header and `entries`, each `width` words and none removed, in
+/// one copy, then finds each one's slot by its hash. False if a dict hashed the fast way got a
+/// probe too long, stopping there.
+fn place_entries(
     block: &mut [u64],
     (shape, slots, how): (u64, usize, Hashing),
     width: usize,
-    live: usize,
-    entries: impl Iterator<Item = &'e [u64]>,
+    entries: &[u64],
 ) -> bool {
+    let live = entries.len() / width.max(1);
     let count = |n: usize| u64::try_from(n).unwrap_or(0);
     if let Some(header) = block.get_mut(..DICT_HEADER_WORDS) {
         header.copy_from_slice(&[1, shape, count(live), count(live), count(slots - 1), how.word()]);
     }
-    for (at, entry) in entries.enumerate() {
+    let start = DICT_HEADER_WORDS + slots;
+    let Some(moved) = block.get_mut(start..start + entries.len()) else { return true };
+    moved.copy_from_slice(entries);
+    let (taken, moved) = block.split_at_mut(start);
+    let taken = taken.get_mut(DICT_HEADER_WORDS..).unwrap_or_default();
+    for (at, entry) in moved.chunks_exact(width.max(1)).take(live).enumerate() {
         let hash = entry.first().copied().unwrap_or(0);
         let mut slot = usize::try_from(hash).unwrap_or(0) & (slots - 1);
-        while block.get(DICT_HEADER_WORDS + slot).is_some_and(|taken| *taken != 0) {
+        while taken.get(slot).is_some_and(|taken| *taken != 0) {
             slot = (slot + 1) & (slots - 1);
             if how == Hashing::Fast && too_far(hash, slot, slots - 1) {
                 return false;
             }
         }
-        if let Some(taken) = block.get_mut(DICT_HEADER_WORDS + slot) {
+        if let Some(taken) = taken.get_mut(slot) {
             *taken = count(at + 1);
-        }
-        let start = DICT_HEADER_WORDS + slots + at * width;
-        if let Some(words) = block.get_mut(start..start + width) {
-            let copied = copy_entry(words, entry);
-            debug_assert!(copied, "an entry as wide as its dict's");
         }
     }
     true
@@ -588,8 +568,19 @@ fn grown(state: &mut State, at: u64, shape: u64, width: usize) -> Option<u64> {
     let start = DICT_HEADER_WORDS + slots;
     let how = Hashing::of(block);
     let words = block.get(start..start + used * width)?;
-    let kept = words.chunks_exact(width).filter(|entry| entry.first() != Some(&REMOVED));
-    fill(state, &mut new, (shape, new_slots, how), width, live, kept);
+    // With nothing removed, the entries move across as they are; otherwise those left are
+    // gathered first.
+    if used == live {
+        fill(state, &mut new, (shape, new_slots, how), width, words);
+    } else {
+        let kept: Vec<u64> = words
+            .chunks_exact(width)
+            .filter(|entry| entry.first() != Some(&REMOVED))
+            .flatten()
+            .copied()
+            .collect();
+        fill(state, &mut new, (shape, new_slots, how), width, &kept);
+    }
     state.heap.discard(at);
     u64::try_from(state.heap.insert(new)).ok()
 }

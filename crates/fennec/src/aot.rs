@@ -171,7 +171,7 @@ pub(crate) fn tests_executable(
     let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
     })?;
-    finish(&compiled, output, false, false)?;
+    finish(&compiled, output, false)?;
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
@@ -196,7 +196,7 @@ pub(crate) fn tracing_executable(
     let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    finish(&compiled, output, false, false)?;
+    finish(&compiled, output, false)?;
     Ok((emitted.shared.sites, emitted.lowered))
 }
 
@@ -265,12 +265,11 @@ pub(crate) fn executable(
     let started = Instant::now();
     let built = llvm_objects(program, release)?;
     let compiled = started.elapsed();
-    let statically = release && links_statically();
     // A release built with the runtime's bitcode has its Rust inside already.
-    let runtime_in = release && runtime_bitcode(built.runtime, statically).is_some();
+    let runtime_in = release && runtime_bitcode(built.runtime, built.statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
-    let linked = finish(&built, output, runtime_in, statically)?;
+    let linked = finish(&built, output, runtime_in)?;
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
     Ok(Built { total: built.total, fresh: built.fresh, compiled, linked, root })
 }
@@ -294,12 +293,7 @@ pub(crate) fn dev_build_settings() -> String {
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
 /// objects linked, which then go in the store under it, with the list of its functions' hashes
 /// beside them. Gives back how long linking took, which is nothing for a stored one.
-fn finish(
-    compiled: &Compiled,
-    output: &Path,
-    runtime_in: bool,
-    statically: bool,
-) -> Result<std::time::Duration, String> {
+fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
     let written = |bytes: &[u8]| -> Result<(), String> {
         std::fs::write(output, bytes).map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
         executable_mode(output)
@@ -308,8 +302,14 @@ fn finish(
         written(bytes)?;
         return Ok(std::time::Duration::ZERO);
     }
-    let linked =
-        link_objects(&compiled.objects, output, compiled.runtime, runtime_in, compiled.tls, statically)?;
+    let linked = link_objects(
+        &compiled.objects,
+        output,
+        compiled.runtime,
+        runtime_in,
+        compiled.tls,
+        compiled.statically,
+    )?;
     if let Some(Stored { cache, root, functions, .. }) = &compiled.stored
         && let Ok(bytes) = std::fs::read(output)
     {
@@ -398,6 +398,9 @@ struct Compiled {
     runtime: Runtime,
     /// Whether the program makes requests, so it links what TLS needs.
     tls: bool,
+    /// Whether it links on its own, against the runtime built for musl, which its runtime was
+    /// chosen for, so it's linked that way too.
+    statically: bool,
     /// Its place in the store, when there's one to use.
     stored: Option<Stored>,
 }
@@ -525,7 +528,7 @@ fn compile_emitted(
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
-    let statically = release && links_statically();
+    let statically = links_statically();
     let runtime = Runtime::for_program(lowered, statically)?;
     let home = fennec_build::fennec_home();
     let cache = home
@@ -539,7 +542,15 @@ fn compile_emitted(
         Stored { cache, root, functions, program }
     });
     if stored.as_ref().is_some_and(|stored| stored.program.is_some()) {
-        return Ok(Compiled { objects: Vec::new(), total: units.len(), fresh: 0, runtime, tls, stored });
+        return Ok(Compiled {
+            objects: Vec::new(),
+            total: units.len(),
+            fresh: 0,
+            runtime,
+            tls,
+            statically,
+            stored,
+        });
     }
     let work = crate::own_temp("llvm");
     let built = if release {
@@ -558,7 +569,15 @@ fn compile_emitted(
         let _ = std::fs::remove_dir_all(&work);
     }
     let built = built?;
-    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime, tls, stored })
+    Ok(Compiled {
+        objects: built.objects,
+        total: units.len(),
+        fresh: built.compiled,
+        runtime,
+        tls,
+        statically,
+        stored,
+    })
 }
 
 /// Links object files with the runtime library, giving back how long linking took. When the
@@ -592,15 +611,28 @@ fn link_objects(
     } else {
         linker(&paths, &runtime, output, tls)
     }
-    .output()
-    .map_err(|err| format!("couldn't run the linker: {err}"))?;
+    .output();
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
+    let linked = linked.map_err(|err| {
+        if cfg!(target_os = "macos") && err.kind() == std::io::ErrorKind::NotFound {
+            NO_XCODE_TOOLS.to_owned()
+        } else {
+            format!("couldn't run the linker: {err}")
+        }
+    })?;
     if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
 }
 
+/// What a Mac without Xcode's command line tools is told, as it links a program through them.
+const NO_XCODE_TOOLS: &str = "linking a program on a Mac needs Xcode's command line tools, which aren't installed: run `xcode-select --install`";
+
 /// What a linker said when it failed, on standard error or standard output.
 fn link_failure(linked: &std::process::Output) -> String {
+    // A Mac's `cc` is a stand-in that runs Xcode's, and says so through `xcrun` when there's none.
+    if cfg!(target_os = "macos") && String::from_utf8_lossy(&linked.stderr).contains("xcrun: error") {
+        return format!("{NO_XCODE_TOOLS}\n{}", String::from_utf8_lossy(&linked.stderr).trim_end());
+    }
     format!(
         "linking failed:\n{}{}",
         String::from_utf8_lossy(&linked.stderr),
@@ -608,7 +640,8 @@ fn link_failure(linked: &std::process::Output) -> String {
     )
 }
 
-/// The system's linker, set to link objects with a runtime library into an executable.
+/// The system's linker, set to link objects with a runtime library into an executable. On a Mac
+/// that's `cc` from Xcode's command line tools, which a Mac program links against.
 #[cfg(not(windows))]
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Command {
     let mut command = Command::new("cc");
@@ -625,11 +658,14 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Comm
 }
 
 /// Whether a build links its program on its own, with musl's C library in it: on Linux, when the
-/// `musl` folder beside `fennec` has the runtime built for musl and musl's own start-up files.
-/// `FENNEC_STATIC=0` asks for a program linked against the system's C library anyway.
+/// `musl` folder beside `fennec` has the runtime built for musl and musl's own start-up files, as
+/// a release's does. Then every build does, so building needs nothing from the machine, not even a
+/// C compiler. `FENNEC_STATIC=0` asks for a program linked against the system's C library anyway,
+/// and so does a sanitizer, whose runtime is the system compiler's.
 fn links_statically() -> bool {
     cfg!(target_os = "linux")
         && std::env::var_os("FENNEC_STATIC").is_none_or(|on| on != "0")
+        && fennec_llvm::sanitize_flag().is_none()
         && musl_folder().is_some_and(|musl| musl.join("self-contained/crt1.o").is_file())
 }
 
@@ -638,31 +674,51 @@ fn musl_folder() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.with_file_name("musl"))
 }
 
-/// The system's linker, set to link objects with a runtime library built for musl, and with musl's
-/// own start-up files and C library, into an executable that needs nothing from the machine it
-/// runs on: no C library, and no loader.
+/// The linker for a program linked on its own, with a runtime library built for musl and with
+/// musl's own start-up files and C library, into an executable that needs nothing from the machine
+/// it runs on: no C library, and no loader. It's LLD, beside LLVM's other tools, so building needs
+/// no C compiler either; where there's none, as in a checkout whose Rust has no `rust-lld`, it's the
+/// system's compiler driving its own linker.
 fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
     let musl = musl_folder().unwrap_or_default().join("self-contained");
-    let mut command = Command::new("cc");
+    let lld = fennec_llvm::Tools::find()
+        .ok()
+        .map(|tools| tools.folder().join("rust-lld"))
+        .filter(|lld| lld.is_file());
+    // musl's C library takes the compiler's helpers, like `__multf3` for a `long double` on arm64,
+    // from the runtime, or, when only the runtime's C parts are linked, from the helpers taken out
+    // of it for that, or the system compiler's `libgcc`.
+    let helpers = musl.join("libcompiler_builtins.a");
+    let (mut command, pass) = if let Some(lld) = &lld {
+        let mut command = Command::new(lld);
+        command.args(["-flavor", "gnu", "-static", "--no-pie"]);
+        (command, "")
+    } else {
+        let mut command = Command::new("cc");
+        command.args(["-static", "-no-pie", "-nostdlib", "-nostartfiles"]);
+        (command, "-Wl,")
+    };
     command
-        .args(["-static", "-no-pie", "-nostdlib", "-nostartfiles"])
         .arg(musl.join("crt1.o"))
         .arg(musl.join("crti.o"))
         .arg(musl.join("crtbegin.o"))
         .args(objects)
-        // musl's C library takes the compiler's helpers, like `__multf3` for a `long double` on
-        // arm64, from the runtime, or from `libgcc` when only the runtime's C parts are linked.
-        .arg("-Wl,--start-group")
+        .arg(format!("{pass}--start-group"))
         .arg(runtime)
         .arg(musl.join("libunwind.a"))
-        .arg(musl.join("libc.a"))
-        .arg("-lgcc")
-        .arg("-Wl,--end-group")
+        .arg(musl.join("libc.a"));
+    if helpers.is_file() {
+        command.arg(&helpers);
+    } else if lld.is_none() {
+        command.arg("-lgcc");
+    }
+    command
+        .arg(format!("{pass}--end-group"))
         .arg(musl.join("crtend.o"))
         .arg(musl.join("crtn.o"))
-        .args(["-Wl,--gc-sections", "-Wl,--eh-frame-hdr"])
+        .args([format!("{pass}--gc-sections"), format!("{pass}--eh-frame-hdr")])
         // Nothing reads the notices, so dropping what's unused would drop them too.
-        .arg(format!("-Wl,--undefined={}", crate::notices::SYMBOL))
+        .arg(format!("{pass}--undefined={}", crate::notices::SYMBOL))
         .arg("-o")
         .arg(output);
     command
@@ -752,12 +808,14 @@ fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
     Ok(copy)
 }
 
-/// What edits an archive: the system's `ar`, or LLVM's on Windows, which doesn't come with one.
+/// What edits an archive: LLVM's, beside its other tools, as a release has it, so building needs
+/// nothing from the machine; or the system's `ar`.
 fn archiver() -> Command {
-    match fennec_llvm::Tools::find() {
-        Ok(tools) if cfg!(windows) => Command::new(tools.folder().join("llvm-ar.exe")),
-        _ => Command::new("ar"),
-    }
+    let shipped = fennec_llvm::Tools::find()
+        .ok()
+        .map(|tools| tools.folder().join(format!("llvm-ar{}", std::env::consts::EXE_SUFFIX)))
+        .filter(|ar| ar.is_file());
+    Command::new(shipped.unwrap_or_else(|| PathBuf::from("ar")))
 }
 
 /// Where the runtime libraries are: next to the `fennec` command, or in the `musl` folder there
@@ -835,6 +893,23 @@ mod tests {
         assert_eq!(super::stamp_in(b"an old library with no stamp"), None);
         assert_eq!(super::stamp_in(b"fennec-runtime-build:short"), None);
         assert_eq!(super::stamp_in(&[b"fennec-runtime-build:".as_slice(), &[b'z'; 64]].concat()), None);
+    }
+
+    /// A Mac whose `cc` says through `xcrun` that Xcode's command line tools aren't there is told
+    /// how to install them, and what `cc` said goes along.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_without_xcodes_tools_is_told_how_to_get_them() {
+        use std::os::unix::process::ExitStatusExt;
+        let said = "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools)\n";
+        let linked = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: said.as_bytes().to_vec(),
+        };
+        let told = super::link_failure(&linked);
+        assert!(told.starts_with(super::NO_XCODE_TOOLS), "{told}");
+        assert!(told.contains("invalid active developer path"), "{told}");
     }
 
     /// The main thread's stack an executable is linked with on macOS is the one the runtime

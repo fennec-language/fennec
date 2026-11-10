@@ -32,11 +32,17 @@ pub(crate) enum Ty {
     Buf,
     /// `shared Outer`: a number and a `shared Bag`.
     Outer,
+    /// `Node`: an enum whose cases hold `str`, `list[str]` and `list[Node]`, a tree.
+    Node,
+    /// `list[Node]`.
+    Nodes,
+    /// A `Node` from `deep`, thousands of levels deep, only measured, never printed whole.
+    Deep,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 14] = [
+pub(crate) const TYPES: [Ty; 16] = [
     Ty::Int,
     Ty::Bool,
     Ty::Str,
@@ -51,6 +57,8 @@ pub(crate) const TYPES: [Ty; 14] = [
     Ty::Sized(Size::U64),
     Ty::Counts,
     Ty::Buf,
+    Ty::Node,
+    Ty::Nodes,
 ];
 
 /// A sized integer type.
@@ -198,6 +206,28 @@ pub(crate) enum Expr {
     BufLen(Box<Expr>),
     /// `buffer[at]`, which fails outside what's filled.
     BufAt(Box<Expr>, Box<Expr>),
+    /// `Node.Leaf(name=text)`.
+    Leaf(Box<Expr>),
+    /// `Node.Number(value=int)`.
+    Number(Box<Expr>),
+    /// `Node.Branch(label=text, children=nodes)`.
+    Branch(Box<Expr>, Box<Expr>),
+    /// `Node.Tagged(tags=texts, inner=nodes)`.
+    Tagged(Box<Expr>, Box<Expr>),
+    /// A `list[str]` written out.
+    Texts(Vec<Expr>),
+    /// A `list[Node]` written out.
+    NodeList(Vec<Expr>),
+    /// `node_or_leaf(nodes, at)`, which never fails.
+    NodeAt(Box<Expr>, Box<Expr>),
+    /// `digest(node)`: the tree as text, through the program's own recursive function.
+    Digest(Box<Expr>),
+    /// `digest_all(nodes)`.
+    DigestAll(Box<Expr>),
+    /// `deep(depth, label)`: a chain of branches `depth` deep, built in a loop.
+    Deep(i64, Box<Expr>),
+    /// `depth_of(node)`, walking first children in a loop.
+    DepthOf(Box<Expr>),
     /// A float written out.
     Float(f64),
     /// `left + - * / right` on floats: `/` by zero fails.
@@ -293,8 +323,23 @@ pub(crate) enum Stmt {
     /// `for ref name in list:` with `name = name + at_or_zero(list, at)`, reading the list it's
     /// changing: at a fixed place, or where the item itself says when `at` is None.
     EachRefRead(String, String, Option<i64>),
+    /// `for ref name in list:` with `name += 1`, then printing `list[at]`: the item changed
+    /// through the `ref` has to read back changed by its place, in the same round, which #1202
+    /// fixed.
+    EachRefThenRead(String, String, i64),
     /// `lock name as held:` printing an `Outer`'s number.
     PrintOuter(String),
+    /// A `Table[Point]` made with a point for each of `xs`, one of them taken out when `removed`
+    /// says, then `for ref point in table:` adding `by` to each point's `x` and printing the `x` of
+    /// the point at `read` by its `Id`, which has to read live, then the table.
+    TableRound {
+        table: String,
+        ids: Vec<String>,
+        xs: Vec<Expr>,
+        removed: Option<usize>,
+        read: usize,
+        by: Expr,
+    },
     /// `shared name = Outer(inner=bag, n=0)`.
     ShareOuter(String, String),
     /// `bump_outer(name, by, refuse=...)`: adds to its number under its lock, and a refusal
@@ -354,6 +399,15 @@ pub(crate) enum Stmt {
     RemoveKey(String, &'static str),
     /// A change to a `Buffer[int]`.
     Buffered(String, BufOp),
+    /// A change to a `list[Node]`: an append, a pop, or an item set where it's kept in the list.
+    NodesAppend(String, Expr),
+    NodesPop(String),
+    /// `if nodes.len() > 0: nodes[at % nodes.len()] = node`.
+    NodesSet(String, Expr, Expr),
+    /// `match node:` changing whichever case it is through `ref`: a branch's label grows by `text`
+    /// and its children by `child`, a tagged node's tags and inner nodes likewise, a leaf's name
+    /// grows and a number counts up.
+    Reshape(String, Expr, Expr),
     /// `holder.items.append(value)`.
     HolderAppend(String, Expr),
     /// `holder.tag += value`.

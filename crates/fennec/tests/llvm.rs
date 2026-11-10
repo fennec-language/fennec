@@ -482,6 +482,66 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// An `else` block that gives a value: `else as why:` with what failed in it, a plain `else:`
+/// after a failure or a `None`, a `match` on the failure before the value, and one that leaves.
+#[test]
+fn an_else_block_gives_the_value_on_its_last_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "else_block_value",
+        ELSE_BLOCK_VALUE,
+        "failed: big\n0\nno world\n1\n2\nnot there\n-1\n0\n4\n",
+    )
+}
+
+const ELSE_BLOCK_VALUE: &str = r#"error Bad:
+    why: str
+
+struct World:
+    size: int
+
+def risky(n: int) -> int fails Bad:
+    if n > 5:
+        fail Bad("big")
+    n
+
+def load(n: int) -> World fails Bad:
+    if n > 5:
+        fail Bad("no world")
+    World(size=n)
+
+def find(names: list[str], name: str) -> int?:
+    for at, held in enumerate(names):
+        if held == name:
+            return at
+    None
+
+def main(stdout: Stdout):
+    small = risky(9) else as why:
+        stdout.print(f"failed: {why.why}")
+        0
+    stdout.print(small)
+    world = load(8) else as why:
+        match why:
+            case Bad(text):
+                stdout.print(text)
+        World(size=1)
+    stdout.print(world.size)
+    kept = load(2) else:
+        World(size=-1)
+    stdout.print(kept.size)
+    where = find(["a", "b"], "c") else:
+        stdout.print("not there")
+        -1
+    stdout.print(where)
+    for turn in range(3):
+        held = risky(turn * 4) else:
+            continue
+        stdout.print(held)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -9336,6 +9396,24 @@ def main(net: Net, stdout: Stdout):
     Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
 }
 
+/// A server built on the plain runtime, as `fennec build` makes one where the runtime with threads
+/// isn't there, closes as gently as one on the threads runtime: a refusal with what the client
+/// sent still unread reaches it whole, with no reset. `close` on the plain runtime shut the
+/// socket at once. Found by fuzzing the server (`fennec-fuzz run http-server`).
+#[test]
+fn a_server_on_the_plain_runtime_closes_gently() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let asked = [&b"NOT HTTP\r\n\r\n"[..], &b"x".repeat(100_000)].concat();
+    let said = served_on("0", "plain_runtime_close", &asked)?;
+    assert_eq!(
+        said,
+        "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line"
+    );
+    Ok(())
+}
+
 /// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
 /// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
 /// when it read the line and `line_value` another. Found by fuzzing the server
@@ -11094,6 +11172,39 @@ def main(stdout: Stdout):
     )
 }
 
+/// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
+/// is held natively: passed in, told apart with `is`, and read as the member it holds.
+#[test]
+fn a_union_with_a_generic_struct_member_is_held_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_generic_member",
+        r#"from std.crypto import Secret
+
+struct Box[T]:
+    value: T
+
+def text_of(given: str | Secret[str]) -> (str, bool):
+    if given is str:
+        return (given, False)
+    (given.expose_secret(), True)
+
+def size(held: Box[int] | int) -> int:
+    if held is int:
+        return held
+    held.value * 10
+
+def main(stdout: Stdout):
+    stdout.print(text_of("plain"), text_of(Secret.of("hidden"))[1])
+    both: list[Box[int] | int] = [Box(value=4), 2]
+    stdout.print(size(both[0]), size(both[1]))
+"#,
+        "(\"plain\", False) True\n40 2\n",
+    )
+}
+
 /// A known difference: native code writes a field holding a union tagged with its member, as
 /// the language says, where the JIT's JSON writer left the tag out.
 #[test]
@@ -11956,6 +12067,52 @@ fn postgres_tls_answering(answer: &'static [u8]) -> std::io::Result<u16> {
         }
     });
     Ok(port)
+}
+
+/// A database URL holds a password only as a `Secret`: a plain one with a password is refused, a
+/// password both in a `Secret` URL and as `password=` is refused, and a failure shows the URL with
+/// its password as `****`. The URL comes from the environment here, as a real one would, so the
+/// compile-time refusal of a written one doesn't apply.
+#[test]
+fn a_database_url_holds_a_password_only_as_a_secret_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std import postgres
+from std.crypto import Secret
+from std.sql import SqlError
+
+## What `settings` made of a URL, or why it couldn't.
+def described(url: str | Secret[str]) -> str:
+    match postgres.settings(url):
+        case Ok(found):
+            return f"{found.user} {found.host} {found.port} {found.database}"
+        case Err(error):
+            return error.message()
+
+def twice(url: Secret[str], net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, url, password=Secret.of("other"))? as _:
+        pass
+
+def main(stdout: Stdout, env: Env, net: Net, entropy: Entropy):
+    written = env.get("FENNEC_DATABASE_URL") else "postgres://ann:hunter2@db.example/shop"
+    stdout.print(described(written))
+    stdout.print(described(Secret.of(written)))
+    match twice(Secret.of(written), net=net, entropy=entropy):
+        case Ok(_):
+            stdout.print("connected")
+        case Err(error):
+            stdout.print(error.message())
+"#;
+    let printed = printed_by("postgres_secret_url", source)?;
+    assert_eq!(
+        printed,
+        "the database URL `postgres://ann:****@db.example/shop` has a password in it, so it has to be a `Secret`, as `env.secret(\"DATABASE_URL\")?` reads one, and never a plain `str`, which could be printed\n\
+         ann db.example 5432 shop\n\
+         `password` is set in the database URL and as an argument: set it in one\n"
+    );
+    assert!(!printed.contains("hunter2"), "{printed}");
+    Ok(())
 }
 
 /// `postgres.connect` asks for TLS unless told not to, and never falls back to the clear: a server

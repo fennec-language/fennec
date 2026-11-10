@@ -70,7 +70,7 @@ extend Parser:
                 .Return(self.expr()?)
             case "fail": .Fail(self.expr()?)
             case "yield": .Yield(self.expr()?)
-            case "assert": .Assert(self.expr()?)
+            case "assert": self.asserted()?
             case "break": .Break
             case "continue": .Continue
             case _: .Pass
@@ -197,8 +197,26 @@ extend Parser:
                 break
         Stmt(kind=.If(branches, otherwise), span=start.to(self.prev_span()))
 
+    ## What `assert` checks: a condition, or `value fails Pattern`, written in as a `match` with one
+    ## case and nothing in it, which nothing else parses to.
+    def asserted(ref self) -> StmtKind fails Diagnostic:
+        value = self.expr()?
+        if not self.at_fails():
+            return .Assert(value)
+        _ = self.advance()
+        at = self.span()
+        pattern = self.pattern()?
+        arm = MatchArm(pattern=pattern, guard=None, body=[], span=at.to(self.prev_span()))
+        .Assert(Expr(kind=.Match(value, arms=[arm]), span=value.span.to(self.prev_span())))
+
     def condition_and_block(ref self) -> (Expr, list[Stmt]) fails Diagnostic:
         cond = self.expr()?
+        if self.at_fails():
+            fail Diagnostic(
+                message="`fails` checks a failure only in `assert`",
+                span=self.span(),
+                help="to act on a failure, handle it with `else as why:`, and tell failures apart with `match why:` in its block",
+            )
         _ = self.expect_punct(":")?
         (cond, self.block()?)
 

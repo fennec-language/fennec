@@ -42,7 +42,7 @@ fn capability_waits(owner: &str, method: &str) -> bool {
         "Clock" => method == "sleep",
         "Signals" => method == "wait",
         "Process" => method == "run",
-        "Stdin" => matches!(method, "read" | "read_line" | "lines"),
+        "Stdin" => matches!(method, "read" | "read_line" | "read_chunk" | "lines"),
         _ => false,
     }
 }

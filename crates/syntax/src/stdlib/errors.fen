@@ -8,3 +8,11 @@ export error ParseError:
     message: str
     line: int
     column: int
+
+## What `run` fails with, or `None` when it doesn't, for a test that needs the failure as a value:
+## `problem = failure_of(() => Time.parse(text))`. `assert Time.parse(text) fails ParseError()` is
+## the usual way to check one.
+export def failure_of[T, E](run: () -> T fails E) -> E?:
+    run() else as why:
+        return why
+    None

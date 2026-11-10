@@ -49,6 +49,7 @@ mod privacy;
 mod program;
 mod protocols;
 mod ref_lowering;
+mod results_fix;
 mod rules;
 mod saving;
 mod secrets;
@@ -70,6 +71,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
+pub use results_fix::result_fixes;
 pub use tuple_lowering::tuple_function;
 pub use types::{Num, Type};
 

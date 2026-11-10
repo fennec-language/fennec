@@ -304,6 +304,104 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// A server that stops when the program's asked to, with 2 seconds' grace, and says so after.
+const STOPPING_SERVER: &str = "from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+    stdout.print(\"stopped\", signals.stopping())
+";
+
+/// A server recorded as it stops when asked replays exactly, with no network and no signal: the
+/// connection waiting for its next request ends where it ended, the one partway through a request
+/// is answered and closed, the one that never finished is cut short as it was at `grace`, and
+/// what the program does after the server is the same.
+#[cfg(unix)]
+#[test]
+fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("server_stopping")?;
+    let program = dir.join("server.fen");
+    std::fs::write(&program, STOPPING_SERVER)?;
+    let executable = dir.join("server");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Started as `fennec run --record` starts it. The program is run here rather than through
+    // `fennec run`, so the signal reaches it.
+    let log = dir.join("server.log");
+    let header = format!("native\0{}", program.display());
+    fennec_rt::replay::start_log(&log, header.as_bytes())?;
+    let mut record = std::process::Command::new(&executable)
+        .env("FENNEC_RECORD", &log)
+        .env("FENNEC_THREADS", "4")
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(record.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    let connect = || -> std::io::Result<std::net::TcpStream> {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        Ok(stream)
+    };
+    let mut idle = connect()?;
+    idle.write_all(b"GET /a HTTP/1.1\r\n\r\n")?;
+    let mut first = [0; 40];
+    idle.read_exact(&mut first)?;
+    let mut partway = connect()?;
+    partway.write_all(b"GET /b HTTP/1.1\r\n")?;
+    let mut stuck = connect()?;
+    stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = std::process::Command::new("kill").args(["-TERM", &record.id().to_string()]).status()?;
+    assert!(sent.success(), "couldn't send SIGTERM");
+    let mut rest = Vec::new();
+    idle.read_to_end(&mut rest)?;
+    partway.write_all(b"\r\n")?;
+    let mut answered = String::new();
+    partway.read_to_string(&mut answered)?;
+    assert!(answered.ends_with("connection: close\r\n\r\n/b"), "{answered}");
+    let _ = stuck.read_to_end(&mut rest);
+    let mut after = String::new();
+    out.read_to_string(&mut after)?;
+    assert!(record.wait()?.success(), "the recorded server failed");
+    let recorded = format!("{port}\n{after}");
+    assert_eq!(after, "stopped True\n");
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .args(["replay", &log.to_string_lossy()])
+            .env("FENNEC_THREADS", threads)
+            .env("FENNEC_THREADS_RUNTIME", "1")
+            .current_dir(&dir)
+            .output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&replayed.stdout),
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Two tasks taking turns at one `shared` value, as they come.
 const TWO_TASKS_ONE_LOCK: &str = "from std.concurrent import Crashed
 

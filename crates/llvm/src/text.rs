@@ -336,6 +336,18 @@ impl Emit<'_, '_, '_> {
     /// A failed comparison in an `assert`, saying what each side was, as the interpreter shows
     /// them. Nothing made for this is let go of, since the program is ending. A value it has no
     /// text for leaves the failure to say only that it failed.
+    /// Fails an `assert ... fails`, with what really happened as its help.
+    pub(crate) fn assert_said(&mut self, happened: &Operand, span: Span) -> Result<(), String> {
+        let (value, kind) = self.operand(happened)?;
+        let happened =
+            if kind == Kind::Str && self.headers() { self.owned_text_block(&value) } else { value };
+        self.declare("declare void @fennec_assert_said(ptr, i64, i64) #1");
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.line(&format!("call void @fennec_assert_said(ptr {happened}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        Ok(())
+    }
+
     pub(crate) fn assert_sides(&mut self, left: &Operand, right: &Operand, span: Span) -> Result<(), String> {
         let (Some(left), Some(right)) = (self.side_text(left)?, self.side_text(right)?) else {
             return Ok(());

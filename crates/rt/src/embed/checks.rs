@@ -44,6 +44,19 @@ pub extern "C" fn proof_broken(message: i64, start: i64, end: i64) {
     super::aot::stop_now(1);
 }
 
+/// Fails an `assert ... fails`, saying what really happened, given as a string: what the call
+/// gave, or what it failed with instead.
+pub extern "C" fn assert_said(happened: i64, start: i64, end: i64) {
+    let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
+    let help = super::with(|state| {
+        u64::try_from(happened)
+            .ok()
+            .and_then(|at| state.heap.block(at))
+            .map_or_else(String::new, super::heap::block_text)
+    });
+    super::fail_with(Diagnostic::new("this assertion failed", span).with_help(help));
+}
+
 /// Fails a comparison in an `assert`, saying what each side was, given as strings.
 pub extern "C" fn assert_sides(left: i64, right: i64, start: i64, end: i64) {
     let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };

@@ -20,13 +20,16 @@ def main(stdout: Stdout):
     stdout.print(combat.damage.hit(ref enemies[0], 30))
     stdout.print(enemies[0].health)
     for amount in [0, 50]:
-        match combat.damage.hit(ref enemies[3], amount):
-            case Ok(left):
-                stdout.print(f"the boss has {left} left")
-            case combat.damage.Dodged(name):
-                stdout.print(f"the {name} dodged")
-            case Err(error):
-                stdout.print(f"no luck: {error}")
+        left = combat.damage.hit(ref enemies[3], amount) else as why:
+            match why:
+                case combat.damage.Dodged(name):
+                    stdout.print(f"the {name} dodged")
+                    continue
+                case _:
+                    error = why
+                    stdout.print(f"no luck: {error}")
+                    continue
+        stdout.print(f"the boss has {left} left")
 
     stdout.print(sum(enemy.health for enemy in enemies))
     stdout.print([enemy.is_down() for enemy in enemies])

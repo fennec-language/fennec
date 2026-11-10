@@ -33,11 +33,10 @@ def main(stdout: Stdout):
     # Patterns written in the program are checked before it runs. One built while it runs
     # might not be valid, so making it gives a result.
     for pattern in ["[0-9]+", "[0-9+"]:
-        match Regex(pattern):
-            case Ok(regex):
-                stdout.print(pattern, "finds", [hit.text for hit in regex.find_all("a1b22")])
-            case Err(error):
-                stdout.print(pattern, "->", error.message)
+        regex = Regex(pattern) else as error:
+            stdout.print(pattern, "->", error.message)
+            continue
+        stdout.print(pattern, "finds", [hit.text for hit in regex.find_all("a1b22")])
 
     # Matching never backtracks, so this takes time in proportion to the text.
     many = "".join(["a" for _ in range(5_000)])

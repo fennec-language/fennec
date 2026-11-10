@@ -1151,7 +1151,7 @@ impl Writer<'_> {
                 (_, _) => {
                     let text = self.of(Ty::Str, 2);
                     self.tree_names = 0;
-                    let child = self.stored(Ty::Node, 1);
+                    let child = self.of(Ty::Node, 1);
                     Stmt::Reshape(name.clone(), text, child)
                 }
             });

@@ -85,10 +85,9 @@ def main(stdout: Stdout):
     mut scored = 0
     mut written = 0
     for _ in range(40):
-        match json.loads[list[Unit]](text):
-            case Ok(units):
-                scored += score(units)
-                written += json.dumps(units).len()
-            case Err(error):
-                stdout.print(error.message)
+        units = json.loads[list[Unit]](text) else as error:
+            stdout.print(error.message)
+            continue
+        scored += score(units)
+        written += json.dumps(units).len()
     stdout.print(text.len(), scored, written)

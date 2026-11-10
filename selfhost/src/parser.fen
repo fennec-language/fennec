@@ -200,12 +200,11 @@ struct Parser:
                 pass
             if self.at(.Eof):
                 break
-            match self.item():
-                case Ok(item): items.append(item)
-                case Err(problem):
-                    self.check_old_mut()?
-                    self.check_old_pub()?
-                    fail problem
+            item = self.item() else as problem:
+                self.check_old_mut()?
+                self.check_old_pub()?
+                fail problem
+            items.append(item)
         self.check_old_mut()?
         self.check_old_pub()?
         Module(items=items)

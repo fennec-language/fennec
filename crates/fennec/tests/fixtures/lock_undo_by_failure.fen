@@ -87,11 +87,9 @@ def modeled(ref words: list[str], ref numbers: list[int], seed: int, steps: int)
         change(ref words, ref numbers, ref random, boom=False) else return
 
 def ran(holder: shared Holder, seed: int, steps: int, crash_at: int) -> bool:
-    match changed(holder, seed=seed, steps=steps, crash_at=crash_at):
-        case Ok(_):
-            return True
-        case Err(_):
-            return False
+    _ = changed(holder, seed=seed, steps=steps, crash_at=crash_at) else:
+        return False
+    return True
 
 def main(stdout: Stdout):
     shared holder = Holder(words=["a", "b"], numbers=[1, 2, 3])

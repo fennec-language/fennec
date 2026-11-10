@@ -18,14 +18,12 @@ def both(port: int) -> int fails Dial | Broken:
     parse(connect("db", port)?)?
 
 def noted(port: int) -> int fails Dial | Broken:
-    match both(port):
-        case Ok(n):
-            n
-        case Err(problem):
-            mut kept = problem
-            kept.add_note(f"while dialing {port}")
-            kept.add_note("second line\nand a third")
-            fail kept
+    n = both(port) else as problem:
+        mut kept = problem
+        kept.add_note(f"while dialing {port}")
+        kept.add_note("second line\nand a third")
+        fail kept
+    n
 
 def main(stdout: Stdout) fails Dial | Broken:
     match connect("db", 0):

@@ -11,17 +11,16 @@ from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeD
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
-    match lex(source, 0):
-        case Ok(tokens):
-            "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
-        case Err(diagnostic): dump_error(diagnostic)
+    tokens = lex(source, 0) else as diagnostic:
+        return dump_error(diagnostic)
+    "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
 
 ## What the checker finds in `source`, checked against the standard library's modules:
 ## every diagnostic, or the parse error that stopped it first. Nothing when it checks.
 def dump_check(source: str, library: list[Module]) -> str:
-    match parse(source):
-        case Ok(module): "".join(dump_error(diagnostic) for diagnostic in check(module, library))
-        case Err(diagnostic): dump_error(diagnostic)
+    module = parse(source) else as diagnostic:
+        return dump_error(diagnostic)
+    "".join(dump_error(diagnostic) for diagnostic in check(module, library))
 
 ## A diagnostic as the dumps show it: its span and message, then its help on a second line.
 def dump_error(diagnostic: Diagnostic) -> str:
@@ -72,12 +71,11 @@ def quoted(text: str) -> str:
 
 ## The syntax tree of `source`, one node per line, or the error that stopped the parser.
 def dump_tree(source: str) -> str:
-    match parse(source):
-        case Ok(module):
-            mut tree = Tree()
-            tree.write_module(module)
-            "".join(line + "\n" for line in tree.lines)
-        case Err(diagnostic): dump_error(diagnostic)
+    module = parse(source) else as diagnostic:
+        return dump_error(diagnostic)
+    mut tree = Tree()
+    tree.write_module(module)
+    "".join(line + "\n" for line in tree.lines)
 
 ## The syntax tree as indented text: one node per line, its children two spaces deeper, and
 ## its span at the end as `@start..end`.

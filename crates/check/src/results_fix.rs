@@ -54,9 +54,7 @@ pub fn result_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
                     test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
                 declared(&test.body, &mut taken);
                 let place = Place { function_tail: false, loop_tail: false, in_test: true };
-                let start = found.len();
                 block(&test.body, place, (sources, &taken), &mut found);
-                mut_when_given_again(found.get_mut(start..).unwrap_or_default());
             }
             _ => {}
         }
@@ -66,29 +64,27 @@ pub fn result_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
         let mut taken: HashSet<String> = def.params.iter().map(|param| param.name.clone()).collect();
         declared(&def.body, &mut taken);
         let place = Place { function_tail: gives, loop_tail: false, in_test: false };
-        let start = found.len();
         block(&def.body, place, (sources, &taken), &mut found);
-        mut_when_given_again(found.get_mut(start..).unwrap_or_default());
     }
     found
 }
 
-/// Makes the first of a function's rewrites that names something `mut`, when a later one names it
-/// again: each `match` had its own case for it, and a function has one name for all of them.
-fn mut_when_given_again(fixes: &mut [Diagnostic]) {
+/// Makes the first of a block's rewrites that names something `mut`, when a later one in the same
+/// block names it again: each `match` had its own case for it, and a block has one name for all.
+fn mut_when_given_again(found: &mut [Diagnostic], rewrites: &[usize]) {
     let named = |fix: &Diagnostic| -> Option<String> {
         let text = &fix.fixes.first()?.text;
         let (name, _) = text.split_once(" = ")?;
         (name != "_" && name.chars().all(|c| c.is_alphanumeric() || c == '_')).then(|| name.to_owned())
     };
-    let names: Vec<Option<String>> = fixes.iter().map(named).collect();
-    for (at, name) in names.iter().enumerate() {
-        let Some(name) = name else { continue };
-        let first = names.iter().position(|other| other.as_ref() == Some(name));
-        let again = names.iter().filter(|other| other.as_ref() == Some(name)).count() > 1;
-        if first == Some(at)
+    let names: Vec<(usize, String)> =
+        rewrites.iter().filter_map(|&at| Some((at, named(found.get(at)?)?))).collect();
+    for (at, name) in &names {
+        let first = names.iter().find(|(_, other)| other == name).map(|(first, _)| *first);
+        let again = names.iter().filter(|(_, other)| other == name).count() > 1;
+        if first == Some(*at)
             && again
-            && let Some(edit) = fixes.get_mut(at).and_then(|fix| fix.fixes.first_mut())
+            && let Some(edit) = found.get_mut(*at).and_then(|fix| fix.fixes.first_mut())
         {
             edit.text.insert_str(0, "mut ");
         }
@@ -138,11 +134,13 @@ fn declared(stmts: &[Stmt], found: &mut HashSet<String>) {
 type Around<'a> = (&'a Sources, &'a HashSet<String>);
 
 fn block(stmts: &[Stmt], place: Place, around: Around<'_>, found: &mut Vec<Diagnostic>) {
+    let mut rewrites = Vec::new();
     for (at, stmt) in stmts.iter().enumerate() {
         let last = at + 1 == stmts.len();
         let here =
             Place { function_tail: place.function_tail && last, loop_tail: place.loop_tail && last, ..place };
         if let Some(fix) = rewritten(stmt, here, around) {
+            rewrites.push(found.len());
             found.push(fix);
             continue;
         }
@@ -162,6 +160,7 @@ fn block(stmts: &[Stmt], place: Place, around: Around<'_>, found: &mut Vec<Diagn
             _ => {}
         }
     }
+    mut_when_given_again(found, &rewrites);
 }
 
 /// A `match`'s cases, as the `Ok` one and the failure's.

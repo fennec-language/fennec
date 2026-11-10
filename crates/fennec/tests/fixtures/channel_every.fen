@@ -38,11 +38,10 @@ def until_heard(hits: Channel[int], replies: Channel[int], listeners: int) fails
     mut answered = 0
     while answered < listeners:
         hits.send(-1)?
-        match replies.receive(timeout=Duration(nanos=250_000_000)):
-            case Ok(_):
-                answered += 1
-            case Err(_):
-                pass
+        _ = replies.receive(timeout=Duration(nanos=250_000_000)) else:
+            pass
+            continue
+        answered += 1
 
 def fan_out(stdout: Stdout) fails Closed | Crashed | Timeout:
     with channel[int](size=1024, to=.Every) as hits:

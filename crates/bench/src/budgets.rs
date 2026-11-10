@@ -88,6 +88,8 @@ struct Measured {
     cold: Option<Duration>,
     /// What it's held to instead of its time, and what it counted, where that can be counted.
     counted: Option<Counted>,
+    /// Where the instructions it counted went, by program, where that's known.
+    programs: Vec<(String, u64)>,
 }
 
 /// A count of instructions and the most there may be.
@@ -140,6 +142,9 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
     }
     if let Some(edit_run) = measured.iter().find(|measured| measured.budget.name == EDIT_RUN.name) {
         let _ = writeln!(table, "\n{}", goal_line(edit_run.warm));
+        if !edit_run.programs.is_empty() {
+            let _ = writeln!(table, "\n{}", programs_line(&edit_run.programs));
+        }
     }
     print!("{table}");
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
@@ -197,6 +202,13 @@ impl Growth {
     }
 }
 
+/// Where an edit's run spends its instructions, program by program.
+fn programs_line(programs: &[(String, u64)]) -> String {
+    let each: Vec<String> =
+        programs.iter().map(|(name, count)| format!("`{name}` {} M", count / 1_000_000)).collect();
+    format!("Edit to run's instructions by program: {}.", each.join(", "))
+}
+
 /// How far edit to run is from its goal, which nothing fails for.
 fn goal_line(warm: Duration) -> String {
     format!(
@@ -229,8 +241,10 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     kit.timed(&["fmt"])?;
     let (check_warm, check_cold, definition) = edit_to_checked(kit, runs)?;
     let counted = kit.counted_edit();
-    let check = Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted };
-    let definition = Measured { budget: DEFINITION, warm: definition, cold: None, counted: None };
+    let check =
+        Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted, programs: Vec::new() };
+    let definition =
+        Measured { budget: DEFINITION, warm: definition, cold: None, counted: None, programs: Vec::new() };
     let mut measured = vec![check, definition, kit.format(runs)?, kit.lint(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
@@ -331,7 +345,7 @@ impl Kit {
         for _ in 0..runs {
             times.push(self.timed(args)?.0);
         }
-        Ok(Measured { budget, warm: median(times), cold: Some(cold), counted: None })
+        Ok(Measured { budget, warm: median(times), cold: Some(cold), counted: None, programs: Vec::new() })
     }
 
     fn format(&self, runs: usize) -> Result<Measured, String> {
@@ -359,7 +373,13 @@ impl Kit {
         };
         let cold = linted()?;
         let times = (0..runs).map(|_| linted()).collect::<Result<Vec<_>, _>>()?;
-        Ok(Measured { budget: LINT, warm: median(times), cold: Some(cold), counted: None })
+        Ok(Measured {
+            budget: LINT,
+            warm: median(times),
+            cold: Some(cold),
+            counted: None,
+            programs: Vec::new(),
+        })
     }
 
     /// From changing a function `main` calls to `fennec run --no-test` having run the program
@@ -383,9 +403,10 @@ impl Kit {
         let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {}\n", 2000 + runs + 1));
         std::fs::write(&path, edited).map_err(|err| err.to_string())?;
         let counted = self.counted_run(&["run", "--no-test"], MOST_EDIT_RUN_INSTRUCTIONS);
+        let programs = fennec_count::counted_programs(&self.dir.join("counting"));
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
         let cold = times.remove(0);
-        Ok(Measured { budget: EDIT_RUN, warm: median(times), cold: Some(cold), counted: counted? })
+        Ok(Measured { budget: EDIT_RUN, warm: median(times), cold: Some(cold), counted: counted?, programs })
     }
 
     /// From changing one function to `fennec test` having a pass or fail, each time, which must
@@ -408,7 +429,7 @@ impl Kit {
         std::fs::write(&path, edited).map_err(|err| err.to_string())?;
         let counted = self.counted(&["test"], MOST_VERDICT_INSTRUCTIONS);
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
-        Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold), counted })
+        Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold), counted, programs: Vec::new() })
     }
 }
 
@@ -605,7 +626,13 @@ mod tests {
 
     fn measured(enforced: bool, warm: u64) -> Measured {
         let budget = Budget { name: "this", limit: Duration::from_millis(100), enforced };
-        Measured { budget, warm: Duration::from_millis(warm), cold: None, counted: None }
+        Measured {
+            budget,
+            warm: Duration::from_millis(warm),
+            cold: None,
+            counted: None,
+            programs: Vec::new(),
+        }
     }
 
     #[test]
@@ -673,6 +700,13 @@ mod tests {
             line.contains("50.0 ms") && line.contains("340.0 ms") && line.contains("not enforced"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn edit_to_runs_instructions_are_shown_by_program() {
+        let line =
+            super::programs_line(&[("llc".to_owned(), 3_000_000_000), ("fennec".to_owned(), 900_000_000)]);
+        assert_eq!(line, "Edit to run's instructions by program: `llc` 3000 M, `fennec` 900 M.");
     }
 
     #[test]

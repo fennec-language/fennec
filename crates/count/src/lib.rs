@@ -229,6 +229,30 @@ fn valgrind_total(folder: &Path) -> Option<u64> {
     (counted > 0).then_some(total)
 }
 
+/// After `count_every_process` counted with Valgrind, how many instructions each program it ran
+/// took, by the name of the program, most first. Empty when it didn't count that way.
+#[must_use]
+pub fn counted_programs(folder: &Path) -> Vec<(String, u64)> {
+    let mut programs: Vec<(String, u64)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(folder.join("valgrind")) else { return programs };
+    for report in entries.flatten().filter_map(|entry| std::fs::read_to_string(entry.path()).ok()) {
+        let (Some(name), Some(count)) = (program_name(&report), valgrind_count(&report)) else { continue };
+        match programs.iter_mut().find(|(known, _)| *known == name) {
+            Some((_, total)) => *total += count,
+            None => programs.push((name, count)),
+        }
+    }
+    programs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    programs
+}
+
+/// The name of the program in a Valgrind report, from `==123== Command: /path/to/opt -O1 ...`.
+fn program_name(report: &str) -> Option<String> {
+    let line = report.lines().find(|line| line.contains("Command: "))?;
+    let path = line.split_once("Command: ")?.1.split_whitespace().next()?;
+    Some(Path::new(path).file_name()?.to_string_lossy().into_owned())
+}
+
 /// The count in macOS's `time -l` report, `  1234567  instructions retired`.
 fn apple_count(report: &str) -> Option<u64> {
     let line = report.lines().find(|line| line.contains("instructions retired"))?;
@@ -250,7 +274,9 @@ pub fn median<T: Copy + Ord>(values: &mut [T], mean: fn(T, T) -> T) -> Option<T>
 
 #[cfg(test)]
 mod tests {
-    use super::{apple_count, instructions, median, summary_count, valgrind_count, valgrind_total};
+    use super::{
+        apple_count, counted_programs, instructions, median, summary_count, valgrind_count, valgrind_total,
+    };
 
     #[test]
     fn perf_reports_give_their_instruction_count() {
@@ -289,6 +315,24 @@ mod tests {
         // One that became another program leaves no count of its own.
         std::fs::write(folder.join("3"), "==3== Cachegrind, a high-precision tracing profiler\n").unwrap();
         assert_eq!(valgrind_total(&folder), Some(1_234));
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn each_programs_count_is_added_up_by_its_name() {
+        let folder = std::env::temp_dir().join(format!("fennec-count-programs-{}", std::process::id()));
+        let reports = folder.join("valgrind");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&reports).unwrap();
+        let report = |pid: u32, command: &str, count: u64| {
+            let text = format!("=={pid}== Command: {command}\n=={pid}== I   refs:      {count}\n");
+            std::fs::write(reports.join(pid.to_string()), text).unwrap();
+        };
+        report(1, "/bin/llc -O0 a.ll", 30);
+        report(2, "/home/fennec run --no-test", 10);
+        report(3, "/bin/llc -O0 b.ll", 5);
+        let programs = counted_programs(&folder);
+        assert_eq!(programs, [("llc".to_owned(), 35), ("fennec".to_owned(), 10)]);
         let _ = std::fs::remove_dir_all(&folder);
     }
 

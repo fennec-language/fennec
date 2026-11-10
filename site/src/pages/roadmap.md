@@ -79,7 +79,7 @@ description: What Fennec does today, what's being built next, and the design que
 Each of these is decided and not built.
 
 - A lint for a copy that can go stale, suggesting `ref`, and a local `ref name = place`.
-- Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
+- No `Ok`, `Err` or `Result`, and an `else as` block that gives a value. Every failure is handled at the call.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.
 - `embed_file` in place of `embed`, and `embed_folder`, a read-only map of a folder's files baked into the program.

@@ -33,7 +33,7 @@ use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Registry, Token};
 
 use super::parallel::{Latch, Pool};
-use crate::stdlib::net::{ServerSession, TlsServer};
+use crate::stdlib::net::{LINGER, LINGER_QUIET, ServerSession, TlsServer};
 
 /// A connection task's stack. Only the pages a task touches take memory.
 const STACK: usize = 1024 * 1024;
@@ -187,12 +187,6 @@ pub struct Conn {
     /// Its TLS, when its server has some.
     tls: RefCell<Option<Box<dyn ServerSession>>>,
 }
-
-/// How long a connection ending gracefully reads what the other side still sends.
-const LINGER: Duration = Duration::from_secs(2);
-
-/// How long a connection ending gracefully waits for more once the other side has gone quiet.
-const LINGER_QUIET: Duration = Duration::from_millis(200);
 
 /// How long a connection has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);

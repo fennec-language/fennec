@@ -354,7 +354,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Built. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Built. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. `Ok`, `Err` and `Result` are removed, as below.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -416,20 +416,52 @@ def load(fs: Fs, path: str) -> float fails LoadError:
             total += row.amount
     return total
 
-result = load(fs, path)
-if result is Err(NotFound):
-    return Response(status=404)
+total = load(fs, path) else as why:
+    match why:
+        case .NotFound(path):
+            return Response(status=404)
+        case _:
+            fail why
 ```
 - One `error Name:` can list several cases, so a signature stays short however many ways it can fail. `fennec fix` writes it. Built: a function that can fail and doesn't say so is a compile error, apart from `main`.
 - `?` is required wherever a failure passes up, including in `with` and `for`. Built for `def`s: `return load(path)` and a last line `load(path)` are compile errors, and `fennec fix` adds the `?`.
-- A failure is always an `error` type: `Err("no")` and `Result[int, str]` are compile errors. Built.
-- A `match` over what can fail handles both its value and its failure, or has `case _:`. Built.
-- `if x is Err(...)` and `if x is None:` narrow `x`. `match` handles several cases.
-- Checking an error and then ignoring it is a compile error.
+- A failure is always an `error` type. Built.
+- `if x is None:` narrows `x`. A failure isn't a value to test: it's handled at the call, as below.
 - `xs[i]` out of range is a bug that stops the program. `xs.get(i)` returns an optional, for when it might not be there. Built.
 
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
+
+**A failing call is handled at the call, and there's no `Ok`, `Err` or `Result`.** There are three ways:
+```fennec
+# pass it up
+score = load_score(fs, path)?
+
+# use a value instead
+score = load_score(fs, path) else 0
+
+# name it, and leave or give a value
+score = load_score(fs, path) else as why:
+    match why:
+        case .Missing(path):
+            stdout.print(f"no save at {path}, starting from 0")
+            0
+        case _:
+            fail why
+```
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here: the explicit "crash here, for this reason" form. Chris decided this on 2026-11-08. Built.
+- An `else as why:` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value as its last line.
+- Different failures are handled with an ordinary `match why:` inside the block, and `_` is the only catch-all.
+- A failure passes on as `fail why`. There's no bare `fail`.
+- An `else` block that neither gives a value of the right type nor leaves is a compile error that says which it needs.
+- `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` handles the `None`: `find(n)? else 5`.
+- `T fails E` is a type only the runtime makes, as for the results of parallel work, and it's read only through `?` and `else`.
+- Held in reserve, not built: an `else match:` shortcut, if real code shows that handling one failure and passing the rest up is common. It's 2 of 141 `match`es in the repository today.
+- Chris decided this on 2026-11-09, after three reviews. Built: `?`, `else value`, `else as why:` with a block that leaves, `match why:` inside it, `fail why`, refusing a bare `fail`, refusing `else as` on a plain optional, and `?` then `else` on `T? fails E`. Not built yet: removing `Ok`, `Err` and `Result`, which a `match` and a written `Result[int, Bad]` still take, and an `else` block giving a value, which is refused today with "an `else:` block must leave". This replaces matching on `Ok` and `Err`, `Result` types written in code, `return Err(...)`, and narrowing with `if x is Err(...)`.
+*Why:* One failure system instead of two: a failure is never a value that can be stored and forgotten, so nothing silently becomes a placeholder. It's close to Zig's `catch |err| switch`.
+
+**A block that stands where a value goes ends with that value, or leaves.** Three blocks can: `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`. Bare blocks and a multi-line `if` can't, since the one-line `x if c else y` covers that. Chris decided this on 2026-11-09. Built: `x = match ...:`, and refusing a multi-line `if` as a value. Not built yet: `x = lock ... as ...:`, which doesn't parse today, and the `else as` block's value.
+*Why:* One rule covers every block that gives a value, and a value that depends on a condition already has a one-line form.
 
 **An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
@@ -452,14 +484,13 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 ```
 - Fields, calls and `[]` on an optional are allowed only in a chain that ends in `else`. The chain stops at the first missing or failing step and gives the default.
 - `else` covers only the chain right before it. A larger expression needs brackets.
-- `else` gives a value or leaves, with `else continue`, `else return` or `else fail`. It doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
+- `else` gives a value or leaves, with `else continue`, `else return` or `else fail why`. It doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
 - Without `else`, it's a compile error whose fix adds one or a check.
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
-**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves as any `else:` block must. Chris decided this on 2026-11-08. Built.
+**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves, or gives a value, as above. Chris decided this on 2026-11-08. Built, with a block that leaves.
 ```fennec
-# Planned: `else as` doesn't parse yet
 score = load_score(path) else as failure:
     stdout.print(failure)
     return
@@ -914,7 +945,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process` and `crypto`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Entropy`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Entropy`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
 **Network access is a capability, `Net`, like `Fs`.** How it narrows is under Supply chain.
@@ -926,11 +957,10 @@ from std.net import Connection, NetError
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
         for conn in parallel(server):
-            match echo(conn):
-                case Err(error):
-                    stdout.print(f"{conn.peer} dropped: {error}")
-                case Ok(_):
-                    stdout.print(f"{conn.peer} left")
+            echo(conn) else as error:
+                stdout.print(f"{conn.peer} dropped: {error}")
+                continue
+            stdout.print(f"{conn.peer} left")
 
 ## Sends back each line it's sent, until the client hangs up.
 def echo(conn: Connection) fails NetError:
@@ -949,7 +979,7 @@ from std import json
 def weather(net: Net, city: str) -> Weather fails NetError:
     response = net.get("https://api.example.com/weather", params={"city": city})?
     if not response.ok():
-        return Err(NetError.Status(response.status))
+        fail NetError.Status(response.status)
     return json.loads[Weather](response.text())?
 ```
 - `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=` and `timeout=` work on every call.
@@ -1005,7 +1035,7 @@ import game.world.physics as physics
 ```
 - The descriptive-names lint covers aliases: `import std.json as j` is flagged like a variable named `j`.
 - A module's own name has one spelling. `import std.json as json` has a fix that rewrites it to `from std import json`, which means the same.
-- An alias can't take a name the language provides everywhere, such as `sum`, `Ok` or `Stdout`.
+- An alias can't take a name the language provides everywhere, such as `sum` or `Stdout`.
 - An alias to the same name (`from std import json as json`), or importing one thing twice under two names, is a lint.
 - `export import x as y` re-exports under a new name, which helps a kit rename part of its API.
 
@@ -1380,8 +1410,8 @@ match tok:
 
 **Windows ships self-contained, after a license check.** `opt`, `llc`, `llvm-link`, `lld` and MinGW's libraries ship with `fennec`, so nothing else needs installing. A person has to check the licenses first.
 
-**Every release ships LLD,** LLVM's linker, beside `fennec`, so building a program needs no system linker. Chris decided this on 2026-11-09. Not built yet: Windows releases ship it, and on macOS and Linux programs still link through the system's `cc`.
-*Why:* A linker that comes with the release links the same way on every machine, and a missing or different system linker can't break a build.
+**Every release ships LLD,** LLVM's linker, beside `fennec`, so on Linux and Windows building a program needs no system linker or C compiler. macOS still needs Xcode's command-line tools for now, from `xcode-select --install`, since linking there without them needs Apple's SDK stubs. Shipping stubs of Fennec's own is deferred. Chris decided this on 2026-11-09. Not built yet: Windows releases ship LLD, and on Linux programs still link through the system's `cc`.
+*Why:* A linker that comes with the release links the same way on every machine, and a missing or different system linker can't break a build. Apple's SDK stubs are more to ship and keep current, and most people building on a Mac already have Xcode's tools, so macOS waits.
 
 **Editions let syntax change after 1.0.** A kit names its edition in `kit.toml`, as in `edition = "2026"`, and `fennec fix` moves it to the next one.
 

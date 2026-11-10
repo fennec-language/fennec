@@ -97,6 +97,7 @@ for at, ref score in enumerate(scores): ...
 ```
 
 - `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, as `for ref` does. Built.
+- A `for ref` body may read what it loops over, as in `unit.target = nearest(units, unit.at)`, and sees the item as it is now, changes made through the loop's name included. Built for lists, arrays and `Table`s.
 - `ref` over a generator is a compile error, since its items are made one at a time and aren't anywhere to change. Built.
 - `case .Button(ref clicks):` changes a field inside the enum a `match` statement is over, as `for ref` changes an item: `match ui[widget_id].kind:` with `clicks += 1` in the case. The case is put back however its body ends, a failure included. Built.
 - `items()` is for keyed things: a dict, a `Table`, and your own types that give `len`, `[]` and `key(i)`. Built for dicts and `Table`s.
@@ -350,7 +351,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - `None` is never a member: `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`.
 - Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
 - A function that can fail says `fails` in its signature, so a reader sees how it can fail there. One that leaves it out is a compile error, and `fennec fix` writes it, as `-> str fails TooBig`, `fails IoError` for one that gives back nothing, or `fails ParseError | RangeError`. `main` doesn't say it, since nothing calls `main`. Built.
-- A failure is always an `error` type, however it's made: `fail` takes one, `Err(...)` holds one, and a `Result` written as a type names one, or several, as its second type. `Err("no")` and `Result[int, str]` are compile errors. Built.
+- A failure is always an `error` type, and `fail` takes one. Built. There's no `Ok`, `Err` or `Result`: a failure is handled at the call, under Failures. Not built yet: `Ok`, `Err` and a written `Result` still work today.
 
 ## Named arguments
 
@@ -416,17 +417,31 @@ first = items[0]                 # must be there: a bug stops the program
 stream = fs.open(filename) else:
     stdout.print(f"Couldn't open file: {filename}")
     return
+
+# name the failure, and leave or give a value
+score = load_score(fs, path) else as why:
+    match why:
+        case .Missing(path):
+            stdout.print(f"no save at {path}, starting from 0")
+            0
+        case _:
+            fail why
 ```
 
-- A `match` over what something that can fail gives back handles both its value and its failure, or has `case _:`, as a `match` over an enum handles every case. A failure is handled with `case Err(error):`, or one case for each error it can fail with. Built.
+- A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built, apart from the removal: `Ok`, `Err` and a written `Result` still work today.
+- An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs, and what its last line is. Built.
+- Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
+- `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. Built.
+- `T fails E` is made only by the runtime, as for the results of parallel work, and read only through `?` and `else`.
+- A block that stands where a value goes ends with that value, or leaves. That's `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`, and not bare blocks or a multi-line `if`, which the one-line `x if c else y` covers. `x = match ...:` is built. `x = lock ... as ...:` isn't yet.
+
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
-- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. `return Err(...)`, and a function that says it gives back a `Result`, give back a value. Built for `def`s; a lambda's body still passes one up as it is.
-- `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
+- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. Built for `def`s; a lambda's body still passes one up as it is.
+- `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `else as why:` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built. On a call that can fail, `_ = f()` is a compile error, so a failure must always be handled, and there's no `ignore`. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Built in the checker and natively, where an error's notes are a hidden word of its own, 0 until one is added.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
-- An `else:` block, or `else as why:`, leaves or gives the value: it ends with `return`, `fail`, `continue` or `break`, or its last line is a value of the type that failed or was `None`, as in `world = load(path) else as why:` with `log.warn(why)` and `World()` under it. One that ends on nothing is a compile error that says what it must give and what its last line is. Built. `else as name:` binds the failure in that block, as Python's `except E as e` does. Built.
 - Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. A dict's `pop(key)` fails on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. `items.get(at)` gives `T?` for a position that may not be there, counting from the end when it's negative as `items[at]` does. Built.
 
 ## Visibility

@@ -653,3 +653,39 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
     let lowered = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n\ndef twice(n: int) -> int fails Bad:\n    half(n)? + (half(n) else 0)\n";
     assert_eq!(crate::problems_as_written(lowered), Vec::<String>::new());
 }
+
+/// What can fail is read only through `?`, `else`, `.expect` or `assert ... fails`: held, printed,
+/// compared, put in a collection or handed on as a plain value, it's refused. An arrow function
+/// may give one back, for `failure_of`.
+#[test]
+fn what_can_fail_is_never_a_plain_value() {
+    let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n\ndef keep[T](x: T) -> T:\n    x\n";
+    let said = "this can fail, but nothing handles it";
+    for line in [
+        "stdout.print(half(3))",
+        "held = half(3)",
+        "items = [half(3)]",
+        "stdout.print(f\"{half(3)}\")",
+        "stdout.print(keep(half(3)))",
+        "pair = (half(3), 1)",
+        "counts = {\"a\": half(3)}",
+        "stdout.print(str(half(3)))",
+        "stdout.print(half(3) is None)",
+        "stdout.print([half(n) for n in [1, 2]])",
+    ] {
+        let program = format!("{declared}\ndef main(stdout: Stdout):\n    {line}\n");
+        let call = if line.contains("half(n)") { "half(n)" } else { "half(3)" };
+        assert_eq!(crate::problems_as_written(&program), [format!("{said} @ {call}")], "{line}");
+    }
+    let fine = format!(
+        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(3) else 0, half(3).expect(\"3 is big enough\"))\n    held = half(3) else as why:\n        stdout.print(why.why)\n        0\n    problem = failure_of(() => half(-1))\n    stdout.print(held, problem is None)\n"
+    );
+    assert_eq!(crate::problems_as_written(&fine), Vec::<String>::new());
+    // In a function that fails with what the call does, the fix passes the failure up.
+    let passing = format!("{declared}\ndef shown(n: int) -> str fails Bad:\n    str(half(n))\n");
+    let module = fennec_syntax::parse(&passing).unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    let fixed = fennec_syntax::apply_fixes(&passing, 0, &diagnostics).unwrap();
+    assert!(fixed.contains("    str(half(n)?)\n"), "{fixed}");
+    assert_eq!(crate::problems_as_written(&fixed), Vec::<String>::new());
+}

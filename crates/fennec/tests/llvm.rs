@@ -4491,25 +4491,28 @@ def inner_returns(stdout: Stdout) -> int fails Boom:
                 return first
     return 0
 
+## The run numbered `run`, passing its failure up.
+def ran(stdout: Stdout, run: int) fails Boom:
+    match run:
+        case 0:
+            through_a_name(stdout)?
+        case 1:
+            looped(stdout)?
+        case 2:
+            summed(stdout)?
+        case 3:
+            nested(stdout)?
+        case 4:
+            rounds(stdout)?
+        case _:
+            noted(stdout)?
+
 def main(stdout: Stdout):
     value = inner_returns(stdout) else as problem:
         problem.at
     stdout.print(value)
     for run in [0, 1, 2, 3, 4, 6]:
-        ran = match run:
-            case 0:
-                through_a_name(stdout)
-            case 1:
-                looped(stdout)
-            case 2:
-                summed(stdout)
-            case 3:
-                nested(stdout)
-            case 4:
-                rounds(stdout)
-            case _:
-                noted(stdout)
-        _ = ran else as problem:
+        ran(stdout, run) else as problem:
             stdout.print(\"failed\", problem.at, problem.notes())
             continue
         stdout.print(\"no failure\")
@@ -6125,6 +6128,117 @@ def main(stdout: Stdout):
     }
     Ok(())
 }
+
+/// A field of a dict's item changed through a copy of the dict another still holds, as
+/// `mut units = given` then `units["a"].tags.append(x)`: the item is read out to change and put
+/// back, so it owns what it holds, and the dict it goes back into is the copy's own. Taken out as a
+/// list's item is, with no owner of its own and the dict still shared, putting it back let go of
+/// the list the other dict still held.
+#[test]
+fn a_dict_items_field_changed_through_a_copy_leaves_the_other_dict_be() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("dict_item_through_copy", DICT_ITEM_THROUGH_COPY, how)?;
+        assert_eq!(
+            (out.as_str(), code),
+            (
+                "400 1050\nUnit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5, 6])\nUnit(hp=1, tags=[1, 2, 3, 7]) Unit(hp=20, tags=[4, 5, 6]) Unit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5, 6])\n",
+                Some(0)
+            ),
+            "{how:?}: {err}"
+        );
+    }
+    Ok(())
+}
+
+const DICT_ITEM_THROUGH_COPY: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+    def grown_by(ref self, values: list[int]):
+        for value in values:
+            self.tags.append(value)
+
+def appended(given: dict[str, Unit], at: int) -> int:
+    mut units = given
+    units["a"].tags.append(at)
+    units["a"].tags.len()
+
+def doubled(given: dict[str, Unit], at: int) -> int:
+    mut units = given
+    key = "a" if at % 2 == 0 else "b"
+    units[key].tags.append(at)
+    own = units[key].tags
+    units[key].grown_by(own)
+    units[key].hp += 1
+    units[key].tags.len() + units[key].hp
+
+def main(stdout: Stdout):
+    given = {"a": Unit(1, [1, 2, 3]), "b": Unit(2, [4, 5, 6])}
+    stdout.print(sum(appended(given, x) for x in range(100)), sum(doubled(given, x) for x in range(100)))
+    stdout.print(given["a"], given["b"])
+    mut mine = given
+    mine["a"].tags.append(7)
+    mine["b"].hp = 20
+    stdout.print(mine["a"], mine["b"], given["a"], given["b"])
+"#;
+
+/// The same through a copy of something holding the dict or list: a struct's dict field, a dict of
+/// dicts, a list of dicts and a dict of lists. A list's item holding a list is made alone, as a list
+/// item is, before it's taken out; it wasn't, which let go of the other list's.
+#[test]
+fn nested_items_changed_through_a_copy_leave_the_original_be() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "60 30\n20 50\nUnit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5]) Unit(hp=3, tags=[6]) Unit(hp=4, tags=[7, 8, 9, 10])\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("nested_through_copy", NESTED_THROUGH_COPY, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const NESTED_THROUGH_COPY: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+struct Box:
+    units: dict[str, Unit]
+    n: int
+
+def in_field(given: Box, at: int) -> int:
+    mut b = given
+    b.units["a"].tags.append(at)
+    b.units["a"].hp += 1
+    b.units["a"].tags.len() + b.units["a"].hp
+
+def in_dicts(given: dict[str, dict[str, Unit]], at: int) -> int:
+    mut dd = given
+    dd["x"]["a"].tags.append(at)
+    dd["x"]["a"].tags.len()
+
+def in_list_of_dicts(given: list[dict[str, Unit]], at: int) -> int:
+    mut xs = given
+    xs[0]["a"].tags.append(at)
+    xs[0]["a"].tags.len()
+
+def in_dict_of_lists(given: dict[str, list[Unit]], at: int) -> int:
+    mut d = given
+    d["a"][0].tags.append(at)
+    d["a"][0].tags.len()
+
+def main(stdout: Stdout):
+    boxed = Box(units={"a": Unit(1, [1, 2, 3])}, n=0)
+    dicts = {"x": {"a": Unit(2, [4, 5])}}
+    lists_of = [{"a": Unit(3, [6])}]
+    of_lists = {"a": [Unit(4, [7, 8, 9, 10])]}
+    stdout.print(sum(in_field(boxed, x) for x in range(10)), sum(in_dicts(dicts, x) for x in range(10)))
+    stdout.print(sum(in_list_of_dicts(lists_of, x) for x in range(10)), sum(in_dict_of_lists(of_lists, x) for x in range(10)))
+    stdout.print(boxed.units["a"], dicts["x"]["a"], lists_of[0]["a"], of_lists["a"][0])
+"#;
 
 /// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
 /// up itself, and keeps working when it's copied and when keys come out. If compiled code and the
@@ -9987,8 +10101,8 @@ fn a_failure_out_of_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
     let after_spending = "Account(balance=7, name=\"ann spent\", log=[\"start\", \"spent\"])";
     let after_leaving = "Account(balance=109, name=\"ann spent\", log=[\"start\", \"spent\"])";
     let wanted = format!(
-        "Ok(1)\n{after_spending}\nErr(Nope(why=\"ann spent spent is short\"))\n{after_spending}\n\
-         Err(Nope(why=\"both undone\"))\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
+        "1\n{after_spending}\nNope(why=\"ann spent spent is short\")\n{after_spending}\n\
+         Nope(why=\"both undone\")\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
          107 1\n{after_leaving}\n114\n{after_leaving}\n-16\n{after_leaving}\n"
     );
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
@@ -13525,6 +13639,68 @@ def main(stdout: Stdout, net: Net):
 ";
     same_as_the_jit("net_kind", source)
 }
+
+/// A field read into a variable and then lent to a call that changes the place it was read from,
+/// `own = xs[i].tags` then `xs[i].grown_by(own)`, takes an owner of its own: the call appends to
+/// the same list, alone, and grows it, and a borrow without one read on from where it was.
+/// Checking proofs, a borrow lent to a call is held for the call too, and what it came from has
+/// to still hold it after: that stopped this program before it was fixed.
+#[test]
+fn a_borrow_lent_to_a_call_that_changes_where_it_came_from_has_an_owner() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "8000 [1, 2, 3] [4, 5, 6]\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("borrow_lent_to_change", BORROW_LENT_TO_CHANGE, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+        let dir = folder("borrow_lent_to_change_checked")?;
+        let (program, executable) = (dir.join("checked.fen"), dir.join("checked"));
+        std::fs::write(&program, BORROW_LENT_TO_CHANGE)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            expected,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+const BORROW_LENT_TO_CHANGE: &str = r"struct Unit:
+    hp: int
+    tags: list[int]
+
+    def grown_by(ref self, values: list[int]):
+        for value in values:
+            self.tags.append(value)
+
+def given(captured: list[Unit], at: int) -> int:
+    mut copy_of = captured
+    copy_of[at % 2].tags.append(at)
+    own_tags = copy_of[at % 2].tags
+    copy_of[at % 2].grown_by(own_tags)
+    copy_of[at % 2].tags.len()
+
+def main(stdout: Stdout):
+    captured = [Unit(1, [1, 2, 3]), Unit(2, [4, 5, 6])]
+    mut total = 0
+    for x in range(1000):
+        total += given(captured, x)
+    stdout.print(total, captured[0].tags, captured[1].tags)
+";
 
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a

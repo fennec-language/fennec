@@ -1431,10 +1431,14 @@ impl Emit<'_, '_, '_> {
         // A local list's own check is made once, ahead of its loop, so that stays as it is.
         // So does a `for mut` item, which lets go of nothing until it's put back.
         let over_loop = self.known.taken_over_loop(dest);
+        // A struct or enum item holding a counted value is one too: letting go of what it held,
+        // changed, mustn't let go of what another list still holds.
+        let holds_counted =
+            matches!(held, Kind::Struct(id) | Kind::Enum(id) if self.module.layouts.holds_counted(id));
         let taken = self
             .known
             .item_home(dest)
-            .filter(|(_, path)| held.counted() || !path.is_empty() || over_loop)
+            .filter(|(_, path)| held.counted() || holds_counted || !path.is_empty() || over_loop)
             .cloned();
         let list = match &taken {
             Some((home, path)) if over_loop && path.is_empty() => self.unshared(*home),

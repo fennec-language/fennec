@@ -46,6 +46,7 @@ mod once;
 mod parallel;
 mod pattern;
 mod place;
+mod plain;
 mod privacy;
 mod program;
 mod protocols;

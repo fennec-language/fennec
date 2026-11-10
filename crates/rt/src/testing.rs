@@ -10,6 +10,8 @@ pub const PROPERTY_CASES: usize = 100;
 pub struct TestOutcome {
     pub name: String,
     pub failure: Option<Diagnostic>,
+    /// The failure's call chain: empty when it passed, or left no call.
+    pub trace: fennec_syntax::Trace,
     /// How many inputs ran: 1 for a plain test.
     pub cases: usize,
 }

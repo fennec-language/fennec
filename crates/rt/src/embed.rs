@@ -609,6 +609,11 @@ thread_local! {
     static LAST_TRACE: RefCell<Trace> = RefCell::new(Trace::default());
 }
 
+/// Keeps a failure's call chain for [`take_trace`].
+pub(crate) fn keep_trace(trace: Trace) {
+    LAST_TRACE.set(trace);
+}
+
 /// The call chain of the failure the last run on this thread ended with, innermost first.
 pub(crate) fn take_trace() -> Trace {
     LAST_TRACE.take()

@@ -304,6 +304,19 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// A server that stops when the program's asked to, with 2 seconds' grace, and says so after.
+const STOPPING_SERVER: &str = "from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+    stdout.print(\"stopped\", signals.stopping())
+";
+
 /// A server recorded as it stops when asked replays exactly, with no network and no signal: the
 /// connection waiting for its next request ends where it ended, the one partway through a request
 /// is answered and closed, the one that never finished is cut short as it was at `grace`, and
@@ -317,20 +330,7 @@ fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<
     }
     let dir = folder("server_stopping")?;
     let program = dir.join("server.fen");
-    std::fs::write(
-        &program,
-        "from std.net import Request, Response
-
-def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
-
-def main(net: Net, signals: Signals, stdout: Stdout):
-    with net.listen(0)? as server:
-        stdout.print(server.port)
-        server.serve(respond, timeout=60s, until=signals, grace=2s)
-    stdout.print(\"stopped\", signals.stopping())
-",
-    )?;
+    std::fs::write(&program, STOPPING_SERVER)?;
     let executable = dir.join("server");
     let built = fennec_command()
         .args(["build", "--llvm"])

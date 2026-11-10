@@ -63,8 +63,11 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
         .map_err(|err| with_program(format!("it wrote code the checker refuses: {err:?}")))?;
     let dev = crate::llvm::built_and_run(&source, "programs", false).map_err(with_program)?;
     // In a program with no other threads, `Named` is made of native blocks, which a dev build
-    // says it made by calling `fennec_native_made`.
-    if named_goes_native() && program.threadless && !makes_native_blocks()? {
+    // says it made by calling `fennec_native_made`. Only one that printed a `Named`'s digest, whose
+    // leaves read `l(...)`, surely made one: code that never runs, like everything after a
+    // failure the compiler can see, makes none and can be left out.
+    let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
+    if named_goes_native() && program.threadless && printed_named && !makes_native_blocks()? {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));

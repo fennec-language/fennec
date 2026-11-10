@@ -7936,6 +7936,65 @@ fn count(counts: &str, name: &str) -> Option<u64> {
     counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
 }
 
+/// Pieces put on a string that's joined from a list, `out.append(...)` then `"".join(out)`, go
+/// on with no block made for them: a number's text, as `str(n)` or in an f-string, is written as a
+/// header, and a short string with characters past ASCII is counted where it is. Each made a block
+/// that was copied from and let go of: 3,996 blocks here, and now only the joined string's growth.
+#[test]
+fn pieces_joined_into_a_string_make_no_blocks_of_their_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of("pieces_joined", PIECES_JOINED)?;
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    prints_in_both_builds("pieces_joined", PIECES_JOINED, "11518\n")?;
+    prints_in_both_builds(
+        "pieces_joined_edges",
+        PIECES_JOINED_EDGES,
+        "0<0>-1<-1>7<7>1234567890<1234567890>-9223372036854775808<-9223372036854775808>9223372036854775807<9223372036854775807>1.5[1.5]-0.0[-0.0]1e+300[1e+300]0.1[0.1]-2.25[-2.25]é(é)日本(日本)🦊(🦊)fóx12(fóx12)ab(ab)ça va très bien(ça va très bien)xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé(xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé)\n298 ) é ]\n2\n",
+    )
+}
+
+const PIECES_JOINED: &str = r#"def main(stdout: Stdout):
+    mut out = []
+    for i in range(1000):
+        out.append(str(i))
+        out.append("é")
+        out.append(f"<{i * 3}>")
+        out.append("日本")
+    text = "".join(out)
+    stdout.print(text.len())
+"#;
+
+const PIECES_JOINED_EDGES: &str = r#"def joined(numbers: list[int], floats: list[float], words: list[str]) -> str:
+    mut out = []
+    for n in numbers:
+        out.append(str(n))
+        out.append(f"<{n}>")
+    for f in floats:
+        out.append(str(f))
+        out.append(f"[{f}]")
+    for word in words:
+        out.append(word)
+        out.append(f"({word})")
+    "".join(out)
+
+def main(stdout: Stdout):
+    numbers = [0, -1, 7, 1234567890, -9223372036854775807 - 1, 9223372036854775807]
+    floats = [1.5, -0.0, 1e300, 0.1, -2.25]
+    words = ["é", "日本", "🦊", "fóx12", "ab", "ça va très bien", "x" * 30 + "é"]
+    text = joined(numbers, floats=floats, words=words)
+    stdout.print(text)
+    stdout.print(text.len(), text[-1], text[-2], text[text.len() // 2])
+    mut index = 0
+    mut seen = 0
+    while index < text.len():
+        if text[index] == "🦊":
+            seen += 1
+        index += 1
+    stdout.print(seen)
+"#;
+
 /// `fennec dev trace` says each place that allocated or copied in a run, with how often and why,
 /// and agrees with what the run counted altogether.
 #[test]

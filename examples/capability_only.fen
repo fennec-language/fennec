@@ -11,7 +11,7 @@ def last_commit(git: Process) -> str:
 def failure[T](run: () -> T fails ProcessError) -> str:
     error = failure_of(run) else:
         return "ran"
-    error.message
+    error.message()
 
 def io_failure[T](run: () -> T fails IoError) -> str:
     error = failure_of(run) else:

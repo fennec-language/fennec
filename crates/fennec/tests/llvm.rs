@@ -8370,14 +8370,14 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(done.status, done.stdout, done.stderr == \"\")
     unknown = failure_of(() => process.run(\"no-such-program-at-all\", []))
     if unknown is not None:
-        stdout.print(unknown.program)
+        stdout.print(unknown.program())
     else:
         stdout.print(\"ran it\")
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
     refused = failure_of(() => echo.run(\"ls\", []))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     stdout.print(stdin.lines())
@@ -9578,14 +9578,14 @@ def main(stdout: Stdout, process: Process, fs: Fs):
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
     nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\"))
     if nowhere is not None:
-        stdout.print(nowhere.message)
+        stdout.print(nowhere.message())
     else:
         stdout.print(\"ran it\")
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
     refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\"))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     fs.remove(\"inside\").expect(\"it works\")
@@ -12022,13 +12022,25 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(process.run(t"cat", input="fed in")?.stdout)
     narrow = process.only("printf")
     stdout.print(narrow.run(t"printf ok")?.stdout)
+    # A value that would start an argument with `-` is refused, and nothing runs.
+    upload = "--upload-pack=touch pwned"
+    refused = failure_of(() => process.run(t"printf {upload}"))
+    if refused is not None:
+        stdout.print(refused.message())
+    path = "-odd"
+    stdout.print(process.run(t"printf [%s] -- {path}")?.stdout)
     _ = narrow.run(t"cat") else as error:
-        stdout.print(error.program)
+        stdout.print(error.program())
         return
     stdout.print("ran")
 "#,
     )?;
-    assert_eq!(printed, "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\ncat\n");
+    assert_eq!(
+        printed,
+        "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\n\
+         `{upload}` starts an argument with `-`, so `printf` would read it as an option: put `--` before it, if `printf` takes that, to mean it isn't one\n\
+         [--][-odd]\ncat\n"
+    );
     Ok(())
 }
 
@@ -18145,7 +18157,7 @@ test \"an hour goes by at once\"(clock: Clock):
 test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"]))
     assert problem is not None
-    assert problem.program == \"echo\"
+    assert problem.program() == \"echo\"
     assert process.ran().len() == 1
 ",
     )?;

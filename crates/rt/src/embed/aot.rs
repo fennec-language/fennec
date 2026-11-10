@@ -320,7 +320,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
         crate::replay::unfinished()
             .map(|why| fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default()))
     });
-    report_counts(&leftovers.counts);
+    report_counts(&leftovers.counts, leftovers.boxes);
     (output, failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default())
 }
 
@@ -368,8 +368,9 @@ pub(super) fn report_sites(sites: &std::collections::HashMap<u32, heap::Counts>)
 }
 
 /// With `FENNEC_COUNTS` set, says on stderr what the run allocated and copied, so a test can
-/// check that a program doesn't copy.
-fn report_counts(counts: &heap::Counts) {
+/// check that a program doesn't copy, and how many blocks were still held when it ended, so a
+/// test can check that it lets go of what it made.
+fn report_counts(counts: &heap::Counts, live: usize) {
     if std::env::var_os("FENNEC_COUNTS").is_none() {
         return;
     }
@@ -377,7 +378,8 @@ fn report_counts(counts: &heap::Counts) {
     let blocked = super::serve::blocked_waits();
     #[cfg(not(any(test, feature = "threads")))]
     let blocked = 0;
-    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts, super::parallel::calls(), blocked));
+    let _ =
+        writeln!(std::io::stderr(), "{} live {live}", counts_line(counts, super::parallel::calls(), blocked));
 }
 
 /// The line `report_counts` writes, given how many `parallel` calls native code made and how many
@@ -412,7 +414,7 @@ pub(crate) fn stop_now(code: i32) -> ! {
 pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
     let (output, failure, leftovers) = super::finish_for_exit();
-    report_counts(&leftovers.counts);
+    report_counts(&leftovers.counts, leftovers.boxes);
     let failure = failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default();
     let code = report(&output, &failure);
     if let Some(stop) = STOP.get() {

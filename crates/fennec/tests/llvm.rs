@@ -7524,7 +7524,60 @@ def main(stdout: Stdout):
     )
 }
 
-/// What a built program says it copied and allocated, as `FENNEC_COUNTS` has it report.
+/// A task that crashes partway through filling a list lets go of what it made so far: a
+/// comprehension whose length is kept aside while it runs, and the keys `sorted(key=)` makes
+/// before a key crashes. What a task leaves comes back to the code that launched it, so a leak
+/// shows in the blocks still held at the end, which would grow with the rounds.
+#[test]
+fn a_task_crashing_partway_through_a_list_leaves_nothing_behind() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let live = |rounds: u32| -> std::io::Result<Option<u64>> {
+        let source = CRASHING_PARTWAY.replace("rounds = 3", &format!("rounds = {rounds}"));
+        let counts = counts_of(&format!("crashing_partway_{rounds}"), &source)?;
+        Ok(count(&counts, "live"))
+    };
+    let (few, many) = (live(3)?, live(30)?);
+    assert!(few.is_some(), "the run says how many blocks it still held");
+    assert_eq!(few, many, "blocks still held after 3 crashed rounds and after 30");
+    Ok(())
+}
+
+const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
+
+def kept_then_crash(at: int):
+    out = [f"item {i} of {100 // (10 - i)}, long enough to need a block of its own" for i in range(20)]
+    print_nothing(out)
+
+def keys_then_crash(at: int):
+    words = [f"word {i}, long enough to need a block of its own" for i in range(20)]
+    print_nothing(sorted(words, key=(word) => f"{word} {100 // (word.len() - 46)}"))
+
+def print_nothing(words: list[str]):
+    if words.len() == 12345:
+        pass
+
+def crashing(which: int) -> int fails Crashed:
+    if which == 0:
+        with launch(() => kept_then_crash(which))?:
+            pass
+    else:
+        with launch(() => keys_then_crash(which))?:
+            pass
+    0
+
+def main(stdout: Stdout):
+    rounds = 3
+    mut crashed = 0
+    for _ in range(rounds):
+        crashed += crashing(0) else 1
+        crashed += crashing(1) else 1
+    stdout.print(crashed)
+"#;
+
+/// What a built program says it copied and allocated, and how many blocks it still held at the
+/// end, as `FENNEC_COUNTS` has it report.
 fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));

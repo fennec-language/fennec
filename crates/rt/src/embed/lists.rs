@@ -723,8 +723,8 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
     })
 }
 
-/// Empties a list only one owner holds, letting go of what it held. The room left is zero,
-/// as native code expects past a list's end.
+/// Empties a list only one owner holds, letting go of what it held, and zeroes the room it held
+/// it in.
 pub extern "C" fn clear(list: i64) {
     with(|state| {
         let address = u64::try_from(list).unwrap_or(0);

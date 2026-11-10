@@ -110,6 +110,9 @@ pub(crate) struct Heap {
     item_plans: Vec<super::plans::ItemPlan>,
     /// Which of those hold no blocks at all, as most lists' items don't, to free them at once.
     empty_items: Vec<bool>,
+    /// How many words an item of each kind takes, worked out once rather than at each new list.
+    /// A worker's heap has none, and works it out.
+    item_words: Vec<usize>,
     /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
     /// thread, so its blocks' shape words are just their shapes.
     owner_bits: u64,
@@ -434,6 +437,11 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
 impl Heap {
     /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no
     /// plans, so it doesn't know, and looks.
+    /// How many words an item of kind `number` takes, if this heap worked it out.
+    pub(super) fn item_words(&self, number: usize) -> Option<usize> {
+        self.item_words.get(number).copied()
+    }
+
     fn items_hold_nothing(&self, number: usize) -> bool {
         self.empty_items.get(number).copied().unwrap_or(false)
     }
@@ -444,6 +452,7 @@ impl Heap {
         self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
         self.item_plans = elements.iter().map(|element| super::plans::item_plan(element)).collect();
         self.empty_items = self.item_plans.iter().map(|items| items.plan.holds_nothing()).collect();
+        self.item_words = elements.iter().map(|element| element.words()).collect();
         self.sizes = shapes.iter().map(|shape| HEADER_WORDS + shape.words()).collect();
         self
     }

@@ -481,6 +481,11 @@ pub(crate) enum Stmt {
     /// `ref self` method given a value read from the list it grows, just after that list grew in
     /// place, and both printed, under `if holder.items.len() < 64:`.
     GrownBy(String, String),
+    /// Collect, then apply: `mut world = [Spot(...), ...]`, then `changes = [plan(item, world)
+    /// for item in parallel(xs)]`, a `Change` for each item worked out on the threads from the
+    /// world as it is, then a plain loop applying them in order through a local `ref`, and the
+    /// world printed.
+    PlanApply(String, Vec<(&'static str, Expr)>, Expr, String),
     /// `stdout.print(<how><members>(<member>, text))`: a union of `members` structs, two or
     /// three, each with a `run` method and a `session` `with` source of its own, given the
     /// member numbered `member`, which must be the one whose `session` and `run` are called.

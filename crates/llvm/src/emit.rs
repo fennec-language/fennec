@@ -1034,6 +1034,17 @@ impl Emit<'_, '_, '_> {
         self.module.threads && self.module.whole.on_workers.contains(self.function.name.as_str())
     }
 
+    /// Writes `write` for a block that's made, leaving a null one be.
+    fn when_made(&mut self, block: &str, write: impl FnOnce(&mut Self)) {
+        let (none, made, after) = (self.temp(), self.label("made"), self.label("made_done"));
+        self.line(&format!("{none} = icmp eq ptr {block}, null"));
+        self.line(&format!("br i1 {none}, label %{after}, label %{made}"));
+        self.start_block(&made);
+        write(self);
+        self.line(&format!("br label %{after}"));
+        self.start_block(&after);
+    }
+
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
         if self.on_workers() {
@@ -2077,6 +2088,7 @@ impl Emit<'_, '_, '_> {
         let returns = self.module.kind(&callee.returns)?;
         let mut shown = Vec::with_capacity(args.len() + 2);
         let mut lent = Vec::new();
+        let mut borrows_lent = Vec::new();
         let returned_at = if returns.in_memory() {
             // What nothing here keeps, like a constant `main` works out ahead in a program with
             // `parallel`, has no local to have its type defined for.
@@ -2103,6 +2115,14 @@ impl Emit<'_, '_, '_> {
             if fresh {
                 lent.push(value.clone());
             }
+            // Checking proofs, a borrowed block lent to a call is held for it too, to see after
+            // that what it was borrowed from still holds it.
+            if self.checks_proofs()
+                && matches!(arg, Operand::Local(local) if self.known.is_borrowed(*local))
+                && matches!(kind, Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) | Kind::TextBlock)
+            {
+                borrows_lent.push(value.clone());
+            }
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
             } else {
@@ -2123,11 +2143,27 @@ impl Emit<'_, '_, '_> {
         if name == self.function.name || !self.module.defined.contains(name) {
             self.check_stack(span);
         }
+        for borrowed in &borrows_lent {
+            self.when_made(borrowed, |emit| emit.retain(borrowed));
+        }
         let result = self.temp();
         if ret == "void" {
             self.line(&format!("call swiftcc void {target}({shown})"));
         } else {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));
+        }
+        for borrowed in &borrows_lent {
+            self.when_made(borrowed, |emit| {
+                // Its one owner now is the one taken for the call: what it was borrowed from let
+                // go of it while the call ran, and the borrow was read after.
+                let alone = emit.alone(borrowed);
+                emit.proof_held(
+                    &alone,
+                    "what a value lent to a call was borrowed from holds it till the call ends",
+                    span,
+                );
+                emit.release(borrowed);
+            });
         }
         if flagged && is_attempt(&self.function.name) {
             // An attempt of a property test's shrinking finds out whether the test fails, so a

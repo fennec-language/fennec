@@ -441,6 +441,18 @@ impl FnCx<'_> {
         )
     }
 
+    /// `==` or `!=`: a type's own, or one the checker knows how to compare.
+    fn equality(&mut self, left: &Type, right: &Type, op: BinOp, (span, right_span): (Span, Span)) -> Type {
+        // What can fail is read only through `?` or `else`: compared as it is, the failure would
+        // be read as a value.
+        if matches!(left, Type::Result(..)) || matches!(right, Type::Result(..)) {
+            self.error(unhandled_result(span));
+        } else if !self.own_equality(left, right, op, span, right_span) {
+            self.comparable(left, right, op, span);
+        }
+        Type::Bool
+    }
+
     pub(crate) fn binary(
         &mut self,
         op: BinOp,
@@ -456,12 +468,7 @@ impl FnCx<'_> {
         }
         let (left, right) = (left.without_literal(), right.without_literal());
         match op {
-            BinOp::Eq | BinOp::NotEq => {
-                if !self.own_equality(&left, &right, op, span, spans.1) {
-                    self.comparable(&left, &right, op, span);
-                }
-                return Type::Bool;
-            }
+            BinOp::Eq | BinOp::NotEq => return self.equality(&left, &right, op, (span, spans.1)),
             BinOp::In | BinOp::NotIn => {
                 self.contains(&left, &right, span);
                 return Type::Bool;

@@ -573,7 +573,7 @@ fn fs_makes_lists_and_removes_files_and_folders() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "Ok() Ok() True\n\
+        "True\n\
          [\"saves/slots/a.txt\", \"saves/slots/b.txt\"] ay\n\
          3 True False False True\n\
          a folder has to be empty to remove\n\
@@ -605,16 +605,19 @@ const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
 
 def main(stdout: Stdout, fs: Fs):
     slots = Path("saves") / "slots"
-    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots)?)
+    fs.make_dir(slots)?
+    # Making a folder that's already there is fine.
+    fs.make_dir(slots)?
+    stdout.print(fs.exists(slots)?)
     fs.write_text(slots / "b.txt", "bee")?
     fs.write_text("saves/slots/a.txt", "ay")?
     stdout.print([path.text for path in fs.list_dir(slots)?], fs.read_text(slots / "a.txt")?)
     found = fs.metadata(slots / "b.txt")?
     folder = fs.metadata(slots)?
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
-    match fs.remove("saves"):
-        case Ok(_): stdout.print("removed a folder that isn't empty")
-        case IoError(): stdout.print("a folder has to be empty to remove")
+    fs.remove("saves") else as why:
+        match why:
+            case IoError(): stdout.print("a folder has to be empty to remove")
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -1875,15 +1878,15 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     let dir = std::env::temp_dir().join(format!("fennec-cli-{}-named-pattern", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
-    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    match fs.read_text(\"/nothing/here\"):\n        case Ok(text): stdout.print(text)\n        case Err(IoError(why)): stdout.print(why != \"\")\n    match fs.read_text(\"/nothing/here\"):\n        case Ok(_): stdout.print(\"read\")\n        case Err(IoError(_)): stdout.print(\"failed\")\n").unwrap();
+    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    text = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(why): str(why != \"\")\n    stdout.print(text)\n    said = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(_): \"failed\"\n    stdout.print(said)\n").unwrap();
     let path = program.to_string_lossy().into_owned();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let ran = fennec(&["run", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
-    assert!(written.contains("case Err(IoError(reason=why)):"), "{written}");
-    assert!(written.contains("case Err(IoError()):"), "{written}");
+    assert!(written.contains("case IoError(reason=why):"), "{written}");
+    assert!(written.contains("case IoError():"), "{written}");
     assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
 }
 
@@ -1919,12 +1922,12 @@ def shown(color: Color) -> str:
         case Red: \"red\"
         case Green(shade): f\"green {shade}\"
 
-def dial(n: int) -> int fails DialError:
+def dial(n: int) -> str fails DialError:
     if n == 0:
         fail DialError.Closed
     fail DialError.NotFound(\"host\")
 
-def unsaid() -> int:
+def unsaid() -> str:
     fail DialError.Closed
 
 def main(stdout: Stdout):
@@ -1938,13 +1941,12 @@ def main(stdout: Stdout):
     warm: Color = Color.warm()
     stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), many.len(), light == Light.Off)
     stdout.print(shown(warm), maybe() == Color.Red)
-    match dial(0):
-        case Err(Closed): stdout.print(\"closed\")
-        case Err(_): stdout.print(\"other\")
-        case Ok(_): stdout.print(\"open\")
-    match unsaid():
-        case Err(_): stdout.print(\"failed\")
-        case Ok(_): stdout.print(\"fine\")
+    dialled = dial(0) else as why:
+        match why:
+            case Closed: \"closed\"
+            case _: \"other\"
+    stdout.print(dialled)
+    stdout.print(unsaid() else \"failed\")
 ";
 
 /// What `CASES_AFTER` prints, as the interpreter printed it.
@@ -1983,12 +1985,12 @@ def shown(color: Color) -> str:
         case .Red: \"red\"
         case .Green(shade): f\"green {shade}\"
 
-def dial(n: int) -> int fails DialError:
+def dial(n: int) -> str fails DialError:
     if n == 0:
         fail .Closed
     fail .NotFound(\"host\")
 
-def unsaid() -> int fails DialError:
+def unsaid() -> str fails DialError:
     fail .Closed
 
 def main(stdout: Stdout):
@@ -2002,13 +2004,12 @@ def main(stdout: Stdout):
     warm: Color = Color.warm()
     stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), many.len(), light == .Off)
     stdout.print(shown(warm), maybe() == .Red)
-    match dial(0):
-        case Err(Closed): stdout.print(\"closed\")
-        case Err(_): stdout.print(\"other\")
-        case Ok(_): stdout.print(\"open\")
-    match unsaid():
-        case Err(_): stdout.print(\"failed\")
-        case Ok(_): stdout.print(\"fine\")
+    dialled = dial(0) else as why:
+        match why:
+            case .Closed: \"closed\"
+            case _: \"other\"
+    stdout.print(dialled)
+    stdout.print(unsaid() else \"failed\")
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
@@ -2392,9 +2393,10 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
         stdout.print(describe(.Liquid(depth=3)))\n    \
         stdout.print(Circle(name=\"own\").name + helper())\n    \
         stdout.print(f\"{body}\")\n    \
-        match total([body]):\n        \
-        case Err(Over(by=n)):\n            stdout.print(n)\n        \
-        case Ok(n):\n            stdout.print(n)\n";
+        weighed = total([body]) else as why:\n        \
+        match why:\n            \
+        case .Over(by=n): n\n    \
+        stdout.print(weighed)\n";
     let manifest = "[dependencies]\nphysics = { path = \"../physics\" }\n";
     write_kit(&kit, "game", manifest, &[("main.fen", main)]).unwrap();
     let home = dir.join("home");

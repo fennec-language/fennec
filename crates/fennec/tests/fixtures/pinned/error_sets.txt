@@ -1,11 +1,8 @@
-source 64983e4a9c9360640fe237a90fe482f02c4871d9b03947d1eea27bb8fbd9adb7
+source 74e72a4ecc2249d6a03ff6dcd06560f3935e32b33ebd8ed8d0c61d053cfbd76f
 code 0
-stdout 204
-Ok("ash at 7")
+stdout 144
 ash at 7
-Err(TooWeak(level=1))
 weak 1
-Err(NotFound(name=""))
 other NotFound(name="") NotFound(name="")
 not found 0
 plain 3

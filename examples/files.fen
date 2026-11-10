@@ -48,9 +48,7 @@ test "a file is for writing or for reading, not both"(fs: Fs):
 
 def main(stdout: Stdout, fs: Fs):
     # This file doesn't exist, so opening it fails, and nothing is made.
-    match load(fs, "no/such/scores.txt"):
-        case Ok(scores):
-            stdout.print("found", scores)
-        case IoError():
-            # What the system says differs from one to another, so it isn't printed here.
-            stdout.print("there are no scores to load")
+    _ = load(fs, "no/such/scores.txt") else:
+        # What the system says differs from one to another, so it isn't printed here.
+        stdout.print("there are no scores to load")
+        []

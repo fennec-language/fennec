@@ -63,13 +63,13 @@ def main(stdout: Stdout):
 test "attacking a distant enemy fails":
     mut world = World()
     far = world.enemies.add(Enemy(position=Vec3(x=10.0, y=0.0, z=0.0)))
-    assert attack(ref world, far) == Err(OutOfRange(distance=10.0))
+    assert attack(ref world, far) fails OutOfRange(distance=10.0)
 
 test "attacking a removed enemy fails":
     mut world = World()
     id = world.enemies.add(Enemy(position=Vec3.zero))
     _ = world.enemies.remove(id)
-    assert attack(ref world, id) == Err(TargetGone(id))
+    assert attack(ref world, id) fails TargetGone(id)
 
 test "update replaces a live enemy, and leaves a removed one's Id alone"():
     mut world = World()

@@ -21,8 +21,6 @@ def main(stdout: Stdout):
     mut enough = Countdown()
     stdout.print(two(ref enough) else -1)
     mut short = Countdown(left=1)
-    match two(ref short):
-        case Ok(total):
-            stdout.print(total)
-        case Err(problem):
-            stdout.print(problem.what)
+    _ = two(ref short) else as why:
+        stdout.print(why.what)
+        0

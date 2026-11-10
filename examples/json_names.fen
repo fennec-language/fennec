@@ -13,12 +13,10 @@ struct Player:
     main_weapon: Weapon
     _save_slot = 0
 
-def failure[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Err(error):
-            error.message
-        case _:
-            "loaded"
+def failure[T](run: () -> T fails ParseError) -> str:
+    error = failure_of(run) else:
+        return "loaded"
+    error.message
 
 def ash() -> Player:
     Player(display_name="Ash", hit_points=12, main_weapon=Weapon(damage_bonus=2, max_range=1.5))
@@ -58,7 +56,7 @@ test "a dict's keys are written as they are":
 test "a key no field has is an error, unless it's ignored":
     text = "{\"displayName\": \"Ash\", \"hitPoints\": 12, \"mainWeapon\": {\"damageBonus\": 2, \"maxRange\": 1.5, \"rarity\": \"rare\"}, \"guild\": \"fox\"}"
     assert (
-        failure(json.loads[Player](text, names=.camel_case))
+        failure(() => json.loads[Player](text, names=.camel_case))
         == "`Player` has no field \"guild\", but the text has one"
     )
     loaded = json.loads[Player](text, names=.camel_case, extra=.ignore)?
@@ -66,7 +64,7 @@ test "a key no field has is an error, unless it's ignored":
 
 test "a field the text leaves out says how it's spelled there":
     assert (
-        failure(json.loads[Weapon]("{\"damageBonus\": 1}", names=.camel_case))
+        failure(() => json.loads[Weapon]("{\"damageBonus\": 1}", names=.camel_case))
         == "`maxRange` is missing"
     )
 

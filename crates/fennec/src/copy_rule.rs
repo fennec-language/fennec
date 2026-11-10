@@ -12,14 +12,16 @@ pub(crate) fn implicit_copies(
     signatures: &fennec_check::Signatures,
     sources: &Sources,
 ) -> Vec<Diagnostic> {
-    let lowered = fennec_ir::lower(module, signatures);
-    let findings = fennec_ir::costs(&lowered);
     let mut problems = Vec::new();
     problems.extend(positional_arguments(module, sources));
     let hot = hot_functions(module);
+    // What's lowered here is only for `@hot` functions and what they call, so a program with
+    // none isn't lowered for it: a build lowers it anyway.
     if hot.is_empty() {
         return problems;
     }
+    let lowered = fennec_ir::lower(module, signatures);
+    let findings = fennec_ir::costs(&lowered);
     let keys: Vec<String> = hot.iter().map(|(key, _)| key.clone()).collect();
     let reach = fennec_ir::reached_from_hot(&lowered, &keys);
     problems.extend(fennec_lint::hot_costs(&findings, &reach));

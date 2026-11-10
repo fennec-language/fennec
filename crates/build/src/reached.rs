@@ -11,12 +11,12 @@ use fennec_syntax::{Item, Module};
 
 use crate::reach::{Uses, is_implicit};
 
-/// What an item defines and uses, and whether it's kept whatever reaches it.
+/// What an item defines, and whether it's kept whatever reaches it. What it uses is worked out
+/// only once it's reached: most of a big program's items aren't.
 #[derive(Default)]
 struct Node {
     names: Vec<String>,
     members: Vec<String>,
-    uses: Uses,
     root: bool,
 }
 
@@ -40,20 +40,22 @@ pub fn keep_what_functions_reach(module: &mut Module, is_start: &dyn Fn(&str) ->
     let mut pending: Vec<usize> = nodes.iter().enumerate().filter(is_root).map(|(at, _)| at).collect();
     let mut kept: HashSet<usize> = pending.iter().copied().collect();
     while let Some(at) = pending.pop() {
-        let Some(Some(node)) = nodes.get(at) else { continue };
-        let named = node.uses.names.iter().filter_map(|name| by_name.get(name.as_str()));
-        let members = node.uses.members.iter().filter_map(|name| by_member.get(name.as_str()));
+        let Some(item) = module.items.get(at) else { continue };
+        let uses = uses(item);
+        let named = uses.names.iter().filter_map(|name| by_name.get(name.as_str()));
+        let members = uses.members.iter().filter_map(|name| by_member.get(name.as_str()));
         for next in named.chain(members).flatten() {
             if kept.insert(*next) {
                 pending.push(*next);
             }
         }
     }
-    let mut at = 0;
-    module.items.retain(|_| {
-        at += 1;
-        kept.contains(&(at - 1))
-    });
+    let (reached, unreached): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut module.items).into_iter().enumerate().partition(|(at, _)| kept.contains(at));
+    module.items = reached.into_iter().map(|(_, item)| item).collect();
+    // What isn't reached is most of a big program, and letting it go takes as long as finding
+    // what is: it's let go of beside the run rather than before it.
+    std::thread::spawn(move || drop(unreached));
 }
 
 /// What an item adds to the graph. A test adds nothing, so it's never kept.
@@ -65,53 +67,63 @@ fn node(item: &Item, is_start: &dyn Fn(&str) -> bool) -> Option<Node> {
             // What saves and loads a tuple the program saves (see `fennec_check::tuple_function`)
             // is only called from inside std's generic code, which no name in the program reaches.
             node.root = is_start(&def.name) || def.name.starts_with("fennec_tuple_");
-            node.uses.function(def);
         }
         Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
             node.names.push(def.name.clone());
             node.names.extend(def.cases.iter().map(|case| case.name.clone()));
             node.members.extend(def.methods.iter().map(|method| method.name.clone()));
-            node.uses.type_def(def);
-            // Its extensions, which go by its name, as `def serialize` and `def deserialize` do
-            // when they're generated: one without the other doesn't check.
-            node.uses.names.insert(def.name.clone());
         }
         Item::Interface(interface) => {
             node.names.push(interface.name.clone());
             node.members.extend(interface.methods.iter().map(|method| method.name.clone()));
-            interface.methods.iter().for_each(|method| node.uses.function(method));
         }
         // An extension's owner may never be named, as with an operator on a built-in type.
         Item::Extend(extension) => {
             node.names.push(extension.name.clone());
             node.members.extend(extension.methods.iter().map(|method| method.name.clone()));
             node.root = extension.methods.iter().any(|method| is_implicit(&method.name));
-            extension.methods.iter().for_each(|method| node.uses.function(method));
-            // The type it extends, and with it the type's other extensions.
-            node.uses.names.insert(extension.name.clone());
         }
-        Item::TypeAlias { name, ty, .. } => {
-            node.names.push(name.clone());
-            node.uses.type_expr(ty);
-        }
-        Item::Const { name, ty, value, .. } => {
+        Item::TypeAlias { name, .. } => node.names.push(name.clone()),
+        Item::Const { name, .. } => {
             node.names.push(name.clone());
             // A kit's `pack.lock` (see `fennec_kit::PACK_LOCK`) is read by std.pack through an
             // intrinsic, so no name in the program reaches it.
             node.root = name == "\0pack_lock";
-            if let Some(ty) = ty {
-                node.uses.type_expr(ty);
-            }
-            node.uses.expr(value);
         }
-        Item::Import(_) => node.root = true,
-        Item::Stmt(stmt) => {
-            node.root = true;
-            node.uses.stmt(stmt);
-        }
+        Item::Import(_) | Item::Stmt(_) => node.root = true,
         Item::Test(_) => return None,
     }
     Some(node)
+}
+
+/// What a reached item uses, and so reaches too.
+fn uses(item: &Item) -> Uses {
+    let mut uses = Uses::default();
+    match item {
+        Item::Function(def) => uses.function(def),
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+            uses.type_def(def);
+            // Its extensions, which go by its name, as `def serialize` and `def deserialize` do
+            // when they're generated: one without the other doesn't check.
+            uses.names.insert(def.name.clone());
+        }
+        Item::Interface(interface) => interface.methods.iter().for_each(|method| uses.function(method)),
+        Item::Extend(extension) => {
+            extension.methods.iter().for_each(|method| uses.function(method));
+            // The type it extends, and with it the type's other extensions.
+            uses.names.insert(extension.name.clone());
+        }
+        Item::TypeAlias { ty, .. } => uses.type_expr(ty),
+        Item::Const { ty, value, .. } => {
+            if let Some(ty) = ty {
+                uses.type_expr(ty);
+            }
+            uses.expr(value);
+        }
+        Item::Stmt(stmt) => uses.stmt(stmt),
+        Item::Import(_) | Item::Test(_) => {}
+    }
+    uses
 }
 
 #[cfg(test)]

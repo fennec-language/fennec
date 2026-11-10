@@ -1,0 +1,48 @@
+# A lock on a struct with a list, a dict and a string, all changed in place: one lock kept, one
+# failed, one crashed in a launched task, and parallel workers failing on every other one. Only the
+# changes of a lock that ends normally stay.
+from std.concurrent import Crashed
+
+error Refused:
+    code: int
+
+struct Big:
+    items: list[int]
+    table: dict[int, int]
+    name: str
+
+def change(big: shared Big, value: int, refuse: bool) fails Refused:
+    lock big as ref held:
+        held.items.append(value)
+        held.table[value] = value
+        held.name += "!"
+        if refuse:
+            fail Refused(code=value)
+
+def crashing(big: shared Big, value: int):
+    lock big as ref held:
+        held.items.append(value)
+        held.items.append(100 // (value - value))
+
+def in_task(big: shared Big, value: int) fails Crashed:
+    with launch(() => crashing(big, value))?:
+        pass
+
+def worked(big: shared Big, value: int) -> int:
+    change(big, value, refuse=value % 2 == 0) else:
+        return 0
+    1
+
+def main(stdout: Stdout):
+    shared big = Big(items=[1, 2, 3], table={1: 1}, name="big")
+    first = worked(big, 5)
+    second = worked(big, 4)
+    lock big as held:
+        stdout.print(first, second, held.items, held.table, held.name)
+    in_task(big, 6) else:
+        stdout.print("crashed")
+    lock big as held:
+        stdout.print(held.items, held.table, held.name)
+    kept = sum(worked(big, n) for n in parallel([n for n in range(10, 20)]))
+    lock big as held:
+        stdout.print(kept, held.items.len(), held.table.len(), held.name.len())

@@ -205,7 +205,7 @@ impl Walk<'_> {
                 names(declared, &mut named);
                 match error {
                     Type::Named(name) => named.contains(&name.as_str()),
-                    Type::Errors(names) => names.iter().all(|name| named.contains(&name.as_str())),
+                    Type::Errors(errors) => errors.iter().all(|error| named.contains(&error.as_str())),
                     _ => false,
                 }
             }

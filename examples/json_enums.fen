@@ -70,7 +70,8 @@ test "a case that doesn't exist says where":
         == "`[1]` is \"Run\", which isn't a case of `Order`"
     )
     assert (
-        failure(() => json.loads[Order]("\"Move\"")) == "the text is `Order.Move`, which needs its fields"
+        failure(() => json.loads[Order]("\"Move\""))
+        == "the text is `Order.Move`, which needs its fields"
     )
     assert (
         failure(() => json.loads[Order]("{\"Move\": {\"to\": [1, 2], \"fast\": true}}"))

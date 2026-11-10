@@ -159,9 +159,8 @@ fn a_failure_needs_to_be_able_to_tell_which_error() {
     assert!(problems.iter().any(|problem| problem.contains("Full")), "{problems:?}");
 }
 
-/// `case Kind.One:` where the type is known is written `case .One:`, as a value is. On a result
-/// failing with a union, `case Err(Shut.Stuck(name))` says which error's case it is, and a later
-/// `case Err(error)` holds the one error the earlier cases left.
+/// `case Kind.One:` where the type is known is written `case .One:`, as a value is. On a failure
+/// that's one of a union, `case Shut.Stuck(name)` says which error's case it is.
 #[test]
 fn a_case_names_its_type_only_where_the_type_isnt_one() {
     let known = "enum Kind:\n    One\n    Two\n\ndef main(stdout: Stdout):\n    match Kind.One:\n        case Kind.One:\n            stdout.print(1)\n        case _:\n            stdout.print(2)\n";
@@ -170,9 +169,10 @@ fn a_case_names_its_type_only_where_the_type_isnt_one() {
     assert_eq!(said, ["the type here is known, so write this case as `.One`"]);
     let union = "error Shut:\n    Stuck(name: str)\n    Jammed\n\n    def said(self) -> str:\n        \"shut\"\n\n\
         error Late:\n    waited: int\n\ndef run(n: int) fails Shut | Late:\n    if n == 1: fail Late(waited=1)\n\n\
-        def main(stdout: Stdout):\n    match run(0):\n        case Ok(_):\n            stdout.print(0)\n        \
-        case Err(Late(waited=_)):\n            stdout.print(1)\n        case Err(Shut.Stuck(name=name)):\n            \
-        stdout.print(name)\n        case Err(error):\n            stdout.print(error.said())\n";
+        def main(stdout: Stdout):\n    run(0) else as why:\n        match why:\n            \
+        case Late(waited=_):\n                stdout.print(1)\n            case Shut.Stuck(name=name):\n                \
+        stdout.print(name)\n            case Shut.Jammed:\n                stdout.print(why)\n        return\n    \
+        stdout.print(0)\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(union), empty);
 }

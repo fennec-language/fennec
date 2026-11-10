@@ -77,7 +77,7 @@ test "bytes go as they are"(net: Net):
                 assert conn.read(10)? == bytes([10, 7])
 
 test "a failure is a case of NetError"(net: Net):
-    assert connecting(net, host="localhost", port=9001) fails .Refused(host="localhost", port=9001)
+    assert connecting(net, host="localhost", port=9001) fails.Refused(host="localhost", port=9001)
 
 test "failures are NetError values"(net: Net):
     assert (

@@ -455,9 +455,9 @@ fn match_cases_bind_typed_values() {
             n
 
         def a(n: int):
-            match risky(n):
-                case Ok(value): value + 'a'
-                case Err(error): error + 1
+            value = risky(n) else as error:
+                error + 1
+            value + 'a'
 
         def b(shape: Shape, other: T):
             match shape:
@@ -477,8 +477,8 @@ fn match_cases_bind_typed_values() {
     assert_eq!(
         problems(program),
         [
-            "can't use `+` on an int and a str @ value + \"a\"",
             "can't use `+` on an Oops and an int @ error + 1",
+            "can't use `+` on an int and a str @ value + \"a\"",
             "`T` isn't a type @ T",
             "can't mix int and float in `+` @ r + 1",
             "can't mix int and float in `+` @ dotted + 1",

@@ -72,14 +72,17 @@ test "an optional Id whose item has gone is saved as missing":
 test "an Id past the end of its Table isn't loaded":
     text = "{\"units\": [{\"name\": \"ash\", \"health\": 1}], \"selected\": [3]}"
     assert (
-        failure(() => json.loads[World](text)) == "`selected[0]` is item 3 of `units`, which has only 1"
+        failure(() => json.loads[World](text))
+        == "`selected[0]` is item 3 of `units`, which has only 1"
     )
     inside = "{\"units\": [{\"name\": \"ash\", \"health\": 1, \"target\": 1}]}"
     assert (
         failure(() => json.loads[World](inside))
         == "`units[0].target` is item 1 of `units`, which has only 1"
     )
-    assert failure(() => json.loads[World]("{\"selected\": [-1]}")) == "`selected[0]` is out of range"
+    assert (
+        failure(() => json.loads[World]("{\"selected\": [-1]}")) == "`selected[0]` is out of range"
+    )
 
 test "an Id needs the one Table of its type":
     assert (

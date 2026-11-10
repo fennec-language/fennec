@@ -713,16 +713,16 @@ fn question_mark_leaves_with_the_error() {
 }
 
 #[test]
-fn matching_a_result_sees_each_error_and_looks_through_ok() {
+fn matching_a_failure_sees_each_error_and_looks_through_ok() {
     let source = format!(
         "{FILES}def show(path: str) -> str:
-    match load(path):
-        case Missing(name):
-            name
-        case Err(_):
-            \"denied\"
-        case text:
-            text
+    text = load(path) else as why:
+        match why:
+            case Missing(name):
+                name
+            case _:
+                \"denied\"
+    text
 "
     );
     let printed = printed(&source, "show").unwrap();
@@ -2956,10 +2956,11 @@ def connect(host: str, port: int) -> int fails DialError:
     port
 
 def described(port: int) -> str:
-    match connect(\"db\", port):
-        case Err(Refused(host, port)): f\"refused {host}:{port}\"
-        case Err(error): f\"failed: {error}\"
-        case Ok(port): f\"port {port}\"
+    got = connect(\"db\", port) else as why:
+        match why:
+            case .Refused(host, port): return f\"refused {host}:{port}\"
+            case _: return f\"failed: {why}\"
+    f\"port {got}\"
 ";
 
 #[test]

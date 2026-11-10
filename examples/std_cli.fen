@@ -51,7 +51,9 @@ test "arguments that don't fit say why":
     assert problem(() => greet().parse(["-q"])) == "there's no option `-q`"
     assert problem(() => greet().parse(["--times"])) == "`--times` needs a value"
     assert problem(() => greet().parse(["-t"])) == "`-t` needs a value"
-    assert problem(() => greet().parse(["--loud=yes"])) == "`--loud` is a flag, so it takes no value"
+    assert (
+        problem(() => greet().parse(["--loud=yes"])) == "`--loud` is a flag, so it takes no value"
+    )
 
 test "positional arguments are given in order":
     copy = Cli(name="copy").positional("from").positional("to", required=False)

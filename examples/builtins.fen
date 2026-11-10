@@ -9,7 +9,12 @@ def main(stdout: Stdout):
     # Converting between numbers. `int` truncates toward zero.
     stdout.print(float(2), 0.5, int(2.9), int(-2.9), int(-9223372036854775808.0), 7)
     # Text might not be a number, so reading one can fail with an `InvalidValue`.
-    stdout.print(float("2.5") else 0.0, float(" 1e3 ") else 0.0, int(" 42 ") else 0, int("4x2") else -1)
+    stdout.print(
+        float("2.5") else 0.0,
+        float(" 1e3 ") else 0.0,
+        int(" 42 ") else 0,
+        int("4x2") else -1,
+    )
     # `else as why:` names the failure; its block gives a value in its place, or leaves.
     twelve = int("twelve") else as why:
         stdout.print(why.message)

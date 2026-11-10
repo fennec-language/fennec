@@ -218,10 +218,6 @@ fn builtins_check_what_they_are_given() {
         ]
     );
     assert_eq!(
-        in_main_after("error Oops:\n    why: str\n\n", "stdout.print(Err(Oops(why='x')))"),
-        ["can't tell what value this result could hold @ Err(Oops(why=\"x\"))"]
-    );
-    assert_eq!(
         in_main("stdout.print(copy(1, n=2))"),
         ["`copy` with fields copies a struct, but this is an int @ copy(1, n=2)"]
     );
@@ -300,11 +296,13 @@ fn several_errors_make_one_of_them() {
             name
 
         def main(stdout: Stdout):
-            match challenge(1, 'Kit'):
-                case Ok(name): stdout.print(name)
-                case NotFound(name): stdout.print(name)
-                case TooWeak(level): stdout.print(level + 1)
-            stdout.print(challenge(1, '') == Err(TooWeak(level=1)))
+            name = challenge(1, 'Kit') else as why:
+                match why:
+                    case NotFound(missing): stdout.print(missing)
+                    case TooWeak(level): stdout.print(level + 1)
+                return
+            stdout.print(name)
+            assert challenge(1, '') fails TooWeak(level=1)
     ";
     let both = Type::Errors(vec!["NotFound".to_owned(), "TooWeak".to_owned()]);
     assert_eq!(returns(program, "challenge"), Ok(crate::result(Type::Str, both)));
@@ -399,58 +397,6 @@ fn a_function_with_no_arrow_gives_back_nothing_even_when_it_calls_itself() {
                 countdown(stdout, n - 1)
     ";
     assert_eq!(returns(program, "countdown"), Ok(Type::Unit));
-}
-
-#[test]
-fn results_can_be_written_as_types() {
-    let program = "
-        error Failed:
-            why: str
-
-        def describe(result: Result[int, Failed]) -> str:
-            match result:
-                case Ok(n): f'{n}'
-                case Err(failed): failed.why
-
-        def main(stdout: Stdout):
-            ok: Result[int, Failed] = Ok(3)
-            stdout.print(describe(ok), describe(Err(Failed('no'))), describe(Ok('three')))
-    ";
-    assert_eq!(
-        problems(program),
-        ["`result` should be a result of int, but this is a result of str @ Ok(\"three\")"]
-    );
-}
-
-/// A result fails with an error, as `fail` does: `Err` holds one, and a `Result` written as a type
-/// names one, or several, as its second type.
-#[test]
-fn a_result_fails_only_with_an_error() {
-    let program = "
-        error Failed:
-            why: str
-
-        error Lost:
-            Gone
-
-        def plain(result: Result[int, str]) -> int:
-            result else 0
-
-        def several(result: Result[int, Failed | Lost]) -> int:
-            result else 0
-
-        def main(stdout: Stdout):
-            stdout.print(plain(Ok(1)), several(Err(Lost.Gone)), several(Err(Failed('x'))))
-            stdout.print(Err('no') else 0, Err(3) else 0)
-    ";
-    assert_eq!(
-        problems(program),
-        [
-            "a `Result` fails with an error, but this is a str @ str",
-            "`Err` holds an error, as `fail` does, but this is a str @ \"no\"",
-            "`Err` holds an error, as `fail` does, but this is an int @ 3",
-        ]
-    );
 }
 
 #[test]

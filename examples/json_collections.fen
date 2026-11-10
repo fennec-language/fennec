@@ -111,8 +111,8 @@ test "rows that don't line up say where":
         == "`[1]` has 1 cell, but the first row has 2"
     )
     assert (
-        failure(() => 
-            json.loads[Board](
+        failure(
+            () => json.loads[Board](
                 "{\"cells\": [[1], [2, 3]], \"scores\": {}, \"seen\": [], \"queue\": []}",
             ),
         )

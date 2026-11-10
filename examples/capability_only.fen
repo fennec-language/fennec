@@ -31,7 +31,8 @@ test "a narrowed Process runs only what it names"(process: Process):
 test "narrowing again only takes more away"(process: Process):
     nothing = process.only("git").only("ls")
     assert (
-        failure(() => nothing.run("ls", [])) == "this Process can run only nothing, so it can't run `ls`"
+        failure(() => nothing.run("ls", []))
+        == "this Process can run only nothing, so it can't run `ls`"
     )
     assert (
         failure(() => nothing.run("git", []))
@@ -53,13 +54,17 @@ test "a narrowed Fs reaches only what's in its folder"(fs: Fs):
         "`saves/../secret.txt` is outside",
     )
     # A folder whose name only starts the same way isn't inside it.
-    assert io_failure(() => saves.write_text("saves2.txt", "x")).startswith("`saves2.txt` is outside")
+    assert io_failure(() => saves.write_text("saves2.txt", "x")).startswith(
+        "`saves2.txt` is outside",
+    )
 
 test "narrowing an Fs again stays inside the first folder"(fs: Fs):
     fs.make_dir("saves/slot1")?
     slot = fs.only("saves").only("saves/slot1")
     slot.write_text("saves/slot1/a.txt", "a")?
-    assert io_failure(() => slot.write_text("saves/b.txt", "b")).startswith("`saves/b.txt` is outside")
+    assert io_failure(() => slot.write_text("saves/b.txt", "b")).startswith(
+        "`saves/b.txt` is outside",
+    )
     escaped = fs.only("saves").only("other")
     assert io_failure(() => escaped.write_text("other/c.txt", "c")).endswith("reach: nothing")
 

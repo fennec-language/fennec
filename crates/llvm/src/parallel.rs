@@ -944,11 +944,9 @@ def main(stdout: Stdout, clock: Clock):
 from std.net import Connection, NetError
 
 def heard(conn: Connection, x: int) -> int:
-    match conn.read(1):
-        case Ok(got):
-            got.len() + x
-        case _:
-            x
+    got = conn.read(1) else:
+        return x
+    got.len() + x
 
 def main(stdout: Stdout, net: Net) fails NetError:
     xs = [1, 2, 3]

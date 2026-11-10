@@ -750,7 +750,8 @@ fn a_tasks_stack_limit_is_its_own_after_a_wait() -> std::io::Result<()> {
 }
 
 /// A stop ends the task it was for: being stopped in a sleep is that task's failure, and doesn't
-/// show up in whichever task its thread runs next.
+/// show up in whichever task its thread runs next. The other task waits on its inbox through the
+/// stop and is told once it's over, so it doesn't depend on how long anything sleeps.
 #[test]
 fn a_stopped_task_keeps_its_failure_to_itself() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

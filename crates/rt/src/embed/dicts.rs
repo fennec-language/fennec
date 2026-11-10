@@ -963,6 +963,12 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     if key.len() + 2 != layout.width {
         return None;
     }
+    if super::lists::marked_alone(block)
+        && let Some(changed) = set_marked(state, at, layout, key, value)
+    {
+        return Some(changed);
+    }
+    let block = state.heap.block(at)?;
     let how = Hashing::of(block);
     let mut hash = hash_key(state, layout.key, key, how);
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
@@ -1025,6 +1031,56 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
         }
     }
     i64::try_from(at).ok()
+}
+
+/// `set_words` on a dict a lock's log marked, with no other owner: changed in place, each word that
+/// changes saved in the log first, for a crash to put back (see `guarded::rollback`). `None`, having
+/// changed nothing, when it would have to grow or change how it hashes, which copies it as for one
+/// shared: its old block is then what a crash puts back.
+fn set_marked(state: &mut State, at: u64, layout: Layout, key: &[u64], value: u64) -> Option<i64> {
+    let block = state.heap.block(at)?;
+    let how = Hashing::of(block);
+    let hash = hash_key(state, layout.key, key, how);
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let (keys, used) = (*block.get(2)?, usize::try_from(*block.get(3)?).ok()?);
+    let start = DICT_HEADER_WORDS + mask + 1;
+    match find(state, block, layout, key, hash) {
+        Probe::Found(entry) => {
+            let owned = layout.value.owned();
+            let old = noted_write(state, at, start + entry * layout.width + layout.value_at(), value, owned)?;
+            if owned {
+                release(state, old);
+            }
+            if let Some(address) = key_block(layout.key, key) {
+                release(state, address);
+            }
+        }
+        Probe::Empty(slot) => {
+            if used >= capacity(mask + 1) || (how == Hashing::Fast && too_far(hash, slot, mask)) {
+                return None;
+            }
+            let count = |n: usize| u64::try_from(n).unwrap_or(0);
+            let entry = start + used * layout.width;
+            let words = std::iter::once(hash).chain(key.iter().copied()).chain(std::iter::once(value));
+            for (offset, word) in words.enumerate() {
+                noted_write(state, at, entry + offset, word, false)?;
+            }
+            noted_write(state, at, DICT_HEADER_WORDS + slot, count(used + 1), false)?;
+            noted_write(state, at, 2, keys + 1, false)?;
+            noted_write(state, at, 3, count(used + 1), false)?;
+        }
+    }
+    i64::try_from(at).ok()
+}
+
+/// Writes `new` at `word` in the dict at `at`, a lock's log marked, saving what was there in the log
+/// first, and gives back what was there. With `holds`, that's a block's address the dict owns, and
+/// the log takes an owner of its own.
+fn noted_write(state: &mut State, at: u64, word: usize, new: u64, holds: bool) -> Option<u64> {
+    let old = *state.heap.block(at)?.get(word)?;
+    super::guarded::rollback::changing(state, at, word, old, holds);
+    *state.heap.block_mut(at)?.get_mut(word)? = new;
+    Some(old)
 }
 
 /// `set_words` for a key held inline in its header, in the usual case: a dict of string headers
@@ -1090,10 +1146,11 @@ fn retain_entry(state: &mut State, layout: Layout, entry: &[u64]) {
     }
 }
 
-/// A block only one owner holds, taking over the owner `at` had.
+/// A block only one owner holds, taking over the owner `at` had. One a lock's log marked, with no
+/// other owner, stays as it is, for `take` to change in place.
 fn unshared(state: &mut State, at: u64) -> Option<u64> {
     let block = state.heap.block(at)?;
-    if state.heap.is_alone(at, block) {
+    if state.heap.is_alone(at, block) || super::lists::marked_alone(block) {
         return Some(at);
     }
     let layout = layout(state, block)?;
@@ -1130,6 +1187,22 @@ fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     let place = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
     let removed = block.get(place..place + layout.width)?;
     let (held, value) = (key_block(layout.key, key_of(removed)), value_of(removed));
+    if super::lists::marked_alone(block) {
+        // A lock's log saves each word first, with owners of what the key and the value hold.
+        let holds = |offset: usize| {
+            (offset == 1 && held.is_some()) || (offset == layout.value_at() && layout.value.owned())
+        };
+        for offset in 0..layout.width {
+            let new = if offset == 0 { REMOVED } else { 0 };
+            noted_write(state, at, place + offset, new, holds(offset))?;
+        }
+        let keys = *state.heap.block(at)?.get(2)?;
+        noted_write(state, at, 2, keys - 1, false)?;
+        if let Some(address) = held {
+            release(state, address);
+        }
+        return Some(Taken::Removed(value));
+    }
     // The whole entry is cleared, so nothing reads a key it no longer owns.
     state.heap.block_mut(at)?.get_mut(place..place + layout.width)?.fill(0);
     let block = state.heap.block_mut(at)?;

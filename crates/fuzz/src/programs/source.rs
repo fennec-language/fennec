@@ -4,7 +4,9 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Stmt};
+use super::ast::{
+    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Stmt, Via,
+};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -116,6 +118,132 @@ def summed_shown(limit: int, stop: int, stdout: Stdout) -> str:
 struct Holder:
     items: list[int]
     tag: int
+
+    def grown_by(ref self, more: list[int]):
+        for item in more:
+            self.items.append(item)
+
+struct Unit:
+    tags: list[int]
+    hp: int
+
+struct Army:
+    units: dict[str, Unit]
+
+struct Session:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int:
+        text.len()
+
+    def session(self) -> with Session:
+        lend Session(log=\"lite\") else:
+            pass
+
+struct Pg:
+    host: str
+
+    def run(self, text: str) -> int:
+        text.len() * 2
+
+    def session(self) -> with Session:
+        lend Session(log=\"pg\") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int:
+        text.len() * 3
+
+    def session(self) -> with Session:
+        lend Session(log=\"mem\") else:
+            pass
+
+type Two = Lite | Pg
+type Three = Lite | Pg | Mem
+
+def matched2(store: Two, text: str) -> str:
+    match store:
+        case Lite(name=_):
+            if store is Lite:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+        case Pg(host=_):
+            if store is Pg:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def checked2(store: Two, text: str) -> str:
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def direct2(store: Two, text: str) -> str:
+    count = store.run(text)
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    \"\"
+
+def matched3(store: Three, text: str) -> str:
+    match store:
+        case Lite(name=_):
+            if store is Lite:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+        case Pg(host=_):
+            if store is Pg:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+        case Mem(size=_):
+            if store is Mem:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def checked3(store: Three, text: str) -> str:
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    if store is Mem:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def direct3(store: Three, text: str) -> str:
+    count = store.run(text)
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    if store is Mem:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    \"\"
+
+def regrown(seed: int) -> int:
+    mut holder = Holder(items=[seed, seed + 1], tag=seed)
+    holder.items.append(holder.tag)
+    own = holder.items
+    holder.grown_by(own)
+    sum(holder.items) + own.len()
 
 enum Node:
     Leaf(name: str)
@@ -404,6 +532,53 @@ impl Writer {
                 self.line(indent + 1, "case .Leaf(ref name):");
                 self.line(indent + 2, &format!("name += {text}"));
             }
+            Stmt::CopiedNested(shape, given, copy, value) => {
+                let value = self.expr(value, false);
+                let (made, change) = match shape {
+                    Nested::DictOfUnits => (
+                        "{\"a\": Unit(tags=[1], hp=1), \"b\": Unit(tags=list[int](), hp=2)}",
+                        format!("{copy}[\"a\"].tags.append({value})"),
+                    ),
+                    Nested::ArmyOfUnits => (
+                        "Army(units={\"a\": Unit(tags=[1], hp=1)})",
+                        format!("{copy}.units[\"a\"].tags.append({value})"),
+                    ),
+                    Nested::DictOfDicts => (
+                        "{\"a\": {\"x\": 1}, \"b\": dict[str, int]()}",
+                        format!("{copy}[\"a\"][\"x\"] += {value}"),
+                    ),
+                    Nested::ListOfDicts => {
+                        ("[{\"x\": 1}, {\"y\": 2}]", format!("{copy}[0][\"x\"] += {value}"))
+                    }
+                    Nested::DictOfUnitLists => {
+                        ("{\"a\": [Unit(tags=[1], hp=1)]}", format!("{copy}[\"a\"][0].tags.append({value})"))
+                    }
+                };
+                self.line(indent, &format!("{given} = {made}"));
+                self.line(indent, &format!("mut {copy} = {given}"));
+                self.line(indent, &change);
+                self.line(indent, &format!("stdout.print({given}, {copy})"));
+            }
+            Stmt::UnionCall(how, members, member, text) => {
+                let how = match how {
+                    Via::Match => "matched",
+                    Via::Is => "checked",
+                    Via::Direct => "direct",
+                };
+                let made = ["Lite(name=\"a\")", "Pg(host=\"b\")", "Mem(size=1)"]
+                    .get(*member)
+                    .copied()
+                    .unwrap_or_default();
+                let text = self.expr(text, false);
+                self.line(indent, &format!("stdout.print({how}{members}({made}, {text}))"));
+            }
+            Stmt::GrownBy(holder, own) => {
+                self.line(indent, &format!("if {holder}.items.len() < 64:"));
+                self.line(indent + 1, &format!("{holder}.items.append({holder}.tag)"));
+                self.line(indent + 1, &format!("{own} = {holder}.items"));
+                self.line(indent + 1, &format!("{holder}.grown_by({own})"));
+                self.line(indent + 1, &format!("stdout.print({holder}, {own})"));
+            }
             Stmt::LocalRef(name, place, body) => {
                 let place = match place {
                     RefPlace::Item(list, at) => format!("{list}[{}]", self.expr(at, false)),
@@ -650,6 +825,11 @@ impl Writer {
                 let (by, plus, list) = (self.expr(by, false), self.expr(plus, false), self.expr(list, false));
                 let list = if *parallel { format!("parallel({list})") } else { list };
                 format!("[{item} * {by} + {plus} for {item} in {list}]")
+            }
+            Expr::Regrown(list) => {
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                format!("sum(regrown({item}) for {item} in parallel({}))", self.expr(list, false))
             }
             Expr::ParallelSum(list, by) => {
                 self.made += 1;

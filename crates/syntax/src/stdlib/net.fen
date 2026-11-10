@@ -233,12 +233,9 @@ export shared Server:
     ## loop goes on to the next.
     def iter(self) -> Iterator[Connection]:
         while True:
-            match accepted(self, timeout=None):
-                case Ok(conn):
-                    yield conn
-                    conn.close()
-                case Err(_):
-                    return
+            conn = accepted(self, timeout=None) else return
+            yield conn
+            conn.close()
 
     ## Has the server drain when the program's asked to stop, by SIGTERM or Ctrl-C say: it takes no
     ## more connections, and a connection waiting for its next message ends, while one partway
@@ -329,19 +326,17 @@ BARE_LINE_FEED = "a line ended without a carriage return"
 ## long gets a 431. One ended by a bare line feed gets a 400: a proxy that takes one and a server
 ## that doesn't would read where a request ends differently.
 def next_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
-    match read_request(connection, timeout):
-        case Ok(read):
-            return read
-        case Err(error):
-            match error:
-                case .Other(reason):
-                    if reason == LONG_LINE:
-                        return .Bad(status=431, reason="a line of the request is too long")
-                    if reason == BARE_LINE_FEED:
-                        return .Bad(status=400, reason="a line ended without a carriage return")
-                case _:
-                    pass
-            fail error
+    read = read_request(connection, timeout) else as error:
+        match error:
+            case .Other(reason):
+                if reason == LONG_LINE:
+                    return .Bad(status=431, reason="a line of the request is too long")
+                if reason == BARE_LINE_FEED:
+                    return .Bad(status=400, reason="a line ended without a carriage return")
+            case _:
+                pass
+        fail error
+    read
 
 ## The next request on a connection.
 def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:

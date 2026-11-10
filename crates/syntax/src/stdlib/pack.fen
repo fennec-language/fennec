@@ -68,20 +68,17 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
         if src._locked.len() > 0:
             layout = src._locked
         return by_name[T](src, layout=layout, at=src._layout_at)?
-    match read_value[T](ref src):
-        case Ok(value):
-            value
-        case Err(_):
-            # Read again keeping track of where it is, which a load that works never pays for.
-            mut again = PackReader(
-                _data=data,
-                _most_deep=held.depth,
-                _longest=held.length,
-                _most_empty=held.empty,
-                _explain=True,
-            )
-            _ = again._header(shape_hash[T](), type_name[T]())?
-            read_value[T](ref again)?
+    read_value[T](ref src) else:
+        # Read again keeping track of where it is, which a load that works never pays for.
+        mut again = PackReader(
+            _data=data,
+            _most_deep=held.depth,
+            _longest=held.length,
+            _most_empty=held.empty,
+            _explain=True,
+        )
+        _ = again._header(shape_hash[T](), type_name[T]())?
+        read_value[T](ref again)?
 
 ## Values one after another, as a file or a stream holds them. Each type's layout goes once,
 ## before the first value of it, and each value after it says which layout it has, by where that
@@ -298,21 +295,18 @@ def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fai
         _most_empty=held.empty,
         _items_left=held.length,
     )
-    match read_value[T](ref src):
-        case Ok(value):
-            value
-        case Err(_):
-            # Read again keeping track of where it is, which a load that works never pays for.
-            mut again = PackReader(
-                _data=body,
-                _exact=exact,
-                _most_deep=held.depth,
-                _longest=held.length,
-                _most_empty=held.empty,
-                _items_left=held.length,
-                _explain=True,
-            )
-            read_value[T](ref again)?
+    read_value[T](ref src) else:
+        # Read again keeping track of where it is, which a load that works never pays for.
+        mut again = PackReader(
+            _data=body,
+            _exact=exact,
+            _most_deep=held.depth,
+            _longest=held.length,
+            _most_empty=held.empty,
+            _items_left=held.length,
+            _explain=True,
+        )
+        read_value[T](ref again)?
 
 ## `T`'s layout to write beside a value, or "" when the kit's `pack.lock` has it, which a reader
 ## finds there instead. A value is then as small as it was before layouts.

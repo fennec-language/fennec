@@ -208,8 +208,8 @@ impl Lowering<'_> {
         let (fallback, join) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(failed), then: fallback, otherwise: join });
         self.current = fallback;
-        if default.leaves() {
-            self.else_leaves(default, &value, span)?;
+        if default.else_block().is_some() {
+            self.else_block(default, &value, Tail::Drop, span)?;
         } else {
             self.effect(default)?;
         }
@@ -220,18 +220,21 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    /// The block of an `else` that leaves, which `else as failure:` runs with what failed.
-    fn else_leaves(&mut self, default: &Expr, value: &Operand, span: Span) -> Lowered<()> {
-        let Some((failure, block)) = default.failure_named() else {
-            return self.tail_expr(default, Tail::Drop);
-        };
-        let Some(Type::Result(_, error)) = type_in(&self.locals, value) else {
-            return Err("it names the failure of something that can't fail".to_owned());
+    /// The block of an `else`, which `else as failure:` runs with what failed. It leaves, or its
+    /// last line goes where `tail` says.
+    fn else_block(&mut self, default: &Expr, value: &Operand, tail: Tail, span: Span) -> Lowered<()> {
+        let Some((failure, block)) = default.else_block() else {
+            return self.tail_expr(default, tail);
         };
         self.scopes.push(std::collections::HashMap::new());
-        let held = self.declare(failure, *error);
-        self.emit(InstKind::GetErr { dest: held, value: value.clone() }, span);
-        let lowered = self.stmts(block, Tail::Drop);
+        if let Some(failure) = failure {
+            let Some(Type::Result(_, error)) = type_in(&self.locals, value) else {
+                return Err("it names the failure of something that can't fail".to_owned());
+            };
+            let held = self.declare(failure, *error);
+            self.emit(InstKind::GetErr { dest: held, value: value.clone() }, span);
+        }
+        let lowered = self.stmts(block, tail);
         self.scopes.pop();
         lowered
     }
@@ -255,13 +258,17 @@ impl Lowering<'_> {
         self.finish(Terminator::Branch { cond, then: fallback, otherwise: present });
         self.current = fallback;
         if default.leaves() {
-            self.else_leaves(default, &value, span)?;
+            self.else_block(default, &value, Tail::Drop, span)?;
+        } else if default.else_block().is_some() {
+            self.else_block(default, &value, Tail::Into(dest), span)?;
         } else {
             let lowered = self.expr(default)?;
             let lowered = self.coerce(lowered, &ty, default.span)?;
             self.emit(InstKind::Copy { dest, value: lowered }, span);
         }
-        self.finish(Terminator::Jump(join));
+        if self.is_open() {
+            self.finish(Terminator::Jump(join));
+        }
         self.current = present;
         // `None else default`, as a `with` source's parameter is when its default is written in,
         // never gets here: it's always the default.

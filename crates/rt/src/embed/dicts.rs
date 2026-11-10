@@ -291,7 +291,7 @@ fn finish(hash: u64) -> u64 {
 }
 
 /// Whether a plain key is hashed by what it holds rather than by its words.
-fn by_what_it_holds(element: &Element) -> bool {
+pub(super) fn by_what_it_holds(element: &Element) -> bool {
     match element {
         Element::Float | Element::F32 => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| by_what_it_holds(field)),
@@ -345,8 +345,15 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
     }
     if let Word::Plain(_) = key_word {
         let block = state.heap.block(first).unwrap_or_default();
-        // Blocks or floats in a key go by what they hold, not by their words.
-        if super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element)) {
+        // Blocks or floats in a key go by what they hold, not by their words: worked out for each
+        // of the program's shapes as it starts.
+        let known = shape_word(block)
+            .and_then(|shape| state.keys_by_value.get(usize::try_from(shape).ok()?))
+            .copied();
+        let by_value = known.unwrap_or_else(|| {
+            super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element))
+        });
+        if by_value {
             let value = super::heap::read_block(state, first);
             return match how {
                 Hashing::Fast => {

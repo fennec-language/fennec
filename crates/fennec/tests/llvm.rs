@@ -482,6 +482,66 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// An `else` block that gives a value: `else as why:` with what failed in it, a plain `else:`
+/// after a failure or a `None`, a `match` on the failure before the value, and one that leaves.
+#[test]
+fn an_else_block_gives_the_value_on_its_last_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "else_block_value",
+        ELSE_BLOCK_VALUE,
+        "failed: big\n0\nno world\n1\n2\nnot there\n-1\n0\n4\n",
+    )
+}
+
+const ELSE_BLOCK_VALUE: &str = r#"error Bad:
+    why: str
+
+struct World:
+    size: int
+
+def risky(n: int) -> int fails Bad:
+    if n > 5:
+        fail Bad("big")
+    n
+
+def load(n: int) -> World fails Bad:
+    if n > 5:
+        fail Bad("no world")
+    World(size=n)
+
+def find(names: list[str], name: str) -> int?:
+    for at, held in enumerate(names):
+        if held == name:
+            return at
+    None
+
+def main(stdout: Stdout):
+    small = risky(9) else as why:
+        stdout.print(f"failed: {why.why}")
+        0
+    stdout.print(small)
+    world = load(8) else as why:
+        match why:
+            case Bad(text):
+                stdout.print(text)
+        World(size=1)
+    stdout.print(world.size)
+    kept = load(2) else:
+        World(size=-1)
+    stdout.print(kept.size)
+    where = find(["a", "b"], "c") else:
+        stdout.print("not there")
+        -1
+    stdout.print(where)
+    for turn in range(3):
+        held = risky(turn * 4) else:
+            continue
+        stdout.print(held)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -12011,6 +12071,52 @@ fn postgres_tls_answering(answer: &'static [u8]) -> std::io::Result<u16> {
         }
     });
     Ok(port)
+}
+
+/// A database URL holds a password only as a `Secret`: a plain one with a password is refused, a
+/// password both in a `Secret` URL and as `password=` is refused, and a failure shows the URL with
+/// its password as `****`. The URL comes from the environment here, as a real one would, so the
+/// compile-time refusal of a written one doesn't apply.
+#[test]
+fn a_database_url_holds_a_password_only_as_a_secret_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std import postgres
+from std.crypto import Secret
+from std.sql import SqlError
+
+## What `settings` made of a URL, or why it couldn't.
+def described(url: str | Secret[str]) -> str:
+    match postgres.settings(url):
+        case Ok(found):
+            return f"{found.user} {found.host} {found.port} {found.database}"
+        case Err(error):
+            return error.message()
+
+def twice(url: Secret[str], net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, url, password=Secret.of("other"))? as _:
+        pass
+
+def main(stdout: Stdout, env: Env, net: Net, entropy: Entropy):
+    written = env.get("FENNEC_DATABASE_URL") else "postgres://ann:hunter2@db.example/shop"
+    stdout.print(described(written))
+    stdout.print(described(Secret.of(written)))
+    match twice(Secret.of(written), net=net, entropy=entropy):
+        case Ok(_):
+            stdout.print("connected")
+        case Err(error):
+            stdout.print(error.message())
+"#;
+    let printed = printed_by("postgres_secret_url", source)?;
+    assert_eq!(
+        printed,
+        "the database URL `postgres://ann:****@db.example/shop` has a password in it, so it has to be a `Secret`, as `env.secret(\"DATABASE_URL\")?` reads one, and never a plain `str`, which could be printed\n\
+         ann db.example 5432 shop\n\
+         `password` is set in the database URL and as an argument: set it in one\n"
+    );
+    assert!(!printed.contains("hunter2"), "{printed}");
+    Ok(())
 }
 
 /// `postgres.connect` asks for TLS unless told not to, and never falls back to the clear: a server

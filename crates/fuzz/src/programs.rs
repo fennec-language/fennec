@@ -280,7 +280,7 @@ mod tests {
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
-            found += usize::from(source.contains("for planned in v"));
+            found += usize::from(source.contains("for change in v"));
         }
         assert!(found >= 3, "{found} programs plan and apply");
     }

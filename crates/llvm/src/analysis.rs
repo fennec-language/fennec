@@ -1661,9 +1661,12 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             let id_map = |local: LocalId| {
                 matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Table(_)))
             };
-            // Nor are an array's: one in a block isn't made alone to take one out.
+            // Nor are an array's: one in a block isn't made alone to take one out. Nor a dict's,
+            // whose item is read out of it as it is, with no making it alone first: the dict may
+            // be another's too, and the item has to own what it holds to change it.
+            let dict = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::Dict(..)));
             if matches!(&inst.kind, InstKind::GetIndex { .. })
-                && (id_map(source) || is_array(function, source))
+                && (id_map(source) || is_array(function, source) || dict)
             {
                 continue;
             }

@@ -43,8 +43,10 @@ def main(stdout: Stdout):
     near = world.enemies.add(Enemy(position=Vec3(x=3.0, y=4.0), velocity=Vec3(x=-1.0)))
     far = world.enemies.add(Enemy(position=Vec3(x=10.0)))
 
-    stdout.print(attack(ref world, near))
-    stdout.print(attack(ref world, far))
+    attack(ref world, near) else as why:
+        stdout.print(why)
+    attack(ref world, far) else as why:
+        stdout.print(why)
     stdout.print(world.enemies[near].health)
 
     step(ref world, 2.0)
@@ -54,7 +56,8 @@ def main(stdout: Stdout):
     stdout.print(world.enemies[far].health)
 
     _ = world.enemies.remove(near)
-    stdout.print(attack(ref world, near))
+    attack(ref world, near) else as why:
+        stdout.print(why)
     stdout.print(world.enemies.len(), world.enemies.get(near))
 
     weakest = min(world.enemies.values(), key=enemy => enemy.health)

@@ -29,7 +29,7 @@ def main(stdout: Stdout):
         "A".code(),
         "é".code(),
         "Fox".codes(),
-        str.from_code(97),
+        str.from_code(97) else "?",
         str.from_code(-1) else "?",
     )
     stdout.print("héllo".len(), "héllo".encode().len(), "héllo"[1])

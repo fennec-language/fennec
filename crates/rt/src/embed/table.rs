@@ -132,15 +132,22 @@ impl Table {
         self.regions.iter().map(|(_, pages)| pages.iter().flatten().count()).sum()
     }
 
-    /// How many blocks it holds of each size, in words, for counting what's live.
+    /// How many blocks it holds of each size, in words, for counting what's live, and apart from
+    /// them how many are never freed: each a literal's, a constant's, a capability's or a case's
+    /// with no fields, made once, the first time it's asked for, and kept for the run.
     #[cfg(any(test, feature = "threads"))]
-    pub(super) fn sizes(&self) -> std::collections::BTreeMap<usize, usize> {
+    pub(super) fn sizes(&self) -> (std::collections::BTreeMap<usize, usize>, usize) {
         let mut sizes = std::collections::BTreeMap::new();
+        let mut never_freed = 0;
         let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
         for block in placed.flat_map(|page| page.iter().flatten()).chain(self.short.values()) {
-            *sizes.entry(block.len()).or_default() += 1;
+            if super::heap::is_never_freed(block) {
+                never_freed += 1;
+            } else {
+                *sizes.entry(block.len()).or_default() += 1;
+            }
         }
-        sizes
+        (sizes, never_freed)
     }
 
     fn slot(&self, address: usize) -> Option<&[u64]> {
@@ -367,6 +374,20 @@ mod tests {
         }
         assert_eq!(table.len(), 0);
         assert!(table.pages() < 200, "{} pages kept for no blocks", table.pages());
+    }
+
+    /// A block that's never freed is counted apart from the live ones, by its count or its owner:
+    /// a case's block whose count has drifted below the mark is still its case's.
+    #[test]
+    fn blocks_never_freed_are_counted_apart() {
+        use super::super::heap::{IMMORTAL, NEVER_FREED_OWNER, OWNER_SHIFT};
+        let mut table = Table::default();
+        table.insert(vec![1, 2, 3].into_boxed_slice());
+        table.insert(vec![IMMORTAL, 2, 3, 4].into_boxed_slice());
+        table.insert(
+            vec![IMMORTAL - 2, (NEVER_FREED_OWNER << OWNER_SHIFT) | 0x17, 2, 0, 0].into_boxed_slice(),
+        );
+        assert_eq!(table.sizes(), ([(3, 1)].into(), 2));
     }
 
     #[test]

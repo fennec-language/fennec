@@ -51,6 +51,33 @@ impl fennec_kit::Parses for Kept {
     }
 }
 
+/// Where the standard library's parse is kept in the cache: one for each build of Fennec, whose
+/// name is a hash of all its source, the standard library's text included, so a kept parse is
+/// always of the text this build holds.
+const PRELUDE: &str = "prelude";
+
+impl Kept {
+    fn prelude_name(&self) -> String {
+        let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec prelude parse 2026-11-10");
+        hasher.update(self.build.as_bytes());
+        hasher.finalize().to_hex()
+    }
+}
+
+impl fennec_syntax::KeptPrelude for Kept {
+    fn prelude(&self) -> Option<Vec<Module>> {
+        let bytes = self.cache.read(PRELUDE, &self.prelude_name())?;
+        Vec::<Module>::decode(&mut Reader::new(&bytes))
+    }
+
+    fn keep_prelude(&self, modules: &[Module]) {
+        let mut writer = Writer::default();
+        modules.encode(&mut writer);
+        // A cache that can't be written only means parsing the standard library again next time.
+        let _ = self.cache.write(PRELUDE, &self.prelude_name(), &writer.into_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use fennec_kit::Parses as _;
@@ -126,6 +153,22 @@ mod tests {
             }
         }
         assert!(compared > 100, "only {compared} examples parsed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The standard library's parse, kept and read back, is what parsing it gives, and is kept for
+    /// one build of Fennec only.
+    #[test]
+    fn the_standard_librarys_parse_reads_back_as_parsing_it_gives() {
+        use fennec_syntax::KeptPrelude as _;
+        let dir = std::env::temp_dir().join(format!("fennec-prelude-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let parsed = fennec_syntax::prelude_modules().unwrap();
+        let parses = kept(&dir, "build one");
+        assert!(parses.prelude().is_none(), "nothing's kept yet");
+        parses.keep_prelude(parsed);
+        assert_eq!(parses.prelude().as_deref(), Some(parsed));
+        assert!(kept(&dir, "build two").prelude().is_none(), "another build parses again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

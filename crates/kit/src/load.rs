@@ -141,6 +141,16 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     Ok(program)
 }
 
+/// Whether a program loaded from the kit at `dir` has every one of the kit's own modules, as
+/// `kit` shows them.
+pub(crate) fn holds_every_file(program: &Program, dir: &Path, shown_as: &str) -> bool {
+    let Some((root, shown_root)) = find_root(dir, shown_as) else { return false };
+    let mut modules = Vec::new();
+    find_modules(&root.join("src"), &mut Vec::new(), &mut modules);
+    let loaded: HashSet<&str> = program.sources.files().map(|(shown, _)| shown).collect();
+    modules.iter().all(|module| loaded.contains(format!("{shown_root}src/{}.fen", module.join("/")).as_str()))
+}
+
 /// The name a kit's `pack.lock` is held under in its program: one no program can write.
 pub const PACK_LOCK: &str = "\0pack_lock";
 

@@ -4802,6 +4802,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
+/// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
+/// leaves the enum out where it's known: that's for the program as written.
+#[test]
+fn a_json_names_case_written_with_its_enum_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "json_names_with_enum",
+        r#"from std import json
+from std.json import JsonNames
+
+struct Player:
+    display_name: str
+
+def main(stdout: Stdout):
+    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    stdout.print(text)
+    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+"#,
+        "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
+    )
+}
+
 /// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
 /// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
 /// what's inside it. A type with no fields gives none.

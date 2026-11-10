@@ -1,5 +1,7 @@
-error: expected a value, found `if`
+error: `if` doesn't give a value over several lines
  --> examples/errors/keyword_where_value_expected.fen:2:13
   |
 2 |     total = if
   |             ^^
+  |
+  = help: write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value

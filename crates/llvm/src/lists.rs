@@ -776,7 +776,9 @@ impl Emit<'_, '_, '_> {
         let global = format!("@\"fen_case_{id}_{number}\"");
         self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
         let (kept, none) = (self.temp(), self.temp());
-        self.line(&format!("{kept} = load atomic ptr, ptr {global} unordered, align 8"));
+        // Acquire, pairing with the release below: a thread that sees the block sees what was
+        // written in it, its count and tag, before it was put here.
+        self.line(&format!("{kept} = load atomic ptr, ptr {global} acquire, align 8"));
         self.line(&format!("{none} = icmp eq ptr {kept}, null"));
         let (first, ready) = (self.label("case_first"), self.label("case_ready"));
         let before = self.current.clone();
@@ -786,7 +788,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {IMMORTAL}, ptr {made}{HEADER_ACCESS}"));
         let tag_at = self.offset(&made, FIELDS_OFFSET);
         self.line(&format!("store i64 {number}, ptr {tag_at}"));
-        self.line(&format!("store atomic ptr {made}, ptr {global} unordered, align 8"));
+        self.line(&format!("store atomic ptr {made}, ptr {global} release, align 8"));
         let made_end = self.current.clone();
         self.line(&format!("br label %{ready}"));
         self.start_block(&ready);

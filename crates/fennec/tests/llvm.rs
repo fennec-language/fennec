@@ -4458,6 +4458,59 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// An arrow failing fewer ways than the function type it's given for, as one failing with
+/// `Refused` where `() -> str fails Refused | Shut` goes, is made as failing all of them, natively:
+/// passed to a function, with a parameter, given to a name typed as one, and a function named as a
+/// value, written in as an arrow calling it.
+#[test]
+fn an_arrow_failing_fewer_ways_than_its_type_says_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "arrow_widened",
+        r#"error Refused:
+    code: int
+
+error Shut:
+    why: str
+
+def capped(n: int) -> int fails Refused:
+    if n < 0:
+        fail Refused(code=n)
+    n
+
+def closed(n: int) -> int fails Shut:
+    if n > 5:
+        fail Shut(why="big")
+    n
+
+def only_refused() -> str fails Refused:
+    f"{capped(-3)?}"
+
+def either(run: () -> str fails Refused | Shut) -> str:
+    run() else as why:
+        match why:
+            case Refused(code): f"refused {code}"
+            case Shut(why=reason): f"shut {reason}"
+
+def each(step: (int) -> int fails Refused | Shut, n: int) -> str:
+    stepped = step(n) else as why:
+        match why:
+            case Refused(code): return f"refused {code}"
+            case Shut(why=reason): return f"shut {reason}"
+    f"{stepped}"
+
+def main(stdout: Stdout):
+    stdout.print(either(only_refused), each(n => closed(n)? + 1, 9), each(n => closed(n)? + 1, 2))
+    stdout.print(either(() => f"{capped(-1)?}"), either(() => f"{capped(2)?}"))
+    run: () -> str fails Refused | Shut = () => f"{capped(-4)?}"
+    stdout.print(either(run))
+"#,
+        "refused -3 shut big 3\nrefused -1 2\nrefused -4\n",
+    )
+}
+
 /// An arrow function's `?` passes its failure up as the arrow's own, natively: a function taking
 /// one that fails runs it twice, passing its failure on.
 #[test]

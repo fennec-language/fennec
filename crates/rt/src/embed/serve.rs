@@ -430,7 +430,7 @@ impl Conn {
             return self.write_securely(data, until);
         }
         while !data.is_empty() {
-            let wrote = self.stream.borrow_mut().write(data);
+            let wrote = self.stream.borrow_mut().write(crate::stdlib::net::piece(data));
             match wrote {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),

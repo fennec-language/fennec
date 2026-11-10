@@ -303,10 +303,13 @@ fn build(state: &mut State, at: usize, stride: usize, items: &[u64], room: usize
         LIST_HEADER_WORDS + items.len(),
     );
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    if let Some(header) = block.get_mut(..LIST_HEADER_WORDS) {
-        header.copy_from_slice(&[1, shape(state, at), number(count), number(room)]);
+    // Written a word at a time: a few words copied as a slice went through a call to copy them.
+    if let Some([owners, kind, length, room_word]) = block.get_mut(..LIST_HEADER_WORDS) {
+        (*owners, *kind, *length, *room_word) = (1, shape(state, at), number(count), number(room));
     }
-    if let Some(words) = block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + items.len()) {
+    if !items.is_empty()
+        && let Some(words) = block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + items.len())
+    {
         words.copy_from_slice(items);
     }
     block

@@ -8006,16 +8006,17 @@ from std.path import Path
 
 def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entropy):
     folder = \"native-capabilities\"
-    stdout.print(fs.exists(folder))
+    stdout.print(fs.exists(folder).expect(\"it works\"))
     fs.make_dir(folder).expect(\"it works\")
     file = folder + \"/a.txt\"
     fs.write_text(file, \"one\\ntwo\\n\").expect(\"it works\")
-    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)))
+    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)).expect(\"it works\"))
     stdout.print(fs.metadata(file).expect(\"it works\").size, fs.metadata(file).expect(\"it works\").is_file)
     stdout.print(fs.list_dir(folder).expect(\"it works\"))
     only = fs.only(folder)
     stdout.print(only.read_text(file).expect(\"it works\"))
-    stdout.print(only.exists(\"/\"))
+    # Outside its folder it can't look at all, which fails rather than saying no.
+    stdout.print(only.exists(\"/\") else True)
     match only.read_text(\"/etc/hosts\"):
         case Ok(_):
             stdout.print(\"read it\")
@@ -8104,7 +8105,7 @@ def main(stdout: Stdout, fs: Fs):
     match write(only, path=\"outside.txt\", text=\"no\"):
         case Ok(_): stdout.print(\"wrote outside\")
         case Err(problem): stdout.print(\"outside what this Fs can reach\" in problem.reason)
-    stdout.print(fs.exists(\"outside.txt\"))
+    stdout.print(fs.exists(\"outside.txt\").expect(\"it works\"))
     fs.remove(folder + \"/a.txt\").expect(\"it works\")
     fs.remove(folder + \"/b.txt\").expect(\"it works\")
     fs.remove(folder).expect(\"it works\")
@@ -8594,7 +8595,7 @@ test "a database is a file"(fs: Fs):
         _ = db.execute(t"delete from notes")?
         word = "fox"
         _ = db.execute(t"insert into notes values ({word})")?
-    assert fs.exists("real.db")
+    assert fs.exists("real.db")?
     with sqlite.open(fs, "real.db")? as db:
         assert db.query[str](t"select text from notes")? == ["fox"]
     fs.remove("real.db")?
@@ -8602,7 +8603,7 @@ test "a database is a file"(fs: Fs):
 test "its file is there to see"(fs: Fs):
     with sqlite.open(fs, "memory.db")? as db:
         _ = db.execute(t"create table if not exists notes (text text)")?
-    assert fs.exists("memory.db")
+    assert fs.exists("memory.db")?
     fs.remove("memory.db")?
 
 def opened(fs: Fs, path: str) fails SqlError:
@@ -17294,12 +17295,12 @@ fn tests_that_take_capabilities_run_through_llvm() -> std::io::Result<()> {
 from std.net import NetError
 
 test \"files are its own\"(fs: Fs):
-    assert not fs.exists(\"a\")
+    assert not fs.exists(\"a\")?
     fs.write_text(\"a\", \"one\")?
     assert fs.read_text(\"a\")? == \"one\"
 
 test \"files are its own, again\"(fs: Fs):
-    assert not fs.exists(\"a\")
+    assert not fs.exists(\"a\")?
     fs.write_text(\"a\", \"two\")?
 
 test \"what it prints is kept\"(stdout: Stdout, clock: Clock):

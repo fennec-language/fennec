@@ -377,7 +377,7 @@ fn tests_get_fakes_unless_asked_for_the_real_thing() {
     let start = dir.join("start.txt");
     std::fs::write(&start, "from disk").unwrap();
     let source = format!(
-        "test \"files\"(fs: Fs, out: Stdout, clock: Clock):\n    fs.make_dir({dir:?})?\n    fs.write_text({written:?}, \"hi\")?\n    assert fs.exists({written:?})\n    out.print(\"printed\", fs.exists({start:?}))\n    assert clock.now().nanos >= 0\n",
+        "test \"files\"(fs: Fs, out: Stdout, clock: Clock):\n    fs.make_dir({dir:?})?\n    fs.write_text({written:?}, \"hi\")?\n    assert fs.exists({written:?})?\n    out.print(\"printed\", fs.exists({start:?})?)\n    assert clock.now().nanos >= 0\n",
     );
     let path = dir.join("real.fen");
     std::fs::write(&path, source).unwrap();
@@ -536,7 +536,7 @@ const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
 
 def main(stdout: Stdout, fs: Fs):
     slots = Path("saves") / "slots"
-    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots))
+    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots)?)
     fs.write_text(slots / "b.txt", "bee")?
     fs.write_text("saves/slots/a.txt", "ay")?
     stdout.print([path.text for path in fs.list_dir(slots)?], fs.read_text(slots / "a.txt")?)
@@ -550,7 +550,7 @@ def main(stdout: Stdout, fs: Fs):
         fs.remove(path)?
     fs.remove(slots)?
     fs.remove("saves")?
-    stdout.print(fs.exists("saves"), fs.list_dir(".")?)
+    stdout.print(fs.exists("saves")?, fs.list_dir(".")?)
 "#;
 
 #[test]

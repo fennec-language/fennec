@@ -242,7 +242,7 @@ impl TestWorld {
         let done = match (method, paths) {
             ("exists", [Value::Str(path)]) => {
                 let key = key(path);
-                return Some(Ok(Value::Bool(key.is_empty() || world.nodes.contains_key(&key))));
+                Ok(Value::Bool(key.is_empty() || world.nodes.contains_key(&key)))
             }
             ("read_text", [Value::Str(path)]) => world.read(path).and_then(|data| {
                 let text = std::str::from_utf8(data).map_err(|err| format!("{path} isn't text: {err}"))?;

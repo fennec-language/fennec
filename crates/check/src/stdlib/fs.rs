@@ -12,7 +12,7 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
     // A path is a `str` here, and the checker takes a `Path` wherever `Fs` takes one.
     let path = || Type::Str;
     Some(match (type_name, name) {
-        ("Fs", "exists") => reads(&[path()], Type::Bool),
+        ("Fs", "exists") => reads(&[path()], io(Type::Bool)),
         ("Fs", "read_text") => reads(&[path()], io(Type::Str)),
         ("Fs", "write_text") => reads(&[path(), Type::Str], io(Type::Unit)),
         ("Fs", "read_bytes") => reads(&[path()], io(Type::Bytes)),

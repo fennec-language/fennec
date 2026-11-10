@@ -732,6 +732,10 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new(message, span).with_help(help));
                 Type::Unknown
             }
+            (UnaryOp::Not, Type::Result(value, _)) if **value == Type::Bool => {
+                self.error(crate::messages::not_bool("not", &ty, span));
+                Type::Bool
+            }
             (UnaryOp::Not, _) => {
                 self.error(
                     Diagnostic::new(format!("`not` needs a bool, but this is {}", article(&ty.kind())), span)

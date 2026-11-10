@@ -4,4 +4,4 @@ error: this changes `self.items`, which the call it's passed to changes too
 10 |         self.items.append(self.grow())
    |                           ^^^^^^^^^^^
    |
-   = help: make that change on the line before, keeping what it gives back in a name, and pass the name
+   = help: a call has to be the only way to reach what it changes: make that change on the line before, keeping what it gives back in a name, and pass the name

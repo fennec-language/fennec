@@ -233,10 +233,14 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures,
     if let Some((mut program, kept)) = crate::image::load(path, &cache)
         && let Ok(signatures) = fennec_check::check_to_run(&mut program.module)
     {
+        crate::lint::lend_loaded(None, path);
         return Ok((program, signatures, Some(kept)));
     }
     let files = crate::image::files_now(path, &cache);
-    let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
+    let loaded = crate::load(path, fennec_kit::Entry::Main);
+    // The lint errors are found from this load, when it has every file they'd look at.
+    crate::lint::lend_loaded(loaded.as_ref(), path);
+    let mut program = loaded.ok_or(ExitCode::FAILURE)?;
     let name = passed_name(path);
     let embedded = program.embedded_texts();
     let text = fingerprint(

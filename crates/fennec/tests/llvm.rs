@@ -12595,11 +12595,9 @@ from std.sql import SqlError
 
 ## What `settings` made of a URL, or why it couldn't.
 def described(url: str | Secret[str]) -> str:
-    match postgres.settings(url):
-        case Ok(found):
-            return f"{found.user} {found.host} {found.port} {found.database}"
-        case Err(error):
-            return error.message()
+    found = postgres.settings(url) else as error:
+        return error.message()
+    f"{found.user} {found.host} {found.port} {found.database}"
 
 def twice(url: Secret[str], net: Net, entropy: Entropy) fails SqlError:
     with postgres.connect(net, entropy, url, password=Secret.of("other"))? as _:
@@ -12609,11 +12607,10 @@ def main(stdout: Stdout, env: Env, net: Net, entropy: Entropy):
     written = env.get("FENNEC_DATABASE_URL") else "postgres://ann:hunter2@db.example/shop"
     stdout.print(described(written))
     stdout.print(described(Secret.of(written)))
-    match twice(Secret.of(written), net=net, entropy=entropy):
-        case Ok(_):
-            stdout.print("connected")
-        case Err(error):
-            stdout.print(error.message())
+    twice(Secret.of(written), net=net, entropy=entropy) else as error:
+        stdout.print(error.message())
+        return
+    stdout.print("connected")
 "#;
     let printed = printed_by("postgres_secret_url", source)?;
     assert_eq!(

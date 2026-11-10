@@ -14,46 +14,22 @@ from std import json
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    match json.loads[int](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[float](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[str](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[bool](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[list[int]](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[list[str?]](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[dict[str, str]](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
-    match json.loads[dict[str, list[float]]](text):
-        case Ok(value):
-            stdout.print(\"ok \" + json.dumps(value))
-        case Err(_):
-            stdout.print(\"err\")
+    as_int: int? = json.loads[int](text) else None
+    stdout.print(\"err\" if as_int is None else \"ok \" + json.dumps(as_int))
+    as_float: float? = json.loads[float](text) else None
+    stdout.print(\"err\" if as_float is None else \"ok \" + json.dumps(as_float))
+    as_str: str? = json.loads[str](text) else None
+    stdout.print(\"err\" if as_str is None else \"ok \" + json.dumps(as_str))
+    as_bool: bool? = json.loads[bool](text) else None
+    stdout.print(\"err\" if as_bool is None else \"ok \" + json.dumps(as_bool))
+    as_ints: list[int]? = json.loads[list[int]](text) else None
+    stdout.print(\"err\" if as_ints is None else \"ok \" + json.dumps(as_ints))
+    as_words: list[str?]? = json.loads[list[str?]](text) else None
+    stdout.print(\"err\" if as_words is None else \"ok \" + json.dumps(as_words))
+    as_names: dict[str, str]? = json.loads[dict[str, str]](text) else None
+    stdout.print(\"err\" if as_names is None else \"ok \" + json.dumps(as_names))
+    as_floats: dict[str, list[float]]? = json.loads[dict[str, list[float]]](text) else None
+    stdout.print(\"err\" if as_floats is None else \"ok \" + json.dumps(as_floats))
 ";
 
 /// The types `READER` reads as, in its order.

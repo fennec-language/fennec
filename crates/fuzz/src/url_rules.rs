@@ -13,19 +13,19 @@ def same(a: Url, b: Url) -> bool:
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    match url.parse(text):
-        case Ok(found):
-            written = f\"{found}\"
-            match url.parse(written):
-                case Ok(again):
-                    stdout.print(\"reads-back\", same(found, again), written)
-                    stdout.print(\"prints-the-same\", f\"{again}\" == written, written)
-                case Err(_):
-                    stdout.print(\"reads-back\", False, written)
-                    stdout.print(\"prints-the-same\", False, written)
-        case Err(_):
-            stdout.print(\"reads-back\", True)
-            stdout.print(\"prints-the-same\", True)
+    found: Url? = url.parse(text) else None
+    if found is None:
+        stdout.print(\"reads-back\", True)
+        stdout.print(\"prints-the-same\", True)
+    else:
+        written = f\"{found}\"
+        again: Url? = url.parse(written) else None
+        if again is None:
+            stdout.print(\"reads-back\", False, written)
+            stdout.print(\"prints-the-same\", False, written)
+        else:
+            stdout.print(\"reads-back\", same(found, again), written)
+            stdout.print(\"prints-the-same\", f\"{again}\" == written, written)
     stdout.print(\"unquotes\", url.unquote(url.quote(text)) == text)
     stdout.print(\"unquotes-kept\", url.unquote(url.quote(text, keep=\"/:@%+\")) == text or text.find(\"%\") is not None)
     query = {text: text, \"b\": text + \"&\"}

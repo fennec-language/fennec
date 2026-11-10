@@ -234,6 +234,83 @@ pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The `json` target's program, which reads its file as several types, printing `Ok(value)` or
+/// `Err(why)` for each.
+const JSON_READER: &str = "\
+from std import json
+
+def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
+    text = fs.read_text(args[0])?
+    ints: list[int]? = json.loads[list[int]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if ints is not None:
+        stdout.print(f\"Ok({ints})\")
+    names: dict[str, str]? = json.loads[dict[str, str]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if names is not None:
+        stdout.print(f\"Ok({names})\")
+    floats: dict[str, list[float]]? = json.loads[dict[str, list[float]]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if floats is not None:
+        stdout.print(f\"Ok({floats})\")
+    words: list[str?]? = json.loads[list[str?]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if words is not None:
+        stdout.print(f\"Ok({words})\")
+    number: float? = json.loads[float](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if number is not None:
+        stdout.print(f\"Ok({number})\")
+    truth: bool? = json.loads[bool](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if truth is not None:
+        stdout.print(f\"Ok({truth})\")
+";
+
+/// The `toml` target's program, which reads its file as several types, printing `Ok(value)` or
+/// `Err(why)` for each.
+const TOML_READER: &str = "\
+from std import toml
+
+def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
+    text = fs.read_text(args[0])?
+    names: dict[str, str]? = toml.loads[dict[str, str]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if names is not None:
+        stdout.print(f\"Ok({names})\")
+    counts: dict[str, int]? = toml.loads[dict[str, int]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if counts is not None:
+        stdout.print(f\"Ok({counts})\")
+    tables: dict[str, dict[str, str]]? = toml.loads[dict[str, dict[str, str]]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if tables is not None:
+        stdout.print(f\"Ok({tables})\")
+    floats: dict[str, list[float]]? = toml.loads[dict[str, list[float]]](text) else as why:
+        stdout.print(f\"Err({why})\")
+        None
+    if floats is not None:
+        stdout.print(f\"Ok({floats})\")
+";
+
+/// The `utf8` target's program, which decodes its file's bytes, printing `Ok(text)` or `Err(why)`.
+const UTF8_READER: &str = "\
+def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
+    decoded = fs.read_bytes(args[0])?.decode() else as why:
+        stdout.print(f\"Err({why})\")
+        return
+    stdout.print(f\"Ok({decoded})\")
+";
+
 /// The programs the targets that read an input natively run it through, each reading the file
 /// it's given. A program here may fail, but never crash or get stuck.
 const READERS: [(&str, &str); 9] = [
@@ -243,26 +320,9 @@ const READERS: [(&str, &str); 9] = [
     ("url", crate::url_rules::READER),
     ("csv", crate::csv_rules::READER),
     ("json-rules", crate::json_rules::READER),
-    (
-        "json",
-        "from std import json\n\ndef main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
-         text = fs.read_text(args[0])?\n    stdout.print(json.loads[list[int]](text))\n    \
-         stdout.print(json.loads[dict[str, str]](text))\n    stdout.print(json.loads[dict[str, list[float]]](text))\n    \
-         stdout.print(json.loads[list[str?]](text))\n    stdout.print(json.loads[float](text))\n    \
-         stdout.print(json.loads[bool](text))\n",
-    ),
-    (
-        "toml",
-        "from std import toml\n\ndef main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
-         text = fs.read_text(args[0])?\n    stdout.print(toml.loads[dict[str, str]](text))\n    \
-         stdout.print(toml.loads[dict[str, int]](text))\n    stdout.print(toml.loads[dict[str, dict[str, str]]](text))\n    \
-         stdout.print(toml.loads[dict[str, list[float]]](text))\n",
-    ),
-    (
-        "utf8",
-        "def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
-         stdout.print(fs.read_bytes(args[0])?.decode())\n",
-    ),
+    ("json", JSON_READER),
+    ("toml", TOML_READER),
+    ("utf8", UTF8_READER),
 ];
 
 /// The readers built so far in this process, by target.

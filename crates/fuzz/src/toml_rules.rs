@@ -9,7 +9,7 @@ const TYPES: [&str; 5] =
     ["dict[str, str]", "dict[str, int]", "dict[str, list[float]]", "dict[str, dict[str, str]]", "Settings"];
 
 /// The program that reads the input as each of `TYPES`, a line each, saying whether what it read
-/// writes and reads back as itself.
+/// writes and reads back as itself. The `n`th type is read by its own function, `read_as_n`.
 pub(crate) fn reader() -> String {
     let mut source = "\
 from std import toml
@@ -25,19 +25,21 @@ struct Settings:
     tags = list[str]()
     window = Window(title=\"main\")
     limits = dict[str, int]()
-
-def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
-    text = fs.read_text(args[0])?
 "
     .to_owned();
-    for ty in TYPES {
+    for (n, ty) in TYPES.iter().enumerate() {
         let _ = write!(
             source,
-            "    match toml.loads[{ty}](text):\n        case Ok(value):\n            written = toml.dumps(value)\n            \
-             match toml.loads[{ty}](written):\n                case Ok(back):\n                    \
-             stdout.print(\"ok\", back == value)\n                case Err(_):\n                    \
-             stdout.print(\"ok unreadable\")\n        case Err(_):\n            stdout.print(\"err\")\n"
+            "\ndef read_as_{n}(text: str) -> str:\n    value = toml.loads[{ty}](text) else:\n        return \"err\"\n    \
+             written = toml.dumps(value)\n    back = toml.loads[{ty}](written) else:\n        return \"ok unreadable\"\n    \
+             f\"ok {{back == value}}\"\n"
         );
+    }
+    source.push_str(
+        "\ndef main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    text = fs.read_text(args[0])?\n",
+    );
+    for n in 0..TYPES.len() {
+        let _ = writeln!(source, "    stdout.print(read_as_{n}(text))");
     }
     source
 }

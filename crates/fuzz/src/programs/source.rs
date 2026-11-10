@@ -108,6 +108,11 @@ def summed_until(limit: int, stop: int, stdout: Stdout) -> int fails Shut:
         total += value
     total
 
+def summed_shown(limit: int, stop: int, stdout: Stdout) -> str:
+    total = summed_until(limit, stop=stop, stdout=stdout) else:
+        return \"shut\"
+    str(total)
+
 struct Holder:
     items: list[int]
     tag: int
@@ -490,19 +495,13 @@ impl Writer {
             }
             Stmt::Change(name, by, refuse) => {
                 let (by, refuse) = (self.expr(by, false), self.expr(refuse, false));
-                self.line(indent, &format!("match change({name}, by={by}, refuse={refuse}):"));
-                self.line(indent + 1, "case Ok(_):");
-                self.line(indent + 2, "pass");
-                self.line(indent + 1, "case Err(_):");
-                self.line(indent + 2, "stdout.print(\"refused\")");
+                self.line(indent, &format!("change({name}, by={by}, refuse={refuse}) else:"));
+                self.line(indent + 1, "stdout.print(\"refused\")");
             }
             Stmt::Tally(name, items) => {
                 let items = self.expr(items, false);
-                self.line(indent, &format!("match tally({name}, items={items}):"));
-                self.line(indent + 1, "case Ok(_):");
-                self.line(indent + 2, "pass");
-                self.line(indent + 1, "case Err(_):");
-                self.line(indent + 2, "stdout.print(\"crashed\")");
+                self.line(indent, &format!("tally({name}, items={items}) else:"));
+                self.line(indent + 1, "stdout.print(\"crashed\")");
             }
             Stmt::PrintShared(name) => {
                 self.line(indent, &format!("lock {name} as held:"));
@@ -551,19 +550,15 @@ impl Writer {
             }
             Stmt::OuterBump(name, by, refuse) => {
                 let (by, refuse) = (self.expr(by, false), self.expr(refuse, false));
-                self.line(indent, &format!("match bump_outer({name}, by={by}, refuse={refuse}):"));
-                self.line(indent + 1, "case Ok(_):");
-                self.line(indent + 2, "pass");
-                self.line(indent + 1, "case Err(_):");
-                self.line(indent + 2, "stdout.print(\"refused\")");
+                self.line(indent, &format!("bump_outer({name}, by={by}, refuse={refuse}) else:"));
+                self.line(indent + 1, "stdout.print(\"refused\")");
             }
             Stmt::Summed(limit, stop) => {
                 let (limit, stop) = (self.expr(limit, false), self.expr(stop, false));
-                self.line(indent, &format!("match summed_until({limit}, stop={stop}, stdout=stdout):"));
-                self.line(indent + 1, "case Ok(total):");
-                self.line(indent + 2, "stdout.print(total)");
-                self.line(indent + 1, "case Err(_):");
-                self.line(indent + 2, "stdout.print(\"shut\")");
+                self.line(
+                    indent,
+                    &format!("stdout.print(summed_shown({limit}, stop={stop}, stdout=stdout))"),
+                );
             }
             Stmt::ShareBag(name, items, counts) => {
                 let items = self.expr(items, false);
@@ -584,11 +579,8 @@ impl Writer {
                     ops_written(ops, 2)
                 );
                 let refuse = self.expr(refuse, false);
-                self.line(indent, &format!("match locked{id}({name}, refuse={refuse}):"));
-                self.line(indent + 1, "case Ok(_):");
-                self.line(indent + 2, "pass");
-                self.line(indent + 1, "case Err(_):");
-                self.line(indent + 2, "stdout.print(\"refused\")");
+                self.line(indent, &format!("locked{id}({name}, refuse={refuse}) else:"));
+                self.line(indent + 1, "stdout.print(\"refused\")");
             }
             Stmt::Sent { id, name, ops, items } => {
                 let _ = write!(
@@ -600,11 +592,8 @@ impl Writer {
                     ops_written(ops, 3)
                 );
                 let items = self.expr(items, false);
-                self.line(indent, &format!("match sent{id}({name}, items={items}):"));
-                self.line(indent + 1, "case Ok(_):");
-                self.line(indent + 2, "pass");
-                self.line(indent + 1, "case Err(_):");
-                self.line(indent + 2, "stdout.print(\"crashed\")");
+                self.line(indent, &format!("sent{id}({name}, items={items}) else:"));
+                self.line(indent + 1, "stdout.print(\"crashed\")");
             }
             _ => {}
         }

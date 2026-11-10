@@ -121,13 +121,9 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         &loaded.sources,
         &findings::lints(&loaded.module, &loaded.sources, program.is_dir()),
     );
-    // A copy each time round a loop is a mistake too, as `fennec run` finds it.
     let written = loaded.module.clone();
     let diagnostics = match fennec_check::check_to_run(&mut loaded.module) {
-        Ok(signatures) => {
-            let lowered = fennec_ir::lower(&loaded.module, &signatures);
-            fennec_lint::implicit_copies(&fennec_ir::costs(&lowered))
-        }
+        Ok(_) => Vec::new(),
         Err(mut diagnostics) => {
             fennec_check::add_rename_fixes(&mut diagnostics, &written, &loaded.sources);
             fennec_check::add_pattern_fixes(&mut diagnostics, &loaded.sources);
@@ -174,7 +170,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             typed: true,
         },
         Ok(loaded) => {
-            let (mut diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
+            let (diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
                 Ok(checked) => (Vec::new(), Some(checked)),
                 Err(mut diagnostics) => {
                     fennec_check::add_rename_fixes(&mut diagnostics, &loaded.module, &loaded.sources);
@@ -184,8 +180,6 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             };
             let costs =
                 checked.as_ref().map(|checked| findings::costs(&loaded.module, checked)).unwrap_or_default();
-            // A copy each time round a loop is a mistake, as `fennec check` finds it.
-            diagnostics.extend(fennec_lint::implicit_copies(&costs));
             let findings = if diagnostics.is_empty() {
                 findings::of_clean(&loaded.module, &loaded.sources, &costs, program.is_dir())
             } else {

@@ -12172,7 +12172,7 @@ def main(stdout: Stdout):
     stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\"}")?))
     stdout.print(said(() => json.loads[Unit]("{\"name\": 1, \"level\": 2}")?))
     stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\", \"at\": {\"x\": 1, \"z\": 2}, \"extra\": 1}")?))
-    stdout.print(said(() => json.loads[Unit]("[1, 2"))?)
+    stdout.print(said(() => json.loads[Unit]("[1, 2")?))
     stdout.print(said(() => json.loads[list[int]]("[1, \"two\"]")?))
     stdout.print(json.loads[Spot]("{\"x\": 1, \"x\": 2}") else Spot(x=0))
     spot_text = toml.dumps(Spot(x=4))

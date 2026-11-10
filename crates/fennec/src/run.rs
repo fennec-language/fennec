@@ -160,8 +160,10 @@ fn started(
     // On Unix it becomes the program, so a signal sent to `fennec run`, like a supervisor's
     // SIGTERM, reaches the program itself, which can stop cleanly, and its exit, a signal's
     // included, is `fennec run`'s. What was built is swept up by a later run instead.
+    // `FENNEC_RUN_WAITS` has it start the program and wait for it instead, for a tool that counts
+    // what a run does: Valgrind loses what a process did before it became another.
     #[cfg(unix)]
-    {
+    if std::env::var_os("FENNEC_RUN_WAITS").is_none() {
         use std::io::Write as _;
         use std::os::unix::process::CommandExt as _;
         sweep_old_runs(executable);
@@ -169,20 +171,17 @@ fn started(
         let _ = std::io::stderr().flush();
         let failed = command.exec();
         let _ = std::fs::remove_file(executable);
-        Err(format!("the program it built didn't start: {failed}"))
+        return Err(format!("the program it built didn't start: {failed}"));
     }
-    #[cfg(not(unix))]
-    {
-        // On Windows the program shares the console, so Ctrl-C reaches it as it reaches this.
-        // This lets it go by, so it waits for the program to stop, and its exit code is the
-        // program's, not a Ctrl-C's.
-        #[cfg(windows)]
-        let _ = ctrlc::set_handler(|| {});
-        let ran = command.status();
-        let _ = std::fs::remove_file(executable);
-        let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
-        Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
-    }
+    // On Windows the program shares the console, so Ctrl-C reaches it as it reaches this.
+    // This lets it go by, so it waits for the program to stop, and its exit code is the
+    // program's, not a Ctrl-C's.
+    #[cfg(windows)]
+    let _ = ctrlc::set_handler(|| {});
+    let ran = command.status();
+    let _ = std::fs::remove_file(executable);
+    let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
+    Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
 }
 
 /// How old what an earlier `fennec run` built has to be before a run sweeps it up: far longer than

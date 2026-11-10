@@ -72,6 +72,13 @@ pub(crate) fn in_a_task() -> bool {
     false
 }
 
+/// How far the launched task running on this thread has been told to stop, shared with whatever
+/// stops it, if a launched task is what's running.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn task_stop() -> Option<Arc<AtomicU8>> {
+    STOP.with_borrow(Clone::clone)
+}
+
 /// The task running on this thread starts cleaning up after a crash, or ends doing so.
 pub(crate) fn cleaning(starts: bool) {
     #[cfg(any(test, feature = "threads"))]

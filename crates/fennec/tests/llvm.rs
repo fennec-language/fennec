@@ -1502,6 +1502,51 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A dict's put and pop, and a list's item set, in a `shared` value under its lock, made in place
+/// with each change noted for a crash to undo: the lock costs what it changes, not a copy of the
+/// whole dict or list each time it's taken. A dict still copies when it grows past its room, as one
+/// with keys taken out does now and then, but no more often than that.
+#[test]
+fn changing_a_dict_or_an_item_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Table:\n    counts = dict[str, int]()\n    names = dict[int, str]()\n    \
+                 items = [0, 0, 0, 0]\n\n    def put(ref self, n: int):\n        self.counts[f\"k{n % 50}\"] = n\n\n\
+                 def main(stdout: Stdout):\n    shared table = Table()\n    mut seen = 0\n";
+    for (name, body) in [
+        (
+            "put",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n % 50}\"] = n\n            \
+             held.names[n % 50] = f\"a name long enough for a block of its own {n}\"\n    \
+             lock table as held:\n        seen = held.counts.len() + held.names.len()\n",
+        ),
+        (
+            "pop",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n}\"] = n\n        \
+             lock table as ref held:\n            seen += held.counts.pop(f\"k{n}\")\n",
+        ),
+        ("method", "    for n in range(2000):\n        lock table as ref held:\n            held.put(n)\n"),
+        (
+            "item",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.items[n % 4] = n\n            \
+             held.items[-1] += 1\n    lock table as held:\n        seen = held.items[3]\n",
+        ),
+    ] {
+        let counts =
+            counts_of(&format!("shared_dict_{name}"), &format!("{types}{body}    stdout.print(seen)\n"))?;
+        let number = |what: &str| {
+            let mut words = counts.split_whitespace();
+            words.position(|word| word == what).and_then(|_| words.next()).and_then(|n| n.parse::<u64>().ok())
+        };
+        // One copy in each lock would be 2,000, of hundreds of bytes each.
+        let (copies, bytes) = (number("copies"), number("copied_bytes"));
+        assert!(copies.is_some_and(|copies| copies < 400), "{name}: {counts}");
+        assert!(bytes.is_some_and(|bytes| bytes < 50_000), "{name}: {counts}");
+    }
+    Ok(())
+}
+
 /// The same in a program with tasks, where a lock's value is read through the lock's edge: 2,000
 /// pushes under the lock in `main` and 2,000 pushes and pops in a launched task copy nothing a
 /// round. What the program copies is only what starting its task copies, the same program with no
@@ -1582,6 +1627,21 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         "lock_undo_by_crash",
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
+    )
+}
+
+/// Puts, pops and item sets made in place on a `shared` value's dicts and list, straight in the
+/// lock's block, then a failure: the dicts and the list are as they were, keys in the same order. So
+/// they are after a dict grown past its room, which copies it once the changes in place are made.
+#[test]
+fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_in_place",
+        include_str!("fixtures/lock_undo_in_place.fen"),
+        include_str!("fixtures/lock_undo_in_place.out"),
     )
 }
 
@@ -4017,9 +4077,10 @@ def main(stdout: Stdout):
         stdout.print("before", x.total)
 "#;
 
-/// A way a function can still take a lock its caller holds, past what the checker sees: a closure
-/// that takes it, passed to a call. The checker refuses the rest, a nested function kept in a list
-/// among them.
+/// The last way a function could take a lock its caller holds past what the checker saw: a
+/// closure that takes it, passed to a call. The checker follows it now, so the program is refused
+/// where it's built; the runtime's check, which ends a program that takes a held lock, stays as
+/// the backstop.
 const TAKEN_AGAIN: [(&str, &str); 1] = [(
     "closure_passed",
     "    reader = () => through_holder(holder)\n    lock one as ref x:\n        x.total = called(reader)\n",
@@ -4045,9 +4106,11 @@ def main(stdout: Stdout):
     stdout.print("before", through_holder(holder))
 "#;
 
-/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
+/// A lock this thread holds, taken again through a closure passed to a call, is refused where the
+/// program's built: the closure is followed to the lock it takes. It once built, and ended the
+/// program where it ran, as it would wait forever otherwise.
 #[test]
-fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
+fn taking_a_lock_already_held_through_a_closure_is_refused_where_its_built() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -4058,11 +4121,12 @@ fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
         std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
         let executable = dir.join(name);
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let ran = outcome(&Command::new(&executable).output_within()?);
-        assert_eq!(ran.2, Some(1), "{name}");
-        assert_eq!(ran.0, "before 1\n", "{name}");
-        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name} built");
+        assert!(
+            said.contains("`called` calls `read` while `x` is locked, and this takes `holder.box`'s lock"),
+            "{name}: {said}"
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -8435,14 +8499,14 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(done.status, done.stdout, done.stderr == \"\")
     unknown = failure_of(() => process.run(\"no-such-program-at-all\", []))
     if unknown is not None:
-        stdout.print(unknown.program)
+        stdout.print(unknown.program())
     else:
         stdout.print(\"ran it\")
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
     refused = failure_of(() => echo.run(\"ls\", []))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     stdout.print(stdin.lines())
@@ -9643,14 +9707,14 @@ def main(stdout: Stdout, process: Process, fs: Fs):
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
     nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\"))
     if nowhere is not None:
-        stdout.print(nowhere.message)
+        stdout.print(nowhere.message())
     else:
         stdout.print(\"ran it\")
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
     refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\"))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     fs.remove(\"inside\").expect(\"it works\")
@@ -12087,13 +12151,25 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(process.run(t"cat", input="fed in")?.stdout)
     narrow = process.only("printf")
     stdout.print(narrow.run(t"printf ok")?.stdout)
+    # A value that would start an argument with `-` is refused, and nothing runs.
+    upload = "--upload-pack=touch pwned"
+    refused = failure_of(() => process.run(t"printf {upload}"))
+    if refused is not None:
+        stdout.print(refused.message())
+    path = "-odd"
+    stdout.print(process.run(t"printf [%s] -- {path}")?.stdout)
     _ = narrow.run(t"cat") else as error:
-        stdout.print(error.program)
+        stdout.print(error.program())
         return
     stdout.print("ran")
 "#,
     )?;
-    assert_eq!(printed, "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\ncat\n");
+    assert_eq!(
+        printed,
+        "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\n\
+         `{upload}` starts an argument with `-`, so `printf` would read it as an option: put `--` before it, if `printf` takes that, to mean it isn't one\n\
+         [--][-odd]\ncat\n"
+    );
     Ok(())
 }
 
@@ -13766,6 +13842,77 @@ def main(stdout: Stdout):
         total += given(captured, x)
     stdout.print(total, captured[0].tags, captured[1].tags)
 ";
+
+/// A name given its own value, `x = x`, keeps what it holds: an enum or struct held in place,
+/// one inside another, a field, a list's item, a boxed enum and a parameter's copy given back.
+/// Written as a copy, it let go of the lists it held before taking them again, so the next lists
+/// made took their memory, and its value printed theirs. The random programs found it.
+#[test]
+fn a_name_given_its_own_value_keeps_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "B(a) Unit(hp=1, tags=[1, 2]) Pack(unit=Unit(hp=2, tags=[3]), names=[\"n\"]) [Unit(hp=3, tags=[4, 5])] Unit(hp=4, tags=[7]) 2 3\n[6]\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("own_value", OWN_VALUE, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const OWN_VALUE: &str = r#"enum Node:
+    Leaf(name: str)
+    Branch(label: str, children: list[Node])
+
+enum Tree:
+    Leaf
+    Pair(left: Tree, right: Tree, tags: list[int])
+
+struct Unit:
+    hp: int
+    tags: list[int]
+
+struct Pack:
+    unit: Unit
+    names: list[str]
+
+def show(node: Node) -> str:
+    match node:
+        case .Leaf(name):
+            "L(" + name + ")"
+        case .Branch(label, children):
+            mut text = "B(" + label
+            for child in children:
+                text += " " + show(child)
+            text + ")"
+
+def last_use(given: Unit) -> Unit:
+    mut u = given
+    u = u
+    u
+
+def main(stdout: Stdout):
+    mut t = Node.Branch(label="a", children=list[Node]())
+    t = t
+    mut u = Unit(hp=1, tags=[1, 2])
+    u = u
+    mut p = Pack(unit=Unit(hp=2, tags=[3]), names=["n"])
+    p = p
+    p.unit = p.unit
+    mut xs = [Unit(hp=3, tags=[4, 5])]
+    xs[0] = xs[0]
+    mut tree = Tree.Pair(left=.Leaf, right=.Leaf, tags=[6])
+    tree = tree
+    ys = last_use(Unit(hp=4, tags=[7]))
+    other = [Node.Leaf(name="x"), Node.Leaf(name="y")]
+    junk = [[9, 9, 9], [8, 8], [7]]
+    stdout.print(show(t), u, p, xs, ys, other.len(), junk.len())
+    match tree:
+        case .Pair(_, _, tags):
+            stdout.print(tags)
+        case .Leaf:
+            pass
+"#;
 
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
@@ -18210,7 +18357,7 @@ test \"an hour goes by at once\"(clock: Clock):
 test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"]))
     assert problem is not None
-    assert problem.program == \"echo\"
+    assert problem.program() == \"echo\"
     assert process.ran().len() == 1
 ",
     )?;

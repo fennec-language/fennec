@@ -15,11 +15,16 @@
 //! A save names a block by its address, and a word by its index among the block's words, from its
 //! count. Saving never fails, so generated code has no flag to check after each one.
 //!
-//! A list about to be changed where it is, like a shared queue's, isn't held as it was: holding it
-//! would make the change copy all of it, every time the lock's taken. The log marks it instead (see
-//! `lists::MARKED`), which native code takes as another owner, so every change asks the runtime
-//! first. An append or a pop there is made in place and noted here, for a crash to undo in turn; any
-//! other change copies the list, as for one held.
+//! A list or a dict about to be changed where it is, like a shared queue's, isn't held as it was:
+//! holding it would make the change copy all of it, every time the lock's taken. The log marks it
+//! instead (see `lists::MARKED`), which native code takes as another owner, so every change asks the
+//! runtime first. So a lock costs what it changes:
+//!
+//! - A list's append, pop or item set is made in place and noted here, for a crash to undo in turn.
+//! - A dict's put or pop is made in place, and each word of its block that changes is saved, as
+//!   generated code saves a field's, for a crash to put back.
+//! - Any other change copies, as for one held. So does a dict that has to grow or change how it
+//!   hashes: what's in its old block is what a crash puts back.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -48,6 +53,19 @@ enum Change {
     /// The item at `at`, the last, was taken off, and the log holds its words, with an owner of
     /// each block in them.
     Popped { at: usize, words: Vec<u64> },
+    /// The item at `at` was set, and the log holds its words as they were, with an owner of each
+    /// block in them.
+    Set { at: usize, words: Vec<u64> },
+}
+
+impl Change {
+    /// The item's words the log holds owners in, if it holds any.
+    fn held_words(&self) -> Option<&[u64]> {
+        match self {
+            Change::Grew { .. } => None,
+            Change::Popped { words, .. } | Change::Set { words, .. } => Some(words),
+        }
+    }
 }
 
 /// What's saved for one lock held.
@@ -84,6 +102,24 @@ thread_local! {
     static LOGS: RefCell<Vec<Log>> = const { RefCell::new(Vec::new()) };
     /// For a crash, what goes back in the lock's own cell, by word, for native code to write.
     static CELL: RefCell<HashMap<usize, Saved>> = RefCell::new(HashMap::new());
+    /// Logs of locks let go of, emptied, for the next locks taken to fill without asking for memory.
+    static SPARE: RefCell<Vec<Log>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A log done with, emptied and kept for another lock. A few are kept, as many as locks are held
+/// inside one another at once, and none too big to hold on to.
+fn spare(mut log: Log) {
+    if log.saved.capacity() > 4096 || log.places.capacity() > 4096 {
+        return;
+    }
+    log.saved.clear();
+    log.places.clear();
+    log.changes.clear();
+    SPARE.with_borrow_mut(|spare| {
+        if spare.len() < 8 {
+            spare.push(log);
+        }
+    });
 }
 
 fn address(value: i64) -> u64 {
@@ -94,15 +130,17 @@ fn address(value: i64) -> u64 {
 pub extern "C" fn begin(cell: i64) {
     attempt(|state: &mut State| {
         let depth = state.heap.tables_behind();
-        LOGS.with_borrow_mut(|logs| {
-            logs.push(Log {
+        let log = SPARE.with_borrow_mut(Vec::pop).map_or_else(
+            || Log {
                 cell: address(cell),
                 depth,
                 saved: Vec::new(),
                 places: HashSet::default(),
                 changes: Vec::new(),
-            });
-        });
+            },
+            |spare| Log { cell: address(cell), depth, ..spare },
+        );
+        LOGS.with_borrow_mut(|logs| logs.push(log));
         Ok(())
     });
 }
@@ -161,31 +199,64 @@ pub extern "C" fn save_text(block: i64, word: i64, w0: i64, w1: i64, w2: i64) {
 /// count of its own, so the change copies it rather than change what the crash would put back. Once a
 /// word's saved, what's there since was made under the lock, so a second save of it does nothing,
 /// and changing it again doesn't copy.
+///
+/// A list, a dict or a struct's block is marked instead, so that it's changed where it is: a struct's
+/// fields are saved then and there, each as this saves it, since what changes them saves nothing more.
 pub extern "C" fn save_ref(block: i64, word: i64, old: i64) {
     let Ok(word) = usize::try_from(word) else { return };
-    let saved = Saved { block: address(block), word, old: address(old), held: old != 0, marked: false };
+    attempt(|state: &mut State| {
+        save_ref_in(state, address(block), word, address(old));
+        Ok(())
+    });
+}
+
+fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
+    let saved = Saved { block, word, old, held: old != 0, marked: false };
     let known = LOGS.with_borrow(|logs| logs.iter().any(|log| log.places.contains(&place(&saved))));
     if known {
         return;
     }
-    // A list is marked rather than held, so that an append or a pop changes it in place.
-    if with(|state| lists::markable(state, saved.old)) {
+    let fields = state.heap.block(old).is_some_and(|words| {
+        heap::is_plain_struct(state, words)
+            && words.first().is_some_and(|count| count & lists::MARKED == 0 && *count < heap::IMMORTAL)
+    });
+    if fields || lists::markable(state, old) {
         let saved = Saved { held: false, marked: true, ..saved };
         if push(saved) == Pushed::Added {
-            attempt(|state: &mut State| {
-                lists::mark(state, saved.old);
-                Ok(())
-            });
+            lists::mark(state, old);
+            if fields {
+                save_fields(state, old);
+            }
         }
         return;
     }
-    if push(saved) != Pushed::Added || !saved.held {
-        return;
+    if push(saved) == Pushed::Added && saved.held {
+        heap::retain(state, old);
     }
-    attempt(|state: &mut State| {
-        heap::retain(state, saved.old);
-        Ok(())
-    });
+}
+
+/// Saves every field of a struct's block a log just marked, before anything changes it: a word that
+/// holds a block as `save_ref` saves it, and any other as it is.
+fn save_fields(state: &mut State, at: u64) {
+    let Some(words) = state.heap.block(at).map(<[u64]>::to_vec) else { return };
+    let mut places = Vec::new();
+    let _ = heap::child_places(state, &words, &mut places);
+    for (word, old) in words.iter().enumerate().skip(heap::HEADER_WORDS) {
+        if places.contains(&word) {
+            save_ref_in(state, at, word, *old);
+        } else {
+            push(Saved { block: at, word, old: *old, held: false, marked: false });
+        }
+    }
+}
+
+/// `fennec_lock_to_change(block)`: a struct's block to change under a lock that saves what it
+/// changes, which native code asks for when it has another owner. One the lock's log marked, with no
+/// other owner, stays where it is, its fields saved already; any other is copied, as `fennec_unshare`
+/// copies it.
+pub extern "C" fn to_change(block: i64) -> i64 {
+    let marked = with(|state| state.heap.block(address(block)).is_some_and(lists::marked_alone));
+    if marked { block } else { heap::unshare(block) }
 }
 
 /// `fennec_lock_kept()`: the innermost lock that may crash ends normally, keeping what it changed.
@@ -193,23 +264,24 @@ pub extern "C" fn save_ref(block: i64, word: i64, old: i64) {
 /// the log of the lock around it, for its own crash to put back.
 pub extern "C" fn kept() {
     attempt(|state: &mut State| {
-        let Some(log) = LOGS.with_borrow_mut(Vec::pop) else { return Ok(()) };
+        let Some(mut log) = LOGS.with_borrow_mut(Vec::pop) else { return Ok(()) };
         let outer = LOGS.with_borrow(|logs| logs.last().map(|outer| outer.depth));
         let own_table = outer.is_none_or(|depth| log.depth > depth);
         let mut passed = Vec::new();
-        let mut changes = log.changes;
-        for saved in log.saved {
+        let mut changes = std::mem::take(&mut log.changes);
+        let cell = log.cell;
+        for saved in log.saved.drain(..) {
             let in_own_table =
                 own_table && usize::try_from(saved.block).is_ok_and(|at| state.heap.blocks.get(at).is_some());
-            if outer.is_none() || saved.block == log.cell || in_own_table {
+            if outer.is_none() || saved.block == cell || in_own_table {
                 if saved.held {
                     heap::release(state, saved.old);
                 }
                 if saved.marked {
                     // What it changed stays: the popped items it held go, and so does the mark.
                     for (_, change) in take_changes(&mut changes, saved.old) {
-                        if let Change::Popped { words, .. } = change {
-                            lists::let_go_of_words(state, saved.old, &words);
+                        if let Some(words) = change.held_words() {
+                            lists::let_go_of_words(state, saved.old, words);
                         }
                     }
                     lists::unmark(state, saved.old, false);
@@ -244,12 +316,14 @@ pub extern "C" fn kept() {
         // is its own: what this lock changed stays.
         for (list, changes) in marked {
             for (_, change) in changes {
-                if let Change::Popped { words, .. } = change {
-                    lists::let_go_of_words(state, list, &words);
+                if let Some(words) = change.held_words() {
+                    lists::let_go_of_words(state, list, words);
                 }
             }
             lists::unmark(state, list, false);
         }
+        log.changes = changes;
+        spare(log);
         Ok(())
     });
 }
@@ -261,16 +335,17 @@ pub extern "C" fn kept() {
 /// table goes.
 pub extern "C" fn undo() {
     attempt(|state: &mut State| {
-        let Some(log) = LOGS.with_borrow_mut(Vec::pop) else { return Ok(()) };
+        let Some(mut log) = LOGS.with_borrow_mut(Vec::pop) else { return Ok(()) };
         // Each list it marked is put back as it was, its changes undone newest first, and its mark
         // becomes an owner, for the word that held it to hold again: what's there now, the same list
         // or a copy, is let go of below as any saved word's is.
-        let mut changes = log.changes;
+        let mut changes = std::mem::take(&mut log.changes);
         for saved in log.saved.iter().filter(|saved| saved.marked) {
             for (_, change) in take_changes(&mut changes, saved.old).into_iter().rev() {
                 match change {
                     Change::Grew { before } => lists::shorten_to(state, saved.old, before),
                     Change::Popped { at, words } => lists::put_back(state, saved.old, at, &words),
+                    Change::Set { at, words } => lists::set_back(state, saved.old, at, &words),
                 }
             }
             lists::unmark(state, saved.old, true);
@@ -279,7 +354,7 @@ pub extern "C" fn undo() {
         let mut first = Vec::new();
         let mut seen = HashSet::new();
         let mut released = Vec::new();
-        for saved in log.saved {
+        for saved in log.saved.drain(..) {
             if !seen.insert((saved.block, saved.word)) {
                 // A value made under the lock: what goes back is the first save's.
                 if saved.held {
@@ -325,27 +400,37 @@ pub extern "C" fn undo() {
         for saved in left.into_values().filter(|saved| saved.held) {
             heap::release(state, saved.old);
         }
+        spare(log);
         Ok(())
     });
 }
 
 /// The changes noted for `list`, oldest first, taken out of `changes`.
 fn take_changes(changes: &mut Vec<(u64, Change)>, list: u64) -> Vec<(u64, Change)> {
+    // Most often they're all one list's.
+    if changes.iter().all(|(at, _)| *at == list) {
+        return std::mem::take(changes);
+    }
     let (taken, kept): (Vec<_>, Vec<_>) =
         std::mem::take(changes).into_iter().partition(|(at, _)| *at == list);
     *changes = kept;
     taken
 }
 
+/// The log that marked `block`. Only a log marks a block, so with one lock held it's that one's,
+/// found without a look through its saves, which a loop of puts makes long.
+fn marking(logs: &mut [Log], block: u64) -> Option<&mut Log> {
+    if let [log] = logs {
+        return Some(log);
+    }
+    logs.iter_mut().rev().find(|log| log.saved.iter().any(|saved| saved.marked && saved.old == block))
+}
+
 /// Notes a change in place to a list a log marked, in that log. Appends one after another undo as
 /// one, back to the length before the first.
 fn note(list: u64, change: Change) -> bool {
     LOGS.with_borrow_mut(|logs| {
-        let Some(log) =
-            logs.iter_mut().rev().find(|log| log.saved.iter().any(|saved| saved.marked && saved.old == list))
-        else {
-            return false;
-        };
+        let Some(log) = marking(logs, list) else { return false };
         let again = matches!(change, Change::Grew { .. })
             && log
                 .changes
@@ -385,6 +470,31 @@ pub(in crate::embed) fn grew(list: u64, before: usize) -> bool {
 /// owner of each block in them, already taken. Says whether a log has it.
 pub(in crate::embed) fn popped(list: u64, at: usize, words: Vec<u64>) -> bool {
     note(list, Change::Popped { at, words })
+}
+
+/// A marked list's item at `at` is about to be set: the log holds `words`, the item as it is, with an
+/// owner of each block in them, already taken. Says whether a log has it.
+pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>) -> bool {
+    note(list, Change::Set { at, words })
+}
+
+/// The word at `word` in `block`, a dict a log marked, is about to change in place from `old`, by
+/// the runtime: saved in that log, for a crash to put back. With `holds`, `old` is a block's
+/// address, and the log takes an owner of its own, so the change lets go of the word's as it would
+/// anyway. A word saved already holds what was made under the lock, which needs no saving.
+pub(in crate::embed) fn changing(state: &mut State, block: u64, word: usize, old: u64, holds: bool) {
+    let saved = Saved { block, word, old, held: holds && old != 0, marked: false };
+    let pushed = LOGS.with_borrow_mut(|logs| {
+        let Some(log) = marking(logs, block) else { return Pushed::NoLog };
+        if !log.places.insert(place(&saved)) {
+            return Pushed::Repeated;
+        }
+        log.saved.push(saved);
+        Pushed::Added
+    });
+    if pushed == Pushed::Added && saved.held {
+        heap::retain(state, old);
+    }
 }
 
 /// Where a block holds others, or nowhere if it can't say.

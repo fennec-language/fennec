@@ -265,7 +265,9 @@ fn stmt_spans(body: &mut [Stmt], moved: &mut dyn FnMut(crate::Span) -> crate::Sp
                 }
                 stmt_spans(body, moved);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Lend { otherwise: body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Lend { otherwise: body, .. } => {
                 stmt_spans(body, moved);
             }
             StmtKind::OnFailure { cleanup, body, .. } => {

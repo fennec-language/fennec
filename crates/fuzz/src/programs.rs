@@ -238,6 +238,24 @@ mod tests {
         assert!(nested >= 1, "{nested} dicts of lists of units copied and changed");
     }
 
+    /// A union's members are called on through the union in every way, two and three of them.
+    #[test]
+    fn it_calls_on_unions_every_way() {
+        let mut found = [0_usize; 6];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            let calls = ["matched2(", "matched3(", "checked2(", "checked3(", "direct2(", "direct3("];
+            for (count, call) in found.iter_mut().zip(calls) {
+                *count += usize::from(body.contains(call));
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 2), "{found:?}");
+    }
+
     #[test]
     fn what_it_writes_is_a_program_that_builds() {
         for seed in 0_u8..=255 {

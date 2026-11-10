@@ -1157,7 +1157,7 @@ struct JsonReader:
                 self._hint = self._hints.pop() else 0
                 self._seen = self._seens.pop() else 0
                 return False
-            if self._explain and self._extra == .error:
+            if self._explain and self._extra == .Error:
                 self._unknown_first(fields)?
         else:
             if self._explain:

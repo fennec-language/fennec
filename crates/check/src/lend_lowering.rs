@@ -647,7 +647,7 @@ fn match_params(
 
 /// A type as written where a type goes and as written in brackets, parsed from its source and
 /// moved to spans of its own, which no program's text reaches.
-fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
+pub(crate) fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
     let source = ty.source()?;
     let text = format!("def held__(held: {source}):\n    _ = held[{source}]\n");
     let module = fennec_syntax::parse(&text).ok()?;
@@ -677,7 +677,7 @@ fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
 
 /// Writes in what each type parameter stands for: in written types, as in `held: list[T]`, and in
 /// brackets, as in `Channel[T](...)`.
-fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
+pub(crate) fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
     // What's written in can name the caller's own type parameters, like `T` in `Box[T]` for a
     // source's `T`, and the walk goes on into it: each name is marked first, then the marks are
     // written in, so nothing written in is retyped again.
@@ -773,7 +773,7 @@ fn untyped_where_unknown(body: &mut [Stmt], unknown: &[&str]) {
     }
 }
 
-fn retype_one(written: &mut TypeExpr, given: &BTreeMap<String, (TypeExpr, Expr)>) {
+pub(crate) fn retype_one(written: &mut TypeExpr, given: &BTreeMap<String, (TypeExpr, Expr)>) {
     if written.args.is_empty()
         && let Some((ty, _)) = given.get(&written.name)
     {

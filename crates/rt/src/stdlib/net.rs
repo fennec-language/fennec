@@ -1002,6 +1002,42 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     Err(failure)
 }
 
+/// How much of what a connection writes the kernel holds before a write waits for the other side to
+/// read: Linux's most by default.
+#[cfg(windows)]
+const SEND_BUFFER_BYTES: usize = 4 << 20;
+
+/// Gives a connection a send buffer of a fixed size. Windows otherwise grows it to take whatever's
+/// written, so a client that never reads can make the kernel hold unbounded memory for each
+/// connection, and a write's `timeout=` never comes. Elsewhere the kernel bounds it already.
+#[cfg(windows)]
+pub(crate) fn bound_send_buffer(socket: &impl std::os::windows::io::AsSocket) {
+    let _ = socket2::SockRef::from(socket).set_send_buffer_size(SEND_BUFFER_BYTES);
+}
+
+/// Gives a connection a send buffer of a fixed size, which only Windows needs.
+#[cfg(not(windows))]
+pub(crate) fn bound_send_buffer<S>(_socket: &S) {}
+
+/// The most of a write handed to Windows at once. Windows takes the whole of a `send` into the kernel
+/// if its send buffer has any room at all, so a big write would go in whole, however small the
+/// buffer: in pieces, a write holds at most one piece more than the buffer, and waits, and times out,
+/// as it does elsewhere.
+#[cfg(windows)]
+const WRITE_PIECE: usize = 256 << 10;
+
+/// What of `data` to hand the kernel in one write.
+pub(crate) fn piece(data: &[u8]) -> &[u8] {
+    #[cfg(windows)]
+    {
+        data.get(..WRITE_PIECE).unwrap_or(data)
+    }
+    #[cfg(not(windows))]
+    {
+        data
+    }
+}
+
 fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
     keep_stream_as(socket, peer, secured, false)
 }
@@ -1013,6 +1049,7 @@ fn keep_stream_as(
     secured: Option<Secured>,
     served: bool,
 ) -> Result<i64, Failure> {
+    bound_send_buffer(&socket);
     let reading = match secured {
         Some(secured) => Reading::Tls(secured),
         None => Reading::Plain(BufReader::new(
@@ -1134,7 +1171,7 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
             let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
             let _ = socket.set_write_timeout(Some(left));
         }
-        let wrote = socket.write(data);
+        let wrote = socket.write(piece(data));
         if deadline.is_some() {
             let _ = socket.set_write_timeout(None);
         }

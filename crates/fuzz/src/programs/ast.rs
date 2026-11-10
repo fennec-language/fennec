@@ -298,6 +298,9 @@ pub(crate) enum Via {
     /// `run` straight on the union, with no match; its `with` source still after `is`, which a
     /// union needs.
     Direct,
+    /// After `if store is Lite: return`, on what's left, `Pg | Mem`: `run` called on it, it
+    /// given where a `Pg | Mem` goes, and a `match` telling the two apart. Three members only.
+    Rest,
 }
 
 /// The containers `CopiedNested` copies and changes deep inside.

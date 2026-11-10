@@ -79,10 +79,6 @@ const KEYS: [&str; 3] = ["a", "b", "c"];
 const MOST_IN_ALL: usize = 250;
 /// The most statements a block has.
 const MOST_STATEMENTS: u8 = 6;
-/// Whether `checked3` and `direct3`, an `is` chain over a union of three, are called. They're
-/// off while native code can't read what's left after `is`, a union of two, and
-/// `three_member_is_chains_dont_build_yet` in `crates/fennec/tests/llvm.rs` fails once it can.
-pub(crate) const THREE_MEMBER_IS_CHAINS: bool = false;
 
 struct Writer<'b> {
     bytes: std::slice::Iter<'b, u8>,
@@ -904,12 +900,14 @@ impl Writer<'_> {
                 body.push(Stmt::Shadowed(self.made, self.bounded(by)));
             }
             23 if self.choice(3) == 0 => {
-                // A union's member called on through the union: after `match`, after `is`, or
-                // straight on it, with its `with` source always after `is`.
-                let how =
-                    [Via::Match, Via::Is, Via::Direct].get(self.choice(3)).copied().unwrap_or(Via::Match);
-                let three = self.choice(2) == 1 && (matches!(how, Via::Match) || THREE_MEMBER_IS_CHAINS);
-                let members = 2 + usize::from(three);
+                // A union's member called on through the union: after `match`, after `is`,
+                // straight on it, with its `with` source always after `is`, or on what's left
+                // of three after `is`.
+                let how = [Via::Match, Via::Is, Via::Direct, Via::Rest]
+                    .get(self.choice(4))
+                    .copied()
+                    .unwrap_or(Via::Match);
+                let members = if matches!(how, Via::Rest) { 3 } else { 2 + self.choice(2) };
                 let member = self.choice(members);
                 let text = self.of(Ty::Str, 2);
                 body.push(Stmt::UnionCall(how, members, member, text));

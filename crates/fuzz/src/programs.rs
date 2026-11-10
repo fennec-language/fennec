@@ -254,11 +254,11 @@ mod tests {
     }
 
     /// A union's members are called on through the union in every way, two and three of them,
-    /// but for the three-member `is` chains while they're switched off.
+    /// and on what's left of three after `is`.
     #[test]
     fn it_calls_on_unions_every_way() {
-        let calls = ["matched2(", "matched3(", "checked2(", "checked3(", "direct2(", "direct3("];
-        let mut found = [0_usize; 6];
+        let calls = ["matched2(", "matched3(", "checked2(", "checked3(", "direct2(", "direct3(", "rest3("];
+        let mut found = [0_usize; 7];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
@@ -269,11 +269,7 @@ mod tests {
                 *count += usize::from(body.contains(call));
             }
         }
-        let held =
-            [true, true, true, generate::THREE_MEMBER_IS_CHAINS, true, generate::THREE_MEMBER_IS_CHAINS];
-        for ((count, call), held) in found.iter().zip(calls).zip(held) {
-            assert!(if held { *count >= 2 } else { *count == 0 }, "{call} in {count}: {found:?}");
-        }
+        assert!(found.iter().all(|count| *count >= 2), "{found:?}");
     }
 
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.

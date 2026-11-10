@@ -631,7 +631,7 @@ impl FnCx<'_> {
             a(union)
         );
         let help = format!(
-            "narrow it first, as `if {named} is {owner}:`, which runs that type's source; a `match` case doesn't narrow `{named}`"
+            "narrow it first, as `if {named} is {owner}:` or a `match` case for `{owner}`, where it runs that type's source"
         );
         self.error(Diagnostic::new(message, call.object.span.to(call.span)).with_help(help));
         true

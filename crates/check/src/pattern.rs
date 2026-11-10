@@ -39,6 +39,7 @@ impl FnCx<'_> {
         }
         for arm in arms {
             self.push(false);
+            self.narrow_to_case(subject, &arm.pattern);
             self.note_undotted_case(&arm.pattern, &ty, arm.span);
             let left = self.without_taken(&ty, &taken);
             self.bind_pattern(&arm.pattern, &left, arm.span);
@@ -75,6 +76,15 @@ impl FnCx<'_> {
             );
         }
         value
+    }
+
+    /// A case naming a member of the union its subject holds, as `case Circle(radius=_):`,
+    /// narrows the subject to that member inside the case, as `is` does.
+    fn narrow_to_case(&mut self, subject: &Expr, pattern: &Pattern) {
+        let Some(path) = crate::stmt::path(subject) else { return };
+        if let Pattern::Variant { name, dotted: false, .. } = pattern {
+            self.narrow_members(&[(path, name.clone(), true)]);
+        }
     }
 
     /// A `match` with a `ref` case changes what it's over: it's a statement of its own, over a

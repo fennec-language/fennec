@@ -293,12 +293,22 @@ pub fn route_formats_natively(module: &mut Module) -> bool {
             }
         }
         let Some(native) = checked.native_formats.get(&(expr.span.start, expr.span.end)) else { return };
-        if let ExprKind::Call { callee, .. } = &mut expr.kind {
+        if let ExprKind::Call { callee, args } = &mut expr.kind {
             let named = match &mut callee.kind {
                 ExprKind::Index { object, .. } => object,
                 _ => callee,
             };
             named.kind = ExprKind::Name(native.clone());
+            // std's code takes an option as its own type, where the rule that leaves out an
+            // enum it's known to be applies: `names=JsonNames.camel_case` is `.camel_case` there.
+            for arg in args.iter_mut().filter(|arg| arg.name.is_some()) {
+                if let ExprKind::Attr { object, name, optional: false } = &arg.value.kind
+                    && let ExprKind::Name(owner) = &object.kind
+                    && fennec_syntax::importable_type(owner).is_some()
+                {
+                    arg.value.kind = ExprKind::Variant(name.clone());
+                }
+            }
         }
     });
     if check_and_resolve(&mut routed).is_err() {
@@ -459,6 +469,41 @@ fn imports_for_std_calls<'a>(module: &mut Module, functions: impl Iterator<Item 
                 names: Vec::new(),
                 aliases: Vec::new(),
                 alias: Some(format!("\0{from}")),
+                span: Span::default(),
+            }),
+        );
+    }
+}
+
+/// A leading-dot case whose name more than one enum has is written in with its enum's name, which
+/// a program needn't have imported when it's the standard library's: `.Error` for a `LogLevel`.
+/// Such an enum is imported where it runs. A program's own type by that name was renamed apart
+/// already, so the name is free.
+fn imports_for_cases(module: &mut Module, cases: &BTreeMap<(u32, u32), String>) {
+    // Only a case the program writes: the library's own code sees its enums where it's written.
+    let mut wanted: Vec<(&str, &str)> = cases
+        .iter()
+        .filter(|((start, _), _)| !Span { start: *start, end: *start }.in_prelude())
+        .filter_map(|(_, owner)| Some((fennec_syntax::importable_type(owner)?, owner.as_str())))
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    for (from, owner) in wanted {
+        let seen = module.items.iter().any(|item| match item {
+            Item::Import(import) => import.bound().any(|(_, bound)| bound == owner),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.name == owner,
+            _ => false,
+        });
+        if seen {
+            continue;
+        }
+        module.items.insert(
+            0,
+            Item::Import(fennec_syntax::Import {
+                module: vec!["std".to_owned(), from.to_owned()],
+                names: vec![owner.to_owned()],
+                aliases: vec![None],
+                alias: None,
                 span: Span::default(),
             }),
         );
@@ -664,6 +709,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         });
     }
     imports_for_std_calls(module, checked.std_calls.values());
+    imports_for_cases(module, &checked.cases);
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);

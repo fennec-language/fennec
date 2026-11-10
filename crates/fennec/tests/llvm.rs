@@ -4945,6 +4945,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
+/// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
+/// leaves the enum out where it's known: that's for the program as written.
+#[test]
+fn a_json_names_case_written_with_its_enum_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "json_names_with_enum",
+        r#"from std import json
+from std.json import JsonNames
+
+struct Player:
+    display_name: str
+
+def main(stdout: Stdout):
+    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    stdout.print(text)
+    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+"#,
+        "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
+    )
+}
+
 /// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
 /// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
 /// what's inside it. A type with no fields gives none.
@@ -5299,6 +5325,45 @@ def used(fine: bool, stdout: Stdout) fails Second:
     )?;
     assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
     Ok(())
+}
+
+/// A function whose last line is a `with` whose block always returns gives back a value on every
+/// way, once the source is written in: alone, and in each branch of an `if`.
+#[test]
+fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_returns_last",
+        r#"struct Session:
+    log: str
+
+struct Lite:
+    name: str
+
+    def session(self) -> with Session:
+        lend Session(log="lite") else:
+            pass
+
+def direct(store: Lite, text: str) -> str:
+    with store.session() as session:
+        return f"{session.log} {text}"
+
+def branched(store: Lite, long: bool) -> int:
+    if long:
+        with store.session() as session:
+            return session.log.len() * 10
+    else:
+        with store.session() as session:
+            return session.log.len()
+
+def main(stdout: Stdout):
+    store = Lite(name="a")
+    stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+"#,
+        "lite x 40 4\n",
+    )
 }
 
 /// `with` sources, written in where they're used: a method one and a function one, one inside
@@ -17764,6 +17829,76 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     stdout.print(pair, (None, "a"), (None, None))
     stdout.print(pair == (1, None), [(1, None), (2, None)])
 "#,
+    )
+}
+
+/// A `match` case naming a union's member narrows the subject to it, natively: its own fields
+/// read there, and its own `with` source runs, for each of three members.
+#[test]
+fn a_match_case_narrows_its_subject_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "match_narrows",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="mem") else:
+            pass
+
+type Store = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    match store:
+        case Lite(name=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.name}"
+        case Postgres(host=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.host}"
+        case Mem(size=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.size}"
+    ""
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Mem(size=4))?)
+"#,
+        "lite 3 a pg 6 b mem 9 4\n",
     )
 }
 

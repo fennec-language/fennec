@@ -228,6 +228,11 @@ test \"any list\" for items: list[int], n: int:
         "def f(n: int) -> int:\n    x = if n > 2:\n        1\n    else:\n        2\n    x\n",
     ),
     (
+        "assert_fails",
+        "test \"load\":\n    assert load(\"bad\") fails Oops(line=3)\n    assert load(\"x\") fails .Missing | Oops()\n",
+    ),
+    ("fails_only_in_assert", "def f():\n    if load(\"bad\") fails Oops():\n        pass\n"),
+    (
         "one_line_if_in_a_fallback",
         "def port(text: str, given: bool) -> int:\n    int(text) else 80 if given else 8080\n",
     ),

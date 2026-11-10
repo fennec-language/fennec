@@ -1,11 +1,9 @@
 from std.collections import Table
 
 def describe(result: Result[str, IoError]) -> str:
-    match result:
-        case Ok(text):
-            f"read {text.len()} characters"
-        case Err(_):
-            "couldn't do it"
+    text = result else:
+        return "couldn't do it"
+    f"read {text.len()} characters"
 
 def main(stdout: Stdout, fs: Fs):
     # Lists.

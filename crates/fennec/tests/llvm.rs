@@ -16718,6 +16718,67 @@ def named(present: bool) -> str?:
     Ok(())
 }
 
+/// `_ = check(n) else as why:` on a call that gives nothing but can fail keeps nothing and runs
+/// the call, as the statement `check(n) else as why:` does.
+#[test]
+fn discarding_what_gives_nothing_runs_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("discard_nothing", DISCARD_NOTHING, "fine 1\nbig\nagain big\n")
+}
+
+const DISCARD_NOTHING: &str = r#"error Bad:
+    why: str
+
+def check(n: int) fails Bad:
+    if n > 1:
+        fail Bad("big")
+
+def main(stdout: Stdout):
+    for n in [1, 2]:
+        _ = check(n) else as why:
+            stdout.print(why.why)
+            continue
+        stdout.print("fine", n)
+    check(5) else as why:
+        stdout.print("again", why.why)
+"#;
+
+/// A failed `assert value fails Pattern` says what really happened, natively: what the call failed
+/// with instead, or what it gave, and stops the program as a failed `assert` does.
+#[test]
+fn a_failed_assert_that_something_fails_says_what_happened() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let setup = "error Oops:\n    line: int\n\nstruct Config:\n    size: int\n\ndef load(text: str) -> Config fails Oops:\n    if text == \"bad\":\n        fail Oops(line=4)\n    Config(size=text.len())\n";
+    for (asserted, said) in [
+        ("load(\"bad\") fails Oops(line=3)", "= help: it failed with Oops(line=4)"),
+        ("load(\"good\") fails Oops()", "= help: it gave Config(size=4)"),
+    ] {
+        let source = format!(
+            "{setup}\ndef main(stdout: Stdout):\n    assert load(\"bad\") fails Oops()\n    stdout.print(1)\n    assert {asserted}\n    stdout.print(2)\n"
+        );
+        let dir = folder("assert_fails_native")?;
+        let program = dir.join("asserted.fen");
+        std::fs::write(&program, &source)?;
+        let executable = dir.join("asserted");
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(out, "1\n", "{asserted}: {err}");
+        assert!(err.contains("this assertion failed") && err.contains(said), "{asserted}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{asserted}");
+    }
+    Ok(())
+}
+
 /// A shift by a count that isn't one fails as the JIT says.
 #[test]
 fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {

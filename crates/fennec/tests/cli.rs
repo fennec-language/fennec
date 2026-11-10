@@ -328,6 +328,17 @@ fn test_fails_when_a_test_fails() {
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
 }
 
+/// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
+/// failed one says what really happened: what it failed with instead, or what it gave.
+#[test]
+fn an_assert_that_something_fails_says_what_really_happened() {
+    let output = fennec(&["test", "crates/fennec/tests/fixtures/assert_fails.fen"], "").unwrap();
+    assert_eq!(text(&output.stdout), "  ✗ fails some other way\n  ✗ gives a value\n1 passed, 2 failed\n");
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("= help: it failed with Oops(line=4, why=\"worse\")"), "{stderr}");
+    assert!(stderr.contains("= help: it gave Config(size=4)"), "{stderr}");
+}
+
 #[test]
 fn test_shrinks_and_replays_property_failures() {
     let output = fennec(&["test", "crates/fennec/tests/fixtures/failing_properties.fen"], "").unwrap();
@@ -696,6 +707,41 @@ fn a_double_lookup_fixed_prints_the_same() {
     let now = std::fs::read_to_string(&program).unwrap();
     assert_eq!(now.matches(".get(").count(), 3, "{now}");
     assert!(!now.contains("in counts") && !now.contains("in names"), "{now}");
+    let output = fennec(&["run", path], "").unwrap();
+    assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "", "it ran as asked");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `fennec fix` writes a `match` on `Ok` and `Err` with `else`: a function's last line returns
+/// from its failure case, a named value keeps its name, and a loop's last statement continues.
+/// The program prints the same before and after.
+#[test]
+fn a_match_on_ok_and_err_fixed_prints_the_same() {
+    let dir = scratch("results-fix").unwrap();
+    let program = dir.join("results_fix.fen");
+    let source = "error Bad:\n    why: str\n\ndef lower(n: int) -> int fails Bad:\n    if n < 1:\n        \
+                  fail Bad(\"small\")\n    n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        \
+                  case Ok(lowered): lowered\n        case Err(_): 0\n\ndef main(stdout: Stdout):\n    \
+                  for n in [0, 3]:\n        given = match lower(n):\n            case Ok(lowered): lowered\n            \
+                  case Err(_): 9\n        stdout.print(given, first(n))\n        match lower(n):\n            \
+                  case Ok(lowered):\n                stdout.print(lowered)\n            case Err(problem):\n                \
+                  stdout.print(problem.why)\n";
+    std::fs::write(&program, source).unwrap();
+    let path = program.to_str().unwrap();
+    let expected = "9 0\nsmall\n2 2\n2\n";
+    assert_eq!(text(&fennec(&["run", path], "").unwrap().stdout), expected);
+    let fixed = fennec(&["fix", path], "").unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    let now = std::fs::read_to_string(&program).unwrap();
+    assert!(!now.contains("Ok(") && !now.contains("Err("), "{now}");
+    for written in [
+        "lowered = lower(n) else:\n        return 0\n    lowered\n",
+        "given = lower(n) else:\n            9\n",
+        "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",
+    ] {
+        assert!(now.contains(written), "{now}");
+    }
     let output = fennec(&["run", path], "").unwrap();
     assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
     assert_eq!(text(&output.stderr), "", "it ran as asked");

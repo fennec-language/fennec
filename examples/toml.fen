@@ -83,11 +83,11 @@ def kit_toml() -> str:
     ])
 
 def describe(text: str) -> str:
-    match toml.loads[Sample](text):
-        case Ok(sample):
-            f"read {sample}"
-        case ParseError(message=message):
-            f"couldn't read it: {message}"
+    sample = toml.loads[Sample](text) else as why:
+        match why:
+            case ParseError(message=message):
+                return f"couldn't read it: {message}"
+    f"read {sample}"
 
 def main(stdout: Stdout):
     manifest = toml.loads[Manifest](kit_toml())?
@@ -116,11 +116,11 @@ def main(stdout: Stdout):
 
 ## Why `text` can't be read as a `Sample`, or "" if it can.
 def why_not(text: str) -> str:
-    match toml.loads[Sample](text):
-        case Ok(_):
-            ""
-        case ParseError(message=message):
-            message
+    _ = toml.loads[Sample](text) else as why:
+        match why:
+            case ParseError(message=message):
+                return message
+    ""
 
 test "tables a header or a dotted key names count toward how deep TOML may nest"():
     for deep in [600, 1000000]:
@@ -143,11 +143,10 @@ test "inline tables in inline tables count toward how deep TOML may nest"():
         )
 
 test "a JSON read that fails leaves nothing behind for the next read"():
-    match json.loads[Sample]("not json", names=.camel_case, extra=.ignore):
-        case Ok(_):
-            assert False
-        case Err(_):
-            pass
+    assert (
+        failure_of(() => json.loads[Sample]("not json", names=.camel_case, extra=.ignore))
+        is not None
+    )
     assert (
         why_not("speed = 1\nother = 2\n") == "`Sample` has no field \"other\", but the text has one"
     )

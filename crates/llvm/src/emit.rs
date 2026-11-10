@@ -3190,6 +3190,16 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A sized number or a literal string elsewhere in a program holds no enum, so it leaves a
+    /// tree's blocks native.
+    #[test]
+    fn sized_numbers_and_literal_strings_leave_blocks_native() -> Result<(), String> {
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    small: u8 = 3\n    wide = i32(7)\n    stdout.print(small, wide, \"tree\", count(build(4)))\n";
+        let (_, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Twig's blocks are native");
+        Ok(())
+    }
+
     #[test]
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";

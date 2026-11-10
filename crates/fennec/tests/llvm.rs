@@ -12210,6 +12210,62 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// What's left of a union of three after `is` is a union of two, which native code can't read
+/// yet, so an `is` chain over three members doesn't build. This fails once it builds: then make
+/// it print `lite pg mem` in both builds, and turn on `THREE_MEMBER_IS_CHAINS` in
+/// `crates/fuzz/src/programs/generate.rs`, so random programs call `checked3` and `direct3` again.
+#[test]
+fn three_member_is_chains_dont_build_yet() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let name = "three_member_is_chain";
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(
+        &program,
+        r#"struct Lite:
+    name: str
+
+struct Pg:
+    host: str
+
+struct Mem:
+    size: int
+
+type Three = Lite | Pg | Mem
+
+def which(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    if store is Pg:
+        return "pg"
+    "mem"
+
+def main(stdout: Stdout):
+    stdout.print(which(Lite(name="a")), which(Pg(host="b")), which(Mem(size=1)))
+"#,
+    )?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(
+            !built.status.success(),
+            "{how:?}: it builds now, so flip this test and the generator's switch"
+        );
+        assert!(said.contains("isn't lowered yet: it reads Lite | Mem | Pg as Mem | Pg"), "{how:?}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
 /// is held natively: passed in, told apart with `is`, and read as the member it holds.
 #[test]

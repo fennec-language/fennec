@@ -38,6 +38,9 @@ fn printable(value: Expr, ty: Ty, digest_only: bool) -> Expr {
     match ty {
         Ty::Buf => Expr::BufItems(Box::new(value)),
         Ty::Deep => Expr::DepthOf(Box::new(value)),
+        // Never printed whole, in every program, so it qualifies for native blocks.
+        Ty::Named => Expr::NamedDigest(Box::new(value)),
+        Ty::Chain => Expr::NamedDepth(Box::new(value)),
         Ty::Node if digest_only => Expr::Digest(Box::new(value)),
         Ty::Nodes if digest_only => Expr::DigestAll(Box::new(value)),
         _ => value,
@@ -47,7 +50,7 @@ fn printable(value: Expr, ty: Ty, digest_only: bool) -> Expr {
 /// Whether a value is a tree or a list of them, whose names an expression of either holds at
 /// most one of, so trees grow by adding, never by doubling, however a loop goes.
 const fn is_tree(ty: Ty) -> bool {
-    matches!(ty, Ty::Node | Ty::Nodes)
+    matches!(ty, Ty::Node | Ty::Nodes | Ty::Named)
 }
 
 /// `n` made to fit `size`, for a literal, which has to.
@@ -386,6 +389,24 @@ impl Writer<'_> {
                 Expr::NodeList((0..count).map(|_| self.of(Ty::Node, next)).collect())
             }
             Ty::Deep => Expr::Deep(0, Box::new(Expr::Str("d".to_owned()))),
+            Ty::Named if depth >= MOST_DEPTH => Expr::NamedLeaf(Box::new(self.of(Ty::Str, next))),
+            Ty::Named => match self.choice(5) {
+                0 => Expr::NamedLeaf(Box::new(self.of(Ty::Str, next))),
+                1 => Expr::Chain(i64::from(self.byte() % 9), Box::new(self.of(Ty::Str, next))),
+                _ => {
+                    let (left, right) = (self.of(Ty::Named, next), self.of(Ty::Named, next));
+                    let count = self.choice(3);
+                    let tags = (0..count).map(|_| self.of(Ty::Str, next)).collect();
+                    let label = self.of(Ty::Str, next);
+                    Expr::NamedPair(
+                        Box::new(left),
+                        Box::new(right),
+                        Box::new(label),
+                        Box::new(Expr::Texts(tags)),
+                    )
+                }
+            },
+            Ty::Chain => Expr::Chain(65, Box::new(Expr::Str("c".to_owned()))),
             Ty::Sized(size) if depth >= MOST_DEPTH => self.sized_literal(size),
             Ty::Sized(size) => match self.choice(4) {
                 0 => {
@@ -534,10 +555,11 @@ impl Writer<'_> {
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
         self.written += 1;
         self.tree_names = 1;
-        let which = self.choice(34);
+        let which = self.choice(36);
         match which {
             30 | 31 => self.trees(body),
             32 | 33 => self.local_refs(body),
+            34 | 35 => self.named(body),
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
@@ -1198,6 +1220,72 @@ impl Writer<'_> {
         };
         let any = Expr::Compare(Compare::Greater, Box::new(length.clone()), Box::new(Expr::Int(0)));
         body.push(Stmt::If(any, vec![Stmt::LocalRef(name, place, uses)], Vec::new()));
+    }
+
+    /// A change to a `Named`, a deep one, one built in a loop that can fail partway, or a copy
+    /// of one kept while the first changes.
+    fn named(&mut self, body: &mut Vec<Stmt>) {
+        match self.choice(4) {
+            0 => {
+                let Some(named) = self.name_of(Ty::Named, true) else { return self.print(body) };
+                self.rename(body, &named);
+            }
+            1 => {
+                const DEPTHS: [i64; 5] = [65, 1000, 5000, 20_000, 200_000];
+                let most = if self.loops > 0 { 2 } else { DEPTHS.len() };
+                let depth = DEPTHS.get(self.choice(most)).copied().unwrap_or(65);
+                let label = self.of(Ty::Str, 2);
+                let name = self.fresh();
+                body.push(Stmt::Let {
+                    name: name.clone(),
+                    value: Expr::Chain(depth, Box::new(label)),
+                    changeable: false,
+                });
+                self.names.push(InScope { name, ty: Ty::Chain, changeable: false, held: 0 });
+            }
+            2 => {
+                // Built a pair a round, failing at round `fail` if the loop gets that far.
+                let (name, round) = (self.fresh(), self.fresh());
+                let count = 1 + i64::from(self.byte() % 6);
+                let fail = i64::from(self.byte() % 16);
+                let left =
+                    Expr::Arith(Arith::Sub, Box::new(Expr::Int(fail)), Box::new(Expr::Name(round.clone())));
+                let number = Expr::Arith(Arith::Div, Box::new(Expr::Int(100)), Box::new(left));
+                let right = Expr::NamedLeaf(Box::new(Expr::Format(Box::new(number))));
+                let grown = Expr::NamedPair(
+                    Box::new(Expr::Name(name.clone())),
+                    Box::new(right),
+                    Box::new(Expr::Format(Box::new(Expr::Name(round.clone())))),
+                    Box::new(Expr::Texts(Vec::new())),
+                );
+                let start = Expr::NamedLeaf(Box::new(Expr::Str("s".to_owned())));
+                body.push(Stmt::Let { name: name.clone(), value: start, changeable: true });
+                let grow = Stmt::Assign { place: Place::Name(name.clone()), value: grown, add: false };
+                body.push(Stmt::Range(round, Expr::Int(count), vec![grow]));
+                self.names.push(InScope { name: name.clone(), ty: Ty::Named, changeable: true, held: 0 });
+                self.read_back(body, &name);
+            }
+            _ => {
+                // A copy kept while the first changes, which it mustn't see.
+                let Some(first) = self.name_of(Ty::Named, true) else { return self.print(body) };
+                let kept = self.fresh();
+                let value =
+                    if self.loops > 0 { Expr::Copy(first.clone()) } else { Expr::Name(first.clone()) };
+                body.push(Stmt::Let { name: kept.clone(), value, changeable: false });
+                self.names.push(InScope { name: kept.clone(), ty: Ty::Named, changeable: false, held: 0 });
+                self.rename(body, &first);
+                self.read_back(body, &kept);
+            }
+        }
+    }
+
+    /// `match named:` changing it through `ref`, with a new left side that holds no tree's name.
+    fn rename(&mut self, body: &mut Vec<Stmt>, named: &str) {
+        let text = self.of(Ty::Str, 2);
+        self.tree_names = 0;
+        let left = self.stored(Ty::Named, 1);
+        body.push(Stmt::Rename(named.to_owned(), text, left));
+        self.read_back(body, named);
     }
 
     /// `match node:` changing it through `ref`, with a child that holds no other tree's name.

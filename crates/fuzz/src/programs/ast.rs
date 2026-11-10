@@ -38,11 +38,17 @@ pub(crate) enum Ty {
     Nodes,
     /// A `Node` from `deep`, thousands of levels deep, only measured, never printed whole.
     Deep,
+    /// `Named`: a recursive enum with no list of itself, `Pair` holding two more, which is only
+    /// ever read through its digest, never printed, compared, shared or sent, so native code can
+    /// keep it in blocks of its own.
+    Named,
+    /// A `Named` from `chain`, thousands of pairs deep, only measured.
+    Chain,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 16] = [
+pub(crate) const TYPES: [Ty; 17] = [
     Ty::Int,
     Ty::Bool,
     Ty::Str,
@@ -59,6 +65,7 @@ pub(crate) const TYPES: [Ty; 16] = [
     Ty::Buf,
     Ty::Node,
     Ty::Nodes,
+    Ty::Named,
 ];
 
 /// A sized integer type.
@@ -226,6 +233,16 @@ pub(crate) enum Expr {
     DigestAll(Box<Expr>),
     /// `deep(depth, label)`: a chain of branches `depth` deep, built in a loop.
     Deep(i64, Box<Expr>),
+    /// `Named.Leaf(name=text)`.
+    NamedLeaf(Box<Expr>),
+    /// `Named.Pair(left=named, right=named, label=text, tags=texts)`.
+    NamedPair(Box<Expr>, Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `chain(depth, label)`: pairs `depth` deep down their left side, built in a loop.
+    Chain(i64, Box<Expr>),
+    /// `named_digest(named)`, the only way a program reads a whole `Named`.
+    NamedDigest(Box<Expr>),
+    /// `named_depth(named)`, walking left sides in a loop.
+    NamedDepth(Box<Expr>),
     /// `depth_of(node)`, walking first children in a loop.
     DepthOf(Box<Expr>),
     /// A float written out.
@@ -429,6 +446,9 @@ pub(crate) enum Stmt {
     /// and its children by `child`, a tagged node's tags and inner nodes likewise, a leaf's name
     /// grows and a number counts up.
     Reshape(String, Expr, Expr),
+    /// `match named:` changing it through `ref`: a pair's label grows by `text`, its tags gain
+    /// the new label, and its left side becomes `left`; a leaf's name grows by `text`.
+    Rename(String, Expr, Expr),
     /// `ref name = place`, then the statements that use it, the last of them its last use.
     LocalRef(String, RefPlace, Vec<Stmt>),
     /// `holder.items.append(value)`.

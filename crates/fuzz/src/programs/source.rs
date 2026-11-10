@@ -178,6 +178,38 @@ def node_or_leaf(nodes: list[Node], at: int) -> Node:
     if nodes.len() == 0: return .Leaf(name=\"none\")
     nodes[at % nodes.len()]
 
+enum Named:
+    Leaf(name: str)
+    Pair(left: Named, right: Named, label: str, tags: list[str])
+
+def chain(depth: int, label: str) -> Named:
+    mut named = Named.Leaf(name=label)
+    for at in range(depth):
+        named = .Pair(left=named, right=.Leaf(name=f\"<{at}>\"), label=label, tags=[label])
+    named
+
+def named_digest(named: Named) -> str:
+    match named:
+        case .Leaf(name):
+            \"l(\" + name + \")\"
+        case .Pair(left, right, label, tags):
+            mut text = \"p(\" + label
+            for tag in tags:
+                text += \",\" + tag
+            text + \" \" + named_digest(left) + \" \" + named_digest(right) + \")\"
+
+def named_depth(named: Named) -> int:
+    mut at = named
+    mut depth = 0
+    while True:
+        match at:
+            case .Pair(left, _, _, _):
+                at = left
+                depth += 1
+            case _:
+                return depth
+    depth
+
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
     lend Tally(count=start) else:
@@ -353,6 +385,16 @@ impl Writer {
                 self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
             }
             Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
+            Stmt::Rename(name, text, left) => {
+                let (text, left) = (self.expr(text, false), self.expr(left, true));
+                self.line(indent, &format!("match {name}:"));
+                self.line(indent + 1, "case .Pair(ref left, _, ref label, ref tags):");
+                self.line(indent + 2, &format!("label += {text}"));
+                self.line(indent + 2, "tags.append(label)");
+                self.line(indent + 2, &format!("left = {left}"));
+                self.line(indent + 1, "case .Leaf(ref name):");
+                self.line(indent + 2, &format!("name += {text}"));
+            }
             Stmt::LocalRef(name, place, body) => {
                 let place = match place {
                     RefPlace::Item(list, at) => format!("{list}[{}]", self.expr(at, false)),
@@ -734,6 +776,23 @@ impl Writer {
             Expr::Digest(node) => format!("digest({})", self.expr(node, true)),
             Expr::DigestAll(nodes) => format!("digest_all({})", self.expr(nodes, false)),
             Expr::Deep(depth, label) => format!("deep({depth}, {})", self.expr(label, false)),
+            Expr::NamedLeaf(name) => {
+                let start = if known { "." } else { "Named." };
+                format!("{start}Leaf(name={})", self.expr(name, false))
+            }
+            Expr::NamedPair(left, right, label, tags) => {
+                let start = if known { "." } else { "Named." };
+                format!(
+                    "{start}Pair(left={}, right={}, label={}, tags={})",
+                    self.expr(left, true),
+                    self.expr(right, true),
+                    self.expr(label, false),
+                    self.expr(tags, false)
+                )
+            }
+            Expr::Chain(depth, label) => format!("chain({depth}, {})", self.expr(label, false)),
+            Expr::NamedDigest(named) => format!("named_digest({})", self.expr(named, true)),
+            Expr::NamedDepth(named) => format!("named_depth({})", self.expr(named, true)),
             Expr::DepthOf(node) => format!("depth_of({})", self.expr(node, true)),
             Expr::Float(x) => super::eval::float_text(*x),
             Expr::FloatArith(operator, left, right) => {

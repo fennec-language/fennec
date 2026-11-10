@@ -97,19 +97,28 @@ mod tests {
         assert!(failed > 0, "no program failed, so failures are never compared");
     }
 
-    /// Trees are built, changed through `ref`, copied while they change, built deep, and built in
-    /// loops that fail partway, often enough to matter.
+    /// Trees, `Node` and `Named`, are built, changed through `ref`, copied while they change,
+    /// built deep, and built in loops that fail partway, often enough to matter.
     #[test]
     fn it_writes_trees_of_every_kind() {
-        let mut found = [0_usize; 5];
+        let mut found = [0_usize; 9];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
             let body = source.split("def main").last().unwrap_or_default();
-            let marks =
-                ["case .Branch(ref label", "deep(20000", "100 // (", "Node.Tagged(tags=[", "digest_all("];
+            let marks = [
+                "case .Branch(ref label",
+                "deep(20000",
+                "100 // (",
+                "Node.Tagged(tags=[",
+                "digest_all(",
+                "named_digest(.Pair(",
+                "case .Pair(ref left",
+                "chain(20000",
+                "f\"<{(100 // (",
+            ];
             for (count, mark) in found.iter_mut().zip(marks) {
                 *count += usize::from(body.contains(mark));
             }

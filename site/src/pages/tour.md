@@ -524,18 +524,16 @@ def main(stdout: Stdout):
     # use a default if it failed
     stdout.print(load_score("") else 0)
 
-    # handle specific failures
-    match load_score(""):
-        case Ok(score): stdout.print(score)
-        case NotFound(path): stdout.print("no file")
-        case Err(error): stdout.print(error)
-
-    # or leave with a block, which must end in return, fail, continue or break
-    score = load_score("save") else:
-        stdout.print("couldn't load")
+    # or name the failure in a block that leaves with return, fail, continue or break
+    score = load_score("save") else as why:
+        stdout.print(f"no file at {why.path}")
         return
     stdout.print(score)
 ```
+
+A failure is handled at the call: `?`, `else`, or `else as`. There's no `Ok`, `Err` or `Result` to store and forget. Inside an `else as` block, `match why:` handles different failures, with `_` the only catch-all, and `fail why` passes one on.
+
+**Planned:** an `else as` block that gives a value as its last line instead of leaving, and the old `Ok`, `Err` and `Result` removed.
 
 - The default after `else` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
 - `fails A | B` combines failures from different places, and `?` passes any of them up as it is. A function type can say it too: `(str) -> int fails ParseError | RangeError`.
@@ -546,7 +544,6 @@ def main(stdout: Stdout):
 - `xs.get(i)` gives an optional, for an index that might not be there.
 - There's no `exit()`. A failure out of `main` prints to stderr and exits with code 1, and `def main(...) -> int:` exits with the `int` it gives back.
 
-**Planned:** `if result is Err(NotFound):`, which checks one failure and narrows the rest.
 
 ## Collections
 
@@ -712,12 +709,13 @@ def echo(conn: Connection) fails NetError:
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
         for conn in parallel(server):
-            match echo(conn):
-                case Err(error): stdout.print(f"{conn.peer} dropped: {error}")
-                case Ok(_): stdout.print(f"{conn.peer} left")
+            echo(conn) else as error:
+                stdout.print(f"{conn.peer} dropped: {error}")
+                continue
+            stdout.print(f"{conn.peer} left")
 ```
 
-Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `match` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
+Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `else as` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
 
 **Planned:** `limit=` on `parallel`.
 

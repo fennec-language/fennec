@@ -10,6 +10,7 @@ use fennec_rt::embed::layout::COUNT;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
+use crate::holding::{Holding, filled, holding, step};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 use crate::{CheckKind, CheckLeft, Shared};
@@ -500,6 +501,10 @@ impl<'p> Module<'_, 'p> {
             wrote_prop: false,
             traced_calls: Vec::new(),
             leave_after_crash: None,
+            holding: Holding::default(),
+            holding_now: BTreeSet::new(),
+            filling: Vec::new(),
+            split: false,
         };
         // A function with locks a crash gives back, or that owns anything, leaves on every failure
         // through `prop`, where a crash puts back what the blocks it's inside changed, gives their
@@ -509,6 +514,15 @@ impl<'p> Module<'_, 'p> {
         let leave_after_crash = ((!emit.on_crash.is_empty() || owns_any) && emit.failed != "unreachable")
             .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
+        // A failure can let go of what's short-lived before `prop` when `prop` doesn't first put
+        // back or roll back what's in a local's blocks. Locals whose blocks it does put things in,
+        // and those it fills itself, are let go of at `prop` and at a return, as before.
+        emit.split = emit.leave_after_crash.is_some() && emit.on_crash.is_empty();
+        let mut untracked: BTreeSet<usize> = emit.known.length_kept.keys().copied().collect();
+        for place in &function.places {
+            untracked.extend([place.root.0, place.value.0]);
+        }
+        emit.holding = holding(&emit, &untracked, emit.split);
         emit.body()?;
         emit.write_traced_exit();
         let (allocas, out, cold, failed, needs_prop) =
@@ -604,6 +618,15 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     leave_after_crash: Option<String>,
     /// What the next way out on a failure is for, when what writes it says.
     check_kind: Option<(Span, Option<CheckKind>)>,
+    /// Which locals may hold something where, worked out before writing.
+    holding: Holding,
+    /// The locals that may hold something as the instruction being written starts.
+    holding_now: BTreeSet<usize>,
+    /// What the instruction being written, and the one after, which it may be written with,
+    /// may fill.
+    filling: Vec<usize>,
+    /// Whether a failure lets go of short-lived locals where it leaves, rather than at `prop`.
+    split: bool,
     /// Items of lists, by field path and index, known to be inside their lists here.
     pub(crate) inside_items: Vec<FieldPath>,
     /// Where the position each was found at is kept, negative indexes counted from the end.
@@ -804,6 +827,8 @@ impl Emit<'_, '_, '_> {
         for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
+            self.holding_now = self.holding.coming_in(at);
+            self.filling.clear();
             self.write_kept_lengths(at);
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
@@ -824,6 +849,10 @@ impl Emit<'_, '_, '_> {
             let mut appended = false;
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
+                self.filling = filled(&self.holding, &inst.kind);
+                if let Some(next) = block.insts.get(index + 1) {
+                    self.filling.extend(filled(&self.holding, &next.kind));
+                }
                 self.forget_entries(&inst.kind);
                 self.take_waiting_places(&inst.kind, inst.span)?;
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
@@ -859,6 +888,9 @@ impl Emit<'_, '_, '_> {
                     }
                 }
                 self.let_go_after(&inst.kind);
+                let mut now = std::mem::take(&mut self.holding_now);
+                step(self, &self.holding, &inst.kind, &mut now);
+                self.holding_now = now;
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
@@ -886,7 +918,7 @@ impl Emit<'_, '_, '_> {
                 self.roll_back_on_crash()?;
             }
             self.write_kept_lengths_after_crash();
-            self.release_locals(None);
+            self.release_locals_at_prop();
             self.line(&leave);
             self.wrote_prop = true;
         }
@@ -1173,7 +1205,55 @@ impl Emit<'_, '_, '_> {
             Some((_, None)) => {}
             None => self.note_runtime_check(),
         }
+        if self.failed == "br label %prop" {
+            let out = self.way_out("prop");
+            return format!("br label %{out}");
+        }
         self.failed.clone()
+    }
+
+    /// Where a failure here goes on the way to `then`: a block away from the hot path that lets go
+    /// of the short-lived locals that may hold something here, which `prop` leaves, or straight
+    /// to `then` when there are none.
+    fn way_out(&mut self, then: &str) -> String {
+        self.ways_out(then).0
+    }
+
+    /// [`Self::way_out`], with the block that goes on to `then`, if it's one of its own.
+    fn ways_out(&mut self, then: &str) -> (String, Option<String>) {
+        if !self.split {
+            return (then.to_owned(), None);
+        }
+        let mut short: Vec<usize> = self.holding_now.iter().chain(&self.filling).copied().collect();
+        short.retain(|local| self.holding.short(*local));
+        short.sort_unstable();
+        short.dedup();
+        // A build that checks proofs checks that the short-lived locals left here are empty.
+        let empty: Vec<usize> = if self.checks_proofs() {
+            (0..self.kinds.len()).filter(|at| self.holding.short(*at) && !short.contains(at)).collect()
+        } else {
+            Vec::new()
+        };
+        if short.is_empty() && empty.is_empty() {
+            return (then.to_owned(), None);
+        }
+        let label = self.label("let_go");
+        let (hot, block) = (std::mem::take(&mut self.out), self.current.clone());
+        self.start_block(&label);
+        for local in empty {
+            self.check_empty(local, "a local a failure leaves is empty");
+        }
+        for local in short {
+            let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
+            let (held, slot, text) = (self.temp(), self.slot(LocalId(local)), self.text_of(&kind));
+            self.line(&format!("{held} = load {text}, ptr {slot}"));
+            self.release_kind(&held, &kind);
+        }
+        self.line(&format!("br label %{then}"));
+        let written = std::mem::replace(&mut self.out, hot);
+        let last = std::mem::replace(&mut self.current, block);
+        self.cold.push_str(&written);
+        (label, Some(last))
     }
 
     /// Says what the next way out on a failure is for, or with `None` that it isn't a check.
@@ -1185,7 +1265,8 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn leave_if(&mut self, failed: &str) {
         let ok = self.label("ok");
         self.needs_prop = true;
-        self.line(&format!("br i1 {failed}, label %prop, label %{ok}, !prof !0"));
+        let out = self.way_out("prop");
+        self.line(&format!("br i1 {failed}, label %{out}, label %{ok}, !prof !0"));
         self.start_block(&ok);
     }
 
@@ -1196,8 +1277,10 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn leave_traced(&mut self, failed: &str, span: Span) {
         let ok = self.label("ok");
         self.needs_prop = true;
-        self.traced_calls.push((self.current.clone(), span.start.saturating_sub(self.start)));
-        self.line(&format!("br i1 {failed}, label %left_traced, label %{ok}, !prof !0"));
+        let (out, last) = self.ways_out("left_traced");
+        let from = last.unwrap_or_else(|| self.current.clone());
+        self.traced_calls.push((from, span.start.saturating_sub(self.start)));
+        self.line(&format!("br i1 {failed}, label %{out}, label %{ok}, !prof !0"));
         self.start_block(&ok);
     }
 
@@ -1227,7 +1310,8 @@ impl Emit<'_, '_, '_> {
         self.start_block(&ok);
         self.declare("declare void @fennec_at_call(i64, i64) nounwind");
         let (place, args) = self.span_values(&here, span);
-        let _ = writeln!(self.cold, "{here}:\n{place}  call void @fennec_at_call({args})\n  br label %prop");
+        let out = self.way_out("prop");
+        let _ = writeln!(self.cold, "{here}:\n{place}  call void @fennec_at_call({args})\n  br label %{out}");
     }
 
     /// Where the instruction being written is in the source.
@@ -2744,17 +2828,28 @@ impl Emit<'_, '_, '_> {
     /// A local read once lets go of its value right after that, rather than when the function
     /// returns, so it doesn't still count as an owner when the next line changes what it read.
     fn let_go_after(&mut self, inst: &InstKind) {
+        for local in self.let_go_of(inst) {
+            let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
+            let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
+            self.line(&format!("{held} = load {text}, ptr {slot}"));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            self.release_kind(&held, &kind);
+        }
+    }
+
+    /// The locals [`Self::let_go_after`] lets go of after `inst`, leaving their slots empty.
+    pub(crate) fn let_go_of(&self, inst: &InstKind) -> Vec<LocalId> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
         {
-            return;
+            return Vec::new();
         }
         // Nor does an `enumerate` never made, whose list its pairs read in its place.
         if let InstKind::Builtin { dest: Some(dest), .. } | InstKind::Copy { dest, .. } = inst
             && (self.known.enumerated.contains_key(&dest.0) || self.known.map_walks.contains_key(&dest.0))
         {
-            return;
+            return Vec::new();
         }
         let (mut reads, mut writes) = (Vec::new(), Vec::new());
         visit(inst, |operand| reads.push(operand.clone()), |local| writes.push(local));
@@ -2763,7 +2858,7 @@ impl Emit<'_, '_, '_> {
             self.known.is_borrowed(*dest) || self.known.is_taken(*dest) || self.known.alias(*dest).is_some()
         });
         if leans {
-            return;
+            return Vec::new();
         }
         let mut done_with: Vec<LocalId> = Vec::new();
         for operand in reads {
@@ -2775,31 +2870,65 @@ impl Emit<'_, '_, '_> {
                 local = lender;
             }
         }
+        let mut let_go = Vec::new();
         for local in done_with {
             if self.owns(local) && self.known.moves(local) && !writes.contains(&local) {
-                let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
-                let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
-                self.line(&format!("{held} = load {text}, ptr {slot}"));
-                self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
-                self.release_kind(&held, &kind);
+                let_go.push(local);
             }
+        }
+        let_go
+    }
+
+    /// Everything local lets go of what it owns, except what's leaving, on a return: what's known
+    /// to be empty here has nothing to let go of. A build that checks proofs checks that it is.
+    fn release_locals(&mut self, except: Option<LocalId>) {
+        for at in 0..self.kinds.len() {
+            if self.holding.tracked(at) && !self.holding_now.contains(&at) && Some(LocalId(at)) != except {
+                self.check_empty(at, "a local a return leaves is empty");
+                continue;
+            }
+            self.release_local(at, except);
         }
     }
 
-    /// Everything local lets go of what it owns, except what's leaving.
-    fn release_locals(&mut self, except: Option<LocalId>) {
+    /// Everything local lets go of what it owns at `prop`, but for what each failure let go of
+    /// before getting there.
+    fn release_locals_at_prop(&mut self) {
         for at in 0..self.kinds.len() {
-            let local = LocalId(at);
-            if Some(local) != except && self.owns(local) {
-                let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
-                let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
-                self.line(&format!("{held} = load {text}, ptr {slot}"));
-                self.release_kind(&held, &kind);
-            } else if Some(local) != except && self.owns_inline(local) {
-                let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
-                let slot = self.slot(local);
-                self.release_inline(&kind, &slot);
+            if self.split && self.holding.short(at) {
+                continue;
             }
+            self.release_local(at, None);
+        }
+    }
+
+    /// In a build that checks proofs, ends the program unless a local thought empty is.
+    fn check_empty(&mut self, at: usize, proof: &str) {
+        let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
+        if !self.checks_proofs() || self.text_of(&kind) != "ptr" {
+            return;
+        }
+        let (held, full, slot) = (self.temp(), self.temp(), self.slot(LocalId(at)));
+        self.line(&format!("{held} = load ptr, ptr {slot}"));
+        self.line(&format!("{full} = icmp ne ptr {held}, null"));
+        let span = self.here_span();
+        self.proof_held(&full, proof, span);
+    }
+
+    /// A local lets go of what it owns, unless it's what's leaving.
+    fn release_local(&mut self, at: usize, except: Option<LocalId>) {
+        let local = LocalId(at);
+        if Some(local) == except {
+            return;
+        }
+        let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
+        if self.owns(local) {
+            let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
+            self.line(&format!("{held} = load {text}, ptr {slot}"));
+            self.release_kind(&held, &kind);
+        } else if self.owns_inline(local) {
+            let slot = self.slot(local);
+            self.release_inline(&kind, &slot);
         }
     }
 

@@ -7858,6 +7858,94 @@ fn a_task_crashing_partway_through_a_list_leaves_nothing_behind() -> std::io::Re
     Ok(())
 }
 
+/// A failure partway through a line lets go of what the line made so far and of what the
+/// function holds: a failure lets go of a value held only briefly where it leaves, and `prop`
+/// of the rest. Checking proofs, each way out checks that what it leaves is empty, as worked
+/// out before writing; and a value left behind would show in the blocks still held at the end,
+/// which would grow with the rounds.
+#[test]
+fn a_failure_partway_through_a_line_leaves_nothing_behind() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let live = |rounds: u32| -> std::io::Result<Option<u64>> {
+        let source = failing_partway().replace("rounds = 3", &format!("rounds = {rounds}"));
+        let counts = counts_of(&format!("failing_partway_{rounds}"), &source)?;
+        Ok(count(&counts, "live"))
+    };
+    let (few, many) = (live(3)?, live(30)?);
+    assert!(few.is_some(), "the run says how many blocks it still held");
+    assert_eq!(few, many, "blocks still held after 3 failed rounds and after 30");
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("failing_partway_checked")?;
+        let (program, executable) = (dir.join("checked.fen"), dir.join("checked"));
+        std::fs::write(&program, failing_partway())?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "2 3\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+const FAILING_PARTWAY: &str = r#"error Refused:
+    at: int
+
+def checked(items: list[str], at: int) -> str fails Refused:
+    if at >= items.len(): fail Refused(at=at)
+    items[at]
+
+def round(at: int) -> int fails Refused:
+    mut held = [f"held through the round {at}, long enough to need a block of its own"]
+    held.append(f"and {at}, long enough to need a block of its own")
+    first = checked(held, at % 3)?
+    both = checked([f"left {at}, long enough to need a block of its own"], 0)? + checked([f"right {at}, long enough to need a block of its own"], at % 2)?
+    first.len() + both.len() + held.len()
+
+def main(stdout: Stdout):
+    rounds = 3
+    mut failed = 0
+    mut failed_many = 0
+    for at in range(rounds):
+        got = round(at) else -1
+        if got < 0:
+            failed += 1
+        made = many(at) else -1
+        if made < 0:
+            failed_many += 1
+    stdout.print(failed, failed_many)
+"#;
+
+/// [`FAILING_PARTWAY`] with `many`, a function of 50 lines that each make a list and a string
+/// held only for the line, enough short-lived values for each failure to let go of its own where
+/// it leaves. Round `at` fails at line `49 - at`.
+fn failing_partway() -> String {
+    let lines: String = (0..50)
+        .map(|line| {
+            format!(
+                "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()\n"
+            )
+        })
+        .collect();
+    format!(
+        "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    total\n"
+    )
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):

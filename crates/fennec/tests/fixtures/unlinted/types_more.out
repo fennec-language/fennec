@@ -4,10 +4,10 @@ True False False True True
 Money(cents=4) Money(cents=1)
 Ok(Score(value=5))
 Err(InvalidValue(message="Score.value breaks its `where` rule"))
-None hi, Kit True False
+nobody hi, Kit True False
 42 5 2
 {"a": 1} {1, 2} [1] (1,)
-Ok(12) Err(NotANumber(text="twelve"))
+12 NotANumber(text="twelve")
 True False False True
 None kit
 [] 0

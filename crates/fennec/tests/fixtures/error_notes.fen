@@ -24,22 +24,23 @@ def noted(path: str) -> int fails Missing | Broken:
         fail kept
     n
 
+## Prints what `noted` gave, or the notes on what it failed with and the failure.
+def shown(stdout: Stdout, path: str):
+    n = noted(path) else as problem:
+        stdout.print(problem.notes(), problem)
+        return
+    stdout.print(n)
+
 def main(stdout: Stdout) fails Missing | Broken:
-    match load(""):
-        case Ok(_):
-            pass
-        case Err(missing):
-            mut m = missing
-            stdout.print(m.notes(), m)
-            m.add_note("first")
-            copy = m
-            m.add_note("second")
-            stdout.print(m.notes(), copy.notes(), m == copy, m)
-            stdout.print(f"{m}", str(m))
-    match noted("long name"):
-        case Ok(n):
-            stdout.print(n)
-        case Err(problem):
-            stdout.print(problem.notes(), problem)
+    missing = failure_of(() => load(""))
+    if missing is not None:
+        mut m = missing
+        stdout.print(m.notes(), m)
+        m.add_note("first")
+        copy = m
+        m.add_note("second")
+        stdout.print(m.notes(), copy.notes(), m == copy, m)
+        stdout.print(f"{m}", str(m))
+    shown(stdout, "long name")
     stdout.print(noted("ab")?)
     stdout.print(noted("a long one")?)

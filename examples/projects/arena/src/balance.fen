@@ -7,4 +7,4 @@ from enemies import spawn
 
 test "a boss survives a full hit":
     mut boss = spawn("boss", Vec3.zero, 250)
-    assert hit(ref boss, 100) == Ok(150)
+    assert hit(ref boss, 100)? == 150

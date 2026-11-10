@@ -60,13 +60,16 @@ def nothing_back(n: int) fails Coded | Short:
     check_short(n - 1)?
     check_coded(n)?
 
+## Prints what a call gave, or what it failed with.
+def shown(stdout: Stdout, run: () -> int fails Coded | Held | Short):
+    value = run() else as error:
+        stdout.print(error)
+        return
+    stdout.print(value)
+
 def main(stdout: Stdout):
     for n in [-1, 0, 1, 2]:
-        match any_of_three(n):
-            case Ok(value):
-                stdout.print(value)
-            case Err(error):
-                stdout.print(error)
+        shown(stdout, () => any_of_three(n))
         stdout.print(by_return(n) else -1, by_copy(n))
     for n in [0, 1, 2]:
         value = short_or_coded(n) else as why:
@@ -79,9 +82,7 @@ def main(stdout: Stdout):
                     continue
         stdout.print(value)
     for n in [-5, -4, 0, 1, 20]:
-        result = in_a_loop(n)
-        stdout.print(result)
-        value = result else as error:
+        value = in_a_loop(n) else as error:
             stdout.print(error)
             stdout.print(f"{error}")
             stdout.print([error])
@@ -89,13 +90,12 @@ def main(stdout: Stdout):
             stdout.print(kept)
             continue
         stdout.print(value)
-    match nothing_back(2):
-        case Ok(_):
-            stdout.print("fine")
-        case Err(error):
-            stdout.print(error)
-    match by_return(6):
-        case Ok(value):
-            stdout.print(value)
-        case Err(error):
-            stdout.print(error)
+    failure = failure_of(() => nothing_back(2))
+    if failure is None:
+        stdout.print("fine")
+    else:
+        stdout.print(failure)
+    value = by_return(6) else as error:
+        stdout.print(error)
+        return
+    stdout.print(value)

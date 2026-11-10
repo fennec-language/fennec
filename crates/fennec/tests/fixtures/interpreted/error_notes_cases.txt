@@ -1,4 +1,4 @@
-source 422b11b27a7168de10c0fb41814df2777fc467d0ca88360f756fc7a4804f57e4
+source 4d07f265f45557eb33074a8371646e3de903ce8931ac0a91ff0918b01a28e4ef
 code 1
 stdout 344
 [] Dial.Closed
@@ -21,4 +21,4 @@ note: second line
   = in `connect`
   = called from `both` at <dir>/cases.fen:18:11
   = called from `noted` at <dir>/cases.fen:25:9
-  = called from `main` at <dir>/cases.fen:60:18
+  = called from `main` at <dir>/cases.fen:59:18

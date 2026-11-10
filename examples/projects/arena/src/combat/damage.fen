@@ -21,4 +21,4 @@ def hit(ref enemy: enemies.Enemy, amount: int) -> int fails Dodged:
 
 test "hitting takes health away":
     mut enemy = enemies.spawn("dummy", Vec3.zero, 100)
-    assert hit(ref enemy, 10) == Ok(90)
+    assert hit(ref enemy, 10)? == 90

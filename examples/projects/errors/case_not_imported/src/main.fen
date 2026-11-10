@@ -1,10 +1,10 @@
 from inventory import take
 
 def main(stdout: Stdout):
-    match take("rope"):
-        case Ok(item):
-            stdout.print(item)
-        case OutOfStock(item):
-            stdout.print(f"no {item} left")
-        case Err(error):
-            stdout.print(error)
+    item = take("rope") else as why:
+        match why:
+            case OutOfStock(item):
+                f"no {item} left"
+            case _:
+                f"{why}"
+    stdout.print(item)

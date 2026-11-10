@@ -37,7 +37,19 @@ def bump(ref x: int):
     x = 99
 
 def made() -> C:
-    C(n=1, big=2, small=0.5, f=1.5, s="the first text, long enough to need a block", items=[1, 2], inner=Inner(v=1, tags=[1]), d={"a": 1}, inners=[Inner(v=1, tags=[1])], boxed=[1], mode=.Off)
+    C(
+        n=1,
+        big=2,
+        small=0.5,
+        f=1.5,
+        s="the first text, long enough to need a block",
+        items=[1, 2],
+        inner=Inner(v=1, tags=[1]),
+        d={"a": 1},
+        inners=[Inner(v=1, tags=[1])],
+        boxed=[1],
+        mode=.Off,
+    )
 
 def fails_after(c: shared C, which: int) fails Nope:
     lock c as ref c:
@@ -94,11 +106,8 @@ def main(stdout: Stdout):
     mut bad = 0
     for which in range(22):
         shared c = made()
-        match fails_after(c, which):
-            case Ok(_):
-                stdout.print("it didn't fail", which)
-            case Err(_):
-                pass
+        if failure_of(() => fails_after(c, which)) is None:
+            stdout.print("it didn't fail", which)
         mut now = ""
         lock c as held:
             now = str(held)

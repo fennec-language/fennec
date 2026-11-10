@@ -17,7 +17,7 @@ def main(stdout: Stdout):
         physics.step(ref body, 0.5)
     stdout.print(body.position)
 
-    stdout.print(combat.damage.hit(ref enemies[0], 30))
+    stdout.print(combat.damage.hit(ref enemies[0], 30) else -1)
     stdout.print(enemies[0].health)
     for amount in [0, 50]:
         left = combat.damage.hit(ref enemies[3], amount) else as why:

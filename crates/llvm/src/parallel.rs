@@ -164,9 +164,6 @@ pub(crate) fn thread_global() -> &'static str {
 /// Where a block's shape word is, whose top 16 bits say which thread made it.
 const SHAPE: u32 = 8;
 const OWNER_SHIFT: u32 = 48;
-/// An owner count only a block that's never freed has: half the runtime's `heap::IMMORTAL`, as
-/// its own thread's retains and releases move its count either way from there.
-const IMMORTAL: u64 = 1 << 47;
 
 /// The start of a function about a block's owners: `%owner` is the thread that made `%block`, and
 /// `%mine` says whether that's this one.
@@ -181,12 +178,12 @@ fn whose_block(changes: bool) -> String {
 }
 
 /// In a function about another thread's block, whether it's one that's never freed, like a
-/// string literal: its count never gets near zero, so a thread needn't count it at all, and a
-/// body using one on every iteration costs nothing here. `%immortal` says so.
+/// string literal, so a thread needn't count it at all, and a body using one on every iteration
+/// costs nothing here. `%immortal` says so. It's read from the owner in the shape word, which
+/// `whose_block` has, never from the count: only a block's own thread may touch its count, as it
+/// changes it without atomics, and a launched task runs beside the thread that made what it holds.
 fn immortal() -> String {
-    format!(
-        "  %held = load atomic i64, ptr %block monotonic, align 8{HEADER_ACCESS}\n  %immortal = icmp uge i64 %held, {IMMORTAL}\n"
-    )
+    format!("  %immortal = icmp eq i64 %owner, {}\n", fennec_rt::embed::heap::NEVER_FREED_OWNER)
 }
 
 /// The start of every shim: on a thread whose failure flag isn't known yet, a worker running

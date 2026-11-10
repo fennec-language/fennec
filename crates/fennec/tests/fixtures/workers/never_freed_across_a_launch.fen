@@ -1,0 +1,25 @@
+# Blocks a launched task holds while the thread that made them keeps taking and dropping owners
+# of them: a string literal and a constant list, which are never freed, and an ordinary list. Only a
+# block's own thread may touch its count: the task's thread counts what it holds elsewhere, and
+# never reads the count, whose owner is changing it. Run under ThreadSanitizer, which once found
+# the task reading counts the program's thread was writing.
+from std.concurrent import Crashed
+
+TAGS = [1, 2, 3, 4, 5, 6, 7, 8]
+TITLE = "a literal long enough to live in a block of its own, never freed"
+
+## Takes and drops owners of each, many times, and adds up their lengths.
+def counted(text: str, tags: list[int], items: list[int]) -> int:
+    mut total = 0
+    for _ in range(3000):
+        held = [text, text]
+        more = [tags, items]
+        total += held[0].len() + more[0].len() + more[1].len()
+    total
+
+def main(stdout: Stdout) fails Crashed:
+    items = [10, 20, 30]
+    mut total = 0
+    with launch(() => stdout.print("task", counted(TITLE, tags=TAGS, items=items)))?:
+        total = counted(TITLE, tags=TAGS, items=items)
+    stdout.print("main", total)

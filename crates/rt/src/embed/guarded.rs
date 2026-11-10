@@ -275,7 +275,10 @@ fn everyone_finds(state: &State, address: u64) -> bool {
 }
 
 fn bump(state: &mut State, address: u64) {
-    if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+    if let Some(block) = state.heap.block_mut(address)
+        && !super::heap::uncounted(block)
+        && let Some(count) = block.first_mut()
+    {
         *count += 1;
     }
 }

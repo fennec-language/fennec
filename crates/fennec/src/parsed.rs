@@ -163,11 +163,11 @@ mod tests {
         use fennec_syntax::KeptPrelude as _;
         let dir = std::env::temp_dir().join(format!("fennec-prelude-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let parsed = fennec_syntax::prelude_modules().unwrap();
-        let parses = kept(&dir, "build one");
-        assert!(parses.prelude().is_none(), "nothing's kept yet");
-        parses.keep_prelude(parsed);
-        assert_eq!(parses.prelude().as_deref(), Some(parsed));
+        let library = fennec_syntax::prelude_modules().unwrap();
+        let cache = kept(&dir, "build one");
+        assert!(cache.prelude().is_none(), "nothing's kept yet");
+        cache.keep_prelude(library);
+        assert_eq!(cache.prelude().as_deref(), Some(library));
         assert!(kept(&dir, "build two").prelude().is_none(), "another build parses again");
         let _ = std::fs::remove_dir_all(&dir);
     }

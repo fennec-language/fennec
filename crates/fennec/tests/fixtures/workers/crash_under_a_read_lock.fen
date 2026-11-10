@@ -13,7 +13,7 @@ def crashing(counts: shared Tally, stdout: Stdout) fails Crashed:
 
 def main(stdout: Stdout):
     shared counts = Tally()
-    failure = failure_of(() => crashing(counts, stdout))
+    failure = failure_of(() => crashing(counts, stdout)?)
     if failure is None:
         stdout.print("fine")
     else:

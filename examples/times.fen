@@ -24,15 +24,15 @@ test "an offset is taken off, and a fraction kept"():
     assert Time.parse("2026-11-06 21:55:56.123456789123z")?.nanosecond() == 123_456_789
 
 test "text that isn't RFC 3339 fails where it goes wrong"():
-    mut problem = failure_of(() => Time.parse("2026-11-06T21:55"))
+    mut problem = failure_of(() => Time.parse("2026-11-06T21:55")?)
     assert problem is not None
     assert (
         problem.message == "`2026-11-06T21:55` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`"
     )
-    problem = failure_of(() => Time.parse("2026-11-06T21:55:56+0200"))
+    problem = failure_of(() => Time.parse("2026-11-06T21:55:56+0200")?)
     assert problem is not None
     assert problem.column == 20
-    problem = failure_of(() => Time.parse("2026-02-30T00:00:00Z"))
+    problem = failure_of(() => Time.parse("2026-02-30T00:00:00Z")?)
     assert problem is not None
     assert problem.message == "2026-02 has no day 30"
 
@@ -95,7 +95,7 @@ test "a time saves as RFC 3339 text and a duration as its nanoseconds"():
     text = json.dumps(visit)
     assert text == "{\"at\": \"2026-11-06T21:00:00Z\", \"stayed\": 5400000000000}"
     assert json.loads[Visit](text)? == visit
-    problem = failure_of(() => json.loads[Visit]("{\"at\": \"yesterday\", \"stayed\": 0}"))
+    problem = failure_of(() => json.loads[Visit]("{\"at\": \"yesterday\", \"stayed\": 0}")?)
     assert problem is not None
     assert problem.message == "`at` is `yesterday`, which isn't an RFC 3339 time"
 

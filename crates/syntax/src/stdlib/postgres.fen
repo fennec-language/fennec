@@ -730,7 +730,7 @@ export def connect(
     # The first connects here, so a wrong URL or password fails with what went wrong.
     first = signed_in(net, entropy, found, secret, allow_weak_sign_in)?
     with pool[PgDatabase, SqlError](
-        open=() => signed_in(net, entropy, found, secret, allow_weak_sign_in),
+        open=() => signed_in(net, entropy, found, secret, allow_weak_sign_in)?,
         size=found.pool_size,
         wait=found.wait,
         first=first,

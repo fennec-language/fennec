@@ -32,7 +32,7 @@ def shown(stdout: Stdout, path: str):
     stdout.print(n)
 
 def main(stdout: Stdout) fails Missing | Broken:
-    missing = failure_of(() => load(""))
+    missing = failure_of(() => load("")?)
     if missing is not None:
         mut m = missing
         stdout.print(m.notes(), m)

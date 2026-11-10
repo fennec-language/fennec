@@ -26,7 +26,7 @@ test "a failing program is its status, not an error"(process: Process):
     assert notes(process, "nope") == "nothing new"
 
 test "a program nothing scripted can't run"(process: Process):
-    problem = failure_of(() => process.run("cargo", ["build"]))
+    problem = failure_of(() => process.run("cargo", ["build"])?)
     assert problem is not None
     assert problem.program() == "cargo"
     assert problem.message().startswith("the test's fake Process has nothing scripted for `cargo`")
@@ -53,7 +53,7 @@ test "a value can't start an argument with a dash, so it can't be read as an opt
     # Nothing ran.
     assert process.ran() == []
     name = "-rf"
-    assert failure_of(() => process.run(t"git rm {name}.txt")) is not None
+    assert failure_of(() => process.run(t"git rm {name}.txt")?) is not None
 
 test "a value inside an argument, or a dash in the template's own text, runs"(process: Process):
     process.script("git", Output())

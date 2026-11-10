@@ -30,10 +30,10 @@ test "the URL-safe alphabet has no + / or ="():
     assert base64.url_decode("ABA=")? == bytes([0, 16])
 
 test "text that isn't base64 says why"():
-    mut problem = failure_of(() => base64.decode("Zm9v!A=="))
+    mut problem = failure_of(() => base64.decode("Zm9v!A==")?)
     assert problem is not None
     assert problem.message == "`Zm9v!A==` isn't base64: character 5 isn't a base64 digit"
-    problem = failure_of(() => base64.decode("Zg"))
+    problem = failure_of(() => base64.decode("Zg")?)
     assert problem is not None
     assert problem.message == "`Zg` isn't base64: its length with `=` isn't a multiple of 4"
 

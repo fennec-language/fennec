@@ -56,7 +56,7 @@ test "a dict's keys are written as they are":
 test "a key no field has is an error, unless it's ignored":
     text = "{\"displayName\": \"Ash\", \"hitPoints\": 12, \"mainWeapon\": {\"damageBonus\": 2, \"maxRange\": 1.5, \"rarity\": \"rare\"}, \"guild\": \"fox\"}"
     assert (
-        failure(() => json.loads[Player](text, names=.CamelCase))
+        failure(() => json.loads[Player](text, names=.CamelCase)?)
         == "`Player` has no field \"guild\", but the text has one"
     )
     loaded = json.loads[Player](text, names=.CamelCase, extra=.Ignore)?
@@ -64,7 +64,7 @@ test "a key no field has is an error, unless it's ignored":
 
 test "a field the text leaves out says how it's spelled there":
     assert (
-        failure(() => json.loads[Weapon]("{\"damageBonus\": 1}", names=.CamelCase))
+        failure(() => json.loads[Weapon]("{\"damageBonus\": 1}", names=.CamelCase)?)
         == "`maxRange` is missing"
     )
 

@@ -186,7 +186,7 @@ export def pool[T: Pooled, E: Explained](
     with channel[PoolNote[T]](size=size * 4 + 16) as notes:
         inbox = notes.inbox()
         sender = notes.sender()
-        with launch(() => run_pool(0, inbox, sender, size, open, begun))?:
+        with launch(() => run_pool(0, inbox, sender, size, open, begun)?)?:
             made = Pool[T](_notes=sender, _wait=wait)
             lend made else:
                 told(sender, PoolNote[T](kind=STOP))

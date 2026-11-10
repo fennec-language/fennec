@@ -92,7 +92,7 @@ impl FnCx<'_> {
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
             ExprKind::Else { value, default } => self.else_value(value, default, span),
-            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
             ExprKind::Index { object, index } => self.index(object, index, span),
@@ -1168,7 +1168,7 @@ impl FnCx<'_> {
     }
 
     /// `value?`: the value inside a result, passing its error up.
-    fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Type {
+    fn try_value(&mut self, value: &Expr, context: Option<&Expr>) -> Type {
         // Inside an arrow function, what's passed up is the arrow's failure.
         let ty = self.expr(value);
         let inner = match &ty {

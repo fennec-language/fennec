@@ -35,7 +35,7 @@ test "what can't be a URL says why"():
         ("https://example.com/a b", "it can't hold a space or a control character"),
         ("http://[::1/", "its IPv6 address has no `]`"),
     ]:
-        problem = failure_of(() => url.parse(text))
+        problem = failure_of(() => url.parse(text)?)
         assert problem is not None
         assert problem.message == f"`{text}` isn't a URL: {why}"
 

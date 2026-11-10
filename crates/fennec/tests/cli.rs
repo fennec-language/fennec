@@ -191,6 +191,43 @@ fn run_hands_main_its_arguments_and_input() {
     assert_eq!(text(&output.stdout), "True\n");
 }
 
+/// A signal sent to `fennec run`, like a supervisor's SIGTERM, reaches the program, which can stop
+/// cleanly, and `fennec run` exits as the program does. It once ran the program as a child it
+/// didn't pass signals to, so the SIGTERM ended `fennec run` and left the program running.
+#[cfg(unix)]
+#[test]
+fn a_signal_sent_to_run_reaches_the_program() -> std::io::Result<()> {
+    use std::io::BufRead;
+    let dir = scratch("run-signal")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(
+        &program,
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):\n    stdout.print(\"ready\")\n    \
+         while not signals.stopping():\n        clock.sleep(10ms)\n    stdout.print(\"stopped cleanly\")\n",
+    )?;
+    let mut run = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(&program)
+        .env("FENNEC_HOME", &dir)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let stdout = run.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+    let (says, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = says.send(line);
+        }
+    });
+    let line = || said.recv_timeout(std::time::Duration::from_secs(120));
+    assert_eq!(line().as_deref(), Ok("ready"));
+    let sent = std::process::Command::new("kill").args(["-TERM", &run.id().to_string()]).status()?;
+    assert!(sent.success(), "couldn't send SIGTERM");
+    assert_eq!(line().as_deref(), Ok("stopped cleanly"));
+    assert_eq!(run.wait()?.code(), Some(0));
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();

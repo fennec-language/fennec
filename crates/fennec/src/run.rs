@@ -156,11 +156,62 @@ fn started(
         let (variable, log) = logged.variable();
         command.env(variable, log);
     }
-    let ran = command.args(arguments).status();
-    let _ = std::fs::remove_file(executable);
-    let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
-    // A program stopped by a signal has no code of its own.
-    Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
+    command.args(arguments);
+    // On Unix it becomes the program, so a signal sent to `fennec run`, like a supervisor's
+    // SIGTERM, reaches the program itself, which can stop cleanly, and its exit, a signal's
+    // included, is `fennec run`'s. What was built is swept up by a later run instead.
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::process::CommandExt as _;
+        sweep_old_runs(executable);
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        let failed = command.exec();
+        let _ = std::fs::remove_file(executable);
+        Err(format!("the program it built didn't start: {failed}"))
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows the program shares the console, so Ctrl-C reaches it as it reaches this.
+        // This lets it go by, so it waits for the program to stop, and its exit code is the
+        // program's, not a Ctrl-C's.
+        #[cfg(windows)]
+        let _ = ctrlc::set_handler(|| {});
+        let ran = command.status();
+        let _ = std::fs::remove_file(executable);
+        let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
+        Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
+    }
+}
+
+/// How old what an earlier `fennec run` built has to be before a run sweeps it up: far longer than
+/// a run takes from building its program to starting it, so another run's is never taken from it
+/// in between. One still running can go: on Unix a running program keeps its file until it ends.
+#[cfg(unix)]
+const SWEPT_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Removes what earlier runs built and started, beside `executable`, once they're old enough.
+#[cfg(unix)]
+fn sweep_old_runs(executable: &std::path::Path) {
+    let Some(folder) = executable.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ours = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("fennec-run-"));
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > SWEPT_AFTER);
+        if ours && old && path != executable {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Loads and checks all of a program.

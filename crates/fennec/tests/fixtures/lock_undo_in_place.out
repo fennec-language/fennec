@@ -1,0 +1,4 @@
+True
+True
+["x", "y", "z"] [("a", 1), ("b", 2), ("c", 3)] [(1, "one"), (2, "two")]
+["grown 39", "grown 37", "grown 38"] [("b", 20), ("c", 3), ("new", 4), ("a", 10), ("grown 0", 0), ("grown 1", 1), ("grown 2", 2), ("grown 3", 3), ("grown 4", 4), ("grown 5", 5), ("grown 6", 6), ("grown 7", 7), ("grown 8", 8), ("grown 9", 9), ("grown 10", 10), ("grown 11", 11), ("grown 12", 12), ("grown 13", 13), ("grown 14", 14), ("grown 15", 15), ("grown 16", 16), ("grown 17", 17), ("grown 18", 18), ("grown 19", 19), ("grown 20", 20), ("grown 21", 21), ("grown 22", 22), ("grown 23", 23), ("grown 24", 24), ("grown 25", 25), ("grown 26", 26), ("grown 27", 27), ("grown 28", 28), ("grown 29", 29), ("grown 30", 30), ("grown 31", 31), ("grown 32", 32), ("grown 33", 33), ("grown 34", 34), ("grown 35", 35), ("grown 36", 36), ("grown 37", 37), ("grown 38", 38), ("grown 39", 39)] [(2, "two, changed, and long enough to be held in a block of its own"), (9, "nine")]

@@ -1141,7 +1141,9 @@ impl FnCx<'_> {
         }
         self.value_functions += 1;
         self.arrows += 1;
+        self.arrows_open.push((span.start, span.end));
         let returns = self.expr(body);
+        self.arrows_open.pop();
         self.arrows -= 1;
         self.value_functions -= 1;
         self.pop();

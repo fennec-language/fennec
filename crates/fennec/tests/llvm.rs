@@ -1502,6 +1502,51 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A dict's put and pop, and a list's item set, in a `shared` value under its lock, made in place
+/// with each change noted for a crash to undo: the lock costs what it changes, not a copy of the
+/// whole dict or list each time it's taken. A dict still copies when it grows past its room, as one
+/// with keys taken out does now and then, but no more often than that.
+#[test]
+fn changing_a_dict_or_an_item_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Table:\n    counts = dict[str, int]()\n    names = dict[int, str]()\n    \
+                 items = [0, 0, 0, 0]\n\n    def put(ref self, n: int):\n        self.counts[f\"k{n % 50}\"] = n\n\n\
+                 def main(stdout: Stdout):\n    shared table = Table()\n    mut seen = 0\n";
+    for (name, body) in [
+        (
+            "put",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n % 50}\"] = n\n            \
+             held.names[n % 50] = f\"a name long enough for a block of its own {n}\"\n    \
+             lock table as held:\n        seen = held.counts.len() + held.names.len()\n",
+        ),
+        (
+            "pop",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n}\"] = n\n        \
+             lock table as ref held:\n            seen += held.counts.pop(f\"k{n}\")\n",
+        ),
+        ("method", "    for n in range(2000):\n        lock table as ref held:\n            held.put(n)\n"),
+        (
+            "item",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.items[n % 4] = n\n            \
+             held.items[-1] += 1\n    lock table as held:\n        seen = held.items[3]\n",
+        ),
+    ] {
+        let counts =
+            counts_of(&format!("shared_dict_{name}"), &format!("{types}{body}    stdout.print(seen)\n"))?;
+        let number = |what: &str| {
+            let mut words = counts.split_whitespace();
+            words.position(|word| word == what).and_then(|_| words.next()).and_then(|n| n.parse::<u64>().ok())
+        };
+        // One copy in each lock would be 2,000, of hundreds of bytes each.
+        let (copies, bytes) = (number("copies"), number("copied_bytes"));
+        assert!(copies.is_some_and(|copies| copies < 400), "{name}: {counts}");
+        assert!(bytes.is_some_and(|bytes| bytes < 50_000), "{name}: {counts}");
+    }
+    Ok(())
+}
+
 /// The same in a program with tasks, where a lock's value is read through the lock's edge: 2,000
 /// pushes under the lock in `main` and 2,000 pushes and pops in a launched task copy nothing a
 /// round. What the program copies is only what starting its task copies, the same program with no
@@ -1555,6 +1600,46 @@ fn changes_inside_a_list_in_a_shared_value_copy_nothing() -> std::io::Result<()>
     Ok(())
 }
 
+/// An append under `lock ... as ref` to a list in a struct with other fields beside it is made in
+/// place, as it is for a struct with that list alone: the struct, a block of its own, is marked by
+/// the lock's log and its fields saved, not held, so it isn't copied and the list isn't either. A
+/// failure still puts the list and the string back. Held, each lock copied the struct and then all
+/// of its list.
+#[test]
+fn an_append_under_a_lock_beside_other_fields_is_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of("lock_append_beside", LOCK_APPEND_BESIDE)?;
+    assert!(count(&counts, "copies") < Some(5), "{counts}");
+    prints_in_both_builds("lock_append_beside", LOCK_APPEND_BESIDE, "10100 0 10100 3\n")
+}
+
+const LOCK_APPEND_BESIDE: &str = "error Refused:
+    code: int
+
+struct Big:
+    items: list[int]
+    table: dict[int, int]
+    name: str
+
+def refused(big: shared Big) -> int fails Refused:
+    lock big as ref held:
+        held.items.append(0)
+        held.name += \"!\"
+        fail Refused(code=1)
+    1
+
+def main(stdout: Stdout):
+    shared big = Big(items=[n for n in range(10_000)], table={1: 2}, name=\"big\")
+    for i in range(100):
+        lock big as ref held:
+            held.items.append(i)
+    gone = refused(big) else 0
+    lock big as held:
+        stdout.print(held.items.len(), gone, held.items[-1] + held.items.len() - 99, held.name.len())
+";
+
 /// Random changes to lists in a `shared` value under `lock ... as ref`, failing at a random step:
 /// appends and pops made in place are undone from the lock's log, and the rest copy, and either way
 /// a failure leaves the lists as they were, and an end leaves what plain lists get. Three thousand
@@ -1582,6 +1667,35 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         "lock_undo_by_crash",
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
+    )
+}
+
+/// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
+/// a launched task, and failing on every other parallel worker. Only what a normal end made stays.
+#[test]
+fn a_struct_of_three_fields_changed_in_place_keeps_only_what_ended_normally() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_rollback_three_fields",
+        include_str!("fixtures/workers/lock_rollback_three_fields.fen"),
+        include_str!("fixtures/workers/lock_rollback_three_fields.out"),
+    )
+}
+
+/// Puts, pops and item sets made in place on a `shared` value's dicts and list, straight in the
+/// lock's block, then a failure: the dicts and the list are as they were, keys in the same order. So
+/// they are after a dict grown past its room, which copies it once the changes in place are made.
+#[test]
+fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_in_place",
+        include_str!("fixtures/lock_undo_in_place.fen"),
+        include_str!("fixtures/lock_undo_in_place.out"),
     )
 }
 
@@ -4017,9 +4131,10 @@ def main(stdout: Stdout):
         stdout.print("before", x.total)
 "#;
 
-/// A way a function can still take a lock its caller holds, past what the checker sees: a closure
-/// that takes it, passed to a call. The checker refuses the rest, a nested function kept in a list
-/// among them.
+/// The last way a function could take a lock its caller holds past what the checker saw: a
+/// closure that takes it, passed to a call. The checker follows it now, so the program is refused
+/// where it's built; the runtime's check, which ends a program that takes a held lock, stays as
+/// the backstop.
 const TAKEN_AGAIN: [(&str, &str); 1] = [(
     "closure_passed",
     "    reader = () => through_holder(holder)\n    lock one as ref x:\n        x.total = called(reader)\n",
@@ -4045,9 +4160,11 @@ def main(stdout: Stdout):
     stdout.print("before", through_holder(holder))
 "#;
 
-/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
+/// A lock this thread holds, taken again through a closure passed to a call, is refused where the
+/// program's built: the closure is followed to the lock it takes. It once built, and ended the
+/// program where it ran, as it would wait forever otherwise.
 #[test]
-fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
+fn taking_a_lock_already_held_through_a_closure_is_refused_where_its_built() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -4058,11 +4175,12 @@ fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
         std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
         let executable = dir.join(name);
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let ran = outcome(&Command::new(&executable).output_within()?);
-        assert_eq!(ran.2, Some(1), "{name}");
-        assert_eq!(ran.0, "before 1\n", "{name}");
-        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name} built");
+        assert!(
+            said.contains("`called` calls `read` while `x` is locked, and this takes `holder.box`'s lock"),
+            "{name}: {said}"
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -4724,6 +4842,31 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A function that takes a `shared` value and isn't called stays in the build when a local in
+/// `main` has its name, and so does the declaration its `shared Point` means, which nothing
+/// names: the program builds, rather than failing to check once trimmed.
+#[test]
+fn a_local_named_like_a_locking_function_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "local_named_like_locking",
+        r"struct Point:
+    x: int
+
+def change(box: shared Point, by: int):
+    lock box as ref held:
+        held.x += by
+
+def main(stdout: Stdout):
+    for change in [1, 2]:
+        stdout.print(change)
+",
+        "1\n2\n",
+    )
+}
+
 /// A `shared` value of a program's own type named like a standard library type, as `Log` is, is
 /// locked in a function of its own. A `ref self` method called under a write lock in a loop
 /// changes the cell where it is, which copies nothing for the handle.
@@ -4799,6 +4942,32 @@ def main(stdout: Stdout):
     stdout.print(pack.dumps(Reached(x=1, y=2))[4:12])
 "#,
         &wanted,
+    )
+}
+
+/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
+/// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
+/// leaves the enum out where it's known: that's for the program as written.
+#[test]
+fn a_json_names_case_written_with_its_enum_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "json_names_with_enum",
+        r#"from std import json
+from std.json import JsonNames
+
+struct Player:
+    display_name: str
+
+def main(stdout: Stdout):
+    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    stdout.print(text)
+    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+"#,
+        "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
     )
 }
 
@@ -5156,6 +5325,45 @@ def used(fine: bool, stdout: Stdout) fails Second:
     )?;
     assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
     Ok(())
+}
+
+/// A function whose last line is a `with` whose block always returns gives back a value on every
+/// way, once the source is written in: alone, and in each branch of an `if`.
+#[test]
+fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_returns_last",
+        r#"struct Session:
+    log: str
+
+struct Lite:
+    name: str
+
+    def session(self) -> with Session:
+        lend Session(log="lite") else:
+            pass
+
+def direct(store: Lite, text: str) -> str:
+    with store.session() as session:
+        return f"{session.log} {text}"
+
+def branched(store: Lite, long: bool) -> int:
+    if long:
+        with store.session() as session:
+            return session.log.len() * 10
+    else:
+        with store.session() as session:
+            return session.log.len()
+
+def main(stdout: Stdout):
+    store = Lite(name="a")
+    stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+"#,
+        "lite x 40 4\n",
+    )
 }
 
 /// `with` sources, written in where they're used: a method one and a function one, one inside
@@ -7872,6 +8080,117 @@ fn count(counts: &str, name: &str) -> Option<u64> {
     counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
 }
 
+/// Pieces put on a string that's joined from a list, `out.append(...)` then `"".join(out)`, go
+/// on with no block made for them: a number's text, as `str(n)` or in an f-string, is written as a
+/// header, and a short string with characters past ASCII is counted where it is. Each made a block
+/// that was copied from and let go of: 3,996 blocks here, and now only the joined string's growth.
+#[test]
+fn pieces_joined_into_a_string_make_no_blocks_of_their_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of("pieces_joined", PIECES_JOINED)?;
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    prints_in_both_builds("pieces_joined", PIECES_JOINED, "11518\n")?;
+    prints_in_both_builds(
+        "pieces_joined_edges",
+        PIECES_JOINED_EDGES,
+        "0<0>-1<-1>7<7>1234567890<1234567890>-9223372036854775808<-9223372036854775808>9223372036854775807<9223372036854775807>1.5[1.5]-0.0[-0.0]1e+300[1e+300]0.1[0.1]-2.25[-2.25]é(é)日本(日本)🦊(🦊)fóx12(fóx12)ab(ab)ça va très bien(ça va très bien)xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé(xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé)\n298 ) é ]\n2\n",
+    )
+}
+
+/// Random strings of characters one to four bytes long, joined from a list in random pieces, against
+/// the same pieces added with `+`: lengths and slices agree, where the pieces' characters are counted
+/// as they go on, a string's bytes but those that go on a character. Three thousand cases.
+#[test]
+fn random_pieces_joined_count_their_characters_as_added_ones_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("pieces_counted", PIECES_COUNTED, "checked 2978 wrong 0\n")
+}
+
+const PIECES_COUNTED: &str = r#"## Random strings of characters one to four bytes long, put on a string joined from a list in
+## random pieces, against the same pieces added with `+`: lengths and slices must agree.
+struct Random:
+    state: int
+
+    def below(ref self, limit: int) -> int:
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        (self.state // 65536) % limit
+
+def piece(ref random: Random) -> str:
+    letters = ["a", "Z", "é", "ñ", "日", "€", "🦊", "𝄞", " ", "0"]
+    mut text = ""
+    for _ in range(random.below(8)):
+        text += letters[random.below(letters.len())]
+    text
+
+def main(stdout: Stdout):
+    mut random = Random(state=7)
+    mut wrong = 0
+    mut checked = 0
+    for _ in range(3000):
+        mut out = []
+        mut added = ""
+        mut counted = 0
+        for _ in range(random.below(12) + 1):
+            part = piece(ref random)
+            out.append(part)
+            added = added + part
+            counted += part.len()
+        joined = "".join(out)
+        if joined.len() != counted or joined.len() != added.len() or joined != added:
+            wrong += 1
+        if joined.len() > 0:
+            start = random.below(joined.len())
+            end = start + random.below(joined.len() - start + 1)
+            if joined[start:end] != added[start:end] or joined[start] != added[start]:
+                wrong += 1
+            checked += 1
+    stdout.print("checked", checked, "wrong", wrong)
+"#;
+
+const PIECES_JOINED: &str = r#"def main(stdout: Stdout):
+    mut out = []
+    for i in range(1000):
+        out.append(str(i))
+        out.append("é")
+        out.append(f"<{i * 3}>")
+        out.append("日本")
+    text = "".join(out)
+    stdout.print(text.len())
+"#;
+
+const PIECES_JOINED_EDGES: &str = r#"def joined(numbers: list[int], floats: list[float], words: list[str]) -> str:
+    mut out = []
+    for n in numbers:
+        out.append(str(n))
+        out.append(f"<{n}>")
+    for f in floats:
+        out.append(str(f))
+        out.append(f"[{f}]")
+    for word in words:
+        out.append(word)
+        out.append(f"({word})")
+    "".join(out)
+
+def main(stdout: Stdout):
+    numbers = [0, -1, 7, 1234567890, -9223372036854775807 - 1, 9223372036854775807]
+    floats = [1.5, -0.0, 1e300, 0.1, -2.25]
+    words = ["é", "日本", "🦊", "fóx12", "ab", "ça va très bien", "x" * 30 + "é"]
+    text = joined(numbers, floats=floats, words=words)
+    stdout.print(text)
+    stdout.print(text.len(), text[-1], text[-2], text[text.len() // 2])
+    mut index = 0
+    mut seen = 0
+    while index < text.len():
+        if text[index] == "🦊":
+            seen += 1
+        index += 1
+    stdout.print(seen)
+"#;
+
 /// `fennec dev trace` says each place that allocated or copied in a run, with how often and why,
 /// and agrees with what the run counted altogether.
 #[test]
@@ -8370,14 +8689,14 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(done.status, done.stdout, done.stderr == \"\")
     unknown = failure_of(() => process.run(\"no-such-program-at-all\", []))
     if unknown is not None:
-        stdout.print(unknown.program)
+        stdout.print(unknown.program())
     else:
         stdout.print(\"ran it\")
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
     refused = failure_of(() => echo.run(\"ls\", []))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     stdout.print(stdin.lines())
@@ -9578,14 +9897,14 @@ def main(stdout: Stdout, process: Process, fs: Fs):
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
     nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\"))
     if nowhere is not None:
-        stdout.print(nowhere.message)
+        stdout.print(nowhere.message())
     else:
         stdout.print(\"ran it\")
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
     refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\"))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     fs.remove(\"inside\").expect(\"it works\")
@@ -11814,6 +12133,83 @@ def main(stdout: Stdout):
     )
 }
 
+/// A union's method runs the one of the type its value holds, natively: on the union, in each
+/// `match` case and in a loop over a list of them. A `with` source does too once it's narrowed
+/// with `is`, where each branch's `store` is its own type; on the union it's refused.
+#[test]
+fn a_unions_methods_and_narrowed_sources_run_the_member_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_members_run",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+type Store = Lite | Postgres
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+type Three = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    if store is Lite:
+        with store.transaction()? as tx:
+            count = store.run("abc")?
+            return f"{tx.log} {count}"
+    else:
+        with store.transaction()? as tx:
+            count = store.run("abcd")?
+            return f"{tx.log} {count}"
+    ""
+
+def ran(store: Three) -> int fails Nope:
+    match store:
+        case Lite(name=_):
+            return store.run("a")?
+        case Postgres(host=_):
+            return store.run("a")?
+        case Mem(size=_):
+            return store.run("a")?
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?)
+    stdout.print(ran(Lite(name="a"))?, ran(Postgres(host="b"))?, ran(Mem(size=1))?)
+    stores: list[Three] = [Lite(name="a"), Postgres(host="b"), Mem(size=1)]
+    for store in stores:
+        stdout.print(store.run("ab")?)
+"#,
+        "lite 3 pg 8\n1 2 3\n2\n4\n6\n",
+    )
+}
+
 /// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
 /// is held natively: passed in, told apart with `is`, and read as the member it holds.
 #[test]
@@ -12002,15 +12398,18 @@ def main(stdout: Stdout):
 
 /// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
 /// written in the source. A value is part of one argument however much it holds, so it can't add
-/// an argument or start a command. Text written beside a value is that argument too.
+/// an argument or start a command. Text written beside a value is that argument too. What comes
+/// after `--` is shown by a program of the test's own, since each system's `printf` reads `--`
+/// its own way: GNU's newer ones take it as the end of their options anywhere.
 #[test]
 fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    let shower = shows_its_arguments("process_template_shower")?;
     let printed = printed_by(
         "process_template",
-        r#"from std.process import ProcessError
+        &r#"from std.process import ProcessError
 
 def main(process: Process, stdout: Stdout) fails ProcessError:
     name = "a b; rm -rf /"
@@ -12022,14 +12421,47 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(process.run(t"cat", input="fed in")?.stdout)
     narrow = process.only("printf")
     stdout.print(narrow.run(t"printf ok")?.stdout)
+    # A value that would start an argument with `-` is refused, and nothing runs.
+    upload = "--upload-pack=touch pwned"
+    refused = failure_of(() => process.run(t"printf {upload}"))
+    if refused is not None:
+        stdout.print(refused.message())
+    path = "-odd"
+    stdout.print(process.run(t"SHOWER -- {path}")?.stdout.strip())
     _ = narrow.run(t"cat") else as error:
-        stdout.print(error.program)
+        stdout.print(error.program())
         return
     stdout.print("ran")
-"#,
+"#
+        .replace("SHOWER", &shower),
     )?;
-    assert_eq!(printed, "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\ncat\n");
+    std::fs::remove_dir_all(Path::new(&shower).parent().unwrap_or(Path::new(&shower)))?;
+    assert_eq!(
+        printed,
+        "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\n\
+         `{upload}` starts an argument with `-`, so `printf` would read it as an option: put `--` before it, if `printf` takes that, to mean it isn't one\n\
+         [--][-odd]\ncat\n"
+    );
     Ok(())
+}
+
+/// Builds a program that prints each argument it's given in brackets, the same on every system,
+/// and gives back its path as a template's text can name it: with `/` between folders, which
+/// Windows takes too, and no spaces.
+fn shows_its_arguments(name: &str) -> std::io::Result<String> {
+    let dir = folder(name)?;
+    let program = dir.join("shower.fen");
+    std::fs::write(
+        &program,
+        "def main(args: Args, stdout: Stdout):\n    stdout.print(\"\".join([f\"[{arg}]\" for arg in args]))\n",
+    )?;
+    let executable = dir.join("shower");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let path = executable.to_string_lossy().replace('\\', "/");
+    assert!(!path.contains([' ', '{', '}']), "a template can't name {path}");
+    Ok(path)
 }
 
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
@@ -13701,6 +14133,77 @@ def main(stdout: Stdout):
         total += given(captured, x)
     stdout.print(total, captured[0].tags, captured[1].tags)
 ";
+
+/// A name given its own value, `x = x`, keeps what it holds: an enum or struct held in place,
+/// one inside another, a field, a list's item, a boxed enum and a parameter's copy given back.
+/// Written as a copy, it let go of the lists it held before taking them again, so the next lists
+/// made took their memory, and its value printed theirs. The random programs found it.
+#[test]
+fn a_name_given_its_own_value_keeps_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "B(a) Unit(hp=1, tags=[1, 2]) Pack(unit=Unit(hp=2, tags=[3]), names=[\"n\"]) [Unit(hp=3, tags=[4, 5])] Unit(hp=4, tags=[7]) 2 3\n[6]\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("own_value", OWN_VALUE, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const OWN_VALUE: &str = r#"enum Node:
+    Leaf(name: str)
+    Branch(label: str, children: list[Node])
+
+enum Tree:
+    Leaf
+    Pair(left: Tree, right: Tree, tags: list[int])
+
+struct Unit:
+    hp: int
+    tags: list[int]
+
+struct Pack:
+    unit: Unit
+    names: list[str]
+
+def show(node: Node) -> str:
+    match node:
+        case .Leaf(name):
+            "L(" + name + ")"
+        case .Branch(label, children):
+            mut text = "B(" + label
+            for child in children:
+                text += " " + show(child)
+            text + ")"
+
+def last_use(given: Unit) -> Unit:
+    mut u = given
+    u = u
+    u
+
+def main(stdout: Stdout):
+    mut t = Node.Branch(label="a", children=list[Node]())
+    t = t
+    mut u = Unit(hp=1, tags=[1, 2])
+    u = u
+    mut p = Pack(unit=Unit(hp=2, tags=[3]), names=["n"])
+    p = p
+    p.unit = p.unit
+    mut xs = [Unit(hp=3, tags=[4, 5])]
+    xs[0] = xs[0]
+    mut tree = Tree.Pair(left=.Leaf, right=.Leaf, tags=[6])
+    tree = tree
+    ys = last_use(Unit(hp=4, tags=[7]))
+    other = [Node.Leaf(name="x"), Node.Leaf(name="y")]
+    junk = [[9, 9, 9], [8, 8], [7]]
+    stdout.print(show(t), u, p, xs, ys, other.len(), junk.len())
+    match tree:
+        case .Pair(_, _, tags):
+            stdout.print(tags)
+        case .Leaf:
+            pass
+"#;
 
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
@@ -17329,6 +17832,76 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A `match` case naming a union's member narrows the subject to it, natively: its own fields
+/// read there, and its own `with` source runs, for each of three members.
+#[test]
+fn a_match_case_narrows_its_subject_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "match_narrows",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="mem") else:
+            pass
+
+type Store = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    match store:
+        case Lite(name=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.name}"
+        case Postgres(host=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.host}"
+        case Mem(size=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.size}"
+    ""
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Mem(size=4))?)
+"#,
+        "lite 3 a pg 6 b mem 9 4\n",
+    )
+}
+
 /// A value of a union like `int | str`, read from a field or a list's item, prints and formats as
 /// itself, a string member unquoted, as in the interpreter: by `print`, `str` and an f-string.
 /// Inside a list it's shown quoted, as any string in a list is.
@@ -18145,7 +18718,7 @@ test \"an hour goes by at once\"(clock: Clock):
 test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"]))
     assert problem is not None
-    assert problem.program == \"echo\"
+    assert problem.program() == \"echo\"
     assert process.ran().len() == 1
 ",
     )?;

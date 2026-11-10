@@ -635,24 +635,7 @@ pub(crate) fn written_ret(def: &FnDef) -> Option<&TypeExpr> {
 
 /// A written type as source text, for suggesting a fix.
 pub(crate) fn written(ty: &TypeExpr) -> String {
-    let args: Vec<String> = ty.args.iter().map(written).collect();
-    match ty.name.as_str() {
-        "|" => return args.join(" | "),
-        "fails" => return args.join(" fails "),
-        _ => {}
-    }
-    if ty.name == "->" {
-        let (ret, params) = args.split_last().map_or(("", &[][..]), |(ret, params)| (ret.as_str(), params));
-        return format!("({}) -> {ret}", params.join(", "));
-    }
-    let base = if ty.name == "tuple" {
-        format!("({})", args.join(", "))
-    } else if args.is_empty() {
-        ty.name.clone()
-    } else {
-        format!("{}[{}]", ty.name, args.join(", "))
-    };
-    if ty.optional { format!("{base}?") } else { base }
+    fennec_syntax::written_type(ty)
 }
 
 /// The type a literal default gives its parameter, if it's one that gives a type.

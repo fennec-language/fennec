@@ -82,8 +82,7 @@ pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) 
 
 /// The name of the `shared` declaration that holds a `held`, made from how it's written.
 pub(crate) fn made_name(held: &str) -> String {
-    let letters: String = held.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    format!("Shared__{letters}")
+    fennec_syntax::shared_declaration(held)
 }
 
 /// A type written as its text says, like `dict[str, int]`.

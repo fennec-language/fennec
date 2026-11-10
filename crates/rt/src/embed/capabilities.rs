@@ -299,7 +299,10 @@ fn native_method(
             crate::stdlib::fs::real_fs(method, &paths, at)
         }
         (Capability::Process, run, _) if run == "run" || run.starts_with("run.") => {
-            let (program, arguments, options) = crate::stdlib::process::run_of(run, args, at)?;
+            let (program, arguments, options) = match crate::stdlib::process::run_of(run, args, at)? {
+                Ok(ran) => ran,
+                Err(refused) => return Ok(refused),
+            };
             // A prompt this program printed shows before the other program starts.
             super::write_kept_output();
             Ok(crate::stdlib::process::run_program(&program, &arguments, &options))

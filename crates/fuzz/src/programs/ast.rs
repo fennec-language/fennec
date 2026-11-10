@@ -150,6 +150,9 @@ pub(crate) enum Expr {
     Mapped(Box<Expr>, Box<Expr>, Box<Expr>, bool),
     /// `sum(item * by for item in parallel(list))`.
     ParallelSum(Box<Expr>, Box<Expr>),
+    /// `sum(regrown(item) for item in parallel(list))`: each round makes a holder, reads its list
+    /// and passes it to a `ref self` method on the same holder.
+    Regrown(Box<Expr>),
     /// `list.len()`.
     Len(Box<Expr>),
     /// `list[at]`, which fails outside the list.
@@ -282,6 +285,34 @@ pub(crate) enum Op {
     /// `ref slot = held.items[at]`, then `slot += amount` and `slot = slot * 2`, reading it: a
     /// place outside the list crashes at the `ref`.
     RefItem(i64, Amount),
+}
+
+/// How a union's member is called on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Via {
+    /// After `match store:` with a case for each member, which doesn't narrow, so each case
+    /// also has `if store is Member:`.
+    Match,
+    /// After `if store is Member:` for each member but the last.
+    Is,
+    /// `run` straight on the union, with no match; its `with` source still after `is`, which a
+    /// union needs.
+    Direct,
+}
+
+/// The containers `CopiedNested` copies and changes deep inside.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Nested {
+    /// `dict[str, Unit]`, a unit's `tags` appended to.
+    DictOfUnits,
+    /// `Army`, a struct holding a `dict[str, Unit]`.
+    ArmyOfUnits,
+    /// `dict[str, dict[str, int]]`, an inner number added to.
+    DictOfDicts,
+    /// `list[dict[str, int]]`.
+    ListOfDicts,
+    /// `dict[str, list[Unit]]`.
+    DictOfUnitLists,
 }
 
 /// What a local `ref` names: a field or an item of something held in a `mut` name, its index
@@ -446,6 +477,22 @@ pub(crate) enum Stmt {
     /// `match named:` changing it through `ref`: a pair's label grows by `text`, its tags gain
     /// the new label, and its left side becomes `left`; a leaf's name grows by `text`.
     Rename(String, Expr, Expr),
+    /// `holder.items.append(holder.tag)`, `own = holder.items`, then `holder.grown_by(own)`: a
+    /// `ref self` method given a value read from the list it grows, just after that list grew in
+    /// place, and both printed, under `if holder.items.len() < 64:`.
+    GrownBy(String, String),
+    /// Collect, then apply: `mut world = [Spot(...), ...]`, then `changes = [plan(item, world)
+    /// for item in parallel(xs)]`, a `Change` for each item worked out on the threads from the
+    /// world as it is, then a plain loop applying them in order through a local `ref`, and the
+    /// world printed.
+    PlanApply(String, Vec<(&'static str, Expr)>, Expr, String),
+    /// `stdout.print(<how><members>(<member>, text))`: a union of `members` structs, two or
+    /// three, each with a `run` method and a `session` `with` source of its own, given the
+    /// member numbered `member`, which must be the one whose `session` and `run` are called.
+    UnionCall(Via, usize, usize, Expr),
+    /// `given = <a container holding containers>`, `mut copy = given`, a change deep inside the
+    /// copy by `value`, then both printed: the original mustn't see it, and must still be whole.
+    CopiedNested(Nested, String, String, Expr),
     /// `ref name = place`, then the statements that use it, the last of them its last use.
     LocalRef(String, RefPlace, Vec<Stmt>),
     /// `holder.items.append(value)`.

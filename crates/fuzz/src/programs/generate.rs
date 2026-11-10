@@ -14,7 +14,8 @@
 )]
 
 use super::ast::{
-    Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Size, Stmt, TYPES, Ty,
+    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Size, Stmt, TYPES, Ty,
+    Via,
 };
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
@@ -216,7 +217,12 @@ impl Writer<'_> {
             21 if !self.threadless => {
                 let list = self.of(Ty::Ints, next);
                 let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
-                let sum = Expr::ParallelSum(Box::new(list), Box::new(by));
+                // Half pass each item's holder a list read from itself, on the threads.
+                let sum = if self.choice(2) == 0 {
+                    Expr::Regrown(Box::new(list))
+                } else {
+                    Expr::ParallelSum(Box::new(list), Box::new(by))
+                };
                 self.bounded(sum)
             }
             20 if self.risky => Expr::BufAt(Box::new(self.of(Ty::Buf, next)), Box::new(self.int(next))),
@@ -874,6 +880,29 @@ impl Writer<'_> {
     /// shares its value can; a struct holding a list, changed; and lists stored into a dict.
     fn copies(&mut self, body: &mut Vec<Stmt>, which: usize) {
         match which {
+            23 if !self.threadless && self.choice(3) == 0 => {
+                // Collect on the threads, then apply in order.
+                const LABELS: [&str; 4] = ["a", "b", "hé🦊", ""];
+                let count = 1 + self.choice(LABELS.len());
+                let mut spots = Vec::with_capacity(count);
+                for label in LABELS.iter().take(count) {
+                    let x = self.int(2);
+                    spots.push((*label, self.bounded(x)));
+                }
+                let xs = self.of(Ty::Ints, 1);
+                let (world, changes) = (self.fresh(), self.fresh());
+                body.push(Stmt::PlanApply(world, spots, xs, changes));
+            }
+            23 if self.choice(3) == 0 => {
+                // A union's member called on through the union: after `match`, after `is`, or
+                // straight on it, with its `with` source always after `is`.
+                let how =
+                    [Via::Match, Via::Is, Via::Direct].get(self.choice(3)).copied().unwrap_or(Via::Match);
+                let members = 2 + self.choice(2);
+                let member = self.choice(members);
+                let text = self.of(Ty::Str, 2);
+                body.push(Stmt::UnionCall(how, members, member, text));
+            }
             23 => {
                 let fixed: Vec<String> = self
                     .names
@@ -891,6 +920,25 @@ impl Writer<'_> {
                     changeable: false,
                 });
                 self.names.push(InScope { name, ty: Ty::Count, changeable: false, held: 0 });
+            }
+            25 if self.choice(3) == 0 => {
+                // A container of containers copied, then changed deep inside through the copy.
+                const SHAPES: [Nested; 5] = [
+                    Nested::DictOfUnits,
+                    Nested::ArmyOfUnits,
+                    Nested::DictOfDicts,
+                    Nested::ListOfDicts,
+                    Nested::DictOfUnitLists,
+                ];
+                let shape = SHAPES.get(self.choice(SHAPES.len())).copied().unwrap_or(Nested::DictOfUnits);
+                let (given, copy) = (self.fresh(), self.fresh());
+                let value = self.int(1);
+                let value = self.bounded(value);
+                body.push(Stmt::CopiedNested(shape, given, copy, value));
+            }
+            24 if self.choice(3) == 0 => {
+                let Some(holder) = self.name_of(Ty::Holder, true) else { return self.print(body) };
+                body.push(Stmt::GrownBy(holder, self.fresh()));
             }
             24 => {
                 let Some(holder) = self.name_of(Ty::Holder, true) else { return self.print(body) };

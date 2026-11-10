@@ -149,12 +149,7 @@ impl FnCx<'_> {
                 let name = key.rsplit('.').next().unwrap_or_default().to_owned();
                 self.call_function(&key, &name, args, span)
             }
-            Type::Arrow(params, returns) => {
-                let params: Vec<ParamType> =
-                    params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
-                self.bind_args("this function", &params, args, span);
-                *returns
-            }
+            Type::Arrow(params, returns) => self.call_value(callee, (params, *returns), args, span),
             Type::Unknown => {
                 self.ignore_args(args);
                 Type::Unknown
@@ -164,6 +159,24 @@ impl FnCx<'_> {
                 self.unusable(Diagnostic::new(message, callee.span), args)
             }
         }
+    }
+
+    /// A call through a function value, as `work()` with `work: () -> nothing`.
+    fn call_value(
+        &mut self,
+        callee: &Expr,
+        (params, returns): (Vec<Type>, Type),
+        args: &[Arg],
+        span: Span,
+    ) -> Type {
+        self.note_value_call(callee, span);
+        let params: Vec<ParamType> =
+            params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
+        // Through a function value, what's called can't be followed by its parameters.
+        self.calling.push(String::new());
+        self.bind_args("this function", &params, args, span);
+        self.calling.pop();
+        returns
     }
 
     /// A call to a name that isn't a local: a function, a type or a builtin.
@@ -273,7 +286,9 @@ impl FnCx<'_> {
             self.note_wait(what, span);
         }
         self.note_lock_call(key, name, span);
+        self.calling.push(key.to_owned());
         self.bind_args(name, &signature.params, args, span);
+        self.calling.pop();
         self.check_bounds(chosen, span);
         self.note_source(key, &signature.returns, false, span);
         signature.returns
@@ -307,6 +322,11 @@ impl FnCx<'_> {
             };
             let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
             self.handle_passed(&arg.value, &ty);
+            if let Some((_, param)) = found
+                && matches!(self.checker.settled(&param.ty), Type::Arrow(..))
+            {
+                self.note_passed_function(&param.name, &arg.value);
+            }
             let Some((at, param)) = found else {
                 let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
                 self.error(unmatched(function, ("parameter", "argument"), &names, arg));
@@ -571,6 +591,10 @@ impl FnCx<'_> {
             );
         }
         let Some((first, rest)) = members.split_first() else { return Type::Unknown };
+        if self.union_source(call, &union, first) {
+            self.ignore_args(call.args);
+            return Type::Unknown;
+        }
         let returns = self.method_on(call, first, false);
         let report = std::mem::replace(&mut self.report, false);
         let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
@@ -586,6 +610,31 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         returns
+    }
+
+    /// Refuses a `with` source called on a union, saying whether it is one: what's written in for
+    /// it is one type's source, chosen where the program's built, so it would run that one
+    /// whatever the value holds. Narrowed with `is`, it's the type's own.
+    fn union_source(&mut self, call: &MethodCall<'_>, union: &Type, first: &Type) -> bool {
+        let Some(owner) = first.type_name() else { return false };
+        let Some((_, entry)) = self.checker.program.method(owner, call.method) else { return false };
+        if entry.def.ret.as_ref().is_none_or(|ret| ret.name != crate::lend::WITH) {
+            return false;
+        }
+        let named = match &call.object.kind {
+            ExprKind::Name(name) => name.clone(),
+            _ => "it".to_owned(),
+        };
+        let message = format!(
+            "`{}` is a `with` source each type in {} has, and which one runs can't be chosen as the program runs yet",
+            call.method,
+            a(union)
+        );
+        let help = format!(
+            "narrow it first, as `if {named} is {owner}:` or a `match` case for `{owner}`, where it runs that type's source"
+        );
+        self.error(Diagnostic::new(message, call.object.span.to(call.span)).with_help(help));
+        true
     }
 
     /// Whether a type has a method by this name, its own or one std or the engines give it.
@@ -797,7 +846,9 @@ impl FnCx<'_> {
                 .with_help(format!("lock it to write with `as ref {name}`")),
             );
         }
+        self.calling.push(key.to_owned());
         self.bind_args(method, params, args, span);
+        self.calling.pop();
         self.note_source(key, &signature.returns, takes_self, span);
         signature.returns
     }

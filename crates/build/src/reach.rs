@@ -283,6 +283,12 @@ impl Uses {
 
     pub(crate) fn type_expr(&mut self, ty: &TypeExpr) {
         self.names.insert(ty.name.clone());
+        // `shared Point` means the declaration lowering made for it, which nothing names.
+        if ty.name == "shared"
+            && let [held] = ty.args.as_slice()
+        {
+            self.names.insert(fennec_syntax::shared_declaration(&fennec_syntax::written_type(held)));
+        }
         for arg in &ty.args {
             self.type_expr(arg);
         }

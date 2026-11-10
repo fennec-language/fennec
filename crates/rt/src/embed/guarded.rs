@@ -131,6 +131,7 @@ fn places_in(state: &State, address: u64) -> Result<Vec<usize>, Diagnostic> {
 }
 
 fn lost(address: u64) -> Diagnostic {
+    super::heap::not_native(address, "copy, into or out of a `shared` value");
     Diagnostic::new(format!("a `shared` value lost the block at {address:#x}"), Span::default())
 }
 

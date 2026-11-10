@@ -117,6 +117,7 @@ fn own_value((name, size): (&str, usize), words: &mut dyn Iterator<Item = &u64>,
 /// Writes the value at a block's address as it shows inside a collection: strings are quoted.
 pub(in crate::embed) fn quoted(state: &State, address: u64, out: &mut Written) {
     let Some(block) = state.heap.block(address) else {
+        super::not_native(address, "print");
         out.push_str("None");
         return;
     };

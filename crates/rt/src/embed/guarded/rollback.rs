@@ -300,6 +300,7 @@ pub extern "C" fn undo() {
                 state.heap.block_mut(saved.block).and_then(|words| words.get(saved.word).copied())
             else {
                 // A block no table here holds: a save there's nothing to put back for.
+                heap::not_native(saved.block, "put back, after a crash under a lock");
                 if saved.held {
                     released.push(saved.old);
                 }

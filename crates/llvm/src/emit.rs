@@ -114,6 +114,15 @@ static PROOFS_CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 
 /// Makes every build from here on check proofs, or not: each check left out because of a proof is
 /// written anyway, as an assertion that it held. `fennec` does when `FENNEC_CHECK_PROOFS=1`.
+/// Whether builds from here on leave native blocks unwatched: see [`crate::NativeBlocks`].
+static NATIVE_TRUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes builds from here on leave native blocks unwatched, as a release build does, or watch
+/// them. One checking proofs watches them whatever this says.
+pub fn trust_native_blocks(on: bool) {
+    NATIVE_TRUSTED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn check_proofs(on: bool) {
     PROOFS_CHECKED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -128,6 +137,13 @@ pub(crate) fn emit_with(
     if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
         shared.proofs = crate::Proofs::Checked;
     }
+    shared.native_blocks = if NATIVE_TRUSTED.load(std::sync::atomic::Ordering::Relaxed)
+        && shared.proofs != crate::Proofs::Checked
+    {
+        crate::NativeBlocks::Trusted
+    } else {
+        crate::NativeBlocks::Watched
+    };
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
     let mut units = Vec::with_capacity(program.functions.len());
@@ -3151,6 +3167,20 @@ def main(stdout: Stdout):
         let source = "def repeated(text: str, times: int) -> str:\n    \"\".join([text for _ in range(times)])\n\ndef main(stdout: Stdout):\n    stdout.print(repeated(\"ab\", 3))\n";
         let text = text_of(source, "repeated")?;
         assert!(!text.contains("kept_length"), "{text}");
+        Ok(())
+    }
+
+    /// A build that watches native blocks, as a dev build does, tells the runtime of each one it
+    /// makes and frees, for it to stop if it's ever given one.
+    #[test]
+    fn a_watched_build_tells_the_runtime_of_its_native_blocks() -> Result<(), String> {
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    stdout.print(count(build(4)))\n";
+        let program = lowered(source)?;
+        let (units, shared, _) = emit(&program)?;
+        assert!(!shared.native.is_empty(), "Twig's blocks are native");
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(text.contains("call void @fennec_native_made("), "{text}");
+        assert!(text.contains("call void @fennec_native_freed(ptr %block)"), "{text}");
         Ok(())
     }
 

@@ -626,19 +626,43 @@ impl Emit<'_, '_, '_> {
         plain
     }
 
-    /// `block += more`, taking over the block's owner: an inline ASCII `more` is copied straight
-    /// in when the block is alone and has room, and anything else goes as [`Self::append_text`]
-    /// does.
+    /// How many characters an inline header's text has: its bytes but the ones that go on a
+    /// character, `10xxxxxx` in UTF-8, counted a word at a time. Its bytes are zero after its
+    /// length, and the last word's top byte, its tag, is left out.
+    fn inline_chars(&mut self, header: &str, length: &str) -> String {
+        self.declare("declare i64 @llvm.ctpop.i64(i64)");
+        let mut chars = length.to_owned();
+        for at in 0..3 {
+            let mut word = self.header_word(header, at);
+            if at == 2 {
+                let cleared = self.temp();
+                self.line(&format!("{cleared} = and i64 {word}, 72057594037927935"));
+                word = cleared;
+            }
+            let (shifted, not_six, high, on, count, left) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{shifted} = shl i64 {word}, 1"));
+            self.line(&format!("{not_six} = xor i64 {shifted}, -1"));
+            self.line(&format!("{high} = and i64 {word}, {not_six}"));
+            self.line(&format!("{on} = and i64 {high}, -9187201950435737472"));
+            self.line(&format!("{count} = call i64 @llvm.ctpop.i64(i64 {on})"));
+            self.line(&format!("{left} = sub i64 {chars}, {count}"));
+            chars = left;
+        }
+        chars
+    }
+
+    /// `block += more`, taking over the block's owner: an inline `more` is copied straight in
+    /// when the block is alone and has room, its characters counted where they are, and anything
+    /// else goes as [`Self::append_text`] does.
     pub(crate) fn append_header(&mut self, block: &str, more: &str) -> String {
         use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
         let in_block = self.header_in_block(more);
-        let ascii = self.inline_ascii(more);
         let more_length = self.inline_length(more);
         let at = |emit: &mut Self, offset: i32| emit.offset(block, offset.unsigned_abs());
         let alone = self.alone(block);
-        let (inline, simple) = (self.temp(), self.temp());
-        self.line(&format!("{inline} = xor i1 {in_block}, true"));
-        self.line(&format!("{simple} = and i1 {inline}, {ascii}"));
+        let simple = self.temp();
+        self.line(&format!("{simple} = xor i1 {in_block}, true"));
         let (length_at, room_at) = (at(self, TEXT_BYTES), at(self, TEXT_ROOM));
         let (length, room, total, fits, ok, quick) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -684,9 +708,10 @@ impl Emit<'_, '_, '_> {
         self.start_block(&copied);
         self.line(&format!("store i64 {total}, ptr {length_at}"));
         let chars_at = at(self, TEXT_CHARS);
+        let counted = self.inline_chars(more, &more_length);
         let (chars, more_chars) = (self.temp(), self.temp());
         self.line(&format!("{chars} = load i64, ptr {chars_at}"));
-        self.line(&format!("{more_chars} = add i64 {chars}, {more_length}"));
+        self.line(&format!("{more_chars} = add i64 {chars}, {counted}"));
         self.line(&format!("store i64 {more_chars}, ptr {chars_at}"));
         let copy_end = self.current.clone();
         self.line(&format!("br label %{done}"));

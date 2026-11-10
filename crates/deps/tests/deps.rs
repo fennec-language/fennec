@@ -13,7 +13,8 @@ mod deps {
         let dir = std::env::temp_dir().join(format!("fennec-deps-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        // As `git` takes it: on Windows, not in the verbatim form `canonicalize` gives.
+        fennec_deps::plain(&dir.canonicalize().unwrap())
     }
 
     fn git(repository: &Path, args: &[&str]) -> String {

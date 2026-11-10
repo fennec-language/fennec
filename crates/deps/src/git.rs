@@ -20,6 +20,10 @@ pub(crate) fn fetch(url: &str, commit: &str, folder: Option<&str>, work: &Path) 
 }
 
 fn fetch_into(url: &str, commit: &str, folder: Option<&str>, work: &Path) -> Result<Files, String> {
+    // Paths as `git` takes them, which on Windows isn't the verbatim form `canonicalize` gives.
+    let work = crate::plain(work);
+    let plain_url = crate::plain_text(url);
+    let url = plain_url.as_deref().unwrap_or(url);
     let repository = work.join("repository");
     std::fs::create_dir_all(work.join("no-hooks"))
         .map_err(|err| format!("couldn't make {}: {err}", work.display()))?;

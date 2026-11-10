@@ -1010,6 +1010,14 @@ impl FnCx<'_> {
         for step in &steps {
             self.else_chain.remove(step);
         }
+        // On `T? fails E`, `?` handles the failure and `else` the `None`: a plain `else` would
+        // handle both, so only `else as why:` takes the failure, giving a `T?`.
+        if let Type::Result(inner, _) = self.checker.settled(&value)
+            && matches!(self.checker.settled(&inner), Type::Optional(_) | Type::None)
+            && default.failure_named().is_none()
+        {
+            self.error(swallows_failure(written, &inner));
+        }
         let mut leaves = default.leaves();
         if leaves && self.value_functions > 0 {
             let message = "an arrow function or comprehension can't leave with `else`";
@@ -1256,4 +1264,15 @@ fn line_shown(line: &fennec_syntax::Stmt) -> String {
         StmtKind::Pass => "`pass`".to_owned(),
         _ => "this".to_owned(),
     }
+}
+
+/// A plain `else` on what can fail as well as give `None`, which would handle both.
+fn swallows_failure(written: Span, inner: &Type) -> Diagnostic {
+    let end = Span { start: written.end, end: written.end };
+    Diagnostic::new("this can fail as well as give `None`, and a plain `else` would handle both", written)
+        .with_help(format!(
+            "pass the failure up with `?` first, so `else` handles the `None`, or handle the failure with `else as why:`, whose block gives {}",
+            a(inner)
+        ))
+        .with_hint("pass the failure up", end, "?")
 }

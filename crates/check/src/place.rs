@@ -94,7 +94,7 @@ impl FnCx<'_> {
         let rest = crate::loops::place_text(expr);
         let holder = source.split(['[', '.']).next().unwrap_or(source);
         Some(format!(
-            "to change `{holder}`: write to `{source}{}`",
+            "to change `{holder}`: write to `{source}{}`, or name the place with `ref {name} = {source}`",
             rest.strip_prefix(name).unwrap_or_default()
         ))
     }

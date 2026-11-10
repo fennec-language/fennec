@@ -211,6 +211,15 @@ fn dict_method(key: &Type, value: &Type, name: &str) -> Option<Method> {
     })
 }
 
+/// `copy(x)` with no fields: every copy is a snapshot already, as a plain `=` or argument makes
+/// one, so taking the call off changes nothing the program does.
+fn plain_copy(call: Span, value: Span) -> Diagnostic {
+    Diagnostic::new("there's no plain `copy(...)`: every copy is a snapshot already", call)
+        .with_help("use the value itself, which `fennec fix` writes; `copy(x, field=new)` still changes fields as it copies")
+        .with_fix(Span { start: call.start, end: value.start }, "")
+        .with_fix(Span { start: value.end, end: call.end }, "")
+}
+
 fn id_map_method(item: &Type, name: &str) -> Option<Method> {
     let id = Type::Id(Box::new(item.clone()));
     let item = item.clone();
@@ -579,6 +588,13 @@ impl FnCx<'_> {
     pub(crate) fn call_builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Type {
         if name == "copy" && args.len() > 1 {
             return self.replace(args, span);
+        }
+        if let ("copy", [arg]) = (name, args)
+            && arg.name.is_none()
+        {
+            let ty = self.expr(&arg.value);
+            self.error(plain_copy(span, arg.value.span));
+            return ty;
         }
         if name == "replace" {
             // The callee is the name the call starts with.

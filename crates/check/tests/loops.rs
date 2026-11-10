@@ -30,7 +30,7 @@ fn changes(body: &str) -> Vec<String> {
 fn a_loop_can_change_what_it_doesnt_go_over() {
     let empty: [&str; 0] = [];
     assert_eq!(changes("for name in team.names:\n    team.win()\n"), empty);
-    assert_eq!(changes("for name in copy(names):\n    names.append(name)\n"), empty);
+    assert_eq!(changes("before = names\nfor name in before:\n    names.append(name)\n"), empty);
     assert_eq!(changes("for name in names[1:]:\n    names.append(name)\n"), empty);
     assert_eq!(
         changes("mut found = list[str]()\nfor name in names:\n    found.append(name)\nnames = found\n"),
@@ -227,7 +227,7 @@ fn a_ref_self_method_needs_its_value_to_itself() {
         ("bag.rename(bag.name)", &["`bag.name` overlaps `bag`, which this method changes"]),
         ("bags[i].absorb(bags[j])", &["`bags[j]` overlaps `bags[i]`, which this method changes"]),
         ("bag.grow(bag.size)", &[]),
-        ("bag.absorb(copy(bag))", &[]),
+        ("held = bag\nbag.absorb(held)", &[]),
         ("bags[0].absorb(bags[1])", &[]),
         ("stdout.print(bag.has(bag))", &[]),
     ];
@@ -353,7 +353,7 @@ fn different_places_can_be_given_as_mut_together() {
         "units[i].look(ref unit.home)",
         // What's worked out from a place is a value of its own.
         "more(ref spots, spots.len())",
-        "read(ref spots[i], copy(spots[j]))",
+        "other = spots[j]\nread(ref spots[i], other)",
         // A method keeping what it reads from its own value isn't given it as `mut`.
         "unit.keep(unit.position)",
     ] {

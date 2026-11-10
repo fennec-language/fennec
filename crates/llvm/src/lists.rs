@@ -499,8 +499,8 @@ impl Emit<'_, '_, '_> {
                     let boxed = matches!(kind, Kind::Boxed(_));
                     let inside = if boxed {
                         // A `shared` value's block is the same one for every name.
-                        let block = if taking && !self.is_cell(&kind) {
-                            self.alone_along((root, &along), &at, "fennec_unshare")
+                        let block = if taking {
+                            self.block_to_change((root, &along), &at, &kind)
                         } else {
                             self.load_block(&at)
                         };
@@ -519,6 +519,10 @@ impl Emit<'_, '_, '_> {
                 PlaceStep::Item(index_operand) => {
                     let list = match (taking, along.is_empty()) {
                         (true, true) => self.unshared(root),
+                        (true, false) if !self.saving.is_empty() => {
+                            let (index, _) = self.operand(index_operand)?;
+                            self.item_to_set(&at, &index)
+                        }
                         (true, false) => self.alone_along((root, &along), &at, "fennec_list_unshare"),
                         (false, _) => self.load_block(&at),
                     };
@@ -1500,6 +1504,26 @@ impl Emit<'_, '_, '_> {
         resolved
     }
 
+    /// The list at `place`, ready for its item at `index` to be set, under a lock that saves what it
+    /// changes. A list the lock's log marked stays where it is, the item noted for a crash to put
+    /// back, so every set asks the runtime, and the list is never taken as alone after.
+    fn item_to_set(&mut self, place: &str, index: &str) -> String {
+        self.declare("declare ptr @fennec_list_item_unshare(ptr, i64) nounwind");
+        let list = self.temp();
+        let (ok, shared) = (self.label("alone"), self.label("shared"));
+        self.line(&format!("{list} = load ptr, ptr {place}"));
+        let alone = self.alone(&list);
+        let came_from = self.current.clone();
+        self.line(&format!("br i1 {alone}, label %{ok}, label %{shared}"));
+        let (copy, resolved) = (self.temp(), self.temp());
+        self.cold_block(&format!(
+            "{shared}:\n  {copy} = call ptr @fennec_list_item_unshare(ptr {list}, i64 {index})\n  store ptr {copy}, ptr {place}\n  br label %{ok}\n"
+        ));
+        self.start_block(&ok);
+        self.line(&format!("{resolved} = phi ptr [ {list}, %{came_from} ], [ {copy}, %{shared} ]"));
+        resolved
+    }
+
     /// Sees that the local's list has no other owner, copying it if it has, and gives it back.
     pub(crate) fn check_alone(&mut self, local: LocalId) -> String {
         self.declare("declare ptr @fennec_list_unshare(ptr) nounwind");
@@ -1575,6 +1599,13 @@ impl Emit<'_, '_, '_> {
         if path.is_empty() {
             return Ok(self.check_alone(object));
         }
+        let place = self.list_place(object, path)?;
+        Ok(self.alone_along((object, path), &place, "fennec_list_unshare"))
+    }
+
+    /// Where the list at a field path from a local is, with nothing it's inside having another
+    /// owner.
+    fn list_place(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
         let mut kind = self.kind_of(object)?.clone();
         let mut place = self.slot(object);
         for (step, name) in path.iter().enumerate() {
@@ -1589,7 +1620,7 @@ impl Emit<'_, '_, '_> {
             place = self.offset(&inner, offset);
             kind = field;
         }
-        Ok(self.alone_along((object, path), &place, "fennec_list_unshare"))
+        Ok(place)
     }
 
     /// The block at a field path from a local, made alone unless that's known already, and
@@ -1612,7 +1643,35 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{block} = load ptr, ptr {place}"));
             return block;
         }
+        if !self.saving.is_empty() {
+            return self.changeable_along((root, path), place);
+        }
         self.alone_along((root, path), place, "fennec_unshare")
+    }
+
+    /// The struct's block at `place`, ready to change under a lock that saves what it changes. One
+    /// the lock's log marked stays where it is, its fields saved already, so it's never taken as
+    /// alone after: its count still has the mark.
+    fn changeable_along(&mut self, (root, path): (LocalId, &[String]), place: &str) -> String {
+        let key = self.fact_key(root, path, 8);
+        if self.alone_fields.contains(&key) {
+            return self.load_block(place);
+        }
+        self.declare("declare ptr @fennec_lock_to_change(ptr) nounwind");
+        let block = self.temp();
+        let (ok, shared) = (self.label("alone"), self.label("shared"));
+        self.line(&format!("{block} = load ptr, ptr {place}"));
+        let alone = self.alone(&block);
+        let came_from = self.current.clone();
+        self.line(&format!("br i1 {alone}, label %{ok}, label %{shared}"));
+        let (copy, resolved) = (self.temp(), self.temp());
+        self.cold_block(&format!(
+            "{shared}:\n  {copy} = call ptr @fennec_lock_to_change(ptr {block})\n  store ptr {copy}, ptr {place}\n  br label %{ok}\n"
+        ));
+        self.start_block(&ok);
+        self.line(&format!("{resolved} = phi ptr [ {block}, %{came_from} ], [ {copy}, %{shared} ]"));
+        self.alone_fields.push(key);
+        resolved
     }
 
     pub(crate) fn alone_along(
@@ -1739,7 +1798,15 @@ impl Emit<'_, '_, '_> {
         let at = if let Some(at) = from_here {
             at
         } else {
-            let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
+            let list = if path.is_empty() {
+                self.unshared(object)
+            } else if !self.saving.is_empty() {
+                // Under a lock that saves what it changes, a list its log marked is set in place.
+                let place = self.list_place(object, path)?;
+                self.item_to_set(&place, &index)
+            } else {
+                self.alone_list(object, path)?
+            };
             let position = if inside {
                 self.proof_inside(&list, &index, "index inside its list", span);
                 index

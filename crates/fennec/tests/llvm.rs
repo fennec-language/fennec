@@ -5327,8 +5327,74 @@ def used(fine: bool, stdout: Stdout) fails Second:
     Ok(())
 }
 
+/// A generic function calling a `with` source its interface gives, `db.transaction()` for
+/// `D: Database`, runs the source of the type it's called with: a copy of it is made for each
+/// type, once each, through another generic function, with the type written in brackets, and for
+/// a parameter typed by the interface itself.
+#[test]
+fn an_interface_source_in_a_generic_runs_each_types_own_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "interface_source",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+interface Database:
+    def run(self, text: str) -> int fails Nope
+    def transaction(self) -> with Transaction fails Nope
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+def saved[D: Database](db: D) -> str fails Nope:
+    with db.transaction()? as tx:
+        count = db.run("abc")?
+        return f"{tx.log} {count}"
+    ""
+
+def twice[D: Database](db: D) -> str fails Nope:
+    first = saved(db)?
+    f"{first}/{saved(db)?}"
+
+def plain(db: Database) -> int fails Nope:
+    with db.transaction()? as tx:
+        return tx.log.len()
+    0
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Lite(name="c"))?)
+    stdout.print(twice(Postgres(host="d"))?, saved[Lite](Lite(name="e"))?)
+    stdout.print(plain(Lite(name="f"))?, plain(Postgres(host="g"))?)
+"#,
+        "lite 3 pg 6 lite 3\npg 6/pg 6 lite 3\n4 2\n",
+    )
+}
+
 /// A function whose last line is a `with` whose block always returns gives back a value on every
-/// way, once the source is written in: alone, and in each branch of an `if`.
+/// way, once the source is written in: alone, in each branch of an `if`, and in each case of
+/// a `match`.
 #[test]
 fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
     if !ready() {
@@ -5358,11 +5424,21 @@ def branched(store: Lite, long: bool) -> int:
         with store.session() as session:
             return session.log.len()
 
+def matched(store: Lite, n: int) -> int:
+    match n:
+        case 0:
+            with store.session() as session:
+                return session.log.len() * 100
+        case _:
+            with store.session() as session:
+                return session.log.len() + n
+
 def main(stdout: Stdout):
     store = Lite(name="a")
     stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+    stdout.print(matched(store, 0), matched(store, 3))
 "#,
-        "lite x 40 4\n",
+        "lite x 40 4\n400 7\n",
     )
 }
 
@@ -12207,6 +12283,79 @@ def main(stdout: Stdout) fails Nope:
         stdout.print(store.run("ab")?)
 "#,
         "lite 3 pg 8\n1 2 3\n2\n4\n6\n",
+    )
+}
+
+/// What's left of a three-member union after `if store is Lite: return` is the other two, read
+/// natively as the union it was: its members told apart with `is` and `match`, each one's
+/// fields read once it's narrowed to it, a method all of them have called on it, and it given
+/// where a `Pg | Mem` goes, and that where the whole union goes.
+#[test]
+fn what_is_left_of_a_union_after_is_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_rest",
+        r#"struct Lite:
+    name: str
+
+    def label(self) -> str:
+        f"lite {self.name}"
+
+struct Pg:
+    host: str
+
+    def label(self) -> str:
+        f"pg {self.host}"
+
+struct Mem:
+    size: int
+
+    def label(self) -> str:
+        f"mem {self.size}"
+
+type Three = Lite | Pg | Mem
+
+def which(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    if store is Pg:
+        return f"pg {store.host}"
+    f"mem {store.size}"
+
+def kind(store: Three) -> str:
+    if store is Mem:
+        return "mem"
+    stdout_text = f"{store}"
+    match store:
+        case Lite(name=_):
+            return f"lite {store.name} {stdout_text}"
+        case Pg(host=_):
+            return f"pg {store.host} {stdout_text}"
+
+def label(store: Three) -> str:
+    if store is Lite:
+        return "skip"
+    store.label()
+
+def two(store: Pg | Mem) -> str:
+    if store is Pg:
+        return store.host
+    which(store)
+
+def passed(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    two(store)
+
+def main(stdout: Stdout):
+    stdout.print(which(Lite(name="a")), which(Pg(host="b")), which(Mem(size=1)))
+    stdout.print(kind(Lite(name="a")), kind(Pg(host="b")), kind(Mem(size=1)))
+    stdout.print(label(Lite(name="a")), label(Pg(host="b")), label(Mem(size=1)))
+    stdout.print(passed(Lite(name="a")), passed(Pg(host="b")), passed(Mem(size=1)))
+"#,
+        "lite pg b mem 1\nlite a Lite(name=\"a\") pg b Pg(host=\"b\") mem\nskip pg b mem 1\nlite b mem 1\n",
     )
 }
 

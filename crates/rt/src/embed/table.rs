@@ -280,6 +280,26 @@ impl Table {
         self.remove_any(address)
     }
 
+    /// Takes the block at `address` out when `wanted` says so of it, finding it once. `None`,
+    /// having changed nothing, when it isn't here or isn't wanted.
+    pub(super) fn take_if(
+        &mut self,
+        address: usize,
+        wanted: impl FnOnce(&[u64]) -> bool,
+    ) -> Option<Box<[u64]>> {
+        let taken = match slot_mut(&mut self.regions, address) {
+            Some(slot) => slot.take_if(|block| wanted(block)),
+            None if self.short.get(&address).is_some_and(|block| wanted(block)) => {
+                self.short.remove(&address)
+            }
+            None => None,
+        };
+        if taken.is_some() {
+            self.len -= 1;
+        }
+        taken
+    }
+
     /// `remove` for what can't yet tell whether this is a string, and so forgets its place after.
     pub(super) fn remove_any(&mut self, address: usize) -> Option<Box<[u64]>> {
         let removed = match slot_mut(&mut self.regions, address) {
@@ -307,6 +327,27 @@ mod tests {
         table.insert(block);
         table.note_place(at);
         table.remove(at);
+    }
+
+    #[test]
+    fn takes_a_block_only_when_wanted() {
+        let mut table = Table::default();
+        let placed: Box<[u64]> = vec![7; PLACED_WORDS].into_boxed_slice();
+        let short: Box<[u64]> = vec![8; 2].into_boxed_slice();
+        let (placed_at, short_at) = (at(&placed), at(&short));
+        table.insert(placed);
+        table.insert(short);
+        for address in [placed_at, short_at] {
+            assert!(table.take_if(address, |_| false).is_none());
+            assert!(table.get(address).is_some(), "a block not wanted stays");
+        }
+        assert_eq!(table.len(), 2);
+        assert!(table.take_if(placed_at + 8, |_| true).is_none(), "nothing's taken from inside a block");
+        assert_eq!(table.take_if(placed_at, |block| block[0] == 7).map(|block| at(&block)), Some(placed_at));
+        assert_eq!(table.take_if(short_at, |block| block[0] == 8).map(|block| at(&block)), Some(short_at));
+        assert_eq!(table.len(), 0);
+        assert!(table.get(placed_at).is_none() && table.get(short_at).is_none());
+        assert!(table.take_if(placed_at, |_| true).is_none(), "a block's taken once");
     }
 
     #[test]

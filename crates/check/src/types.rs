@@ -244,6 +244,14 @@ impl Type {
         }
     }
 
+    /// Whether a type parameter is part of this type, as `T` is of `list[T]`.
+    pub(crate) fn has_params(&self) -> bool {
+        match self {
+            Type::Param(_) => true,
+            other => other.children().iter().any(|child| child.has_params()),
+        }
+    }
+
     /// The types directly inside this one.
     pub(crate) fn children(&self) -> Vec<&Type> {
         match self {

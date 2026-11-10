@@ -818,6 +818,29 @@ fn run_exits_with_1_when_the_program_fails() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// With `FENNEC_RUN_WAITS`, `fennec run` starts the program and waits for it rather than becoming
+/// it, as the edit-to-run budget counts it, and the run is otherwise the same: what it prints, and
+/// the exit code `main` gives back.
+#[test]
+fn a_run_that_waits_for_its_program_prints_and_exits_the_same() {
+    let dir = scratch("run-waits").unwrap();
+    let program = dir.join("two.fen");
+    std::fs::write(&program, "def main(stdout: Stdout) -> int:\n    stdout.print(\"ran\")\n    return 2\n")
+        .unwrap();
+    let path = program.to_str().unwrap();
+    let mut command = crate::executables::fennec_command();
+    let output = command
+        .args(["run", "--no-test", path])
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_RUN_WAITS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "ran\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `main` may give back an int, which the process exits with: `return 2` exits with 2, and
 /// `return 0` with 0. One that gives back an int or a failure exits with the int, or prints the
 /// failure on standard error and exits with 1. The same on every engine, and built.

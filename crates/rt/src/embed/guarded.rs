@@ -527,6 +527,27 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
     }
 }
 
+/// Forgets each `shared` value whose table goes with this heap, at the end of a run whose heap is freed
+/// rather than left for the process's exit: one the run ended holding the write lock of, as a test
+/// may. A value's own block is in its table, so it goes too, and what's kept of the value would
+/// outlive it. The next block put at that address would look like a handle to it, and copying,
+/// locking or letting go of that block would go to a table that's gone. A value whose lock isn't held
+/// keeps its table, and its block, so stays. Only a process with more than one run in it has this to
+/// do.
+pub(super) fn forget_ending(heap: &super::heap::Heap) {
+    if !ANY.load(Ordering::Relaxed) {
+        return;
+    }
+    let forgot = tables(|tables| {
+        let before = tables.len();
+        tables.retain(|address, _| !usize::try_from(*address).is_ok_and(|at| heap.holds_block(at)));
+        tables.len() != before
+    });
+    if forgot {
+        GONE.fetch_add(1, Ordering::Release);
+    }
+}
+
 pub mod rollback;
 
 #[cfg(test)]

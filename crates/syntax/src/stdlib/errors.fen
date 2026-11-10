@@ -13,6 +13,6 @@ export error ParseError:
 ## `problem = failure_of(() => Time.parse(text))`. `assert Time.parse(text) fails ParseError()` is
 ## the usual way to check one.
 export def failure_of[T, E](run: () -> T fails E) -> E?:
-    _ = run() else as why:
+    run() else as why:
         return why
     None

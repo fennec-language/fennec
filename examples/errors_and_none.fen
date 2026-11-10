@@ -47,4 +47,6 @@ def main(stdout: Stdout):
     stdout.print(level)
     found = require(players, "Ash").expect("Ash was added above")
     stdout.print(found.name)
-    stdout.print(challenge(players, "Kit") == Err(TooWeak(level=1)))
+    _ = challenge(players, "Kit") else as why:
+        stdout.print(why == TooWeak(level=1))
+        ""

@@ -172,6 +172,14 @@ pub fn load_with(path: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     }
 }
 
+/// Whether `program`, loaded from `path` as `shown_as` with `Entry::Main`, holds every file of its
+/// kit, so that it's just what `Entry::Everything` would load: the same files, visited in the same
+/// order. A single file loads the same either way.
+#[must_use]
+pub fn holds_every_file(program: &Program, path: &Path, shown_as: &str) -> bool {
+    !path.is_dir() || load::holds_every_file(program, path, shown_as)
+}
+
 /// Why a program couldn't be loaded.
 #[derive(Clone, Debug, Default)]
 pub struct Problems {

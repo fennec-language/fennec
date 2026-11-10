@@ -310,6 +310,13 @@ pub(super) fn task_mark(task: u64) -> u64 {
 /// this, in the shape word, which doesn't change once the block's in use.
 pub const NEVER_FREED_OWNER: u64 = 0xFFFD;
 
+/// Whether a block is never freed: by its owner, or by a count no thread's owners can reach.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn is_never_freed(block: &[u64]) -> bool {
+    block.first().is_some_and(|count| *count >= IMMORTAL)
+        || block.get(1).is_some_and(|shape| *shape >> OWNER_SHIFT == NEVER_FREED_OWNER)
+}
+
 /// Marks a block as never freed, by its owner.
 pub(super) fn mark_never_freed(block: &mut [u64]) {
     mark_owner(block, NEVER_FREED_OWNER << OWNER_SHIFT);
@@ -567,9 +574,9 @@ impl Heap {
         }
     }
 
-    /// Its live blocks, by how many words each takes, the statics among them.
+    /// Its live blocks, by how many words each takes, and apart from them how many are never freed.
     #[cfg(any(test, feature = "threads"))]
-    pub(crate) fn live_by_size(&self) -> std::collections::BTreeMap<usize, usize> {
+    pub(crate) fn live_by_size(&self) -> (std::collections::BTreeMap<usize, usize>, usize) {
         self.blocks.sizes()
     }
 
@@ -777,6 +784,13 @@ impl Heap {
         self.behind.len()
     }
 
+    /// Whether the block at `address` is in this heap's own table or one behind it: one that goes
+    /// when this heap does.
+    pub(super) fn holds_block(&self, address: usize) -> bool {
+        self.blocks.get(address).is_some()
+            || self.behind.iter().any(|(table, _)| table.get(address).is_some())
+    }
+
     /// Takes the current table back out, leaving the one behind it current.
     #[expect(
         clippy::unnecessary_box_returns,
@@ -822,6 +836,19 @@ impl Heap {
 
     pub(super) fn lent_has(&self, address: u64) -> bool {
         usize::try_from(address).is_ok_and(|at| self.lent.as_ref().is_some_and(|lent| lent.get(at).is_some()))
+    }
+
+    /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
+    /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
+    /// `None`, having taken nothing, for any other block.
+    pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
+        let empty_items = &self.empty_items;
+        self.blocks.take_if(at, |block| {
+            !is_handle_block(block)
+                && shape_word(block)
+                    .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
+                    .is_some_and(|number| empty_items.get(number).copied().unwrap_or(false))
+        })
     }
 
     /// Takes a block out of the current table or one behind it.

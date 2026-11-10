@@ -123,16 +123,11 @@ def main(stdout: Stdout):
     changes_later(stdout)
     worked_out_first(stdout)
 
-    match up_to_failure(4):
-        case Ok(total):
-            stdout.print(total)
-        case Err(failure):
-            stdout.print("failed", failure)
-    match up_to_failure(1000):
-        case Ok(total):
-            stdout.print(total)
-        case Err(failure):
-            stdout.print("failed", failure)
+    for limit in [4, 1000]:
+        total = up_to_failure(limit) else as why:
+            stdout.print("failed", why)
+            continue
+        stdout.print(total)
 
 def first_big() -> int:
     for n in three():

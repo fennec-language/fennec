@@ -86,15 +86,13 @@ test "the help lists everything":
 
 def main(stdout: Stdout, args: Args):
     cli = greet()
-    found = cli.parse([arg for arg in args])
-    match found:
-        case Err(error):
-            stdout.print(f"{error.message}; `--help` lists what it takes")
-        case Ok(given):
-            if given.wants_help:
-                stdout.write(cli.help())
-            else:
-                say_hello(stdout, given)
+    given = cli.parse([arg for arg in args]) else as why:
+        stdout.print(f"{why.message}; `--help` lists what it takes")
+        return
+    if given.wants_help:
+        stdout.write(cli.help())
+    else:
+        say_hello(stdout, given)
 
 def say_hello(stdout: Stdout, given: CliArgs):
     names = given.many() if given.many().len() > 0 else ["world"]

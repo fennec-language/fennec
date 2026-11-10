@@ -40,6 +40,12 @@ struct Maker:
     def twice(ref self, n: int) -> list[str] fails TooBig:
         [self.make(n)?, self.make(n + 1)?]
 
+## "ok" and what a call gave, or "err" and what it failed with.
+def shown[E](run: () -> str fails E) -> str:
+    found = run() else as why:
+        return f"err {why}"
+    f"ok {found}"
+
 def main(stdout: Stdout):
     stdout.print(word(1) else "none", word(9) else "none")
     stdout.print(words(2) else [], words(9) else ["failed"])
@@ -49,21 +55,9 @@ def main(stdout: Stdout):
     )
     stdout.print(wrapped(1) else "failed", wrapped(9) else "failed")
 
-    match word(1):
-        case Ok(found):
-            stdout.print("ok", found)
-        case Err(problem):
-            stdout.print("err", problem)
-    match word(5):
-        case Ok(found):
-            stdout.print("ok", found)
-        case Err(problem):
-            stdout.print("err", problem)
-    match wrapped(5):
-        case Ok(found):
-            stdout.print("ok", found)
-        case Err(problem):
-            stdout.print("err", problem)
+    stdout.print(shown(() => word(1)))
+    stdout.print(shown(() => word(5)))
+    stdout.print(shown(() => wrapped(5)))
 
     result = words(1)
     stdout.print(result)

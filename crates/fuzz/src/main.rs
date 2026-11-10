@@ -5,6 +5,7 @@
 //! fennec-fuzz one <target> <file>
 //! fennec-fuzz show [llvm] <file>
 //! fennec-fuzz worker <target> <seed> <first input> <input to stop at> <progress file>
+//! fennec-fuzz input <target> <seed> <input> <file>
 //! ```
 //!
 //! Inputs run in a worker process, so a crash, a stack overflow or running out of memory can't
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["show", "programs", file] => show(Path::new(file), programs::written),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
+        ["input", name, seed, number, file] => input(name, (seed, number), Path::new(file)),
         ["run", rest @ ..] => run(rest),
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]"
             .to_owned()),
@@ -107,6 +109,16 @@ fn one(name: &str, file: &Path) -> Result<ExitCode, String> {
 fn show(file: &Path, written: fn(&[u8]) -> String) -> Result<ExitCode, String> {
     let input = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
     print!("{}", written(&input));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Writes input `number` of a run with `seed`, as it is before it's cut down, to look at it.
+fn input(name: &str, (seed, number): (&str, &str), file: &Path) -> Result<ExitCode, String> {
+    let target = target_named(name)?;
+    let parsed = |text: &str| text.parse::<u64>().map_err(|_| format!("`{text}` isn't a number"));
+    let corpus = target.corpus(&repository());
+    let bytes = mutate::input(&corpus, target.tokens, parsed(seed)?, parsed(number)?);
+    std::fs::write(file, bytes).map_err(|err| format!("{}: {err}", file.display()))?;
     Ok(ExitCode::SUCCESS)
 }
 

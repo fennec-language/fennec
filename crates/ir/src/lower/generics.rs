@@ -110,6 +110,11 @@ impl Context<'_> {
             Type::Dict(key, value) => Type::Dict(inner(key), inner(value)),
             Type::Result(ok, error) => Type::Result(inner(ok), inner(error)),
             Type::Tuple(items) => Type::Tuple(items.iter().map(|item| self.concrete(item, subst)).collect()),
+            // A generic type among a union's members, like `Secret[str]` in `str | Secret[str]`, is
+            // its copy, as anywhere else.
+            Type::Union(members) => {
+                Type::Union(members.iter().map(|member| self.concrete(member, subst)).collect())
+            }
             Type::Arrow(params, returns) => {
                 Type::Arrow(params.iter().map(|param| self.concrete(param, subst)).collect(), inner(returns))
             }

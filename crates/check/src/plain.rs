@@ -86,6 +86,27 @@ impl Walk<'_> {
         self.inside(expr);
     }
 
+    /// What `?` or `else` reads: a failure anywhere along a chain of steps, as in
+    /// `find(1).name else "?"`, stops it there.
+    fn chain(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Attr { object, .. } => self.chain(object),
+            ExprKind::Index { object, index } => {
+                self.chain(object);
+                self.expr(index);
+            }
+            ExprKind::Call { callee, args } if matches!(callee.kind, ExprKind::Attr { .. }) => {
+                if let ExprKind::Attr { object, .. } = &callee.kind {
+                    self.chain(object);
+                }
+                for arg in args {
+                    self.expr(&arg.value);
+                }
+            }
+            _ => self.read(expr),
+        }
+    }
+
     /// An expression whose value is used as it is. What's inside it that can fail is said first,
     /// as what's around it, like `keep(half(3))`, can fail only through it.
     fn expr(&mut self, expr: &Expr) {
@@ -100,13 +121,13 @@ impl Walk<'_> {
     fn inside(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Try { value, context } => {
-                self.read(value);
+                self.chain(value);
                 if let Some(context) = context {
                     self.expr(context);
                 }
             }
             ExprKind::Else { value, default } => {
-                self.read(value);
+                self.chain(value);
                 self.expr(default);
             }
             ExprKind::Call { callee, args } if is_expect(callee) => {
@@ -123,8 +144,10 @@ impl Walk<'_> {
                 self.lambdas -= 1;
             }
             ExprKind::Match { subject, arms } => {
-                // `assert value fails Pattern`, and what an `else` block is written as.
-                if expr.asserted_failure().is_some() || expr.else_block().is_some() {
+                // `assert value fails Pattern`, what an `else` block is written as, and the
+                // `match` lowering writes for a `?` or an `else`, whose cases are its own.
+                let lowered = arms.iter().any(|arm| crate::lend_lowering::written_in(arm.span));
+                if lowered || expr.asserted_failure().is_some() || expr.else_block().is_some() {
                     self.read(subject);
                 } else {
                     self.expr(subject);

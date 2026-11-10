@@ -46,13 +46,12 @@ test "the field's own name isn't read":
     )
 
 test "a skipped field in the text is a field it doesn't have":
-    found = json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}")
     assert (
-        failure(() => found)
+        failure(() => json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}"))
         == "`Account` doesn't save `cache`, which has `@skip`, but the text has it"
     )
 
 def main(stdout: Stdout):
     text = json.dumps(ash())
     stdout.print(text)
-    stdout.print(json.loads[Account](text))
+    stdout.print(json.loads[Account](text).expect("it reads back what it wrote"))

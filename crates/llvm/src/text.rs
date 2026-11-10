@@ -969,12 +969,35 @@ impl Emit<'_, '_, '_> {
         let (slot, mut text) = (self.slot(joined), self.temp());
         self.line(&format!("{text} = load ptr, ptr {slot}"));
         for part in parts {
-            // A string's header goes straight on, with no block made for it.
+            // A string's header goes straight on, with no block made for it, and so does a
+            // number's text, written as a header: its digits always fit in one.
             if let FormatPart::Value { value, spec: None } = part
                 && self.headers()
-                && self.operand_kind(value)? == Kind::Str
+                && matches!(self.operand_kind(value)?, Kind::Str | Kind::Int | Kind::Float)
             {
-                let (header, _) = self.operand(value)?;
+                let (held, kind) = self.operand(value)?;
+                let header = match kind {
+                    Kind::Int => {
+                        let (place, made) = (self.place_for_text(), self.temp());
+                        self.int_header_helper();
+                        self.line(&format!("call void @fen_int_header(ptr {place}, i64 {held})"));
+                        self.line(&format!("{made} = load {}, ptr {place}", crate::headers::HEADER));
+                        made
+                    }
+                    Kind::Float => {
+                        let header = crate::headers::HEADER;
+                        self.declare(&format!(
+                            "declare void @fennec_float_header(ptr sret({header}) align 8, double) nounwind"
+                        ));
+                        let (place, made) = (self.place_for_text(), self.temp());
+                        self.line(&format!(
+                            "call void @fennec_float_header(ptr sret({header}) align 8 {place}, double {held})"
+                        ));
+                        self.line(&format!("{made} = load {header}, ptr {place}"));
+                        made
+                    }
+                    _ => held,
+                };
                 text = self.append_piece(&text, &header);
                 continue;
             }

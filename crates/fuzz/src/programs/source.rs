@@ -238,6 +238,20 @@ def direct3(store: Three, text: str) -> str:
             return f\"{session.log} {count}\"
     \"\"
 
+struct Spot:
+    label: str
+    x: int
+
+enum Change:
+    Move(at: int, by: int)
+    Rename(at: int, label: str)
+
+def plan(x: int, world: list[Spot]) -> Change:
+    at = x % world.len()
+    if x % 2 == 0:
+        return .Move(at=at, by=x)
+    .Rename(at=at, label=f\"<{x}>\")
+
 def regrown(seed: int) -> int:
     mut holder = Holder(items=[seed, seed + 1], tag=seed)
     holder.items.append(holder.tag)
@@ -571,6 +585,31 @@ impl Writer {
                     .unwrap_or_default();
                 let text = self.expr(text, false);
                 self.line(indent, &format!("stdout.print({how}{members}({made}, {text}))"));
+            }
+            Stmt::PlanApply(world, spots, xs, changes) => {
+                let spots: Vec<String> = spots
+                    .iter()
+                    .map(|(label, x)| format!("Spot(label=\"{label}\", x={})", self.expr(x, false)))
+                    .collect();
+                self.line(indent, &format!("mut {world} = [{}]", spots.join(", ")));
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                let xs = self.expr(xs, false);
+                self.line(
+                    indent,
+                    &format!("{changes} = [plan({item}, {world}) for {item} in parallel({xs})]"),
+                );
+                // Not `change`, the name of a function every program has: a loop name the same as a
+                // function's fails once trimmed, a bug of its own (2026-11-10).
+                self.line(indent, &format!("for planned in {changes}:"));
+                self.line(indent + 1, "match planned:");
+                self.line(indent + 2, "case .Move(at, by):");
+                self.line(indent + 3, &format!("ref spot = {world}[at]"));
+                self.line(indent + 3, "spot.x += by");
+                self.line(indent + 2, "case .Rename(at, label):");
+                self.line(indent + 3, &format!("ref spot = {world}[at]"));
+                self.line(indent + 3, "spot.label += label");
+                self.line(indent, &format!("stdout.print({world}, {changes}.len())"));
             }
             Stmt::GrownBy(holder, own) => {
                 self.line(indent, &format!("if {holder}.items.len() < 64:"));

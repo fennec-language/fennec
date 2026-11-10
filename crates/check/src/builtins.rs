@@ -295,6 +295,9 @@ fn test_only(ty: &Type, name: &str) -> Option<&'static str> {
         }
         ("Env", "set") => "only a test's own body can set what the fake `Env` it received holds",
         ("Signals", "stop") => "only a test's own body can stop the fake `Signals` it received",
+        ("Stderr", "captured") => {
+            "only a test's own body can read what it wrote, from the `Stderr` it received"
+        }
         _ => return None,
     })
 }

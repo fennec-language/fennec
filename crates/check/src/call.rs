@@ -282,6 +282,12 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
+        if !chosen.is_empty() {
+            let types = chosen.iter().map(|chosen| chosen.ty.clone()).collect();
+            let call =
+                crate::generic_copies::Call { caller: self.key.clone(), callee: key.to_owned(), types };
+            self.checker.generic_calls.insert((span.start, span.end), call);
+        }
         if let Some(what) = crate::waits::intrinsic_waits(key) {
             self.note_wait(what, span);
         }
@@ -700,6 +706,13 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let signature = self.interface_method_with(&def, &owner, types, span);
+        let gives = match &signature.returns {
+            Type::Result(value, _) => value.as_ref(),
+            other => other,
+        };
+        if crate::lend::lent(gives).is_some() {
+            self.checker.generic_sources.insert(self.key.clone());
+        }
         if signature.params.first().is_some_and(|param| param.is_mut) {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);

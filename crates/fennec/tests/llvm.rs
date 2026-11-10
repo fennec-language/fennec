@@ -5327,6 +5327,71 @@ def used(fine: bool, stdout: Stdout) fails Second:
     Ok(())
 }
 
+/// A generic function calling a `with` source its interface gives, `db.transaction()` for
+/// `D: Database`, runs the source of the type it's called with: a copy of it is made for each
+/// type, once each, through another generic function, with the type written in brackets, and for
+/// a parameter typed by the interface itself.
+#[test]
+fn an_interface_source_in_a_generic_runs_each_types_own_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "interface_source",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+interface Database:
+    def run(self, text: str) -> int fails Nope
+    def transaction(self) -> with Transaction fails Nope
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+def saved[D: Database](db: D) -> str fails Nope:
+    with db.transaction()? as tx:
+        count = db.run("abc")?
+        return f"{tx.log} {count}"
+    ""
+
+def twice[D: Database](db: D) -> str fails Nope:
+    first = saved(db)?
+    f"{first}/{saved(db)?}"
+
+def plain(db: Database) -> int fails Nope:
+    with db.transaction()? as tx:
+        return tx.log.len()
+    0
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Lite(name="c"))?)
+    stdout.print(twice(Postgres(host="d"))?, saved[Lite](Lite(name="e"))?)
+    stdout.print(plain(Lite(name="f"))?, plain(Postgres(host="g"))?)
+"#,
+        "lite 3 pg 6 lite 3\npg 6/pg 6 lite 3\n4 2\n",
+    )
+}
+
 /// A function whose last line is a `with` whose block always returns gives back a value on every
 /// way, once the source is written in: alone, in each branch of an `if`, and in each case of
 /// a `match`.

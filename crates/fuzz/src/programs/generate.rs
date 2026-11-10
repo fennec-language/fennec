@@ -13,7 +13,9 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt, TYPES, Ty};
+use super::ast::{
+    Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Size, Stmt, TYPES, Ty,
+};
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;
@@ -532,9 +534,10 @@ impl Writer<'_> {
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
         self.written += 1;
         self.tree_names = 1;
-        let which = self.choice(32);
+        let which = self.choice(34);
         match which {
             30 | 31 => self.trees(body),
+            32 | 33 => self.local_refs(body),
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
@@ -725,7 +728,15 @@ impl Writer<'_> {
     /// `for item in list:`, with the list held so the body can't change it.
     fn each(&mut self, body: &mut Vec<Stmt>, depth: usize) {
         let list = self.of(Ty::Ints, 1);
-        let looped = if let Expr::Name(looped) = &list { Some(looped.clone()) } else { None };
+        // A loop over a name's list, or over a holder's, holds that name, which can't change under it.
+        let looped = match &list {
+            Expr::Name(looped) => Some(looped.clone()),
+            Expr::HeldItems(holder) => match holder.as_ref() {
+                Expr::Name(looped) => Some(looped.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
         let held: Vec<usize> = self
             .names
             .iter()
@@ -832,10 +843,12 @@ impl Writer<'_> {
             };
             let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
             let at = PLACES.get(self.choice(PLACES.len())).copied().unwrap_or(0);
-            let op = match self.choice(8) {
+            let op = match self.choice(9) {
+                // Only `+=` through the `ref`: reading one under a lock doesn't build yet.
+                8 if !safe => Op::RefItem(at, value),
                 6 => Op::AddTwice(value),
                 7 => Op::GrowItems(value),
-                0 | 1 => Op::Append(value),
+                0 | 1 | 8 => Op::Append(value),
                 2 => Op::Pop,
                 3 if safe => Op::SetCount(key, value, false),
                 3 => Op::SetItem(at, value, self.choice(2) == 0),
@@ -1098,6 +1111,93 @@ impl Writer<'_> {
                 self.read_back(body, &kept);
             }
         }
+    }
+
+    /// One local `ref` or two in a row into the same container, the second taken after the
+    /// first's last use, each changing its place and reading the container while it lives; then
+    /// now and then a change to the container itself.
+    fn local_refs(&mut self, body: &mut Vec<Stmt>) {
+        const KINDS: [Ty; 5] = [Ty::Ints, Ty::Point, Ty::Holder, Ty::Holder, Ty::Nodes];
+        let ty = KINDS.get(self.choice(KINDS.len())).copied().unwrap_or(Ty::Ints);
+        let Some(container) = self.name_of(ty, true) else { return self.print(body) };
+        for _ in 0..=self.choice(2) {
+            self.local_ref(body, &container, ty);
+        }
+        if ty == Ty::Ints && self.choice(2) == 0 {
+            let value = self.int(1);
+            body.push(Stmt::Append(container.clone(), value));
+        }
+        self.read_back(body, &container);
+    }
+
+    /// `ref name = place` into `container`, and what uses it.
+    fn local_ref(&mut self, body: &mut Vec<Stmt>, container: &str, ty: Ty) {
+        let name = self.fresh();
+        let held = Expr::Name(container.to_owned());
+        let (place, named, length) = match ty {
+            Ty::Point => (RefPlace::Field(container.to_owned(), self.choice(2) == 0), Ty::Int, None),
+            Ty::Holder => match self.choice(3) {
+                0 => (RefPlace::Tag(container.to_owned()), Ty::Int, None),
+                1 => (RefPlace::HeldList(container.to_owned()), Ty::Ints, None),
+                _ => {
+                    let length = Expr::Len(Box::new(Expr::HeldItems(Box::new(held))));
+                    (RefPlace::HeldItem(container.to_owned(), self.int(2)), Ty::Int, Some(length))
+                }
+            },
+            Ty::Nodes => {
+                let length = Expr::Len(Box::new(held));
+                (RefPlace::NodeItem(container.to_owned(), self.int(2)), Ty::Node, Some(length))
+            }
+            _ => {
+                (RefPlace::Item(container.to_owned(), self.int(2)), Ty::Int, Some(Expr::Len(Box::new(held))))
+            }
+        };
+        let mut uses = Vec::new();
+        for _ in 0..self.choice(3) {
+            let read = Expr::Name(name.clone());
+            uses.push(match (named, self.choice(3)) {
+                (Ty::Int, 0) => {
+                    let by = self.int(1);
+                    Stmt::Print(vec![(Expr::Bump(name.clone(), Box::new(self.bounded(by))), Ty::Int)])
+                }
+                (Ty::Int, _) => {
+                    let value = self.int(1);
+                    let value = self.bounded(value);
+                    Stmt::Assign { place: Place::Name(name.clone()), value, add: self.choice(2) == 0 }
+                }
+                (Ty::Ints, 0) => Stmt::Pop(name.clone()),
+                (Ty::Ints, _) => Stmt::Append(name.clone(), self.int(1)),
+                (_, _) => {
+                    let text = self.of(Ty::Str, 2);
+                    self.tree_names = 0;
+                    let child = self.stored(Ty::Node, 1);
+                    Stmt::Reshape(name.clone(), text, child)
+                }
+            });
+            // Read while the `ref` lives: it and the container it points into, which sees the change.
+            if self.choice(2) == 0 {
+                uses.push(Stmt::Print(vec![
+                    (printable(read, named, self.digest_only), named),
+                    (printable(Expr::Name(container.to_owned()), ty, self.digest_only), ty),
+                ]));
+            }
+        }
+        let read = printable(Expr::Name(name.clone()), named, self.digest_only);
+        uses.push(Stmt::Print(vec![(read, named)]));
+        let Some(length) = length.filter(|_| !self.risky) else {
+            body.push(Stmt::LocalRef(name, place, uses));
+            return;
+        };
+        // Kept inside the list unless the program is risky, where a place outside it fails.
+        let inside = |at: Expr| Expr::Arith(Arith::Rem, Box::new(at), Box::new(length.clone()));
+        let place = match place {
+            RefPlace::Item(list, at) => RefPlace::Item(list, inside(at)),
+            RefPlace::HeldItem(holder, at) => RefPlace::HeldItem(holder, inside(at)),
+            RefPlace::NodeItem(nodes, at) => RefPlace::NodeItem(nodes, inside(at)),
+            place => place,
+        };
+        let any = Expr::Compare(Compare::Greater, Box::new(length.clone()), Box::new(Expr::Int(0)));
+        body.push(Stmt::If(any, vec![Stmt::LocalRef(name, place, uses)], Vec::new()));
     }
 
     /// `match node:` changing it through `ref`, with a child that holds no other tree's name.

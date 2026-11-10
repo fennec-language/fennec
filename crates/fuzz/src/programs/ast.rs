@@ -265,6 +265,27 @@ pub(crate) enum Op {
     AddTwice(Amount),
     /// `grow_all(ref held.items, amount)`, through a `ref` parameter.
     GrowItems(Amount),
+    /// `ref slot = held.items[at]` then `slot += amount`: a place outside the list crashes at the
+    /// `ref`.
+    RefItem(i64, Amount),
+}
+
+/// What a local `ref` names: a field or an item of something held in a `mut` name, its index
+/// worked out once, at the `ref`.
+#[derive(Clone, Debug)]
+pub(crate) enum RefPlace {
+    /// `list[at]`.
+    Item(String, Expr),
+    /// `point.x` or `point.y`.
+    Field(String, bool),
+    /// `holder.items[at]`.
+    HeldItem(String, Expr),
+    /// `holder.items`, the whole list.
+    HeldList(String),
+    /// `holder.tag`.
+    Tag(String),
+    /// `nodes[at]`, a tree.
+    NodeItem(String, Expr),
 }
 
 /// A change to a `Buffer[int]`. Each fails where a list's would, and `pop` on an empty one.
@@ -408,6 +429,8 @@ pub(crate) enum Stmt {
     /// and its children by `child`, a tagged node's tags and inner nodes likewise, a leaf's name
     /// grows and a number counts up.
     Reshape(String, Expr, Expr),
+    /// `ref name = place`, then the statements that use it, the last of them its last use.
+    LocalRef(String, RefPlace, Vec<Stmt>),
     /// `holder.items.append(value)`.
     HolderAppend(String, Expr),
     /// `holder.tag += value`.

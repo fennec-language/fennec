@@ -1,0 +1,23 @@
+## A lock taken in a loop, as a server's handlers take theirs: a shared counter bumped, then a
+## shared dict's entry updated, each under `lock ... as ref`, which keeps what it changes ready to
+## put back on a crash. So what a lock costs, its own and its log's, is tracked like any speed.
+
+struct Hits:
+    count = 0
+
+struct Table:
+    counts = dict[int, int]()
+
+def main(stdout: Stdout):
+    shared hits = Hits()
+    shared table = Table()
+    for i in range(1_000_000):
+        lock hits as ref held:
+            held.count += 1
+        key = i * 7919 % 64
+        lock table as ref held:
+            held.counts[key] = (held.counts.get(key) else 0) + 1
+    lock hits as held:
+        stdout.print(held.count)
+    lock table as held:
+        stdout.print(held.counts.len(), held.counts[0], held.counts[63])

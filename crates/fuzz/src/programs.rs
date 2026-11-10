@@ -16,7 +16,7 @@ mod source;
 /// Whether `Named` is made of native blocks in a program with no other threads, which it is once
 /// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
 /// `FENNEC_FUZZ_NAMED_NATIVE` turns the check on before then, to run against a branch that has them.
-const NAMED_GOES_NATIVE: bool = false;
+const NAMED_GOES_NATIVE: bool = true;
 
 fn named_goes_native() -> bool {
     NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
@@ -96,6 +96,19 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
             return Err(with_program(format!("the {how} build touched memory it doesn't own: {said}")));
         }
     }
+    // A program that runs `parallel` does the same on one thread as on several.
+    if source.contains("parallel(") {
+        for threads in [1, 4, 8] {
+            let ran = crate::llvm::ran_again_on("programs", threads).map_err(with_program)?;
+            if ran != release {
+                return Err(with_program(format!(
+                    "the --release build does something else on {threads} threads:\n--- on {threads}\n{}\n--- as it ran first\n{}",
+                    shown(&ran),
+                    shown(&release)
+                )));
+            }
+        }
+    }
     if dev != release {
         return Err(with_program(format!(
             "the dev build and the --release build disagree:\n--- dev\n{}\n--- release\n{}",
@@ -172,11 +185,13 @@ mod tests {
     #[test]
     fn it_writes_local_refs_of_every_kind() {
         let mut found = [0_usize; 6];
-        for seed in 0_u8..=255 {
-            let bytes: Vec<u8> = (0_u8..160)
+        // Two lengths of input, since some kinds are rare.
+        for (seed, length) in (0_u8..=255).flat_map(|seed| [(seed, 160_u8), (seed, 96)]) {
+            let bytes: Vec<u8> = (0_u8..length)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
             let refs: Vec<&str> =
                 source.lines().map(str::trim).filter(|line| line.starts_with("ref ")).collect();
             let field = |names: &[&str]| {
@@ -188,7 +203,7 @@ mod tests {
                 field(&["x", "y"]),
                 refs.iter().any(|line| line.contains(".items[") && !line.starts_with("ref slot")),
                 refs.iter().any(|line| line.starts_with("ref slot")),
-                source.contains("bump(ref v"),
+                body.contains("bump(ref v"),
             ];
             for (count, kind) in found.iter_mut().zip(kinds) {
                 *count += usize::from(kind);
@@ -215,6 +230,59 @@ mod tests {
             }
         }
         assert!(threadless >= 32 && named >= 3, "{threadless} with no threads, {named} making Named");
+    }
+
+    /// A holder is passed a list read from its own field by a `ref self` method, in `main` and on
+    /// `parallel`'s threads, and a copy of a container of containers is changed deep inside: the
+    /// shapes of use-after-frees native code once had.
+    #[test]
+    fn it_passes_a_holder_its_own_list() {
+        let (mut plain, mut threaded, mut nested) = (0, 0, 0);
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            plain += usize::from(body.contains(".grown_by(v"));
+            nested += usize::from(body.contains("[\"a\"][0].tags.append("));
+            threaded += usize::from(body.contains("sum(regrown("));
+        }
+        assert!(plain >= 3 && threaded >= 3, "{plain} in main, {threaded} in parallel");
+        // And a copy of a container of containers is changed deep inside.
+        assert!(nested >= 1, "{nested} dicts of lists of units copied and changed");
+    }
+
+    /// A union's members are called on through the union in every way, two and three of them.
+    #[test]
+    fn it_calls_on_unions_every_way() {
+        let mut found = [0_usize; 6];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            let calls = ["matched2(", "matched3(", "checked2(", "checked3(", "direct2(", "direct3("];
+            for (count, call) in found.iter_mut().zip(calls) {
+                *count += usize::from(body.contains(call));
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 2), "{found:?}");
+    }
+
+    /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.
+    #[test]
+    fn it_plans_on_threads_then_applies() {
+        let mut found = 0;
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            found += usize::from(source.contains("for planned in v"));
+        }
+        assert!(found >= 3, "{found} programs plan and apply");
     }
 
     #[test]

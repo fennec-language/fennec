@@ -12,7 +12,9 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Size, Stmt};
+use super::ast::{
+    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Size, Stmt,
+};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -807,6 +809,79 @@ impl Machine {
             Stmt::Reshape(name, text, child) => self.reshape(name, text, child)?,
             Stmt::Rename(name, text, left) => self.rename(name, text, left)?,
             Stmt::LocalRef(name, place, body) => self.local_ref(name, place, body)?,
+            Stmt::CopiedNested(shape, _, _, value) => {
+                let value = int(&self.expr(value)?)?;
+                // What `given` holds, which the change to the copy mustn't reach, and the copy.
+                let (given, copy) = match shape {
+                    Nested::DictOfUnits => {
+                        let rest = "\"b\": Unit(tags=[], hp=2)}";
+                        (
+                            format!("{{\"a\": Unit(tags=[1], hp=1), {rest}"),
+                            format!("{{\"a\": Unit(tags=[1, {value}], hp=1), {rest}"),
+                        )
+                    }
+                    Nested::ArmyOfUnits => (
+                        "Army(units={\"a\": Unit(tags=[1], hp=1)})".to_owned(),
+                        format!("Army(units={{\"a\": Unit(tags=[1, {value}], hp=1)}})"),
+                    ),
+                    Nested::DictOfDicts => (
+                        "{\"a\": {\"x\": 1}, \"b\": {}}".to_owned(),
+                        format!("{{\"a\": {{\"x\": {}}}, \"b\": {{}}}}", checked(value.checked_add(1))?),
+                    ),
+                    Nested::ListOfDicts => (
+                        "[{\"x\": 1}, {\"y\": 2}]".to_owned(),
+                        format!("[{{\"x\": {}}}, {{\"y\": 2}}]", checked(value.checked_add(1))?),
+                    ),
+                    Nested::DictOfUnitLists => (
+                        "{\"a\": [Unit(tags=[1], hp=1)]}".to_owned(),
+                        format!("{{\"a\": [Unit(tags=[1, {value}], hp=1)]}}"),
+                    ),
+                };
+                let _ = writeln!(self.out, "{given} {copy}");
+            }
+            Stmt::UnionCall(_, _, member, text) => {
+                let text = self.text_of(text)?;
+                let log = ["lite", "pg", "mem"].get(*member).ok_or(Stop::Unsure)?;
+                let length = i64::try_from(text.chars().count()).map_err(|_| Stop::Unsure)?;
+                let times = i64::try_from(*member + 1).map_err(|_| Stop::Unsure)?;
+                let _ = writeln!(self.out, "{log} {}", checked(length.checked_mul(times))?);
+            }
+            Stmt::PlanApply(_, spots, xs, _) => {
+                let mut world = Vec::with_capacity(spots.len());
+                for (label, x) in spots {
+                    world.push(((*label).to_owned(), int(&self.expr(x)?)?));
+                }
+                let Value::Ints(items) = self.expr(xs)? else { return Err(Stop::Unsure) };
+                let len = i64::try_from(world.len()).map_err(|_| Stop::Unsure)?;
+                // Each change is planned from the world before any is applied.
+                let mut changes = Vec::with_capacity(items.len());
+                for x in &items {
+                    let at = usize::try_from(floor_rem(*x, len)?).map_err(|_| Stop::Unsure)?;
+                    changes.push((at, *x, floor_rem(*x, 2)? == 0));
+                }
+                for (at, x, moved) in changes {
+                    let spot = world.get_mut(at).ok_or(Stop::Unsure)?;
+                    if moved {
+                        spot.1 = checked(spot.1.checked_add(x))?;
+                    } else {
+                        let _ = write!(spot.0, "<{x}>");
+                    }
+                }
+                let shown: Vec<String> =
+                    world.iter().map(|(label, x)| format!("Spot(label=\"{label}\", x={x})")).collect();
+                let _ = writeln!(self.out, "[{}] {}", shown.join(", "), items.len());
+            }
+            Stmt::GrownBy(holder, _) => {
+                if let Value::Holder(items, tag) = self.slot(holder)?
+                    && items.len() < 64
+                {
+                    items.push(*tag);
+                    let own = items.clone();
+                    items.extend_from_slice(&own);
+                    let shown_holder = shown(self.get(holder)?);
+                    let _ = writeln!(self.out, "{shown_holder} {}", shown(&Value::Ints(own)));
+                }
+            }
             Stmt::Pop(name) => {
                 if let Value::Ints(items) = self.slot(name)? {
                     items.pop();
@@ -1316,6 +1391,20 @@ impl Machine {
                     values.push(int(&self.expr(item)?)?);
                 }
                 Value::Ints(values)
+            }
+            Expr::Regrown(list) => {
+                let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+                let mut terms = Vec::with_capacity(items.len());
+                for seed in items {
+                    let next = checked(seed.checked_add(1))?;
+                    let grown = [seed, next, seed, seed, next, seed];
+                    let mut total: i64 = 0;
+                    for item in grown {
+                        total = checked(total.checked_add(item))?;
+                    }
+                    terms.push(checked(total.checked_add(3))?);
+                }
+                Value::Int(sum_of(&terms)?)
             }
             Expr::ParallelSum(list, by) => {
                 let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };

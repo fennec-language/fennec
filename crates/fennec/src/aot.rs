@@ -184,7 +184,7 @@ pub(crate) fn tracing_executable(
 ) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
-    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false)?;
+    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false, None)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),
@@ -262,8 +262,19 @@ pub(crate) fn executable(
     output: &Path,
     release: bool,
 ) -> Result<Built, String> {
+    executable_checked(program, output, release, None)
+}
+
+/// Like `executable`, for a program whose module was checked already, cut down to what `main`
+/// reaches: `checked` is what that check found, as checking it to emit would, when it's known.
+pub(crate) fn executable_checked(
+    program: &fennec_kit::Program,
+    output: &Path,
+    release: bool,
+    checked: Option<fennec_check::Signatures>,
+) -> Result<Built, String> {
     let started = Instant::now();
-    let built = llvm_objects(program, release)?;
+    let built = llvm_objects(program, release, checked)?;
     let compiled = started.elapsed();
     // A release built with the runtime's bitcode has its Rust inside already.
     let runtime_in = release && runtime_bitcode(built.runtime, built.statically).is_some();
@@ -415,7 +426,7 @@ struct Emitted {
 
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
 fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
-    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for }, traced)
+    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for }, traced, None)
 }
 
 /// What LLVM emits for a program: each function's text, and what they share.
@@ -427,6 +438,7 @@ fn emitted_with(
     reached: &fennec_syntax::Module,
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
     tests: bool,
+    checked: Option<fennec_check::Signatures>,
 ) -> Result<Emitted, String> {
     // Reading and writing JSON and TOML go through std's code in Fennec, where LLVM can take it.
     let mut routed = reached.clone();
@@ -434,11 +446,11 @@ fn emitted_with(
     let sorts = fennec_check::route_sorts_natively(&mut routed);
     let formats = fennec_check::route_formats_natively(&mut routed);
     if (formats || sorts)
-        && let Ok(emitted) = emitted_as_written(&routed, emit, tests)
+        && let Ok(emitted) = emitted_as_written(&routed, emit, tests, None)
     {
         return Ok(emitted);
     }
-    emitted_as_written(reached, emit, tests)
+    emitted_as_written(reached, emit, tests, checked)
 }
 
 /// What LLVM emits for a trimmed program, with its calls as they are.
@@ -446,9 +458,24 @@ fn emitted_as_written(
     reached: &fennec_syntax::Module,
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
     tests: bool,
+    checked: Option<fennec_check::Signatures>,
 ) -> Result<Emitted, String> {
-    let checked = fennec_check::check_to_emit(reached)
-        .map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?;
+    let checked = match checked {
+        // What the run's check found, which checking it again here would find: a dev build of
+        // `fennec` checks it again anyway, to say so if it ever isn't.
+        Some(checked) => {
+            if cfg!(debug_assertions) {
+                let again = fennec_check::check_to_emit(reached).ok();
+                assert!(
+                    again.as_ref() == Some(&checked),
+                    "a run's check found other signatures than a build's"
+                );
+            }
+            checked
+        }
+        None => fennec_check::check_to_emit(reached)
+            .map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?,
+    };
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
     let mut lowered = fennec_ir::lower_with(
         reached,
@@ -490,13 +517,19 @@ fn emitted_as_written(
 }
 
 /// Lowers what the program reaches and compiles it.
-fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
+fn llvm_objects(
+    program: &fennec_kit::Program,
+    release: bool,
+    checked: Option<fennec_check::Signatures>,
+) -> Result<Compiled, String> {
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
-    let emitted = emitted(&reached, false)?;
+    // What was checked is only this module if cutting it down left it as it was.
+    let checked = checked.filter(|_| reached == program.module);
+    let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),

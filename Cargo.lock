@@ -148,6 +148,7 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 name = "fennec"
 version = "0.0.1"
 dependencies = [
+ "ctrlc",
  "fennec-blake3",
  "fennec-build",
  "fennec-check",

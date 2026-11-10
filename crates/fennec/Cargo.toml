@@ -31,6 +31,10 @@ fennec-reference.workspace = true
 fennec-lsp.workspace = true
 fennec-syntax.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Lets Ctrl-C go by while `fennec run`'s program stops, as the program sees it too.
+ctrlc.workspace = true
+
 [lints]
 workspace = true
 

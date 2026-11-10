@@ -127,6 +127,9 @@ jobs:
             if [ "$RUNNER_OS" = macOS ]; then
               flags="$flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
               echo "ZERO_AR_DATE=1" >> "$GITHUB_ENV"
+              # The runtime's C parts are built for the macOS a program is built for, as LLVM's
+              # code is, rather than for the runner's SDK.
+              echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
             fi
             echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
             echo "CFLAGS_${TARGET//-/_}=-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$PWD=/fennec" >> "$GITHUB_ENV"
@@ -202,7 +205,13 @@ jobs:
             cp "$from/fennec" "$name/"
             tools="$TOOLCHAIN/lib/rustlib/$TARGET"
             mkdir -p "$name/llvm/bin" "$name/llvm/lib"
-            cp "$tools"/bin/{opt,llc,llvm-link} "$name/llvm/bin/"
+            # LLVM's `ar` takes the runtime's Rust out of its library, so building needs no `ar` from
+            # the machine. On Linux LLD links a program too, so it needs no C compiler or linker
+            # either; a Mac links through Xcode's command line tools.
+            cp "$tools"/bin/{opt,llc,llvm-link,llvm-ar} "$name/llvm/bin/"
+            if [ "$RUNNER_OS" = Linux ]; then
+              cp "$tools/bin/rust-lld" "$name/llvm/bin/"
+            fi
             # The tools share LLVM from a library of their own, which they find in `../lib`.
             cp "$TOOLCHAIN"/lib/libLLVM* "$name/llvm/lib/"
           fi

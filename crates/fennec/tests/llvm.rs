@@ -15009,6 +15009,69 @@ fn float_keys_hash_as_decided() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A struct, enum or union holding a float is a key, and hashes as `==` has it: `-0.0` is `0.0`
+/// and every NaN is one key, in a `float` field or an `f32` one, at run time and in a constant
+/// worked out while compiling. An enum with an `f32` field compared by its bits, so
+/// `.At(value=f32(0.0)) == .At(value=f32(-0.0))` was `False`, and a struct with one was two keys.
+#[test]
+fn keys_holding_floats_hash_as_they_compare_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_field_keys",
+        r#"struct Point:
+    x: float
+    y: float
+
+struct Small:
+    at: f32
+
+enum Reading32:
+    At(value: f32)
+    Gone
+
+enum Reading:
+    Level(value: float)
+    Off
+
+type Mark = Point | str
+
+def nan() -> float:
+    big = 1e308 * 10.0
+    big - big
+
+def counted() -> int:
+    other = -nan()
+    seen = {Point(x=0.0, y=1.0), Point(x=-0.0, y=1.0), Point(x=nan(), y=2.0), Point(x=other, y=2.0)}
+    seen.len()
+
+SEEN = counted()
+
+def main(stdout: Stdout):
+    missing = nan()
+    other = -missing
+    mut names = {Point(x=0.0, y=1.0): "zero"}
+    names[Point(x=-0.0, y=1.0)] = "negative zero"
+    names[Point(x=missing, y=2.0)] = "nan"
+    names[Point(x=other, y=2.0)] = "nan again"
+    stdout.print(names.len(), names[Point(x=0.0, y=1.0)], names[Point(x=missing, y=2.0)])
+    stdout.print(Point(x=-0.0, y=1.0) in names, Point(x=0.5, y=1.0) in names)
+    small = {Small(at=f32(0.0)), Small(at=f32(-0.0)), Small(at=f32(missing)), Small(at=f32(other))}
+    readings = {Reading.Level(value=-0.0): 1, Reading.Level(value=0.0): 2, Reading.Off: 3}
+    marks: set[Mark] = {Point(x=0.0, y=0.0), Point(x=-0.0, y=-0.0), "a"}
+    stdout.print(small.len(), readings.len(), readings[Reading.Level(value=0.0)], marks.len())
+    stdout.print(SEEN, counted())
+    zero = f32(0.0)
+    stdout.print(Reading32.At(value=zero) == .At(value=-zero), Small(at=zero) == Small(at=-zero))
+    stdout.print(Reading.Level(value=0.0) == .Level(value=-0.0), Reading32.At(value=f32(missing)) == .At(value=f32(other)))
+    sized = {Reading32.At(value=zero): 1, Reading32.At(value=-zero): 2, Reading32.At(value=f32(missing)): 3, Reading32.At(value=f32(other)): 4}
+    stdout.print(sized.len(), sized[Reading32.At(value=zero)], {f32(0.0), f32(-0.0), f32(missing), f32(other)}.len())
+"#,
+        "2 negative zero nan again\nTrue False\n2 2 2 2\n2 2\nTrue True\nTrue True\n2 2 2\n",
+    )
+}
+
 /// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
 #[test]
 fn operators_on_collections_match_the_jit() -> std::io::Result<()> {

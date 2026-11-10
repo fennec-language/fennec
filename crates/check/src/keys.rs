@@ -1,6 +1,6 @@
-//! What can be a dict key or set item. Keys compare by their bits and hash the same way, so a
-//! struct holding a float, which can be `-0.0` or NaN, or one with its own idea of equal, would
-//! find the wrong entry or none.
+//! What can be a dict key or set item. Keys compare and hash by Fennec's one equality, so a struct
+//! with its own idea of equal would find the wrong entry or none. A float field is fine: `-0.0` is
+//! `0.0` and NaN is NaN, for `==` and hashing alike.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -77,11 +77,7 @@ fn key_problem(cx: &mut FnCx<'_>, ty: &Type, open: &mut Vec<String>) -> Option<S
     let mut found = None;
     for (case, field) in fields.chain(in_cases) {
         let held = cx.checker.field_type(name, case, &field.name);
-        found = if held == Type::Float {
-            Some(format!("its field `{}` is a float", field.name))
-        } else {
-            key_problem(cx, &held, open)
-        };
+        found = key_problem(cx, &held, open);
         if found.is_some() {
             break;
         }

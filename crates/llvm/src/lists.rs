@@ -1080,7 +1080,8 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => self.float_compare(BinOp::Eq, (&x, &y)),
+                        // An `f32` is held as the `double` that's exactly its value.
+                        Kind::Float | Kind::F32 => self.float_compare(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
@@ -1127,7 +1128,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{less} = icmp ult i1 {x}, {y}"));
                             self.line(&format!("{more} = icmp ugt i1 {x}, {y}"));
                         }
-                        Kind::Float => {
+                        Kind::Float | Kind::F32 => {
                             let (is_less, is_more) = (
                                 self.float_compare(BinOp::Lt, (&x, &y)),
                                 self.float_compare(BinOp::Gt, (&x, &y)),
@@ -1206,7 +1207,7 @@ impl Emit<'_, '_, '_> {
         let Some(layout) = self.module.layouts.get(id) else { return false };
         let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
         fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
-            Some(Kind::Float) => true,
+            Some(Kind::Float | Kind::F32) => true,
             Some(Kind::Struct(inner) | Kind::Enum(inner)) => self.holds_a_float(inner),
             _ => false,
         })

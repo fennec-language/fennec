@@ -149,16 +149,7 @@ impl FnCx<'_> {
                 let name = key.rsplit('.').next().unwrap_or_default().to_owned();
                 self.call_function(&key, &name, args, span)
             }
-            Type::Arrow(params, returns) => {
-                self.note_value_call(callee, span);
-                let params: Vec<ParamType> =
-                    params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
-                // Through a function value, what's called can't be followed by its parameters.
-                self.calling.push(String::new());
-                self.bind_args("this function", &params, args, span);
-                self.calling.pop();
-                *returns
-            }
+            Type::Arrow(params, returns) => self.call_value(callee, (params, *returns), args, span),
             Type::Unknown => {
                 self.ignore_args(args);
                 Type::Unknown
@@ -168,6 +159,24 @@ impl FnCx<'_> {
                 self.unusable(Diagnostic::new(message, callee.span), args)
             }
         }
+    }
+
+    /// A call through a function value, as `work()` with `work: () -> nothing`.
+    fn call_value(
+        &mut self,
+        callee: &Expr,
+        (params, returns): (Vec<Type>, Type),
+        args: &[Arg],
+        span: Span,
+    ) -> Type {
+        self.note_value_call(callee, span);
+        let params: Vec<ParamType> =
+            params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
+        // Through a function value, what's called can't be followed by its parameters.
+        self.calling.push(String::new());
+        self.bind_args("this function", &params, args, span);
+        self.calling.pop();
+        returns
     }
 
     /// A call to a name that isn't a local: a function, a type or a builtin.

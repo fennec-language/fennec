@@ -572,6 +572,12 @@ fn a_function_value_called_inside_a_lock_is_followed_to_what_it_holds() {
             "`calls` calls the function it's given as `work`, so it's called only by name, where what it's given can be checked @ calls"
         ]
     );
+    assert_eq!(
+        found(
+            "    resting = () => nap(clock)\n    lock scores as held:\n        resting()\n        _ = held\n"
+        ),
+        ["`resting` is called while `held` is locked, and this waits on `Clock.sleep` @ resting()"]
+    );
     let each = "struct Scores:\n    total = 0\n\ndef each(scores: shared Scores, works: list[() -> nothing]):\n    \
         for work in works:\n        lock scores as held:\n            work()\n            _ = held\n";
     assert_eq!(

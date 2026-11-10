@@ -120,6 +120,9 @@ pub(crate) struct FnCx<'c> {
     /// The functions whose arguments are being matched, innermost last, for what's passed for a
     /// function parameter.
     pub(crate) calling: Vec<String>,
+    /// Each local name given an arrow function, by the arrow function's span: `None` once it's
+    /// given anything else too, when what it holds can't be known.
+    pub(crate) arrow_locals: std::collections::HashMap<String, Option<(u32, u32)>>,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// How many loops this is inside, which `break` and `continue` need.
@@ -175,6 +178,7 @@ impl<'c> FnCx<'c> {
             kept_generators: 0,
             arrows_open: Vec::new(),
             calling: Vec::new(),
+            arrow_locals: std::collections::HashMap::new(),
             value_functions: 0,
             loops: 0,
             arrows: 0,

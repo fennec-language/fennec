@@ -53,34 +53,13 @@ pub(crate) struct Values {
     calls: BTreeMap<(u32, u32), BTreeSet<Option<String>>>,
     /// What each arrow function locks itself, by span.
     pub(crate) locks: BTreeMap<(u32, u32), String>,
+    /// Each call inside a lock to an arrow function a local name holds: its span, the name, where
+    /// it's called and the lock held.
+    local_calls: Vec<((u32, u32), String, Span, String)>,
 }
 
-impl Values {
-    /// What an arrow function does of what `own` holds, itself or through what it calls:
-    /// `Some(None)` when it calls a function value that can't be known.
-    fn arrow_reaches(
-        &self,
-        at: (u32, u32),
-        own: &BTreeMap<(u32, u32), String>,
-        _found: &BTreeMap<String, String>,
-        reached: impl Fn(&str) -> Option<String>,
-    ) -> Option<Option<String>> {
-        if let Some(what) = own.get(&at) {
-            return Some(Some(what.clone()));
-        }
-        for callee in self.calls.get(&at).into_iter().flatten() {
-            match callee {
-                None => return Some(None),
-                Some(key) => {
-                    if let Some(what) = reached(key) {
-                        return Some(Some(what));
-                    }
-                }
-            }
-        }
-        None
-    }
-}
+/// A function's parameter, by the function's key and the parameter's name.
+type ParamKey = (String, String);
 
 /// A function value passed for a function parameter.
 struct Passed {
@@ -96,11 +75,42 @@ struct Passed {
 
 /// What a function value passed is.
 enum Given {
-    Arrow((u32, u32)),
+    /// An arrow function, by span, and whether it's written right there, where it was checked as
+    /// running under the lock held there.
+    Arrow((u32, u32), bool),
     Function(String),
     /// The caller's own parameter, by the caller's key and the parameter's name.
     Param(String, String),
     Unknown,
+}
+
+/// What a function value does, as a lock held while it's called sees it.
+enum Verdict {
+    Waits(String),
+    Locks(String),
+    /// It's a function value whose function can't be known, or calls one.
+    Unknown,
+    Fine,
+}
+
+impl Verdict {
+    /// The problem with calling what's at `span` inside a lock, said after `said`.
+    fn problem(self, said: &str, span: Span) -> Option<Diagnostic> {
+        Some(match self {
+            Verdict::Waits(what) => {
+                Diagnostic::new(format!("{said}this waits on {what}"), span).with_help(WAIT_FIRST)
+            }
+            Verdict::Locks(what) => {
+                Diagnostic::new(format!("{said}this takes {what}"), span).with_help(TOGETHER)
+            }
+            Verdict::Unknown => Diagnostic::new(
+                format!("{said}what this holds can't be known, so it can't be shown not to wait"),
+                span,
+            )
+            .with_help("pass an arrow function or a `def` by name, so what it does can be checked"),
+            Verdict::Fine => return None,
+        })
+    }
 }
 
 /// What a method of a capability waits on, if it waits.
@@ -146,6 +156,20 @@ impl FnCx<'_> {
             _ => None,
         };
         let held = self.lock.clone();
+        if let ExprKind::Name(name) = &callee.kind
+            && self.origin(name) == Some(Origin::Local)
+            && let Some(Some(arrow)) = self.arrow_locals.get(name).copied()
+        {
+            for open in &self.arrows_open {
+                self.checker.values.calls.entry(*open).or_default().insert(None);
+            }
+            if let Some(held) = held
+                && self.report
+            {
+                self.checker.values.local_calls.push((arrow, name.clone(), span, held));
+            }
+            return;
+        }
         match param {
             Some(name) if self.arrows_open.is_empty() => {
                 self.checker.values.called.push((self.key.clone(), name, held));
@@ -180,9 +204,15 @@ impl FnCx<'_> {
             return;
         }
         let given = match &value.kind {
-            ExprKind::Lambda { .. } => Given::Arrow((value.span.start, value.span.end)),
+            ExprKind::Lambda { .. } => Given::Arrow((value.span.start, value.span.end), true),
             ExprKind::Name(name) if self.origin(name) == Some(Origin::Param) => {
                 Given::Param(self.key.clone(), name.clone())
+            }
+            ExprKind::Name(name)
+                if self.origin(name) == Some(Origin::Local)
+                    && let Some(Some(arrow)) = self.arrow_locals.get(name).copied() =>
+            {
+                Given::Arrow(arrow, false)
             }
             ExprKind::Name(name) => match self.lookup(name) {
                 Some((Type::Function(key), _)) => Given::Function(key),
@@ -262,59 +292,12 @@ impl Checker {
     }
 
     /// Reports each function value passed for a parameter that's called inside a lock, there or
-    /// in what it's handed on to, when what's passed waits, locks, or can't be known.
+    /// in what it's handed on to, and each arrow function a local name holds called inside one,
+    /// when it waits, locks, or can't be known.
     fn values_under_locks(&mut self, waiting: &BTreeMap<String, String>, locking: &BTreeMap<String, String>) {
         let values = std::mem::take(&mut self.values);
-        // The parameters called at all, and those called inside a lock, with the lock: a
-        // parameter handed on to one is called as that one is.
-        let mut called: BTreeSet<(String, String)> =
-            values.called.iter().map(|(key, param, _)| (key.clone(), param.clone())).collect();
-        let mut locked: BTreeMap<(String, String), String> = values
-            .called
-            .iter()
-            .filter_map(|(key, param, held)| Some(((key.clone(), param.clone()), held.clone()?)))
-            .collect();
-        loop {
-            let mut grew = false;
-            for passed in &values.passed {
-                let Given::Param(key, param) = &passed.given else { continue };
-                let target = (passed.callee.clone(), passed.param.clone());
-                let mine = (key.clone(), param.clone());
-                if called.contains(&target) && called.insert(mine.clone()) {
-                    grew = true;
-                }
-                let held = locked
-                    .get(&target)
-                    .cloned()
-                    .or_else(|| passed.held.clone().filter(|_| called.contains(&target)));
-                if let Some(held) = held
-                    && !locked.contains_key(&mine)
-                {
-                    locked.insert(mine, held);
-                    grew = true;
-                }
-            }
-            if !grew {
-                break;
-            }
-        }
-        // A function that calls what it's given, called through a function value, would be given
-        // what can't be followed.
-        for passed in &values.passed {
-            if let Given::Function(key) = &passed.given
-                && called.contains(&(passed.callee.clone(), passed.param.clone()))
-                && let Some((_, param)) = called.iter().find(|(function, _)| function == key)
-            {
-                let name = key.rsplit('.').next().unwrap_or_default();
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        format!("`{name}` calls the function it's given as `{param}`, so it's called only by name, where what it's given can be checked"),
-                        passed.span,
-                    )
-                    .with_help(format!("pass an arrow function that calls it, like `() => {name}(...)`")),
-                );
-            }
-        }
+        let (called, locked) = params_called(&values);
+        self.handed_on_by_value(&values, &called);
         for passed in &values.passed {
             let target = (passed.callee.clone(), passed.param.clone());
             let held = locked
@@ -322,37 +305,83 @@ impl Checker {
                 .cloned()
                 .or_else(|| passed.held.clone().filter(|_| called.contains(&target)));
             let Some(held) = held else { continue };
+            // An arrow function written inside a lock was checked as running there.
+            if matches!(passed.given, Given::Arrow(_, true)) && passed.held.is_some() {
+                continue;
+            }
             let said = format!("`{}` calls `{}` {held}, and ", passed.name, passed.param);
-            let (waits, locks) = match &passed.given {
-                // An arrow function written inside a lock was checked as running there.
-                Given::Param(..) | Given::Arrow(_) if passed.held.is_some() => continue,
-                Given::Param(..) => continue,
-                Given::Function(key) => (self.reached(waiting, key).map(Some), self.reached(locking, key)),
-                Given::Arrow(at) => (
-                    values.arrow_reaches(*at, &values.waits, waiting, |key| self.reached(waiting, key)),
-                    values.locks.get(at).cloned().or_else(|| {
-                        values
-                            .arrow_reaches(*at, &values.locks, locking, |key| self.reached(locking, key))
-                            .flatten()
-                    }),
-                ),
-                Given::Unknown => (Some(None), None),
-            };
-            let problem = match (waits, locks) {
-                (Some(Some(what)), _) => {
-                    Diagnostic::new(format!("{said}this waits on {what}"), passed.span).with_help(WAIT_FIRST)
-                }
-                (Some(None), _) => Diagnostic::new(
-                    format!("{said}what this holds can't be known, so it can't be shown not to wait"),
+            if let Some(problem) =
+                self.verdict(&values, &passed.given, waiting, locking).problem(&said, passed.span)
+            {
+                self.diagnostics.push(problem);
+            }
+        }
+        for (arrow, name, span, held) in &values.local_calls {
+            let said = format!("`{name}` is called {held}, and ");
+            let verdict = self.verdict(&values, &Given::Arrow(*arrow, false), waiting, locking);
+            if let Some(problem) = verdict.problem(&said, *span) {
+                self.diagnostics.push(problem);
+            }
+        }
+    }
+
+    /// A function that calls what it's given, called through a function value, would be given
+    /// what can't be followed: it's called only by name.
+    fn handed_on_by_value(&mut self, values: &Values, called: &BTreeSet<ParamKey>) {
+        for passed in &values.passed {
+            let Given::Function(key) = &passed.given else { continue };
+            if !called.contains(&(passed.callee.clone(), passed.param.clone())) {
+                continue;
+            }
+            let Some((_, param)) = called.iter().find(|(function, _)| function == key) else { continue };
+            let name = key.rsplit('.').next().unwrap_or_default();
+            self.diagnostics.push(
+                Diagnostic::new(
+                    format!("`{name}` calls the function it's given as `{param}`, so it's called only by name, where what it's given can be checked"),
                     passed.span,
                 )
-                .with_help("pass an arrow function or a `def` by name, so what it does can be checked"),
-                (None, Some(what)) => {
-                    Diagnostic::new(format!("{said}this takes {what}"), passed.span).with_help(TOGETHER)
+                .with_help(format!("pass an arrow function that calls it, like `() => {name}(...)`")),
+            );
+        }
+    }
+
+    /// What a function value passed does, as a lock held while it's called sees it.
+    fn verdict(
+        &self,
+        values: &Values,
+        given: &Given,
+        waiting: &BTreeMap<String, String>,
+        locking: &BTreeMap<String, String>,
+    ) -> Verdict {
+        match given {
+            Given::Function(key) => match (self.reached(waiting, key), self.reached(locking, key)) {
+                (Some(what), _) => Verdict::Waits(what),
+                (None, Some(what)) => Verdict::Locks(what),
+                (None, None) => Verdict::Fine,
+            },
+            Given::Arrow(at, _) => {
+                if let Some(what) = values.waits.get(at) {
+                    return Verdict::Waits(what.clone());
                 }
-                (None, None) => continue,
-            };
-            self.diagnostics.push(problem);
+                let calls = values.calls.get(at);
+                for callee in calls.into_iter().flatten() {
+                    match callee {
+                        None => return Verdict::Unknown,
+                        Some(key) => {
+                            if let Some(what) = self.reached(waiting, key) {
+                                return Verdict::Waits(what);
+                            }
+                        }
+                    }
+                }
+                if let Some(what) = values.locks.get(at) {
+                    return Verdict::Locks(what.clone());
+                }
+                let locks = calls.into_iter().flatten().flatten().find_map(|key| self.reached(locking, key));
+                locks.map_or(Verdict::Fine, Verdict::Locks)
+            }
+            Given::Param(..) => Verdict::Fine,
+            Given::Unknown => Verdict::Unknown,
         }
     }
 
@@ -375,6 +404,42 @@ impl Checker {
                 let message = format!("`{}` takes {what} {}", call.name, call.held);
                 self.diagnostics.push(Diagnostic::new(message, call.span).with_help(TOGETHER));
             }
+        }
+    }
+}
+
+/// The function parameters called at all, and those called inside a lock, with the lock: a
+/// parameter handed on to one is called as that one is.
+fn params_called(values: &Values) -> (BTreeSet<ParamKey>, BTreeMap<ParamKey, String>) {
+    let mut called: BTreeSet<ParamKey> =
+        values.called.iter().map(|(key, param, _)| (key.clone(), param.clone())).collect();
+    let mut locked: BTreeMap<ParamKey, String> = values
+        .called
+        .iter()
+        .filter_map(|(key, param, held)| Some(((key.clone(), param.clone()), held.clone()?)))
+        .collect();
+    loop {
+        let mut grew = false;
+        for passed in &values.passed {
+            let Given::Param(key, param) = &passed.given else { continue };
+            let target = (passed.callee.clone(), passed.param.clone());
+            let mine = (key.clone(), param.clone());
+            if called.contains(&target) && called.insert(mine.clone()) {
+                grew = true;
+            }
+            let held = locked
+                .get(&target)
+                .cloned()
+                .or_else(|| passed.held.clone().filter(|_| called.contains(&target)));
+            if let Some(held) = held
+                && !locked.contains_key(&mine)
+            {
+                locked.insert(mine, held);
+                grew = true;
+            }
+        }
+        if !grew {
+            return (called, locked);
         }
     }
 }

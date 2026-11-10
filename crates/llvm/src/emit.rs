@@ -3278,6 +3278,21 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A case with no fields is one block made the first time and kept in a global: put there
+    /// with release and read with acquire, so another thread that sees it sees its count and tag.
+    #[test]
+    fn a_shared_case_is_published_with_release_and_read_with_acquire() -> Result<(), String> {
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig, tag: str)\n\ndef leaf() -> Twig:\n    .Leaf\n\ndef main(stdout: Stdout):\n    stdout.print(leaf() is Twig.Leaf)\n";
+        let text = text_of(source, "leaf")?;
+        assert!(
+            text.contains("load atomic ptr, ptr @\"fen_case_") && text.contains("acquire, align 8"),
+            "{text}"
+        );
+        assert!(text.contains("release, align 8"), "{text}");
+        assert!(!text.contains("unordered"), "{text}");
+        Ok(())
+    }
+
     #[test]
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";

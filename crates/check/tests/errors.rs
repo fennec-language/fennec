@@ -678,7 +678,8 @@ fn failure_of_is_only_for_tests() {
     let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n";
     let said = "`failure_of` is only for tests @ failure_of(() => half(-1)?)";
     let help = "outside a test, name a failure where it happens with `x = f() else as why:`; a test checks one with `assert f() fails Oops()`";
-    let in_main = format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)?))\n");
+    let in_main =
+        format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)?))\n");
     assert_eq!(problems(&in_main), [said]);
     assert_eq!(helps(&in_main), [help]);
     let helper = format!("{declared}\ndef problem() -> Bad?:\n    failure_of(() => half(-1)?)\n");

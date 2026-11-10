@@ -2413,6 +2413,11 @@ impl Emit<'_, '_, '_> {
 
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        // `x = x` changes nothing. Written as a copy, it would let go of what `x` held before
+        // taking it again, or hand it over and clear `x`.
+        if *value == Operand::Local(dest) {
+            return Ok(());
+        }
         // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
         if self.known.alias(dest).is_some()
             || self.known.enumerated.contains_key(&dest.0)
@@ -3270,6 +3275,21 @@ def main(stdout: Stdout):
         let text = text_of(source, "main")?;
         assert!(text.contains("call i1 @fen_add_plain("), "{text}");
         assert!(text.contains("call ptr @fennec_dict_set("), "{text}");
+        Ok(())
+    }
+
+    /// A case with no fields is one block made the first time and kept in a global: put there
+    /// with release and read with acquire, so another thread that sees it sees its count and tag.
+    #[test]
+    fn a_shared_case_is_published_with_release_and_read_with_acquire() -> Result<(), String> {
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig, tag: str)\n\ndef leaf() -> Twig:\n    .Leaf\n\ndef main(stdout: Stdout):\n    stdout.print(leaf() is Twig.Leaf)\n";
+        let text = text_of(source, "leaf")?;
+        assert!(
+            text.contains("load atomic ptr, ptr @\"fen_case_") && text.contains("acquire, align 8"),
+            "{text}"
+        );
+        assert!(text.contains("release, align 8"), "{text}");
+        assert!(!text.contains("unordered"), "{text}");
         Ok(())
     }
 

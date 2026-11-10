@@ -905,11 +905,26 @@ fn shape_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
 /// Whether a block is a struct's of plain fields, which a lock's log can mark and save word by word:
 /// no closure, generator or error, whose blocks hold more than their fields, and no enum.
 pub(super) fn is_plain_struct(state: &State, block: &[u64]) -> bool {
-    shape_word(block).is_some_and(|shape| shape < state.tables.str_shape)
-        && matches!(
-            shape_of(state, block).as_deref(),
-            Some(Element::Struct { fields, .. }) if !fields.iter().any(|(name, _)| name.starts_with('\0'))
-        )
+    let Some(shape) = shape_word(block).filter(|shape| *shape < state.tables.str_shape) else { return false };
+    let element = usize::try_from(shape).ok().and_then(|shape| state.tables.shapes.get(shape));
+    matches!(
+        element.map(AsRef::as_ref),
+        Some(Element::Struct { fields, .. }) if !fields.iter().any(|(name, _)| name.starts_with('\0'))
+    )
+}
+
+/// Where a struct's block holds others, as `child_places` finds them, from the plan its shape has.
+pub(super) fn struct_places(state: &State, block: &[u64], found: &mut impl Extend<usize>) {
+    let fields = block.get(HEADER_WORDS..).unwrap_or_default();
+    let plan = shape_word(block)
+        .and_then(|shape| usize::try_from(shape).ok())
+        .and_then(|at| state.heap.plans.get(at));
+    if plan.and_then(|plan| super::plans::places(plan, fields, HEADER_WORDS, found)).is_some() {
+        return;
+    }
+    let mut walked = Vec::new();
+    let _ = child_places(state, block, &mut walked);
+    found.extend(walked);
 }
 
 /// What a block of a struct, enum or tuple is laid out as.

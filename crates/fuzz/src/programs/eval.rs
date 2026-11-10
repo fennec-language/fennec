@@ -871,6 +871,13 @@ impl Machine {
                     world.iter().map(|(label, x)| format!("Spot(label=\"{label}\", x={x})")).collect();
                 let _ = writeln!(self.out, "[{}] {}", shown.join(", "), items.len());
             }
+            Stmt::Shadowed(_, by) => {
+                let by = int(&self.expr(by)?)?;
+                let change = checked(by.checked_mul(2))?;
+                let bumped = checked(change.checked_add(1))?;
+                let tally = checked(bumped.checked_sub(by))?;
+                let _ = writeln!(self.out, "{change} {bumped} {tally}");
+            }
             Stmt::GrownBy(holder, _) => {
                 if let Value::Holder(items, tag) = self.slot(holder)?
                     && items.len() < 64

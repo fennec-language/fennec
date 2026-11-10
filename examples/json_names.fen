@@ -1,4 +1,4 @@
-# `names=` spells field names the way another program expects them, and `extra=.ignore`
+# `names=` spells field names the way another program expects them, and `extra=.Ignore`
 # reads text that has keys no field has. Both apply at every level of the call.
 from std import json
 from std.json import JsonNames
@@ -27,48 +27,48 @@ test "names are spelled the way the text expects":
         == "{\"display_name\": \"Ash\", \"hit_points\": 12, \"main_weapon\": {\"damage_bonus\": 2, \"max_range\": 1.5}, \"_save_slot\": 0}"
     )
     assert (
-        json.dumps(ash(), names=.camel_case)
+        json.dumps(ash(), names=.CamelCase)
         == "{\"displayName\": \"Ash\", \"hitPoints\": 12, \"mainWeapon\": {\"damageBonus\": 2, \"maxRange\": 1.5}, \"_saveSlot\": 0}"
     )
     assert (
-        json.dumps(ash().main_weapon, names=.pascal_case)
+        json.dumps(ash().main_weapon, names=.PascalCase)
         == "{\"DamageBonus\": 2, \"MaxRange\": 1.5}"
     )
     assert (
-        json.dumps(ash().main_weapon, names=.kebab_case)
+        json.dumps(ash().main_weapon, names=.KebabCase)
         == "{\"damage-bonus\": 2, \"max-range\": 1.5}"
     )
 
 test "they read back with the same names":
     for names in [
-        JsonNames.snake_case,
-        JsonNames.camel_case,
-        JsonNames.pascal_case,
-        JsonNames.kebab_case,
+        JsonNames.SnakeCase,
+        JsonNames.CamelCase,
+        JsonNames.PascalCase,
+        JsonNames.KebabCase,
     ]:
         text = json.dumps(ash(), names=names)
         assert json.loads[Player](text, names=names)? == ash()
 
 test "a dict's keys are written as they are":
     scores = {"high_score": 3}
-    assert json.dumps(scores, names=.camel_case) == "{\"high_score\": 3}"
+    assert json.dumps(scores, names=.CamelCase) == "{\"high_score\": 3}"
 
 test "a key no field has is an error, unless it's ignored":
     text = "{\"displayName\": \"Ash\", \"hitPoints\": 12, \"mainWeapon\": {\"damageBonus\": 2, \"maxRange\": 1.5, \"rarity\": \"rare\"}, \"guild\": \"fox\"}"
     assert (
-        failure(() => json.loads[Player](text, names=.camel_case))
+        failure(() => json.loads[Player](text, names=.CamelCase))
         == "`Player` has no field \"guild\", but the text has one"
     )
-    loaded = json.loads[Player](text, names=.camel_case, extra=.ignore)?
+    loaded = json.loads[Player](text, names=.CamelCase, extra=.Ignore)?
     assert loaded == ash()
 
 test "a field the text leaves out says how it's spelled there":
     assert (
-        failure(() => json.loads[Weapon]("{\"damageBonus\": 1}", names=.camel_case))
+        failure(() => json.loads[Weapon]("{\"damageBonus\": 1}", names=.CamelCase))
         == "`maxRange` is missing"
     )
 
 def main(stdout: Stdout):
-    text = json.dumps(ash(), names=.camel_case)
+    text = json.dumps(ash(), names=.CamelCase)
     stdout.print(text)
-    stdout.print(json.loads[Player](text, names=.camel_case) else ash())
+    stdout.print(json.loads[Player](text, names=.CamelCase) else ash())

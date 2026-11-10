@@ -577,14 +577,14 @@ impl FnCx<'_> {
         }
     }
 
-    /// `names=` and `extra=` take a case of `JsonNames` and `JsonExtra`, like `.camel_case`.
+    /// `names=` and `extra=` take a case of `JsonNames` and `JsonExtra`, like `.CamelCase`.
     pub(crate) fn json_option(&mut self, option: &str, ty: &Type, span: Span) {
         let expected = Type::named(if option == "names" { "JsonNames" } else { "JsonExtra" });
         if !self.checker.fits(&expected, ty) {
             let cases = if option == "names" {
-                "`.snake_case`, `.camel_case`, `.pascal_case` or `.kebab_case`"
+                "`.SnakeCase`, `.CamelCase`, `.PascalCase` or `.KebabCase`"
             } else {
-                "`.error` or `.ignore`"
+                "`.Error` or `.Ignore`"
             };
             self.error(
                 mismatch(&format!("`{option}`"), &expected, ty, span).with_help(format!("write {cases}")),

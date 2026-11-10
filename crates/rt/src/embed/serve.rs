@@ -1331,7 +1331,7 @@ pub(crate) fn fail_as_stopped() {
 
 /// Whether this is a launched task that's been stopped. If so, it fails, as a crash does, so it
 /// ends with its locks put back and let go; that it was stopped keeps its end quiet.
-fn cut_short() -> bool {
+pub(crate) fn cut_short() -> bool {
     let stopped = super::threads::stopped();
     if stopped {
         fail_as_stopped();

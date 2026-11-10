@@ -271,6 +271,9 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
 /// cleaning up after a crash, and at `threads::STOPPED_HARD`, whatever it's doing.
 fn stop(launched: &Arc<Launched>, level: u8) {
     launched.stop.fetch_max(level, Ordering::AcqRel);
+    // A read blocking the task's thread, as on Windows, hears of nothing run there: it's ended
+    // from here, by shutting its socket.
+    crate::stdlib::net::cut_blocked_reads(&launched.stop);
     let stopping = Arc::clone(launched);
     launched.pool.run_on(
         launched.worker,

@@ -11094,6 +11094,39 @@ def main(stdout: Stdout):
     )
 }
 
+/// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
+/// is held natively: passed in, told apart with `is`, and read as the member it holds.
+#[test]
+fn a_union_with_a_generic_struct_member_is_held_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_generic_member",
+        r#"from std.crypto import Secret
+
+struct Box[T]:
+    value: T
+
+def text_of(given: str | Secret[str]) -> (str, bool):
+    if given is str:
+        return (given, False)
+    (given.expose_secret(), True)
+
+def size(held: Box[int] | int) -> int:
+    if held is int:
+        return held
+    held.value * 10
+
+def main(stdout: Stdout):
+    stdout.print(text_of("plain"), text_of(Secret.of("hidden"))[1])
+    both: list[Box[int] | int] = [Box(value=4), 2]
+    stdout.print(size(both[0]), size(both[1]))
+"#,
+        "(\"plain\", False) True\n40 2\n",
+    )
+}
+
 /// A known difference: native code writes a field holding a union tagged with its member, as
 /// the language says, where the JIT's JSON writer left the tag out.
 #[test]

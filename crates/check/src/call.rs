@@ -571,6 +571,10 @@ impl FnCx<'_> {
             );
         }
         let Some((first, rest)) = members.split_first() else { return Type::Unknown };
+        if self.union_source(call, &union, first) {
+            self.ignore_args(call.args);
+            return Type::Unknown;
+        }
         let returns = self.method_on(call, first, false);
         let report = std::mem::replace(&mut self.report, false);
         let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
@@ -586,6 +590,31 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         returns
+    }
+
+    /// Refuses a `with` source called on a union, saying whether it is one: what's written in for
+    /// it is one type's source, chosen where the program's built, so it would run that one
+    /// whatever the value holds. Narrowed with `is`, it's the type's own.
+    fn union_source(&mut self, call: &MethodCall<'_>, union: &Type, first: &Type) -> bool {
+        let Some(owner) = first.type_name() else { return false };
+        let Some((_, entry)) = self.checker.program.method(owner, call.method) else { return false };
+        if !entry.def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH) {
+            return false;
+        }
+        let named = match &call.object.kind {
+            ExprKind::Name(name) => name.clone(),
+            _ => "it".to_owned(),
+        };
+        let message = format!(
+            "`{}` is a `with` source each type in {} has, and which one runs can't be chosen as the program runs yet",
+            call.method,
+            a(union)
+        );
+        let help = format!(
+            "narrow it first, as `if {named} is {owner}:`, which runs that type's source; a `match` case doesn't narrow `{named}`"
+        );
+        self.error(Diagnostic::new(message, call.object.span.to(call.span)).with_help(help));
+        true
     }
 
     /// Whether a type has a method by this name, its own or one std or the engines give it.

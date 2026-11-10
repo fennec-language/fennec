@@ -240,7 +240,8 @@ pub fn test_done(number: i64) {
     // what they hold outside the program, like a test's databases, is cleaned up.
     let world = with(|state: &mut State| state.world.take());
     drop(world);
-    let line = test_line(number, failure.as_ref(), &ran);
+    let trace = super::take_trace();
+    let line = test_line(number, failure.as_ref().map(|failure| (failure, &trace)), &ran);
     if real_tests() {
         // What the test printed comes first.
         super::write_kept_output();
@@ -254,8 +255,12 @@ pub fn test_done(number: i64) {
 
 /// What a test did, as a line: its number, and what it ran if it passed, as the numbers of the
 /// flags that were set, or for a failure where it is, its message and its help, in hexadecimal so
-/// that anything can be in them.
-fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>, ran: &[String]) -> String {
+/// that anything can be in them, and its call chain.
+fn test_line(
+    number: i64,
+    failure: Option<(&fennec_syntax::Diagnostic, &fennec_syntax::Trace)>,
+    ran: &[String],
+) -> String {
     let hex = |text: &str| {
         let mut hex = String::with_capacity(text.len() * 2);
         for byte in text.bytes() {
@@ -265,12 +270,13 @@ fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>, ran: &[St
     };
     match failure {
         None => format!("{number} ok {}", ran.join(",")),
-        Some(failure) => format!(
-            "{number} failed {} {} {} {}",
+        Some((failure, trace)) => format!(
+            "{number} failed {} {} {} {} {}",
             failure.span.start,
             failure.span.end,
             hex(&failure.message),
-            hex(failure.help.as_deref().unwrap_or(""))
+            hex(failure.help.as_deref().unwrap_or("")),
+            trace.encode()
         ),
     }
 }

@@ -11,17 +11,75 @@ pub(crate) enum Ty {
     Ints,
     Point,
     Shape,
-    /// `u8`.
-    Byte,
+    /// `u8`, `i32` or `u64`.
+    Sized(Size),
     /// `shared Point`, reached only through `lock`.
     Shared,
     /// What `tallied` lends a `with` block.
     Tally,
+    /// `shared Bag`: a list and a dict, reached only through `lock`.
+    Bag,
+    /// `Holder`: a struct holding a list.
+    Holder,
+    /// `dict[str, list[int]]`.
+    Lists,
+    /// `() -> int`: a function that sums the list it captured.
+    Count,
+    Float,
+    /// `dict[str, int]`.
+    Counts,
+    /// `Buffer[int]`.
+    Buf,
+    /// `shared Outer`: a number and a `shared Bag`.
+    Outer,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 7] = [Ty::Int, Ty::Bool, Ty::Str, Ty::Ints, Ty::Point, Ty::Shape, Ty::Byte];
+pub(crate) const TYPES: [Ty; 14] = [
+    Ty::Int,
+    Ty::Bool,
+    Ty::Str,
+    Ty::Ints,
+    Ty::Point,
+    Ty::Shape,
+    Ty::Holder,
+    Ty::Lists,
+    Ty::Float,
+    Ty::Sized(Size::U8),
+    Ty::Sized(Size::I32),
+    Ty::Sized(Size::U64),
+    Ty::Counts,
+    Ty::Buf,
+];
+
+/// A sized integer type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Size {
+    U8,
+    I32,
+    U64,
+}
+
+impl Size {
+    /// Its name in Fennec.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Size::U8 => "u8",
+            Size::I32 => "i32",
+            Size::U64 => "u64",
+        }
+    }
+
+    /// The least and the most it holds.
+    pub(crate) const fn range(self) -> (i128, i128) {
+        match self {
+            Size::U8 => (0, 255),
+            Size::I32 => (-2_147_483_648, 2_147_483_647),
+            Size::U64 => (0, 18_446_744_073_709_551_615),
+        }
+    }
+}
 
 /// An arithmetic operator on ints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +115,9 @@ pub(crate) enum Expr {
     Bool(bool),
     Str(String),
     Name(String),
+    /// `copy(name)`: a name's value, copied on purpose, which a loop needs where the name may
+    /// change while the copy's held.
+    Copy(String),
     Arith(Arith, Box<Expr>, Box<Expr>),
     /// `left % 1009`, keeping a number small where a program isn't meant to fail.
     Small(Box<Expr>),
@@ -73,8 +134,10 @@ pub(crate) enum Expr {
     TextLen(Box<Expr>),
     /// A list of ints written out.
     Ints(Vec<Expr>),
-    /// `[item * by + plus for item in list]`.
-    Mapped(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `[item * by + plus for item in list]`, or over `parallel(list)` when the flag says so.
+    Mapped(Box<Expr>, Box<Expr>, Box<Expr>, bool),
+    /// `sum(item * by for item in parallel(list))`.
+    ParallelSum(Box<Expr>, Box<Expr>),
     /// `list.len()`.
     Len(Box<Expr>),
     /// `list[at]`, which fails outside the list.
@@ -95,18 +158,101 @@ pub(crate) enum Expr {
     Area(Box<Expr>),
     /// `bump(ref name, by)`: adds `by` to an int name and gives ten times what it holds then.
     Bump(String, Box<Expr>),
-    /// `u8(int)`, which fails outside 0 to 255.
-    Byte(Box<Expr>),
-    /// `left + right` on `u8`s, checked.
-    ByteAdd(Box<Expr>, Box<Expr>),
-    /// `left.wrapping_add(right)` on `u8`s.
-    ByteWrap(Box<Expr>, Box<Expr>),
-    /// `int(byte)`.
+    /// `u8(int)`, `i32(int)` or `u64(int)`, which fails outside what the size holds.
+    Convert(Size, Box<Expr>),
+    /// `left + - * right` on one size, checked against it.
+    SizedArith(Size, Arith, Box<Expr>, Box<Expr>),
+    /// `left.wrapping_add(right)` on one size.
+    SizedWrap(Size, Box<Expr>, Box<Expr>),
+    /// `int(sized)`, which fails for a `u64` past the ints.
     IntOf(Box<Expr>),
     /// `sum(counted(limit))`, through a generator.
     SumCounted(Box<Expr>),
     /// `tally.count`, in the `with` block it's lent to.
     Count(String),
+    /// `Holder(items=list, tag=int)`.
+    Holder(Box<Expr>, Box<Expr>),
+    /// `holder.items`.
+    HeldItems(Box<Expr>),
+    /// `holder.tag`.
+    Tag(Box<Expr>),
+    /// A `dict[str, list[int]]` written out.
+    Lists(Vec<(&'static str, Expr)>),
+    /// `lists.get(key) else list[int]()`.
+    ListAt(Box<Expr>, &'static str),
+    /// `() => sum(list)`, capturing a name that can't change.
+    Summing(String),
+    /// `count()`.
+    Called(String),
+    /// A `dict[str, int]` written out.
+    Counts(Vec<(&'static str, Expr)>),
+    /// `counts.get(key) else 0`.
+    CountOf(Box<Expr>, &'static str),
+    /// `key in counts`.
+    Has(Box<Expr>, &'static str),
+    /// `Buffer[int]()`, or with `capacity=`, then each item pushed.
+    Buffer(Option<i64>, Vec<Expr>),
+    /// `[item for item in buffer]`.
+    BufItems(Box<Expr>),
+    /// `buffer.len()`.
+    BufLen(Box<Expr>),
+    /// `buffer[at]`, which fails outside what's filled.
+    BufAt(Box<Expr>, Box<Expr>),
+    /// A float written out.
+    Float(f64),
+    /// `left + - * / right` on floats: `/` by zero fails.
+    FloatArith(Arith, Box<Expr>, Box<Expr>),
+    /// `float(int)`.
+    FloatOf(Box<Expr>),
+    /// `int(float)`, which fails outside the ints, and for infinity and NaN.
+    Truncated(Box<Expr>),
+    /// A comparison between floats.
+    FloatCompare(Compare, Box<Expr>, Box<Expr>),
+}
+
+/// A number written into a lock's body: a literal, or what a task was sent, times something.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Amount {
+    Literal(i64),
+    /// `number * by`, in a task's body.
+    Sent(i64),
+}
+
+/// A change to a `Bag`'s list or dict under `lock bag as ref held:`.
+#[derive(Clone, Debug)]
+pub(crate) enum Op {
+    /// `held.items.append(amount)`.
+    Append(Amount),
+    /// `_ = held.items.pop()`.
+    Pop,
+    /// `held.items[at] = amount`, or `+=` with `add`: a place outside the list crashes.
+    SetItem(i64, Amount, bool),
+    /// `held.counts[key] = amount`, or `+=` with `add`: a key that isn't there crashes then.
+    SetCount(&'static str, Amount, bool),
+    /// `_ = held.counts.remove(key)`.
+    Remove(&'static str),
+    /// `held.add_twice(amount)`, a `ref self` method appending it twice.
+    AddTwice(Amount),
+    /// `grow_all(ref held.items, amount)`, through a `ref` parameter.
+    GrowItems(Amount),
+}
+
+/// A change to a `Buffer[int]`. Each fails where a list's would, and `pop` on an empty one.
+#[derive(Clone, Debug)]
+pub(crate) enum BufOp {
+    Push(Expr),
+    /// `_ = buffer.pop()`.
+    Pop,
+    /// `buffer[at] = value`.
+    Set(Expr, Expr),
+    /// `buffer.insert(at, value)`, which fails past the end.
+    Insert(Expr, Expr),
+    /// `_ = buffer.remove(at)`.
+    Remove(Expr),
+    /// `buffer.truncate(count)`.
+    Truncate(Expr),
+    /// `buffer.extend(other)`, another buffer.
+    Extend(String),
 }
 
 /// Where an assignment writes.
@@ -144,6 +290,20 @@ pub(crate) enum Stmt {
     Each(String, Expr, Vec<Stmt>),
     /// `for ref name in list:`, the body adding to each item.
     EachRef(String, String, Expr),
+    /// `for ref name in list:` with `name = name + at_or_zero(list, at)`, reading the list it's
+    /// changing: at a fixed place, or where the item itself says when `at` is None.
+    EachRefRead(String, String, Option<i64>),
+    /// `lock name as held:` printing an `Outer`'s number.
+    PrintOuter(String),
+    /// `shared name = Outer(inner=bag, n=0)`.
+    ShareOuter(String, String),
+    /// `bump_outer(name, by, refuse=...)`: adds to its number under its lock, and a refusal
+    /// undoes it, printing `refused`.
+    OuterBump(String, Expr, Expr),
+    /// `summed_until(limit, stop, stdout)`: sums a generator lending from a source until an item
+    /// is `stop`, letting it go there. The source prints as it opens and closes, and its cleanup
+    /// fails for an even `limit`, which fails the loop: that prints `shut`.
+    Summed(Expr, Expr),
     /// `while counter < limit:`, counting up each round so it ends.
     While(String, i64, Vec<Stmt>),
     /// `if condition: break`.
@@ -162,6 +322,25 @@ pub(crate) enum Stmt {
     Change(String, Expr, Expr),
     /// `lock name as held:` printing it.
     PrintShared(String),
+    /// `shared name = Bag(items=list, counts={...})`.
+    ShareBag(String, Expr, Vec<(&'static str, i64)>),
+    /// `locked<id>(name, refuse=...)`: a function of its own takes the bag's lock, makes each
+    /// change, then fails if asked to, which undoes them all. A failure prints `refused`.
+    Locked {
+        id: usize,
+        name: String,
+        ops: Vec<Op>,
+        refuse: Expr,
+    },
+    /// `sent<id>(name, items=list)`: a launched task makes each change for each number it's sent,
+    /// under the lock each time. One that crashes undoes that round's changes and prints
+    /// `crashed`.
+    Sent {
+        id: usize,
+        name: String,
+        ops: Vec<Op>,
+        items: Expr,
+    },
     /// `tally(name, items=list)`: a launched task takes each item from its inbox and, under the
     /// lock, counts it in `y` and adds it to `x`. A task that overflows crashes, which undoes
     /// that lock's changes and prints `crashed`.
@@ -169,6 +348,20 @@ pub(crate) enum Stmt {
     /// `for name in range(list.len()):` reading `list[name]` first each round, with the body free
     /// to change the list, so a bound worked out once can stop holding.
     Indexed(String, String, Vec<Stmt>),
+    /// `counts[key] = value`, or `+=` with `add`, which fails for a key that isn't there.
+    SetKey(String, &'static str, Expr, bool),
+    /// `_ = counts.remove(key)`.
+    RemoveKey(String, &'static str),
+    /// A change to a `Buffer[int]`.
+    Buffered(String, BufOp),
+    /// `holder.items.append(value)`.
+    HolderAppend(String, Expr),
+    /// `holder.tag += value`.
+    HolderTag(String, Expr),
+    /// `lists[key] = list`, storing a list's value.
+    PutList(String, &'static str, Expr),
+    /// `if key in lists: lists[key].append(value)`.
+    ListAppend(String, &'static str, Expr),
     /// `grow_all(ref list, by)`, adding `by` to each item through a `ref` parameter.
     GrowAll(String, Expr),
     /// `for name in counted(limit):`, over a generator.

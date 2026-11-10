@@ -1,8 +1,10 @@
 //! A program tree written out as Fennec.
 
+#![expect(clippy::too_many_lines, reason = "one match writes each statement, and one each expression")]
+
 use std::fmt::Write as _;
 
-use super::ast::{Arith, Case, Compare, Expr, Place, Program, Stmt};
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Stmt};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
@@ -61,12 +63,64 @@ def grow_all(ref items: list[int], by: int):
     for ref item in items:
         item += by
 
+def buffer_of(made: Buffer[int], items: list[int]) -> Buffer[int]:
+    mut buffer = made
+    for item in items:
+        buffer.push(item)
+    buffer
+
 def counted(limit: int) -> Iterator[int]:
     for at in range(limit):
         yield at * 3
 
 struct Tally:
     count: int
+
+struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+    def add_twice(ref self, n: int):
+        self.items.append(n)
+        self.items.append(n)
+
+struct Outer:
+    inner: shared Bag
+    n: int
+
+def bump_outer(outer: shared Outer, by: int, refuse: bool) fails Refused:
+    lock outer as ref held:
+        held.n += by
+        if refuse:
+            fail Refused(code=by)
+
+error Shut:
+    code: int
+
+def shutting(code: int, stdout: Stdout) -> with Tally fails Shut:
+    stdout.print(\"opening\", code)
+    lend Tally(count=code) else:
+        stdout.print(\"undoing\", code)
+    stdout.print(\"closing\", code)
+    if code % 2 == 0:
+        fail Shut(code=code)
+
+def lent_counts(limit: int, stdout: Stdout) -> Iterator[int] fails Shut:
+    with shutting(limit, stdout)? as tally:
+        for at in range(limit):
+            yield at + tally.count
+
+def summed_until(limit: int, stop: int, stdout: Stdout) -> int fails Shut:
+    mut total = 0
+    for value in lent_counts(limit, stdout)?:
+        if value == stop:
+            break
+        total += value
+    total
+
+struct Holder:
+    items: list[int]
+    tag: int
 
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
@@ -78,17 +132,51 @@ def tallied(start: int, stdout: Stdout) -> with Tally:
 
 /// The program as Fennec source.
 pub(crate) fn source(program: &Program) -> String {
-    let mut writer = Writer { out: HEADER.to_owned(), made: 0 };
-    writer.out.push_str("def main(stdout: Stdout):\n");
+    let mut writer = Writer { out: String::new(), helpers: String::new(), made: 0 };
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
-    writer.out
+    format!("{HEADER}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
 struct Writer {
+    /// `main`'s body.
     out: String,
+    /// The functions the statements in `main` call that are written for them, like a lock's
+    /// body.
+    helpers: String,
     /// How many names this writer has made up, for comprehensions.
     made: usize,
+}
+
+/// A number in a lock's body as Fennec.
+fn amount(amount: Amount) -> String {
+    match amount {
+        Amount::Literal(n) => n.to_string(),
+        Amount::Sent(by) => format!("(number * {by})"),
+    }
+}
+
+/// The changes `ops` make under `lock ... as ref held:`, at `indent`.
+fn ops_written(ops: &[Op], indent: usize) -> String {
+    let mut out = String::new();
+    let pad = "    ".repeat(indent);
+    for op in ops {
+        let line = match op {
+            Op::Append(value) => format!("held.items.append({})", amount(*value)),
+            Op::Pop => "_ = held.items.pop()".to_owned(),
+            Op::SetItem(at, value, add) => {
+                format!("held.items[{at}] {} {}", if *add { "+=" } else { "=" }, amount(*value))
+            }
+            Op::SetCount(key, value, add) => {
+                format!("held.counts[\"{key}\"] {} {}", if *add { "+=" } else { "=" }, amount(*value))
+            }
+            Op::Remove(key) => format!("_ = held.counts.remove(\"{key}\")"),
+            Op::AddTwice(value) => format!("held.add_twice({})", amount(*value)),
+            Op::GrowItems(value) => format!("grow_all(ref held.items, {})", amount(*value)),
+        };
+        let _ = writeln!(out, "{pad}{line}");
+    }
+    out
 }
 
 impl Writer {
@@ -150,6 +238,11 @@ impl Writer {
                 self.line(indent, &format!("for {name} in {list}:"));
                 self.block(body, indent + 1);
             }
+            Stmt::EachRefRead(name, list, at) => {
+                let at = at.map_or_else(|| name.clone(), |at| at.to_string());
+                self.line(indent, &format!("for ref {name} in {list}:"));
+                self.line(indent + 1, &format!("{name} = {name} + at_or_zero({list}, {at})"));
+            }
             Stmt::EachRef(name, list, by) => {
                 let by = self.expr(by, false);
                 self.line(indent, &format!("for ref {name} in {list}:"));
@@ -189,6 +282,46 @@ impl Writer {
                 self.line(indent, &format!("for {name} in range({list}.len()):"));
                 self.line(indent + 1, &format!("stdout.print({list}[{name}])"));
                 self.block(body, indent + 1);
+            }
+            Stmt::SetKey(name, key, value, add) => {
+                let value = self.expr(value, false);
+                let operator = if *add { "+=" } else { "=" };
+                self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
+            }
+            Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
+            Stmt::Buffered(name, op) => {
+                let line = match op {
+                    BufOp::Push(value) => format!("{name}.push({})", self.expr(value, false)),
+                    BufOp::Pop => format!("_ = {name}.pop()"),
+                    BufOp::Set(at, value) => {
+                        let (at, value) = (self.expr(at, false), self.expr(value, false));
+                        format!("{name}[{at}] = {value}")
+                    }
+                    BufOp::Insert(at, value) => {
+                        let (at, value) = (self.expr(at, false), self.expr(value, false));
+                        format!("{name}.insert({at}, {value})")
+                    }
+                    BufOp::Remove(at) => format!("_ = {name}.remove({})", self.expr(at, false)),
+                    BufOp::Truncate(count) => format!("{name}.truncate({})", self.expr(count, false)),
+                    BufOp::Extend(other) => format!("{name}.extend({other})"),
+                };
+                self.line(indent, &line);
+            }
+            Stmt::HolderAppend(name, value) => {
+                let value = self.expr(value, false);
+                self.line(indent, &format!("{name}.items.append({value})"));
+            }
+            Stmt::HolderTag(name, value) => {
+                let value = self.expr(value, false);
+                self.line(indent, &format!("{name}.tag += {value}"));
+            }
+            Stmt::PutList(name, key, list) => {
+                let list = self.expr(list, true);
+                self.line(indent, &format!("{name}[\"{key}\"] = {list}"));
+            }
+            Stmt::ListAppend(name, key, value) => {
+                let value = self.expr(value, false);
+                self.line(indent, &format!("if \"{key}\" in {name}: {name}[\"{key}\"].append({value})"));
             }
             Stmt::GrowAll(list, by) => {
                 let by = self.expr(by, false);
@@ -238,6 +371,78 @@ impl Writer {
                 self.line(indent, &format!("with tallied({start}, stdout) as {name}:"));
                 self.block(body, indent + 1);
             }
+            _ => self.bagged(stmt, indent),
+        }
+    }
+
+    /// The statements about a `shared Bag`: what `stmt` writes for them, with the functions
+    /// they call written alongside.
+    fn bagged(&mut self, stmt: &Stmt, indent: usize) {
+        match stmt {
+            Stmt::PrintOuter(name) => {
+                self.line(indent, &format!("lock {name} as held:"));
+                self.line(indent + 1, "stdout.print(held.n)");
+            }
+            Stmt::ShareOuter(name, bag) => {
+                self.line(indent, &format!("shared {name} = Outer(inner={bag}, n=0)"));
+            }
+            Stmt::OuterBump(name, by, refuse) => {
+                let (by, refuse) = (self.expr(by, false), self.expr(refuse, false));
+                self.line(indent, &format!("match bump_outer({name}, by={by}, refuse={refuse}):"));
+                self.line(indent + 1, "case Ok(_):");
+                self.line(indent + 2, "pass");
+                self.line(indent + 1, "case Err(_):");
+                self.line(indent + 2, "stdout.print(\"refused\")");
+            }
+            Stmt::Summed(limit, stop) => {
+                let (limit, stop) = (self.expr(limit, false), self.expr(stop, false));
+                self.line(indent, &format!("match summed_until({limit}, stop={stop}, stdout=stdout):"));
+                self.line(indent + 1, "case Ok(total):");
+                self.line(indent + 2, "stdout.print(total)");
+                self.line(indent + 1, "case Err(_):");
+                self.line(indent + 2, "stdout.print(\"shut\")");
+            }
+            Stmt::ShareBag(name, items, counts) => {
+                let items = self.expr(items, false);
+                let counts = if counts.is_empty() {
+                    "dict[str, int]()".to_owned()
+                } else {
+                    let pairs: Vec<String> =
+                        counts.iter().map(|(key, n)| format!("\"{key}\": {n}")).collect();
+                    format!("{{{}}}", pairs.join(", "))
+                };
+                self.line(indent, &format!("shared {name} = Bag(items={items}, counts={counts})"));
+            }
+            Stmt::Locked { id, name, ops, refuse } => {
+                let _ = write!(
+                    self.helpers,
+                    "def locked{id}(box: shared Bag, refuse: bool) fails Refused:\n    lock box as ref held:\n{}        \
+                     if refuse:\n            fail Refused(code={id})\n\n",
+                    ops_written(ops, 2)
+                );
+                let refuse = self.expr(refuse, false);
+                self.line(indent, &format!("match locked{id}({name}, refuse={refuse}):"));
+                self.line(indent + 1, "case Ok(_):");
+                self.line(indent + 2, "pass");
+                self.line(indent + 1, "case Err(_):");
+                self.line(indent + 2, "stdout.print(\"refused\")");
+            }
+            Stmt::Sent { id, name, ops, items } => {
+                let _ = write!(
+                    self.helpers,
+                    "def worker{id}(inbox: Inbox[int], box: shared Bag):\n    for number in inbox:\n        \
+                     lock box as ref held:\n{}\ndef sent{id}(box: shared Bag, items: list[int]) fails Crashed | Closed | \
+                     Timeout:\n    with launch((inbox) => worker{id}(inbox, box))? as sends:\n        for item in items:\n            \
+                     sends.send(item)?\n\n",
+                    ops_written(ops, 3)
+                );
+                let items = self.expr(items, false);
+                self.line(indent, &format!("match sent{id}({name}, items={items}):"));
+                self.line(indent + 1, "case Ok(_):");
+                self.line(indent + 2, "pass");
+                self.line(indent + 1, "case Err(_):");
+                self.line(indent + 2, "stdout.print(\"crashed\")");
+            }
             _ => {}
         }
     }
@@ -250,6 +455,7 @@ impl Writer {
             Expr::Bool(value) => (if *value { "True" } else { "False" }).to_owned(),
             Expr::Str(text) => format!("\"{text}\""),
             Expr::Name(name) => name.clone(),
+            Expr::Copy(name) => format!("copy({name})"),
             Expr::Arith(operator, left, right) => {
                 let symbol = match operator {
                     Arith::Add => "+",
@@ -261,7 +467,7 @@ impl Writer {
                 format!("({} {symbol} {})", self.expr(left, false), self.expr(right, false))
             }
             Expr::Small(value) => format!("({} % 1009)", self.expr(value, false)),
-            Expr::Compare(compare, left, right) => {
+            Expr::Compare(compare, left, right) | Expr::FloatCompare(compare, left, right) => {
                 let symbol = match compare {
                     Compare::Less => "<",
                     Compare::LessEq => "<=",
@@ -277,23 +483,28 @@ impl Writer {
                 let (yes, when, no) = (self.expr(yes, false), self.expr(when, false), self.expr(no, false));
                 format!("({yes} if {when} else {no})")
             }
-            Expr::Concat(left, right) | Expr::ByteAdd(left, right) => {
+            Expr::Concat(left, right) => {
                 format!("({} + {})", self.expr(left, false), self.expr(right, false))
             }
             Expr::Format(value) => format!("f\"<{{{}}}>\"", self.expr(value, false)),
             Expr::TextLen(text) => format!("{}.len()", self.expr(text, false)),
-            // Reported: `list[int]()` where nothing else says the type fails to build once trimmed.
-            // Take this out once the checker lane's `typed_empty_list` test passes.
-            Expr::Ints(items) if items.is_empty() => "[0][0:0]".to_owned(),
+            Expr::Ints(items) if items.is_empty() => "list[int]()".to_owned(),
             Expr::Ints(items) => {
                 let items: Vec<String> = items.iter().map(|item| self.expr(item, false)).collect();
                 format!("[{}]", items.join(", "))
             }
-            Expr::Mapped(list, by, plus) => {
+            Expr::Mapped(list, by, plus, parallel) => {
                 self.made += 1;
                 let item = format!("item{}", self.made);
                 let (by, plus, list) = (self.expr(by, false), self.expr(plus, false), self.expr(list, false));
+                let list = if *parallel { format!("parallel({list})") } else { list };
                 format!("[{item} * {by} + {plus} for {item} in {list}]")
+            }
+            Expr::ParallelSum(list, by) => {
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                let (by, list) = (self.expr(by, false), self.expr(list, false));
+                format!("sum({item} * {by} for {item} in parallel({list}))")
             }
             Expr::Len(list) => format!("{}.len()", self.expr(list, false)),
             Expr::Index(list, at) => format!("{}[{}]", self.expr(list, false), self.expr(at, false)),
@@ -314,13 +525,74 @@ impl Writer {
             }
             Expr::Area(shape) => format!("area({})", self.expr(shape, true)),
             Expr::Bump(name, by) => format!("bump(ref {name}, {})", self.expr(by, false)),
-            Expr::Byte(value) => format!("u8({})", self.expr(value, false)),
-            Expr::ByteWrap(left, right) => {
+            Expr::Convert(size, value) => format!("{}({})", size.name(), self.expr(value, false)),
+            Expr::SizedArith(_, operator, left, right) => {
+                let symbol = match operator {
+                    Arith::Sub => "-",
+                    Arith::Mul => "*",
+                    _ => "+",
+                };
+                format!("({} {symbol} {})", self.expr(left, false), self.expr(right, false))
+            }
+            Expr::SizedWrap(_, left, right) => {
                 format!("{}.wrapping_add({})", self.expr(left, false), self.expr(right, false))
             }
             Expr::IntOf(byte) => format!("int({})", self.expr(byte, false)),
             Expr::SumCounted(limit) => format!("sum(counted({}))", self.expr(limit, false)),
             Expr::Count(name) => format!("{name}.count"),
+            Expr::Holder(items, tag) => {
+                format!("Holder(items={}, tag={})", self.expr(items, true), self.expr(tag, false))
+            }
+            Expr::HeldItems(holder) => format!("{}.items", self.expr(holder, false)),
+            Expr::Tag(holder) => format!("{}.tag", self.expr(holder, false)),
+            Expr::Lists(pairs) if pairs.is_empty() => "dict[str, list[int]]()".to_owned(),
+            Expr::Lists(pairs) => {
+                let pairs: Vec<String> =
+                    pairs.iter().map(|(key, list)| format!("\"{key}\": {}", self.expr(list, true))).collect();
+                format!("{{{}}}", pairs.join(", "))
+            }
+            Expr::ListAt(lists, key) => {
+                format!("({}.get(\"{key}\") else list[int]())", self.expr(lists, false))
+            }
+            Expr::Summing(name) => format!("() => sum({name})"),
+            Expr::Called(name) => format!("{name}()"),
+            Expr::Counts(pairs) if pairs.is_empty() => "dict[str, int]()".to_owned(),
+            Expr::Counts(pairs) => {
+                let pairs: Vec<String> =
+                    pairs.iter().map(|(key, n)| format!("\"{key}\": {}", self.expr(n, false))).collect();
+                format!("{{{}}}", pairs.join(", "))
+            }
+            Expr::CountOf(counts, key) => format!("({}.get(\"{key}\") else 0)", self.expr(counts, false)),
+            Expr::Has(counts, key) => format!("(\"{key}\" in {})", self.expr(counts, false)),
+            Expr::Buffer(capacity, items) => {
+                let made = capacity
+                    .map_or_else(|| "Buffer[int]()".to_owned(), |n| format!("Buffer[int](capacity={n})"));
+                if items.is_empty() {
+                    return made;
+                }
+                // Filled through a function, since a buffer has no literal.
+                let items: Vec<String> = items.iter().map(|item| self.expr(item, false)).collect();
+                format!("buffer_of({made}, [{}])", items.join(", "))
+            }
+            Expr::BufItems(buffer) => {
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                format!("[{item} for {item} in {}]", self.expr(buffer, false))
+            }
+            Expr::BufLen(buffer) => format!("{}.len()", self.expr(buffer, false)),
+            Expr::BufAt(buffer, at) => format!("{}[{}]", self.expr(buffer, false), self.expr(at, false)),
+            Expr::Float(x) => super::eval::float_text(*x),
+            Expr::FloatArith(operator, left, right) => {
+                let symbol = match operator {
+                    Arith::Add => "+",
+                    Arith::Sub => "-",
+                    Arith::Mul => "*",
+                    Arith::Div | Arith::Rem => "/",
+                };
+                format!("({} {symbol} {})", self.expr(left, false), self.expr(right, false))
+            }
+            Expr::FloatOf(value) => format!("float({})", self.expr(value, false)),
+            Expr::Truncated(value) => format!("int({})", self.expr(value, false)),
         }
     }
 }

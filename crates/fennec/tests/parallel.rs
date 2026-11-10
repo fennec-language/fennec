@@ -998,11 +998,9 @@ def deep(n: int) -> int:
     deep(n - 1) + 1 + kept[0] - n
 
 def waited(connection: Connection) -> str:
-    match connection.read_line(timeout=20ms):
-        case Err(error):
-            error.message()
-        case Ok(_):
-            \"heard something\"
+    _ = connection.read_line(timeout=20ms) else as error:
+        return error.message()
+    \"heard something\"
 
 def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails NetError:
     connection.write(greeting + \"\\n\")?
@@ -1029,11 +1027,10 @@ def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
         stdout.print(server.port)
         for connection in parallel(server):
-            match answer(connection, greeting, marks):
-                case Ok(count):
-                    stdout.print(\"answered\", count, connection.peer != \"\")
-                case Err(error):
-                    stdout.print(\"failed\", error.message())
+            count = answer(connection, greeting, marks) else as error:
+                stdout.print(\"failed\", error.message())
+                continue
+            stdout.print(\"answered\", count, connection.peer != \"\")
 ";
 
 /// One client's whole talk with a server: each line sent, what came back, and the end.
@@ -1131,11 +1128,10 @@ def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
         stdout.print(server.port)
         for connection in parallel(server):
-            match answer(connection, counter):
-                case Ok(_):
-                    stdout.print(\"answered\")
-                case Err(error):
-                    stdout.print(\"failed\", error.message())
+            _ = answer(connection, counter) else as error:
+                stdout.print(\"failed\", error.message())
+                continue
+            stdout.print(\"answered\")
 ";
 
 /// A connection's task that crashes while it holds a lock ends only itself: the lock's changes are

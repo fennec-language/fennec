@@ -305,6 +305,7 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
 }
 
 /// A server that stops when the program's asked to, with 2 seconds' grace, and says so after.
+#[cfg(unix)]
 const STOPPING_SERVER: &str = "from std.net import Request, Response
 
 def respond(request: Request) -> Response:

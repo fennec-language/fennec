@@ -73,17 +73,12 @@ export def rows_as[T: Deserializable](rows: SqlRows) -> list[T] fails SqlError:
         src._row = row
         src._cell = 0
         src._in_record = False
-        match T.deserialize(ref src):
-            case Ok(value):
-                found.append(value)
-            case Err(err):
-                # A field with no column says so with no line, and its name as the message.
-                if err.line < 0:
-                    fail .Column(
-                        name=err.message,
-                        reason="the query gives no column for this field",
-                    )
-                fail .Column(name=src._column(), reason=err.message)
+        value = T.deserialize(ref src) else as err:
+            # A field with no column says so with no line, and its name as the message.
+            if err.line < 0:
+                fail .Column(name=err.message, reason="the query gives no column for this field")
+            fail .Column(name=src._column(), reason=err.message)
+        found.append(value)
     found
 
 ## Reads a row into a value, through its `deserialize`: a struct's fields by the columns' names,

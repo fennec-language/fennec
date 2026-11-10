@@ -6,7 +6,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "io",
-    names: &["Stdout", "Stdin", "Stderr", "StdoutWriter", "Writer", "Reader", "MemoryStream", "read_all"],
+    names: &["Stdout", "Stdin", "Stderr", "StdoutWriter", "StdinReader", "Writer", "Reader", "MemoryStream", "read_all"],
     source: include_str!("io.fen"),
     gives: &[],
 };

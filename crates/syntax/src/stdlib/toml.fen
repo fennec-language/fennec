@@ -520,20 +520,17 @@ struct TomlParser:
                 return .Int(n=n)
         if has_any(unsigned, 46, 101, 69):
             if not float_ok(unsigned): fail self.bad_at(unknown, at)
-            match float(without_underscores(token)):
-                case Ok(x):
-                    # TOML writes `inf` for that. A number too big for a float didn't say it.
-                    if x == 1e308 * 10.0 or x == -1e308 * 10.0:
-                        fail self.bad_at(f"`{token}` is too big for a float", at)
-                    return .Float(x=x)
-                case Err(_):
-                    fail self.bad_at(unknown, at)
+            x = float(without_underscores(token)) else fail self.bad_at(unknown, at)
+            # TOML writes `inf` for that. A number too big for a float didn't say it.
+            if x == 1e308 * 10.0 or x == -1e308 * 10.0:
+                fail self.bad_at(f"`{token}` is too big for a float", at)
+            return .Float(x=x)
         if not whole_ok(unsigned): fail self.bad_at(unknown, at)
-        match int(without_underscores(token)):
-            case Ok(n):
-                .Int(n=n)
-            case Err(_):
-                fail self.bad_at(f"`{token}` is too big for an int", at)
+        n = int(without_underscores(token)) else fail self.bad_at(
+            f"`{token}` is too big for an int",
+            at,
+        )
+        .Int(n=n)
 
 def hex_upper(code: int) -> str:
     digits = "0123456789ABCDEF"
@@ -810,15 +807,11 @@ struct TomlReader:
                 n
             case .Text(text):
                 if self._in_key:
-                    match int(text):
-                        case Ok(n):
-                            return n
-                        case Err(_):
-                            fail ParseError(
-                                message=f"{self._where()} has the key \"{text}\", which isn't an int",
-                                line=0,
-                                column=0,
-                            )
+                    return int(text) else fail ParseError(
+                        message=f"{self._where()} has the key \"{text}\", which isn't an int",
+                        line=0,
+                        column=0,
+                    )
                 fail self._misfit("int")
             case _:
                 fail self._misfit("int")

@@ -21,7 +21,7 @@
 ## own, so the same code runs against a socket or against bytes a test wrote.
 
 from std import base64, crypto
-from std.concurrent import Borrowed, Pool, Timeout, pool
+from std.concurrent import Pool, Timeout, pool
 from std.crypto import Secret
 from std.intrinsics import bytes_text
 from std.net import Connection, NetError
@@ -750,12 +750,10 @@ def signed_in(
         reason=f"couldn't connect to {found.host}:{found.port}",
     )
     db = PgDatabase(_conn=conn)
-    match db._opened(entropy, found, password, weak):
-        case Ok(_):
-            return db
-        case Err(failure):
-            conn.close()
-            fail failure
+    db._opened(entropy, found, password, weak) else as failure:
+        conn.close()
+        fail failure
+    db
 
 ## Connections to a database, lent one block at a time, made by `postgres.connect`.
 export struct PgPool:
@@ -773,15 +771,12 @@ export struct PgPool:
     ## A connection of its own for a `with` block, for queries that go together without a
     ## transaction. Waits up to the pool's `wait` for one, then fails with `Timeout`.
     def borrow(self) -> with PgDatabase fails SqlError | Timeout:
-        mut taken: Borrowed[PgDatabase]? = None
-        match self._pool.borrowed():
-            case Ok(got):
-                taken = got
-            case Err(.Timeout(waited)):
-                fail Timeout(waited=waited)
-            case Err(failure):
-                fail SqlError.Failed(reason=failure.message())
-        borrowed = taken else fail SqlError.Failed(reason="the pool has ended")
+        borrowed = self._pool.borrowed() else as failure:
+            match failure:
+                case .Timeout(waited):
+                    fail Timeout(waited=waited)
+                case _:
+                    fail SqlError.Failed(reason=failure.message())
         lend borrowed.value else:
             borrowed.give_back(False)
         borrowed.give_back(True)
@@ -898,32 +893,19 @@ export struct PgDatabase:
     ## Exactly one byte is read, so nothing the server sent in the clear goes on into TLS.
     def _start_tls(self, host: str) fails SqlError:
         send(self._conn, ssl_request())?
-        mut answer = bytes([])
-        match self._conn.read(1):
-            case Ok(got):
-                answer = got
-            case Err(error):
-                fail SqlError.Failed(
-                    reason=f"the connection to the server failed: {error.message()}",
-                )
+        answer = self._conn.read(1) else as error:
+            fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
         if answer.len() == 0 or answer[0] != 83:
             fail SqlError.Failed(
                 reason="the server doesn't take TLS: `tls=False` connects without it",
             )
-        match self._conn.start_tls(host):
-            case Ok(_):
-                pass
-            case Err(error):
-                fail SqlError.Failed(reason=f"TLS with the server failed: {error.message()}")
+        self._conn.start_tls(host) else as error:
+            fail SqlError.Failed(reason=f"TLS with the server failed: {error.message()}")
 
     ## Tells the server this is the end.
     def _goodbye(self):
         # Closing goes ahead whether or not the server hears it.
-        match self._conn.write(terminate()):
-            case Ok(_):
-                pass
-            case Err(_):
-                pass
+        self._conn.write(terminate()) else return
 
     ## Starts TLS when the settings ask for it, and signs in.
     def _opened(
@@ -948,11 +930,7 @@ export struct PgDatabase:
     ## answered a query asked for here, so whatever an interrupted query left unread is passed
     ## over first, and the server is idle, in no transaction.
     def reset(self) -> bool:
-        match self._settled():
-            case Ok(settled):
-                settled
-            case Err(_):
-                False
+        self._settled() else False
 
     def _settled(self) -> bool fails SqlError:
         send(self._conn, simple_query("rollback"))?
@@ -1031,11 +1009,8 @@ def simple_query(text: str) -> bytes:
     out.done(81)
 
 def send(conn: Connection, data: bytes) fails SqlError:
-    match conn.write(data):
-        case Ok(_):
-            pass
-        case Err(error):
-            fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
+    conn.write(data) else as error:
+        fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
 
 ## What the server's sent next, waiting for at most `wait` when it's given.
 def more_from(conn: Connection, wait: Duration?) -> bytes fails NetError:
@@ -1051,12 +1026,8 @@ def next_message(
     while True:
         found = reader.next()?
         if found is not None: return found
-        match more_from(conn, wait):
-            case Ok(more):
-                if more.len() == 0: fail SqlError.Failed(reason="the server closed the connection")
-                reader.feed(more)
-            case Err(error):
-                fail SqlError.Failed(
-                    reason=f"the connection to the server failed: {error.message()}",
-                )
+        more = more_from(conn, wait) else as error:
+            fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
+        if more.len() == 0: fail SqlError.Failed(reason="the server closed the connection")
+        reader.feed(more)
     fail SqlError.Failed(reason="the server closed the connection")

@@ -27,10 +27,31 @@ export struct Stdout:
     def writer(self) -> StdoutWriter:
         StdoutWriter(_out=self)
 
-## Standard input, given to `main`: what's typed or piped in. Its method written in Rust is
-## `lines()`, every line to the end. Only `main` is given one: it can't be made.
+## Standard input, given to `main`: what's typed or piped in. Its methods written in Rust are
+## `read_line()`, the next line or `None` at the end, `read_chunk(size)`, and `lines()`, every
+## line to the end. Only `main` is given one: it can't be made.
 export struct Stdin:
     _given: int
+
+    ## Standard input as a `Reader`, for code written for any stream: `stdin.reader()`.
+    def reader(self) -> StdinReader:
+        StdinReader(_in=self)
+
+## Standard input as a `Reader`, from `stdin.reader()`. It reads through the same buffer as
+## `Stdin`'s own methods, so nothing's lost between them.
+export struct StdinReader:
+    _in: Stdin
+
+    def read_chunk(self, size: int) -> bytes fails IoError:
+        self._in.read_chunk(size)?
+
+    def read_line(self) -> str? fails IoError:
+        self._in.read_line()?
+
+    def lines(self) -> Iterator[str] fails IoError:
+        while True:
+            line = self._in.read_line()? else return
+            yield line
 
 ## Standard error, given to `main` or a test: what isn't the program's output, like warnings, errors
 ## and logs. Its methods written in Rust are `write(data)` for bytes, `write_text(text)`,

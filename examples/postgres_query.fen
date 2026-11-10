@@ -50,8 +50,13 @@ def main(stdout: Stdout):
     stdout.print(failure_from_fields({"C": "40P01", "M": "deadlock detected"}).message())
     # A float column can hold what isn't a number, and that isn't a failure.
     nan = PgMessage.Row(cells=["NaN".encode()], present=[True])
-    match rows_of(["ratio"], types=[701], rows=[nan]):
-        case Ok(made):
-            stdout.print(made.columns, made.kinds, made.floats)
-        case _:
-            pass
+    ratios = rows_of(["ratio"], types=[701], rows=[nan]) else SqlRows(
+        columns=[],
+        kinds=[],
+        at=[],
+        ints=[],
+        floats=[],
+        texts=[],
+        blobs=[],
+    )
+    stdout.print(ratios.columns, ratios.kinds, ratios.floats)

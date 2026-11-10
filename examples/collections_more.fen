@@ -1,7 +1,7 @@
 from std.collections import Table
 
-def describe(result: Result[str, IoError]) -> str:
-    text = result else:
+def describe(read: () -> str fails IoError) -> str:
+    text = read() else:
         return "couldn't do it"
     f"read {text.len()} characters"
 
@@ -72,9 +72,6 @@ def main(stdout: Stdout, fs: Fs):
 
     # Files. Paths in a folder that doesn't exist fail without touching the disk.
     stdout.print(fs.exists("no/such/folder/save.txt")?)
-    stdout.print(describe(fs.read_text("no/such/folder/save.txt")))
-    match fs.write_text("no/such/folder/save.txt", "saved"):
-        case Ok(_):
-            stdout.print("wrote it")
-        case Err(_):
-            stdout.print("couldn't write it")
+    stdout.print(describe(() => fs.read_text("no/such/folder/save.txt")))
+    fs.write_text("no/such/folder/save.txt", "saved") else:
+        stdout.print("couldn't write it")

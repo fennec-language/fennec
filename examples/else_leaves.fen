@@ -51,11 +51,10 @@ def main(stdout: Stdout):
     heal(ref held, "kit")
     stdout.print(held["kit"], held.len())
     stdout.print(must_find(health, "ash") else 0)
-    match must_find(health, "nobody"):
-        case Ok(points):
-            stdout.print(points)
-        case NotFound(name):
-            stdout.print("no", name)
+    points = must_find(health, "nobody") else as why:
+        stdout.print("no", why.name)
+        0
+    stdout.print(points)
     stdout.print(parse_all(["1", "x", "3"]))
     stdout.print(first_small([["a", "9"], ["1"]]))
     mut values = [1, 2, 3]

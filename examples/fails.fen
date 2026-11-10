@@ -8,7 +8,7 @@ error LoadError:
     BadRow(line: int)
 
 def amount(value: float, line: int) -> float fails LoadError:
-    if value < 0.0: return Err(LoadError.BadRow(line))
+    if value < 0.0: fail .BadRow(line)
     value
 
 def total(rows: list[float]) -> float fails LoadError:

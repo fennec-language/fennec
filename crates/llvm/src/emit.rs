@@ -885,6 +885,7 @@ impl Emit<'_, '_, '_> {
             if !self.on_crash.is_empty() {
                 self.roll_back_on_crash()?;
             }
+            self.write_kept_lengths_after_crash();
             self.release_locals(None);
             self.line(&leave);
             self.wrote_prop = true;
@@ -3173,6 +3174,18 @@ def main(stdout: Stdout):
         let source = "def repeated(text: str, times: int) -> str:\n    \"\".join([text for _ in range(times)])\n\ndef main(stdout: Stdout):\n    stdout.print(repeated(\"ab\", 3))\n";
         let text = text_of(source, "repeated")?;
         assert!(!text.contains("kept_length"), "{text}");
+        Ok(())
+    }
+
+    /// An enum holding strings gets native blocks in a program with no other threads, and its
+    /// drop lets go of each string's block, giving the runtime one with no owner left.
+    #[test]
+    fn an_enum_holding_strings_has_native_blocks() -> Result<(), String> {
+        let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str)\n\ndef build(depth: int) -> Named:\n    if depth == 0: return .Leaf(name=\"leaf\")\n    .Pair(left=build(depth - 1), right=build(depth - 1), label=\"pair\")\n\ndef size(tree: Named) -> int:\n    match tree:\n        case .Leaf(name):\n            name.len()\n        case .Pair(left, right, label):\n            size(left) + size(right) + label.len()\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
+        let (units, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Named's blocks are native");
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(text.contains("call void @fennec_free(ptr %text"), "{text}");
         Ok(())
     }
 

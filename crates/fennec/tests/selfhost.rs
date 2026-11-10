@@ -200,7 +200,7 @@ def step(ref world: World, dt: float) -> (int, str)?:
         case .Circle(r): r
         case Rect(w, h): w * h
         case (1, -2, -3.5, -1e999, -0.0, \"s\", True, False, None, _): 0
-        case Ok(value):
+        case Wrapped(value):
             value
         case name: name
     z = [
@@ -275,7 +275,7 @@ const CHECK_CASES: &[(&str, &str)] = &[
     ),
     (
         "bracket_counts",
-        "def f(a: dict[int], b: int[str], c: Result[int], d: list, e: (int, str) -> bool):\n    pass\n",
+        "def f(a: dict[int], b: int[str], c: list[int, str], d: list, e: (int, str) -> bool):\n    pass\n",
     ),
     ("alias_loop", "type Loop = Loop\ntype Pair = (int, Loop)\n\ndef f(p: Pair):\n    pass\n"),
     (

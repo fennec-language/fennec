@@ -488,6 +488,9 @@ impl Lowering<'_> {
         at: Span,
     ) -> Option<Vec<Stmt>> {
         let ExprKind::Call { callee, args } = &call.kind else { return None };
+        // A block that always returns leaves the source's body returning, which what's written
+        // after it says, so a function ending in the `with` gives back a value on every way.
+        let always_returns = always_returns(block);
         // Several names split what the source lends, a tuple, as `with conn.split() as r, w:`.
         let split = names.len() > 1;
         let held = match names {
@@ -575,7 +578,11 @@ impl Lowering<'_> {
             written.push(assign(&returned, none, true, Some(optional)));
         }
         written.extend(body);
-        written.extend(taken_again(ways, &exit, &returned, at));
+        if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
+            written.extend(returned_always(&returned, at));
+        } else {
+            written.extend(taken_again(ways, &exit, &returned, at));
+        }
         Some(written)
     }
 }
@@ -823,6 +830,37 @@ fn taken_again(ways: Ways, exit: &str, returned: &str, at: Span) -> Vec<Stmt> {
         written.push(dispatch(exit, CONTINUED, StmtKind::Continue, at));
     }
     written
+}
+
+/// What's written after a source's body whose block always returns a value: `assert returned is
+/// not None`, which narrows it, and `return returned`.
+fn returned_always(returned: &str, at: Span) -> Vec<Stmt> {
+    let none = Box::new(Expr { kind: ExprKind::None, span: here(at) });
+    let given = Expr {
+        kind: ExprKind::Binary {
+            op: fennec_syntax::BinOp::IsNot,
+            lhs: Box::new(name(returned, at)),
+            rhs: none,
+        },
+        span: here(at),
+    };
+    vec![stmt(StmtKind::Assert(given), at), stmt(StmtKind::Return(Some(name(returned, at))), at)]
+}
+
+/// Whether every way through a block leaves it by `return` or `fail`.
+fn always_returns(block: &[Stmt]) -> bool {
+    let Some(last) = block.last() else { return false };
+    match &last.kind {
+        StmtKind::Return(_) | StmtKind::Fail(_) => true,
+        StmtKind::If { branches, otherwise: Some(otherwise) } => {
+            branches.iter().all(|(_, body)| always_returns(body)) && always_returns(otherwise)
+        }
+        StmtKind::With { body, .. } => always_returns(body),
+        StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+            !arms.is_empty() && arms.iter().all(|arm| always_returns(&arm.body))
+        }
+        _ => false,
+    }
 }
 
 /// `if exit == kind: then`.

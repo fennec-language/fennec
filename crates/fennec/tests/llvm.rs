@@ -5184,6 +5184,45 @@ def used(fine: bool, stdout: Stdout) fails Second:
     Ok(())
 }
 
+/// A function whose last line is a `with` whose block always returns gives back a value on every
+/// way, once the source is written in: alone, and in each branch of an `if`.
+#[test]
+fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_returns_last",
+        r#"struct Session:
+    log: str
+
+struct Lite:
+    name: str
+
+    def session(self) -> with Session:
+        lend Session(log="lite") else:
+            pass
+
+def direct(store: Lite, text: str) -> str:
+    with store.session() as session:
+        return f"{session.log} {text}"
+
+def branched(store: Lite, long: bool) -> int:
+    if long:
+        with store.session() as session:
+            return session.log.len() * 10
+    else:
+        with store.session() as session:
+            return session.log.len()
+
+def main(stdout: Stdout):
+    store = Lite(name="a")
+    stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+"#,
+        "lite x 40 4\n",
+    )
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

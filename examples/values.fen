@@ -4,7 +4,7 @@ def add_bonus(ref scores: list[int], bonus: int):
 
 def main(stdout: Stdout):
     original = [1, 2, 3]
-    mut changed = copy(original)
+    mut changed = original
     changed.append(4)
     stdout.print(original)
     stdout.print(changed)

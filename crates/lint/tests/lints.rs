@@ -344,8 +344,6 @@ fn a_conversion_that_makes_a_value_of_a_names_own_stays() {
     assert_eq!(needless_conversions(named).0, 0, "`mut y = s` would make `y` stand for `s`");
     let in_a_case = "def f(s: str, n: int) -> str:\n    match n:\n        case 1:\n            mut y = str(s)\n            y += \"!\"\n            y\n        case _:\n            s\n";
     assert_eq!(needless_conversions(in_a_case).0, 0, "in a case of a `match` too");
-    let copied = "def f(s: list[int], n: int) -> list[int]:\n    match n:\n        case 1:\n            mut y = copy(s)\n            y.append(1)\n            y\n        case _:\n            s\n";
-    assert_eq!(needless_copies(copied).0, 0, "`needless-copy` leaves it too");
     let test_body = "test \"a name of its own\":\n    s = \"a\"\n    mut y = str(s)\n    y += \"!\"\n    assert s == \"a\"\n";
     assert_eq!(needless_conversions(test_body).0, 0, "in a test too");
     let in_a_loop = "def f(n: int) -> int:\n    mut h = \"a\"\n    mut total = 0\n    for _ in range(n):\n        k = str(h)\n        h += \"b\"\n        total += k.len()\n    total\n";
@@ -1086,38 +1084,6 @@ fn an_alias_that_changes_nothing_goes() {
     assert_eq!(fixed(module), "from std import json\n\ndef read() -> str:\n    json.dumps([1])\n");
     let twice = "from std.math import sqrt, sqrt as root\n\ndef side() -> float:\n    sqrt(root(2.0))\n";
     assert_eq!(rules(twice), ["needless-alias"]);
-}
-
-/// The needless copies in a program that checks, and the program with their fixes made.
-fn needless_copies(source: &str) -> (usize, String) {
-    let mut sources = Sources::new();
-    let base = sources.add("game.fen", source);
-    let Ok(module) = parse_at(source, base) else { return (0, "it doesn't parse".to_owned()) };
-    let found = fennec_lint::needless_copies(&module, &sources);
-    let diagnostics: Vec<_> = found.iter().map(|lint| lint.diagnostic.clone()).collect();
-    (found.len(), apply_fixes(source, 0, &diagnostics).unwrap_or_else(|| source.to_owned()))
-}
-
-#[test]
-fn a_copy_that_changes_nothing_goes() {
-    let shared = "def f(xs: list[int]) -> int:\n    ys = copy(xs)\n    ys[0] + xs[0]\n";
-    assert_eq!(needless_copies(shared), (1, shared.replace("copy(xs)", "xs")));
-    let number = "def f() -> int:\n    copy(7) + 1\n";
-    assert_eq!(needless_copies(number), (1, number.replace("copy(7)", "7")));
-}
-
-#[test]
-fn a_copy_that_saves_a_change_from_showing_or_names_no_place_stays() {
-    for kept in [
-        // Without it, `ys` would share `xs`, and changing `xs` would copy it then.
-        "def f(ref xs: list[int]) -> int:\n    ys = copy(xs)\n    xs.append(1)\n    ys.len()\n",
-        // Without it, `ys` would name `xs`, so changing `ys` would change the caller's list.
-        "def f(ref xs: list[int]):\n    mut ys = copy(xs)\n    ys.append(1)\n",
-        // A program's own `copy` isn't the builtin.
-        "def copy(n: int) -> int:\n    n + 1\n\ndef f() -> int:\n    copy(7)\n",
-    ] {
-        assert_eq!(needless_copies(kept).0, 0, "{kept}");
-    }
 }
 
 #[test]

@@ -28,4 +28,4 @@ def main(stdout: Stdout, fs: Fs):
         slot.is_absolute(),
     )
     stdout.print(slot == Path("saves/slot1.json"), slot)
-    stdout.print(fs.exists(Path("/")), fs.exists(Path("/").join("no such place")))
+    stdout.print(fs.exists(Path("/"))?, fs.exists(Path("/").join("no such place"))?)

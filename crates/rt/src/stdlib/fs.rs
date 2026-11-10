@@ -423,9 +423,11 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
     let wrong = || Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
     let io = |err: std::io::Error| err.to_string();
     Ok(match (method, paths) {
+        // Whether there's anything at `path`, and a failure when it can't be looked at, as when
+        // a folder on the way can't be read: a `False` then could be wrong.
         ("exists", [Value::Str(path)]) => {
             let path = path.to_string();
-            Value::Bool(blocking(move || Path::new(&path).exists()))
+            done(blocking(move || Path::new(&path).try_exists().map_err(io)), Value::Bool)
         }
         ("read_text", [Value::Str(path)]) => {
             let path = path.to_string();

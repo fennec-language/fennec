@@ -25,8 +25,10 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     }
     let program = generate::program(input);
     let source = source::source(&program);
-    // A task needs the runtime with threads, as a release has beside `fennec`.
-    if source.contains("match tally(") && !crate::llvm::threads_runtime_here() {
+    // A task needs the runtime with threads, as a release has beside `fennec`. Where there's
+    // none, a program that launches one, through `tally` or a `sent`, can't be built.
+    let launches = source.contains("match tally(") || source.contains("match sent");
+    if launches && !crate::llvm::threads_runtime_here() {
         return Ok(());
     }
     let with_program = |wrong: String| format!("{wrong}\n--- program\n{source}");
@@ -115,6 +117,36 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 3), "{found:?}");
     }
 
+    /// Local `ref`s name list items, fields, a holder's items, its list and its tag, and items
+    /// under a lock, and pass themselves on as `ref` arguments, often enough to matter.
+    #[test]
+    fn it_writes_local_refs_of_every_kind() {
+        let mut found = [0_usize; 6];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let refs: Vec<&str> =
+                source.lines().map(str::trim).filter(|line| line.starts_with("ref ")).collect();
+            let field = |names: &[&str]| {
+                refs.iter().any(|line| line.rsplit_once('.').is_some_and(|(_, field)| names.contains(&field)))
+            };
+            let kinds = [
+                field(&["tag"]),
+                field(&["items"]),
+                field(&["x", "y"]),
+                refs.iter().any(|line| line.contains(".items[") && !line.starts_with("ref slot")),
+                refs.iter().any(|line| line.starts_with("ref slot")),
+                source.contains("bump(ref v"),
+            ];
+            for (count, kind) in found.iter_mut().zip(kinds) {
+                *count += usize::from(kind);
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 3), "{found:?}");
+    }
+
     #[test]
     fn what_it_writes_is_a_program_that_builds() {
         for seed in 0_u8..=255 {
@@ -125,19 +157,15 @@ mod tests {
             assert!(source.lines().count() < 2000, "{} lines", source.lines().count());
             let module =
                 fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
-            let signatures =
-                fennec_check::check(&module).unwrap_or_else(|err| unreachable!("{source}\n{err:?}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
             // `fennec build` refuses positional arguments that are easy to get backwards.
             let mut sources = fennec_syntax::Sources::new();
             sources.add("program.fen", source.clone());
             let found = fennec_lint::positional_arguments(&module, &sources);
             let said: Vec<String> =
                 found.iter().map(|lint| format!("{}: {}", lint.rule, lint.message())).collect();
-            assert!(said.is_empty(), "{source}\n{said:#?}");
-            // It refuses a copy made each time round a loop that isn't said with `copy`, too.
-            let copies =
-                fennec_lint::implicit_copies(&fennec_ir::costs(&fennec_ir::lower(&module, &signatures)));
-            let said: Vec<&str> = copies.iter().map(|copy| copy.message.as_str()).collect();
             assert!(said.is_empty(), "{source}\n{said:#?}");
         }
     }

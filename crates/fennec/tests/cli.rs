@@ -377,7 +377,7 @@ fn tests_get_fakes_unless_asked_for_the_real_thing() {
     let start = dir.join("start.txt");
     std::fs::write(&start, "from disk").unwrap();
     let source = format!(
-        "test \"files\"(fs: Fs, out: Stdout, clock: Clock):\n    fs.make_dir({dir:?})?\n    fs.write_text({written:?}, \"hi\")?\n    assert fs.exists({written:?})\n    out.print(\"printed\", fs.exists({start:?}))\n    assert clock.now().nanos >= 0\n",
+        "test \"files\"(fs: Fs, out: Stdout, clock: Clock):\n    fs.make_dir({dir:?})?\n    fs.write_text({written:?}, \"hi\")?\n    assert fs.exists({written:?})?\n    out.print(\"printed\", fs.exists({start:?})?)\n    assert clock.now().nanos >= 0\n",
     );
     let path = dir.join("real.fen");
     std::fs::write(&path, source).unwrap();
@@ -536,7 +536,7 @@ const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
 
 def main(stdout: Stdout, fs: Fs):
     slots = Path("saves") / "slots"
-    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots))
+    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots)?)
     fs.write_text(slots / "b.txt", "bee")?
     fs.write_text("saves/slots/a.txt", "ay")?
     stdout.print([path.text for path in fs.list_dir(slots)?], fs.read_text(slots / "a.txt")?)
@@ -550,7 +550,7 @@ def main(stdout: Stdout, fs: Fs):
         fs.remove(path)?
     fs.remove(slots)?
     fs.remove("saves")?
-    stdout.print(fs.exists("saves"), fs.list_dir(".")?)
+    stdout.print(fs.exists("saves")?, fs.list_dir(".")?)
 "#;
 
 #[test]
@@ -1733,6 +1733,37 @@ fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
     assert!(text(&left.stderr).contains("`stdout` doesn't exist"), "{}", text(&left.stderr));
 }
 
+/// `fennec fix` takes a plain `copy(...)` off, since every copy is a snapshot already, and keeps
+/// one that changes fields. A loop over a copy goes over a name made the line before, as the loop
+/// rule asks, rather than over what it changes.
+#[test]
+fn fix_takes_plain_copies_off_and_names_what_a_loop_goes_over() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-plain-copy", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("copies.fen");
+    std::fs::write(
+        &program,
+        "struct Point:\n    x: int\n    y: int\n\ndef main(stdout: Stdout):\n    mut names = [\"a\", \"b\"]\n    for name in copy(names):\n        names.append(name)\n    mut grid = {1: [2]}\n    for key, row in copy(grid).items():\n        grid[key + 1] = row\n    kept = copy(names)\n    moved = copy(Point(x=1, y=2), x=5)\n    stdout.print(names, grid, kept, moved.x)\n",
+    )
+    .unwrap();
+    let path = program.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        "struct Point:\n    x: int\n    y: int\n\ndef main(stdout: Stdout):\n    mut names = [\"a\", \"b\"]\n    names_before = names\n    for name in names_before:\n        names.append(name)\n    mut grid = {1: [2]}\n    grid_before = grid\n    for key, row in grid_before.items():\n        grid[key + 1] = row\n    kept = names\n    moved = copy(Point(x=1, y=2), x=5)\n    stdout.print(names, grid, kept, moved.x)\n"
+    );
+    assert_eq!(
+        text(&ran.stdout),
+        "[\"a\", \"b\", \"a\", \"b\"] {1: [2], 2: [2]} [\"a\", \"b\", \"a\", \"b\"] 5\n",
+        "{}",
+        text(&ran.stderr)
+    );
+}
+
 /// `fennec fix` names the fields of a pattern matching another kit's type by position, and a
 /// part that's only `_` goes, so it reads no field.
 #[test]
@@ -2570,27 +2601,31 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A copy made each time round a loop without saying so is a compile error, which names where
-/// the other holder is used again. `copy(...)` says it's on purpose.
+/// A copy made each time round a loop is a hint, which names where the other holder is used
+/// again: every copy is a snapshot, as the program says, so it checks and runs. In a `@hot`
+/// function it's a compile error.
 #[test]
-fn a_copy_each_time_round_a_loop_has_to_be_written() {
+fn a_copy_each_time_round_a_loop_is_a_hint_and_a_hot_path_refuses_it() {
     let dir = scratch("copy-rule").unwrap();
     let program = dir.join("loop.fen");
-    let source = "def main(stdout: Stdout):\n    mut h = [1, 2]\n    for _ in range(3):\n        k = h\n        \
-                  h.append(k.len())\n        stdout.print(k.len(), h.len())\n";
-    std::fs::write(&program, source).unwrap();
-    for command in ["check", "run"] {
-        let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
-        assert!(!output.status.success(), "{command}");
-        let printed = text(&output.stderr);
-        assert!(
-            printed.contains("`h` is copied each time round the loop, since `k` still holds it"),
-            "{printed}"
-        );
-    }
-    std::fs::write(&program, source.replace("k = h", "k = copy(h)")).unwrap();
+    let body = "    mut seen = [1, 2]\n    for _ in range(3):\n        kept = seen\n        seen.append(kept.len())\n        \
+                stdout.print(kept.len(), seen.len())\n";
+    let said = "`seen` is copied each time round the loop, since `kept` still holds it";
+    std::fs::write(&program, format!("def main(stdout: Stdout):\n{body}")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
-    assert_eq!(text(&output.stdout), "2 3\n3 4\n4 5\n");
+    assert_eq!(text(&output.stdout), "2 3\n3 4\n4 5\n", "{}", text(&output.stderr));
+    let linted = fennec(&["lint", program.to_str().unwrap()], "").unwrap();
+    assert!(linted.status.success(), "{}", text(&linted.stderr));
+    assert!(text(&linted.stdout).contains(said), "{}", text(&linted.stdout));
+    std::fs::write(
+        &program,
+        format!("@hot\ndef grow(stdout: Stdout):\n{body}\ndef main(stdout: Stdout):\n    grow(stdout)\n"),
+    )
+    .unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(!output.status.success());
+    let refused = "`seen` is copied here, since `kept` still holds it";
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -2748,7 +2783,8 @@ fn constants_are_worked_out_while_compiling() {
     );
 }
 
-/// A build refuses what `check` and a run refuse, including a copy each time round a loop.
+/// A build refuses what `check` and a run refuse, including a copy each time round a loop in a
+/// `@hot` function.
 #[test]
 fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     let dir = std::env::temp_dir().join(format!("fennec_build_refuses_{}", std::process::id()));
@@ -2756,20 +2792,21 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     let program = dir.join("copies.fen");
     std::fs::write(
         &program,
-        "def main(stdout: Stdout):\n    mut xs = [1]\n    mut history = [[0]]\n    for frame in range(3):\n        \
-         history.append(xs)\n        xs.append(frame)\n    stdout.print(history, xs)\n",
+        "@hot\ndef record(stdout: Stdout):\n    mut xs = [1]\n    mut history = [[0]]\n    for frame in range(3):\n        \
+         history.append(xs)\n        xs.append(frame)\n    stdout.print(history, xs)\n\ndef main(stdout: Stdout):\n    \
+         record(stdout)\n",
     )?;
     let program = program.to_string_lossy().into_owned();
     let executable = dir.join("copies").to_string_lossy().into_owned();
     let checked = fennec(&["check", &program], "")?;
     assert!(!checked.status.success());
-    assert!(text(&checked.stderr).contains("is copied each time"), "{}", text(&checked.stderr));
+    assert!(text(&checked.stderr).contains("`xs` is copied here"), "{}", text(&checked.stderr));
     for build in
         [vec!["build", &program, "-o", &executable], vec!["build", "--llvm", &program, "-o", &executable]]
     {
         let built = fennec(&build, "")?;
         assert!(!built.status.success(), "{build:?}");
-        assert!(text(&built.stderr).contains("is copied each time"), "{build:?}: {}", text(&built.stderr));
+        assert!(text(&built.stderr).contains("`xs` is copied here"), "{build:?}: {}", text(&built.stderr));
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -2830,10 +2867,9 @@ fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
                  stdout.print(held.tags, at)\n"
             ),
         )?;
-        let checked = fennec(&["check", &program.to_string_lossy()], "")?;
-        let told = text(&checked.stderr);
+        let linted = fennec(&["lint", &program.to_string_lossy()], "")?;
+        let told = text(&linted.stdout);
         assert!(told.contains(&format!("`{said}` is copied each time round the loop")), "{told}");
-        assert!(told.contains(&format!("write `copy({said})`")), "{told}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

@@ -278,7 +278,7 @@ fn files_can_fail_to_read() {
 
         def read(fs: Fs, path: str):
             text = fs.read_text(path)? from Unreadable(path)
-            if fs.exists(path):
+            if fs.exists(path)?:
                 fs.write_text(path, text)?
             text.strip()
 
@@ -578,4 +578,29 @@ fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
     assert!(fennec_syntax::parse(chained).is_ok());
     let unhandled = "def port(text: str, given: bool) -> int:\n    int(text) if given else 8080\n";
     assert_eq!(problems(unhandled), ["this can fail, but nothing handles it @ int(text)"]);
+}
+
+/// On `T? fails E`, a plain `else` would handle the failure and the `None` alike, so it's refused,
+/// on one line or in a chain, with `?` first as the fix to make by hand. `?` then `else`, and
+/// `else as why:`, which handles only the failure, check.
+#[test]
+fn a_plain_else_cant_handle_a_failure_and_a_none_alike() {
+    let declared = "error Bad:\n    why: str\n\ndef cached(n: int) -> int? fails Bad:\n    if n > 5:\n        fail Bad('broken')\n    if n > 2:\n        return None\n    n\n";
+    let said = "this can fail as well as give `None`, and a plain `else` would handle both";
+    for line in [
+        "found = cached(7) else 0",
+        "found = cached(1) else None else 0",
+        "found = cached(1) else:\n        0",
+    ] {
+        let program = format!("{declared}\ndef main(stdout: Stdout):\n    {line}\n    stdout.print(found)\n");
+        assert_eq!(
+            problems(&program),
+            [format!("{said} @ cached({})", if line.contains('7') { 7 } else { 1 })],
+            "{line}"
+        );
+    }
+    let fine = format!(
+        "{declared}\ndef first(n: int) -> int fails Bad:\n    cached(n)? else 0\n\ndef main(stdout: Stdout):\n    held = cached(7) else as why:\n        None\n    stdout.print(held, first(1) else 2)\n"
+    );
+    assert_eq!(problems(&fine), Vec::<String>::new());
 }

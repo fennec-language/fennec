@@ -94,7 +94,7 @@ def respond(stats: shared Stats, db: Database, fs: Fs, dir: str, request: Reques
 
 def main(net: Net, fs: Fs, args: Args, stdout: Stdout) fails NetError | SqlError | IoError:
     dir = args[0] if args.len() > 0 else "soak-data"
-    if not fs.exists(dir):
+    if not fs.exists(dir)?:
         fs.make_dir(dir)?
     shared stats = Stats()
     with sqlite.open(fs, f"{dir}/soak.db")? as db:

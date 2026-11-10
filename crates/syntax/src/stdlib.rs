@@ -41,6 +41,7 @@ modules! {
     fs,
     html,
     intrinsics,
+    io,
     json,
     layout,
     log,

@@ -2553,6 +2553,61 @@ def main(stdout: Stdout):
         stdout.print(unit.seen)
 ";
 
+/// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
+/// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
+/// through it, as it undoes a write made directly.
+#[test]
+fn a_local_ref_in_a_lock_reads_and_is_rolled_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "local_ref_in_lock",
+        LOCAL_REF_IN_LOCK,
+        "Bag(items=[2, 2], counts={})\n5\nfailed: stop\nBag(items=[4, 2], counts={})\n",
+    )
+}
+
+const LOCAL_REF_IN_LOCK: &str = r#"error Nope:
+    why: str
+
+struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+def changed(box: shared Bag):
+    lock box as ref held:
+        ref slot = held.items[0]
+        slot = slot * 2
+
+def read_after(box: shared Bag) -> int:
+    lock box as ref held:
+        ref items = held.items
+        items[0] = items[1] * 2
+        ref slot = held.items[0]
+        x = slot + 1
+        x
+
+def undone(box: shared Bag) fails Nope:
+    lock box as ref held:
+        ref slot = held.items[1]
+        slot = slot * 10
+        ref items = held.items
+        items.append(9)
+        fail Nope("stop")
+
+def main(stdout: Stdout):
+    shared b = Bag(items=[1, 2], counts=dict[str, int]())
+    changed(b)
+    lock b as held:
+        stdout.print(held)
+    stdout.print(read_after(b))
+    undone(b) else as why:
+        stdout.print("failed:", why.why)
+    lock b as held:
+        stdout.print(held)
+"#;
+
 /// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
 /// read back through the list and through the name, its index worked out once at the `ref`, and
 /// passed on as `ref`. It's declared again each time round a loop.
@@ -8227,6 +8282,36 @@ fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::i
     send(&running, "TERM")?;
     assert_eq!(wait(&mut running)?.signal(), Some(15));
     drop(running);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a program writes to `Stderr` goes out at once, after what it printed before, so the two read
+/// in order where they're shown together, as on a terminal.
+#[cfg(unix)]
+#[test]
+fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stderr_in_order")?;
+    let program = dir.join("warn.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, stderr: Stderr):
+    stdout.print(\"first\")
+    stderr.write_line(\"then a warning\")?
+    stdout.print(\"last\")
+",
+    )?;
+    let executable = dir.join("warn");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Both to one pipe, as a terminal shows them.
+    let ran =
+        Command::new("sh").arg("-c").arg("\"$0\" 2>&1").arg(&executable).output_before(FENNEC_DEADLINE)?;
+    assert!(ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "first\nthen a warning\nlast\n");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

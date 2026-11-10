@@ -210,6 +210,7 @@ pub enum Cap {
     Net,
     Env,
     Signals,
+    Stderr,
 }
 
 impl Cap {
@@ -225,6 +226,7 @@ impl Cap {
             "Net" => Some(Cap::Net),
             "Env" => Some(Cap::Env),
             "Signals" => Some(Cap::Signals),
+            "Stderr" => Some(Cap::Stderr),
             _ => None,
         }
     }
@@ -241,6 +243,7 @@ impl Cap {
             Cap::Net => "Net",
             Cap::Env => "Env",
             Cap::Signals => "Signals",
+            Cap::Stderr => "Stderr",
         }
     }
 
@@ -257,6 +260,7 @@ impl Cap {
             Cap::Net => 7,
             Cap::Env => 8,
             Cap::Signals => 9,
+            Cap::Stderr => 10,
         }
     }
 }

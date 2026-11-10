@@ -14,7 +14,10 @@ use crate::types::{Type, a};
 
 /// Whether a type is a capability, through which all I/O goes.
 pub(crate) fn is_capability(name: &str) -> bool {
-    matches!(name, "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Env" | "Signals")
+    matches!(
+        name,
+        "Stdout" | "Stderr" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Env" | "Signals"
+    )
 }
 
 /// Whether a type is a capability, by itself.

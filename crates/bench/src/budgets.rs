@@ -71,6 +71,20 @@ const MOST_EDIT_RUN_INSTRUCTIONS: u64 = 4_850_000_000;
 /// program, rather than a new executable being linked and started, an edit should show in 50 ms.
 const EDIT_RUN_GOAL: Duration = Duration::from_millis(50);
 
+/// Linting a file with thousands of lint errors, each shown with its line. It holds showing them to
+/// the same work for each, wherever in the file it points: finding a line by reading the file up
+/// to it made that grow with the square of the file. Its count is held to well under twice what it
+/// was when that was fixed, which a change that makes it grow that way again goes far past.
+const MANY_ERRORS: Budget =
+    Budget { name: "lint, 10,000 errors in one file", limit: Duration::from_secs(1), enforced: true };
+
+/// What linting the file of `MANY_ERRORS` may run.
+const MOST_MANY_ERRORS_INSTRUCTIONS: u64 = 3_000_000_000;
+
+/// How many functions the file of `MANY_ERRORS` has, each with two lint errors: a local too short
+/// to say what it is, and nothing that uses the function.
+const ERRORED_FUNCTIONS: usize = 5000;
+
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
 
@@ -259,6 +273,7 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     run.counted = kit.counted_run(&["run"], MOST_RUN_INSTRUCTIONS)?;
     measured.push(run);
     measured.push(kit.edit_to_run(runs)?);
+    measured.push(kit.many_errors(runs)?);
     Ok(measured)
 }
 
@@ -276,13 +291,21 @@ struct Kit {
 /// The file edits are made to, and the line in it that changes.
 const EDITED: &str = "src/m3.fen";
 const EDITED_FILE: usize = 3;
-const EDITED_LINE: &str = "    y = x + 300\n";
+const EDITED_LINE: &str = "    bigger = number + 300\n";
 
-/// A function that checks and runs natively, and that nothing else depends on.
+/// The edited line, as the `edit`th edit leaves it.
+fn edited_line(edit: usize) -> String {
+    format!("    bigger = number + 300 + {edit}\n")
+}
+
+/// A function that checks and runs natively, and that nothing else depends on. The kit has nothing
+/// for the linter to say, as a kit someone works on wouldn't: its functions are exported, so one
+/// nothing in it calls is still used, and documented, as what's exported must be.
 fn function(number: usize) -> String {
     format!(
-        "def f{number}(x: int) -> int:\n    y = x + {number}\n    if y > 100:\n        return y - 1\n    \
-         z = y * 2\n    z + 1\n\n"
+        "## Step {number} of the kit.\nexport def step_{number}(number: int) -> int:\n    \
+         bigger = number + {number}\n    if bigger > 100:\n        return bigger - 1\n    \
+         doubled = bigger * 2\n    doubled + 1\n\n"
     )
 }
 
@@ -300,19 +323,22 @@ impl Kit {
                 text.push_str(&function(number));
             }
             for number in (first..first + FUNCTIONS_PER_FILE).step_by(10) {
-                let _ = write!(text, "test \"t{number}\":\n    assert f{number}(1) > 0\n\n");
+                let _ = write!(text, "test \"step {number}\":\n    assert step_{number}(1) > 0\n\n");
             }
             std::fs::write(dir.join(format!("src/m{file}.fen")), text)?;
-            imports.push(format!("from m{file} import f{first}\n"));
+            imports.push(format!("from m{file} import step_{first}\n"));
         }
         imports.sort();
-        let calls: Vec<String> =
-            (0..files).map(|file| format!("f{}(1)", file * FUNCTIONS_PER_FILE)).collect();
-        let main = format!(
-            "{}\ndef main(stdout: Stdout):\n    stdout.print({})\n",
-            imports.concat(),
-            calls.join(" + ")
-        );
+        // `main` calls the first function of each file, through a function for every ten files, so
+        // no function is longer than the linter allows.
+        let mut main = imports.concat();
+        let totals: Vec<String> = (0..files.div_ceil(10)).map(|total| format!("total_{total}()")).collect();
+        for (total, chunk) in (0..files).collect::<Vec<_>>().chunks(10).enumerate() {
+            let calls: Vec<String> =
+                chunk.iter().map(|file| format!("step_{}(1)", file * FUNCTIONS_PER_FILE)).collect();
+            let _ = write!(main, "\ndef total_{total}() -> int:\n    {}\n", calls.join(" + "));
+        }
+        let _ = write!(main, "\ndef main(stdout: Stdout):\n    stdout.print({})\n", totals.join(" + "));
         std::fs::write(dir.join("src/main.fen"), main)?;
         Ok(Kit { dir: dir.to_path_buf(), fennec })
     }
@@ -398,7 +424,7 @@ impl Kit {
         let (_, before) = self.timed(&["run", "--no-test"])?;
         let mut times = Vec::with_capacity(runs + 1);
         for run in 0..=runs {
-            let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {}\n", 2000 + run));
+            let edited = original.replace(EDITED_LINE, &edited_line(2000 + run));
             std::fs::write(&path, edited).map_err(|err| err.to_string())?;
             let (took, printed) = self.timed(&["run", "--no-test"])?;
             if printed == before {
@@ -408,7 +434,7 @@ impl Kit {
             }
             times.push(took);
         }
-        let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {}\n", 2000 + runs + 1));
+        let edited = original.replace(EDITED_LINE, &edited_line(2000 + runs + 1));
         std::fs::write(&path, edited).map_err(|err| err.to_string())?;
         let counted = self.counted_run(&["run", "--no-test"], MOST_EDIT_RUN_INSTRUCTIONS);
         let programs = fennec_count::counted_programs(&self.dir.join("counting"));
@@ -425,7 +451,7 @@ impl Kit {
         let (cold, _) = self.timed(&["test"])?;
         let mut times = Vec::with_capacity(runs);
         for run in 1..=runs {
-            let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
+            let edited = original.replace(EDITED_LINE, &edited_line(run));
             std::fs::write(&path, edited).map_err(|err| err.to_string())?;
             let (took, printed) = self.timed(&["test"])?;
             if !ran_one_test(&printed) {
@@ -433,11 +459,70 @@ impl Kit {
             }
             times.push(took);
         }
-        let edited = original.replace(EDITED_LINE, "    y = x + 300 + 1000\n");
+        let edited = original.replace(EDITED_LINE, &edited_line(1000));
         std::fs::write(&path, edited).map_err(|err| err.to_string())?;
         let counted = self.counted(&["test"], MOST_VERDICT_INSTRUCTIONS);
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
         Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold), counted, programs: Vec::new() })
+    }
+}
+
+impl Kit {
+    /// `fennec lint` on a file of its own with thousands of lint errors, which it shows, so it exits
+    /// with 1.
+    fn many_errors(&self, runs: usize) -> Result<Measured, String> {
+        let folder = self.dir.join("errors");
+        std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+        let file = folder.join("many.fen");
+        let mut text = String::new();
+        for number in 0..ERRORED_FUNCTIONS {
+            let _ = write!(text, "def short_{number}() -> int:\n    qz = {number}\n    qz\n\n");
+        }
+        std::fs::write(&file, text).map_err(|err| err.to_string())?;
+        let path = file.to_string_lossy().into_owned();
+        let linted = || -> Result<(Duration, String), String> {
+            let start = Instant::now();
+            let output = self
+                .command(&["lint", &path])
+                .output()
+                .map_err(|err| format!("couldn't run fennec: {err}"))?;
+            let took = start.elapsed();
+            match output.status.code() {
+                Some(1) => Ok((took, String::from_utf8_lossy(&output.stderr).into_owned())),
+                _ => Err(format!(
+                    "`fennec lint` on {path} should find its errors:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )),
+            }
+        };
+        let (cold, said) = linted()?;
+        let errors = said.lines().filter(|line| line.starts_with("error: ")).count();
+        if errors < 2 * ERRORED_FUNCTIONS {
+            return Err(format!(
+                "`fennec lint` should show {} errors, but showed {errors}",
+                2 * ERRORED_FUNCTIONS
+            ));
+        }
+        let times = (0..runs).map(|_| linted().map(|(took, _)| took)).collect::<Result<Vec<_>, _>>()?;
+        let counting = self.dir.join("counting");
+        std::fs::create_dir_all(&counting).map_err(|err| err.to_string())?;
+        let counted = Counter::find(&counting).and_then(|counter| {
+            let program = Program {
+                command: self.fennec.clone(),
+                args: vec!["lint".to_owned(), path.clone()],
+                stdin: None,
+            };
+            counter.count_exiting(&program, 1, |command| self.set_up(command))
+        });
+        let counted =
+            counted.map(|instructions| Counted { instructions, most: MOST_MANY_ERRORS_INSTRUCTIONS });
+        Ok(Measured {
+            budget: MANY_ERRORS,
+            warm: median(times),
+            cold: Some(cold),
+            counted,
+            programs: Vec::new(),
+        })
     }
 }
 
@@ -522,7 +607,7 @@ fn session_script(uri: &str, text: &str, edits: usize) -> std::io::Result<Vec<u8
         |method: &str, params: Json| Json::object([("method", Json::string(method)), ("params", params)]);
     fennec_lsp::write(&mut script, &message("textDocument/didOpen", open))?;
     for edit in 1..=edits {
-        let edited = text.replace(EDITED_LINE, &format!("    y = x + 300 + {edit}\n"));
+        let edited = text.replace(EDITED_LINE, &edited_line(edit));
         let document = Json::object([("uri", Json::string(uri)), ("version", Json::number(edit + 1))]);
         let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
         let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
@@ -606,7 +691,7 @@ fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration, Durati
     let mut times = Vec::with_capacity(runs);
     let mut definitions = Vec::with_capacity(runs);
     for run in 1..=runs {
-        let edited = text.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
+        let edited = text.replace(EDITED_LINE, &edited_line(run));
         let document =
             Json::object([("uri", Json::string(uri.as_str())), ("version", Json::number(run + 1))]);
         let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
@@ -614,7 +699,8 @@ fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration, Durati
         times.push(editor.settled("textDocument/didChange", params)?);
         let line =
             text.get(..text.find(EDITED_LINE).unwrap_or(0)).map_or(0, |before| before.matches('\n').count());
-        let place = Json::object([("line", Json::number(line)), ("character", Json::number(8))]);
+        // At `number`, which the definition is the parameter of.
+        let place = Json::object([("line", Json::number(line)), ("character", Json::number(13))]);
         let document = Json::object([("uri", Json::string(uri.as_str()))]);
         let params = Json::object([("textDocument", document), ("position", place)]);
         definitions.push(editor.answered(100 + run, "textDocument/definition", params)?);
@@ -692,7 +778,7 @@ mod tests {
 
     #[test]
     fn a_session_script_is_framed_messages_ending_in_exit() {
-        let script = super::session_script("file:///a.fen", "    y = x + 300\n", 2).unwrap();
+        let script = super::session_script("file:///a.fen", super::EDITED_LINE, 2).unwrap();
         let text = String::from_utf8_lossy(&script);
         assert_eq!(text.matches("Content-Length").count(), 5, "{text}");
         assert!(

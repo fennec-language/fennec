@@ -1,18 +1,63 @@
-//! Writing a program tree from bytes. Each byte chooses something, so fewer bytes make a smaller
-//! program, and cutting a failing input down cuts the program down. Every loop is bounded, so
-//! every program ends, and every name is printed when its block ends, which is the digest the
-//! builds and the evaluator are compared on.
+//! Writing a program tree from bytes. Each byte chooses something, and once they run out a
+//! stream seeded by them goes on choosing, so the input decides the whole program and a short
+//! one still makes a varied one. Every loop is bounded, so every program ends, and every name is
+//! printed when it's written and when its block ends, which is the digest the builds and the
+//! evaluator are compared on.
 //!
 //! Most programs keep their numbers small and their indexes in range, so they run to the end. One
 //! in eight is risky: big numbers, indexes as they come and division by anything, to compare where
 //! and whether the builds and the evaluator fail.
 
-use super::ast::{Arith, Case, Compare, Expr, Place, Program, Stmt, TYPES, Ty};
+#![expect(
+    clippy::too_many_lines,
+    reason = "one match chooses each kind of statement, and one each kind of value"
+)]
+
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt, TYPES, Ty};
+
+/// How many statements a program has before it ends, where the input's bytes run out sooner.
+const MOST_FROM_STREAM: usize = 60;
+
+/// A stream's start from the input's bytes, never zero, which xorshift can't leave.
+fn seeded(bytes: &[u8]) -> u64 {
+    let hash = fennec_blake3::hash(bytes);
+    let first: [u8; 8] = hash.as_bytes().get(..8).and_then(|head| head.try_into().ok()).unwrap_or([1; 8]);
+    u64::from_le_bytes(first) | 1
+}
 
 /// How deep expressions nest.
 const MOST_DEPTH: usize = 3;
 /// How deep blocks nest.
 const MOST_BLOCKS: usize = 3;
+/// What prints the value `name` holds: a buffer, which can't be printed whole, by its items.
+fn printable(name: &str, ty: Ty) -> Expr {
+    let value = Expr::Name(name.to_owned());
+    if ty == Ty::Buf { Expr::BufItems(Box::new(value)) } else { value }
+}
+
+/// `n` made to fit `size`, for a literal, which has to.
+fn literal_in(size: Size, n: i64) -> i64 {
+    match size {
+        Size::U8 => n.rem_euclid(256),
+        Size::I32 => i64::from(i32::try_from(n.rem_euclid(1 << 31)).unwrap_or(0)) * n.signum(),
+        Size::U64 => n.saturating_abs(),
+    }
+}
+
+/// What a worked-out int is kept below, with `%`, to fit `size` where nothing's meant to fail.
+const fn inside(size: Size) -> i64 {
+    match size {
+        Size::U8 => 256,
+        Size::I32 => 1 << 31,
+        Size::U64 => 1 << 62,
+    }
+}
+
+/// The keys a `Bag`'s dict holds.
+const KEYS: [&str; 3] = ["a", "b", "c"];
+/// The most statements a program has, past which a block gets none: `if` and `else` in each
+/// other could otherwise make one too big to build in a minute.
+const MOST_IN_ALL: usize = 250;
 /// The most statements a block has.
 const MOST_STATEMENTS: u8 = 6;
 
@@ -25,6 +70,11 @@ struct Writer<'b> {
     risky: bool,
     /// How many loops the statement being written is inside.
     loops: usize,
+    /// How many statements have been written.
+    written: usize,
+    /// What chooses once the input's bytes run out: a stream seeded by them, so the input still
+    /// decides everything, and a short one doesn't make a program of nothing but its first choice.
+    stream: u64,
 }
 
 /// A name in scope.
@@ -41,9 +91,20 @@ struct InScope {
 pub(crate) fn program(bytes: &[u8]) -> Program {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
-    let mut writer = Writer { bytes: bytes.iter(), names: Vec::new(), made: 0, risky, loops: 0 };
+    let mut writer = Writer {
+        bytes: bytes.iter(),
+        names: Vec::new(),
+        made: 0,
+        risky,
+        loops: 0,
+        written: 0,
+        stream: seeded(bytes),
+    };
     let mut body = Vec::new();
-    while writer.bytes.len() > 0 && body.len() < 64 {
+    while (writer.bytes.len() > 0 || writer.written < MOST_FROM_STREAM)
+        && body.len() < 64
+        && writer.written <= MOST_IN_ALL
+    {
         writer.statement(&mut body, 0);
     }
     writer.print_from(&mut body, 0);
@@ -51,9 +112,16 @@ pub(crate) fn program(bytes: &[u8]) -> Program {
 }
 
 impl Writer<'_> {
-    /// The next choice. Running out always chooses 0, so every input ends.
+    /// The next choice: the input's next byte, then the stream's.
     fn byte(&mut self) -> u8 {
-        self.bytes.next().copied().unwrap_or(0)
+        if let Some(byte) = self.bytes.next() {
+            return *byte;
+        }
+        // xorshift64, which only has to be the same every time.
+        self.stream ^= self.stream << 13;
+        self.stream ^= self.stream >> 7;
+        self.stream ^= self.stream << 17;
+        self.stream.to_le_bytes().first().copied().unwrap_or(0)
     }
 
     fn choice(&mut self, count: usize) -> usize {
@@ -96,8 +164,11 @@ impl Writer<'_> {
             return self.name_of(Ty::Int, false).map_or_else(|| self.small_int(), Expr::Name);
         }
         let next = depth + 1;
-        match self.choice(17) {
-            14 => Expr::IntOf(Box::new(self.of(Ty::Byte, next))),
+        match self.choice(22) {
+            14 => {
+                let size = self.size();
+                Expr::IntOf(Box::new(self.of(Ty::Sized(size), next)))
+            }
             15 => {
                 let limit = if self.risky {
                     Expr::Arith(Arith::Rem, Box::new(self.int(next)), Box::new(Expr::Int(9)))
@@ -107,6 +178,25 @@ impl Writer<'_> {
                 Expr::SumCounted(Box::new(limit))
             }
             16 => self.name_of(Ty::Tally, false).map_or_else(|| self.small_int(), Expr::Count),
+            19 => {
+                let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+                Expr::CountOf(Box::new(self.of(Ty::Counts, next)), key)
+            }
+            21 => {
+                let list = self.of(Ty::Ints, next);
+                let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
+                let sum = Expr::ParallelSum(Box::new(list), Box::new(by));
+                self.bounded(sum)
+            }
+            20 if self.risky => Expr::BufAt(Box::new(self.of(Ty::Buf, next)), Box::new(self.int(next))),
+            20 => Expr::BufLen(Box::new(self.of(Ty::Buf, next))),
+            17 if self.risky => Expr::Truncated(Box::new(self.float(next))),
+            17 => Expr::Tag(Box::new(self.of(Ty::Holder, next))),
+            18 => {
+                let called = self.name_of(Ty::Count, false).map(Expr::Called);
+                let called = called.unwrap_or_else(|| self.small_int());
+                self.bounded(called)
+            }
             0 | 1 => self.small_int(),
             2 | 3 => self.name_of(Ty::Int, false).map_or_else(|| self.small_int(), Expr::Name),
             4 => {
@@ -170,8 +260,24 @@ impl Writer<'_> {
         match ty {
             Ty::Int => self.int(depth),
             Ty::Bool if depth >= MOST_DEPTH => Expr::Bool(self.choice(2) == 0),
-            Ty::Bool => match self.choice(4) {
+            Ty::Bool => match self.choice(6) {
                 0 => Expr::Bool(self.choice(2) == 0),
+                5 => {
+                    let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+                    Expr::Has(Box::new(self.of(Ty::Counts, next)), key)
+                }
+                4 => {
+                    const COMPARES: [Compare; 5] =
+                        [Compare::Less, Compare::LessEq, Compare::Equal, Compare::NotEqual, Compare::Greater];
+                    let compare = COMPARES.get(self.choice(COMPARES.len())).copied().unwrap_or(Compare::Less);
+                    let (left, right) = (self.float(next), self.float(next));
+                    // A float compared with itself is refused, since NaN equals NaN.
+                    let right = match (&left, right) {
+                        (Expr::Name(a), Expr::Name(b)) if *a == b => Expr::Float(0.5),
+                        (_, right) => right,
+                    };
+                    Expr::FloatCompare(compare, Box::new(left), Box::new(right))
+                }
                 1 => Expr::And(Box::new(self.of(Ty::Bool, next)), Box::new(self.of(Ty::Bool, next))),
                 2 => Expr::Not(Box::new(self.of(Ty::Bool, next))),
                 _ => {
@@ -199,7 +305,7 @@ impl Writer<'_> {
                 _ => Expr::Str(String::new()),
             },
             Ty::Ints if depth >= MOST_DEPTH => Expr::Ints(vec![Expr::Int(1), Expr::Int(2)]),
-            Ty::Ints => match self.choice(4) {
+            Ty::Ints => match self.choice(7) {
                 0 => {
                     let count = self.choice(4);
                     Expr::Ints((0..count).map(|_| self.int(next)).collect())
@@ -209,40 +315,113 @@ impl Writer<'_> {
                     let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
                     let plus = self.int(MOST_DEPTH);
                     let plus = self.bounded(plus);
-                    Expr::Mapped(Box::new(list), Box::new(by), Box::new(plus))
+                    Expr::Mapped(Box::new(list), Box::new(by), Box::new(plus), self.choice(3) == 0)
                 }
                 2 => Expr::Ints(Vec::new()),
+                3 => Expr::HeldItems(Box::new(self.of(Ty::Holder, next))),
+                6 => Expr::BufItems(Box::new(self.of(Ty::Buf, next))),
+                4 => {
+                    let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+                    Expr::ListAt(Box::new(self.of(Ty::Lists, next)), key)
+                }
                 _ => Expr::Ints(vec![Expr::Int(3), Expr::Int(1), Expr::Int(2)]),
             },
             Ty::Point => Expr::Point(Box::new(self.int(next)), Box::new(self.int(next))),
-            Ty::Byte if depth >= MOST_DEPTH => Expr::Byte(Box::new(Expr::Int(i64::from(self.byte())))),
-            Ty::Byte => match self.choice(4) {
+            Ty::Sized(size) if depth >= MOST_DEPTH => self.sized_literal(size),
+            Ty::Sized(size) => match self.choice(4) {
                 0 => {
                     let value = self.int(next);
-                    // Kept in range where nothing's meant to fail. A literal is checked to fit when
-                    // the program's compiled, so only what's worked out can be out of range.
-                    let value = if let Expr::Int(n) = value {
-                        Expr::Int(n.rem_euclid(256))
-                    } else if self.risky {
-                        value
-                    } else {
-                        Expr::Arith(Arith::Rem, Box::new(value), Box::new(Expr::Int(256)))
+                    // A literal is checked to fit when the program's compiled, so only what's
+                    // worked out can be out of range, and only where the program's risky.
+                    let value = match value {
+                        Expr::Int(n) => Expr::Int(literal_in(size, n)),
+                        value if self.risky => value,
+                        value => Expr::Arith(Arith::Rem, Box::new(value), Box::new(Expr::Int(inside(size)))),
                     };
-                    Expr::Byte(Box::new(value))
+                    Expr::Convert(size, Box::new(value))
                 }
-                1 => Expr::ByteWrap(Box::new(self.of(Ty::Byte, next)), Box::new(self.of(Ty::Byte, next))),
+                1 => Expr::SizedWrap(
+                    size,
+                    Box::new(self.of(Ty::Sized(size), next)),
+                    Box::new(self.of(Ty::Sized(size), next)),
+                ),
                 2 if self.risky => {
-                    Expr::ByteAdd(Box::new(self.of(Ty::Byte, next)), Box::new(self.of(Ty::Byte, next)))
+                    let operator = [Arith::Add, Arith::Sub, Arith::Mul]
+                        .get(self.choice(3))
+                        .copied()
+                        .unwrap_or(Arith::Add);
+                    let (left, right) = (self.of(Ty::Sized(size), next), self.of(Ty::Sized(size), next));
+                    Expr::SizedArith(size, operator, Box::new(left), Box::new(right))
                 }
-                _ => Expr::Byte(Box::new(Expr::Int(i64::from(self.byte())))),
+                _ => self.sized_literal(size),
             },
             // These are made by statements of their own, never in an expression.
-            Ty::Shared | Ty::Tally => Expr::Int(0),
+            Ty::Holder => {
+                let items = self.of(Ty::Ints, next);
+                Expr::Holder(Box::new(items), Box::new(self.int(next)))
+            }
+            Ty::Lists => {
+                let count = self.choice(3);
+                let pairs = KEYS.iter().take(count).map(|key| (*key, self.of(Ty::Ints, next))).collect();
+                Expr::Lists(pairs)
+            }
+            Ty::Float => self.float(depth),
+            Ty::Buf => {
+                let capacity = if self.choice(2) == 0 { None } else { Some(i64::from(self.byte() % 9)) };
+                let count = self.choice(4);
+                Expr::Buffer(capacity, (0..count).map(|_| self.int(next)).collect())
+            }
+            Ty::Counts => {
+                let count = self.choice(4);
+                let pairs = KEYS.iter().take(count).map(|key| (*key, self.int(next))).collect();
+                Expr::Counts(pairs)
+            }
+            Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count | Ty::Outer => Expr::Int(0),
             Ty::Shape => match self.choice(3) {
                 0 => Expr::Shape(Case::Circle, Box::new(self.int(next))),
                 1 => Expr::Shape(Case::Square, Box::new(self.int(next))),
                 _ => Expr::Shape(Case::Empty, Box::new(Expr::Int(0))),
             },
+        }
+    }
+
+    fn size(&mut self) -> Size {
+        [Size::U8, Size::I32, Size::U64].get(self.choice(3)).copied().unwrap_or(Size::U8)
+    }
+
+    /// A sized integer written out as a conversion of a literal that fits.
+    fn sized_literal(&mut self, size: Size) -> Expr {
+        let n = i64::from(self.byte()) * if self.choice(2) == 0 { 1 } else { -1_000_003 };
+        Expr::Convert(size, Box::new(Expr::Int(literal_in(size, n))))
+    }
+
+    /// A float: written out, worked out, or from an int.
+    fn float(&mut self, depth: usize) -> Expr {
+        const FLOATS: [f64; 9] = [0.5, 1.5, -2.25, 1e10, 0.1, 3.0, -0.0, 1e300, 2.5e-5];
+        const DIVISORS: [f64; 4] = [0.5, 3.0, -2.25, 1e-300];
+        let literal =
+            |at: usize, from: &[f64]| Expr::Float(from.get(at % from.len()).copied().unwrap_or(1.0));
+        if depth >= MOST_DEPTH {
+            return self
+                .name_of(Ty::Float, false)
+                .map_or_else(|| literal(self.choice(9), &FLOATS), Expr::Name);
+        }
+        let next = depth + 1;
+        match self.choice(6) {
+            0 | 1 => literal(self.choice(9), &FLOATS),
+            2 => {
+                let operator =
+                    [Arith::Add, Arith::Sub, Arith::Mul].get(self.choice(3)).copied().unwrap_or(Arith::Add);
+                Expr::FloatArith(operator, Box::new(self.float(next)), Box::new(self.float(next)))
+            }
+            3 => {
+                // A divisor written out is never zero, which could be refused as the program's
+                // compiled; one worked out may be, in a risky program, and fails as it runs.
+                let divisor = if self.risky { self.float(next) } else { literal(self.choice(4), &DIVISORS) };
+                Expr::FloatArith(Arith::Div, Box::new(self.float(next)), Box::new(divisor))
+            }
+            4 => Expr::FloatOf(Box::new(self.int(next))),
+            _ => self.name_of(Ty::Float, false).map_or_else(|| literal(self.choice(9), &FLOATS), Expr::Name),
         }
     }
 
@@ -254,7 +433,7 @@ impl Writer<'_> {
     fn block(&mut self, depth: usize) -> Vec<Stmt> {
         let scope = self.names.len();
         let mut body = Vec::new();
-        let count = 1 + self.byte() % MOST_STATEMENTS;
+        let count = if self.written > MOST_IN_ALL { 0 } else { 1 + self.byte() % MOST_STATEMENTS };
         for _ in 0..count {
             self.statement(&mut body, depth);
         }
@@ -266,15 +445,19 @@ impl Writer<'_> {
     /// Prints each name declared since `scope`, so the digest has every value, and so no change
     /// goes unread, which the checker refuses.
     fn print_from(&mut self, body: &mut Vec<Stmt>, scope: usize) {
-        for name in self.names.iter().skip(scope).filter(|name| name.ty == Ty::Shared) {
-            body.push(Stmt::PrintShared(name.name.clone()));
+        for name in self.names.iter().skip(scope) {
+            match name.ty {
+                Ty::Shared | Ty::Bag => body.push(Stmt::PrintShared(name.name.clone())),
+                Ty::Outer => body.push(Stmt::PrintOuter(name.name.clone())),
+                _ => {}
+            }
         }
         let values: Vec<(Expr, Ty)> = self
             .names
             .iter()
             .skip(scope)
-            .filter(|name| !matches!(name.ty, Ty::Shared | Ty::Tally))
-            .map(|name| (Expr::Name(name.name.clone()), name.ty))
+            .filter(|name| !matches!(name.ty, Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count | Ty::Outer))
+            .map(|name| (printable(&name.name, name.ty), name.ty))
             .collect();
         for chunk in values.chunks(4) {
             body.push(Stmt::Print(chunk.to_vec()));
@@ -282,9 +465,35 @@ impl Writer<'_> {
     }
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
-        let which = self.choice(23);
+        self.written += 1;
+        let which = self.choice(30);
         match which {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
+            23..=25 => self.copies(body, which),
+            26 => self.change_counts(body),
+            27 => self.change_buffer(body),
+            29 => {
+                let table = self.fresh();
+                let count = 1 + self.choice(3);
+                let ids: Vec<String> = (0..count).map(|_| self.fresh()).collect();
+                let xs = (0..count).map(|_| self.int(1)).collect();
+                let removed = if count > 1 && self.choice(3) == 0 { Some(self.choice(count)) } else { None };
+                // The point read by its `Id` is never the one taken out, which would fail.
+                let start = self.choice(count);
+                let read = (0..count)
+                    .map(|step| (start + step) % count)
+                    .find(|at| Some(*at) != removed)
+                    .unwrap_or(0);
+                let by = self.int(1);
+                let by = self.bounded(by);
+                body.push(Stmt::TableRound { table, ids, xs, removed, read, by });
+            }
+            28 => {
+                // A generator lending from a source, let go partway or run out.
+                let limit = Expr::Int(i64::from(self.byte() % 6));
+                let stop = Expr::Int(i64::from(self.byte() % 10));
+                body.push(Stmt::Summed(limit, stop));
+            }
             22 => {
                 let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
@@ -295,6 +504,12 @@ impl Writer<'_> {
             0..=2 => {
                 let ty = self.ty();
                 let value = self.of(ty, 0);
+                // In a loop, holding a name's value while the name changes copies it each round,
+                // which is refused unless it's said on purpose.
+                let value = match value {
+                    Expr::Name(other) if self.loops > 0 => Expr::Copy(other),
+                    value => value,
+                };
                 let name = self.fresh();
                 let changeable = self.choice(2) == 0;
                 body.push(Stmt::Let { name: name.clone(), value, changeable });
@@ -307,7 +522,13 @@ impl Writer<'_> {
                 let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
                 let item = self.fresh();
                 let by = if self.risky { self.small_int() } else { Expr::Int(i64::from(self.byte() % 5)) };
-                body.push(Stmt::EachRef(item, list.clone(), by));
+                // Half read the list they're changing, at a fixed place or where the item says.
+                let read = [None, Some(0), Some(-1), Some(2)].get(self.choice(4)).copied().flatten();
+                body.push(match self.choice(3) {
+                    0 => Stmt::EachRef(item, list.clone(), by),
+                    1 => Stmt::EachRefRead(item, list.clone(), read),
+                    _ => Stmt::EachRefThenRead(item, list.clone(), read.unwrap_or(0)),
+                });
                 self.read_back(body, &list);
             }
             8 if self.loops > 0 => {
@@ -357,7 +578,8 @@ impl Writer<'_> {
                 let ty = self.ty();
                 let Some(name) = self.name_of(ty, true) else { return self.print(body) };
                 let value = self.of(ty, 1);
-                body.push(Stmt::Assign { place: Place::Name(name.clone()), value, add: false });
+                let add = ty == Ty::Float && self.choice(2) == 0;
+                body.push(Stmt::Assign { place: Place::Name(name.clone()), value, add });
                 self.read_back(body, &name);
             }
             _ => self.print(body),
@@ -461,6 +683,10 @@ impl Writer<'_> {
 
     /// A `shared Point`, or a change to one under its lock.
     fn sharing(&mut self, body: &mut Vec<Stmt>, which: usize) {
+        // Half of these are about a `shared Bag`, whose list and dict change under its lock.
+        if self.choice(2) == 0 {
+            return self.bag(body, which);
+        }
         if which == 16 {
             let name = self.fresh();
             let (x, y) = (self.int(1), self.int(1));
@@ -478,6 +704,206 @@ impl Writer<'_> {
         let by = self.bounded(by);
         let refuse = self.of(Ty::Bool, 1);
         body.push(Stmt::Change(shared, by, refuse));
+    }
+
+    /// A `shared Bag`, or changes to one under its lock, from `main` or from a task.
+    fn bag(&mut self, body: &mut Vec<Stmt>, which: usize) {
+        if which == 16 || self.name_of(Ty::Bag, false).is_none() {
+            let name = self.fresh();
+            let items = self.of(Ty::Ints, 1);
+            let count = self.choice(3);
+            let counts = KEYS.iter().take(count).map(|key| (*key, i64::from(self.byte() % 9))).collect();
+            body.push(Stmt::ShareBag(name.clone(), items, counts));
+            self.names.push(InScope { name, ty: Ty::Bag, changeable: false, held: 0 });
+            return;
+        }
+        let Some(name) = self.name_of(Ty::Bag, false) else { return self.print(body) };
+        // Now and then a `shared Outer` holding it, or a change to one under its own lock.
+        match self.choice(5) {
+            0 => {
+                let outer = self.fresh();
+                body.push(Stmt::ShareOuter(outer.clone(), name));
+                self.names.push(InScope { name: outer, ty: Ty::Outer, changeable: false, held: 0 });
+                return;
+            }
+            1 => {
+                let Some(outer) = self.name_of(Ty::Outer, false) else { return self.print(body) };
+                let by = self.int(1);
+                let by = self.bounded(by);
+                let refuse = self.of(Ty::Bool, 1);
+                body.push(Stmt::OuterBump(outer, by, refuse));
+                return;
+            }
+            _ => {}
+        }
+        self.made += 1;
+        let id = self.made;
+        if which == 17 {
+            // From `main`, a crash would end the program, where the undoing can't be seen, so
+            // only a risky program's changes can crash there.
+            let ops = self.ops(!self.risky, false);
+            let refuse = self.of(Ty::Bool, 1);
+            body.push(Stmt::Locked { id, name, ops, refuse });
+        } else {
+            let ops = self.ops(false, true);
+            let items = self.of(Ty::Ints, 1);
+            body.push(Stmt::Sent { id, name, ops, items });
+        }
+    }
+
+    /// One to four changes under a bag's lock: only ones that can't crash where `safe` says so,
+    /// and using the number a task was sent where `sent` says so.
+    fn ops(&mut self, safe: bool, sent: bool) -> Vec<Op> {
+        const PLACES: [i64; 5] = [0, 1, -1, 2, 5];
+        let count = 1 + self.choice(4);
+        let mut ops = Vec::with_capacity(count);
+        for _ in 0..count {
+            let value = if sent && self.choice(2) == 0 {
+                Amount::Sent(i64::from(self.byte() % 4))
+            } else {
+                Amount::Literal(i64::from(self.byte() % 20) - 5)
+            };
+            let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+            let at = PLACES.get(self.choice(PLACES.len())).copied().unwrap_or(0);
+            let op = match self.choice(8) {
+                6 => Op::AddTwice(value),
+                7 => Op::GrowItems(value),
+                0 | 1 => Op::Append(value),
+                2 => Op::Pop,
+                3 if safe => Op::SetCount(key, value, false),
+                3 => Op::SetItem(at, value, self.choice(2) == 0),
+                4 => Op::SetCount(key, value, !safe && self.choice(2) == 0),
+                _ => Op::Remove(key),
+            };
+            ops.push(op);
+        }
+        ops
+    }
+
+    /// What copies are tested on: a function capturing a list that can't change, while one that
+    /// shares its value can; a struct holding a list, changed; and lists stored into a dict.
+    fn copies(&mut self, body: &mut Vec<Stmt>, which: usize) {
+        match which {
+            23 => {
+                let fixed: Vec<String> = self
+                    .names
+                    .iter()
+                    .filter(|name| name.ty == Ty::Ints && !name.changeable)
+                    .map(|name| name.name.clone())
+                    .collect();
+                let Some(captured) = fixed.get(self.choice(fixed.len())).cloned() else {
+                    return self.print(body);
+                };
+                let name = self.fresh();
+                body.push(Stmt::Let {
+                    name: name.clone(),
+                    value: Expr::Summing(captured),
+                    changeable: false,
+                });
+                self.names.push(InScope { name, ty: Ty::Count, changeable: false, held: 0 });
+            }
+            24 => {
+                let Some(holder) = self.name_of(Ty::Holder, true) else { return self.print(body) };
+                let value = self.int(1);
+                let value = self.bounded(value);
+                body.push(if self.choice(2) == 0 {
+                    Stmt::HolderAppend(holder.clone(), value)
+                } else {
+                    Stmt::HolderTag(holder.clone(), value)
+                });
+                self.read_back(body, &holder);
+            }
+            _ => {
+                let Some(lists) = self.name_of(Ty::Lists, true) else { return self.print(body) };
+                let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+                if self.choice(2) == 0 {
+                    let list = self.of(Ty::Ints, 1);
+                    body.push(Stmt::PutList(lists.clone(), key, list));
+                } else {
+                    let value = self.int(1);
+                    body.push(Stmt::ListAppend(lists.clone(), key, value));
+                }
+                self.read_back(body, &lists);
+            }
+        }
+    }
+
+    /// A change to a `dict[str, int]`: a key set, added to or removed.
+    fn change_counts(&mut self, body: &mut Vec<Stmt>) {
+        let Some(counts) = self.name_of(Ty::Counts, true) else { return self.print(body) };
+        let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
+        match self.choice(3) {
+            0 => body.push(Stmt::RemoveKey(counts.clone(), key)),
+            1 => {
+                let value = self.int(0);
+                let value = self.bounded(value);
+                body.push(Stmt::SetKey(counts.clone(), key, value, false));
+            }
+            _ => {
+                let value = self.int(1);
+                let value = self.bounded(value);
+                let add = Stmt::SetKey(counts.clone(), key, value, true);
+                // A key that isn't there fails `+=`, which only a risky program risks.
+                if self.risky {
+                    body.push(add);
+                } else {
+                    let there = Expr::Has(Box::new(Expr::Name(counts.clone())), key);
+                    body.push(Stmt::If(there, vec![add], Vec::new()));
+                }
+            }
+        }
+        self.read_back(body, &counts);
+    }
+
+    /// A change to a `Buffer[int]`, kept from failing unless the program is risky.
+    fn change_buffer(&mut self, body: &mut Vec<Stmt>) {
+        let Some(buffer) = self.name_of(Ty::Buf, true) else { return self.print(body) };
+        let length = Expr::BufLen(Box::new(Expr::Name(buffer.clone())));
+        let any = Expr::Compare(Compare::Greater, Box::new(length.clone()), Box::new(Expr::Int(0)));
+        // A place in the buffer: as it comes in a risky program, else kept inside it, where
+        // there's anything.
+        let at = self.int(2);
+        let inside = Expr::Arith(Arith::Rem, Box::new(at.clone()), Box::new(length.clone()));
+        let at = if self.risky { at } else { inside };
+        let guarded = |risky: bool, op: BufOp| {
+            let change = Stmt::Buffered(buffer.clone(), op);
+            if risky { change } else { Stmt::If(any.clone(), vec![change], Vec::new()) }
+        };
+        let change = match self.choice(7) {
+            0 | 1 => Stmt::Buffered(buffer.clone(), BufOp::Push(self.int(1))),
+            2 => guarded(self.risky, BufOp::Pop),
+            3 => {
+                let value = self.int(1);
+                guarded(self.risky, BufOp::Set(at, value))
+            }
+            4 => {
+                let place = if self.risky {
+                    self.int(2)
+                } else if self.choice(2) == 0 {
+                    length
+                } else {
+                    Expr::Int(0)
+                };
+                Stmt::Buffered(buffer.clone(), BufOp::Insert(place, self.int(1)))
+            }
+            5 => guarded(self.risky, BufOp::Remove(at)),
+            _ => {
+                let others: Vec<String> = self
+                    .names
+                    .iter()
+                    .filter(|name| name.ty == Ty::Buf && name.name != buffer)
+                    .map(|name| name.name.clone())
+                    .collect();
+                match others.get(self.choice(others.len().max(1))) {
+                    Some(other) => Stmt::Buffered(buffer.clone(), BufOp::Extend(other.clone())),
+                    None => {
+                        Stmt::Buffered(buffer.clone(), BufOp::Truncate(Expr::Int(i64::from(self.byte() % 4))))
+                    }
+                }
+            }
+        };
+        body.push(change);
+        self.read_back(body, &buffer);
     }
 
     fn change_int(&mut self, body: &mut Vec<Stmt>) {
@@ -511,7 +937,7 @@ impl Writer<'_> {
     /// refuses, and every write is in the digest.
     fn read_back(&self, body: &mut Vec<Stmt>, name: &str) {
         if let Some(found) = self.names.iter().rev().find(|held| held.name == name) {
-            body.push(Stmt::Print(vec![(Expr::Name(found.name.clone()), found.ty)]));
+            body.push(Stmt::Print(vec![(printable(&found.name, found.ty), found.ty)]));
         }
     }
 

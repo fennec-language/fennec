@@ -59,7 +59,7 @@ def sha256_of_bytes_list(chunks: list[bytes]) -> str:
 ## `==` on two compares what they hold in constant time.
 ##
 ## ```fennec
-## token = Secret.of(env.get("API_TOKEN") else "")
+## token = env.secret("API_TOKEN")?
 ## headers = {"authorization": f"Bearer {token.expose_secret()}"}
 ## ```
 export struct Secret[T]:

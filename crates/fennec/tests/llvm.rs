@@ -2396,6 +2396,62 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `for ref` body that reads what it loops over sees its item as it is now, changes made
+/// through the loop's name included: by position, through a field, with `enumerate`, and by `Id`.
+#[test]
+fn a_for_ref_body_reads_its_item_as_it_is_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "for_ref_reads_now",
+        FOR_REF_READS_NOW,
+        "7\n7\n27 24\n12 30\n0 106\n1 206\n2 306\n6\n6\n",
+    )
+}
+
+const FOR_REF_READS_NOW: &str = r"from std.collections import Table
+
+struct Unit:
+    health: int
+    seen: int
+
+struct World:
+    units: list[Unit]
+    turn: int
+
+def total(units: list[Unit]) -> int:
+    sum(unit.health for unit in units)
+
+def total_in(world: World) -> int:
+    total(world.units)
+
+def main(stdout: Stdout):
+    mut units = [Unit(health=10, seen=0), Unit(health=20, seen=0)]
+    for ref unit in units:
+        unit.health -= 3
+        unit.seen = total(units)
+        stdout.print(units[0].health)
+    stdout.print(units[0].seen, units[1].seen)
+    mut world = World(units=[Unit(health=1, seen=0), Unit(health=2, seen=0)], turn=0)
+    for ref unit in world.units:
+        unit.health *= 10
+        unit.seen = total_in(world)
+    stdout.print(world.units[0].seen, world.units[1].seen)
+    mut scores = [1, 2, 3]
+    for at, ref score in enumerate(scores):
+        score += 100
+        stdout.print(at, sum(scores))
+    mut table = Table[Unit]()
+    first = table.add(Unit(health=5, seen=0))
+    _ = table.add(Unit(health=6, seen=0))
+    for ref unit in table:
+        unit.health += 1
+        unit.seen = table[first].health
+    for unit in table:
+        stdout.print(unit.seen)
+";
+
 /// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively as
 /// in the interpreter: a case that finishes, one that leaves by `return`, and one that fails, each
 /// putting the case back, and a `_` field kept as it was.
@@ -9280,6 +9336,24 @@ def main(net: Net, stdout: Stdout):
     Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
 }
 
+/// A server built on the plain runtime, as `fennec build` makes one where the runtime with threads
+/// isn't there, closes as gently as one on the threads runtime: a refusal with what the client
+/// sent still unread reaches it whole, with no reset. `close` on the plain runtime shut the
+/// socket at once. Found by fuzzing the server (`fennec-fuzz run http-server`).
+#[test]
+fn a_server_on_the_plain_runtime_closes_gently() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let asked = [&b"NOT HTTP\r\n\r\n"[..], &b"x".repeat(100_000)].concat();
+    let said = served_on("0", "plain_runtime_close", &asked)?;
+    assert_eq!(
+        said,
+        "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line"
+    );
+    Ok(())
+}
+
 /// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
 /// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
 /// when it read the line and `line_value` another. Found by fuzzing the server
@@ -11035,6 +11109,39 @@ def main(stdout: Stdout):
     pairs: list[(int, str) | bool] = [(1, "one"), True]
     stdout.print(pairs)
 "#,
+    )
+}
+
+/// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
+/// is held natively: passed in, told apart with `is`, and read as the member it holds.
+#[test]
+fn a_union_with_a_generic_struct_member_is_held_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_generic_member",
+        r#"from std.crypto import Secret
+
+struct Box[T]:
+    value: T
+
+def text_of(given: str | Secret[str]) -> (str, bool):
+    if given is str:
+        return (given, False)
+    (given.expose_secret(), True)
+
+def size(held: Box[int] | int) -> int:
+    if held is int:
+        return held
+    held.value * 10
+
+def main(stdout: Stdout):
+    stdout.print(text_of("plain"), text_of(Secret.of("hidden"))[1])
+    both: list[Box[int] | int] = [Box(value=4), 2]
+    stdout.print(size(both[0]), size(both[1]))
+"#,
+        "(\"plain\", False) True\n40 2\n",
     )
 }
 

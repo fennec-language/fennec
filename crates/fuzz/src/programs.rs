@@ -40,6 +40,15 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
         let ended = if *succeeded { "ran to the end".to_owned() } else { format!("failed: {said}") };
         format!("{}({ended})", String::from_utf8_lossy(printed))
     };
+    // Built checking proofs (`FENNEC_CHECK_PROOFS=1`), a stop on one is a false proof, whether or
+    // not both builds stop the same way.
+    for (how, (_, said, _)) in [("dev", &dev), ("--release", &release)] {
+        if said.contains("proof broken") {
+            return Err(with_program(format!(
+                "a proof the compiler made is false, in the {how} build: {said}"
+            )));
+        }
+    }
     if dev != release {
         return Err(with_program(format!(
             "the dev build and the --release build disagree:\n--- dev\n{}\n--- release\n{}",
@@ -88,6 +97,8 @@ mod tests {
             let bytes: Vec<u8> =
                 (0_u8..96).map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(3))).collect();
             let source = source::source(&generate::program(&bytes));
+            // Small enough to build well inside a minute, however the bytes go.
+            assert!(source.lines().count() < 2000, "{} lines", source.lines().count());
             let module =
                 fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
             let checked = fennec_check::check(&module);

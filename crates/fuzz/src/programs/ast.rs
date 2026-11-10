@@ -294,6 +294,41 @@ pub(crate) enum Op {
     PopCount(&'static str),
 }
 
+/// What an arrow function that fails is given to.
+#[derive(Clone, Debug)]
+pub(crate) enum Arrow {
+    /// `tried`, which prints the value or what it failed with.
+    Tried,
+    /// `tried_twice`, which calls it twice, passing a failure up with `?` to the call's `else`.
+    Twice,
+    /// `tried_each` with a list, the arrow taking each item.
+    Each(Expr),
+    /// `failure_of`, printing whether it gave `None`.
+    FailureOf,
+    /// `either`, the arrow failing two ways: `capped(n)?`, then `shut_below(other)?`.
+    Either(Expr),
+}
+
+/// What holds a float in `FloatKeys`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FloatHeld {
+    /// `Gauge(at=value, n=1)`, a struct's `float` field.
+    Gauge,
+    /// `Gauge32(at=f32(value))`, a struct's `f32` field.
+    Gauge32,
+    /// `Level.At(value=value)`, an enum case's `float`, or `Level.Off`.
+    Level,
+    /// `Level32.At(value=f32(value))`, or `Level32.Off`.
+    Level32,
+    /// A `Gauge` held as `Marked`, a union with `str`, its set holding `"a"` too.
+    Marked,
+}
+
+/// The floats `FloatKeys` picks from, each with the key it is: `0.0` and `-0.0` are one, as are
+/// two NaNs made differently. The last, `Off`, is only for an enum.
+pub(crate) const FLOATS: [(&str, u8); 8] =
+    [("0.0", 0), ("-0.0", 0), ("nan()", 1), ("-nan()", 1), ("1.5", 2), ("-1.5", 3), ("2.0", 4), ("Off", 5)];
+
 /// How a union's member is called on.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Via {
@@ -433,6 +468,21 @@ pub(crate) enum Stmt {
     /// is `stop`, letting it go there. The source prints as it opens and closes, and its cleanup
     /// fails for an even `limit`, which fails the loop: that prints `shut`.
     Summed(Expr, Expr),
+    /// An arrow function that fails, `() => capped(n, limit=limit)?`, its `?` passing its own
+    /// failure up to what it's given to, as #1305 has it. `capped` fails with `n` when it's over
+    /// `limit`.
+    Arrowed(Arrow, Expr, i64),
+    /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
+    /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
+    /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.
+    FloatKeys {
+        held: FloatHeld,
+        names: (String, String),
+        values: Vec<usize>,
+        probe: usize,
+        asked: usize,
+        pair: (usize, usize),
+    },
     /// `while counter < limit:`, counting up each round so it ends.
     While(String, i64, Vec<Stmt>),
     /// `if condition: break`.

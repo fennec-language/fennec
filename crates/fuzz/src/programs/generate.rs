@@ -14,8 +14,8 @@
 )]
 
 use super::ast::{
-    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Size, Stmt, TYPES, Ty,
-    Via,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    RefPlace, Size, Stmt, TYPES, Ty, Via,
 };
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
@@ -579,6 +579,7 @@ impl Writer<'_> {
                 let by = self.bounded(by);
                 body.push(Stmt::TableRound { table, ids, xs, removed, read, by });
             }
+            28 if self.choice(2) == 0 => self.arrows_or_floats(body),
             28 => {
                 // A generator lending from a source, let go partway or run out.
                 let limit = Expr::Int(i64::from(self.byte() % 6));
@@ -881,6 +882,43 @@ impl Writer<'_> {
 
     /// A list lent to a call through `ref` beside a value read from it, the whole list or a
     /// list's item, or a value assigned to itself, a local or a struct's fields.
+    /// An arrow function that fails and passes it up with `?`, or keys holding floats.
+    fn arrows_or_floats(&mut self, body: &mut Vec<Stmt>) {
+        if self.choice(2) == 0 {
+            let limit = i64::from(self.byte() % 12) - 3;
+            let how = match self.choice(5) {
+                0 => Arrow::Tried,
+                1 => Arrow::Twice,
+                2 => Arrow::Each(self.of(Ty::Ints, 1)),
+                3 => Arrow::FailureOf,
+                _ => Arrow::Either(self.int(1)),
+            };
+            let n = self.int(1);
+            body.push(Stmt::Arrowed(how, n, limit));
+            return;
+        }
+        let held = match self.choice(5) {
+            0 => FloatHeld::Gauge,
+            1 => FloatHeld::Gauge32,
+            2 => FloatHeld::Level,
+            3 => FloatHeld::Level32,
+            _ => FloatHeld::Marked,
+        };
+        // `Off` is only an enum's.
+        let kinds = if matches!(held, FloatHeld::Level | FloatHeld::Level32) {
+            FLOATS.len()
+        } else {
+            FLOATS.len() - 1
+        };
+        let count = 2 + self.choice(4);
+        let values: Vec<usize> = (0..count).map(|_| self.choice(kinds)).collect();
+        let probe = self.choice(count);
+        let asked = self.choice(kinds);
+        let pair = (self.choice(count), self.choice(count));
+        let names = (self.fresh(), self.fresh());
+        body.push(Stmt::FloatKeys { held, names, values, probe, asked, pair });
+    }
+
     fn lent_or_self(&mut self, body: &mut Vec<Stmt>) {
         /// The types of locals that can be assigned to themselves: not `shared`, nor reached
         /// only through what lends it.

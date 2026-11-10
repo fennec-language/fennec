@@ -328,7 +328,8 @@ pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
 }
 
 /// Applies the changes the ranges of a call made to this thread's blocks' owners, freeing those
-/// left with none.
+/// left with none. A block that's never freed has none: a worker leaves its count alone
+/// (`heap::uncounted`), and so doesn't note a change to one.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn settle(changes: HashMap<u64, i64>) {
     let gone: Vec<u64> = super::with(|state| {

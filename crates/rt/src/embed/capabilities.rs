@@ -4,7 +4,7 @@
 //! carries a capability as its block's address, and the runtime reads from the block what the
 //! capability may do, so passing one through native code can't widen it.
 //!
-//! A kind on its own, 0 to 8, still means that plain capability where one is taken: no
+//! A kind on its own, 0 to 9, still means that plain capability where one is taken: no
 //! block's address is that small.
 
 use std::rc::Rc;
@@ -23,7 +23,7 @@ use crate::value::{Capability, Value};
 const WORDS: usize = 4;
 
 /// The kinds a capability word can be on its own, below any block's address.
-const KINDS: i64 = 9;
+const KINDS: i64 = 10;
 
 /// The kind native code numbers a capability by, the inverse of `super::capability`.
 fn kind_of(capability: Capability) -> i64 {
@@ -37,6 +37,7 @@ fn kind_of(capability: Capability) -> i64 {
         Capability::Entropy => 6,
         Capability::Net => 7,
         Capability::Env => 8,
+        Capability::Signals => 9,
     }
 }
 
@@ -63,7 +64,17 @@ fn plain(state: &mut State, kind: i64) -> i64 {
 /// `fennec_capability_block(kind)`: the block of the plain capability of a kind, which
 /// native code needn't count.
 pub extern "C" fn block(kind: i64) -> i64 {
-    with(|state| plain(state, kind))
+    let (address, real) = with(|state| {
+        let real = state.world.as_ref().is_none_or(crate::fakes::TestWorld::real);
+        Some((plain(state, kind), real))
+    })
+    .unwrap_or((0, false));
+    // `main` given `Signals` catches the signals that ask a program to stop, from the start. A
+    // test's fake catches nothing, and a replay's stops come from its recording.
+    if kind == kind_of(Capability::Signals) && real && !crate::replay::replaying() {
+        crate::signals::listen();
+    }
+    address
 }
 
 /// What a `Value` holds for a capability word: a kind, or a capability's block.
@@ -321,6 +332,13 @@ fn native_method(
         }
         (Capability::Env, "get", [Value::Str(name)]) => Ok(crate::env::variable(name)),
         (Capability::Env, "all", []) => Ok(crate::env::variables()),
+        (Capability::Signals, "stopping", []) => Ok(Value::Bool(crate::signals::stopping())),
+        (Capability::Signals, "wait", []) => {
+            // What's been printed comes out first, as it does before anything else that waits.
+            super::write_kept_output();
+            crate::signals::wait().map_err(|why| Diagnostic::new(why, at))?;
+            Ok(Value::Unit)
+        }
         _ => Err(crate::methods::no_method(&Value::Capability(capability), method, at)),
     }
 }

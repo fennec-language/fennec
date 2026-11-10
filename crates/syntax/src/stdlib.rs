@@ -52,6 +52,7 @@ modules! {
     process,
     random,
     re,
+    signals,
     sql,
     sqlite,
     string,

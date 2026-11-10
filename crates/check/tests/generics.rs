@@ -372,7 +372,7 @@ fn a_test_receives_capabilities_by_type() {
             assert text == \"\"
     ";
     assert_eq!(problems(fine), Vec::<String>::new());
-    let fix = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net` and `env: Env`";
+    let fix = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`";
     for (written, name) in
         [("args: Args", "args"), ("n: int", "n"), ("out: Stdout = 1", "out"), ("self", "self")]
     {

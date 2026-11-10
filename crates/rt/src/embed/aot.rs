@@ -80,14 +80,16 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     }
 }
 
-/// The program handed over, `length` bytes of it, ready for workers to start from.
-fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
+/// The program handed over, `length` bytes of it, ready for workers to start from. They share it
+/// with this thread, so it's never copied.
+fn program_handed_over(length: i64, stop: fn(i32)) -> std::sync::Arc<Vec<u8>> {
     let _ = STOP.set(stop);
     super::write_kept_output_on_panic();
     let mut bytes = IMAGE.take();
     bytes.truncate(usize::try_from(length).unwrap_or(0));
+    let bytes = std::sync::Arc::new(bytes);
     // Each worker `parallel` runs on starts a runtime of its own, holding the program.
-    let program = std::sync::Arc::new(bytes.clone());
+    let program = std::sync::Arc::clone(&bytes);
     super::parallel::set_worker_setup(Box::new(move || {
         if let Some(Image { sources, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
@@ -228,7 +230,8 @@ pub fn failed_for(text: i64) {
 /// by the one before.
 pub fn test_world(fakes: i64) {
     with(|state: &mut State| {
-        state.world = (fakes != 0 && !real_tests()).then(|| TestWorld::new(TestCapabilities::Fakes));
+        state.world = (fakes != 0 && !real_tests())
+            .then(|| Box::new(TestWorld::new(TestCapabilities::Fakes)) as Box<dyn std::any::Any>);
     });
 }
 
@@ -320,7 +323,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
         crate::replay::unfinished()
             .map(|why| fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default()))
     });
-    report_counts(&leftovers.counts);
+    report_counts(&leftovers.counts, leftovers.boxes);
     (output, failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default())
 }
 
@@ -368,8 +371,9 @@ pub(super) fn report_sites(sites: &std::collections::HashMap<u32, heap::Counts>)
 }
 
 /// With `FENNEC_COUNTS` set, says on stderr what the run allocated and copied, so a test can
-/// check that a program doesn't copy.
-fn report_counts(counts: &heap::Counts) {
+/// check that a program doesn't copy, and how many blocks were still held when it ended, so a
+/// test can check that it lets go of what it made.
+fn report_counts(counts: &heap::Counts, live: usize) {
     if std::env::var_os("FENNEC_COUNTS").is_none() {
         return;
     }
@@ -377,7 +381,8 @@ fn report_counts(counts: &heap::Counts) {
     let blocked = super::serve::blocked_waits();
     #[cfg(not(any(test, feature = "threads")))]
     let blocked = 0;
-    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts, super::parallel::calls(), blocked));
+    let _ =
+        writeln!(std::io::stderr(), "{} live {live}", counts_line(counts, super::parallel::calls(), blocked));
 }
 
 /// The line `report_counts` writes, given how many `parallel` calls native code made and how many
@@ -412,7 +417,7 @@ pub(crate) fn stop_now(code: i32) -> ! {
 pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
     let (output, failure, leftovers) = super::finish_for_exit();
-    report_counts(&leftovers.counts);
+    report_counts(&leftovers.counts, leftovers.boxes);
     let failure = failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default();
     let code = report(&output, &failure);
     if let Some(stop) = STOP.get() {

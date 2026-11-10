@@ -885,6 +885,7 @@ impl Emit<'_, '_, '_> {
             if !self.on_crash.is_empty() {
                 self.roll_back_on_crash()?;
             }
+            self.write_kept_lengths_after_crash();
             self.release_locals(None);
             self.line(&leave);
             self.wrote_prop = true;
@@ -3185,6 +3186,19 @@ def main(stdout: Stdout):
         assert!(!shared.native.is_empty(), "Named's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
         assert!(text.contains("call void @fennec_free(ptr %text"), "{text}");
+        Ok(())
+    }
+
+    /// An enum holding lists of strings and numbers gets native blocks in a program with no
+    /// other threads, and its drop lets go of each list, giving the runtime one with no owner
+    /// left.
+    #[test]
+    fn an_enum_holding_lists_has_native_blocks() -> Result<(), String> {
+        let source = "enum Doc:\n    Words(names: list[str], counts: list[int])\n    Pair(left: Doc, right: Doc)\n\ndef build(depth: int) -> Doc:\n    if depth == 0: return .Words(names=[\"a\", \"b\"], counts=[1, 2])\n    .Pair(left=build(depth - 1), right=build(depth - 1))\n\ndef size(doc: Doc) -> int:\n    match doc:\n        case .Words(names, counts):\n            names.len() + sum(counts)\n        case .Pair(left, right):\n            size(left) + size(right)\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
+        let (units, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Doc's blocks are native");
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(text.contains("call void @fennec_free(ptr %list"), "{text}");
         Ok(())
     }
 

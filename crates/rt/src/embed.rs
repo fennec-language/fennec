@@ -432,8 +432,10 @@ struct State {
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
-    /// A test's fake capabilities, while one that takes them runs.
-    world: Option<crate::fakes::TestWorld>,
+    /// A test's fake capabilities, while one that takes them runs. Behind a box whose type is
+    /// known only where one is made, so a program that isn't a test links none of what a test's
+    /// world does, like cleaning up the files its fakes made.
+    world: Option<Box<dyn std::any::Any>>,
     /// The program's name, as `args.program`.
     program: String,
     /// What it was given on its command line, as `args`.
@@ -711,6 +713,16 @@ fn handle(at: usize) -> i64 {
 }
 
 impl State {
+    /// The fakes of the test running, if one is.
+    fn world(&self) -> Option<&crate::fakes::TestWorld> {
+        self.world.as_ref().and_then(|world| world.downcast_ref())
+    }
+
+    /// `world`, to change.
+    fn world_mut(&mut self) -> Option<&mut crate::fakes::TestWorld> {
+        self.world.as_mut().and_then(|world| world.downcast_mut())
+    }
+
     fn push(&mut self, value: Value) -> i64 {
         self.temps.push(value);
         handle(self.temps.len() - 1)
@@ -1052,7 +1064,7 @@ pub mod io {
     pub(super) fn write(state: &mut State, text: &str) -> Result<(), Diagnostic> {
         // A test's `Stdout` keeps what it printed, for `stdout.captured()`, and a fake one prints
         // nothing more.
-        if let Some(world) = state.world.as_mut() {
+        if let Some(world) = state.world_mut() {
             world.print(text, "");
             if !world.real() {
                 return Ok(());

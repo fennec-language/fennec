@@ -46,6 +46,63 @@ enum Value {
     Texts(Vec<String>),
     /// A tree from `deep`, by how deep it is.
     Deep(i64),
+    Named(Named),
+    /// A `Named` from `chain`, by how deep it is.
+    Chain(i64),
+}
+
+/// A `Named`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Named {
+    Leaf(String),
+    Pair(Box<Named>, Box<Named>, String, Vec<String>),
+}
+
+impl Named {
+    /// How deep it goes and how many it holds, walking without recursing, so a deep one can't
+    /// overflow the evaluator's stack.
+    fn measure(&self) -> (usize, usize) {
+        let mut waiting = vec![(self, 1)];
+        let (mut deepest, mut count) = (0, 0);
+        while let Some((named, depth)) = waiting.pop() {
+            deepest = deepest.max(depth);
+            count += 1;
+            if let Named::Pair(left, right, _, _) = named {
+                waiting.extend([(left.as_ref(), depth + 1), (right.as_ref(), depth + 1)]);
+            }
+        }
+        (deepest, count)
+    }
+
+    /// As the program's `named_digest` writes it.
+    fn digest(&self, text: &mut String) {
+        match self {
+            Named::Leaf(name) => {
+                let _ = write!(text, "l({name})");
+            }
+            Named::Pair(left, right, label, tags) => {
+                let _ = write!(text, "p({label}");
+                for tag in tags {
+                    text.push(',');
+                    text.push_str(tag);
+                }
+                text.push(' ');
+                left.digest(text);
+                text.push(' ');
+                right.digest(text);
+                text.push(')');
+            }
+        }
+    }
+}
+
+/// A `Named` made, or unsure past what the evaluator follows.
+fn kept_named(named: Named) -> Ran<Named> {
+    let (depth, count) = named.measure();
+    if depth > MOST_TREE_DEPTH || count > MOST_TREE_NODES {
+        return Err(Stop::Unsure);
+    }
+    Ok(named)
 }
 
 /// A `Node`.
@@ -253,7 +310,7 @@ impl Bag {
                     let len = i64::try_from(self.items.len()).ok()?;
                     let at = if *at < 0 { at + len } else { *at };
                     let item = self.items.get_mut(usize::try_from(at).ok()?)?;
-                    *item = item.checked_add(amount(*value)?)?;
+                    *item = item.checked_add(amount(*value)?)?.checked_mul(2)?;
                 }
             }
         }
@@ -395,9 +452,14 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
         Value::Sized(_, n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
-        Value::Shared(_) | Value::Bag(_) | Value::Count(_) | Value::Outer(_) | Value::Deep(_) => {
-            "shared".to_owned()
-        }
+        // None of these is ever printed whole.
+        Value::Shared(_)
+        | Value::Bag(_)
+        | Value::Count(_)
+        | Value::Outer(_)
+        | Value::Deep(_)
+        | Value::Named(_)
+        | Value::Chain(_) => "shared".to_owned(),
         Value::Node(tree) => tree.shown(),
         Value::Nodes(trees) => trees_shown(trees),
         Value::Texts(texts) => texts_shown(texts),
@@ -579,6 +641,32 @@ impl Machine {
         Ok(())
     }
 
+    fn named_of(&mut self, expr: &Expr) -> Ran<Named> {
+        match self.expr(expr)? {
+            Value::Named(named) => Ok(named),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
+    /// `match name:` changing a pair's label, tags and left side, or a leaf's name, through
+    /// `ref`, the new left side worked out only for a pair.
+    fn rename(&mut self, name: &str, text: &Expr, left: &Expr) -> Ran<()> {
+        let Value::Named(named) = self.get(name)? else { return Err(Stop::Unsure) };
+        let named = match named.clone() {
+            Named::Leaf(mut held) => {
+                held.push_str(&self.text_of(text)?);
+                Named::Leaf(held)
+            }
+            Named::Pair(_, right, mut label, mut tags) => {
+                label.push_str(&self.text_of(text)?);
+                tags.push(label.clone());
+                Named::Pair(Box::new(self.named_of(left)?), right, label, tags)
+            }
+        };
+        *self.slot(name)? = Value::Named(kept_named(named)?);
+        Ok(())
+    }
+
     fn trees_of(&mut self, expr: &Expr) -> Ran<Vec<Tree>> {
         match self.expr(expr)? {
             Value::Nodes(trees) => Ok(trees),
@@ -717,6 +805,7 @@ impl Machine {
                 }
             }
             Stmt::Reshape(name, text, child) => self.reshape(name, text, child)?,
+            Stmt::Rename(name, text, left) => self.rename(name, text, left)?,
             Stmt::LocalRef(name, place, body) => self.local_ref(name, place, body)?,
             Stmt::Pop(name) => {
                 if let Value::Ints(items) = self.slot(name)? {
@@ -1448,6 +1537,46 @@ impl Machine {
                 text.push(']');
                 Value::Str(text)
             }
+            Expr::NamedLeaf(name) => Value::Named(Named::Leaf(self.text_of(name)?)),
+            Expr::NamedPair(left, right, label, tags) => {
+                let (left, right) = (self.named_of(left)?, self.named_of(right)?);
+                let label = self.text_of(label)?;
+                let Value::Texts(tags) = self.expr(tags)? else { return Err(Stop::Unsure) };
+                Value::Named(kept_named(Named::Pair(Box::new(left), Box::new(right), label, tags))?)
+            }
+            Expr::Chain(depth, label) => {
+                let label = self.text_of(label)?;
+                let depth = (*depth).max(0);
+                if depth > 64 {
+                    // Only measured, as the program only ever measures one this deep.
+                    Value::Chain(depth)
+                } else {
+                    let mut named = Named::Leaf(label.clone());
+                    for at in 0..depth {
+                        let right = Named::Leaf(format!("<{at}>"));
+                        named =
+                            Named::Pair(Box::new(named), Box::new(right), label.clone(), vec![label.clone()]);
+                    }
+                    Value::Named(named)
+                }
+            }
+            Expr::NamedDigest(named) => {
+                let mut text = String::new();
+                self.named_of(named)?.digest(&mut text);
+                Value::Str(text)
+            }
+            Expr::NamedDepth(named) => match self.expr(named)? {
+                Value::Chain(depth) => Value::Int(depth),
+                Value::Named(mut at) => {
+                    let mut depth = 0;
+                    while let Named::Pair(left, ..) = at {
+                        at = *left;
+                        depth += 1;
+                    }
+                    Value::Int(depth)
+                }
+                _ => return Err(Stop::Unsure),
+            },
             Expr::Deep(depth, label) => {
                 // The label is worked out, for anything it does, though only the depth is kept.
                 let _ = self.text_of(label)?;

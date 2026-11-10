@@ -49,17 +49,6 @@ def change(box: shared Point, by: int, refuse: bool) fails Refused:
         if refuse:
             fail Refused(code=by)
 
-def tallying(inbox: Inbox[int], totals: shared Point):
-    for number in inbox:
-        lock totals as ref held:
-            held.y += 1
-            held.x += number
-
-def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeout:
-    with launch((inbox) => tallying(inbox, totals))? as sends:
-        for item in items:
-            sends.send(item)?
-
 def grow_all(ref items: list[int], by: int):
     for ref item in items:
         item += by
@@ -178,6 +167,38 @@ def node_or_leaf(nodes: list[Node], at: int) -> Node:
     if nodes.len() == 0: return .Leaf(name=\"none\")
     nodes[at % nodes.len()]
 
+enum Named:
+    Leaf(name: str)
+    Pair(left: Named, right: Named, label: str, tags: list[str])
+
+def chain(depth: int, label: str) -> Named:
+    mut named = Named.Leaf(name=label)
+    for at in range(depth):
+        named = .Pair(left=named, right=.Leaf(name=f\"<{at}>\"), label=label, tags=[label])
+    named
+
+def named_digest(named: Named) -> str:
+    match named:
+        case .Leaf(name):
+            \"l(\" + name + \")\"
+        case .Pair(left, right, label, tags):
+            mut text = \"p(\" + label
+            for tag in tags:
+                text += \",\" + tag
+            text + \" \" + named_digest(left) + \" \" + named_digest(right) + \")\"
+
+def named_depth(named: Named) -> int:
+    mut at = named
+    mut depth = 0
+    while True:
+        match at:
+            case .Pair(left, _, _, _):
+                at = left
+                depth += 1
+            case _:
+                return depth
+    depth
+
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
     lend Tally(count=start) else:
@@ -187,11 +208,26 @@ def tallied(start: int, stdout: Stdout) -> with Tally:
 ";
 
 /// The program as Fennec source.
+/// The functions that launch a task, left out of a program that has no other threads.
+const TASKS: &str = "def tallying(inbox: Inbox[int], totals: shared Point):
+    for number in inbox:
+        lock totals as ref held:
+            held.y += 1
+            held.x += number
+
+def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeout:
+    with launch((inbox) => tallying(inbox, totals))? as sends:
+        for item in items:
+            sends.send(item)?
+
+";
+
 pub(crate) fn source(program: &Program) -> String {
     let mut writer = Writer { out: String::new(), helpers: String::new(), made: 0 };
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
-    format!("{HEADER}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    let tasks = if program.threadless { "" } else { TASKS };
+    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
 struct Writer {
@@ -230,7 +266,10 @@ fn ops_written(ops: &[Op], indent: usize) -> String {
             Op::AddTwice(value) => format!("held.add_twice({})", amount(*value)),
             Op::GrowItems(value) => format!("grow_all(ref held.items, {})", amount(*value)),
             Op::RefItem(at, value) => {
-                format!("ref slot{number} = held.items[{at}]\n{pad}slot{number} += {}", amount(*value))
+                format!(
+                    "ref slot{number} = held.items[{at}]\n{pad}slot{number} += {}\n{pad}slot{number} = slot{number} * 2",
+                    amount(*value)
+                )
             }
         };
         let _ = writeln!(out, "{pad}{line}");
@@ -350,6 +389,16 @@ impl Writer {
                 self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
             }
             Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
+            Stmt::Rename(name, text, left) => {
+                let (text, left) = (self.expr(text, false), self.expr(left, true));
+                self.line(indent, &format!("match {name}:"));
+                self.line(indent + 1, "case .Pair(ref left, _, ref label, ref tags):");
+                self.line(indent + 2, &format!("label += {text}"));
+                self.line(indent + 2, "tags.append(label)");
+                self.line(indent + 2, &format!("left = {left}"));
+                self.line(indent + 1, "case .Leaf(ref name):");
+                self.line(indent + 2, &format!("name += {text}"));
+            }
             Stmt::LocalRef(name, place, body) => {
                 let place = match place {
                     RefPlace::Item(list, at) => format!("{list}[{}]", self.expr(at, false)),
@@ -730,6 +779,23 @@ impl Writer {
             Expr::Digest(node) => format!("digest({})", self.expr(node, true)),
             Expr::DigestAll(nodes) => format!("digest_all({})", self.expr(nodes, false)),
             Expr::Deep(depth, label) => format!("deep({depth}, {})", self.expr(label, false)),
+            Expr::NamedLeaf(name) => {
+                let start = if known { "." } else { "Named." };
+                format!("{start}Leaf(name={})", self.expr(name, false))
+            }
+            Expr::NamedPair(left, right, label, tags) => {
+                let start = if known { "." } else { "Named." };
+                format!(
+                    "{start}Pair(left={}, right={}, label={}, tags={})",
+                    self.expr(left, true),
+                    self.expr(right, true),
+                    self.expr(label, false),
+                    self.expr(tags, false)
+                )
+            }
+            Expr::Chain(depth, label) => format!("chain({depth}, {})", self.expr(label, false)),
+            Expr::NamedDigest(named) => format!("named_digest({})", self.expr(named, true)),
+            Expr::NamedDepth(named) => format!("named_depth({})", self.expr(named, true)),
             Expr::DepthOf(node) => format!("depth_of({})", self.expr(node, true)),
             Expr::Float(x) => super::eval::float_text(*x),
             Expr::FloatArith(operator, left, right) => {

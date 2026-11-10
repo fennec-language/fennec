@@ -380,12 +380,23 @@ impl Emit<'_, '_, '_> {
             _ => ListItem::Str,
         };
         let length = self.list_length(list);
+        // The stack is checked once, before the keys are made: the calls below are all from here,
+        // as deep as this.
+        self.check_stack(span);
         let keys = self.new_list(key_item, &length);
         let key_text = returns.memory(self.module.layouts);
         let (at, end) = self.loop_begin(&length);
         let value = self.item_value(list, held, &at);
         let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(held) };
-        let got = self.call_closure_with(&closure, &returns, &[format!("{text} {value}")], span);
+        let (got, failed) = self.call_closure_unchecked(&closure, &returns, &[format!("{text} {value}")]);
+        // A key that fails lets go of the keys made so far, the rest still zero, before leaving.
+        let (let_go, kept) = (self.label("keys_let_go"), self.label("keys_kept"));
+        self.line(&format!("br i1 {failed}, label %{let_go}, label %{kept}, !prof !0"));
+        self.start_block(&let_go);
+        self.release(&keys);
+        self.leave_traced("true", span);
+        self.line("unreachable");
+        self.start_block(&kept);
         let place = self.item_address(&keys, &key_text, &at);
         self.store_field(&returns, &got, &place, ITEM_ACCESS);
         self.loop_end(&end);

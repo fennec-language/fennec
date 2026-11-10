@@ -310,6 +310,19 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> String {
         self.check_stack(span);
+        let (result, failed) = self.call_closure_unchecked(closure, returns, args);
+        self.leave_traced(&failed, span);
+        result
+    }
+
+    /// As [`Self::call_closure_with`], with the stack checked already and a failure left for the
+    /// caller to leave by: what it gave back, and an `i1` that holds when it failed.
+    pub(crate) fn call_closure_unchecked(
+        &mut self,
+        closure: &str,
+        returns: &Kind,
+        args: &[String],
+    ) -> (String, String) {
         let mut shown = Vec::with_capacity(args.len() + 3);
         let place = if returns.in_memory() {
             let at = self.place_for(returns);
@@ -339,8 +352,7 @@ impl Emit<'_, '_, '_> {
         let (held, failed) = (self.temp(), self.temp());
         self.line(&format!("{held} = load ptr, ptr %err"));
         self.line(&format!("{failed} = icmp ne ptr {held}, null"));
-        self.leave_traced(&failed, span);
-        place.unwrap_or(result)
+        (place.unwrap_or(result), failed)
     }
 
     pub(crate) fn call_closure(

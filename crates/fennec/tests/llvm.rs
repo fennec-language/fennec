@@ -7516,7 +7516,60 @@ def main(stdout: Stdout):
     )
 }
 
-/// What a built program says it copied and allocated, as `FENNEC_COUNTS` has it report.
+/// A task that crashes partway through filling a list lets go of what it made so far: a
+/// comprehension whose length is kept aside while it runs, and the keys `sorted(key=)` makes
+/// before a key crashes. What a task leaves comes back to the code that launched it, so a leak
+/// shows in the blocks still held at the end, which would grow with the rounds.
+#[test]
+fn a_task_crashing_partway_through_a_list_leaves_nothing_behind() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let live = |rounds: u32| -> std::io::Result<Option<u64>> {
+        let source = CRASHING_PARTWAY.replace("rounds = 3", &format!("rounds = {rounds}"));
+        let counts = counts_of(&format!("crashing_partway_{rounds}"), &source)?;
+        Ok(count(&counts, "live"))
+    };
+    let (few, many) = (live(3)?, live(30)?);
+    assert!(few.is_some(), "the run says how many blocks it still held");
+    assert_eq!(few, many, "blocks still held after 3 crashed rounds and after 30");
+    Ok(())
+}
+
+const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
+
+def kept_then_crash(at: int):
+    out = [f"item {i} of {100 // (10 - i)}, long enough to need a block of its own" for i in range(20)]
+    print_nothing(out)
+
+def keys_then_crash(at: int):
+    words = [f"word {i}, long enough to need a block of its own" for i in range(20)]
+    print_nothing(sorted(words, key=(word) => f"{word} {100 // (word.len() - 46)}"))
+
+def print_nothing(words: list[str]):
+    if words.len() == 12345:
+        pass
+
+def crashing(which: int) -> int fails Crashed:
+    if which == 0:
+        with launch(() => kept_then_crash(which))?:
+            pass
+    else:
+        with launch(() => keys_then_crash(which))?:
+            pass
+    0
+
+def main(stdout: Stdout):
+    rounds = 3
+    mut crashed = 0
+    for _ in range(rounds):
+        crashed += crashing(0) else 1
+        crashed += crashing(1) else 1
+    stdout.print(crashed)
+"#;
+
+/// What a built program says it copied and allocated, and how many blocks it still held at the
+/// end, as `FENNEC_COUNTS` has it report.
 fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
@@ -8216,6 +8269,41 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(stdin.lines())
     stdout.print(entropy.seed() != entropy.seed())
 ";
+
+/// A program links only what the capabilities it's given need: a hello world catches no signals, so
+/// it has none of the thread and socket pair catching them takes, and its runtime's state holds a
+/// test's fakes only behind a box, so none of what cleaning up after them takes either. Each
+/// symbol a program takes from the system costs it at every start. A program given `Signals` has
+/// what catching them needs.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_program_links_only_what_its_capabilities_need() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("links_what_it_needs")?;
+    let imports = |name: &str, source: &str| -> std::io::Result<String> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built =
+            fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let listed = Command::new("nm").arg("-u").arg(&executable).output()?;
+        Ok(String::from_utf8_lossy(&listed.stdout).into_owned())
+    };
+    let hello = imports("hello", "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    for unneeded in ["_socketpair", "_pthread_create", "_sigprocmask", "_fdopendir", "_unlinkat"] {
+        assert!(!hello.lines().any(|line| line.trim() == unneeded), "a hello world takes {unneeded}");
+    }
+    let stopping = imports(
+        "stopping",
+        "def main(signals: Signals, stdout: Stdout):\n    stdout.print(signals.stopping())\n",
+    )?;
+    assert!(stopping.lines().any(|line| line.trim() == "_socketpair"), "{stopping}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
 
 /// A program given `Signals` catches SIGTERM, SIGINT and SIGHUP, so it can finish what it's doing:
 /// it sees `stopping()` turn true, says so and exits 0. A second signal, once a stop's been asked
@@ -15669,6 +15757,55 @@ def size(tree: Named) -> int:
 
 def main(stdout: Stdout):
     total = sum(size(build(10, tag=n)) for n in range(3))
+    kept = build(3, tag=7)
+    stdout.print(total, size(kept))
+"#;
+
+/// A recursive enum holding lists of strings and numbers is made and freed by generated code,
+/// which lets go of each list as its block goes: built, read, copied and changed apart from the
+/// tree, and dropped over and over, in a dev build and with `--release`.
+#[test]
+fn native_blocks_hold_lists() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("native_lists", WORD_TREES, how)?;
+        assert_eq!((out.as_str(), code), ("14519248 2833\n", Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const WORD_TREES: &str = r#"enum Doc:
+    Words(names: list[str], counts: list[int])
+    Pair(left: Doc, right: Doc, title: str)
+    Empty
+
+def build(depth: int, tag: int) -> Doc:
+    if depth == 0:
+        if tag % 4 == 0: return .Empty
+        mut names = []
+        mut counts = []
+        for n in range(tag % 5 + 1):
+            names.append(f"word {tag} {n} long enough to sit in a block of its own")
+            counts.append(n * tag)
+        return .Words(names=names, counts=counts)
+    .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), title=f"t{tag}")
+
+def size(doc: Doc) -> int:
+    match doc:
+        case .Words(names, counts):
+            mut more = names
+            more.append("x")
+            sum(name.len() for name in more) + sum(counts) + names.len()
+        case .Pair(left, right, title):
+            size(left) + size(right) + title.len()
+        case .Empty:
+            1
+
+def main(stdout: Stdout):
+    rounds = 3
+    total = sum(size(build(10, tag=n)) for n in range(rounds))
     kept = build(3, tag=7)
     stdout.print(total, size(kept))
 "#;

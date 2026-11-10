@@ -112,6 +112,16 @@ pub(crate) fn built_and_run(
 /// program doesn't own, a native block handed to the runtime.
 pub(crate) const CAUGHT: [&str; 3] = ["proof broken", "AddressSanitizer", "handed a native block"];
 
+/// Runs what `built_and_run` last made under `name` again, on `threads` threads, with what it
+/// said cut as `built_and_run` cuts it.
+pub(crate) fn ran_again_on(name: &str, threads: usize) -> Result<(Vec<u8>, String, bool), String> {
+    let work = work().join(name);
+    let (printed, said, succeeded) =
+        ran_on(&work.join("program"), &[], &work, MOST_KILOBYTES, Some(threads))?;
+    let caught = said.lines().find(|line| CAUGHT.iter().any(|what| line.contains(what)));
+    Ok((printed, caught.or_else(|| said.lines().next()).unwrap_or_default().to_owned(), succeeded))
+}
+
 /// The executable `built_and_run` last made under `name`.
 pub(crate) fn built_executable(name: &str) -> PathBuf {
     work().join(name).join("program")
@@ -134,9 +144,24 @@ fn ran_holding(
     work: &Path,
     most_kilobytes: u64,
 ) -> Result<(Vec<u8>, String, bool), String> {
+    ran_on(executable, args, work, most_kilobytes, None)
+}
+
+/// `ran_holding`, on `threads` threads where it says, through `FENNEC_THREADS`.
+fn ran_on(
+    executable: &Path,
+    args: &[&std::ffi::OsStr],
+    work: &Path,
+    most_kilobytes: u64,
+    threads: Option<usize>,
+) -> Result<(Vec<u8>, String, bool), String> {
     let (out, err) = (work.join("stdout"), work.join("stderr"));
     let file = |path: &Path| File::create(path).map_err(|err| format!("{}: {err}", path.display()));
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    if let Some(threads) = threads {
+        command.env("FENNEC_THREADS", threads.to_string());
+    }
+    let mut child = command
         .args(args)
         .stdout(file(&out)?)
         .stderr(file(&err)?)

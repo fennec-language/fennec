@@ -23,7 +23,7 @@ type Step = Option<String>;
 
 /// A place: a name and the steps after it, like `xs[i].hp`.
 #[derive(Clone, Debug, PartialEq)]
-struct Place {
+pub(crate) struct Place {
     root: String,
     steps: Vec<Step>,
 }
@@ -31,7 +31,7 @@ struct Place {
 impl Place {
     /// Whether changing one can change the other: one is inside the other, where an index
     /// matches any item and different fields are different places.
-    fn overlaps(&self, other: &Place) -> bool {
+    pub(crate) fn overlaps(&self, other: &Place) -> bool {
         self.root == other.root
             && self.steps.iter().zip(&other.steps).all(|(a, b)| a.is_none() || b.is_none() || a == b)
     }
@@ -51,7 +51,7 @@ impl Place {
 }
 
 /// The place an expression names, if it names one.
-fn place(expr: &Expr) -> Option<Place> {
+pub(crate) fn place(expr: &Expr) -> Option<Place> {
     match &expr.kind {
         ExprKind::Name(name) => Some(Place { root: name.clone(), steps: Vec::new() }),
         ExprKind::Attr { object, name, optional: false } => {

@@ -21,6 +21,18 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         };
         // What's left once the program checks is the linter's. Some of its lints have no fix,
         // and those are for `fennec lint` to report.
+        // TEMPORARY-MIGRATION: only the `Ok`/`Err` rewrite, for migrating the repository.
+        if std::env::var_os("FENNEC_FIX_RESULTS_ONLY").is_some() {
+            let changed =
+                program.sources.fixed(&fennec_check::result_fixes(&program.module, &program.sources));
+            if changed.is_empty() {
+                return ExitCode::SUCCESS;
+            }
+            if let Err(code) = write_all(changed) {
+                return code;
+            }
+            continue;
+        }
         let Err(mut diagnostics) = fennec_check::check(&program.module) else {
             let mut lints = fennec_lint::lint(&program.module, &program.sources);
             lints.extend(fennec_lint::needless_copies(&program.module, &program.sources));

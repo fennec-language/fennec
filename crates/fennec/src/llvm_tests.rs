@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::process::Command;
 
 use fennec_rt::{PROPERTY_CASES, TestOutcome, property_seed};
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef, Trace};
 
 use crate::test_inputs::{Inputs, PREFIX, written};
 
@@ -439,9 +439,9 @@ fn from_hex(text: &str) -> Option<String> {
     String::from_utf8(bytes?).ok()
 }
 
-/// What a test executable said about one test: its number, how it failed if it did, and the
-/// numbers of the flags it set.
-type TestLine = (usize, Option<Diagnostic>, Vec<usize>);
+/// What a test executable said about one test: its number, how it failed if it did with the
+/// failure's call chain, and the numbers of the flags it set.
+type TestLine = (usize, Option<(Diagnostic, Trace)>, Vec<usize>);
 
 /// Reads a line a test executable wrote.
 fn read_line(line: &str) -> Option<TestLine> {
@@ -463,9 +463,10 @@ fn read_line(line: &str) -> Option<TestLine> {
             let end = words.next()?.parse().ok()?;
             let message = from_hex(words.next()?)?;
             let help = from_hex(words.next().unwrap_or(""))?;
+            let trace = Trace::decode(words.next().unwrap_or(""))?;
             let failure = Diagnostic::new(message, Span { start, end });
             let failure = if help.is_empty() { failure } else { failure.with_help(help) };
-            Some((number, Some(failure), Vec::new()))
+            Some((number, Some((failure, trace)), Vec::new()))
         }
         _ => None,
     }
@@ -589,13 +590,15 @@ pub(crate) fn run(
                     result.ran.insert(test.name.clone(), ran);
                 }
                 let cases = if test.inputs.is_empty() { 1 } else { PROPERTY_CASES };
-                result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases });
+                let trace = Trace::default();
+                result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, trace, cases });
             }
             // A property test's input is the simplest that fails, as it shrank it.
-            Some(failure) => {
+            Some((failure, trace)) => {
                 result.outcomes.push(TestOutcome {
                     name: test.name.clone(),
                     failure: Some(test_failure(failure)),
+                    trace,
                     cases: 1,
                 });
             }
@@ -617,12 +620,17 @@ fn rerun_crashed(work: &std::path::Path, taken: &[&TestDef], seen: &[bool], resu
         let line = output.lines().filter_map(read_line).find(|(at, _, _)| *at == number);
         let failure = match line {
             Some((_, failure, _)) => failure,
-            None => Some(Diagnostic::new(format!("this test crashed: {crash}"), test.span)),
+            None => {
+                Some((Diagnostic::new(format!("this test crashed: {crash}"), test.span), Trace::default()))
+            }
         };
         let cases = if failure.is_none() && !test.inputs.is_empty() { PROPERTY_CASES } else { 1 };
+        let (failure, trace) =
+            failure.map_or((None, Trace::default()), |(failure, trace)| (Some(failure), trace));
         result.outcomes.push(TestOutcome {
             name: test.name.clone(),
             failure: failure.map(test_failure),
+            trace,
             cases,
         });
     }

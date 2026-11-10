@@ -197,7 +197,8 @@ fn run_plan(
             format!("LLVM can't build what this test reaches yet: {why}"),
             span.unwrap_or_default(),
         );
-        outcomes.push(fennec_rt::TestOutcome { name, failure: Some(failure), cases: 1 });
+        let trace = fennec_syntax::Trace::default();
+        outcomes.push(fennec_rt::TestOutcome { name, failure: Some(failure), trace, cases: 1 });
     }
     // Workers finish in any order, and a report reads in the order the tests are written.
     let place = |name: &str| graph.tests().position(|test| test == name);
@@ -229,6 +230,10 @@ fn run_plan(
                     println!("  ✗ {}", outcome.name);
                 }
                 eprint!("{}", render(diagnostic));
+                // Past a call outside the program's own files, the chain is what runs the test, a
+                // property test's shrinking say, which says nothing of the test's own failure.
+                let own = outcome.trace.until(|span| program.sources.locate(span).is_none());
+                eprint!("{}", program.sources.render_trace(diagnostic.span, &own));
             }
         }
     }

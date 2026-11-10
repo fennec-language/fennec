@@ -166,21 +166,45 @@ pub(crate) fn errors_shown(path: &str) -> String {
 /// The lint errors of a run's program, being found on a thread of their own while it's built.
 static FINDING: std::sync::Mutex<Option<std::thread::JoinHandle<String>>> = std::sync::Mutex::new(None);
 
+/// Where a run hands the lint errors being found the program it loaded, so they're found from the
+/// one load rather than a second: one parse, and one program both see.
+static LENT: std::sync::Mutex<Option<std::sync::mpsc::Sender<fennec_kit::Program>>> =
+    std::sync::Mutex::new(None);
+
 /// Starts finding the lint errors of the program at `path` beside whatever comes next, for
 /// `show_errors_found` to show.
 pub(crate) fn find_errors_beside(path: &str) {
     let owned = path.to_owned();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    *LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
     // It parses and walks the program as a run does, so it has a run's stack.
     let thread = std::thread::Builder::new().stack_size(crate::STACK_BYTES);
-    match thread.spawn(move || errors_remembered(&owned)) {
-        Ok(finding) => *FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(finding),
-        Err(_) => eprint!("{}", errors_remembered(path)),
+    if let Ok(finding) = thread.spawn(move || errors_remembered_with(&owned, &receiver)) {
+        *FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(finding);
+    } else {
+        lend_loaded(None, path);
+        eprint!("{}", errors_remembered(path));
+    }
+}
+
+/// Hands the lint errors being found the program the run loaded, when it's what they'd load
+/// themselves: one with every file of its kit, before anything changes it. With `None`, or one
+/// that isn't, they load it themselves. Either way only the first call does anything.
+pub(crate) fn lend_loaded(program: Option<&fennec_kit::Program>, path: &str) {
+    let Some(lend) = LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return };
+    let whole =
+        program.filter(|program| fennec_kit::holds_every_file(program, std::path::Path::new(path), path));
+    if let Some(program) = whole {
+        // Nobody waiting only means the errors were found without it.
+        let _ = lend.send(program.clone());
     }
 }
 
 /// Shows the lint errors `find_errors_beside` found, waiting for them if they aren't ready, the
 /// first time it's called. A run calls it before anything else it says, so they come first.
 pub(crate) fn show_errors_found() {
+    // A run that ends before it loaded anything lets them load it themselves.
+    lend_loaded(None, "");
     let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     if let Some(found) = finding.and_then(|finding| finding.join().ok()) {
         eprint!("{found}");
@@ -188,6 +212,11 @@ pub(crate) fn show_errors_found() {
 }
 
 pub(crate) fn errors_remembered(path: &str) -> String {
+    errors_remembered_with(path, &std::sync::mpsc::channel().1)
+}
+
+/// `errors_remembered`, linting the program `lent` gives, if it gives one, rather than loading it.
+fn errors_remembered_with(path: &str, lent: &std::sync::mpsc::Receiver<fennec_kit::Program>) -> String {
     let Some(cache) = crate::run::cache() else { return errors_shown(path) };
     let files = crate::image::files_now(path, &cache);
     let Some(key) = files_key(path, files.as_deref()) else { return errors_shown(path) };
@@ -198,7 +227,7 @@ pub(crate) fn errors_remembered(path: &str) -> String {
         return String::from_utf8_lossy(shown).into_owned();
     }
     let shown = match &files {
-        Some(files) => of_kit(path, &cache, files),
+        Some(files) => of_kit(path, &cache, files, lent),
         None => errors_shown(path),
     };
     // A cache that can't be written only means linting it again next time.
@@ -296,11 +325,16 @@ impl Linted {
 /// What those find in a file depends only on its text and on `fennec_lint::Facts`, so when the
 /// facts are as they were, the rest are as they were too. The lints that look across files, and
 /// those that check the program, look at all of it each time.
-fn of_kit(path: &str, cache: &fennec_build::Cache, files: &[fennec_build::KitFile]) -> String {
+fn of_kit(
+    path: &str,
+    cache: &fennec_build::Cache,
+    files: &[fennec_build::KitFile],
+    lent: &std::sync::mpsc::Receiver<fennec_kit::Program>,
+) -> String {
     let overlay = fennec_kit::Overlay::new();
-    let Ok(program) =
-        fennec_kit::load_with(std::path::Path::new(path), path, fennec_kit::Entry::Everything, &overlay)
-    else {
+    let loaded =
+        || fennec_kit::load_with(std::path::Path::new(path), path, fennec_kit::Entry::Everything, &overlay);
+    let Some(program) = lent.recv().ok().or_else(|| loaded().ok()) else {
         return String::new();
     };
     let (module, sources) = (&program.module, &program.sources);

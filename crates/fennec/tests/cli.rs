@@ -113,6 +113,38 @@ fn a_run_after_an_edit_shows_the_lints_all_of_the_kit_has() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A run lints from the program it loaded when `main` reaches every file of the kit, and loads
+/// all of it again when it doesn't, so a file nothing imports is linted too: after an edit, what
+/// a run shows is what `fennec lint` shows, either way.
+#[test]
+fn a_run_lints_the_files_main_doesnt_import_too() {
+    let dir = scratch("unimported_linted").unwrap();
+    assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
+    let kit = dir.join("demo");
+    let main = "def main(stdout: Stdout):\n    mut doubled = 42\n    stdout.print(doubled)\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let spare = "## Half the number.\nexport def half(number: int) -> int:\n    mut halved = number / 2\n    halved\n";
+    std::fs::write(kit.join("src/spare.fen"), spare).unwrap();
+    let fennec = |args: &[&str]| {
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE");
+        command.output().unwrap()
+    };
+    for edit in ["42", "43"] {
+        std::fs::write(kit.join("src/main.fen"), main.replace("42", edit)).unwrap();
+        let ran = fennec(&["run", "--no-test"]);
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        let said = text(&ran.stderr);
+        assert!(said.contains("src/spare.fen") && said.contains("src/main.fen"), "after {edit}: {said}");
+        assert!(said.contains("2 lints, 2 of which `fennec fix` can fix"), "after {edit}: {said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The README's sample is the first Fennec code most people see, so it has to run as it's
 /// shown, formatted and with nothing for the linter to say.
 #[test]

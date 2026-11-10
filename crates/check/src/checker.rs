@@ -84,6 +84,8 @@ pub(crate) struct Checker {
     pub(crate) generic_sources: BTreeSet<String>,
     /// Each call to a generic function, by its span, with the types its type parameters are there.
     pub(crate) generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    /// Each `with` source called on a union, by the call's span, written in for each member.
+    pub(crate) union_sources: BTreeMap<(u32, u32), crate::union_sources::Dispatch>,
     /// The `with`s that open several handles, by their values' span, which lowering nests one
     /// inside another, innermost last.
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
@@ -204,6 +206,7 @@ impl Checker {
             sources: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
+            union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
@@ -359,6 +362,7 @@ impl Checker {
             sources,
             generic_sources: self.generic_sources,
             generic_calls,
+            union_sources: self.union_sources,
             opened_apart: self.opened_apart,
             launches,
             ref_matches: self.ref_matches,

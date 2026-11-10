@@ -191,6 +191,27 @@ fn run_hands_main_its_arguments_and_input() {
     assert_eq!(text(&output.stdout), "True\n");
 }
 
+/// `stdin.read_line()` and `stdin.read_chunk(size)` read standard input a piece at a time, through
+/// the one buffer `lines()` reads too, so nothing's lost between them: a line without its ending,
+/// `\r\n` too, then bytes, then the lines left, and `None` and empty bytes at the end.
+#[test]
+fn stdin_reads_a_line_or_a_chunk_at_a_time() -> std::io::Result<()> {
+    let dir = scratch("stdin-pieces")?;
+    let program = dir.join("pieces.fen");
+    std::fs::write(
+        &program,
+        "def main(stdin: Stdin, stdout: Stdout) fails IoError:\n    stdout.print(stdin.read_line()?)\n    \
+         stdout.print(stdin.read_line()?)\n    stdout.print(stdin.read_chunk(5)?.decode() else \"?\")\n    \
+         stdout.print(stdin.lines())\n    stdout.print(stdin.read_line()?, stdin.read_chunk(5)?.len())\n",
+    )?;
+    let output =
+        fennec_in(&dir, &["run", "--no-test", &program.to_string_lossy()], "one\ntwo\r\nthree four\nlast\n")?;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "one\ntwo\nthree\n[\" four\", \"last\"]\nNone 0\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A signal sent to `fennec run`, like a supervisor's SIGTERM, reaches the program, which can stop
 /// cleanly, and `fennec run` exits as the program does. It once ran the program as a child it
 /// didn't pass signals to, so the SIGTERM ended `fennec run` and left the program running.

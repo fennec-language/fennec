@@ -508,10 +508,11 @@ fn release_planned_child(
         }
         return;
     }
-    if crate::embed::threads::ON
-        && lent.is_some_and(|lent| usize::try_from(child).is_ok_and(|at| lent.get(at).is_some()))
-    {
-        *lent_owners.entry(child).or_default() -= 1;
+    if let Some(block) = lent.filter(|_| crate::embed::threads::ON).and_then(|lent| lent.get(at)) {
+        // Left alone on a worker, as `change_lent_owners` leaves it.
+        if !super::uncounted(block) {
+            *lent_owners.entry(child).or_default() -= 1;
+        }
     } else if crate::embed::guarded::is_handle(child) {
         freeing.pending.push(child);
     } else {

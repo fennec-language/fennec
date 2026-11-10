@@ -899,14 +899,13 @@ impl Heap {
         if self.reading.iter().any(|table| table.get(at).is_some()) {
             return true;
         }
-        let lent = self
-            .lent
-            .as_ref()
-            .is_some_and(|lent| usize::try_from(address).is_ok_and(|at| lent.get(at).is_some()));
-        if lent {
+        let Some(block) = self.lent.as_ref().and_then(|lent| lent.get(at)) else { return false };
+        // A worker leaves the count of a block that's never freed alone, as its native code does,
+        // so `threads::settle` never has a change to one to make on the thread that lent it.
+        if !uncounted(block) {
             *self.lent_owners.entry(address).or_default() += by;
         }
-        lent
+        true
     }
 
     pub(super) fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {

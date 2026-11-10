@@ -212,6 +212,28 @@ fn stdin_reads_a_line_or_a_chunk_at_a_time() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `stdin.reader()` makes standard input a `Reader`, from `std.io`, so code written for any
+/// stream reads it: here a line, then the lines left, through a function that takes any reader.
+#[test]
+fn stdin_is_a_reader_through_reader() -> std::io::Result<()> {
+    let dir = scratch("stdin-reader")?;
+    let program = dir.join("reader.fen");
+    std::fs::write(
+        &program,
+        "from std.io import Reader\n\n\
+         def counted[R: Reader](ref src: R) -> int fails IoError:\n    \
+         mut count = 0\n    for _ in src.lines()?:\n        count += 1\n    count\n\n\
+         def main(stdin: Stdin, stdout: Stdout) fails IoError:\n    mut src = stdin.reader()\n    \
+         stdout.print(src.read_line()?)\n    stdout.print(counted(ref src)?)\n",
+    )?;
+    let output =
+        fennec_in(&dir, &["run", "--no-test", &program.to_string_lossy()], "first\nsecond\r\nthird\n")?;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "first\n2\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A signal sent to `fennec run`, like a supervisor's SIGTERM, reaches the program, which can stop
 /// cleanly, and `fennec run` exits as the program does. It once ran the program as a child it
 /// didn't pass signals to, so the SIGTERM ended `fennec run` and left the program running.

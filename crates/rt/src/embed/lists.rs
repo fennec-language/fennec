@@ -191,6 +191,17 @@ pub(super) fn element_number(state: &State, block: &[u64]) -> Option<usize> {
     usize::try_from(at).ok()
 }
 
+/// The number of a kind of item and how many words one takes, worked out once by the heap where
+/// it can.
+fn item_words(state: &State, element: i64) -> Option<(usize, usize)> {
+    let at = usize::try_from(element).ok()?;
+    let words = match state.heap.item_words(at) {
+        Some(words) => words,
+        None => state.tables.elements.get(at)?.words(),
+    };
+    Some((at, words))
+}
+
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
     Some((at, Rc::clone(state.tables.elements.get(at)?)))
@@ -262,10 +273,10 @@ pub(super) fn items(block: &[u64], stride: usize) -> &[u64] {
 /// A new list owned once of `count` items of a kind, all zero, for native code to fill.
 pub extern "C" fn new(element: i64, count: i64) -> i64 {
     with(|state| {
-        let Some((at, element)) = self::element(state, element) else { return 0 };
+        let Some((at, stride)) = item_words(state, element) else { return 0 };
         let count = usize::try_from(count).unwrap_or(0);
         // A fresh block is already zero, so only the header is written.
-        let mut block = build(state, at, element.words(), &[], count);
+        let mut block = build(state, at, stride, &[], count);
         if let Some(length) = block.get_mut(2) {
             *length = u64::try_from(count).unwrap_or(0);
         }
@@ -277,9 +288,9 @@ pub extern "C" fn new(element: i64, count: i64) -> i64 {
 /// many it will add. A long list's memory isn't touched until it's used.
 pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
     with(|state| {
-        let Some((at, element)) = self::element(state, element) else { return 0 };
+        let Some((at, stride)) = item_words(state, element) else { return 0 };
         let room = usize::try_from(room).unwrap_or(0);
-        let block = build(state, at, element.words(), &[], room);
+        let block = build(state, at, stride, &[], room);
         state.heap.insert(block)
     })
 }
@@ -305,16 +316,16 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
 fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i64> {
     let address = u64::try_from(list).ok()?;
     let block = state.heap.block(address)?;
-    let element = element_of(state, block)?;
     let at =
         usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
             .ok()?;
-    let stride = element.words();
+    let (_, stride) = item_words(state, i64::try_from(at).ok()?)?;
     let count = usize::try_from(*block.get(2)?).ok()?;
     let room = usize::try_from(*block.get(3)?).ok()?;
     let shared = !state.heap.is_alone(address, block);
     let wanted = if count + more > room { grown_room(count, more) } else { room }.max(least);
     let address = if shared {
+        let element = element_of(state, block)?;
         let kept = items(block, stride).to_vec();
         state.heap.copied(kept.len());
         retain_items(state, &element, &kept);

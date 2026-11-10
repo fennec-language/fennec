@@ -12,6 +12,10 @@
 //! that made it. So native code puts the cell's words back, a word at a time, with what `undo_word`
 //! gives it.
 //!
+//! A save of a word that holds no block, the most common, goes in one buffer this thread keeps for
+//! every lock it holds, in words native code can add to as it adds to any block (`Buffer`). Saves
+//! that hold or mark a block stay in their lock's log.
+//!
 //! A save names a block by its address, and a word by its index among the block's words, from its
 //! count. Saving never fails, so generated code has no flag to check after each one.
 //!
@@ -75,6 +79,9 @@ struct Log {
     /// How many tables were behind the current one when the lock was taken. One more than the log
     /// around it says means the lock brought a table of its own. A value of only numbers has none.
     depth: usize,
+    /// Where its plain saves start in the buffer.
+    start: usize,
+    /// Its saves that hold or mark, and the plain ones of a lock around the innermost.
     saved: Vec<Saved>,
     /// Where each save is for, so that a place written again and again is saved once.
     places: Places,
@@ -146,38 +153,200 @@ struct Logs {
     held: Vec<Log>,
     /// Logs of locks let go of, emptied, for the next locks taken to fill without asking for memory.
     spare: Vec<Log>,
+    /// The plain saves of every lock held.
+    buffer: Buffer,
+    /// How many of the buffer's saves the logs know of. Native code may add saves without asking the
+    /// runtime, past this; the runtime takes them in (`take_in`) before it looks at any log.
+    known: usize,
+}
+
+/// This thread's plain saves, of every lock it holds, oldest first: each a word that holds no
+/// block, as it was. Its own words, as a heap block's are, so that native code can add to it as it
+/// writes into any block. Word 0 says how many saves it holds and word 1 how many it has room for;
+/// then come three words a save: the block, the word's index among its words, and what was there.
+///
+/// Each log's plain saves start where the buffer ended when it began (`Log::start`), so the
+/// innermost's are the last. A save of an outer lock's own cell is that lock's, wherever it is.
+struct Buffer(Vec<u64>);
+
+/// The words before a buffer's first save.
+const BUFFER_HEADER: usize = 2;
+/// The words of one save in a buffer.
+const SAVE_WORDS: usize = 3;
+/// The room a buffer starts with, in saves.
+const FIRST_ROOM: usize = 16;
+/// The most room in saves a buffer keeps with no lock held. A lock that saved more lets it go.
+const KEPT_ROOM: usize = 4096;
+
+impl Buffer {
+    fn header(&self, at: usize) -> usize {
+        self.0.get(at).map_or(0, |word| usize::try_from(*word).unwrap_or(0))
+    }
+
+    fn len(&self) -> usize {
+        self.header(0)
+    }
+
+    fn room(&self) -> usize {
+        self.header(1)
+    }
+
+    fn set_len(&mut self, len: usize) {
+        if let Some(word) = self.0.first_mut() {
+            *word = u64::try_from(len).unwrap_or(0);
+        }
+    }
+
+    /// Where the save at `at` is among the buffer's words.
+    fn words(at: usize) -> std::ops::Range<usize> {
+        let first = BUFFER_HEADER + at * SAVE_WORDS;
+        first..first + SAVE_WORDS
+    }
+
+    fn get(&self, at: usize) -> Option<Saved> {
+        let &[block, word, old] = self.0.get(Self::words(at))? else { return None };
+        Some(Saved { block, word: usize::try_from(word).ok()?, old, held: false, marked: false })
+    }
+
+    fn last(&self) -> Option<Saved> {
+        self.len().checked_sub(1).and_then(|at| self.get(at))
+    }
+
+    fn write(&mut self, at: usize, saved: Saved) {
+        if let Some(words) = self.0.get_mut(Self::words(at)) {
+            words.copy_from_slice(&[saved.block, u64::try_from(saved.word).unwrap_or(0), saved.old]);
+        }
+    }
+
+    /// Adds a save at the end, making room first if there's none.
+    fn push(&mut self, saved: Saved) {
+        let len = self.len();
+        if len >= self.room() {
+            self.grow(len);
+        }
+        self.write(len, saved);
+        self.set_len(len + 1);
+    }
+
+    /// Twice the room, or the first, with the `len` saves there are copied over.
+    fn grow(&mut self, len: usize) {
+        let room = (self.room() * 2).max(FIRST_ROOM);
+        let mut words = vec![0; BUFFER_HEADER + room * SAVE_WORDS];
+        let used = BUFFER_HEADER + len * SAVE_WORDS;
+        if let (Some(to), Some(from)) = (words.get_mut(..used), self.0.get(..used)) {
+            to.copy_from_slice(from);
+        }
+        if let Some(word) = words.get_mut(1) {
+            *word = u64::try_from(room).unwrap_or(0);
+        }
+        self.0 = words;
+        self.set_len(len);
+    }
+
+    /// Keeps the saves from `start` on that `keep` says to, in order, and drops the rest.
+    fn retain_from(&mut self, start: usize, mut keep: impl FnMut(Saved) -> bool) {
+        let mut kept = start;
+        for at in start..self.len() {
+            let Some(saved) = self.get(at) else { continue };
+            if keep(saved) {
+                self.write(kept, saved);
+                kept += 1;
+            }
+        }
+        if kept < self.len() {
+            self.set_len(kept);
+        }
+    }
+
+    fn truncate(&mut self, len: usize) {
+        if len < self.len() {
+            self.set_len(len);
+        }
+    }
 }
 
 thread_local! {
-    static LOGS: RefCell<Logs> = const { RefCell::new(Logs { held: Vec::new(), spare: Vec::new() }) };
+    static LOGS: RefCell<Logs> = const {
+        RefCell::new(Logs { held: Vec::new(), spare: Vec::new(), buffer: Buffer(Vec::new()), known: 0 })
+    };
     /// For a crash, what goes back in the lock's own cell, by word, for native code to write.
     static CELL: RefCell<HashMap<usize, Saved>> = RefCell::new(HashMap::new());
 }
 
-/// The logs of the locks this thread holds, innermost last, to change.
-fn with_logs<T>(f: impl FnOnce(&mut Vec<Log>) -> T) -> T {
-    LOGS.with_borrow_mut(|logs| f(&mut logs.held))
+/// The log a save of a word of `block` is for, among `held`: the log whose cell it is, or the
+/// innermost.
+fn target(held: &[Log], block: u64) -> Option<usize> {
+    held.iter().rposition(|log| log.cell == block).or(held.len().checked_sub(1))
 }
 
-/// The logs of the locks this thread holds, innermost last.
-fn read_logs<T>(f: impl FnOnce(&[Log]) -> T) -> T {
-    LOGS.with_borrow(|logs| f(&logs.held))
-}
+impl Logs {
+    /// Takes in the saves native code added to the buffer since the runtime last looked: each one of
+    /// a place its log saved already is dropped, as a save the runtime adds would be.
+    fn take_in(&mut self) {
+        let Logs { held, buffer, known, .. } = self;
+        if *known < buffer.len() {
+            buffer.retain_from(*known, |saved| {
+                target(held, saved.block)
+                    .and_then(|at| held.get_mut(at))
+                    .is_some_and(|log| log.places.insert(place(&saved)))
+            });
+        }
+        *known = buffer.len();
+    }
 
-/// Keeps an empty log for another lock. A few are kept, as many as locks are held inside one another
-/// at once, and none too big to hold on to.
-fn keep_spare(spare: &mut Vec<Log>, log: Log) {
-    if spare.len() < 8 && log.saved.capacity() <= 4096 && log.places.capacity() <= 4096 {
-        spare.push(log);
+    /// Adds a save to the log of the lock it's for: the log whose cell it is, or the innermost. A
+    /// plain one goes in the buffer, unless it's for a log around the innermost, of a block that
+    /// isn't its cell: that log's saves in the buffer are behind the innermost's.
+    fn push(&mut self, saved: Saved) -> Pushed {
+        let Logs { held, buffer, .. } = self;
+        let Some(at) = target(held, saved.block) else { return Pushed::NoLog };
+        let innermost = at + 1 == held.len();
+        let Some(log) = held.get_mut(at) else { return Pushed::NoLog };
+        let same = |last: &Saved| last.block == saved.block && last.word == saved.word;
+        if !saved.held && !saved.marked && (innermost || saved.block == log.cell) {
+            // A loop writes the same place, so the last save is looked at first.
+            let last = buffer.len() > log.start && buffer.last().is_some_and(|last| same(&last));
+            if last || !log.places.insert(place(&saved)) {
+                return Pushed::Repeated;
+            }
+            buffer.push(saved);
+            return Pushed::Added;
+        }
+        if log.saved.last().is_some_and(same) || !log.places.insert(place(&saved)) {
+            return Pushed::Repeated;
+        }
+        log.saved.push(saved);
+        Pushed::Added
+    }
+
+    /// A lock's log is let go of. With none left, a buffer grown big is let go of too.
+    fn ended(&mut self, mut log: Log) {
+        if self.held.is_empty() && self.buffer.room() > KEPT_ROOM {
+            self.buffer = Buffer(Vec::new());
+        }
+        log.saved.clear();
+        log.places.clear();
+        log.changes.clear();
+        if self.spare.len() < 8 && log.saved.capacity() <= 4096 && log.places.capacity() <= 4096 {
+            self.spare.push(log);
+        }
     }
 }
 
-/// A log done with, emptied and kept for another lock.
-fn spare(mut log: Log) {
-    log.saved.clear();
-    log.places.clear();
-    log.changes.clear();
-    LOGS.with_borrow_mut(|logs| keep_spare(&mut logs.spare, log));
+/// The logs of the locks this thread holds, to change, with any saves native code added taken in.
+fn with_logs<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
+    LOGS.with_borrow_mut(|logs| {
+        logs.take_in();
+        let result = f(logs);
+        logs.known = logs.buffer.len();
+        result
+    })
+}
+
+/// The logs of the locks this thread holds, innermost last.
+#[cfg(test)]
+fn read_logs<T>(f: impl FnOnce(&[Log]) -> T) -> T {
+    LOGS.with_borrow(|logs| f(&logs.held))
 }
 
 fn address(value: i64) -> u64 {
@@ -187,12 +356,14 @@ fn address(value: i64) -> u64 {
 /// `fennec_lock_begin(cell)`: a lock that may crash is taken, after its table, if it has one.
 pub extern "C" fn begin(cell: i64) {
     let depth = with(|state| state.heap.tables_behind());
-    LOGS.with_borrow_mut(|logs| {
+    with_logs(|logs| {
+        let start = logs.buffer.len();
         let log = match logs.spare.pop() {
-            Some(spare) => Log { cell: address(cell), depth, ..spare },
+            Some(spare) => Log { cell: address(cell), depth, start, ..spare },
             None => Log {
                 cell: address(cell),
                 depth,
+                start,
                 saved: Vec::new(),
                 places: Places::default(),
                 changes: Vec::new(),
@@ -202,32 +373,16 @@ pub extern "C" fn begin(cell: i64) {
     });
 }
 
-/// Adds a save to the log of the lock it's for: the log whose cell it is, or the innermost.
+/// Adds a save to the log of the lock it's for.
 fn push(saved: Saved) -> Pushed {
-    with_logs(|logs| {
-        let at = logs.iter().rposition(|log| log.cell == saved.block).or(logs.len().checked_sub(1));
-        let Some(log) = at.and_then(|at| logs.get_mut(at)) else { return Pushed::NoLog };
-        // A loop writes the same place, so the last save is looked at first.
-        let last = log.saved.last().is_some_and(|last| last.block == saved.block && last.word == saved.word);
-        if last || !log.places.insert(place(&saved)) {
-            return Pushed::Repeated;
-        }
-        log.saved.push(saved);
-        Pushed::Added
-    })
+    with_logs(|logs| logs.push(saved))
 }
 
-/// Adds saves of one block's words, as `push` adds each, looking the logs up once.
+/// Adds saves of one block's words, as `push` adds each, taking the logs once.
 fn push_all(saves: impl Iterator<Item = Saved>) {
     with_logs(|logs| {
-        let mut saves = saves.peekable();
-        let Some(first) = saves.peek() else { return };
-        let at = logs.iter().rposition(|log| log.cell == first.block).or(logs.len().checked_sub(1));
-        let Some(log) = at.and_then(|at| logs.get_mut(at)) else { return };
         for saved in saves {
-            if log.places.insert(place(&saved)) {
-                log.saved.push(saved);
-            }
+            logs.push(saved);
         }
     });
 }
@@ -284,7 +439,7 @@ pub extern "C" fn save_ref(block: i64, word: i64, old: i64) {
 
 fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
     let saved = Saved { block, word, old, held: old != 0, marked: false };
-    let known = read_logs(|logs| logs.iter().any(|log| log.places.contains(place(&saved))));
+    let known = with_logs(|logs| logs.held.iter().any(|log| log.places.contains(place(&saved))));
     if known {
         return;
     }
@@ -383,21 +538,48 @@ pub extern "C" fn to_change(block: i64) -> i64 {
 /// it holds nothing to let go of, so its log is emptied and kept, with no look at the heap. Says
 /// whether it did.
 fn end_holding_nothing() -> bool {
-    LOGS.with_borrow_mut(|logs| {
+    with_logs(|logs| {
         let outermost = logs.held.len() == 1;
         let Some(log) = logs.held.last() else { return false };
         let plain = log.changes.is_empty()
             && (log.saved.is_empty()
-                || (outermost && log.saved.iter().all(|saved| !saved.held && !saved.marked)));
+                || (outermost && log.saved.iter().all(|saved| !saved.held && !saved.marked)))
+            && (outermost || logs.buffer.len() == log.start);
         if !plain {
             return false;
         }
-        if let Some(mut log) = logs.held.pop() {
-            log.saved.clear();
-            log.places.clear();
-            keep_spare(&mut logs.spare, log);
+        if let Some(log) = logs.held.pop() {
+            logs.buffer.truncate(log.start);
+            logs.ended(log);
         }
         true
+    })
+}
+
+/// Takes the innermost log off for its lock's normal end. Its plain saves of what's not its own stay
+/// in the buffer, as the log's around it, once each, and the rest go. Gives the log, the depth of
+/// the log around it, if any, and whether it brought a table of its own.
+fn pop_kept(state: &State) -> Option<(Log, Option<usize>, bool)> {
+    with_logs(|logs| {
+        let log = logs.held.pop()?;
+        let outer = logs.held.last().map(|outer| outer.depth);
+        let own_table = outer.is_none_or(|depth| log.depth > depth);
+        let Logs { held, buffer, .. } = logs;
+        if outer.is_none() {
+            buffer.truncate(log.start);
+        } else {
+            // Its plain saves of what's not its own stay, as the outer log's, once each.
+            buffer.retain_from(log.start, |saved| {
+                let in_own_table = own_table
+                    && usize::try_from(saved.block).is_ok_and(|at| state.heap.blocks.get(at).is_some());
+                if saved.block == log.cell || in_own_table {
+                    return false;
+                }
+                held.iter().any(|outer| outer.cell == saved.block)
+                    || held.last_mut().is_some_and(|outer| outer.places.insert(place(&saved)))
+            });
+        }
+        Some((log, outer, own_table))
     })
 }
 
@@ -409,9 +591,7 @@ pub extern "C" fn kept() {
         return;
     }
     attempt(|state: &mut State| {
-        let Some(mut log) = with_logs(Vec::pop) else { return Ok(()) };
-        let outer = read_logs(|logs| logs.last().map(|outer| outer.depth));
-        let own_table = outer.is_none_or(|depth| log.depth > depth);
+        let Some((mut log, outer, own_table)) = pop_kept(state) else { return Ok(()) };
         let mut passed = Vec::new();
         let mut changes = std::mem::take(&mut log.changes);
         let cell = log.cell;
@@ -441,7 +621,7 @@ pub extern "C" fn kept() {
         } else {
             with_logs(|logs| {
                 let (mut repeated, mut marked) = (Vec::new(), Vec::new());
-                if let Some(outer) = logs.last_mut() {
+                if let Some(outer) = logs.held.last_mut() {
                     for saved in passed {
                         if outer.places.insert(place(&saved)) {
                             // A list this lock marked is the outer one's to undo now, with its changes.
@@ -473,7 +653,7 @@ pub extern "C" fn kept() {
             lists::unmark(state, list, false);
         }
         log.changes = changes;
-        spare(log);
+        with_logs(|logs| logs.ended(log));
         Ok(())
     });
 }
@@ -485,7 +665,22 @@ pub extern "C" fn kept() {
 /// table goes.
 pub extern "C" fn undo() {
     attempt(|state: &mut State| {
-        let Some(mut log) = with_logs(Vec::pop) else { return Ok(()) };
+        let Some((mut log, plain)) = with_logs(|logs| {
+            let log = logs.held.pop()?;
+            let Logs { held, buffer, .. } = logs;
+            let mut plain = Vec::new();
+            // A save of an outer lock's cell is that lock's, for its own crash to put back.
+            buffer.retain_from(log.start, |saved| {
+                let outer = held.iter().any(|outer| outer.cell == saved.block);
+                if !outer {
+                    plain.push(saved);
+                }
+                outer
+            });
+            Some((log, plain))
+        }) else {
+            return Ok(());
+        };
         // Each list it marked is put back as it was, its changes undone newest first, and its mark
         // becomes an owner, for the word that held it to hold again: what's there now, the same list
         // or a copy, is let go of below as any saved word's is.
@@ -504,7 +699,7 @@ pub extern "C" fn undo() {
         let mut first = Vec::new();
         let mut seen = HashSet::new();
         let mut released = Vec::new();
-        for saved in log.saved.drain(..) {
+        for saved in log.saved.drain(..).chain(plain) {
             if !seen.insert((saved.block, saved.word)) {
                 // A value made under the lock: what goes back is the first save's.
                 if saved.held {
@@ -550,7 +745,7 @@ pub extern "C" fn undo() {
         for saved in left.into_values().filter(|saved| saved.held) {
             heap::release(state, saved.old);
         }
-        spare(log);
+        with_logs(|logs| logs.ended(log));
         Ok(())
     });
 }
@@ -580,7 +775,7 @@ fn marking(logs: &mut [Log], block: u64) -> Option<&mut Log> {
 /// one, back to the length before the first.
 fn note(list: u64, change: Change) -> bool {
     with_logs(|logs| {
-        let Some(log) = marking(logs, list) else { return false };
+        let Some(log) = marking(&mut logs.held, list) else { return false };
         let again = matches!(change, Change::Grew { .. })
             && log
                 .changes
@@ -598,7 +793,7 @@ fn note(list: u64, change: Change) -> bool {
 /// A marked list moved from `from` to `to`, to have room: the log that marked it goes by where it is.
 pub(in crate::embed) fn moved(from: u64, to: u64) {
     with_logs(|logs| {
-        for log in logs.iter_mut() {
+        for log in &mut logs.held {
             for saved in log.saved.iter_mut().filter(|saved| saved.marked && saved.old == from) {
                 saved.old = to;
             }
@@ -635,7 +830,7 @@ pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>) -> bool {
 pub(in crate::embed) fn changing(state: &mut State, block: u64, word: usize, old: u64, holds: bool) {
     let saved = Saved { block, word, old, held: holds && old != 0, marked: false };
     let pushed = with_logs(|logs| {
-        let Some(log) = marking(logs, block) else { return Pushed::NoLog };
+        let Some(log) = marking(&mut logs.held, block) else { return Pushed::NoLog };
         if !log.places.insert(place(&saved)) {
             return Pushed::Repeated;
         }
@@ -677,10 +872,10 @@ fn held() -> usize {
     read_logs(<[Log]>::len)
 }
 
-/// How many saves the logs hold.
+/// How many saves the logs hold, with any native code added and the runtime hasn't taken in.
 #[cfg(test)]
 fn saved_entries() -> usize {
-    read_logs(|logs| logs.iter().map(|log| log.saved.len()).sum())
+    LOGS.with_borrow(|logs| logs.held.iter().map(|log| log.saved.len()).sum::<usize>() + logs.buffer.len())
 }
 
 #[cfg(test)]

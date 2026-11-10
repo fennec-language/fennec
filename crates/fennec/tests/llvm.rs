@@ -12066,15 +12066,18 @@ def main(stdout: Stdout):
 
 /// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
 /// written in the source. A value is part of one argument however much it holds, so it can't add
-/// an argument or start a command. Text written beside a value is that argument too.
+/// an argument or start a command. Text written beside a value is that argument too. What comes
+/// after `--` is shown by a program of the test's own, since each system's `printf` reads `--`
+/// its own way: GNU's newer ones take it as the end of their options anywhere.
 #[test]
 fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    let shower = shows_its_arguments("process_template_shower")?;
     let printed = printed_by(
         "process_template",
-        r#"from std.process import ProcessError
+        &r#"from std.process import ProcessError
 
 def main(process: Process, stdout: Stdout) fails ProcessError:
     name = "a b; rm -rf /"
@@ -12092,13 +12095,15 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     if refused is not None:
         stdout.print(refused.message())
     path = "-odd"
-    stdout.print(process.run(t"printf [%s] -- {path}")?.stdout)
+    stdout.print(process.run(t"SHOWER -- {path}")?.stdout.strip())
     _ = narrow.run(t"cat") else as error:
         stdout.print(error.program())
         return
     stdout.print("ran")
-"#,
+"#
+        .replace("SHOWER", &shower),
     )?;
+    std::fs::remove_dir_all(Path::new(&shower).parent().unwrap_or(Path::new(&shower)))?;
     assert_eq!(
         printed,
         "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\n\
@@ -12106,6 +12111,25 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
          [--][-odd]\ncat\n"
     );
     Ok(())
+}
+
+/// Builds a program that prints each argument it's given in brackets, the same on every system,
+/// and gives back its path as a template's text can name it: with `/` between folders, which
+/// Windows takes too, and no spaces.
+fn shows_its_arguments(name: &str) -> std::io::Result<String> {
+    let dir = folder(name)?;
+    let program = dir.join("shower.fen");
+    std::fs::write(
+        &program,
+        "def main(args: Args, stdout: Stdout):\n    stdout.print(\"\".join([f\"[{arg}]\" for arg in args]))\n",
+    )?;
+    let executable = dir.join("shower");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let path = executable.to_string_lossy().replace('\\', "/");
+    assert!(!path.contains([' ', '{', '}']), "a template can't name {path}");
+    Ok(path)
 }
 
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text

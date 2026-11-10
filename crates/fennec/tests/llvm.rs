@@ -15767,6 +15767,47 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A recursive enum holding strings, inline and in blocks of their own, is made and freed by
+/// generated code, which lets go of each string as its block goes: built and dropped over and
+/// over, read along the way, in a dev build and with `--release`.
+#[test]
+fn native_blocks_hold_strings() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("native_strings", NAMED_TREES, how)?;
+        assert_eq!((out.as_str(), code), ("118916 273\n", Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const NAMED_TREES: &str = r#"enum Named:
+    Leaf(name: str)
+    Pair(left: Named, right: Named, label: str)
+    Empty
+
+def build(depth: int, tag: int) -> Named:
+    if depth == 0:
+        if tag % 3 == 0: return .Empty
+        return .Leaf(name=f"leaf number {tag} with a name long enough for a block")
+    .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), label=f"p{tag}")
+
+def size(tree: Named) -> int:
+    match tree:
+        case .Leaf(name):
+            name.len()
+        case .Pair(left, right, label):
+            size(left) + size(right) + label.len()
+        case .Empty:
+            1
+
+def main(stdout: Stdout):
+    total = sum(size(build(10, tag=n)) for n in range(3))
+    kept = build(3, tag=7)
+    stdout.print(total, size(kept))
+"#;
+
 /// The shared block behaves as a block of its own would: compared, matched, printed, held in
 /// lists and dicts, and made and let go of on other threads.
 #[test]

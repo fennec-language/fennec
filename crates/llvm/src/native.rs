@@ -6,8 +6,11 @@
 //! printed or compared by it, not in a generator, a closure or another thread. A type gets
 //! native blocks only when the whole program shows that, and stays in the table otherwise.
 //!
-//! For now that's enums whose fields are numbers or the enum itself. While a run counts what it
-//! allocates, under `FENNEC_COUNTS` or the copy tracer, each native block made says so.
+//! For now that's enums whose fields are numbers, strings or the enum itself. A string is the
+//! runtime's as ever, held by its header, which a native block's drop lets go of; an enum holding
+//! one gets native blocks only in a program with no other threads, which would count strings
+//! their own way. While a run counts what it allocates, under `FENNEC_COUNTS` or the copy
+//! tracer, each native block made says so.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -35,12 +38,21 @@ fn qualifies(program: &Program, layouts: &Layouts, name: &str) -> bool {
     if !layout.boxed || layout.cell || layout.cases.is_none() {
         return false;
     }
-    // Its fields are numbers or itself, so freeing it needs nothing of the runtime's.
-    let plain = layout.cases.iter().flatten().flat_map(|case| &case.fields).all(|field| {
+    // Its fields are numbers, strings or itself, so freeing it needs nothing of the runtime's
+    // but letting go of its strings, which it does by their headers.
+    let fields = || layout.cases.iter().flatten().flat_map(|case| &case.fields);
+    let plain = fields().all(|field| {
         matches!(Kind::from_ty(layouts, field.ty), Some(Kind::Int | Kind::Float | Kind::Bool))
             || Kind::from_ty(layouts, field.ty) == Some(Kind::Boxed(id))
+            || (Kind::from_ty(layouts, field.ty) == Some(Kind::Str) && layouts.text_headers())
     });
     if !plain {
+        return false;
+    }
+    // Another thread counts a string's owners its own way, which a drop here doesn't.
+    if fields().any(|field| Kind::from_ty(layouts, field.ty) == Some(Kind::Str))
+        && (crate::parallel::uses_parallel(program) || crate::parallel::uses_launch(program))
+    {
         return false;
     }
     let exact = Type::Named(name.to_owned());
@@ -258,32 +270,48 @@ impl crate::emit::Emit<'_, '_, '_> {
         let fields_at = u64::from(FIELDS.unsigned_abs());
         let mut cases = Vec::new();
         for (number, case) in layout.cases.iter().flatten().enumerate() {
-            let held: Vec<u64> = case
-                .fields
-                .iter()
-                .filter(|field| Kind::from_ty(self.module.layouts, field.ty) == Some(Kind::Boxed(id)))
-                .map(|field| fields_at + u64::from(field.offset))
-                .collect();
-            if !held.is_empty() {
-                cases.push((number, held));
+            let held_by = |kind: Kind| -> Vec<u64> {
+                case.fields
+                    .iter()
+                    .filter(|field| Kind::from_ty(self.module.layouts, field.ty) == Some(kind.clone()))
+                    .map(|field| fields_at + u64::from(field.offset))
+                    .collect()
+            };
+            let (held, texts) = (held_by(Kind::Boxed(id)), held_by(Kind::Str));
+            if !held.is_empty() || !texts.is_empty() {
+                cases.push((number, held, texts));
             }
         }
         let mut text = format!(
             "define internal void @fen_drop_{id}(ptr %start) nounwind {{\nentry:\n  br label %top\ntop:\n  %block = phi ptr [ %start, %entry ]"
         );
-        for (number, _) in &cases {
-            text.push_str(&format!(", [ %last{number}, %again{number} ]"));
+        for (number, held, _) in &cases {
+            if !held.is_empty() {
+                text.push_str(&format!(", [ %last{number}, %again{number} ]"));
+            }
         }
         text.push_str(&format!(
             "\n  %tag_at = getelementptr inbounds i8, ptr %block, i64 {fields_at}\n  %tag = load i64, ptr %tag_at\n  switch i64 %tag, label %free ["
         ));
-        for (number, _) in &cases {
+        for (number, _, _) in &cases {
             text.push_str(&format!(" i64 {number}, label %case{number}"));
         }
         text.push_str(" ]\n");
-        for (number, held) in &cases {
+        for (number, held, texts) in &cases {
             text.push_str(&format!("case{number}:\n"));
-            let Some((last, before)) = held.split_last() else { continue };
+            // Its strings first: each header's block, if it has one, loses an owner, and is
+            // given to the runtime's free once it has none.
+            for (at, offset) in texts.iter().enumerate() {
+                let it = format!("{number}_text{at}");
+                text.push_str(&format!(
+                    "  %tag_at{it} = getelementptr inbounds i8, ptr %block, i64 {}\n  %tag{it} = load i64, ptr %tag_at{it}\n  %in_block{it} = icmp sgt i64 %tag{it}, -1\n  br i1 %in_block{it}, label %held{it}, label %kept{it}\nheld{it}:\n  %word_at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %text{it} = load ptr, ptr %word_at{it}\n  %count{it} = load i64, ptr %text{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %text{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %free{it}, label %kept{it}\nfree{it}:\n  call void @fennec_free(ptr %text{it})\n  br label %kept{it}\nkept{it}:\n",
+                    offset + 16
+                ));
+            }
+            let Some((last, before)) = held.split_last() else {
+                text.push_str("  br label %free\n");
+                continue;
+            };
             for (at, offset) in before.iter().enumerate() {
                 let it = format!("{number}_{at}");
                 text.push_str(&format!(

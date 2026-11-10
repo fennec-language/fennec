@@ -15,5 +15,5 @@ def two(ref source: Source) -> int:
 
 def main(stdout: Stdout):
     mut counter = Count()
-    kept = copy(counter)
+    kept = counter
     stdout.print(two(ref counter), counter.left, kept.left)

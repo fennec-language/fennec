@@ -98,7 +98,7 @@ impl Lowering<'_> {
             // One union where another goes, as what's left after an `is` given where `Pg | Mem`
             // goes, or that given where `Three` goes: remade as the other, member by member.
             Type::Union(members) if let Type::Union(held) = &from => {
-                self.union_as_union(value, held, members, span)
+                Ok(self.union_as_union(value, held, members, span))
             }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
@@ -107,7 +107,7 @@ impl Lowering<'_> {
     /// A union's value remade as another union's: a test for each member they share, that
     /// member read out and tagged as the other's. The checker has shown the value holds one of
     /// them; one that doesn't ends the program, as a `match` it gets past does.
-    fn union_as_union(&mut self, value: Operand, held: &[Type], to: &[Type], span: Span) -> Lowered<Operand> {
+    fn union_as_union(&mut self, value: Operand, held: &[Type], to: &[Type], span: Span) -> Operand {
         let union = Type::Union(to.to_vec());
         let dest = self.temporary(union.clone());
         let join = self.new_block();
@@ -125,7 +125,7 @@ impl Lowering<'_> {
         }
         self.finish(Terminator::NoMatch { value, span });
         self.current = join;
-        Ok(Operand::Local(dest))
+        Operand::Local(dest)
     }
 
     /// A value read as the type the typed tree has for `expr`, which is narrower than it's

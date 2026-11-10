@@ -495,7 +495,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       NIGHTLY: nightly-2026-10-15
       FENNEC_SANITIZE: address
@@ -516,6 +516,12 @@ jobs:
           RUSTFLAGS=-Zsanitizer=address cargo "+$NIGHTLY" build --release --locked -p fennec-runtime \
             --features sanitize -Zbuild-std --target x86_64-unknown-linux-gnu
           cp target/x86_64-unknown-linux-gnu/release/libfennec_runtime.a target/release/
+          # The runtime with threads too, so random programs that launch tasks, and lock and roll
+          # back across threads, run under the sanitizer.
+          RUSTFLAGS=-Zsanitizer=address cargo "+$NIGHTLY" build --release --locked -p fennec-runtime \
+            --features threads,sanitize -Zbuild-std --target x86_64-unknown-linux-gnu --target-dir target/threads
+          cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a \
+            target/release/libfennec_runtime_threads.a
       - name: Run every example LLVM takes
         run: |
           built=0
@@ -554,7 +560,11 @@ jobs:
       - name: Fuzz random programs
         env:
           FENNEC_CHECK_PROOFS: 1
-        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed 1 --seconds 300 --stuck 60 --found found
+          # As the workers' job has it, since a task's stack isn't the thread's.
+          ASAN_OPTIONS: detect_leaks=0:exitcode=86:detect_stack_use_after_return=0
+        run: |
+          [ -f target/release/libfennec_runtime_threads.a ] || { echo "::error::no threads runtime"; exit 1; }
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed 1 --seconds 300 --stuck 60 --found found
       - name: Keep what fuzzing found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

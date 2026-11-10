@@ -243,10 +243,19 @@ fn reads_in_place(target: &Expr, live: &mut Live) {
 
 impl<'a> Lost<'a> {
     fn problem(&self, name: &str, span: Span) -> Diagnostic {
-        let (message, help) = match self.locals.get(name).map(|value| started_as(value)) {
+        let value = self.locals.get(name);
+        let (message, help) = match value.map(|value| started_as(value)) {
             Some(Started::Table(table)) => (
                 format!("this changes your own copy of what's in `{table}`, and nothing reads it"),
-                format!("to change `{table}`, write to it there, or take out the change"),
+                match value
+                    .filter(|value| matches!(value.kind, ExprKind::Index { .. } | ExprKind::Attr { .. }))
+                {
+                    Some(place) => format!(
+                        "to change it where it is, write `ref {name} = {}`, or take out the change",
+                        crate::loops::place_text(place)
+                    ),
+                    None => format!("to change `{table}`, write to it there, or take out the change"),
+                },
             ),
             Some(Started::Called(called)) if !self.checker.program.is_type_name(&called) => (
                 format!("this changes your own copy of what `{called}` gave back, and nothing reads it"),

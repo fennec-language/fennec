@@ -1291,6 +1291,15 @@ extend Id[T]:
         src.saw_id(kind, position)
         id_at[T](position, src.tag(kind))
 
+extend Table[T]:
+    ## Puts `value` at `id` and gives `True` when `id` is live, or gives `False` and changes
+    ## nothing when it's gone: for an `Id` that may be stale, where `table[id] = value` would stop
+    ## the program.
+    def update(ref self, id: Id[T], value: T) -> bool:
+        if self.get(id) is None: return False
+        self[id] = value
+        True
+
 extend Table[T: Serializable]:
     def serialize(self, ref out: Serializer):
         if out.exact():

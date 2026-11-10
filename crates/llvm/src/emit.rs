@@ -2130,8 +2130,10 @@ impl Emit<'_, '_, '_> {
         }
         if flagged && is_attempt(&self.function.name) {
             // An attempt of a property test's shrinking finds out whether the test fails, so a
-            // failure is cleared, as one test's is before the next, and the attempt goes on to say
-            // so. Built in place of `with launch`, which the test entry can use once it's emitted.
+            // failure is cleared, as one test's is before the next, and the attempt says it
+            // failed at once. What the call gave back was never written, so nothing may look at
+            // it, and the attempt owns nothing yet: the call is its first. Built in place of `with
+            // launch`, which the test entry can use once it's emitted.
             let (held, failed) = (self.temp(), self.temp());
             self.line(&format!("{held} = load ptr, ptr %err"));
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
@@ -2139,9 +2141,13 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("br i1 {failed}, label %{caught}, label %{after}"));
             self.start_block(&caught);
             self.declare("declare void @fennec_aot_attempt_failed()");
+            self.declare("declare i8 @fennec_aot_attempt_passed()");
             self.line("store ptr null, ptr %err");
             self.line("call void @fennec_aot_attempt_failed()");
-            self.line(&format!("br label %{after}"));
+            // Taken back, so the next attempt starts afresh, as `test:passed` would have.
+            self.line("call i8 @fennec_aot_attempt_passed()");
+            let ret = self.module.ret_text(self.function)?;
+            self.line(&format!("ret {ret} 0"));
             self.start_block(&after);
         } else if flagged {
             let (held, failed) = (self.temp(), self.temp());
@@ -3206,6 +3212,16 @@ def main(stdout: Stdout):
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
         assert!(text.contains("call void @fennec_native_made("), "{text}");
         assert!(text.contains("call void @fennec_native_freed(ptr %block)"), "{text}");
+        Ok(())
+    }
+
+    /// A sized number or a literal string elsewhere in a program holds no enum, so it leaves a
+    /// tree's blocks native.
+    #[test]
+    fn sized_numbers_and_literal_strings_leave_blocks_native() -> Result<(), String> {
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    small: u8 = 3\n    wide = i32(7)\n    stdout.print(small, wide, \"tree\", count(build(4)))\n";
+        let (_, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Twig's blocks are native");
         Ok(())
     }
 

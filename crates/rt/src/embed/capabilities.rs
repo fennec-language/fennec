@@ -4,7 +4,7 @@
 //! carries a capability as its block's address, and the runtime reads from the block what the
 //! capability may do, so passing one through native code can't widen it.
 //!
-//! A kind on its own, 0 to 9, still means that plain capability where one is taken: no
+//! A kind on its own, 0 to 10, still means that plain capability where one is taken: no
 //! block's address is that small.
 
 use std::rc::Rc;
@@ -23,7 +23,7 @@ use crate::value::{Capability, Value};
 const WORDS: usize = 4;
 
 /// The kinds a capability word can be on its own, below any block's address.
-const KINDS: i64 = 10;
+const KINDS: i64 = 11;
 
 /// The kind native code numbers a capability by, the inverse of `super::capability`.
 fn kind_of(capability: Capability) -> i64 {
@@ -38,6 +38,7 @@ fn kind_of(capability: Capability) -> i64 {
         Capability::Net => 7,
         Capability::Env => 8,
         Capability::Signals => 9,
+        Capability::Stderr => 10,
     }
 }
 
@@ -332,6 +333,11 @@ fn native_method(
         }
         (Capability::Env, "get", [Value::Str(name)]) => Ok(crate::env::variable(name)),
         (Capability::Env, "all", []) => Ok(crate::env::variables()),
+        (Capability::Stderr, _, _) => {
+            // What's been printed to standard output comes out first, so the two read in order.
+            super::write_kept_output();
+            crate::stderr::written(method, args, at)
+        }
         (Capability::Signals, "stopping", []) => Ok(Value::Bool(crate::signals::stopping())),
         (Capability::Signals, "wait", []) => {
             // What's been printed comes out first, as it does before anything else that waits.

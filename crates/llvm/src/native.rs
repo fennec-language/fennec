@@ -127,7 +127,9 @@ fn mentions(program: &Program, ty: &Type, target: &str, seen: &mut HashSet<Strin
         | Type::Bool
         | Type::Int
         | Type::Float
+        | Type::Sized(_)
         | Type::Str
+        | Type::LiteralStr
         | Type::Bytes => false,
         Type::List(item)
         | Type::Buffer(item)

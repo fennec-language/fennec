@@ -9,13 +9,34 @@ from lexer import byte_length, lex
 from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 from parser import Parser, is_field_word, is_name, describe
 
+## What an expression made at its top, outside any parentheses.
+enum Formed:
+    Conditional
+    Fallback
+    Plain
+
+## A one-line `if` and a fallback `else` in one expression, without parentheses saying which
+## holds which: `int(text) else 80 if given else 8080` reads two ways.
+def mixed_else(inner: Expr) -> Diagnostic:
+    Diagnostic(
+        message="a one-line `if` and a fallback `else` need parentheses to share an expression",
+        span=inner.span,
+        help="put this part in parentheses, or give the `if` or the fallback a line of its own",
+    )
+
 extend Parser:
     def expr(ref self) -> Expr fails Diagnostic:
+        parsed, _ = self.expr_made()?
+        parsed
+
+    ## An expression, and whether this call made a one-line `if` or a fallback `else` of its own,
+    ## rather than reading one inside parentheses.
+    def expr_made(ref self) -> (Expr, Formed) fails Diagnostic:
         if self.at_match():
-            return self.match_expr()?
+            return (self.match_expr()?, .Plain)
         lambda = self.lambda()?
         if lambda is not None:
-            return lambda
+            return (lambda, .Plain)
         value = self.or_expr()?
         if self.eat_keyword("if"):
             cond = self.or_expr()?
@@ -25,8 +46,10 @@ extend Parser:
                     span=self.span(),
                     help="write `a if condition else b`",
                 )
-            otherwise = self.expr()?
-            return Expr(kind=.Cond(value, cond=cond, otherwise=otherwise), span=value.span.to(otherwise.span))
+            otherwise, made = self.expr_made()?
+            if made == .Fallback:
+                fail mixed_else(otherwise)
+            return (Expr(kind=.Cond(value, cond=cond, otherwise=otherwise), span=value.span.to(otherwise.span)), .Conditional)
         if self.eat_keyword("else"):
             mut default = Expr(kind=.Nothing, span=self.span())
             if self.at_leaving():
@@ -43,9 +66,12 @@ extend Parser:
                     )
                 default = self.leaving_block(failure)?
             else:
-                default = self.expr()?
-            return Expr(kind=.Else(value, default=default), span=value.span.to(default.span))
-        value
+                inner, made = self.expr_made()?
+                if made == .Conditional:
+                    fail mixed_else(inner)
+                default = inner
+            return (Expr(kind=.Else(value, default=default), span=value.span.to(default.span)), .Fallback)
+        (value, .Plain)
 
     def at_leaving(self) -> bool:
         self.peek() in [.Keyword("continue"), .Keyword("break"), .Keyword("return"), .Keyword("fail")]

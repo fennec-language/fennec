@@ -429,6 +429,7 @@ score = load_score(fs, path) else as why:
 ```
 
 - A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built, apart from the removal: `Ok`, `Err` and a written `Result` still work today.
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. Built.
 - An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs. Leaving is built. Giving a value isn't yet: today it's refused with "an `else:` block must leave".
 - Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
 - `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. Built.
@@ -442,6 +443,7 @@ score = load_score(fs, path) else as why:
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Built in the checker and natively, where an error's notes are a hidden word of its own, 0 until one is added.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
+- A one-line `x if condition else y` and a fallback `else` can't share an expression without parentheses, since `int(text) else 80 if given else 8080` reads two ways: write `int(text) else (80 if given else 8080)`, or give one of them its own line. `fennec fix` writes the parentheses the way it's read. Built.
 - Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. A dict's `pop(key)` fails on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. `items.get(at)` gives `T?` for a position that may not be there, counting from the end when it's negative as `items[at]` does. Built.
 
 ## Visibility

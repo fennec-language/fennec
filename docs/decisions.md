@@ -449,6 +449,7 @@ score = load_score(fs, path) else as why:
         case _:
             fail why
 ```
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here: the explicit "crash here, for this reason" form. Chris decided this on 2026-11-08. Built.
 - An `else as why:` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value as its last line.
 - Different failures are handled with an ordinary `match why:` inside the block, and `_` is the only catch-all.
 - A failure passes on as `fail why`. There's no bare `fail`.
@@ -1409,8 +1410,8 @@ match tok:
 
 **Windows ships self-contained, after a license check.** `opt`, `llc`, `llvm-link`, `lld` and MinGW's libraries ship with `fennec`, so nothing else needs installing. A person has to check the licenses first.
 
-**Every release ships LLD,** LLVM's linker, beside `fennec`, so building a program needs no system linker. Chris decided this on 2026-11-09. Not built yet: Windows releases ship it, and on macOS and Linux programs still link through the system's `cc`.
-*Why:* A linker that comes with the release links the same way on every machine, and a missing or different system linker can't break a build.
+**Every release ships LLD,** LLVM's linker, beside `fennec`, so on Linux and Windows building a program needs no system linker or C compiler. macOS still needs Xcode's command-line tools for now, from `xcode-select --install`, since linking there without them needs Apple's SDK stubs. Shipping stubs of Fennec's own is deferred. Chris decided this on 2026-11-09. Not built yet: Windows releases ship LLD, and on Linux programs still link through the system's `cc`.
+*Why:* A linker that comes with the release links the same way on every machine, and a missing or different system linker can't break a build. Apple's SDK stubs are more to ship and keep current, and most people building on a Mac already have Xcode's tools, so macOS waits.
 
 **Editions let syntax change after 1.0.** A kit names its edition in `kit.toml`, as in `edition = "2026"`, and `fennec fix` moves it to the next one.
 

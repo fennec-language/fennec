@@ -9336,6 +9336,24 @@ def main(net: Net, stdout: Stdout):
     Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
 }
 
+/// A server built on the plain runtime, as `fennec build` makes one where the runtime with threads
+/// isn't there, closes as gently as one on the threads runtime: a refusal with what the client
+/// sent still unread reaches it whole, with no reset. `close` on the plain runtime shut the
+/// socket at once. Found by fuzzing the server (`fennec-fuzz run http-server`).
+#[test]
+fn a_server_on_the_plain_runtime_closes_gently() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let asked = [&b"NOT HTTP\r\n\r\n"[..], &b"x".repeat(100_000)].concat();
+    let said = served_on("0", "plain_runtime_close", &asked)?;
+    assert_eq!(
+        said,
+        "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line"
+    );
+    Ok(())
+}
+
 /// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
 /// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
 /// when it read the line and `line_value` another. Found by fuzzing the server
@@ -11091,6 +11109,39 @@ def main(stdout: Stdout):
     pairs: list[(int, str) | bool] = [(1, "one"), True]
     stdout.print(pairs)
 "#,
+    )
+}
+
+/// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
+/// is held natively: passed in, told apart with `is`, and read as the member it holds.
+#[test]
+fn a_union_with_a_generic_struct_member_is_held_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_generic_member",
+        r#"from std.crypto import Secret
+
+struct Box[T]:
+    value: T
+
+def text_of(given: str | Secret[str]) -> (str, bool):
+    if given is str:
+        return (given, False)
+    (given.expose_secret(), True)
+
+def size(held: Box[int] | int) -> int:
+    if held is int:
+        return held
+    held.value * 10
+
+def main(stdout: Stdout):
+    stdout.print(text_of("plain"), text_of(Secret.of("hidden"))[1])
+    both: list[Box[int] | int] = [Box(value=4), 2]
+    stdout.print(size(both[0]), size(both[1]))
+"#,
+        "(\"plain\", False) True\n40 2\n",
     )
 }
 

@@ -4842,6 +4842,31 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A function that takes a `shared` value and isn't called stays in the build when a local in
+/// `main` has its name, and so does the declaration its `shared Point` means, which nothing
+/// names: the program builds, rather than failing to check once trimmed.
+#[test]
+fn a_local_named_like_a_locking_function_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "local_named_like_locking",
+        r"struct Point:
+    x: int
+
+def change(box: shared Point, by: int):
+    lock box as ref held:
+        held.x += by
+
+def main(stdout: Stdout):
+    for change in [1, 2]:
+        stdout.print(change)
+",
+        "1\n2\n",
+    )
+}
+
 /// A `shared` value of a program's own type named like a standard library type, as `Log` is, is
 /// locked in a function of its own. A `ref self` method called under a write lock in a loop
 /// changes the cell where it is, which copies nothing for the handle.
@@ -4917,6 +4942,32 @@ def main(stdout: Stdout):
     stdout.print(pack.dumps(Reached(x=1, y=2))[4:12])
 "#,
         &wanted,
+    )
+}
+
+/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
+/// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
+/// leaves the enum out where it's known: that's for the program as written.
+#[test]
+fn a_json_names_case_written_with_its_enum_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "json_names_with_enum",
+        r#"from std import json
+from std.json import JsonNames
+
+struct Player:
+    display_name: str
+
+def main(stdout: Stdout):
+    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    stdout.print(text)
+    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+"#,
+        "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
     )
 }
 
@@ -5274,6 +5325,45 @@ def used(fine: bool, stdout: Stdout) fails Second:
     )?;
     assert_eq!(printed, "2\nworked\nfailed Second.Lost(why=\"outer\")\n");
     Ok(())
+}
+
+/// A function whose last line is a `with` whose block always returns gives back a value on every
+/// way, once the source is written in: alone, and in each branch of an `if`.
+#[test]
+fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_returns_last",
+        r#"struct Session:
+    log: str
+
+struct Lite:
+    name: str
+
+    def session(self) -> with Session:
+        lend Session(log="lite") else:
+            pass
+
+def direct(store: Lite, text: str) -> str:
+    with store.session() as session:
+        return f"{session.log} {text}"
+
+def branched(store: Lite, long: bool) -> int:
+    if long:
+        with store.session() as session:
+            return session.log.len() * 10
+    else:
+        with store.session() as session:
+            return session.log.len()
+
+def main(stdout: Stdout):
+    store = Lite(name="a")
+    stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+"#,
+        "lite x 40 4\n",
+    )
 }
 
 /// `with` sources, written in where they're used: a method one and a function one, one inside
@@ -7989,6 +8079,117 @@ fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::i
 fn count(counts: &str, name: &str) -> Option<u64> {
     counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
 }
+
+/// Pieces put on a string that's joined from a list, `out.append(...)` then `"".join(out)`, go
+/// on with no block made for them: a number's text, as `str(n)` or in an f-string, is written as a
+/// header, and a short string with characters past ASCII is counted where it is. Each made a block
+/// that was copied from and let go of: 3,996 blocks here, and now only the joined string's growth.
+#[test]
+fn pieces_joined_into_a_string_make_no_blocks_of_their_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of("pieces_joined", PIECES_JOINED)?;
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    prints_in_both_builds("pieces_joined", PIECES_JOINED, "11518\n")?;
+    prints_in_both_builds(
+        "pieces_joined_edges",
+        PIECES_JOINED_EDGES,
+        "0<0>-1<-1>7<7>1234567890<1234567890>-9223372036854775808<-9223372036854775808>9223372036854775807<9223372036854775807>1.5[1.5]-0.0[-0.0]1e+300[1e+300]0.1[0.1]-2.25[-2.25]é(é)日本(日本)🦊(🦊)fóx12(fóx12)ab(ab)ça va très bien(ça va très bien)xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé(xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé)\n298 ) é ]\n2\n",
+    )
+}
+
+/// Random strings of characters one to four bytes long, joined from a list in random pieces, against
+/// the same pieces added with `+`: lengths and slices agree, where the pieces' characters are counted
+/// as they go on, a string's bytes but those that go on a character. Three thousand cases.
+#[test]
+fn random_pieces_joined_count_their_characters_as_added_ones_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("pieces_counted", PIECES_COUNTED, "checked 2978 wrong 0\n")
+}
+
+const PIECES_COUNTED: &str = r#"## Random strings of characters one to four bytes long, put on a string joined from a list in
+## random pieces, against the same pieces added with `+`: lengths and slices must agree.
+struct Random:
+    state: int
+
+    def below(ref self, limit: int) -> int:
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        (self.state // 65536) % limit
+
+def piece(ref random: Random) -> str:
+    letters = ["a", "Z", "é", "ñ", "日", "€", "🦊", "𝄞", " ", "0"]
+    mut text = ""
+    for _ in range(random.below(8)):
+        text += letters[random.below(letters.len())]
+    text
+
+def main(stdout: Stdout):
+    mut random = Random(state=7)
+    mut wrong = 0
+    mut checked = 0
+    for _ in range(3000):
+        mut out = []
+        mut added = ""
+        mut counted = 0
+        for _ in range(random.below(12) + 1):
+            part = piece(ref random)
+            out.append(part)
+            added = added + part
+            counted += part.len()
+        joined = "".join(out)
+        if joined.len() != counted or joined.len() != added.len() or joined != added:
+            wrong += 1
+        if joined.len() > 0:
+            start = random.below(joined.len())
+            end = start + random.below(joined.len() - start + 1)
+            if joined[start:end] != added[start:end] or joined[start] != added[start]:
+                wrong += 1
+            checked += 1
+    stdout.print("checked", checked, "wrong", wrong)
+"#;
+
+const PIECES_JOINED: &str = r#"def main(stdout: Stdout):
+    mut out = []
+    for i in range(1000):
+        out.append(str(i))
+        out.append("é")
+        out.append(f"<{i * 3}>")
+        out.append("日本")
+    text = "".join(out)
+    stdout.print(text.len())
+"#;
+
+const PIECES_JOINED_EDGES: &str = r#"def joined(numbers: list[int], floats: list[float], words: list[str]) -> str:
+    mut out = []
+    for n in numbers:
+        out.append(str(n))
+        out.append(f"<{n}>")
+    for f in floats:
+        out.append(str(f))
+        out.append(f"[{f}]")
+    for word in words:
+        out.append(word)
+        out.append(f"({word})")
+    "".join(out)
+
+def main(stdout: Stdout):
+    numbers = [0, -1, 7, 1234567890, -9223372036854775807 - 1, 9223372036854775807]
+    floats = [1.5, -0.0, 1e300, 0.1, -2.25]
+    words = ["é", "日本", "🦊", "fóx12", "ab", "ça va très bien", "x" * 30 + "é"]
+    text = joined(numbers, floats=floats, words=words)
+    stdout.print(text)
+    stdout.print(text.len(), text[-1], text[-2], text[text.len() // 2])
+    mut index = 0
+    mut seen = 0
+    while index < text.len():
+        if text[index] == "🦊":
+            seen += 1
+        index += 1
+    stdout.print(seen)
+"#;
 
 /// `fennec dev trace` says each place that allocated or copied in a run, with how often and why,
 /// and agrees with what the run counted altogether.
@@ -11932,6 +12133,83 @@ def main(stdout: Stdout):
     )
 }
 
+/// A union's method runs the one of the type its value holds, natively: on the union, in each
+/// `match` case and in a loop over a list of them. A `with` source does too once it's narrowed
+/// with `is`, where each branch's `store` is its own type; on the union it's refused.
+#[test]
+fn a_unions_methods_and_narrowed_sources_run_the_member_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_members_run",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+type Store = Lite | Postgres
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+type Three = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    if store is Lite:
+        with store.transaction()? as tx:
+            count = store.run("abc")?
+            return f"{tx.log} {count}"
+    else:
+        with store.transaction()? as tx:
+            count = store.run("abcd")?
+            return f"{tx.log} {count}"
+    ""
+
+def ran(store: Three) -> int fails Nope:
+    match store:
+        case Lite(name=_):
+            return store.run("a")?
+        case Postgres(host=_):
+            return store.run("a")?
+        case Mem(size=_):
+            return store.run("a")?
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?)
+    stdout.print(ran(Lite(name="a"))?, ran(Postgres(host="b"))?, ran(Mem(size=1))?)
+    stores: list[Three] = [Lite(name="a"), Postgres(host="b"), Mem(size=1)]
+    for store in stores:
+        stdout.print(store.run("ab")?)
+"#,
+        "lite 3 pg 8\n1 2 3\n2\n4\n6\n",
+    )
+}
+
 /// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
 /// is held natively: passed in, told apart with `is`, and read as the member it holds.
 #[test]
@@ -12120,15 +12398,18 @@ def main(stdout: Stdout):
 
 /// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
 /// written in the source. A value is part of one argument however much it holds, so it can't add
-/// an argument or start a command. Text written beside a value is that argument too.
+/// an argument or start a command. Text written beside a value is that argument too. What comes
+/// after `--` is shown by a program of the test's own, since each system's `printf` reads `--`
+/// its own way: GNU's newer ones take it as the end of their options anywhere.
 #[test]
 fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    let shower = shows_its_arguments("process_template_shower")?;
     let printed = printed_by(
         "process_template",
-        r#"from std.process import ProcessError
+        &r#"from std.process import ProcessError
 
 def main(process: Process, stdout: Stdout) fails ProcessError:
     name = "a b; rm -rf /"
@@ -12146,13 +12427,15 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     if refused is not None:
         stdout.print(refused.message())
     path = "-odd"
-    stdout.print(process.run(t"printf [%s] -- {path}")?.stdout)
+    stdout.print(process.run(t"SHOWER -- {path}")?.stdout.strip())
     _ = narrow.run(t"cat") else as error:
         stdout.print(error.program())
         return
     stdout.print("ran")
-"#,
+"#
+        .replace("SHOWER", &shower),
     )?;
+    std::fs::remove_dir_all(Path::new(&shower).parent().unwrap_or(Path::new(&shower)))?;
     assert_eq!(
         printed,
         "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\n\
@@ -12160,6 +12443,25 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
          [--][-odd]\ncat\n"
     );
     Ok(())
+}
+
+/// Builds a program that prints each argument it's given in brackets, the same on every system,
+/// and gives back its path as a template's text can name it: with `/` between folders, which
+/// Windows takes too, and no spaces.
+fn shows_its_arguments(name: &str) -> std::io::Result<String> {
+    let dir = folder(name)?;
+    let program = dir.join("shower.fen");
+    std::fs::write(
+        &program,
+        "def main(args: Args, stdout: Stdout):\n    stdout.print(\"\".join([f\"[{arg}]\" for arg in args]))\n",
+    )?;
+    let executable = dir.join("shower");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let path = executable.to_string_lossy().replace('\\', "/");
+    assert!(!path.contains([' ', '{', '}']), "a template can't name {path}");
+    Ok(path)
 }
 
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
@@ -17527,6 +17829,76 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     stdout.print(pair, (None, "a"), (None, None))
     stdout.print(pair == (1, None), [(1, None), (2, None)])
 "#,
+    )
+}
+
+/// A `match` case naming a union's member narrows the subject to it, natively: its own fields
+/// read there, and its own `with` source runs, for each of three members.
+#[test]
+fn a_match_case_narrows_its_subject_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "match_narrows",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="mem") else:
+            pass
+
+type Store = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    match store:
+        case Lite(name=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.name}"
+        case Postgres(host=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.host}"
+        case Mem(size=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.size}"
+    ""
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Mem(size=4))?)
+"#,
+        "lite 3 a pg 6 b mem 9 4\n",
     )
 }
 

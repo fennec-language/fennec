@@ -287,6 +287,19 @@ pub(crate) enum Op {
     RefItem(i64, Amount),
 }
 
+/// How a union's member is called on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Via {
+    /// After `match store:` with a case for each member, which doesn't narrow, so each case
+    /// also has `if store is Member:`.
+    Match,
+    /// After `if store is Member:` for each member but the last.
+    Is,
+    /// `run` straight on the union, with no match; its `with` source still after `is`, which a
+    /// union needs.
+    Direct,
+}
+
 /// The containers `CopiedNested` copies and changes deep inside.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Nested {
@@ -468,6 +481,15 @@ pub(crate) enum Stmt {
     /// `ref self` method given a value read from the list it grows, just after that list grew in
     /// place, and both printed, under `if holder.items.len() < 64:`.
     GrownBy(String, String),
+    /// Collect, then apply: `mut world = [Spot(...), ...]`, then `changes = [plan(item, world)
+    /// for item in parallel(xs)]`, a `Change` for each item worked out on the threads from the
+    /// world as it is, then a plain loop applying them in order through a local `ref`, and the
+    /// world printed.
+    PlanApply(String, Vec<(&'static str, Expr)>, Expr, String),
+    /// `stdout.print(<how><members>(<member>, text))`: a union of `members` structs, two or
+    /// three, each with a `run` method and a `session` `with` source of its own, given the
+    /// member numbered `member`, which must be the one whose `session` and `run` are called.
+    UnionCall(Via, usize, usize, Expr),
     /// `given = <a container holding containers>`, `mut copy = given`, a change deep inside the
     /// copy by `value`, then both printed: the original mustn't see it, and must still be whole.
     CopiedNested(Nested, String, String, Expr),

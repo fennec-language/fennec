@@ -116,6 +116,37 @@ pub fn module_as_value(alias: &str, module: &str, span: Span) -> Diagnostic {
         .with_help(format!("`std.{module}` provides {}", shown(module, names)))
 }
 
+/// A written type as source text, as `dict[str, int]` or `(int) -> str`.
+#[must_use]
+pub fn written_type(ty: &crate::TypeExpr) -> String {
+    let args: Vec<String> = ty.args.iter().map(written_type).collect();
+    match ty.name.as_str() {
+        "|" => return args.join(" | "),
+        "fails" => return args.join(" fails "),
+        _ => {}
+    }
+    if ty.name == "->" {
+        let (ret, params) = args.split_last().map_or(("", &[][..]), |(ret, params)| (ret.as_str(), params));
+        return format!("({}) -> {ret}", params.join(", "));
+    }
+    let base = if ty.name == "tuple" {
+        format!("({})", args.join(", "))
+    } else if args.is_empty() {
+        ty.name.clone()
+    } else {
+        format!("{}[{}]", ty.name, args.join(", "))
+    };
+    if ty.optional { format!("{base}?") } else { base }
+}
+
+/// The name of the declaration lowering makes for `shared T`, from how `T` is written: what a
+/// written `shared T` means once it's made.
+#[must_use]
+pub fn shared_declaration(held: &str) -> String {
+    let letters: String = held.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    format!("Shared__{letters}")
+}
+
 /// `a.b.c` for a chain of names and attributes, like the module path in `std.json.loads`.
 pub fn dotted(expr: &Expr) -> Option<String> {
     match &expr.kind {

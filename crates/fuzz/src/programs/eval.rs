@@ -839,6 +839,38 @@ impl Machine {
                 };
                 let _ = writeln!(self.out, "{given} {copy}");
             }
+            Stmt::UnionCall(_, _, member, text) => {
+                let text = self.text_of(text)?;
+                let log = ["lite", "pg", "mem"].get(*member).ok_or(Stop::Unsure)?;
+                let length = i64::try_from(text.chars().count()).map_err(|_| Stop::Unsure)?;
+                let times = i64::try_from(*member + 1).map_err(|_| Stop::Unsure)?;
+                let _ = writeln!(self.out, "{log} {}", checked(length.checked_mul(times))?);
+            }
+            Stmt::PlanApply(_, spots, xs, _) => {
+                let mut world = Vec::with_capacity(spots.len());
+                for (label, x) in spots {
+                    world.push(((*label).to_owned(), int(&self.expr(x)?)?));
+                }
+                let Value::Ints(items) = self.expr(xs)? else { return Err(Stop::Unsure) };
+                let len = i64::try_from(world.len()).map_err(|_| Stop::Unsure)?;
+                // Each change is planned from the world before any is applied.
+                let mut changes = Vec::with_capacity(items.len());
+                for x in &items {
+                    let at = usize::try_from(floor_rem(*x, len)?).map_err(|_| Stop::Unsure)?;
+                    changes.push((at, *x, floor_rem(*x, 2)? == 0));
+                }
+                for (at, x, moved) in changes {
+                    let spot = world.get_mut(at).ok_or(Stop::Unsure)?;
+                    if moved {
+                        spot.1 = checked(spot.1.checked_add(x))?;
+                    } else {
+                        let _ = write!(spot.0, "<{x}>");
+                    }
+                }
+                let shown: Vec<String> =
+                    world.iter().map(|(label, x)| format!("Spot(label=\"{label}\", x={x})")).collect();
+                let _ = writeln!(self.out, "[{}] {}", shown.join(", "), items.len());
+            }
             Stmt::GrownBy(holder, _) => {
                 if let Value::Holder(items, tag) = self.slot(holder)?
                     && items.len() < 64

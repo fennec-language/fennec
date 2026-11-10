@@ -885,6 +885,7 @@ impl Emit<'_, '_, '_> {
             if !self.on_crash.is_empty() {
                 self.roll_back_on_crash()?;
             }
+            self.write_kept_lengths_after_crash();
             self.release_locals(None);
             self.line(&leave);
             self.wrote_prop = true;

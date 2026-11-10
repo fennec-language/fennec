@@ -1943,7 +1943,9 @@ impl Emit<'_, '_, '_> {
             return kept.clone();
         }
         let kept = self.label("%kept_length");
-        let _ = writeln!(self.allocas, "  {kept} = alloca i64");
+        // -1 until the list is made, and again once the list holds its length itself: what a
+        // crash's way out goes by.
+        let _ = writeln!(self.allocas, "  {kept} = alloca i64\n  store i64 -1, ptr {kept}");
         self.kept_lengths.insert(list, kept.clone());
         kept
     }
@@ -1983,6 +1985,38 @@ impl Emit<'_, '_, '_> {
                 self.proof_held(&over, "a length kept aside fits its list's room", span);
             }
             self.line(&format!("store i64 {length}, ptr {length_at}{HEADER_ACCESS}"));
+            self.line(&format!("store i64 -1, ptr {kept}"));
+        }
+    }
+
+    /// On the way out after a crash, writes the length of each list still kept aside, in a loop
+    /// the crash left partway, to the list, so letting go of it lets go of the items it holds.
+    /// A list whose length is its own, or that was never made, is left as it is.
+    pub(crate) fn write_kept_lengths_after_crash(&mut self) {
+        let mut kept_lists: Vec<usize> = self
+            .known
+            .length_kept
+            .keys()
+            .filter(|list| matches!(self.kind_of(LocalId(**list)), Ok(Kind::List(_))))
+            .copied()
+            .collect();
+        kept_lists.sort_unstable();
+        for list in kept_lists {
+            let (kept, slot) = (self.kept_length(list), self.slot(LocalId(list)));
+            let (length, block, none, own, skip) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            let (write, next) = (self.label("kept_write"), self.label("kept_written"));
+            self.line(&format!("{length} = load i64, ptr {kept}"));
+            self.line(&format!("{block} = load ptr, ptr {slot}"));
+            self.line(&format!("{none} = icmp eq ptr {block}, null"));
+            self.line(&format!("{own} = icmp slt i64 {length}, 0"));
+            self.line(&format!("{skip} = or i1 {none}, {own}"));
+            self.line(&format!("br i1 {skip}, label %{next}, label %{write}"));
+            self.start_block(&write);
+            let length_at = self.offset(&block, u32::try_from(LIST_LENGTH).unwrap_or(0));
+            self.line(&format!("store i64 {length}, ptr {length_at}{HEADER_ACCESS}"));
+            self.line(&format!("br label %{next}"));
+            self.start_block(&next);
         }
     }
 

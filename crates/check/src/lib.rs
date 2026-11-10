@@ -28,6 +28,7 @@ mod fields;
 mod function;
 pub use fields::{each_field_type, fields_of};
 mod generic;
+mod generic_copies;
 mod gone;
 mod imports;
 mod index;
@@ -712,6 +713,11 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     imports_for_cases(module, &checked.cases);
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
+    // A generic function calling an interface's `with` source is copied for each type it's called
+    // with, and the copies checked again, where each type's own source is found and written in.
+    if generic_copies::lower(module, &checked.generic_sources, &checked.generic_calls) {
+        return Round::Again;
+    }
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
     let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
@@ -840,6 +846,10 @@ pub struct Checked {
     shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, which lowering writes in where it's used.
     sources: BTreeMap<(u32, u32), lend_lowering::Source>,
+    /// Each generic function that calls a `with` source an interface gives its type parameter.
+    generic_sources: BTreeSet<String>,
+    /// Each call to a generic function, with the types its type parameters are there.
+    generic_calls: BTreeMap<(u32, u32), generic_copies::Call>,
     /// The `with`s that open several handles, which lowering nests one inside another.
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.

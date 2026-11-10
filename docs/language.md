@@ -584,9 +584,9 @@ def serve(conn: Connection, rooms: shared dict[str, Room], db: Database) fails N
 def autosave(rooms: shared dict[str, Room], fs: Fs, clock: Clock) fails IoError:
     while True:
         clock.sleep(30s)
-        lock rooms as current:
-            # your own copy, so the lock ends before the file is written
-            snapshot = current
+        # your own copy, so the lock ends before the file is written
+        snapshot = lock rooms as current:
+            current
         fs.write_text("rooms.json", json.dumps(snapshot))?
 
 def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy):

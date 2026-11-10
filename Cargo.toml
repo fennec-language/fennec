@@ -93,6 +93,12 @@ signal-hook = { version = "=0.3.18", default-features = false, features = ["iter
 # The same on Windows, for Ctrl-C and Ctrl-Break, through `SetConsoleCtrlHandler`, its handler run
 # on a thread of its own. Under MIT or Apache-2.0.
 ctrlc = { version = "=3.4.7", default-features = false }
+# On Windows only, to give each connection a send buffer of a fixed size. Windows otherwise grows
+# it to take whatever's written, so a client that never reads can make the kernel hold unbounded
+# memory for each connection: a denial of service, and a write's `timeout=` that never comes.
+# Standard Rust can't set it, and doing so ourselves would be new `unsafe`. It's used for nothing
+# else. rust-lang's own crate, under MIT or Apache-2.0.
+socket2 = { version = "=0.6.5", default-features = false }
 fennec-bench = { path = "crates/bench" }
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }

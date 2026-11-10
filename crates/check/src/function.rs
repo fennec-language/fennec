@@ -951,7 +951,16 @@ impl<'c> FnCx<'c> {
     pub(crate) fn narrow_members(&mut self, known: &[(String, String, bool)]) {
         for (name, member, holds) in known {
             let Some(member) = self.member_type(member, Span::default()) else { continue };
-            let Some(ty) = self.union_of(name) else { continue };
+            // What's left of the union after an earlier `is`, as after `if s is Circle: return`,
+            // is narrowed further; otherwise the union it was declared with.
+            let current = self.lookup(name).map(|(ty, _)| self.checker.settled(&ty));
+            let ty = match current {
+                Some(Type::Union(members)) if members.contains(&member) => Type::Union(members),
+                _ => match self.union_of(name) {
+                    Some(ty) => ty,
+                    None => continue,
+                },
+            };
             let Type::Union(members) = ty else { continue };
             if !members.contains(&member) {
                 continue;

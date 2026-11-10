@@ -880,6 +880,19 @@ impl Writer<'_> {
     /// shares its value can; a struct holding a list, changed; and lists stored into a dict.
     fn copies(&mut self, body: &mut Vec<Stmt>, which: usize) {
         match which {
+            23 if !self.threadless && self.choice(3) == 0 => {
+                // Collect on the threads, then apply in order.
+                const LABELS: [&str; 4] = ["a", "b", "hé🦊", ""];
+                let count = 1 + self.choice(LABELS.len());
+                let mut spots = Vec::with_capacity(count);
+                for label in LABELS.iter().take(count) {
+                    let x = self.int(2);
+                    spots.push((*label, self.bounded(x)));
+                }
+                let xs = self.of(Ty::Ints, 1);
+                let (world, changes) = (self.fresh(), self.fresh());
+                body.push(Stmt::PlanApply(world, spots, xs, changes));
+            }
             23 if self.choice(3) == 0 => {
                 // A union's member called on through the union: after `match`, after `is`, or
                 // straight on it, with its `with` source always after `is`.

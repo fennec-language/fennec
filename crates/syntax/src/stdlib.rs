@@ -37,6 +37,7 @@ modules! {
     concurrent,
     crypto,
     csv,
+    env,
     fs,
     html,
     intrinsics,

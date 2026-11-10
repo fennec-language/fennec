@@ -589,13 +589,27 @@ impl Expr {
             && matches!(kind, StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_))
     }
 
+    /// The block an `else:` or `else as name:` holds, with the name it gives the failure, when this
+    /// is what one parsed to: one case, over a value nothing wrote. The block leaves, or its last
+    /// line is the value. `else continue`, `else return` and `else fail` are blocks of one line.
+    pub fn else_block(&self) -> Option<(Option<&str>, &[Stmt])> {
+        let ExprKind::Match { subject, arms } = &self.kind else { return None };
+        if !matches!(subject.kind, ExprKind::Bool(false)) || subject.span.start != subject.span.end {
+            return None;
+        }
+        match arms.as_slice() {
+            [MatchArm { pattern: Pattern::Bind(name), guard: None, body, .. }] => Some((Some(name), body)),
+            [MatchArm { pattern: Pattern::Wildcard, guard: None, body, .. }] => Some((None, body)),
+            _ => None,
+        }
+    }
+
     /// The name `else as name:` gives the failure and the block it holds, when this is what one
     /// parsed to.
     pub fn failure_named(&self) -> Option<(&str, &[Stmt])> {
-        let ExprKind::Match { arms, .. } = &self.kind else { return None };
-        match arms.as_slice() {
-            [MatchArm { pattern: Pattern::Bind(name), body, .. }] if self.leaves() => Some((name, body)),
-            _ => None,
+        match self.else_block()? {
+            (Some(name), body) => Some((name, body)),
+            (None, _) => None,
         }
     }
 

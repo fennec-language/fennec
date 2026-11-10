@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt};
+use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Size, Stmt};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +142,16 @@ fn kept(tree: Tree) -> Ran<Tree> {
     Ok(tree)
 }
 
+/// Where a local `ref` points once its index is worked out.
+enum Resolved {
+    Item(String, usize),
+    Field(String, bool),
+    HeldItem(String, usize),
+    HeldList(String),
+    Tag(String),
+    NodeItem(String, usize),
+}
+
 /// Why running stopped before the end.
 #[derive(Debug, PartialEq, Eq)]
 enum Stop {
@@ -238,6 +248,12 @@ impl Bag {
                     for item in &mut self.items {
                         *item = item.checked_add(value)?;
                     }
+                }
+                Op::RefItem(at, value) => {
+                    let len = i64::try_from(self.items.len()).ok()?;
+                    let at = if *at < 0 { at + len } else { *at };
+                    let item = self.items.get_mut(usize::try_from(at).ok()?)?;
+                    *item = item.checked_add(amount(*value)?)?;
                 }
             }
         }
@@ -409,6 +425,18 @@ fn shown(value: &Value) -> String {
     }
 }
 
+/// The name a local `ref`'s place is in.
+fn place_holder(place: &Resolved) -> &str {
+    match place {
+        Resolved::Item(name, _)
+        | Resolved::Field(name, _)
+        | Resolved::HeldItem(name, _)
+        | Resolved::HeldList(name)
+        | Resolved::Tag(name)
+        | Resolved::NodeItem(name, _) => name,
+    }
+}
+
 impl Machine {
     fn buffer_of(&mut self, expr: &Expr) -> Ran<Vec<i64>> {
         match self.expr(expr)? {
@@ -471,6 +499,84 @@ impl Machine {
             Value::Node(tree) => Ok(tree),
             _ => Err(Stop::Unsure),
         }
+    }
+
+    /// Where a local `ref` points, its index worked out now and kept: outside the list fails.
+    fn resolved(&mut self, place: &RefPlace) -> Ran<Resolved> {
+        Ok(match place {
+            RefPlace::Item(list, at) => {
+                let at = int(&self.expr(at)?)?;
+                let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                Resolved::Item(list.clone(), place_in(at, items.len())?)
+            }
+            RefPlace::Field(point, x) => Resolved::Field(point.clone(), *x),
+            RefPlace::HeldItem(holder, at) => {
+                let at = int(&self.expr(at)?)?;
+                let Value::Holder(items, _) = self.get(holder)? else { return Err(Stop::Unsure) };
+                Resolved::HeldItem(holder.clone(), place_in(at, items.len())?)
+            }
+            RefPlace::HeldList(holder) => Resolved::HeldList(holder.clone()),
+            RefPlace::Tag(holder) => Resolved::Tag(holder.clone()),
+            RefPlace::NodeItem(nodes, at) => {
+                let at = int(&self.expr(at)?)?;
+                let Value::Nodes(trees) = self.get(nodes)? else { return Err(Stop::Unsure) };
+                Resolved::NodeItem(nodes.clone(), place_in(at, trees.len())?)
+            }
+        })
+    }
+
+    /// What a local `ref`'s place holds now.
+    fn at_place(&self, place: &Resolved) -> Ran<Value> {
+        Ok(match (place, self.get(place_holder(place))?) {
+            (Resolved::Item(_, at), Value::Ints(items))
+            | (Resolved::HeldItem(_, at), Value::Holder(items, _)) => {
+                Value::Int(*items.get(*at).ok_or(Stop::Unsure)?)
+            }
+            (Resolved::Field(_, x), Value::Point(px, py)) => Value::Int(if *x { *px } else { *py }),
+            (Resolved::HeldList(_), Value::Holder(items, _)) => Value::Ints(items.clone()),
+            (Resolved::Tag(_), Value::Holder(_, tag)) => Value::Int(*tag),
+            (Resolved::NodeItem(_, at), Value::Nodes(trees)) => {
+                Value::Node(trees.get(*at).cloned().ok_or(Stop::Unsure)?)
+            }
+            _ => return Err(Stop::Unsure),
+        })
+    }
+
+    /// Puts a value into a local `ref`'s place.
+    fn put_in_place(&mut self, place: &Resolved, value: Value) -> Ran<()> {
+        match (place, self.slot(place_holder(place))?, value) {
+            (Resolved::Item(_, at), Value::Ints(items), Value::Int(n))
+            | (Resolved::HeldItem(_, at), Value::Holder(items, _), Value::Int(n)) => {
+                *items.get_mut(*at).ok_or(Stop::Unsure)? = n;
+            }
+            (Resolved::Field(_, true), Value::Point(px, _), Value::Int(n)) => *px = n,
+            (Resolved::Field(_, false), Value::Point(_, py), Value::Int(n)) => *py = n,
+            (Resolved::HeldList(_), Value::Holder(items, _), Value::Ints(list)) => *items = list,
+            (Resolved::Tag(_), Value::Holder(_, tag), Value::Int(n)) => *tag = n,
+            (Resolved::NodeItem(_, at), Value::Nodes(trees), Value::Node(tree)) => {
+                *trees.get_mut(*at).ok_or(Stop::Unsure)? = tree;
+            }
+            _ => return Err(Stop::Unsure),
+        }
+        Ok(())
+    }
+
+    /// `ref name = place` and the statements using it. Each runs with the name holding what the
+    /// place does, which goes back into the place after it, so reading the container between
+    /// them sees each change, as the program does. No statement here both changes the name and
+    /// reads the container.
+    fn local_ref(&mut self, name: &str, place: &RefPlace, body: &[Stmt]) -> Ran<()> {
+        let place = self.resolved(place)?;
+        for stmt in body {
+            let value = self.at_place(&place)?;
+            self.scopes.push(vec![(name.to_owned(), value)]);
+            let ran = self.stmt(stmt);
+            let after = self.scopes.pop().and_then(|mut scope| scope.pop()).map(|(_, value)| value);
+            // A failure stops the program, so what the place holds after it can't be seen.
+            ran?;
+            self.put_in_place(&place, after.ok_or(Stop::Unsure)?)?;
+        }
+        Ok(())
     }
 
     fn trees_of(&mut self, expr: &Expr) -> Ran<Vec<Tree>> {
@@ -611,6 +717,7 @@ impl Machine {
                 }
             }
             Stmt::Reshape(name, text, child) => self.reshape(name, text, child)?,
+            Stmt::LocalRef(name, place, body) => self.local_ref(name, place, body)?,
             Stmt::Pop(name) => {
                 if let Value::Ints(items) = self.slot(name)? {
                     items.pop();
@@ -1142,8 +1249,12 @@ impl Machine {
                 Value::Ints(mapped)
             }
             Expr::Len(list) => {
-                let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
-                Value::Int(i64::try_from(items.len()).map_err(|_| Stop::Unsure)?)
+                let len = match self.expr(list)? {
+                    Value::Ints(items) => items.len(),
+                    Value::Nodes(trees) => trees.len(),
+                    _ => return Err(Stop::Unsure),
+                };
+                Value::Int(i64::try_from(len).map_err(|_| Stop::Unsure)?)
             }
             Expr::Index(list, at) => {
                 let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };

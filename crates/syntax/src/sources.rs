@@ -18,6 +18,9 @@ struct File {
     path: String,
     text: String,
     base: u32,
+    /// Where each of its lines starts, worked out the first time a diagnostic is rendered against
+    /// it, so rendering many is the same work for each, wherever in the file it points.
+    lines: std::sync::OnceLock<Vec<usize>>,
 }
 
 impl Sources {
@@ -29,7 +32,12 @@ impl Sources {
     pub fn add(&mut self, path: impl Into<String>, text: impl Into<String>) -> u32 {
         // One byte of room after each file, so a span at its very end stays in it.
         let base = self.files.last().map_or(0, |file| file.end().saturating_add(1));
-        self.files.push(File { path: path.into(), text: text.into(), base });
+        self.files.push(File {
+            path: path.into(),
+            text: text.into(),
+            base,
+            lines: std::sync::OnceLock::new(),
+        });
         base
     }
 
@@ -45,12 +53,15 @@ impl Sources {
         };
         let also = diagnostic.also().and_then(|span| {
             let other = self.file(span)?;
-            Some(crate::diagnostic::place(&other.path, &other.text, local(span, other)))
+            Some(crate::diagnostic::place(&other.path, &other.text, local(span, other), &|at| {
+                other.line_of(at)
+            }))
         });
         Diagnostic { span: local(diagnostic.span, file), ..diagnostic.clone() }.render_with(
             &file.path,
             &file.text,
             also.as_deref(),
+            &|at| file.line_of(at),
         )
     }
 
@@ -221,6 +232,19 @@ impl File {
     fn end(&self) -> u32 {
         self.base.saturating_add(u32::try_from(self.text.len()).unwrap_or(u32::MAX))
     }
+
+    /// The line a byte offset into the file is on, from 1, and where that line starts, as
+    /// `diagnostic::line_of` finds by reading up to it.
+    fn line_of(&self, at: usize) -> (usize, usize) {
+        if !self.text.is_char_boundary(at) {
+            return (1, 0);
+        }
+        let starts = self.lines.get_or_init(|| {
+            std::iter::once(0).chain(self.text.match_indices('\n').map(|(newline, _)| newline + 1)).collect()
+        });
+        let line = starts.partition_point(|&start| start <= at);
+        (line, starts.get(line.wrapping_sub(1)).copied().unwrap_or(0))
+    }
 }
 
 /// A failure's call chain: each call it left on its way out, innermost first. It stays small however
@@ -327,5 +351,43 @@ impl Trace {
         let skipped = parts.next()?.parse().ok()?;
         let outer = entries(parts.next()?)?.into_iter().collect();
         Some(Trace { inner, outer, skipped })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Sources;
+    use crate::diagnostic::{Also, Diagnostic};
+    use crate::span::Span;
+
+    /// Rendering against a program's files finds each line from an index of where lines start,
+    /// and must say what reading the file up to the diagnostic says: at the start and end of a
+    /// line, on an empty line, at the end of the file, after a character of several bytes, and in
+    /// a second file, with `also` pointing into the first.
+    #[test]
+    fn a_diagnostic_renders_the_same_by_the_line_index_as_by_reading_up_to_it() {
+        let first = "def main():\n    x = 1\n\n    \u{e9}t\u{e9} = 2\nlast";
+        let second = "one\ntwo\n";
+        let mut sources = Sources::new();
+        let base = sources.add("a.fen", first);
+        let other = sources.add("b.fen", second);
+        let text_of = |at: u32| if at >= other { second } else { first };
+        let mut offsets: Vec<u32> =
+            first.char_indices().map(|(at, _)| base + u32::try_from(at).unwrap()).collect();
+        offsets.push(base + u32::try_from(first.len()).unwrap());
+        offsets.extend(second.char_indices().map(|(at, _)| other + u32::try_from(at).unwrap()));
+        for at in offsets {
+            let span = Span { start: at, end: at + 1 };
+            let diagnostic = Diagnostic::new("here", span)
+                .also_at_the(Also::Other, Span { start: base + 4, end: base + 8 });
+            let (path, local) = if at >= other { ("b.fen", at - other) } else { ("a.fen", at - base) };
+            let read =
+                Diagnostic::new("here", Span { start: local, end: local + 1 }).render(path, text_of(at));
+            let indexed = sources.render(&diagnostic);
+            let without_note =
+                indexed.lines().filter(|line| !line.contains("= note:")).collect::<Vec<_>>().join("\n");
+            assert_eq!(without_note, read.trim_end(), "at {at}");
+            assert!(indexed.contains("= note: the other one is at a.fen:1:5"), "at {at}: {indexed}");
+        }
     }
 }

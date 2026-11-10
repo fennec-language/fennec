@@ -84,7 +84,18 @@ impl Counter {
     /// How many instructions a program runs, after `set_up` gives it the folder and environment
     /// it needs.
     pub fn count_set_up(&self, program: &Program, set_up: impl FnOnce(&mut Command)) -> Option<u64> {
-        self.counted(program, None, set_up)
+        self.counted(program, None, 0, set_up)
+    }
+
+    /// `count_set_up`, for a program that exits with `code` when it does what it's meant to, like
+    /// a linter that found what it reports.
+    pub fn count_exiting(
+        &self,
+        program: &Program,
+        code: i32,
+        set_up: impl FnOnce(&mut Command),
+    ) -> Option<u64> {
+        self.counted(program, None, code, set_up)
     }
 
     /// How many instructions a program and every program it starts run, for one that compiles,
@@ -96,7 +107,7 @@ impl Counter {
         folder: &Path,
         set_up: impl FnOnce(&mut Command),
     ) -> Option<u64> {
-        self.counts_every_process().then(|| self.counted(program, Some(folder), set_up)).flatten()
+        self.counts_every_process().then(|| self.counted(program, Some(folder), 0, set_up)).flatten()
     }
 
     /// Whether `count_every_process` can count here.
@@ -112,6 +123,7 @@ impl Counter {
         &self,
         program: &Program,
         every: Option<&Path>,
+        code: i32,
         set_up: impl FnOnce(&mut Command),
     ) -> Option<u64> {
         let input = program.input().ok()?;
@@ -146,7 +158,7 @@ impl Counter {
         };
         set_up(&mut command);
         let output = command.arg(&program.command).args(&program.args).stdin(input).output().ok()?;
-        if !output.status.success() {
+        if output.status.code() != Some(code) {
             return None;
         }
         let stderr = String::from_utf8_lossy(&output.stderr);

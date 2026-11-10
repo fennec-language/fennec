@@ -228,6 +228,8 @@ fn next_to_free(
         // A `shared` value's handle: its count is the runtime's, wherever its block is.
         if crate::embed::guarded::is_handle(address) {
             crate::embed::guarded::release_handle(state, address);
+        } else {
+            super::not_native(address, "free");
         }
     }
     None
@@ -275,30 +277,114 @@ fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>, take
 /// owner of to be freed: taken out of the table at once when this thread alone counts them and
 /// holds every block it can reach.
 fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, taken: &mut Vec<Box<[u64]>>) {
+    let direct = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
+    if release_planned_items(state, block, direct, pending, taken) {
+        return;
+    }
     let mut found = std::mem::take(&mut state.heap.found);
     children_into(state, block, &mut found);
-    let direct = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
     for child in found.drain(..) {
-        if direct {
-            match state.heap.blocks.release_one(usize::try_from(child).unwrap_or(usize::MAX)) {
-                Released::Gone(block) => {
-                    taken.push(block);
-                    continue;
-                }
-                Released::Held => continue,
-                Released::Missing => {}
-            }
-        }
-        if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                pending.push(child);
-            }
-        } else if !state.heap.change_lent_owners(child, -1) && crate::embed::guarded::is_handle(child) {
-            pending.push(child);
-        }
+        release_child(state, child, direct, pending, taken);
     }
     state.heap.found = found;
+}
+
+/// Gives up the owner a freed block held of `child`, queueing it to be freed once that was its
+/// last.
+#[inline]
+fn release_child(
+    state: &mut State,
+    child: u64,
+    direct: bool,
+    pending: &mut Vec<u64>,
+    taken: &mut Vec<Box<[u64]>>,
+) {
+    if direct {
+        match state.heap.blocks.release_one(usize::try_from(child).unwrap_or(usize::MAX)) {
+            Released::Gone(block) => {
+                taken.push(block);
+                return;
+            }
+            Released::Held => return,
+            Released::Missing => {}
+        }
+    }
+    if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            pending.push(child);
+        }
+    } else if !state.heap.change_lent_owners(child, -1) && crate::embed::guarded::is_handle(child) {
+        pending.push(child);
+    }
+}
+
+/// Gives up what a list's in-place items hold, item by item as their kind's plan says, with no
+/// list of the addresses gathered first: json's arrays of values, say, whose strings and lists
+/// are freed with them. False, having done nothing, for a block that isn't such a list.
+fn release_planned_items(
+    state: &mut State,
+    block: &[u64],
+    direct: bool,
+    pending: &mut Vec<u64>,
+    taken: &mut Vec<Box<[u64]>>,
+) -> bool {
+    if shape_word(block).is_none_or(|shape| shape < state.tables.str_shape)
+        || is_text(state, block)
+        || crate::embed::dicts::is_dict(state, block)
+    {
+        return false;
+    }
+    let Some(number) = crate::embed::lists::element_number(state, block) else { return false };
+    if state.tables.elements.get(number).is_none_or(|element| crate::embed::lists::owns_items(element)) {
+        return false;
+    }
+    let planned = state.heap.item_plans.get(number);
+    if planned.is_none_or(|planned| matches!(planned.plan, Plan::Walk) || planned.plan.holds_nothing()) {
+        return false;
+    }
+    // Letting go of a child changes the table, never the plans, so they're set aside meanwhile.
+    let plans = std::mem::take(&mut state.heap.item_plans);
+    if let Some(planned) = plans.get(number) {
+        let mut letting_go =
+            LettingGo { state: &mut *state, direct, pending: &mut *pending, taken: &mut *taken };
+        for item in crate::embed::lists::items(block, planned.stride).chunks(planned.stride) {
+            if crate::embed::plans::addresses(&planned.plan, item, &mut letting_go).is_none() {
+                walk_item(&mut letting_go, number, item);
+            }
+        }
+    }
+    state.heap.item_plans = plans;
+    true
+}
+
+/// Lets go of what an item holds that its plan couldn't say, walking its kind.
+#[cold]
+#[inline(never)]
+fn walk_item(letting_go: &mut LettingGo<'_>, number: usize, item: &[u64]) {
+    let mut found = Vec::new();
+    if let Some(element) = letting_go.state.tables.elements.get(number) {
+        super::held_addresses(element, item, &mut found);
+    }
+    letting_go.extend(found);
+}
+
+/// Lets go of each address a plan finds as it's found, for `release_planned_items`.
+struct LettingGo<'a> {
+    state: &'a mut State,
+    direct: bool,
+    pending: &'a mut Vec<u64>,
+    taken: &'a mut Vec<Box<[u64]>>,
+}
+
+impl Extend<u64> for LettingGo<'_> {
+    fn extend<I: IntoIterator<Item = u64>>(&mut self, addresses: I) {
+        for child in addresses {
+            if child != 0 {
+                release_child(self.state, child, self.direct, self.pending, self.taken);
+            }
+        }
+    }
 }
 
 /// Gives up the owner a struct's or enum's block holds of each block its plan says it refers
@@ -400,6 +486,8 @@ fn release_planned_child(
         *lent_owners.entry(child).or_default() -= 1;
     } else if crate::embed::guarded::is_handle(child) {
         freeing.pending.push(child);
+    } else {
+        super::not_native(child, "free, a block a freed one held");
     }
 }
 
@@ -449,8 +537,11 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
         }
         Some(_) => true,
         None => {
-            if !state.heap.change_lent_owners(address, -1) && crate::embed::guarded::is_handle(address) {
+            if state.heap.change_lent_owners(address, -1) {
+            } else if crate::embed::guarded::is_handle(address) {
                 crate::embed::guarded::release_handle(state, address);
+            } else {
+                super::not_native(address, "release");
             }
             false
         }
@@ -476,6 +567,64 @@ mod tests {
                 state.heap.recycle(block);
             }
         });
+    }
+
+    /// A list of values laid out in place, each holding a string and a list of strings, lets go
+    /// of all of them when it's freed, as its items' plan finds them, leaving nothing behind.
+    #[test]
+    fn a_freed_list_lets_go_of_what_its_items_hold() {
+        use crate::value::{Instance, Value};
+        let held = Rc::new(Element::Struct {
+            name: Rc::from("Held"),
+            fields: vec![
+                (Rc::from("name"), Element::Str),
+                (Rc::from("tags"), Element::List(Rc::new(Element::Str))),
+            ],
+        });
+        let tables = Tables { elements: vec![held, Rc::new(Element::Str)], ..Tables::default() };
+        start(tables, crate::Inputs::default());
+        with(|state| {
+            let planned = state.heap.item_plans.first().map(|planned| &planned.plan);
+            assert!(planned.is_some_and(|plan| !matches!(plan, crate::embed::plans::Plan::Walk)));
+        });
+        let before = with(|state| state.heap.live());
+        let item = |at: usize| {
+            let text =
+                |what: &str| Value::str(&format!("{what} {at}, long enough to need a block of its own"));
+            Value::Instance(Rc::new(Instance {
+                type_name: Rc::from("Held"),
+                case: None,
+                fields: vec![
+                    (Rc::from("name"), text("name")),
+                    (Rc::from("tags"), Value::list(vec![text("first tag"), text("second tag")])),
+                ],
+                is_error: false,
+                cause: None,
+                notes: None,
+            }))
+        };
+        let pushed = with(|state| state.push(Value::list((0..3).map(item).collect())));
+        let block = crate::embed::lists::from_value(pushed, 0, 0, 0);
+        assert_ne!(block, 0);
+        assert!(with(|state| state.heap.live()) >= before + 10, "the list, 3 names, 3 lists and 6 tags");
+        crate::embed::heap::free(block);
+        with(|state| assert_eq!(state.heap.live(), before));
+        finish();
+    }
+
+    /// A block generated code made, handed to the runtime anyway, stops the program saying so,
+    /// rather than being let go of with nothing done. An address it holds no block for that
+    /// generated code didn't make is let go of with nothing done, as before.
+    #[test]
+    #[should_panic(expected = "the runtime was handed a native block it doesn't own: release")]
+    fn a_native_block_handed_to_the_runtime_stops_the_program() {
+        start(Tables::default(), crate::Inputs::default());
+        let made = Box::new([1_u64, 0, 0]);
+        let address = i64::try_from(std::ptr::from_ref(&made[0]).addr()).unwrap();
+        // Not one of generated code's: nothing happens.
+        with(|state| super::release(state, address.cast_unsigned() + 64));
+        super::super::native_made(address);
+        with(|state| super::release(state, address.cast_unsigned()));
     }
 
     #[test]

@@ -542,6 +542,45 @@ def main(stdout: Stdout):
         stdout.print(held)
 "#;
 
+/// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
+/// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
+#[test]
+fn a_failure_and_a_none_are_handled_apart() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("failure_and_none", FAILURE_AND_NONE, "1 -1 -9\nfailed: broken\nTrue\n1\n")
+}
+
+const FAILURE_AND_NONE: &str = r#"error Bad:
+    why: str
+
+struct Entry:
+    size: int
+
+def cached(n: int) -> Entry? fails Bad:
+    if n > 5:
+        fail Bad("broken")
+    if n > 2:
+        return None
+    Entry(size=n)
+
+def lookup(n: int) -> int fails Bad:
+    entry = cached(n)? else Entry(size=-1)
+    entry.size
+
+def main(stdout: Stdout):
+    stdout.print(lookup(1) else -9, lookup(3) else -9, lookup(7) else -9)
+    held = cached(7) else as why:
+        stdout.print(f"failed: {why.why}")
+        None
+    stdout.print(held is None)
+    other = cached(1) else as why:
+        Entry(size=0)
+    found = other else Entry(size=-2)
+    stdout.print(found.size)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -963,7 +1002,7 @@ def more_facts(stdout: Stdout):
         ran += at
     stdout.print(limit, ran)
     for at, item in enumerate(items):
-        mut here = copy(at)
+        mut here = at
         bump(ref here)
         stdout.print(at, here, item)
 
@@ -1317,9 +1356,11 @@ def main(stdout: Stdout):
     # What's given to the call comes from what's changed.
     mut own = [unit(1), unit(2), unit(3)]
     own[0].grow(own[1].hp)
-    own[0].grown_by(copy(own[0].tags))
+    first_tags = own[0].tags
+    own[0].grown_by(first_tags)
     own[1].grown_by(own[0].tags)
-    own[2].absorb(copy(own[2]))
+    third = own[2]
+    own[2].absorb(third)
     own[2].absorb(own[0])
     first = own[1]
     own[1].grown_by(first.tags)
@@ -1913,7 +1954,7 @@ def grow(ref units: list[Unit], by: int):
 def main(stdout: Stdout):
     mut units = [Unit([1, 2, 3], 0), Unit([4], 1)]
     # A copy of the list, of an item, and of the field, each kept apart from what comes after.
-    snapshot = copy(units)
+    snapshot = units
     shared = units
     item = units[0]
     tags = units[0].tags
@@ -1934,7 +1975,7 @@ def main(stdout: Stdout):
     grow(ref units, 5)
     stdout.print(units, snapshot)
     # A caller's copy stays as it was.
-    mut mine = copy(units)
+    mut mine = units
     kept = mine
     grow(ref mine, 6)
     stdout.print(mine[0].tags, kept[0].tags)
@@ -2365,7 +2406,7 @@ def main(stdout: Stdout):
     # Copies taken before the loop keep what they had.
     mut units = make()
     shared = units
-    kept = copy(units)
+    kept = units
     item = units[0]
     tags = units[0].tags
     for ref unit in units:
@@ -3588,7 +3629,7 @@ def main(stdout: Stdout):
     stdout.print(c[-1], c[-3], [i * i for i in range(4)][2])
     mut h = [1, 2]
     for _ in range(3):
-        k = copy(h)
+        k = h
         h.append(k.len())
         stdout.print(k.len(), h.len())
 ",
@@ -5396,7 +5437,7 @@ def main(stdout: Stdout):
     bump(ref holder, 1)
     stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
     stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
-    mut list_only = copy(two)
+    mut list_only = two
     shown = list_only[0]
     list_only[0].id = 77
     stdout.print(shown.id, list_only[0].id, two[0].id)
@@ -5407,7 +5448,7 @@ def main(stdout: Stdout):
     copied = kept
     kept.packets.append(a)
     stdout.print(kept.packets.len(), copied.packets.len())
-    mut nested = copy(kept)
+    mut nested = kept
     other = nested
     nested.packets[0].data[1] = 123
     stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
@@ -5417,7 +5458,8 @@ def main(stdout: Stdout):
         item = item * 2
     stdout.print(walked[0], walked[2], before[0], before[2])
     mut grows = [1, 2]
-    for item in copy(grows):
+    grows_before = grows
+    for item in grows_before:
         grows[0] = item + 10
         grows[1] = 40
     stdout.print(grows[0], grows[1])
@@ -5509,7 +5551,7 @@ def main(stdout: Stdout):
     a = Point(x=1.0, y=2.0, on=True)
     b = moved(a, 0.5)
     stdout.print(a.x, b.x, a.on)
-    mut c = copy(b)
+    mut c = b
     nudge(ref c)
     stdout.print(b.y, c.y, b.on, c.on)
     mut line = Line(start=a, end=c, weight=3)
@@ -7694,7 +7736,7 @@ fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
     assert!(counts.starts_with("copies 0 "), "{counts}");
     same_as_the_jit(
         "copies_kept",
-        "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = copy(a)\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = copy(row)\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
+        "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = a\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = row\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
     )
 }
 
@@ -7840,7 +7882,8 @@ def main(stdout: Stdout):
     pairs = enumerate(names)
     stdout.print(pairs.len(), pairs[1])
     mut grow = [1, 2, 3]
-    for at, n in enumerate(copy(grow)):
+    grow_before = grow
+    for at, n in enumerate(grow_before):
         grow.append(n + at)
     stdout.print(grow)
     for at, word in enumerate(["a", "b"]):
@@ -8214,6 +8257,176 @@ fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<(
         Command::new("sh").arg("-c").arg("\"$0\" 2>&1").arg(&executable).output_before(FENNEC_DEADLINE)?;
     assert!(ran.status.success());
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "first\nthen a warning\nlast\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A server built on the runtime `threads` names, `"1"` with threads and `"0"` without, serving
+/// HTTP until the program's asked to stop, with 2 seconds' grace. Gives it running, the port it
+/// listens on, and what it prints after.
+#[cfg(unix)]
+fn stopping_server(
+    threads: &str,
+    name: &str,
+) -> std::io::Result<(PathBuf, Running, u16, std::io::BufReader<std::process::ChildStdout>)> {
+    if threads == "1" {
+        assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
+    }
+    let dir = folder(name)?;
+    let program = dir.join("serve.fen");
+    std::fs::write(
+        &program,
+        "from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    Response(status=200, body=request.path.encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+    stdout.print(\"stopped\")
+",
+    )?;
+    let executable = dir.join("serve");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", threads)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut printed, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    Ok((dir, server, port, printed))
+}
+
+/// Sends SIGTERM to `running`.
+#[cfg(unix)]
+fn terminate(running: &Running) -> std::io::Result<()> {
+    let sent = Command::new("kill").args(["-TERM", &running.0.id().to_string()]).status()?;
+    assert!(sent.success(), "couldn't send SIGTERM");
+    Ok(())
+}
+
+/// What a server serving until it's asked to stop prints after, and that it then exits 0.
+#[cfg(unix)]
+fn stopped_cleanly(
+    mut server: Running,
+    mut printed: std::io::BufReader<std::process::ChildStdout>,
+) -> std::io::Result<()> {
+    use std::io::Read;
+    let mut last = String::new();
+    printed.read_to_string(&mut last)?;
+    assert_eq!(last, "stopped\n");
+    assert_eq!(server.0.wait()?.code(), Some(0));
+    Ok(())
+}
+
+/// A connection to the server on `port`, whose reads give up after 30 seconds.
+#[cfg(unix)]
+fn connected(port: u16) -> std::io::Result<std::net::TcpStream> {
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    Ok(stream)
+}
+
+/// A server serving `until=signals` drains when the program's asked to stop, on the runtime with
+/// threads: a connection waiting for its next request ends at once rather than at its timeout,
+/// one partway through a request is answered and closed, one that never finishes is cut short
+/// when `grace` is up, and the program goes on past the server and exits 0.
+#[cfg(unix)]
+#[test]
+fn a_server_serving_until_signals_drains_when_asked() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let (dir, server, port, printed) = stopping_server("1", "server_until_threads")?;
+    let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/a";
+    // Kept alive, answered, and then waiting for a next request.
+    let mut idle = connected(port)?;
+    idle.write_all(b"GET /a HTTP/1.1\r\n\r\n")?;
+    let mut first = vec![0; answer.len()];
+    idle.read_exact(&mut first)?;
+    assert_eq!(first, answer);
+    // Partway through a request, finished after the stop.
+    let mut partway = connected(port)?;
+    partway.write_all(b"GET /b HTTP/1.1\r\n")?;
+    // Partway through one it never finishes.
+    let mut stuck = connected(port)?;
+    stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
+    // The server has taken each before it's asked to stop.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    terminate(&server)?;
+    let asked = std::time::Instant::now();
+    let mut rest = Vec::new();
+    idle.read_to_end(&mut rest)?;
+    assert!(rest.is_empty(), "{}", String::from_utf8_lossy(&rest));
+    assert!(
+        asked.elapsed() < std::time::Duration::from_secs(20),
+        "the idle connection waited out its timeout"
+    );
+    partway.write_all(b"\r\n")?;
+    let mut answered = Vec::new();
+    partway.read_to_end(&mut answered)?;
+    assert_eq!(
+        String::from_utf8_lossy(&answered),
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b"
+    );
+    let mut cut = Vec::new();
+    let _ = stuck.read_to_end(&mut cut);
+    assert!(cut.is_empty(), "{}", String::from_utf8_lossy(&cut));
+    stopped_cleanly(server, printed)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The same on the runtime without threads, which serves a connection at a time: the one being
+/// served is answered and closed when it's partway through a request, and one waiting for its next
+/// request ends at once. A server waiting for a connection stops at once.
+#[cfg(unix)]
+#[test]
+fn a_server_on_the_plain_runtime_serving_until_signals_stops_when_asked() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let answer = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/a";
+    let (dir, server, port, printed) = stopping_server("0", "server_until_plain_partway")?;
+    let mut partway = connected(port)?;
+    partway.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n")?;
+    let mut first = vec![0; answer.len()];
+    partway.read_exact(&mut first)?;
+    assert_eq!(String::from_utf8_lossy(&first), answer);
+    terminate(&server)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    partway.write_all(b"\r\n")?;
+    let mut answered = Vec::new();
+    partway.read_to_end(&mut answered)?;
+    assert_eq!(
+        String::from_utf8_lossy(&answered),
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b"
+    );
+    stopped_cleanly(server, printed)?;
+    std::fs::remove_dir_all(&dir)?;
+    let (dir, server, port, printed) = stopping_server("0", "server_until_plain_idle")?;
+    let mut idle = connected(port)?;
+    idle.write_all(b"GET /a HTTP/1.1\r\n\r\n")?;
+    let mut first = vec![0; answer.len()];
+    idle.read_exact(&mut first)?;
+    assert_eq!(String::from_utf8_lossy(&first), answer);
+    terminate(&server)?;
+    let mut rest = Vec::new();
+    idle.read_to_end(&mut rest)?;
+    assert!(rest.is_empty(), "{}", String::from_utf8_lossy(&rest));
+    stopped_cleanly(server, printed)?;
+    std::fs::remove_dir_all(&dir)?;
+    let (dir, server, _, printed) = stopping_server("0", "server_until_plain_waiting")?;
+    terminate(&server)?;
+    stopped_cleanly(server, printed)?;
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -12479,7 +12692,7 @@ def main(stdout: Stdout):
     for at in range(good.len()):
         for _ in range(40):
             seed = step(seed)
-            mut changed = copy(items)
+            mut changed = items
             changed[at] = (seed >> 16) & 255
             loaded += tried(bytes(changed), Limits())
             loaded += tried(bytes(changed), small)
@@ -13804,7 +14017,7 @@ def main(stdout: Stdout):
     sixth = names.add(Named("f"))
     stdout.print(sixth, names.values())
     # A copy keeps looking from where it was, apart from the original.
-    mut copied = copy(names)
+    mut copied = names
     _ = copied.remove(ids[1])
     _ = names.remove(ids[3])
     stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
@@ -13860,7 +14073,7 @@ def main(stdout: Stdout):
     stdout.print(numbers.values(), numbers.len())
     gone = numbers.add(5)
     stdout.print(numbers.values(), numbers.len(), numbers[gone])
-    mut cleared = copy(names)
+    mut cleared = names
     _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
@@ -15124,7 +15337,7 @@ def main(stdout: Stdout):
     b = a
     a = .Num(1)
     stdout.print(describe(a), describe(b))
-    mut c = copy(b)
+    mut c = b
     replace(ref c, "changed")
     stdout.print(describe(b), describe(c))
     # Reassigning in a loop lets go of what it held.
@@ -15330,7 +15543,7 @@ def total(expr: Expr) -> int:
 def changed(value: Json) -> Json:
     match value:
         case .Items(values):
-            mut more = copy(values)
+            mut more = values
             more.append(Json.Null)
             .Items(more)
         case _:
@@ -15852,9 +16065,11 @@ def bags(bag: Bag, ref other: Bag) -> str:
 
 def main(stdout: Stdout):
     mut twice = [1, 2]
-    stdout.print(both(copy(twice), ref twice), twice)
+    twice_before = twice
+    stdout.print(both(twice_before, ref twice), twice)
     mut bag = Bag(label="short", count=1)
-    stdout.print(bags(copy(bag), ref bag), bag)
+    bag_before = bag
+    stdout.print(bags(bag_before, ref bag), bag)
     kept = twice
     stdout.print(both(kept, ref twice), twice, kept)
     held = bag

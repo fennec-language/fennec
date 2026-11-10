@@ -19,7 +19,7 @@ def main(stdout: Stdout):
     stdout.print(ash)
     stdout.print(ash.position.length())
 
-    mut twin = copy(ash)
+    mut twin = ash
     twin.take_damage(30)
     stdout.print(ash.health, twin.health)
 

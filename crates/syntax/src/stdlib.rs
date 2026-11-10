@@ -101,12 +101,41 @@ pub fn prelude() -> impl Iterator<Item = &'static str> {
     CORE.into_iter().map(|(_, source)| source).chain(modules)
 }
 
+/// Where the prelude's parse is kept between processes, so each one needn't parse it again.
+pub trait KeptPrelude: Send + Sync {
+    /// The prelude as parsed before, by this same build of Fennec, if it was kept.
+    fn prelude(&self) -> Option<Vec<crate::Module>>;
+    /// Keeps the prelude as it was just parsed.
+    fn keep_prelude(&self, modules: &[crate::Module]);
+}
+
+/// Where the prelude's parse is kept, once `keep_prelude_in` says.
+static KEPT: std::sync::OnceLock<Box<dyn KeptPrelude>> = std::sync::OnceLock::new();
+
+/// Has the prelude's parse found where `kept` keeps it, and kept there once parsed. Only the
+/// first call does anything, and it has to come before the prelude's first use.
+pub fn keep_prelude_in(kept: Box<dyn KeptPrelude>) {
+    let _ = KEPT.set(kept);
+}
+
 /// The prelude's sources parsed, once for the whole process: the checker and the compiler
-/// both read it, and a run uses them both.
+/// both read it, and a run uses them both. A parse kept by an earlier process of this build is
+/// read instead, when there's one.
 pub fn prelude_modules() -> Result<&'static [crate::Module], crate::Diagnostic> {
     static PARSED: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
         std::sync::OnceLock::new();
-    match PARSED.get_or_init(parse_prelude) {
+    let parsed = PARSED.get_or_init(|| {
+        let kept = KEPT.get();
+        if let Some(modules) = kept.and_then(|kept| kept.prelude()) {
+            return Ok(modules);
+        }
+        let modules = parse_prelude()?;
+        if let Some(kept) = kept {
+            kept.keep_prelude(&modules);
+        }
+        Ok(modules)
+    });
+    match parsed {
         Ok(modules) => Ok(modules),
         Err(diagnostic) => Err(diagnostic.clone()),
     }

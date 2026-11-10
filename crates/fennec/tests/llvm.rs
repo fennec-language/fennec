@@ -2512,6 +2512,61 @@ def main(stdout: Stdout):
         stdout.print(unit.seen)
 ";
 
+/// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
+/// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
+/// through it, as it undoes a write made directly.
+#[test]
+fn a_local_ref_in_a_lock_reads_and_is_rolled_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "local_ref_in_lock",
+        LOCAL_REF_IN_LOCK,
+        "Bag(items=[2, 2], counts={})\n5\nfailed: stop\nBag(items=[4, 2], counts={})\n",
+    )
+}
+
+const LOCAL_REF_IN_LOCK: &str = r#"error Nope:
+    why: str
+
+struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+def changed(box: shared Bag):
+    lock box as ref held:
+        ref slot = held.items[0]
+        slot = slot * 2
+
+def read_after(box: shared Bag) -> int:
+    lock box as ref held:
+        ref items = held.items
+        items[0] = items[1] * 2
+        ref slot = held.items[0]
+        x = slot + 1
+        x
+
+def undone(box: shared Bag) fails Nope:
+    lock box as ref held:
+        ref slot = held.items[1]
+        slot = slot * 10
+        ref items = held.items
+        items.append(9)
+        fail Nope("stop")
+
+def main(stdout: Stdout):
+    shared b = Bag(items=[1, 2], counts=dict[str, int]())
+    changed(b)
+    lock b as held:
+        stdout.print(held)
+    stdout.print(read_after(b))
+    undone(b) else as why:
+        stdout.print("failed:", why.why)
+    lock b as held:
+        stdout.print(held)
+"#;
+
 /// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
 /// read back through the list and through the name, its index worked out once at the `ref`, and
 /// passed on as `ref`. It's declared again each time round a loop.

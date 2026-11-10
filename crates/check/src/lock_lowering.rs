@@ -192,8 +192,14 @@ impl Lowering<'_> {
                             && let Some((_, handle)) = renamed.iter().find(|(held, _)| held == name)
                         {
                             // The handle's name is empty at the start, so its type, found by
-                            // span, isn't the value's.
-                            let at = Span { start: expr.span.start, end: expr.span.start };
+                            // span, isn't the value's. A name another lowering wrote in, like a
+                            // local `ref`'s place, is empty already, so its handle gets a span
+                            // of its own.
+                            let at = if expr.span.start == expr.span.end {
+                                crate::lend_lowering::here(expr.span)
+                            } else {
+                                Span { start: expr.span.start, end: expr.span.start }
+                            };
                             let object = Box::new(Expr { kind: ExprKind::Name(handle.clone()), span: at });
                             expr.kind = ExprKind::Attr { object, name: "value".to_owned(), optional: false };
                         }

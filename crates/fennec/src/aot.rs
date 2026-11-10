@@ -698,10 +698,7 @@ fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command 
         command.args(["-static", "-no-pie", "-nostdlib", "-nostartfiles"]);
         (command, "-Wl,")
     };
-    command
-        .arg(musl.join("crt1.o"))
-        .arg(musl.join("crti.o"))
-        .arg(musl.join("crtbegin.o"));
+    command.arg(musl.join("crt1.o")).arg(musl.join("crti.o")).arg(musl.join("crtbegin.o"));
     name_objects(&mut command, objects);
     command
         .arg(format!("{pass}--start-group"))
@@ -942,7 +939,8 @@ mod tests {
         use std::process::Command;
         let work = std::env::temp_dir().join(format!("fennec-many-objects-{}", std::process::id()));
         // A quote and a backslash, which the file escapes, and spaces, which it quotes.
-        let parts = work.join(format!("{}\"quoted\" and back\\slashed", "a folder with a long name, ".repeat(4)));
+        let parts =
+            work.join(format!("{}\"quoted\" and back\\slashed", "a folder with a long name, ".repeat(4)));
         std::fs::create_dir_all(&parts).unwrap();
         let compile = |name: &str, text: &str| {
             let (source, object) = (work.join(format!("{name}.c")), work.join(format!("{name}.o")));

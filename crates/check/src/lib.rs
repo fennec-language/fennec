@@ -28,6 +28,7 @@ mod fields;
 mod function;
 pub use fields::{each_field_type, fields_of};
 mod generic;
+mod gone;
 mod imports;
 mod index;
 mod infer;

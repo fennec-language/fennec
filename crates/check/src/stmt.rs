@@ -164,6 +164,11 @@ impl FnCx<'_> {
             );
             return Flow::exit();
         }
+        if let Some(Expr { kind: ExprKind::Call { callee, .. }, span: call }) = value
+            && matches!(&callee.kind, ExprKind::Name(name) if name == "Err")
+        {
+            self.returned_errs.insert((call.start, call.end), span);
+        }
         let declared = self.declared.clone().filter(|_| !self.generator);
         // `return Err(...)` in a function that says `fails E` makes a result of both.
         let declared = match (value.as_ref().map(|value| &value.kind), &self.fails) {

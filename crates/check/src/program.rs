@@ -360,6 +360,9 @@ impl Program {
         match name {
             "|" => return self.errors_named(written, generics, depth),
             "fails" => return self.fallible_returns(written, generics, depth),
+            "Result" if crate::gone::written_by_hand(written.span) => {
+                return Err(crate::gone::result_type(written.span));
+            }
             _ => {}
         }
         // `with Transaction`, what a source lends, and `shared Scores`, which holds any type.

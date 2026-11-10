@@ -109,6 +109,9 @@ pub(crate) struct FnCx<'c> {
     pub(crate) worked_out_here: std::collections::HashSet<(u32, u32)>,
     /// The `/`s between two ints, which give a float, so a mix with an int there can say `//`.
     pub(crate) int_divisions: std::collections::HashSet<(u32, u32)>,
+    /// Each `Err(...)` a `return` gives back, by span, with the `return`'s span: `fennec fix`
+    /// writes it `fail ...`.
+    pub(crate) returned_errs: std::collections::HashMap<(u32, u32), Span>,
     /// How many generators kept for later this is inside.
     pub(crate) kept_generators: usize,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
@@ -162,6 +165,7 @@ impl<'c> FnCx<'c> {
             handle_closures: std::collections::HashSet::new(),
             worked_out_here: std::collections::HashSet::new(),
             int_divisions: std::collections::HashSet::new(),
+            returned_errs: std::collections::HashMap::new(),
             kept_generators: 0,
             value_functions: 0,
             loops: 0,

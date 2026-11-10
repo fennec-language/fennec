@@ -26,10 +26,9 @@ use crate::text;
 /// What takes the place of the word being typed, so the program parses.
 const PLACEHOLDER: &str = "completing_here_";
 
-/// The builtins, as the checker's `BUILTINS` lists them, which no file declares.
-const BUILTINS: [&str; 22] = [
-    "Err",
-    "Ok",
+/// The builtins, as the checker's `BUILTINS` lists them, which no file declares. `Ok` and `Err`
+/// are left out: they're there only for what lowering writes.
+const BUILTINS: [&str; 20] = [
     "all",
     "any",
     "bytes",

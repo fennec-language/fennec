@@ -519,10 +519,40 @@ fn else_as_is_for_what_can_fail_and_its_block_leaves() {
         "def main(stdout: Stdout):\n    held: int? = None\n    value = held else as failure:\n        stdout.print(failure)\n        return\n    stdout.print(value)\n",
     );
     assert_eq!(found, ["this can't fail, so `else as` has no failure to name @ held"]);
-    let parsed = fennec_syntax::parse(
+    let ends_on_nothing = problems(
         "error Oops:\n    pass\n\ndef risky() -> int fails Oops:\n    fail Oops()\n\ndef main(stdout: Stdout):\n    value = risky() else as failure:\n        stdout.print(failure)\n    stdout.print(value)\n",
     );
-    assert_eq!(parsed.err().map(|problem| problem.message), Some("an `else:` block must leave".to_owned()));
+    assert_eq!(
+        ends_on_nothing,
+        [
+            "this `else` block must give an `int` or leave; its last line `stdout.print(...)` gives nothing @ stdout.print(failure)"
+        ]
+    );
+}
+
+/// An `else:` block, or `else as why:`, leaves or gives the value in place of what failed or was
+/// `None`, as its last line, of that one's type. One that ends on nothing says what it must give
+/// and what its last line is.
+#[test]
+fn an_else_block_gives_a_value_or_leaves() {
+    let declared = "error Oops:\n    why: str\n\nstruct World:\n    size: int\n\ndef load(n: int) -> World fails Oops:\n    if n > 1:\n        fail Oops('big')\n    World(size=n)\n\ndef find(n: int) -> int?:\n    if n > 1:\n        return None\n    n\n";
+    let fine = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    world = load(3) else as why:\n        stdout.print(why.why)\n        World(size=0)\n    kept = load(1) else:\n        World(size=-1)\n    found = find(5) else:\n        stdout.print('none')\n        0\n    for at in range(2):\n        held = load(at) else:\n            continue\n        stdout.print(held.size)\n    stdout.print(world.size, kept.size, found)\n"
+    );
+    assert_eq!(problems(&fine), Vec::<String>::new());
+    let set = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    mut total = 0\n    world = load(3) else as why:\n        total = 1\n    stdout.print(world.size, total)\n"
+    );
+    assert_eq!(
+        problems(&set),
+        [
+            "this `else` block must give a `World` or leave; its last line `total = ...` gives nothing @ total = 1"
+        ]
+    );
+    let wrong = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    found = find(5) else:\n        'none'\n    stdout.print(found)\n"
+    );
+    assert_eq!(problems(&wrong).len(), 1, "{:?}", problems(&wrong));
 }
 
 /// A one-line `if` and a fallback `else` in one expression read two ways, so they need

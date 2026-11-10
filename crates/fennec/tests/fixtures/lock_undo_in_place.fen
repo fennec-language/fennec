@@ -1,0 +1,46 @@
+error Boom:
+    step: int
+
+struct Holder:
+    items: list[str]
+    counts: dict[str, int]
+    names: dict[int, str]
+
+## Puts, pops and item sets straight on the held value, then a dict grown past its room, which
+## copies it: with `fail_at` 1 it fails after the changes made in place, and with 2 after the
+## growing too.
+def changed(holder: shared Holder, fail_at: int) fails Boom:
+    lock holder as ref held:
+        held.items[0] = "set, and long enough to be held in a block of its own"
+        held.items[-1] = "last"
+        held.counts["b"] = 20
+        held.counts["new"] = 4
+        _ = held.counts.pop("a")
+        held.counts["a"] = 10
+        held.names[2] = "two, changed, and long enough to be held in a block of its own"
+        _ = held.names.pop(1)
+        held.names[9] = "nine"
+        if fail_at == 1:
+            fail Boom(step=1)
+        for n in range(40):
+            held.counts[f"grown {n}"] = n
+            held.items[n % 3] = f"grown {n}"
+        if fail_at == 2:
+            fail Boom(step=2)
+
+def show(holder: shared Holder) -> str:
+    lock holder as held:
+        f"{held.items} {held.counts.items()} {held.names.items()}"
+
+def main(stdout: Stdout):
+    shared holder = Holder(
+        items=["x", "y", "z"], counts={"a": 1, "b": 2, "c": 3}, names={1: "one", 2: "two"}
+    )
+    before = show(holder)
+    for fail_at in [1, 2]:
+        _ = changed(holder, fail_at=fail_at) else:
+            stdout.print(show(holder) == before)
+    _ = changed(holder, fail_at=0) else:
+        stdout.print("failed")
+    stdout.print(before)
+    stdout.print(show(holder))

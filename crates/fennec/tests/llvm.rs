@@ -7955,6 +7955,58 @@ fn pieces_joined_into_a_string_make_no_blocks_of_their_own() -> std::io::Result<
     )
 }
 
+/// Random strings of characters one to four bytes long, joined from a list in random pieces, against
+/// the same pieces added with `+`: lengths and slices agree, where the pieces' characters are counted
+/// as they go on, a string's bytes but those that go on a character. Three thousand cases.
+#[test]
+fn random_pieces_joined_count_their_characters_as_added_ones_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("pieces_counted", PIECES_COUNTED, "checked 2978 wrong 0\n")
+}
+
+const PIECES_COUNTED: &str = r#"## Random strings of characters one to four bytes long, put on a string joined from a list in
+## random pieces, against the same pieces added with `+`: lengths and slices must agree.
+struct Random:
+    state: int
+
+    def below(ref self, limit: int) -> int:
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        (self.state // 65536) % limit
+
+def piece(ref random: Random) -> str:
+    letters = ["a", "Z", "é", "ñ", "日", "€", "🦊", "𝄞", " ", "0"]
+    mut text = ""
+    for _ in range(random.below(8)):
+        text += letters[random.below(letters.len())]
+    text
+
+def main(stdout: Stdout):
+    mut random = Random(state=7)
+    mut wrong = 0
+    mut checked = 0
+    for _ in range(3000):
+        mut out = []
+        mut added = ""
+        mut counted = 0
+        for _ in range(random.below(12) + 1):
+            part = piece(ref random)
+            out.append(part)
+            added = added + part
+            counted += part.len()
+        joined = "".join(out)
+        if joined.len() != counted or joined.len() != added.len() or joined != added:
+            wrong += 1
+        if joined.len() > 0:
+            start = random.below(joined.len())
+            end = start + random.below(joined.len() - start + 1)
+            if joined[start:end] != added[start:end] or joined[start] != added[start]:
+                wrong += 1
+            checked += 1
+    stdout.print("checked", checked, "wrong", wrong)
+"#;
+
 const PIECES_JOINED: &str = r#"def main(stdout: Stdout):
     mut out = []
     for i in range(1000):

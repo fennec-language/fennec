@@ -379,8 +379,22 @@ pub(crate) fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec
 /// only reserved, not used, until a file nests deeply.
 const PARSING_STACK: usize = 1 << 30;
 
-/// Parses a file at its offset, with the examples in its doc comments as tests if asked.
+/// Parses a file at its offset, with the examples in its doc comments as tests if asked, or takes
+/// its parse from where parses are kept, when one of its text is.
 fn parse_file(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
+    let parses = crate::PARSES.get();
+    if let Some(kept) = parses.and_then(|parses| parses.kept(text, shown, doc_examples, base)) {
+        return Ok(kept);
+    }
+    let fresh = parsed(text, base, shown, doc_examples);
+    if let (Some(parses), Ok(module)) = (parses, &fresh) {
+        parses.keep(text, shown, doc_examples, base, module);
+    }
+    fresh
+}
+
+/// Parses a file at its offset, with the examples in its doc comments as tests if asked.
+fn parsed(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
     let mut module = fennec_syntax::parse_at(text, base)?;
     if doc_examples {
         module.items.extend(fennec_syntax::doc_examples(text, base, shown)?);

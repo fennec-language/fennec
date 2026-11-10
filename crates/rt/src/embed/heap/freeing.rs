@@ -656,6 +656,10 @@ mod tests {
     /// and is freed where it was made the next time that thread frees something.
     #[test]
     fn a_list_another_thread_counts_waits_for_it() {
+        // A number of its own: what other threads give back waits on a queue by the number of the
+        // thread that made it, and every other test's thread is the main thread's 0, so another
+        // test freeing a block could take this one's off the queue first.
+        let me = i64::from(crate::embed::threads::take_index());
         let elements = vec![Rc::new(Element::Int), Rc::new(Element::Str)];
         start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
         let before = with(|state| state.heap.live());
@@ -670,12 +674,12 @@ mod tests {
         crate::embed::heap::free(texts);
         with(|state| assert_eq!(state.heap.live(), before, "a list of strings lets go of its strings"));
         let counted = crate::embed::lists::new(0, 1);
-        crate::embed::threads::retain_shared(counted, 0);
+        crate::embed::threads::retain_shared(counted, me);
         crate::embed::heap::free(counted);
         with(|state| {
             assert!(state.heap.block(counted.cast_unsigned()).is_some(), "freed while another counted it");
         });
-        crate::embed::threads::release_shared(counted, 0);
+        crate::embed::threads::release_shared(counted, me);
         let other = crate::embed::lists::new(0, 1);
         crate::embed::heap::free(other);
         with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));

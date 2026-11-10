@@ -42,7 +42,6 @@ modules! {
     html,
     io,
     intrinsics,
-    io,
     json,
     layout,
     log,

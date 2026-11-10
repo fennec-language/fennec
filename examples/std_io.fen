@@ -60,7 +60,10 @@ test "a connection is a writer and a reader"(net: Net):
                 assert src.read_line()? == "ana: 3"
                 assert src.read_line()? == "bo: 5"
 
-test "standard error is a writer, and standard output is one through writer()"(stdout: Stdout, stderr: Stderr):
+test "standard error is a writer, and standard output is one through writer()"(
+    stdout: Stdout,
+    stderr: Stderr,
+):
     mut err = stderr
     report(ref err, SCORES)?
     assert stderr.captured() == "ana: 3\nbo: 5\n"

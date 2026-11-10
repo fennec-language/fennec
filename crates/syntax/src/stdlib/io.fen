@@ -48,7 +48,9 @@ export struct StdoutWriter:
 
     ## Writes `data`, which has to be UTF-8 text: standard output takes text.
     def write(self, data: bytes) fails IoError:
-        text = data.decode() else fail IoError(reason="standard output takes text, and these bytes aren't UTF-8")
+        text = data.decode() else fail IoError(
+            reason="standard output takes text, and these bytes aren't UTF-8",
+        )
         self._out.write(text)
 
     def write_text(self, text: str) fails IoError:

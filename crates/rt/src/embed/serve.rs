@@ -203,6 +203,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 impl Conn {
     /// Takes a connection, registering it with this thread's poll when this is an I/O worker.
     pub fn new(mut stream: TcpStream) -> Conn {
+        crate::stdlib::net::bound_send_buffer(&stream);
         let token = Token(NEXT_TOKEN.get());
         NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
         let registered = REGISTRY.with_borrow(|registry| {

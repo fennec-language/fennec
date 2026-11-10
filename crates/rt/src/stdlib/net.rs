@@ -1002,6 +1002,23 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     Err(failure)
 }
 
+/// How much of what a connection writes the kernel holds before a write waits for the other side to
+/// read: Linux's most by default.
+#[cfg(windows)]
+const SEND_BUFFER_BYTES: usize = 4 << 20;
+
+/// Gives a connection a send buffer of a fixed size. Windows otherwise grows it to take whatever's
+/// written, so a client that never reads can make the kernel hold unbounded memory for each
+/// connection, and a write's `timeout=` never comes. Elsewhere the kernel bounds it already.
+#[cfg(windows)]
+pub(crate) fn bound_send_buffer(socket: &impl std::os::windows::io::AsSocket) {
+    let _ = socket2::SockRef::from(socket).set_send_buffer_size(SEND_BUFFER_BYTES);
+}
+
+/// Gives a connection a send buffer of a fixed size, which only Windows needs.
+#[cfg(not(windows))]
+pub(crate) fn bound_send_buffer<S>(_socket: &S) {}
+
 fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
     keep_stream_as(socket, peer, secured, false)
 }
@@ -1013,6 +1030,7 @@ fn keep_stream_as(
     secured: Option<Secured>,
     served: bool,
 ) -> Result<i64, Failure> {
+    bound_send_buffer(&socket);
     let reading = match secured {
         Some(secured) => Reading::Tls(secured),
         None => Reading::Plain(BufReader::new(

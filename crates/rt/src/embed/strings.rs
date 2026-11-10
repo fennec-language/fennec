@@ -551,10 +551,11 @@ pub extern "C" fn print(address: i64) {
 
 /// A new string with an int's text.
 pub extern "C" fn int_text(n: i64) -> i64 {
-    // Written on the stack, so the only thing made is the string's block.
+    // Written on the stack, so the only thing made is the string's block. Its digits and sign are
+    // ASCII, so they're its text as they are, a character each, with nothing to check or count.
     let mut digits = [0_u8; 20];
-    let text = std::str::from_utf8(super::text::decimal(n, &mut digits)).unwrap_or_default();
-    with(|state| text_address(state, text))
+    let written = super::text::decimal(n, &mut digits);
+    with(|state| text_from_bytes(state, written, written.len()))
 }
 
 /// `reversed(text)`: a new string of its characters, last first.

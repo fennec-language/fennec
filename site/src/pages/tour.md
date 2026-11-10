@@ -49,7 +49,7 @@ def main(stdout: Stdout):
     stdout.print(target.health + 1)
 ```
 
-There's no inline `ref`, so a name never quietly links to something else.
+A plain name never quietly links to something else. **Planned:** a local `ref target = units[1]`, for several changes to one place in a row. It lasts until its last use, and while it's alive nothing else reaches `units`.
 
 ## Names
 
@@ -306,14 +306,11 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health, backup.stats.health)
 ```
 
-**Planned:** a compile error for a copy that can quietly go stale:
+**Planned:** a lint for a copy that can quietly go stale, asking whether a `ref` was meant:
 
 ```fennec planned
-# error: edits to one won't reach the other
+# lint: edits to one won't reach the other; a `ref` changes the original
 world.selected = world.units[i]
-
-# fine: a separate copy, on purpose
-world.selected = copy(world.units[i])
 ```
 
 ## Mistakes the compiler stops
@@ -527,18 +524,16 @@ def main(stdout: Stdout):
     # use a default if it failed
     stdout.print(load_score("") else 0)
 
-    # handle specific failures
-    match load_score(""):
-        case Ok(score): stdout.print(score)
-        case NotFound(path): stdout.print("no file")
-        case Err(error): stdout.print(error)
-
-    # or leave with a block, which must end in return, fail, continue or break
-    score = load_score("save") else:
-        stdout.print("couldn't load")
+    # or name the failure in a block that leaves with return, fail, continue or break
+    score = load_score("save") else as why:
+        stdout.print(f"no file at {why.path}")
         return
     stdout.print(score)
 ```
+
+A failure is handled at the call: `?`, `else`, or `else as`. There's no `Ok`, `Err` or `Result` to store and forget. Inside an `else as` block, `match why:` handles different failures, with `_` the only catch-all, and `fail why` passes one on.
+
+**Planned:** an `else as` block that gives a value as its last line instead of leaving, and the old `Ok`, `Err` and `Result` removed.
 
 - The default after `else` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
 - `fails A | B` combines failures from different places, and `?` passes any of them up as it is. A function type can say it too: `(str) -> int fails ParseError | RangeError`.
@@ -549,7 +544,6 @@ def main(stdout: Stdout):
 - `xs.get(i)` gives an optional, for an index that might not be there.
 - There's no `exit()`. A failure out of `main` prints to stderr and exits with code 1, and `def main(...) -> int:` exits with the `int` it gives back.
 
-**Planned:** `if result is Err(NotFound):`, which checks one failure and narrows the rest.
 
 ## Collections
 
@@ -715,12 +709,13 @@ def echo(conn: Connection) fails NetError:
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
         for conn in parallel(server):
-            match echo(conn):
-                case Err(error): stdout.print(f"{conn.peer} dropped: {error}")
-                case Ok(_): stdout.print(f"{conn.peer} left")
+            echo(conn) else as error:
+                stdout.print(f"{conn.peer} dropped: {error}")
+                continue
+            stdout.print(f"{conn.peer} left")
 ```
 
-Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `match` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
+Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `else as` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
 
 **Planned:** `limit=` on `parallel`.
 
@@ -845,8 +840,8 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
 
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
 - The `?` on the `with launch` line covers the task: its own failures, and `Crashed` if it crashes, come out where the block ends. A crash ends only its own task.
-- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. **Planned:** `to=.Every`, which gives every listener every message.
-- **Planned:** `TaskGroup`, which holds a number of tasks known only at run time and stops them all when its block ends, and pools, like a database's connections, each lent to one block at a time by its keeper, so nothing can leak or be used twice.
+- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. `to=.Every` gives every listener every message.
+- **Planned:** pools, like a database's connections, each lent to one block at a time by its keeper, so nothing can leak or be used twice.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 

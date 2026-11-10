@@ -9,7 +9,7 @@ Fennec reads at a glance, builds almost instantly, and is built to run as fast a
 - A name holds its own value.
 - `mut` lets a name change.
 - To change something in a list, write to it there.
-- `ref` lets a loop, a function or a name change yours.
+- `ref` lets a loop, a function or a local name change yours.
 
 ```fennec
 def heal_all(ref units: list[Unit]):
@@ -25,7 +25,7 @@ def main(stdout: Stdout):
     updated_health = target.health + 1
 ```
 
-`ref target = units[target_id]` names a field or an item for the rest of its block: a change through `target` is a change there, and reading `units` sees it. Its index is worked out once, at the `ref`. From the `ref` to the last line that uses it, nothing else may change what it's in, so it's one `ref` into a list at a time, and reading is fine. It costs nothing when the program runs. Built. There's no scoped `with units[target_id] as ref target:`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
+A local `ref target = units[target_id]` links a name to a place for several changes in a row. It lasts until its last use, inside its block. While it's alive, nothing else may change that container, and a second `ref` into it is refused, but reading it is fine and sees the change. Its index is worked out once, at the `ref`. It's checked at compile time and costs nothing at run time. Built. There's no scoped `with units[target_id] as ref target:`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare
 
@@ -176,6 +176,8 @@ target = units.get(enemy.target_id) else return    # may be gone
 units[unit_id].health -= 1                         # sure: stops loudly if wrong
 ```
 
+`units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone. Not built yet.
+
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
 A copy of a `Table` keeps its tag, so an `Id` from before the copy works in both, and generations are unique across copies, so an item added to one copy can't be found through the other. Not built yet: today an item added to each copy can get the same `Id`.
@@ -184,7 +186,7 @@ An `Id` is local to its process's `Table`. To name something across servers, sen
 
 ## Sharing, resources and tasks
 
-Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now, however many calls down it's taken: take them together in one. Not built yet: `TaskGroup`, and pools. A `shared Name:` declaration, and a `with` on a `shared` value, are refused, and `fennec fix` rewrites what's mechanical: `struct Name:`, `shared Name` where the type is written, `shared x = Name()` and `lock`. A `def del` is refused.
+Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; server rounds for `parallel(server)`; and `with launch`, `Channel`, `Inbox` and `Sender`, natively. A `lock` inside another `lock` is refused for now, however many calls down it's taken: take them together in one. Not built yet: pools. A `shared Name:` declaration, and a `with` on a `shared` value, are refused, and `fennec fix` rewrites what's mechanical: `struct Name:`, `shared Name` where the type is written, `shared x = Name()` and `lock`. A `def del` is refused.
 
 Four questions, each with its own words:
 
@@ -274,7 +276,7 @@ with fs.create("save.dat")? as file:
 - `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles and the note: a cleanup that fails is added to the block's failure as a note, and the rest of the cleanup is skipped. Running it on a crash is built natively: the crash waits while the cleanups run, innermost first, and a cleanup that crashes too is said, with the first crash the one that goes on. A cleanup's `x = f()?` is a note too, and the rest of the cleanup is skipped. A `?` deeper in a line still replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
-- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
+- `for conn in parallel(server):` lends each connection to its own round's task, closed when that round ends. It's a plain loop, not `for ref`, and a connection's methods take `self`. A generator can't `lend` its items: there's no `Iterator[with T]`.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
 
 ### `launch` and channels
@@ -303,7 +305,6 @@ def main(speakers: Speakers, input: Input):
 - The arrow is the call you'd write anyway. `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it.
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock))?:`.
 - The `?` on its line covers the task: `with launch(...)` fails with the task's errors and `Crashed`, from `std.concurrent`, where the block ends. `inbox_size=` is 16 unless given. Checked, and written in around `std.intrinsics`' `launch` and `launch_end`. Built natively: a task runs on the runtime's threads, with what it captured copied for it.
-- `TaskGroup`, from `std.concurrent`, holds a number of tasks known only at run time, and stops them all when its block ends.
 - Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself opens with a plain function, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `channel[T](size)` is the only way to make one, since `Channel`'s constructor is private. It builds natively, and so do `send`, `receive` and `for job in jobs`, each message copied across as it's sent.
 - A channel delivers each message to one receiver by default, as a work queue. `to=.Every` gives every listener every message, as in `with channel[Hit](size=1024, to=.Every) as hits:`, and receiving reads the same either way, `for hit in hits`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. A listener asks with `for hit in hits.listen(when_behind=.DropOldest)`. There's no separate events type. Built natively.
 - Dev builds stop with a report when tasks are waiting only on each other, since a hang through channels alone can't be ruled out at compile time.
@@ -350,7 +351,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - `None` is never a member: `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`.
 - Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
 - A function that can fail says `fails` in its signature, so a reader sees how it can fail there. One that leaves it out is a compile error, and `fennec fix` writes it, as `-> str fails TooBig`, `fails IoError` for one that gives back nothing, or `fails ParseError | RangeError`. `main` doesn't say it, since nothing calls `main`. Built.
-- A failure is always an `error` type, however it's made: `fail` takes one, `Err(...)` holds one, and a `Result` written as a type names one, or several, as its second type. `Err("no")` and `Result[int, str]` are compile errors. Built.
+- A failure is always an `error` type, and `fail` takes one. Built. There's no `Ok`, `Err` or `Result`: a failure is handled at the call, under Failures. Not built yet: `Ok`, `Err` and a written `Result` still work today.
 
 ## Named arguments
 
@@ -416,17 +417,33 @@ first = items[0]                 # must be there: a bug stops the program
 stream = fs.open(filename) else:
     stdout.print(f"Couldn't open file: {filename}")
     return
+
+# name the failure, and leave or give a value
+score = load_score(fs, path) else as why:
+    match why:
+        case .Missing(path):
+            stdout.print(f"no save at {path}, starting from 0")
+            0
+        case _:
+            fail why
 ```
 
-- A `match` over what something that can fail gives back handles both its value and its failure, or has `case _:`, as a `match` over an enum handles every case. A failure is handled with `case Err(error):`, or one case for each error it can fail with. Built.
+- A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built, apart from the removal: `Ok`, `Err` and a written `Result` still work today.
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. Built.
+- An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs. Leaving is built. Giving a value isn't yet: today it's refused with "an `else:` block must leave".
+- Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
+- `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. Built.
+- `T fails E` is made only by the runtime, as for the results of parallel work, and read only through `?` and `else`.
+- A block that stands where a value goes ends with that value, or leaves. That's `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`, and not bare blocks or a multi-line `if`, which the one-line `x if c else y` covers. `x = match ...:` is built. `x = lock ... as ...:` isn't yet.
+
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
-- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. `return Err(...)`, and a function that says it gives back a `Result`, give back a value. Built for `def`s; a lambda's body still passes one up as it is.
-- `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
+- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. Built for `def`s; a lambda's body still passes one up as it is.
+- `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `else as why:` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built. On a call that can fail, `_ = f()` is a compile error, so a failure must always be handled, and there's no `ignore`. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Built in the checker and natively, where an error's notes are a hidden word of its own, 0 until one is added.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
-- An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built. `else as name:` binds the failure in that block, as Python's `except E as e` does. Built.
+- A one-line `x if condition else y` and a fallback `else` can't share an expression without parentheses, since `int(text) else 80 if given else 8080` reads two ways: write `int(text) else (80 if given else 8080)`, or give one of them its own line. `fennec fix` writes the parentheses the way it's read. Built.
 - Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. A dict's `pop(key)` fails on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. `items.get(at)` gives `T?` for a position that may not be there, counting from the end when it's negative as `items[at]` does. Built.
 
 ## Visibility

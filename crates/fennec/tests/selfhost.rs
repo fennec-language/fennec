@@ -219,6 +219,18 @@ test \"any list\" for items: list[int], n: int:
     assert items.len() >= 0
 ",
     ),
+    (
+        "one_line_if_in_a_fallback",
+        "def port(text: str, given: bool) -> int:\n    int(text) else 80 if given else 8080\n",
+    ),
+    (
+        "fallback_in_a_one_line_if",
+        "def port(text: str, given: bool) -> int:\n    8080 if not given else int(text) else 80\n",
+    ),
+    (
+        "one_line_if_and_fallback_apart",
+        "def port(text: str, given: bool) -> int:\n    (int(text) else 80) if given else (8080 else 1)\n",
+    ),
     ("local_ref", "def main():\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n"),
     ("local_ref_without_a_name", "def main():\n    ref units[0] = 1\n"),
     ("local_ref_without_a_value", "def main():\n    ref first\n"),

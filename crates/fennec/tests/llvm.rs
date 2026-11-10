@@ -15761,6 +15761,55 @@ def main(stdout: Stdout):
     stdout.print(total, size(kept))
 "#;
 
+/// A recursive enum holding lists of strings and numbers is made and freed by generated code,
+/// which lets go of each list as its block goes: built, read, copied and changed apart from the
+/// tree, and dropped over and over, in a dev build and with `--release`.
+#[test]
+fn native_blocks_hold_lists() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("native_lists", WORD_TREES, how)?;
+        assert_eq!((out.as_str(), code), ("14519248 2833\n", Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const WORD_TREES: &str = r#"enum Doc:
+    Words(names: list[str], counts: list[int])
+    Pair(left: Doc, right: Doc, title: str)
+    Empty
+
+def build(depth: int, tag: int) -> Doc:
+    if depth == 0:
+        if tag % 4 == 0: return .Empty
+        mut names = []
+        mut counts = []
+        for n in range(tag % 5 + 1):
+            names.append(f"word {tag} {n} long enough to sit in a block of its own")
+            counts.append(n * tag)
+        return .Words(names=names, counts=counts)
+    .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), title=f"t{tag}")
+
+def size(doc: Doc) -> int:
+    match doc:
+        case .Words(names, counts):
+            mut more = names
+            more.append("x")
+            sum(name.len() for name in more) + sum(counts) + names.len()
+        case .Pair(left, right, title):
+            size(left) + size(right) + title.len()
+        case .Empty:
+            1
+
+def main(stdout: Stdout):
+    rounds = 3
+    total = sum(size(build(10, tag=n)) for n in range(rounds))
+    kept = build(3, tag=7)
+    stdout.print(total, size(kept))
+"#;
+
 /// The shared block behaves as a block of its own would: compared, matched, printed, held in
 /// lists and dicts, and made and let go of on other threads.
 #[test]

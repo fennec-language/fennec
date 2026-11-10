@@ -13588,6 +13588,77 @@ def main(stdout: Stdout):
     stdout.print(total, captured[0].tags, captured[1].tags)
 ";
 
+/// A name given its own value, `x = x`, keeps what it holds: an enum or struct held in place,
+/// one inside another, a field, a list's item, a boxed enum and a parameter's copy given back.
+/// Written as a copy, it let go of the lists it held before taking them again, so the next lists
+/// made took their memory, and its value printed theirs. The random programs found it.
+#[test]
+fn a_name_given_its_own_value_keeps_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "B(a) Unit(hp=1, tags=[1, 2]) Pack(unit=Unit(hp=2, tags=[3]), names=[\"n\"]) [Unit(hp=3, tags=[4, 5])] Unit(hp=4, tags=[7]) 2 3\n[6]\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("own_value", OWN_VALUE, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const OWN_VALUE: &str = r#"enum Node:
+    Leaf(name: str)
+    Branch(label: str, children: list[Node])
+
+enum Tree:
+    Leaf
+    Pair(left: Tree, right: Tree, tags: list[int])
+
+struct Unit:
+    hp: int
+    tags: list[int]
+
+struct Pack:
+    unit: Unit
+    names: list[str]
+
+def show(node: Node) -> str:
+    match node:
+        case .Leaf(name):
+            "L(" + name + ")"
+        case .Branch(label, children):
+            mut text = "B(" + label
+            for child in children:
+                text += " " + show(child)
+            text + ")"
+
+def last_use(given: Unit) -> Unit:
+    mut u = given
+    u = u
+    u
+
+def main(stdout: Stdout):
+    mut t = Node.Branch(label="a", children=list[Node]())
+    t = t
+    mut u = Unit(hp=1, tags=[1, 2])
+    u = u
+    mut p = Pack(unit=Unit(hp=2, tags=[3]), names=["n"])
+    p = p
+    p.unit = p.unit
+    mut xs = [Unit(hp=3, tags=[4, 5])]
+    xs[0] = xs[0]
+    mut tree = Tree.Pair(left=.Leaf, right=.Leaf, tags=[6])
+    tree = tree
+    ys = last_use(Unit(hp=4, tags=[7]))
+    other = [Node.Leaf(name="x"), Node.Leaf(name="y")]
+    junk = [[9, 9, 9], [8, 8], [7]]
+    stdout.print(show(t), u, p, xs, ys, other.len(), junk.len())
+    match tree:
+        case .Pair(_, _, tags):
+            stdout.print(tags)
+        case .Leaf:
+            pass
+"#;
+
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
 /// change, or copied out still takes an owner. `FENNEC_COUNTS` shows no copies.

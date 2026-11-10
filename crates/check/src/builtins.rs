@@ -284,10 +284,6 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         ("Entropy", "bytes") => reads(&[Type::Int], Type::Bytes),
-        ("Env", "get") => reads(&[Type::Str], Type::optional(Type::Str)),
-        ("Env", "all") => reads(&[], Type::Dict(Box::new(Type::Str), Box::new(Type::Str))),
-        // Only a test's fake `Env` is set.
-        ("Env", "set") => reads(&[Type::Str, Type::Str], Type::Unit),
         _ => return stdlib::method(type_name, name),
     })
 }

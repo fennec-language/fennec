@@ -566,6 +566,45 @@ impl Machine {
                     }
                 }
             }
+            Stmt::EachRefThenRead(_, list, at) => {
+                let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
+                for place in 0..items.len() {
+                    let changed = match self.slot(list)? {
+                        Value::Ints(items) => {
+                            let held = items.get_mut(place).ok_or(Stop::Unsure)?;
+                            *held = checked(held.checked_add(1))?;
+                            items.clone()
+                        }
+                        _ => return Err(Stop::Unsure),
+                    };
+                    let len = i64::try_from(changed.len()).map_err(|_| Stop::Unsure)?;
+                    let read = usize::try_from(floor_rem(*at, len)?).map_err(|_| Stop::Unsure)?;
+                    let _ = writeln!(self.out, "{}", changed.get(read).copied().ok_or(Stop::Unsure)?);
+                }
+            }
+            Stmt::TableRound { xs, removed, read, by, .. } => {
+                let mut slots: Vec<Option<i64>> = Vec::with_capacity(xs.len());
+                for x in xs {
+                    slots.push(Some(int(&self.expr(x)?)?));
+                }
+                if let Some(slot) = removed.and_then(|at| slots.get_mut(at)) {
+                    *slot = None;
+                }
+                for place in 0..slots.len() {
+                    let Some(Some(x)) = slots.get(place).copied() else { continue };
+                    let by = int(&self.expr(by)?)?;
+                    let changed = checked(x.checked_add(by))?;
+                    if let Some(slot) = slots.get_mut(place) {
+                        *slot = Some(changed);
+                    }
+                    // Read live, by `Id`, after the change through the `ref`.
+                    let read = slots.get(*read).copied().flatten().ok_or(Stop::Unsure)?;
+                    let _ = writeln!(self.out, "{read}");
+                }
+                let points: Vec<String> =
+                    slots.iter().flatten().map(|x| format!("Point(x={x}, y=0)")).collect();
+                let _ = writeln!(self.out, "Table([{}])", points.join(", "));
+            }
             Stmt::ShareOuter(name, _) => {
                 self.outers.push(0);
                 self.bind(name, Value::Outer(self.outers.len() - 1));

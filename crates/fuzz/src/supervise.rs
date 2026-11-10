@@ -6,7 +6,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Seek, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::targets::Target;
@@ -24,6 +24,9 @@ pub(crate) const STUCK: Duration = Duration::from_secs(10);
 const WAITING_TIMES: u32 = 30;
 /// The most memory a worker may hold.
 pub(crate) const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
+/// How much CPU time building one program may take, the tools `fennec build` starts included.
+/// A generated program builds in a few seconds; one `opt` once ran 18 hours on one.
+pub(crate) const BUILD_STUCK: Duration = Duration::from_secs(120);
 
 /// How a worker went wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +89,113 @@ pub(crate) fn kilobytes(id: u32) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
+/// What a process group holds and has used, summed over every process in it, where that can be
+/// asked.
+fn group_use(group: u32) -> Option<(u64, Duration)> {
+    let output = Command::new("ps").args(["-A", "-o", "pgid=,rss=,time="]).output().ok()?;
+    let mut sum = (0, Duration::ZERO);
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next().and_then(|pgid| pgid.parse::<u32>().ok()) != Some(group) {
+            continue;
+        }
+        sum.0 += fields.next().and_then(|rss| rss.parse::<u64>().ok()).unwrap_or(0);
+        sum.1 += fields.next().and_then(cpu_time_in).unwrap_or_default();
+    }
+    Some(sum)
+}
+
+/// Every process started from `id`, however deep, with its process group: what's left running
+/// when `id` is killed unless they're killed too.
+fn descendants(id: u32) -> Vec<(u32, u32)> {
+    let Ok(output) = Command::new("ps").args(["-A", "-o", "pid=,ppid=,pgid="]).output() else {
+        return Vec::new();
+    };
+    let listed: Vec<(u32, u32, u32)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(|field| field.parse::<u32>().ok());
+            Some((fields.next()??, fields.next()??, fields.next()??))
+        })
+        .collect();
+    let mut found: Vec<(u32, u32)> = Vec::new();
+    let mut parents = vec![id];
+    while let Some(parent) = parents.pop() {
+        for &(pid, ppid, pgid) in &listed {
+            if ppid == parent && !found.iter().any(|&(seen, _)| seen == pid) {
+                found.push((pid, pgid));
+                parents.push(pid);
+            }
+        }
+    }
+    found
+}
+
+/// Sends `SIGKILL` to `target`: a process, or a process group written as its negative.
+fn kill(target: &str) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", target])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Kills `child` and everything it started: the groups any of them lead, as a build's tools are,
+/// and on Unix `child`'s own group when it leads one. A tool whose parent died first is still in
+/// its group, so it goes too.
+fn stop(child: &mut Child) {
+    let id = child.id();
+    let below = descendants(id);
+    if cfg!(unix) {
+        kill(&format!("-{id}"));
+    }
+    let _ = child.kill();
+    for (pid, pgid) in below {
+        // Only a group one of them leads, never the group this process is in.
+        if pid == pgid {
+            kill(&format!("-{pgid}"));
+        }
+        kill(&pid.to_string());
+    }
+    let _ = child.wait();
+}
+
+/// Runs `command` to the end and gives back what it wrote, as `Command::output` does, but in a
+/// process group of its own, so `fennec build` and the `opt`, `llc` and linker it starts are
+/// watched together: all of them are stopped once together they hold more than `most_kilobytes`
+/// or use `stuck` CPU time, and how it went wrong comes back with what was written by then.
+pub(crate) fn output_watched(
+    command: &mut Command,
+    stuck: Duration,
+    most_kilobytes: u64,
+) -> Result<(Output, Option<Failure>), String> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("couldn't run `{}`: {err}", command.get_program().display()))?;
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = read(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+    let stderr = read(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+    let failure = watch_as(&mut child, Watched::Group, stuck, None, most_kilobytes, || false);
+    let status = child
+        .wait()
+        .map_err(|err| format!("couldn't wait for `{}`: {err}", command.get_program().display()))?;
+    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    Ok((Output { status, stdout, stderr }, failure))
+}
+
 /// How much CPU time a process has used, where that can be asked.
 pub(crate) fn cpu_time(id: u32) -> Option<Duration> {
     let output = Command::new("ps").args(["-o", "time=", "-p", &id.to_string()]).output().ok()?;
@@ -117,6 +227,27 @@ pub(crate) fn watch(
     stuck: Duration,
     deadline: Option<Instant>,
     most_kilobytes: u64,
+    moved: impl FnMut() -> bool,
+) -> Option<Failure> {
+    watch_as(child, Watched::Process, stuck, deadline, most_kilobytes, moved)
+}
+
+/// What `watch_as` counts memory and CPU time over.
+#[derive(Clone, Copy)]
+enum Watched {
+    /// The process alone.
+    Process,
+    /// The process group it leads, every process in it summed, where groups can be asked about.
+    Group,
+}
+
+/// `watch`, counting over what `watched` says. Stopping it stops what it started too.
+fn watch_as(
+    child: &mut Child,
+    watched: Watched,
+    stuck: Duration,
+    deadline: Option<Instant>,
+    most_kilobytes: u64,
     mut moved: impl FnMut() -> bool,
 ) -> Option<Failure> {
     // When it last made progress, and the CPU time it had used by then.
@@ -134,8 +265,9 @@ pub(crate) fn watch(
         checks += 1;
         let mut too_big = false;
         if checks.is_multiple_of(10) {
-            too_big = kilobytes(child.id()).is_some_and(|held| held > most_kilobytes);
-            used = cpu_time(child.id()).or(used);
+            let (held, cpu) = measured(child.id(), watched);
+            too_big = held.is_some_and(|held| held > most_kilobytes);
+            used = cpu.or(used);
         }
         let on_the_clock = since.0.elapsed();
         let busy = |used: Option<Duration>| used.map_or(on_the_clock, |used| used.saturating_sub(since.1));
@@ -144,13 +276,12 @@ pub(crate) fn watch(
         // clock stands in for it, which a busy machine runs up without the process doing
         // anything. So it's asked again before anything is called stuck.
         if is_stuck && on_the_clock <= stuck * WAITING_TIMES {
-            used = cpu_time(child.id()).or(used);
+            used = measured(child.id(), watched).1.or(used);
             is_stuck = busy(used) > stuck;
         }
         let out_of_time = deadline.is_some_and(|deadline| Instant::now() >= deadline);
         if too_big || out_of_time || is_stuck {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop(child);
             return match (too_big, out_of_time) {
                 (true, _) => Some(Failure::TooMuchMemory),
                 (false, true) => None,
@@ -158,6 +289,16 @@ pub(crate) fn watch(
             };
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// What `id` holds and has used, alone or with its group as `watched` says.
+fn measured(id: u32, watched: Watched) -> (Option<u64>, Option<Duration>) {
+    match watched {
+        Watched::Group if cfg!(unix) => {
+            group_use(id).map_or((None, None), |(held, used)| (Some(held), Some(used)))
+        }
+        _ => (kilobytes(id), cpu_time(id)),
     }
 }
 
@@ -251,5 +392,73 @@ mod tests {
             watch(&mut spins, Duration::from_millis(500), None, super::MOST_KILOBYTES, || false),
             Some(Failure::Stuck)
         );
+    }
+
+    /// Whether a process is gone, given two seconds to be: a killed one is reaped soon after.
+    #[cfg(unix)]
+    fn gone(pid: &str) -> bool {
+        for _ in 0..200 {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// A build's tools are counted with it, and stopped with it: here a spinning grandchild,
+    /// as `opt` under `fennec build`, whose CPU time its parent's own doesn't show.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_is_stopped_with_every_tool_it_started() {
+        use super::{Failure, MOST_KILOBYTES, output_watched};
+        let dir = std::env::temp_dir().join(format!("fennec-fuzz-group-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let noted = dir.join("pid");
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(format!("sh -c 'while :; do :; done' & echo $! > {}; wait", noted.display()));
+        let (_, failure) = output_watched(&mut command, Duration::from_millis(500), MOST_KILOBYTES).unwrap();
+        assert_eq!(failure, Some(Failure::Stuck));
+        let spinner = std::fs::read_to_string(&noted).unwrap();
+        assert!(gone(spinner.trim()), "the spinning tool {spinner} outlived its build");
+        // Memory is counted over the group too: a limit of one kilobyte, which anything holds.
+        let mut sleeps = std::process::Command::new("sh");
+        sleeps.args(["-c", "sleep 5"]);
+        let (_, failure) = output_watched(&mut sleeps, Duration::from_secs(10), 1).unwrap();
+        assert_eq!(failure, Some(Failure::TooMuchMemory));
+        // And one that finishes gives back what it wrote.
+        let mut says = std::process::Command::new("sh");
+        says.args(["-c", "echo out; echo err >&2"]);
+        let (said, failure) = output_watched(&mut says, Duration::from_secs(10), MOST_KILOBYTES).unwrap();
+        assert_eq!((failure, said.stdout, said.stderr), (None, b"out\n".to_vec(), b"err\n".to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worker that's stopped takes what it started with it, even in a group of its own, which
+    /// is how a stuck worker left an `opt` running for 18 hours.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_worker_leaves_nothing_running() {
+        use super::{Failure, watch};
+        let dir = std::env::temp_dir().join(format!("fennec-fuzz-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let noted = dir.join("pid");
+        let script = format!(
+            "perl -e 'setpgrp(0, 0); exec q(sleep), 30' & echo $! > {}; while :; do :; done",
+            noted.display()
+        );
+        let mut worker = std::process::Command::new("sh").args(["-c", &script]).spawn().unwrap();
+        assert_eq!(
+            watch(&mut worker, Duration::from_millis(500), None, super::MOST_KILOBYTES, || false),
+            Some(Failure::Stuck)
+        );
+        let sleeper = std::fs::read_to_string(&noted).unwrap();
+        assert!(gone(sleeper.trim()), "{sleeper} outlived the worker that started it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

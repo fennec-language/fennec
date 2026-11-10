@@ -2413,6 +2413,11 @@ impl Emit<'_, '_, '_> {
 
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        // `x = x` changes nothing. Written as a copy, it would let go of what `x` held before
+        // taking it again, or hand it over and clear `x`.
+        if *value == Operand::Local(dest) {
+            return Ok(());
+        }
         // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
         if self.known.alias(dest).is_some()
             || self.known.enumerated.contains_key(&dest.0)

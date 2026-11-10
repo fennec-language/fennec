@@ -1073,6 +1073,22 @@ impl Emit<'_, '_, '_> {
         alone
     }
 
+    /// Whether a block has one owner and a lock's log marked it, for the lock to change it in place
+    /// (see `lists::MARKED` in the runtime).
+    pub(crate) fn marked_alone(&mut self, block: &str) -> String {
+        let marked_one = fennec_rt::embed::lists::MARKED | 1;
+        if self.on_workers() {
+            self.marked_alone_helper(marked_one);
+            let alone = self.temp();
+            self.line(&format!("{alone} = call i1 @fen_marked_alone(ptr {block})"));
+            return alone;
+        }
+        let (count, alone) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{alone} = icmp eq i64 {count}, {marked_one}"));
+        alone
+    }
+
     /// Takes one owner off a block that has one, giving back whether that was the last. With
     /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
     pub(crate) fn owner_gone(&mut self, block: &str) -> String {

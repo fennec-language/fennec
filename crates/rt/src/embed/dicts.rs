@@ -952,6 +952,67 @@ fn set_in(state: &mut State, dict: i64, key: i64, value: i64) -> Option<i64> {
     set_words(state, dict, &[key.cast_unsigned()], value.cast_unsigned())
 }
 
+/// `fennec_dict_set_found(dict, entry, key, value)`: `dict[key] = value`, as `set` does, where native
+/// code's lookup just found `key` at `entry`, the address of its entry, or 0. In a dict a lock's log
+/// marked, with no other owner, as under `lock … as ref`, the value is written in place, what was
+/// there saved in the log first, with no second search for the key. Only while `entry` is still one
+/// of this dict's live entries, holding these key words: anything between the lookup and this that
+/// grew, copied or changed the dict leaves `set` to do it.
+pub extern "C" fn set_found(dict: i64, entry: i64, key: i64, value: i64) -> i64 {
+    with(|state| {
+        set_at_entry(state, dict, entry, key.cast_unsigned(), value.cast_unsigned())
+            .or_else(|| set_in(state, dict, key, value))
+            .unwrap_or(dict)
+    })
+}
+
+/// `set_found`'s write in place, `None` having changed nothing for anything but a marked dict with
+/// one owner whose live entry at `entry` holds `key`.
+fn set_at_entry(state: &mut State, dict: i64, entry: i64, key: u64, value: u64) -> Option<i64> {
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
+    if entry == 0 || !super::lists::marked_alone(block) {
+        return None;
+    }
+    let layout = layout(state, block)?;
+    if layout.width != 3 {
+        return None;
+    }
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let used = usize::try_from(*block.get(3)?).ok()?;
+    let start = DICT_HEADER_WORDS + mask + 1;
+    let bytes = usize::try_from(entry.cast_unsigned().checked_sub(at)?).ok()?;
+    let word = (bytes % 8 == 0).then_some(bytes / 8)?;
+    let number = word.checked_sub(start)?;
+    if number % layout.width != 0 || number / layout.width >= used {
+        return None;
+    }
+    if block.get(word) == Some(&REMOVED) || block.get(word + 1) != Some(&key) {
+        return None;
+    }
+    let owned = layout.value.owned();
+    let old = noted_write(state, at, word + layout.value_at(), value, owned)?;
+    if owned {
+        release(state, old);
+    }
+    if let Some(address) = key_block(layout.key, &[key]) {
+        release(state, address);
+    }
+    if state.heap.counting() {
+        FOUND_PUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Some(dict)
+}
+
+/// How many puts `set_found` made where the lookup found the key, in a run that counts what it does,
+/// for `FENNEC_COUNTS` to say.
+static FOUND_PUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many puts `set_found` made in place, while counting.
+pub(super) fn found_puts() -> u64 {
+    FOUND_PUTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `dict[key] = value` with the key's words: takes over the owners `dict`, a key held in a
 /// block and `value` had, and gives back the dict's.
 fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i64> {

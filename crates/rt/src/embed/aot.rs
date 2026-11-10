@@ -381,8 +381,12 @@ fn report_counts(counts: &heap::Counts, live: usize) {
     let blocked = super::serve::blocked_waits();
     #[cfg(not(any(test, feature = "threads")))]
     let blocked = 0;
-    let _ =
-        writeln!(std::io::stderr(), "{} live {live}", counts_line(counts, super::parallel::calls(), blocked));
+    let said = counts_line(counts, super::parallel::calls(), blocked);
+    let said = match super::dicts::found_puts() {
+        0 => said,
+        puts => format!("{said} found_puts {puts}"),
+    };
+    let _ = writeln!(std::io::stderr(), "{said} live {live}");
 }
 
 /// The line `report_counts` writes, given how many `parallel` calls native code made and how many

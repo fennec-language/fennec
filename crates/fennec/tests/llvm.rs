@@ -1699,6 +1699,53 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
     )
 }
 
+/// A put after a lookup of the same key under a lock writes where the lookup found it, unless what
+/// came between grew the dict, popped the key or put another: each kept, and each put back by a
+/// failure.
+#[test]
+fn a_put_after_a_lookup_under_a_lock_is_right_whatever_came_between() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("lock_found_entry", include_str!("fixtures/lock_found_entry.fen"))
+}
+
+/// A put after a lookup under a lock, of a number and of a string held in a block, takes and lets go
+/// of the same owners whether it's kept or a failure puts the old value back: twice the rounds hold
+/// no more at the end. The puts are made where the lookup found the key (`found_puts`), so the
+/// rolled-back ones are undone from what that path noted.
+#[test]
+fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) else 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) else:\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
+    let dir = folder("lock_found_counts")?;
+    let program = dir.join("found.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("found");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let run = |rounds: &str| -> std::io::Result<(String, String)> {
+        let ran = Command::new(&executable).arg(rounds).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
+    };
+    let (fewer, more) = (run("60")?, run("120")?);
+    std::fs::remove_dir_all(&dir)?;
+    let names = "name 2, long enough to be held in a block of its own name 1, long enough to be held in a block of its own";
+    assert_eq!((fewer.0, more.0), (format!("20 20 20 {names}\n"), format!("40 40 40 {names}\n")));
+    let field = |counts: &str, name: &str| {
+        counts.split_whitespace().skip_while(|word| *word != name).nth(1).unwrap_or_default().to_owned()
+    };
+    // Both puts of every round, rolled back or kept, but for the six whose key wasn't there yet:
+    // rounds 0, 1 and 2, as round 0's were put back.
+    assert_eq!(field(&fewer.1, "found_puts"), "114", "{}", fewer.1);
+    assert_eq!(field(&fewer.1, "live"), field(&more.1, "live"), "{} / {}", fewer.1, more.1);
+    Ok(())
+}
+
 /// What's changed in place stays right when it's read while changing, and when something still holds
 /// the list as it was.
 #[test]

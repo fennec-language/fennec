@@ -1,0 +1,41 @@
+error Boom:
+    step: int
+
+struct Tally:
+    counts: dict[int, int]
+
+## A put after a lookup of the same key, with what's done between them: nothing, a put that grows
+## the dict, the key popped and put back, or another key's put. With `failing`, the lock fails after,
+## and all of it is put back.
+def counted(tally: shared Tally, key: int, between: int, failing: bool) fails Boom:
+    lock tally as ref held:
+        seen = held.counts.get(key) else 0
+        if between == 1:
+            for n in range(100, 140):
+                held.counts[n] = n
+        elif between == 2:
+            _ = held.counts.pop(key) else 0
+            held.counts[key] = 1000
+        elif between == 3:
+            held.counts[key + 1] = 7
+        held.counts[key] = seen + 1
+        if failing:
+            fail Boom(step=between)
+
+def show(tally: shared Tally) -> str:
+    lock tally as held:
+        f"{held.counts.items()}"
+
+def main(stdout: Stdout):
+    shared tally = Tally(counts={1: 10, 2: 20, 3: 30})
+    for between in [0, 1, 2, 3]:
+        before = show(tally)
+        _ = counted(tally, key=2, between=between, failing=True) else as why:
+            stdout.print(why.step, show(tally) == before)
+        _ = counted(tally, key=2, between=between, failing=False) else:
+            stdout.print("failed")
+        stdout.print(show(tally))
+    for _ in range(1000):
+        _ = counted(tally, key=1, between=0, failing=False) else:
+            stdout.print("failed")
+    stdout.print(show(tally))

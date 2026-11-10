@@ -251,6 +251,7 @@ fn capability_kind(ty: &fennec_check::Type) -> Option<i64> {
         fennec_layout::Cap::Entropy => 6,
         fennec_layout::Cap::Net => 7,
         fennec_layout::Cap::Env => 8,
+        fennec_layout::Cap::Signals => 9,
     })
 }
 

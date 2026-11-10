@@ -37,6 +37,8 @@ pub(crate) struct TestWorld {
     pub(crate) entropy_drawn: usize,
     /// The fake `Env`'s variables, by name, as the test set them.
     pub(crate) variables: BTreeMap<String, String>,
+    /// Whether the test asked its fake `Signals` to stop.
+    pub(crate) stopped: bool,
     /// The test's network, in memory.
     pub(crate) net: crate::stdlib::net::Fake,
     /// The test's SQLite databases, by path, each in a file of the test's own.
@@ -54,6 +56,7 @@ impl TestWorld {
             ran: Vec::new(),
             entropy_drawn: 0,
             variables: BTreeMap::new(),
+            stopped: false,
             net: crate::stdlib::net::Fake::default(),
             databases: crate::stdlib::sqlite::Fakes::default(),
         }
@@ -223,6 +226,7 @@ impl TestWorld {
             Capability::Clock => Some(self.clock(method, args, span)),
             Capability::Entropy => Some(self.entropy(method, args, span)),
             Capability::Env => Some(self.env(method, args, span)),
+            Capability::Signals => Some(self.signals(method, args, span)),
             Capability::Process => self.process(method, args, span),
             Capability::Net => Some(self.net.net_method(method, args, span)),
             Capability::Stdout | Capability::Stdin | Capability::Args => None,
@@ -354,6 +358,24 @@ impl TestWorld {
                 Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span))
             }
             _ => Err(crate::methods::no_method(&Value::Capability(Capability::Env), method, span)),
+        }
+    }
+
+    /// The fake `Signals`, which stops only when the test asks it to.
+    pub(crate) fn signals(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        match (method, args) {
+            ("stopping", []) => Ok(Value::Bool(self.stopped)),
+            ("stop", []) => {
+                self.stopped = true;
+                Ok(Value::Unit)
+            }
+            ("wait", []) if self.stopped => Ok(Value::Unit),
+            // Nothing else in a test can ask it to stop, so the wait would never end.
+            ("wait", []) => {
+                Err(Diagnostic::new("`wait` would wait forever: the test never stopped its `Signals`", span)
+                    .with_help("call `signals.stop()` in the test first"))
+            }
+            _ => Err(crate::methods::no_method(&Value::Capability(Capability::Signals), method, span)),
         }
     }
 

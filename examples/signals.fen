@@ -1,0 +1,27 @@
+# `Signals` says when the program's been asked to stop: by SIGTERM, Ctrl-C or SIGHUP on Unix, and
+# Ctrl-C or Ctrl-Break on Windows. A program given it catches them from the start, so it can finish
+# what it's doing and stop cleanly. A second one ends it at once. In a test, `Signals` is a fake
+# that stops only when the test calls `stop()`.
+
+## Runs `frame` until a stop's asked for, and says how many frames ran.
+def run_until_stopped(signals: Signals, frames: int) -> int:
+    mut ran = 0
+    while not signals.stopping() and ran < frames:
+        ran += 1
+    ran
+
+test "a loop runs until it's asked to stop"(signals: Signals):
+    assert run_until_stopped(signals, frames=3) == 3
+    signals.stop()
+    assert run_until_stopped(signals, frames=3) == 0
+
+test "a fake Signals isn't stopping until the test stops it"(signals: Signals):
+    assert not signals.stopping()
+    signals.stop()
+    assert signals.stopping()
+    # Once it's stopping, waiting for a stop ends at once.
+    signals.wait()
+
+def main(signals: Signals, stdout: Stdout):
+    # Nothing's asked this run to stop.
+    stdout.print(signals.stopping())

@@ -40,6 +40,7 @@ fn capability_waits(owner: &str, method: &str) -> bool {
     match owner {
         "Net" | "Connection" | "Server" | "UdpSocket" => true,
         "Clock" => method == "sleep",
+        "Signals" => method == "wait",
         "Process" => method == "run",
         "Stdin" => matches!(method, "read" | "read_line" | "lines"),
         _ => false,

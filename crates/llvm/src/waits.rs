@@ -95,6 +95,7 @@ fn waits(name: &str) -> Option<bool> {
     let tasks = ["intrinsics.channel_send", "intrinsics.channel_take", "intrinsics.launch_take"];
     if network.iter().any(|prefix| name.starts_with(prefix))
         || name == "Clock.sleep"
+        || name == "Signals.wait"
         || runs.contains(&name)
         || tasks.contains(&name)
     {

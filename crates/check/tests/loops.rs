@@ -374,3 +374,37 @@ fn overlapping_arguments_are_found_wherever_the_call_is() {
         assert!(said.iter().all(|one| one.contains(" overlap @ ")), "{body}: {said:?}");
     }
 }
+
+/// Each way of reaching one thing twice while a call changes it, `f(ref xs[i], ref xs[j])`,
+/// `f(ref x, ref x)`, `bag.grab(bag.items)` and an argument that changes what its call changes,
+/// says the same rule first, then its own fix, so they read as one rule.
+#[test]
+fn every_way_in_twice_says_the_same_rule() {
+    let rule = "a call has to be the only way to reach what it changes: ";
+    let program = "struct Bag:
+    items: list[int]
+
+    def grab(ref self, items: list[int]):
+        self.items.append(items.len())
+
+def both(ref a: int, ref b: int):
+    a += b
+
+def add(ref xs: list[int], n: int):
+    xs.append(n)
+
+def main(stdout: Stdout):
+    mut xs = [1, 2]
+    mut bag = Bag(items=[])
+    i = 0
+    j = 1
+    both(ref xs[i], ref xs[j])
+    both(ref xs[0], ref xs[0])
+    bag.grab(bag.items)
+    add(ref bag.items, bag.items.pop() else 0)
+    stdout.print(xs, bag.items)
+";
+    let said = helps(program);
+    assert_eq!(said.len(), 4, "{said:?}");
+    assert!(said.iter().all(|help| help.starts_with(rule)), "{said:?}");
+}

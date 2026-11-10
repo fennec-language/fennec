@@ -41,15 +41,9 @@ fn free_plain_list(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;
     }
-    let Some(block) = state.heap.block(address) else { return false };
-    let plain = !super::is_handle_block(block)
-        && shape_word(block).is_some_and(|shape| shape > state.tables.str_shape)
-        && crate::embed::lists::element_number(state, block)
-            .is_some_and(|number| state.heap.items_hold_nothing(number));
-    if !plain {
-        return false;
-    }
-    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) else {
+    let first_list = crate::embed::lists::first_list_shape(state);
+    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list))
+    else {
         return false;
     };
     state.heap.recycle(block);

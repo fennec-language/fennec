@@ -784,6 +784,13 @@ impl Heap {
         self.behind.len()
     }
 
+    /// Whether the block at `address` is in this heap's own table or one behind it: one that goes
+    /// when this heap does.
+    pub(super) fn holds_block(&self, address: usize) -> bool {
+        self.blocks.get(address).is_some()
+            || self.behind.iter().any(|(table, _)| table.get(address).is_some())
+    }
+
     /// Takes the current table back out, leaving the one behind it current.
     #[expect(
         clippy::unnecessary_box_returns,

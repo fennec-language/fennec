@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::generate::printing_plainly;
-use crate::supervise::{MOST_KILOBYTES, STUCK, watch};
+use crate::supervise::{BUILD_STUCK, MOST_KILOBYTES, STUCK, output_watched, watch};
 
 /// `fennec`: where `FENNEC` says, or beside this program.
 fn fennec() -> PathBuf {
@@ -48,13 +48,29 @@ pub(crate) fn ready() -> Result<(), String> {
 /// it doesn't take yet.
 const BROKEN: [&str; 5] = ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked"];
 
+/// What `fennec build` gave, run with the tools it starts in a group of their own: one whose
+/// tools together take more than `BUILD_STUCK` CPU time or `MOST_KILOBYTES` of memory is
+/// stopped, every tool with it, and that's a failure of its own, since building a program
+/// should never take that.
+fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
+    let (built, failure) = output_watched(command, BUILD_STUCK, MOST_KILOBYTES)?;
+    match failure {
+        Some(failure) => Err(format!(
+            "building it {failure}, `fennec build` and the tools it started together, and all were stopped:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        )),
+        None => Ok(built),
+    }
+}
+
 /// Builds `source` in `work`, giving back the executable, or None when the backend doesn't take
 /// the program yet.
 fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
     std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
-    let built = Command::new(fennec())
+    let mut command = Command::new(fennec());
+    command
         .args(["build", "--llvm"])
         .args(release.then_some("--release"))
         .arg(&program)
@@ -62,9 +78,8 @@ fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, St
         .arg(&executable)
         // Its own home and no cache, so fuzzing leaves nothing behind in the real ones.
         .env("FENNEC_HOME", work)
-        .env("FENNEC_NO_CACHE", "1")
-        .output()
-        .map_err(|err| format!("couldn't run `{}`: {err}", fennec().display()))?;
+        .env("FENNEC_NO_CACHE", "1");
+    let built = built_within(&mut command)?;
     if built.status.success() {
         return Ok(Some(executable));
     }
@@ -87,16 +102,16 @@ pub(crate) fn built_and_run(
     std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
     std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
-    let built = Command::new(fennec())
+    let mut command = Command::new(fennec());
+    command
         .args(["build", "--llvm"])
         .args(release.then_some("--release"))
         .arg(&program)
         .arg("-o")
         .arg(&executable)
         .env("FENNEC_HOME", &work)
-        .env("FENNEC_NO_CACHE", "1")
-        .output()
-        .map_err(|err| format!("couldn't run `{}`: {err}", fennec().display()))?;
+        .env("FENNEC_NO_CACHE", "1");
+    let built = built_within(&mut command)?;
     if !built.status.success() {
         let how = if release { "with --release" } else { "as a dev build" };
         return Err(format!("it didn't build {how}:\n{}", String::from_utf8_lossy(&built.stderr)));

@@ -100,9 +100,11 @@ fn arguments() -> Option<Vec<String>> {
 
 fn main() -> ExitCode {
     fennec_rt::use_tls();
-    // Loading a kit parses only the files that changed since a parse of them was kept.
+    // Loading a kit parses only the files that changed since a parse of them was kept, and the
+    // standard library is parsed by the first process of a build, and read by the rest.
     if let Some(cache) = run::cache() {
-        fennec_kit::keep_parses_in(Box::new(parsed::Kept::new(cache)));
+        fennec_kit::keep_parses_in(Box::new(parsed::Kept::new(cache.clone())));
+        fennec_syntax::keep_prelude_in(Box::new(parsed::Kept::new(cache)));
     }
     // A build that writes every check a proof left out as an assertion it held, to find false
     // proofs with: each says "proof broken" and which, if one didn't.

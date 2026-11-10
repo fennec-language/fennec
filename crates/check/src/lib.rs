@@ -85,32 +85,27 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 
 /// Like `check`, for a module `check_to_build` has resolved and trimmed to what `main` reaches,
 /// about to be lowered: the standard library's functions are checked only when the module
-/// reaches them, or lowering uses them without the program naming them. The rules about how a
-/// program is written were held to it as written, before it was rewritten, as a format's calls
-/// are to std's code, whose arguments have types a builtin's don't.
+/// reaches them, or lowering uses them without the program naming them.
 pub fn check_to_emit(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
-    checked_typed_in(module, checker::Scope::ReachedWithFields, true).map(Checked::into_signatures)
+    checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)
 }
 
 /// Checks a parsed module. Returns the signatures and the type of every expression and
 /// name, or every problem found, in source order.
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
-    checked_typed_in(module, checker::Scope::Everything, false)
+    checked_typed_in(module, checker::Scope::Everything)
 }
 
-/// Checks a module, `again` when it's a program a rewrite changed after it checked as written:
-/// the rules about how a program is written were held to it then.
-fn checked_typed_in(module: &Module, scope: checker::Scope, again: bool) -> Result<Checked, Vec<Diagnostic>> {
+fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_type_names(module);
     let mut renamed = module.clone();
     hide_interface_params(&mut renamed);
-    if !names.is_empty() {
-        fennec_syntax::rename::rename_types(&mut renamed, &names);
+    if names.is_empty() {
+        return checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names));
     }
-    let mut checker = checker::Checker::new(&renamed);
-    checker.again = again;
-    checker.run(scope).map_err(|problems| as_written(problems, &names))
+    fennec_syntax::rename::rename_types(&mut renamed, &names);
+    checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names))
 }
 
 /// The types a program declares with the same name as a standard library type, each with the
@@ -298,19 +293,25 @@ pub fn route_formats_natively(module: &mut Module) -> bool {
             }
         }
         let Some(native) = checked.native_formats.get(&(expr.span.start, expr.span.end)) else { return };
-        if let ExprKind::Call { callee, .. } = &mut expr.kind {
+        if let ExprKind::Call { callee, args } = &mut expr.kind {
             let named = match &mut callee.kind {
                 ExprKind::Index { object, .. } => object,
                 _ => callee,
             };
             named.kind = ExprKind::Name(native.clone());
+            // std's code takes an option as its own type, where the rule that leaves out an
+            // enum it's known to be applies: `names=JsonNames.camel_case` is `.camel_case` there.
+            for arg in args.iter_mut().filter(|arg| arg.name.is_some()) {
+                if let ExprKind::Attr { object, name, optional: false } = &arg.value.kind
+                    && let ExprKind::Name(owner) = &object.kind
+                    && fennec_syntax::importable_type(owner).is_some()
+                {
+                    arg.value.kind = ExprKind::Variant(name.clone());
+                }
+            }
         }
     });
-    // What it calls now has types a builtin's arguments don't, which the rules about how a
-    // program is written, like leaving out a case's enum where it's known, would hold it to.
-    own_types_apart(&mut routed);
-    let Ok(checked) = checked_typed_in(&routed, checker::Scope::Everything, true) else { return false };
-    if resolved(&mut routed, checked).is_err() {
+    if check_and_resolve(&mut routed).is_err() {
         return false;
     }
     *module = routed;
@@ -704,7 +705,15 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         });
     }
     imports_for_std_calls(module, checked.std_calls.values());
-    imports_for_cases(module, checked.cases.values());
+    // Only a case the program writes: the library's own code sees its enums where it's written.
+    imports_for_cases(
+        module,
+        checked
+            .cases
+            .iter()
+            .filter(|((start, _), _)| !Span { start: *start, end: *start }.in_prelude())
+            .map(|(_, owner)| owner),
+    );
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);

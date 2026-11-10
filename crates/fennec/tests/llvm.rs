@@ -6126,6 +6126,62 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A field of a dict's item changed through a copy of the dict another still holds, as
+/// `mut units = given` then `units["a"].tags.append(x)`: the item is read out to change and put
+/// back, so it owns what it holds, and the dict it goes back into is the copy's own. Taken out as a
+/// list's item is, with no owner of its own and the dict still shared, putting it back let go of
+/// the list the other dict still held.
+#[test]
+fn a_dict_items_field_changed_through_a_copy_leaves_the_other_dict_be() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("dict_item_through_copy", DICT_ITEM_THROUGH_COPY, how)?;
+        assert_eq!(
+            (out.as_str(), code),
+            (
+                "400 1050\nUnit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5, 6])\nUnit(hp=1, tags=[1, 2, 3, 7]) Unit(hp=20, tags=[4, 5, 6]) Unit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5, 6])\n",
+                Some(0)
+            ),
+            "{how:?}: {err}"
+        );
+    }
+    Ok(())
+}
+
+const DICT_ITEM_THROUGH_COPY: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+    def grown_by(ref self, values: list[int]):
+        for value in values:
+            self.tags.append(value)
+
+def appended(given: dict[str, Unit], at: int) -> int:
+    mut units = given
+    units["a"].tags.append(at)
+    units["a"].tags.len()
+
+def doubled(given: dict[str, Unit], at: int) -> int:
+    mut units = given
+    key = "a" if at % 2 == 0 else "b"
+    units[key].tags.append(at)
+    own = units[key].tags
+    units[key].grown_by(own)
+    units[key].hp += 1
+    units[key].tags.len() + units[key].hp
+
+def main(stdout: Stdout):
+    given = {"a": Unit(1, [1, 2, 3]), "b": Unit(2, [4, 5, 6])}
+    stdout.print(sum(appended(given, x) for x in range(100)), sum(doubled(given, x) for x in range(100)))
+    stdout.print(given["a"], given["b"])
+    mut mine = given
+    mine["a"].tags.append(7)
+    mine["b"].hp = 20
+    stdout.print(mine["a"], mine["b"], given["a"], given["b"])
+"#;
+
 /// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
 /// up itself, and keeps working when it's copied and when keys come out. If compiled code and the
 /// runtime hashed a key differently for it, these lookups would miss.

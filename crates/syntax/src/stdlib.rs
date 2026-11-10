@@ -40,6 +40,7 @@ modules! {
     env,
     fs,
     html,
+    io,
     intrinsics,
     json,
     layout,

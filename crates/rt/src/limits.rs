@@ -161,9 +161,6 @@ fn narrowed_fs(
     if reachable {
         return call(Capability::Fs, method, args);
     }
-    if method == "exists" {
-        return Ok(Value::Bool(false));
-    }
     let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
     Ok(crate::stdlib::fs::io_error(&reason))
 }

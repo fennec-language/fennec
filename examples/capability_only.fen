@@ -42,13 +42,20 @@ test "narrowing again only takes more away"(process: Process):
         == "this Process can run only nothing, so it can't run `git`"
     )
 
+## Whether `fs` can't look for `path` at all, as outside what a narrowed `Fs` reaches.
+def cant_look(fs: Fs, path: str) -> bool:
+    _ = fs.exists(path) else return True
+    False
+
 test "a narrowed Fs reaches only what's in its folder"(fs: Fs):
     fs.make_dir("saves/slot1")?
     fs.write_text("secret.txt", "hunter2")?
     saves = fs.only("saves")
     saves.write_text("saves/slot1/game.json", "{}")?
     assert saves.read_text("saves/slot1/game.json")? == "{}"
-    assert saves.exists("saves/slot1") and not saves.exists("secret.txt")
+    assert saves.exists("saves/slot1")?
+    # Outside its folder it can't look at all, which fails rather than saying no.
+    assert cant_look(saves, "secret.txt")
     assert io_failure(saves.read_text("secret.txt")).startswith(
         "`secret.txt` is outside what this Fs can reach",
     )

@@ -37,6 +37,8 @@ pub(crate) struct TestWorld {
     pub(crate) entropy_drawn: usize,
     /// The fake `Env`'s variables, by name, as the test set them.
     pub(crate) variables: BTreeMap<String, String>,
+    /// What the test wrote to its fake `Stderr`.
+    pub(crate) errors: String,
     /// Whether the test asked its fake `Signals` to stop.
     pub(crate) stopped: bool,
     /// The test's network, in memory.
@@ -56,6 +58,7 @@ impl TestWorld {
             ran: Vec::new(),
             entropy_drawn: 0,
             variables: BTreeMap::new(),
+            errors: String::new(),
             stopped: false,
             net: crate::stdlib::net::Fake::default(),
             databases: crate::stdlib::sqlite::Fakes::default(),
@@ -215,6 +218,9 @@ impl TestWorld {
         if capability == Capability::Stdout && method == "captured" {
             return Some(Ok(Value::str(self.printed())));
         }
+        if capability == Capability::Stderr && method == "captured" {
+            return Some(Ok(Value::str(&self.errors)));
+        }
         if self.real() || method == "only" {
             return None;
         }
@@ -227,6 +233,7 @@ impl TestWorld {
             Capability::Entropy => Some(self.entropy(method, args, span)),
             Capability::Env => Some(self.env(method, args, span)),
             Capability::Signals => Some(self.signals(method, args, span)),
+            Capability::Stderr => Some(crate::stderr::faked(&mut self.errors, method, args, span)),
             Capability::Process => self.process(method, args, span),
             Capability::Net => Some(self.net.net_method(method, args, span)),
             Capability::Stdout | Capability::Stdin | Capability::Args => None,
@@ -246,7 +253,7 @@ impl TestWorld {
         let done = match (method, paths) {
             ("exists", [Value::Str(path)]) => {
                 let key = key(path);
-                return Some(Ok(Value::Bool(key.is_empty() || world.nodes.contains_key(&key))));
+                Ok(Value::Bool(key.is_empty() || world.nodes.contains_key(&key)))
             }
             ("read_text", [Value::Str(path)]) => world.read(path).and_then(|data| {
                 let text = std::str::from_utf8(data).map_err(|err| format!("{path} isn't text: {err}"))?;

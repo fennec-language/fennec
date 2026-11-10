@@ -102,6 +102,59 @@ export shared Connection:
             if line is None: return
             yield line
 
+    ## This connection as a `Writer`, from `std.io`, for code written for any stream. A failure
+    ## of the network comes through as an `IoError`, with the network's own words in a note.
+    def writer(self) -> ConnectionWriter:
+        ConnectionWriter(_conn=self)
+
+    ## This connection as a `Reader`, from `std.io`, buffered as the connection is.
+    def reader(self) -> ConnectionReader:
+        ConnectionReader(_conn=self)
+
+## A connection as a `Writer`, from `conn.writer()`. Each write is sent at once, so `flush` has
+## nothing to do.
+export struct ConnectionWriter:
+    _conn: Connection
+
+    def write(self, data: bytes) fails IoError:
+        self._conn.write(data) else as why:
+            fail io_failure(why)
+
+    def write_text(self, text: str) fails IoError:
+        self._conn.write(text) else as why:
+            fail io_failure(why)
+
+    def write_line(self, text: str) fails IoError:
+        self._conn.write(text + "\n") else as why:
+            fail io_failure(why)
+
+    def flush(self) fails IoError:
+        pass
+
+## A connection as a `Reader`, from `conn.reader()`.
+export struct ConnectionReader:
+    _conn: Connection
+
+    def read_chunk(self, size: int) -> bytes fails IoError:
+        self._conn.read(size) else as why:
+            fail io_failure(why)
+
+    def read_line(self) -> str? fails IoError:
+        self._conn.read_line() else as why:
+            fail io_failure(why)
+
+    def lines(self) -> Iterator[str] fails IoError:
+        while True:
+            line = self.read_line()?
+            if line is None: return
+            yield line
+
+## A failure of the network as the `IoError` a stream fails with, keeping what the network said.
+def io_failure(why: NetError) -> IoError:
+    mut failure = IoError(reason=why.message())
+    failure.add_note(f"the network failed: {why.message()}")
+    failure
+
 ## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
 export struct Packet:
     data: bytes

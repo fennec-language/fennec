@@ -38,8 +38,11 @@ def by_return(n: int) -> int fails Coded | Short:
     coded(n)?
 
 def by_copy(n: int) -> str:
-    answer = short_or_coded(n) if n > 0 else short(n)
-    value = answer else as error:
+    if n > 0:
+        value = short_or_coded(n) else as error:
+            return f"{error}"
+        return f"{value}"
+    value = short(n) else as error:
         return f"{error}"
     f"{value}"
 

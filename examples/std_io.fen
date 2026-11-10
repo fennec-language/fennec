@@ -60,6 +60,14 @@ test "a connection is a writer and a reader"(net: Net):
                 assert src.read_line()? == "ana: 3"
                 assert src.read_line()? == "bo: 5"
 
+test "standard error is a writer, and standard output is one through writer()"(stdout: Stdout, stderr: Stderr):
+    mut err = stderr
+    report(ref err, SCORES)?
+    assert stderr.captured() == "ana: 3\nbo: 5\n"
+    mut out = stdout.writer()
+    report(ref out, SCORES)?
+    assert stdout.captured() == "ana: 3\nbo: 5\n"
+
 test "json, csv and pack write to and read from any stream"():
     mut written = MemoryStream()
     json.dump(SCORES, ref written)?

@@ -1,0 +1,25 @@
+# `Stderr` is standard error: where a program says what isn't its output, like warnings, errors and
+# logs, so they don't mix with what it prints. Each write goes out at once. In a test, `Stderr` is a
+# fake that keeps what's written, for `captured()`.
+
+## Warns that `name` wasn't found, on standard error, and gives how many it's warned about.
+def warn_missing(stderr: Stderr, names: list[str]) -> int fails IoError:
+    for name in names:
+        stderr.write_line(f"warning: {name} wasn't found")?
+    names.len()
+
+test "warnings go to standard error, not standard output"(stdout: Stdout, stderr: Stderr):
+    assert warn_missing(stderr, ["a.txt", "b.txt"])? == 2
+    assert stderr.captured() == "warning: a.txt wasn't found\nwarning: b.txt wasn't found\n"
+    assert stdout.captured() == ""
+
+test "bytes and text with no new line"(stderr: Stderr):
+    stderr.write("ab".encode())?
+    stderr.write_text("cd")?
+    stderr.flush()?
+    assert stderr.captured() == "abcd"
+
+def main(stdout: Stdout, stderr: Stderr):
+    # Nothing's wrong, so nothing goes to standard error.
+    stdout.print("all found")
+    stderr.flush()?

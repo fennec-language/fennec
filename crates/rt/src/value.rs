@@ -71,6 +71,7 @@ pub(crate) enum Capability {
     Net,
     Env,
     Signals,
+    Stderr,
 }
 
 #[derive(Clone, Debug)]
@@ -305,6 +306,7 @@ impl Value {
             Value::Capability(Capability::Net) => "Net".to_owned(),
             Value::Capability(Capability::Env) => "Env".to_owned(),
             Value::Capability(Capability::Signals) => "Signals".to_owned(),
+            Value::Capability(Capability::Stderr) => "Stderr".to_owned(),
             Value::Limited(limited) => Value::Capability(limited.capability).type_name(),
         }
     }

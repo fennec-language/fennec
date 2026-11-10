@@ -1,6 +1,7 @@
 ## `std.io`: what any stream of bytes can do. A `Writer` takes bytes and text, and a `Reader` gives
-## them back, a chunk or a line at a time. Files, connections and a `MemoryStream` are both, so
-## code written for one works on all of them:
+## them back, a chunk or a line at a time. Files, connections and a `MemoryStream` are both,
+## standard error is a `Writer`, and standard output is one through `stdout.writer()`, so code
+## written for one works on all of them:
 ##
 ## ```fennec
 ## def report[W: Writer](ref out: W, lines: list[str]) fails IoError:
@@ -13,6 +14,51 @@
 ## `conn.writer()` and `conn.reader()` as an `IoError` with the network's own words in a note.
 ## Readers are buffered already, so `read_line` reads only as far as it needs.
 from std.intrinsics import bytes_builder, bytes_push_bytes, bytes_push_text
+
+## Standard output, given to `main` or a test: what the program says. Its methods written in Rust
+## are `print(...)`, which writes what it's given with spaces between and a new line after, and
+## `write(...)`, which writes it with no new line. What's written is held and goes out in pieces.
+## A test's `Stdout` is a fake that keeps what's printed, for the test's `captured()`. Only `main`
+## and tests are given one: it can't be made.
+export struct Stdout:
+    _given: int
+
+    ## Standard output as a `Writer`, for code written for any stream: `stdout.writer()`.
+    def writer(self) -> StdoutWriter:
+        StdoutWriter(_out=self)
+
+## Standard input, given to `main`: what's typed or piped in. Its method written in Rust is
+## `lines()`, every line to the end. Only `main` is given one: it can't be made.
+export struct Stdin:
+    _given: int
+
+## Standard error, given to `main` or a test: what isn't the program's output, like warnings, errors
+## and logs. Its methods written in Rust are `write(data)` for bytes, `write_text(text)`,
+## `write_line(text)`, which adds a new line, and `flush()`. Each goes out at once, after what's
+## been printed to standard output, and fails with an `IoError` when standard error is closed. A
+## test's `Stderr` is a fake that keeps what's written, for the test's `captured()`. Only `main`
+## and tests are given one: it can't be made. It's a `Writer` as it is.
+export struct Stderr:
+    _given: int
+
+## Standard output as a `Writer`, from `stdout.writer()`. What's written goes out as `print` and
+## `write` send it, so `flush` has nothing it can do sooner.
+export struct StdoutWriter:
+    _out: Stdout
+
+    ## Writes `data`, which has to be UTF-8 text: standard output takes text.
+    def write(self, data: bytes) fails IoError:
+        text = data.decode() else fail IoError(reason="standard output takes text, and these bytes aren't UTF-8")
+        self._out.write(text)
+
+    def write_text(self, text: str) fails IoError:
+        self._out.write(text)
+
+    def write_line(self, text: str) fails IoError:
+        self._out.print(text)
+
+    def flush(self) fails IoError:
+        pass
 
 ## Something bytes and text can be written to.
 export interface Writer:

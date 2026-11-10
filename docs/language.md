@@ -176,7 +176,7 @@ target = units.get(enemy.target_id) else return    # may be gone
 units[unit_id].health -= 1                         # sure: stops loudly if wrong
 ```
 
-`units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone. Not built yet.
+`units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone. Built.
 
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 

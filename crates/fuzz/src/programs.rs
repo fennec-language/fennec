@@ -135,7 +135,8 @@ mod tests {
                 found.iter().map(|lint| format!("{}: {}", lint.rule, lint.message())).collect();
             assert!(said.is_empty(), "{source}\n{said:#?}");
             // It refuses a copy made each time round a loop that isn't said with `copy`, too.
-            let copies = fennec_lint::implicit_copies(&fennec_ir::costs(&fennec_ir::lower(&module, &signatures)));
+            let copies =
+                fennec_lint::implicit_copies(&fennec_ir::costs(&fennec_ir::lower(&module, &signatures)));
             let said: Vec<&str> = copies.iter().map(|copy| copy.message.as_str()).collect();
             assert!(said.is_empty(), "{source}\n{said:#?}");
         }

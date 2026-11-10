@@ -327,10 +327,15 @@ fn release_child(
             Released::Missing => {}
         }
     }
-    if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            pending.push(child);
+    if let Some(block) = state.heap.block_mut(child) {
+        if super::uncounted(block) {
+            return;
+        }
+        if let Some(count) = block.first_mut() {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                pending.push(child);
+            }
         }
     } else if !state.heap.change_lent_owners(child, -1) && crate::embed::guarded::is_handle(child) {
         pending.push(child);
@@ -491,10 +496,15 @@ fn release_planned_child(
             Released::Held => return,
             Released::Missing => {}
         }
-    } else if let Some(count) = blocks.get_mut(at).and_then(<[u64]>::first_mut) {
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            freeing.pending.push(child);
+    } else if let Some(block) = blocks.get_mut(at) {
+        if super::uncounted(block) {
+            return;
+        }
+        if let Some(count) = block.first_mut() {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                freeing.pending.push(child);
+            }
         }
         return;
     }
@@ -548,7 +558,11 @@ pub(in crate::embed) fn measure_part(part: u8, address: usize) {
 
 /// Gives up one owner of a block, freeing it when that was the last.
 pub(in crate::embed) fn release(state: &mut State, address: u64) {
-    let last = match state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+    let block = state.heap.block_mut(address);
+    if block.as_deref().is_some_and(super::uncounted) {
+        return;
+    }
+    let last = match block.and_then(|block| block.first_mut()) {
         Some(count) if *count > 1 => {
             *count -= 1;
             false
@@ -677,6 +691,70 @@ mod tests {
         let other = crate::embed::lists::new(0, 1);
         crate::embed::heap::free(other);
         with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));
+        finish();
+    }
+
+    /// A block that's never freed, as a shared enum case's is, made in this thread's table.
+    fn never_freed() -> u64 {
+        let elements = vec![Rc::new(Element::Int)];
+        start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
+        let kept = crate::embed::lists::new(0, 0).cast_unsigned();
+        with(|state| {
+            let block = state.heap.block_mut(kept).unwrap();
+            block[0] = super::super::IMMORTAL;
+            super::super::mark_never_freed(block);
+        });
+        kept
+    }
+
+    /// Takes three owners of `kept` and gives them back the three ways the runtime lets go of a
+    /// block, `rounds` times: as what a freed block held, straight from the table and not, and as
+    /// a release. Gives its count after.
+    fn count_after_rounds(kept: u64, rounds: u64) -> u64 {
+        for _ in 0..rounds {
+            with(|state| {
+                super::super::retain(state, kept);
+                super::super::retain(state, kept);
+                super::super::retain(state, kept);
+                let (mut pending, mut taken) = (Vec::new(), Vec::new());
+                super::release_child(state, kept, true, &mut pending, &mut taken);
+                super::release_child(state, kept, false, &mut pending, &mut taken);
+                super::release(state, kept);
+                assert!(pending.is_empty() && taken.is_empty(), "never freed");
+            });
+        }
+        with(|state| state.heap.block(kept).unwrap()[0])
+    }
+
+    /// On a worker, nothing counts a block that's never freed: native code there doesn't, so
+    /// neither does the runtime, and the count stays where it started however often the block is
+    /// let go of. Counting only the runtime's half had a shared case's count drop by one for each
+    /// connection a server's worker answered, until it read as a block that can be freed.
+    #[test]
+    fn a_worker_leaves_a_never_freed_blocks_count_alone() {
+        crate::embed::threads::take_index();
+        let kept = never_freed();
+        let native_skipped = with(|state| {
+            let block = state.heap.block(kept).unwrap();
+            super::super::uncounted(block)
+        });
+        assert!(native_skipped, "a worker leaves it, as its native code does");
+        assert_eq!(count_after_rounds(kept, 1_000), super::super::IMMORTAL);
+        crate::embed::heap::unshare(kept.cast_signed());
+        with(|state| assert_eq!(state.heap.block(kept).unwrap()[0], super::super::IMMORTAL, "copied"));
+        finish();
+    }
+
+    /// The main thread's native code counts a block that's never freed, so its runtime does too:
+    /// each owner it takes, it gives back.
+    #[test]
+    fn the_main_thread_counts_a_never_freed_block() {
+        let kept = never_freed();
+        assert_eq!(crate::embed::threads::index(), 0, "a test runs as the main thread");
+        assert!(!with(|state| super::super::uncounted(state.heap.block(kept).unwrap())));
+        assert_eq!(count_after_rounds(kept, 1_000), super::super::IMMORTAL, "as many taken as given back");
+        with(|state| super::release(state, kept));
+        assert_eq!(with(|state| state.heap.block(kept).unwrap()[0]), super::super::IMMORTAL - 1);
         finish();
     }
 

@@ -413,6 +413,19 @@ const FINISHED: u64 = u64::MAX;
 /// near zero.
 pub const IMMORTAL: u64 = 1 << 48;
 
+/// Whether this thread leaves `block`'s count alone: a block that's never freed, on a worker
+/// thread. Native code on a worker doesn't count one, since it's no thread's, so the runtime there
+/// doesn't either. Otherwise a worker that made one, which keeps it in its own table, would take
+/// off owners its native code never gave it, until the count fell below [`IMMORTAL`] and the block
+/// read as one that can be freed. The main thread's native code counts it, so its runtime does
+/// too. Only a count at the mark or above asks more, so other blocks pay nothing.
+pub(super) fn uncounted(block: &[u64]) -> bool {
+    super::threads::ON
+        && block.first().is_some_and(|count| *count >= IMMORTAL)
+        && block.get(1).is_some_and(|word| word >> OWNER_SHIFT == NEVER_FREED_OWNER)
+        && super::threads::index() != 0
+}
+
 /// How many words of freed blocks a heap keeps for reuse, across all sizes: 8 MB. Reuse is only
 /// a little cheaper than the allocator, which needs this much to match on programs that free a
 /// lot at once. More just keeps memory from the rest of the program, with blocks scattered
@@ -1363,8 +1376,12 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         };
         let mut copy: Box<[u64]> = block.into();
         // The block copied loses an owner, in its count, or for its lender to take off.
-        if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
-            *count = count.saturating_sub(1);
+        if let Some(block) = state.heap.block_mut(address) {
+            if !uncounted(block)
+                && let Some(count) = block.first_mut()
+            {
+                *count = count.saturating_sub(1);
+            }
         } else {
             state.heap.change_lent_owners(address, -1);
         }
@@ -1397,8 +1414,12 @@ pub extern "C" fn to_value(address: i64) -> i64 {
 
 /// One more owner for a block.
 pub(super) fn retain(state: &mut State, address: u64) {
-    if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
-        *count += 1;
+    if let Some(block) = state.heap.block_mut(address) {
+        if !uncounted(block)
+            && let Some(count) = block.first_mut()
+        {
+            *count += 1;
+        }
     } else if state.heap.change_lent_owners(address, 1) {
     } else if super::guarded::is_handle(address) {
         super::guarded::count_handle(address);

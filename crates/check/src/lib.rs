@@ -712,14 +712,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    // A generic function calling an interface's `with` source is copied for each type it's called
-    // with, and the copies checked again, where each type's own source is found and written in.
-    if generic_copies::lower(module, &checked.generic_sources, &checked.generic_calls) {
-        return Round::Again;
-    }
-    // A `with` source called on a union is written in once for each member, under an `is` for
-    // it, and checked again, where each member's own source is found.
-    if union_sources::lower(module, &checked.union_sources) {
+    if sources_copied(module, checked) {
         return Round::Again;
     }
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
@@ -740,6 +733,15 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// Copies what calls a `with` source that isn't known until the program runs, saying whether
+/// any was, for the copies to be checked again, where each one's own source is found. A generic
+/// function calling an interface's source is copied for each type it's called with, and a `with`
+/// on a union's source is written in once for each member, under an `is` for it.
+fn sources_copied(module: &mut Module, checked: &Checked) -> bool {
+    generic_copies::lower(module, &checked.generic_sources, &checked.generic_calls)
+        || union_sources::lower(module, &checked.union_sources)
 }
 
 /// Each source with its leading-dot cases named, as the program's own text was above: what

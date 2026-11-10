@@ -73,13 +73,16 @@ def main(stdout: Stdout):
     stdout.print(order, last, order + [5], items[1:3])
 
     mut walked = [1, 2, 3]
-    for walk in copy(walked):
+    as_it_was = walked
+    for walk in as_it_was:
         walked.append(walk)
     stdout.print(walked)
 
-    # A `ref` argument has its list to itself, so the other one is given a copy, which keeps its items.
+    # A `ref` argument has its list to itself, so the other one is given a value made first, which
+    # keeps its items.
     mut twice = [1, 2]
-    stdout.print(both(copy(twice), ref twice), twice)
+    given = twice
+    stdout.print(both(given, ref twice), twice)
 
     # A call can give back more than fits in a machine's return registers.
     mut ints = [1]

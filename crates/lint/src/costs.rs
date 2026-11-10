@@ -1,6 +1,6 @@
-//! What may copy or allocate, from what the IR finds. A copy made each time round a loop
-//! without saying so is a compile error, and so is anything that costs in a `@hot` function or
-//! what it calls. The rest are hints: they flag correct code, so they
+//! What may copy or allocate, from what the IR finds. Anything that costs in a `@hot` function or
+//! what it calls is a compile error. The rest are hints, a copy made each time round a loop
+//! included: they flag correct code, since every copy is a snapshot as the program says, so they
 //! never fail `fennec lint`, but whoever is looking at a hot path wants every one, with where it
 //! runs.
 
@@ -25,7 +25,9 @@ pub(crate) fn of(findings: &[Finding]) -> Vec<Lint> {
         .iter()
         .filter_map(|finding| {
             let rule = match finding.cost {
-                Cost::Copy { .. } if finding.per_iteration() => return None,
+                Cost::Copy { .. } if finding.per_iteration() => {
+                    return Some(Lint::hint("copies", problem(finding)?));
+                }
                 Cost::Copy { .. } => "copies",
                 Cost::Allocation { .. } if finding.is_hot() => "allocates",
                 Cost::Allocation { .. } => return None,
@@ -40,9 +42,9 @@ pub(crate) fn of(findings: &[Finding]) -> Vec<Lint> {
         .collect()
 }
 
-/// Each copy made each time round a loop, as a mistake.
-pub(crate) fn implicit(findings: &[Finding]) -> Vec<Diagnostic> {
-    findings.iter().filter(|finding| finding.per_iteration()).filter_map(problem).collect()
+/// Whether anything is copied each time round a loop.
+pub(crate) fn copies_each_round(findings: &[Finding]) -> bool {
+    findings.iter().any(|finding| finding.per_iteration() && matches!(finding.cost, Cost::Copy { .. }))
 }
 
 pub(crate) fn hot(findings: &[Finding], reach: &HotReach) -> Vec<Diagnostic> {
@@ -56,7 +58,6 @@ pub(crate) fn hot(findings: &[Finding], reach: &HotReach) -> Vec<Diagnostic> {
     };
     let mut problems: Vec<Diagnostic> = findings
         .iter()
-        .filter(|finding| !(finding.per_iteration() && matches!(finding.cost, Cost::Copy { .. })))
         .filter_map(|finding| {
             let (_, root) = reach.reached.iter().find(|(name, _)| *name == finding.function)?;
             let help = match &finding.cost {
@@ -95,9 +96,7 @@ fn problem(finding: &Finding) -> Option<Diagnostic> {
         _ => "each time round the loop".to_owned(),
     };
     let message = format!("`{value}` is copied {when}, since {because}");
-    let help = format!(
-        "write `copy({value})` to copy it on purpose, or stop holding it elsewhere before this changes it"
-    );
+    let help = format!("to change it where it is, stop holding `{value}` elsewhere before this changes it");
     let diagnostic = Diagnostic::new(message, finding.span).with_help(help);
     Some(match later {
         Some(later) => diagnostic.also_at(later),

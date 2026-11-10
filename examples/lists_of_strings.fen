@@ -50,7 +50,7 @@ def main(stdout: Stdout):
 
     trees = [Tree.Leaf, Tree.Node(left=.Leaf, value=1, right=.Leaf)]
     stdout.print(depth(trees[0]), depth(trees[1]), trees.len())
-    mut grown = copy(trees)
+    mut grown = trees
     grown.append(Tree.Node(left=trees[1], value=2, right=trees[1]))
     grown[0] = grown[2]
     total = sum(depth(tree) for tree in grown)

@@ -3,7 +3,7 @@
 //! `dict` is sure to mean the same by `in`, `[]` and `get`, so this looks at a program that
 //! checks, and at names and fields, which give the same thing each time they're read. A dict of
 //! optional values is left alone: there a key holding `None` gives `None` written the first way,
-//! and the default written the second. Each fix is tried, as `needless-copy` does. Where a
+//! and the default written the second. Each fix is tried, as `needless-conversion`'s is. Where a
 //! place is named it's left alone too, as `needless-conversion` leaves it.
 
 use std::collections::HashMap;

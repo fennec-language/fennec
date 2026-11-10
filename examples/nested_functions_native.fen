@@ -44,7 +44,8 @@ def main(stdout: Stdout):
     stdout.print(plus(1), [plus(n) for n in range(2)], sum(plus(n) for n in range(3)))
     stdout.print(rolling([1, 2, 3]))
     mut changing = [1, 2, 3]
-    for at, item in enumerate(copy(changing)):
+    before = changing
+    for at, item in enumerate(before):
         if at == 0:
             changing.append(item + 9)
         stdout.print(at, item, changing.len())

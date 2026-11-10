@@ -46,7 +46,7 @@ def main(stdout: Stdout):
     health = {"ash": 10, "kit": 4}
     stdout.print(total_health(["ash", "nobody", "kit"], health))
     stdout.print(health_of(health, "kit"), health_of(health, "nobody"))
-    mut held = copy(health)
+    mut held = health
     heal(ref held, "nobody")
     heal(ref held, "kit")
     stdout.print(held["kit"], held.len())

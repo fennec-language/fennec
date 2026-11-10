@@ -20,6 +20,7 @@ mod params;
 mod paths;
 mod rewrites;
 mod sizes;
+mod stale;
 
 use fennec_syntax::{Diagnostic, Item, Module, Sources};
 
@@ -165,25 +166,25 @@ pub fn kit_lints(module: &Module) -> Vec<Lint> {
     asserts::in_kit(module, asserts::declares_expect(module))
 }
 
-/// Every explicit `copy` that changes nothing, in a module that checks. Finding them checks the
-/// whole program again for each `copy`, so they're asked for where the whole program is checked
-/// anyway, apart from `lint`.
+/// Each struct copied from one place into another while what it came from can still change, as
+/// a hint: `world.selected = world.units[i]` is a snapshot, which a program that meant a link
+/// would write as a `ref`. It needs the typed tree, so it's asked for where the whole program is
+/// checked anyway.
 #[must_use]
-pub fn needless_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
-    copies::of(module, sources)
+pub fn stale_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
+    stale::of(module, sources)
 }
 
 /// Every conversion to the type a value has already, in a module that checks: `str(s)` on text,
-/// `int(n)` on an int, `float(x)` on a float, and `str(x)` shown in an f-string. Like
-/// `needless_copies`, each fix is tried, so they're asked for where the whole program is checked
-/// anyway.
+/// `int(n)` on an int, `float(x)` on a float, and `str(x)` shown in an f-string. Each fix is
+/// tried, so they're asked for where the whole program is checked anyway.
 #[must_use]
 pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
     conversions::of(module, sources)
 }
 
 /// Every `table[key] if key in table else default` on a dict, in a module that checks, which
-/// `table.get(key) else default` says with one lookup. Like `needless_copies`, each fix is tried,
+/// `table.get(key) else default` says with one lookup. Like `needless_conversions`, each fix is tried,
 /// so they're asked for where the whole program is checked anyway.
 #[must_use]
 pub fn double_lookups(module: &Module, sources: &Sources) -> Vec<Lint> {
@@ -197,25 +198,15 @@ pub fn self_compares(module: &Module, sources: &Sources) -> Vec<Lint> {
     compares::of(module, sources)
 }
 
-/// A hint for each place a lowered program may copy, once, and each it may allocate in code
-/// that runs often, from what `fennec_ir::costs` finds, in its order: hot code first. A copy
-/// made each time round a loop is a mistake instead, which `implicit_copies` gives.
+/// A hint for each place a lowered program may copy, and each it may allocate in code that runs
+/// often, from what `fennec_ir::costs` finds, in its order: hot code first.
 #[must_use]
 pub fn costs(findings: &[fennec_ir::Finding]) -> Vec<Lint> {
     costs::of(findings)
 }
 
-/// Each copy made each time round a loop without saying so, as a compile error. Changing a
-/// value something else still holds copies it first, and a loop that does that every time
-/// round, here or further up the calls, says so with `copy(...)` or stops sharing the value.
-#[must_use]
-pub fn implicit_copies(findings: &[fennec_ir::Finding]) -> Vec<Diagnostic> {
-    costs::implicit(findings)
-}
-
 /// Each cost in a `@hot` function, or in one it calls, as a compile error, and each call it can't
-/// see into. A hot path may not allocate or copy, and a copy `implicit_copies` reports already
-/// isn't said twice.
+/// see into. A hot path may not allocate or copy.
 #[must_use]
 pub fn hot_costs(findings: &[fennec_ir::Finding], reach: &fennec_ir::HotReach) -> Vec<Diagnostic> {
     costs::hot(findings, reach)

@@ -38,9 +38,10 @@ def main(stdout: Stdout):
     squares[7] += 10
     stdout.print(kept[7], squares[7], squares == kept)
 
-    # A loop can't change what it goes over, so this one goes over a copy while it grows the dict.
+    # A loop can't change what it goes over, so this one goes over the dict as it was before it grows.
     mut grow: dict[int, int] = {1: 1}
-    for key in copy(grow):
+    before = grow
+    for key in before:
         grow[key + 1] = key
     stdout.print(grow)
 

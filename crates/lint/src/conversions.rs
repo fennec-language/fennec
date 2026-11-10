@@ -1,7 +1,7 @@
 //! `needless-conversion`: `str(s)` on what's text already, `int(n)` on an int, `float(x)` on a
 //! float, and `f"{str(x)}"`, since an f-string shows any value as `str` does. Only the typed
-//! tree knows what a value is, so this looks at a program that checks. Each fix is tried, as
-//! `needless-copy` does: without the conversion the program has to check and make no copy each
+//! tree knows what a value is, so this looks at a program that checks. Each fix is tried:
+//! without the conversion the program has to check and make no copy each
 //! time round a loop. A conversion where a place is named is left alone: `mut y = str(s)` makes
 //! a value of `y`'s own, and `mut y = s` would make `y` stand for `s`.
 
@@ -44,10 +44,10 @@ fn without(module: &Module, call: Span) -> Module {
     trial
 }
 
-/// Whether a program checks and makes no copy each time round a loop, which is a compile error.
+/// Whether a program checks and makes no copy each time round a loop, which a fix mustn't add.
 pub(crate) fn still_fine(mut trial: Module) -> bool {
     let Ok(signatures) = fennec_check::check_and_resolve(&mut trial) else { return false };
-    crate::costs::implicit(&fennec_ir::costs(&fennec_ir::lower(&trial, &signatures))).is_empty()
+    !crate::costs::copies_each_round(&fennec_ir::costs(&fennec_ir::lower(&trial, &signatures)))
 }
 
 /// The lint for taking a conversion out, written as its value is.

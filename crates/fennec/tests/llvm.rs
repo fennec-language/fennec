@@ -903,7 +903,7 @@ def more_facts(stdout: Stdout):
         ran += at
     stdout.print(limit, ran)
     for at, item in enumerate(items):
-        mut here = copy(at)
+        mut here = at
         bump(ref here)
         stdout.print(at, here, item)
 
@@ -1257,9 +1257,11 @@ def main(stdout: Stdout):
     # What's given to the call comes from what's changed.
     mut own = [unit(1), unit(2), unit(3)]
     own[0].grow(own[1].hp)
-    own[0].grown_by(copy(own[0].tags))
+    first_tags = own[0].tags
+    own[0].grown_by(first_tags)
     own[1].grown_by(own[0].tags)
-    own[2].absorb(copy(own[2]))
+    third = own[2]
+    own[2].absorb(third)
     own[2].absorb(own[0])
     first = own[1]
     own[1].grown_by(first.tags)
@@ -1853,7 +1855,7 @@ def grow(ref units: list[Unit], by: int):
 def main(stdout: Stdout):
     mut units = [Unit([1, 2, 3], 0), Unit([4], 1)]
     # A copy of the list, of an item, and of the field, each kept apart from what comes after.
-    snapshot = copy(units)
+    snapshot = units
     shared = units
     item = units[0]
     tags = units[0].tags
@@ -1874,7 +1876,7 @@ def main(stdout: Stdout):
     grow(ref units, 5)
     stdout.print(units, snapshot)
     # A caller's copy stays as it was.
-    mut mine = copy(units)
+    mut mine = units
     kept = mine
     grow(ref mine, 6)
     stdout.print(mine[0].tags, kept[0].tags)
@@ -2305,7 +2307,7 @@ def main(stdout: Stdout):
     # Copies taken before the loop keep what they had.
     mut units = make()
     shared = units
-    kept = copy(units)
+    kept = units
     item = units[0]
     tags = units[0].tags
     for ref unit in units:
@@ -3475,7 +3477,7 @@ def main(stdout: Stdout):
     stdout.print(c[-1], c[-3], [i * i for i in range(4)][2])
     mut h = [1, 2]
     for _ in range(3):
-        k = copy(h)
+        k = h
         h.append(k.len())
         stdout.print(k.len(), h.len())
 ",
@@ -5283,7 +5285,7 @@ def main(stdout: Stdout):
     bump(ref holder, 1)
     stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
     stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
-    mut list_only = copy(two)
+    mut list_only = two
     shown = list_only[0]
     list_only[0].id = 77
     stdout.print(shown.id, list_only[0].id, two[0].id)
@@ -5294,7 +5296,7 @@ def main(stdout: Stdout):
     copied = kept
     kept.packets.append(a)
     stdout.print(kept.packets.len(), copied.packets.len())
-    mut nested = copy(kept)
+    mut nested = kept
     other = nested
     nested.packets[0].data[1] = 123
     stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
@@ -5304,7 +5306,8 @@ def main(stdout: Stdout):
         item = item * 2
     stdout.print(walked[0], walked[2], before[0], before[2])
     mut grows = [1, 2]
-    for item in copy(grows):
+    grows_before = grows
+    for item in grows_before:
         grows[0] = item + 10
         grows[1] = 40
     stdout.print(grows[0], grows[1])
@@ -5396,7 +5399,7 @@ def main(stdout: Stdout):
     a = Point(x=1.0, y=2.0, on=True)
     b = moved(a, 0.5)
     stdout.print(a.x, b.x, a.on)
-    mut c = copy(b)
+    mut c = b
     nudge(ref c)
     stdout.print(b.y, c.y, b.on, c.on)
     mut line = Line(start=a, end=c, weight=3)
@@ -7581,7 +7584,7 @@ fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
     assert!(counts.starts_with("copies 0 "), "{counts}");
     same_as_the_jit(
         "copies_kept",
-        "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = copy(a)\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = copy(row)\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
+        "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = a\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = row\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
     )
 }
 
@@ -7727,7 +7730,8 @@ def main(stdout: Stdout):
     pairs = enumerate(names)
     stdout.print(pairs.len(), pairs[1])
     mut grow = [1, 2, 3]
-    for at, n in enumerate(copy(grow)):
+    grow_before = grow
+    for at, n in enumerate(grow_before):
         grow.append(n + at)
     stdout.print(grow)
     for at, word in enumerate(["a", "b"]):
@@ -12183,7 +12187,7 @@ def main(stdout: Stdout):
     for at in range(good.len()):
         for _ in range(40):
             seed = step(seed)
-            mut changed = copy(items)
+            mut changed = items
             changed[at] = (seed >> 16) & 255
             loaded += tried(bytes(changed), Limits())
             loaded += tried(bytes(changed), small)
@@ -13508,7 +13512,7 @@ def main(stdout: Stdout):
     sixth = names.add(Named("f"))
     stdout.print(sixth, names.values())
     # A copy keeps looking from where it was, apart from the original.
-    mut copied = copy(names)
+    mut copied = names
     _ = copied.remove(ids[1])
     _ = names.remove(ids[3])
     stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
@@ -13564,7 +13568,7 @@ def main(stdout: Stdout):
     stdout.print(numbers.values(), numbers.len())
     gone = numbers.add(5)
     stdout.print(numbers.values(), numbers.len(), numbers[gone])
-    mut cleared = copy(names)
+    mut cleared = names
     _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
@@ -14828,7 +14832,7 @@ def main(stdout: Stdout):
     b = a
     a = .Num(1)
     stdout.print(describe(a), describe(b))
-    mut c = copy(b)
+    mut c = b
     replace(ref c, "changed")
     stdout.print(describe(b), describe(c))
     # Reassigning in a loop lets go of what it held.
@@ -15034,7 +15038,7 @@ def total(expr: Expr) -> int:
 def changed(value: Json) -> Json:
     match value:
         case .Items(values):
-            mut more = copy(values)
+            mut more = values
             more.append(Json.Null)
             .Items(more)
         case _:
@@ -15556,9 +15560,11 @@ def bags(bag: Bag, ref other: Bag) -> str:
 
 def main(stdout: Stdout):
     mut twice = [1, 2]
-    stdout.print(both(copy(twice), ref twice), twice)
+    twice_before = twice
+    stdout.print(both(twice_before, ref twice), twice)
     mut bag = Bag(label="short", count=1)
-    stdout.print(bags(copy(bag), ref bag), bag)
+    bag_before = bag
+    stdout.print(bags(bag_before, ref bag), bag)
     kept = twice
     stdout.print(both(kept, ref twice), twice, kept)
     held = bag

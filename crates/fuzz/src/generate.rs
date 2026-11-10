@@ -263,12 +263,7 @@ impl Writer<'_> {
                 let value = self.of(kind, 0);
                 let name = self.fresh();
                 let changeable = self.choice(2) == 0;
-                // `mut v2 = v1` would change `v1` through `v2`, so it changes a copy.
-                let value = if changeable && self.names.iter().any(|(held, ..)| *held == value) {
-                    format!("copy({value})")
-                } else {
-                    value
-                };
+                // `mut v2 = v1` makes a value of `v2`'s own, so changing it leaves `v1` alone.
                 let word = if changeable { "mut " } else { "" };
                 self.line(indent, &format!("{word}{name} = {value}"));
                 self.names.push((name, kind, changeable));

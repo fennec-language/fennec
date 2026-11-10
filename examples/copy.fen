@@ -1,4 +1,4 @@
-# `copy(value)` makes a separate value on purpose, so changing one doesn't reach the other.
+# A plain `=` makes a value of its own, so changing one doesn't reach the other.
 
 struct Point:
     x: int
@@ -11,17 +11,17 @@ struct Shape:
 
 def main(stdout: Stdout):
     original = Point(x=1)
-    mut copied = copy(original)
+    mut copied = original
     copied.x = 2
     stdout.print(original.x, copied.x, copied.y)
     one = Shape(at=original, name="one", tags=["t"])
-    mut two = copy(one)
+    mut two = one
     two.at.x = 9
     two.name = "two"
     two.tags.append("u")
     stdout.print(one.at.x, one.name, one.tags, two.at.x, two.name, two.tags)
     mut list_a = [1, 2]
-    mut list_b = copy(list_a)
+    mut list_b = list_a
     list_b.append(3)
     list_a[0] = 5
     stdout.print(list_a, list_b)

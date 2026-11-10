@@ -455,13 +455,9 @@ impl Writer<'_> {
             16..=18 => self.sharing(body, which),
             0..=2 => {
                 let ty = self.ty();
-                let value = self.of(ty, 0);
                 // In a loop, holding a name's value while the name changes copies it each round,
-                // which is refused unless it's said on purpose.
-                let value = match value {
-                    Expr::Name(other) if self.loops > 0 => Expr::Copy(other),
-                    value => value,
-                };
+                // which is a hint, not a mistake.
+                let value = self.of(ty, 0);
                 let name = self.fresh();
                 let changeable = self.choice(2) == 0;
                 body.push(Stmt::Let { name: name.clone(), value, changeable });

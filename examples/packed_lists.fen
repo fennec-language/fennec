@@ -31,8 +31,9 @@ def main(stdout: Stdout):
 
     mut weights = [0.5, 1.5, 2.0]
     stdout.print(total(weights))
-    # A loop can't change what it goes over, so this one goes over a copy while it grows the list.
-    for weight in copy(weights):
+    # A loop can't change what it goes over, so this one goes over the list as it was before it grows.
+    before = weights
+    for weight in before:
         if weight > 1.0:
             weights.append(weight * 10.0)
     stdout.print(weights)

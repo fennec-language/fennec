@@ -808,9 +808,10 @@ impl Machine {
             Stmt::Rename(name, text, left) => self.rename(name, text, left)?,
             Stmt::LocalRef(name, place, body) => self.local_ref(name, place, body)?,
             Stmt::GrownBy(holder, _) => {
-                if let Value::Holder(items, _) = self.slot(holder)?
+                if let Value::Holder(items, tag) = self.slot(holder)?
                     && items.len() < 64
                 {
+                    items.push(*tag);
                     let own = items.clone();
                     items.extend_from_slice(&own);
                     let shown_holder = shown(self.get(holder)?);
@@ -1332,12 +1333,12 @@ impl Machine {
                 let mut terms = Vec::with_capacity(items.len());
                 for seed in items {
                     let next = checked(seed.checked_add(1))?;
-                    let grown = [seed, next, seed, next];
+                    let grown = [seed, next, seed, seed, next, seed];
                     let mut total: i64 = 0;
                     for item in grown {
                         total = checked(total.checked_add(item))?;
                     }
-                    terms.push(checked(total.checked_add(2))?);
+                    terms.push(checked(total.checked_add(3))?);
                 }
                 Value::Int(sum_of(&terms)?)
             }

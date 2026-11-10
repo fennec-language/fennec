@@ -123,6 +123,7 @@ struct Holder:
 
 def regrown(seed: int) -> int:
     mut holder = Holder(items=[seed, seed + 1], tag=seed)
+    holder.items.append(holder.tag)
     own = holder.items
     holder.grown_by(own)
     sum(holder.items) + own.len()
@@ -416,6 +417,7 @@ impl Writer {
             }
             Stmt::GrownBy(holder, own) => {
                 self.line(indent, &format!("if {holder}.items.len() < 64:"));
+                self.line(indent + 1, &format!("{holder}.items.append({holder}.tag)"));
                 self.line(indent + 1, &format!("{own} = {holder}.items"));
                 self.line(indent + 1, &format!("{holder}.grown_by({own})"));
                 self.line(indent + 1, &format!("stdout.print({holder}, {own})"));

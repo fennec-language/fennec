@@ -449,8 +449,9 @@ pub(crate) enum Stmt {
     /// `match named:` changing it through `ref`: a pair's label grows by `text`, its tags gain
     /// the new label, and its left side becomes `left`; a leaf's name grows by `text`.
     Rename(String, Expr, Expr),
-    /// `own = holder.items` then `holder.grown_by(own)`, a `ref self` method given a value read
-    /// from the list it grows, and both printed, under `if holder.items.len() < 64:`.
+    /// `holder.items.append(holder.tag)`, `own = holder.items`, then `holder.grown_by(own)`: a
+    /// `ref self` method given a value read from the list it grows, just after that list grew in
+    /// place, and both printed, under `if holder.items.len() < 64:`.
     GrownBy(String, String),
     /// `ref name = place`, then the statements that use it, the last of them its last use.
     LocalRef(String, RefPlace, Vec<Stmt>),

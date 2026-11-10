@@ -1440,15 +1440,16 @@ pub(crate) fn drain_on_stop(server: i64) -> Option<u64> {
         address.set_ip(loopback);
     }
     PLAIN_DRAINS.store(true, Ordering::SeqCst);
-    let served = || SERVING.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let being_served = || SERVING.lock().unwrap_or_else(PoisonError::into_inner).clone();
     Some(crate::signals::on_stop(Box::new(move || {
         let _ = TcpStream::connect_timeout(&address, Duration::from_secs(1));
-        if let Some(stream) = served().filter(|stream| !stream.read_since_write.load(Ordering::SeqCst)) {
+        if let Some(stream) = being_served().filter(|stream| !stream.read_since_write.load(Ordering::SeqCst))
+        {
             let _ = stream.socket.shutdown(Shutdown::Read);
         }
         let _ = std::thread::Builder::new().name("fennec-grace".to_owned()).spawn(move || {
             std::thread::sleep(grace);
-            if let Some(stream) = served() {
+            if let Some(stream) = being_served() {
                 let _ = stream.socket.shutdown(Shutdown::Both);
             }
         });

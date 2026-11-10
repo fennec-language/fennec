@@ -201,7 +201,13 @@ export shared Server:
     ## with the 4xx status that says so, without calling `respond`. Given `until=signals`, it stops
     ## when the program's asked to, as `stop_on` says: requests being answered are finished, within
     ## `grace`, and then it returns.
-    def serve(self, respond: (Request) -> Response, timeout = 30s, until: Signals? = None, grace = 20s):
+    def serve(
+        self,
+        respond: (Request) -> Response,
+        timeout = 30s,
+        until: Signals? = None,
+        grace = 20s,
+    ):
         if until is not None:
             self.stop_on(until, grace=grace)
         for connection in parallel(self):

@@ -235,8 +235,13 @@ pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Elem
 
 /// The number of the kind of item a list's block holds.
 pub(super) fn element_number(state: &State, block: &[u64]) -> Option<usize> {
-    let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    let at = shape_word(block)?.checked_sub(first_list_shape(state))?;
     usize::try_from(at).ok()
+}
+
+/// The shape of a list of the first kind of item: lists' shapes follow strings' and dicts'.
+pub(super) fn first_list_shape(state: &State) -> u64 {
+    state.tables.str_shape + 1 + super::dicts::SHAPES
 }
 
 /// The number of a kind of item and how many words one takes, worked out once by the heap where

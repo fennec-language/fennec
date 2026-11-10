@@ -12211,7 +12211,7 @@ def main(stdout: Stdout):
 
 /// A union's method runs the one of the type its value holds, natively: on the union, in each
 /// `match` case and in a loop over a list of them. A `with` source does too once it's narrowed
-/// with `is`, where each branch's `store` is its own type; on the union it's refused.
+/// with `is`, where each branch's `store` is its own type.
 #[test]
 fn a_unions_methods_and_narrowed_sources_run_the_member_it_holds() -> std::io::Result<()> {
     if !ready() {
@@ -12356,6 +12356,88 @@ def main(stdout: Stdout):
     stdout.print(passed(Lite(name="a")), passed(Pg(host="b")), passed(Mem(size=1)))
 "#,
         "lite pg b mem 1\nlite a Lite(name=\"a\") pg b Pg(host=\"b\") mem\nskip pg b mem 1\nlite b mem 1\n",
+    )
+}
+
+/// A `with` source called on a name holding a union runs the source of the member it holds,
+/// natively: on two members and on three, twice in one function, and on a name given a union
+/// from a field.
+#[test]
+fn a_with_source_on_a_union_runs_the_member_it_holds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_sources",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log=f"mem{self.size}") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+type Store = Lite | Postgres
+
+type Three = Lite | Postgres | Mem
+
+struct Holder:
+    db: Three
+
+def saved(store: Store) -> str fails Nope:
+    with store.transaction()? as tx:
+        count = store.run("abc")?
+        return f"{tx.log} {count}"
+    ""
+
+def three(store: Three) -> str fails Nope:
+    mut seen = ""
+    with store.transaction()? as tx:
+        seen = tx.log
+    with store.transaction()? as tx:
+        seen = f"{seen}+{tx.log}"
+    seen
+
+def held(holder: Holder) -> int fails Nope:
+    db = holder.db
+    with db.transaction()? as tx:
+        return tx.log.len()
+    0
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?)
+    stdout.print(three(Lite(name="a"))?, three(Postgres(host="b"))?, three(Mem(size=7))?)
+    stdout.print(held(Holder(db=Mem(size=42)))?, held(Holder(db=Lite(name="x")))?)
+"#,
+        "lite 3 pg 6\nlite+lite pg+pg mem7+mem7\n5 4\n",
     )
 }
 

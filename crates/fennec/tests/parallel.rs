@@ -1138,6 +1138,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// put back first, so the next connection sees none of them, and the server goes on.
 #[test]
 fn a_server_task_crashing_under_a_lock_rolls_back_and_the_server_goes_on() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader};
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
@@ -1157,14 +1158,23 @@ fn a_server_task_crashing_under_a_lock_rolls_back_and_the_server_goes_on() -> st
     let _ = failing.join();
     // The crashed round's `+= 100` was put back, and the next round is answered.
     let after = talk(port, &["count"]);
+    // The crash is said just after its connection closes, so the next round can be answered first:
+    // the server is stopped once it's said, or after a while.
+    let (says, said) = std::sync::mpsc::channel();
+    let errors = BufReader::new(server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    std::thread::spawn(move || errors.lines().map_while(Result::ok).try_for_each(|line| says.send(line)));
+    let mut lines = Vec::new();
+    while let Ok(line) = said.recv_timeout(std::time::Duration::from_secs(20)) {
+        let crash = line.contains("division by zero");
+        lines.push(line);
+        if crash {
+            break;
+        }
+    }
     server.0.kill()?;
     let _ = server.0.wait()?;
-    let mut said = String::new();
-    std::io::Read::read_to_string(
-        &mut server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?,
-        &mut said,
-    )?;
     std::fs::remove_dir_all(&dir)?;
+    let said = lines.join("\n");
     assert_eq!(after?, ["ready", "2"], "{said}");
     assert!(said.contains("division by zero"), "{said}");
     Ok(())

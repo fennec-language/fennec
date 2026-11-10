@@ -9,14 +9,14 @@ def last_commit(git: Process) -> str:
     found.stdout.strip()
 
 def failure[T](run: () -> T fails ProcessError) -> str:
-    error = failure_of(run) else:
-        return "ran"
-    error.message()
+    _ = run() else as why:
+        return why.message()
+    "ran"
 
 def io_failure[T](run: () -> T fails IoError) -> str:
-    error = failure_of(run) else:
-        return "done"
-    error.reason
+    _ = run() else as why:
+        return why.reason
+    "done"
 
 test "a narrowed Process runs only what it names"(process: Process):
     process.script("git", Output(stdout="Add Tree\n"))

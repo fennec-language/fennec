@@ -60,7 +60,9 @@ def main(stdout: Stdout):
     stdout.print(shown(() => wrapped(5)?))
 
     stdout.print(words(1) else [])
-    stdout.print(failure_of(() => words(9)?))
+    _ = words(9) else as why:
+        stdout.print(why)
+        []
 
     mut maker = Maker()
     for n in [1, 2, 5]:

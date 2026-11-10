@@ -22,9 +22,9 @@ struct Board:
     queue: Deque[str]
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "each collection is written as what it holds":
     mut scores = SortedMap[str, int]()

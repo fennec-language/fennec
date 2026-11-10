@@ -17,9 +17,9 @@ def wait_a_second(clock: Clock) -> int:
     (clock.now() - start).nanos
 
 def failed[T](run: () -> T fails IoError) -> bool:
-    _ = failure_of(run) else:
-        return False
-    True
+    _ = run() else:
+        return True
+    False
 
 test "a written file reads back"(fs: Fs):
     save_score(fs, 120)?

@@ -448,7 +448,7 @@ fn leaving_with_else_is_checked_like_the_statement() {
 /// program there with no error and an exit code of 0.
 #[test]
 fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
-    let unmarked = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(why=\"neg\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)) is None)\n";
+    let unmarked = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(why=\"neg\")\n    n // 2\n\ntest \"half\":\n    assert failure_of(() => half(-1)) is not None\n";
     assert_eq!(problems(unmarked), ["this can fail, and a failure passes up only with `?` @ half(-1)"]);
     assert!(fixed(unmarked).contains("failure_of(() => half(-1)?)"), "{}", fixed(unmarked));
     assert_eq!(problems(&fixed(unmarked)), Vec::<String>::new());
@@ -671,6 +671,22 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
     assert_eq!(crate::problems_as_written(lowered), Vec::<String>::new());
 }
 
+/// `failure_of` is only for tests. Anywhere else, in `main` or in a helper a test calls, it's
+/// refused, and the help points at `else as why:`, which names a failure where it happens.
+#[test]
+fn failure_of_is_only_for_tests() {
+    let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n";
+    let said = "`failure_of` is only for tests @ failure_of(() => half(-1)?)";
+    let help = "outside a test, name a failure where it happens with `x = f() else as why:`; a test checks one with `assert f() fails Oops()`";
+    let in_main = format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)?))\n");
+    assert_eq!(problems(&in_main), [said]);
+    assert_eq!(helps(&in_main), [help]);
+    let helper = format!("{declared}\ndef problem() -> Bad?:\n    failure_of(() => half(-1)?)\n");
+    assert_eq!(problems(&helper), [said]);
+    let in_test = format!("{declared}\ntest \"half\":\n    assert failure_of(() => half(-1)?) is not None\n");
+    assert_eq!(problems(&in_test), Vec::<String>::new());
+}
+
 /// What can fail is read only through `?`, `else`, `.expect` or `assert ... fails`: held, printed,
 /// compared, put in a collection or handed on as a plain value, it's refused. An arrow function
 /// may give one back, for `failure_of`.
@@ -695,7 +711,7 @@ fn what_can_fail_is_never_a_plain_value() {
         assert_eq!(crate::problems_as_written(&program), [format!("{said} @ {call}")], "{line}");
     }
     let fine = format!(
-        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(3) else 0, half(3).expect(\"3 is big enough\"))\n    held = half(3) else as why:\n        stdout.print(why.why)\n        0\n    problem = failure_of(() => half(-1)?)\n    stdout.print(held, problem is None)\n"
+        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(3) else 0, half(3).expect(\"3 is big enough\"))\n    held = half(3) else as why:\n        stdout.print(why.why)\n        0\n    stdout.print(held)\n\ntest \"its failure\":\n    problem = failure_of(() => half(-1)?)\n    assert problem is not None\n"
     );
     assert_eq!(crate::problems_as_written(&fine), Vec::<String>::new());
     // In a function that fails with what the call does, the fix passes the failure up.

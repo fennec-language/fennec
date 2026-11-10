@@ -113,7 +113,8 @@ struct Program:
             self.shadowed[type_def.name] = self.types[type_def.name]
         if not prelude:
             methods = f"{type_def.name}."
-            for key in copy(self.functions).keys():
+            functions = self.functions
+            for key in functions.keys():
                 if self.functions[key].prelude and key.startswith(methods):
                     _ = self.functions.pop(key)
         for method in type_def.methods:
@@ -251,7 +252,7 @@ struct Program:
     ## The types as the standard library's own declarations see them: its own, where a
     ## program's type of the same name replaced one.
     def std_types(self) -> dict[str, TypeInfo]:
-        mut seen = copy(self.types)
+        mut seen = self.types
         for name, info in self.shadowed.items():
             seen[name] = info
         seen
@@ -287,6 +288,9 @@ struct Program:
             held = self.resolve_within(written.args[0], generics, depth)?
             return .Generic("shared", [held])
         if name == "shared" and written.args.len() == 0:
+            return .Unknown
+        # `ref unit = units[at]`, which takes the place's type.
+        if name == "ref" and written.args.len() == 0:
             return .Unknown
         builtin = name in built_in_types()
         if (

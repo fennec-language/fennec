@@ -11,13 +11,44 @@ use crate::lexer::lex;
 use crate::span::Span;
 use crate::token::{FPart, Kw, Punct, Tok};
 
+/// What an expression made at its top, outside any parentheses.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Formed {
+    /// `a if condition else b`.
+    Conditional,
+    /// `value else default`.
+    Fallback,
+    Plain,
+}
+
+/// A one-line `if` and a fallback `else` in one expression, without parentheses saying which
+/// holds which: `int(text) else 80 if given else 8080` reads two ways. The fix writes the
+/// parentheses around `inner`, the way it's read.
+fn mixed_else(inner: &Expr) -> Diagnostic {
+    let at_end = Span { start: inner.span.end, end: inner.span.end };
+    let at_start = Span { start: inner.span.start, end: inner.span.start };
+    Diagnostic::new(
+        "a one-line `if` and a fallback `else` need parentheses to share an expression",
+        inner.span,
+    )
+    .with_help("put this part in parentheses, or give the `if` or the fallback a line of its own")
+    .with_fix(at_start, "(")
+    .with_fix(at_end, ")")
+}
+
 impl Parser {
     pub(super) fn expr(&mut self) -> Result<Expr, Diagnostic> {
+        self.expr_made().map(|(made, _)| made)
+    }
+
+    /// An expression, and whether this call made a one-line `if` or a fallback `else` of its own,
+    /// rather than reading one inside parentheses.
+    fn expr_made(&mut self) -> Result<(Expr, Formed), Diagnostic> {
         if self.at_match() {
-            return self.match_expr();
+            return Ok((self.match_expr()?, Formed::Plain));
         }
         if let Some(lambda) = self.lambda()? {
-            return Ok(lambda);
+            return Ok((lambda, Formed::Plain));
         }
         let value = self.or_expr()?;
         if self.eat_kw(Kw::If) {
@@ -26,14 +57,17 @@ impl Parser {
                 return Err(Diagnostic::new("a conditional expression needs `else`", self.span())
                     .with_help("write `a if condition else b`"));
             }
-            let otherwise = self.expr()?;
+            let (otherwise, made) = self.expr_made()?;
+            if made == Formed::Fallback {
+                return Err(mixed_else(&otherwise));
+            }
             let span = value.span.to(otherwise.span);
             let kind = ExprKind::Cond {
                 then: Box::new(value),
                 cond: Box::new(cond),
                 otherwise: Box::new(otherwise),
             };
-            return Ok(Expr { kind, span });
+            return Ok((Expr { kind, span }, Formed::Conditional));
         }
         if self.eat_kw(Kw::Else) {
             let default = match self.peek() {
@@ -48,15 +82,19 @@ impl Parser {
                     }
                     self.leaving_block(Some(failure))?
                 }
-                _ => self.expr()?,
+                _ => {
+                    let (default, made) = self.expr_made()?;
+                    if made == Formed::Conditional {
+                        return Err(mixed_else(&default));
+                    }
+                    default
+                }
             };
             let span = value.span.to(default.span);
-            return Ok(Expr {
-                kind: ExprKind::Else { value: Box::new(value), default: Box::new(default) },
-                span,
-            });
+            let kind = ExprKind::Else { value: Box::new(value), default: Box::new(default) };
+            return Ok((Expr { kind, span }, Formed::Fallback));
         }
-        Ok(value)
+        Ok((value, Formed::Plain))
     }
 
     /// `continue`, `break`, `return` or `fail` after `else`, as a `match` with one case that leaves, which

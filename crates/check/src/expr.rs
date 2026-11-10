@@ -409,13 +409,36 @@ impl FnCx<'_> {
             cx.restore(&before);
             ty
         };
-        let then = side(self, then, true);
-        let otherwise = side(self, otherwise, false);
-        if matches!((&then, &otherwise), (Type::LiteralStr, Type::LiteralStr)) {
+        let then_ty = side(self, then, true);
+        let otherwise_ty = side(self, otherwise, false);
+        if matches!((&then_ty, &otherwise_ty), (Type::LiteralStr, Type::LiteralStr)) {
             return Type::LiteralStr;
         }
-        let sides = [then.without_literal(), otherwise.without_literal()];
+        let sides = [then_ty.without_literal(), otherwise_ty.without_literal()];
+        if let Some(failing) = self.failing_side((then, otherwise), &sides) {
+            self.error(crate::messages::unhandled(failing.span));
+            return Type::Unknown;
+        }
         self.join_or_report(&sides, span, "the two sides of this `if` give")
+    }
+
+    /// The side of a one-line `if` that can fail where the other gives what it would on
+    /// success, as in `int(text) if given else 8080`: the two don't join, and the failure is why.
+    fn failing_side<'e>(
+        &mut self,
+        (then, otherwise): (&'e Expr, &'e Expr),
+        sides: &[Type; 2],
+    ) -> Option<&'e Expr> {
+        if self.checker.join_all(sides).is_some() {
+            return None;
+        }
+        let [then_ty, otherwise_ty] = sides;
+        [(then, then_ty, otherwise_ty), (otherwise, otherwise_ty, then_ty)].into_iter().find_map(
+            |(value, ty, other)| {
+                let Type::Result(held, _) = self.checker.settled(ty) else { return None };
+                self.checker.join_all(&[*held, other.clone()]).map(|_| value)
+            },
+        )
     }
 
     pub(crate) fn binary(
@@ -708,6 +731,10 @@ impl FnCx<'_> {
                 let help = "convert it to a signed size first, like `i64(x)`";
                 self.error(Diagnostic::new(message, span).with_help(help));
                 Type::Unknown
+            }
+            (UnaryOp::Not, Type::Result(value, _)) if **value == Type::Bool => {
+                self.error(crate::messages::not_bool("not", &ty, span));
+                Type::Bool
             }
             (UnaryOp::Not, _) => {
                 self.error(

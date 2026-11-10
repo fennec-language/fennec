@@ -102,6 +102,22 @@ fn a_page_is_never_loaded() {
     );
 }
 
+/// A database URL written in the source can't hold its password, which would be in a plain `str`
+/// and in the source too. Without one, or as a `Secret`, it's fine.
+#[test]
+fn a_database_url_written_with_its_password_is_refused() {
+    let program = "
+        a = postgres.settings('postgres://ann:pw@db/shop')
+        b = settings(url='postgres://ann:pw@db/shop')
+        c = postgres.settings('postgres://ann@db/shop')
+        d = postgres.settings(Secret.of('postgres://ann:pw@db/shop'))
+    ";
+    let imports =
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.postgres import settings\n";
+    let refused = "this database URL has its password written in the source @ \"postgres://ann:pw@db/shop\"";
+    assert_eq!(with_imports(imports, program), [refused, refused]);
+}
+
 #[test]
 fn json_and_toml_are_called_the_right_way() {
     let program = "

@@ -265,7 +265,7 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
     };
     let method = match (method, &data, size) {
         ("write", Some(_), _)
-        | ("read" | "read_line" | "sync", None, None)
+        | ("read" | "read_line" | "sync" | "flush", None, None)
         | ("read_chunk", None, Some(_)) => method.to_owned(),
         ("read_chunk", None, None) => {
             return Err(Diagnostic::new("`read_chunk` takes how many bytes to read, 0 or more", span));
@@ -309,7 +309,12 @@ fn file_work(
             out.get_ref().sync_all().map_err(io)?;
             Ok(Given::Nothing)
         }
-        ("sync", _) => Ok(Given::Nothing),
+        // What's been written goes to the file now, without waiting for the disk.
+        ("flush", OpenFile::Writing { out, .. }) => {
+            out.flush().map_err(io)?;
+            Ok(Given::Nothing)
+        }
+        ("sync" | "flush", _) => Ok(Given::Nothing),
         ("write", _) => Err("this file was opened to read, not to write".to_owned()),
         ("read", OpenFile::Reading(reader)) => {
             let mut all = Vec::new();
@@ -423,9 +428,11 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
     let wrong = || Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
     let io = |err: std::io::Error| err.to_string();
     Ok(match (method, paths) {
+        // Whether there's anything at `path`, and a failure when it can't be looked at, as when
+        // a folder on the way can't be read: a `False` then could be wrong.
         ("exists", [Value::Str(path)]) => {
             let path = path.to_string();
-            Value::Bool(blocking(move || Path::new(&path).exists()))
+            done(blocking(move || Path::new(&path).try_exists().map_err(io)), Value::Bool)
         }
         ("read_text", [Value::Str(path)]) => {
             let path = path.to_string();

@@ -124,8 +124,8 @@ fn locked_layout_problems(program: &fennec_kit::Program) -> Vec<String> {
 /// Every lint the linter finds in a program, in the order they're written.
 fn lints_of(program: &fennec_kit::Program) -> Vec<fennec_lint::Lint> {
     let mut found = fennec_lint::lint(&program.module, &program.sources);
-    found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
     found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
+    found.extend(fennec_lint::stale_copies(&program.module, &program.sources));
     found.extend(fennec_lint::double_lookups(&program.module, &program.sources));
     found.extend(fennec_lint::self_compares(&program.module, &program.sources));
     if program.manifest.is_some() {
@@ -389,8 +389,8 @@ fn errors_of(
             .extend(found.iter().map(|one| (base + one.at, one.rule.clone(), one.fixable, one.text.clone())));
     }
     let mut whole = fennec_lint::across_files(module, sources);
-    whole.extend(fennec_lint::needless_copies(module, sources));
     whole.extend(fennec_lint::needless_conversions(module, sources));
+    whole.extend(fennec_lint::stale_copies(module, sources));
     whole.extend(fennec_lint::double_lookups(module, sources));
     whole.extend(fennec_lint::self_compares(module, sources));
     whole.retain(|lint| program.is_own(lint.diagnostic.span));
@@ -434,11 +434,10 @@ fn linted(path: &str, json: bool) -> ExitCode {
     }
     let found = lints_of(&program);
     let costs = fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures));
-    let copies = fennec_lint::implicit_copies(&costs);
-    if !copies.is_empty() {
-        return rejected(&program, &copies, json);
-    }
-    let hints = fennec_lint::costs(&costs);
+    // A lint that's a hint flags correct code, so it's shown with the hints and fails nothing.
+    let (found, mut hints): (Vec<_>, Vec<_>) =
+        found.into_iter().partition(|lint| lint.severity == fennec_lint::Severity::Error);
+    hints.extend(fennec_lint::costs(&costs));
     if json {
         let shown: Vec<Finding<'_>> = found.iter().chain(&hints).map(Finding::linted).collect();
         print!("{}", report::json(&program.sources, &shown));

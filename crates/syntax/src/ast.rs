@@ -294,6 +294,18 @@ pub enum StmtKind {
     Pass,
 }
 
+/// The type `ref name = place` is written in with: `name: ref = place`.
+pub const REF: &str = "ref";
+
+impl StmtKind {
+    /// `ref name = place`: the name, and the place it stands for.
+    pub fn local_ref(&self) -> Option<(&str, &Expr)> {
+        let Self::Assign { target, op: None, value, ty: Some(written), .. } = self else { return None };
+        let ExprKind::Name(name) = &target.kind else { return None };
+        (written.name == REF && written.args.is_empty()).then_some((name.as_str(), value))
+    }
+}
+
 /// A file's bytes, shared since a file can be big and a syntax tree is copied. Written for
 /// debugging, it's a hash and not every byte: hashing a tree that way still sees any change.
 #[derive(Clone, PartialEq, Eq)]

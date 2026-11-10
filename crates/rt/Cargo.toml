@@ -21,6 +21,12 @@ rustls.workspace = true
 rustls-platform-verifier.workspace = true
 rusqlite.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+signal-hook.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+ctrlc.workspace = true
+
 [lints]
 workspace = true
 

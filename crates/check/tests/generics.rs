@@ -367,12 +367,12 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
 fn a_test_receives_capabilities_by_type() {
     let fine = "
         test \"all three\"(out: Stdout, files: Fs, time: Clock):
-            out.print(files.exists(\"a\"), time.now())
+            out.print(files.exists(\"a\")?, time.now())
             text: str = out.captured()
             assert text == \"\"
     ";
     assert_eq!(problems(fine), Vec::<String>::new());
-    let fix = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net` and `env: Env`";
+    let fix = "a test can receive `stdout: Stdout`, `stderr: Stderr`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`";
     for (written, name) in
         [("args: Args", "args"), ("n: int", "n"), ("out: Stdout = 1", "out"), ("self", "self")]
     {

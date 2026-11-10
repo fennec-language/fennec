@@ -618,7 +618,7 @@ impl FnCx<'_> {
     fn union_source(&mut self, call: &MethodCall<'_>, union: &Type, first: &Type) -> bool {
         let Some(owner) = first.type_name() else { return false };
         let Some((_, entry)) = self.checker.program.method(owner, call.method) else { return false };
-        if !entry.def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH) {
+        if entry.def.ret.as_ref().is_none_or(|ret| ret.name != crate::lend::WITH) {
             return false;
         }
         let named = match &call.object.kind {

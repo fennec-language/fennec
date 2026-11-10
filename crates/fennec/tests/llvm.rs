@@ -4511,8 +4511,8 @@ def main(stdout: Stdout):
     )
 }
 
-/// An arrow function's `?` passes its failure up as the arrow's own, natively: `failure_of` gets
-/// it, or doesn't, and a function taking one that fails runs it twice, passing its failure on.
+/// An arrow function's `?` passes its failure up as the arrow's own, natively: a function taking
+/// one that fails runs it twice, passing its failure on.
 #[test]
 fn an_arrow_functions_question_mark_passes_its_failure_up_natively() -> std::io::Result<()> {
     if !ready() {
@@ -4532,13 +4532,10 @@ def twice(run: () -> int fails Bad) -> int fails Bad:
     run()? + run()?
 
 def main(stdout: Stdout) fails Bad:
-    problem = failure_of(() => half(-1)?)
-    fine = failure_of(() => half(4)?)
-    stdout.print(problem is None, fine is None)
     stdout.print(twice(() => half(8)? + 1)?)
     stdout.print(twice(() => half(-2)?) else 99)
 "#,
-        "False True\n10\n99\n",
+        "10\n99\n",
     )
 }
 
@@ -8880,32 +8877,24 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(only.read_text(file).expect(\"it works\"))
     # Outside its folder it can't look at all, which fails rather than saying no.
     stdout.print(only.exists(\"/\") else True)
-    hosts = failure_of(() => only.read_text(\"/etc/hosts\")?)
-    if hosts is not None:
+    _ = only.read_text(\"/etc/hosts\") else as hosts:
         stdout.print(hosts.reason.endswith(\"native-capabilities\"))
-    else:
-        stdout.print(\"read it\")
-    missing = failure_of(() => fs.read_text(\"no such file\")?)
-    if missing is not None:
+        \"\"
+    _ = fs.read_text(\"no such file\") else as missing:
         stdout.print(missing.reason != \"\")
-    else:
-        stdout.print(\"read it\")
+        \"\"
     fs.remove(file).expect(\"it works\")
     fs.remove(folder).expect(\"it works\")
     done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
     stdout.print(done.status, done.stdout, done.stderr == \"\")
-    unknown = failure_of(() => process.run(\"no-such-program-at-all\", [])?)
-    if unknown is not None:
+    _ = process.run(\"no-such-program-at-all\", []) else as unknown:
         stdout.print(unknown.program())
-    else:
-        stdout.print(\"ran it\")
+        done
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
-    refused = failure_of(() => echo.run(\"ls\", [])?)
-    if refused is not None:
+    _ = echo.run(\"ls\", []) else as refused:
         stdout.print(refused.message())
-    else:
-        stdout.print(\"ran it\")
+        done
     stdout.print(stdin.lines())
     stdout.print(entropy.seed() != entropy.seed())
 ";
@@ -9289,11 +9278,8 @@ def main(stdout: Stdout, fs: Fs):
     only = fs.only(folder)
     write(only, path=folder + \"/b.txt\", text=\"den\").expect(\"it works\")
     stdout.print(read(Saves(fs=only, folder=folder), \"b.txt\").expect(\"it works\"))
-    outside = failure_of(() => write(only, path=\"outside.txt\", text=\"no\")?)
-    if outside is not None:
+    write(only, path=\"outside.txt\", text=\"no\") else as outside:
         stdout.print(\"outside what this Fs can reach\" in outside.reason)
-    else:
-        stdout.print(\"wrote outside\")
     stdout.print(fs.exists(\"outside.txt\").expect(\"it works\"))
     fs.remove(folder + \"/a.txt\").expect(\"it works\")
     fs.remove(folder + \"/b.txt\").expect(\"it works\")
@@ -9349,11 +9335,8 @@ def blocked(fs: Fs) fails IoError:
         fs.write_text(\"taken.txt/inside.txt\", \"here first\")?
 
 def main(fs: Fs, stdout: Stdout):
-    problem = failure_of(() => blocked(fs)?)
-    if problem is not None:
+    blocked(fs) else as problem:
         stdout.print(\"the block failed:\", problem.reason != \"\")
-    else:
-        stdout.print(\"the block succeeded\")
     stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
     # The file written beside the path, to take its place, is gone.
     names = fs.list_dir(\".\") else []
@@ -9959,9 +9942,9 @@ def said(failure: SqlError) -> str:
 
 ## What `run` failed with, by `said`, or `worked` when it didn't fail.
 def told[T](run: () -> T fails SqlError, worked: str) -> str:
-    why = failure_of(run) else:
-        return worked
-    said(why)
+    _ = run() else as why:
+        return said(why)
+    worked
 
 ## What a failure says, whichever kind it is.
 def said_of(error: SqlError | Timeout) -> str:
@@ -10022,11 +10005,8 @@ def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlErr
             stdout.print(told(() => db.execute(t"select from no_such_table")?, worked="no error"))
             stdout.print(told(() => db.query[PathOnly](t"select path from fennec_entries")?, worked="read a column that isn't there"))
             # A transaction that fails changes nothing; one that ends is kept.
-            rolled_back = failure_of(() => adds_then_fails(db)?)
-            if rolled_back is not None:
+            adds_then_fails(db) else as rolled_back:
                 stdout.print(said(rolled_back), rows_in(db)?)
-            else:
-                stdout.print("no failure")
             kept = "kept"
             with db.transaction()? as tx:
                 stdout.print(tx.execute(t"update fennec_entries set path = {kept} where path = {path}")?)
@@ -10102,18 +10082,14 @@ def main(stdout: Stdout, process: Process, fs: Fs):
         \"sh\", [\"-c\", \"cat; pwd; printenv FENNEC_FOX\"], input=\"in\\n\", cwd=\"inside\", env={\"FENNEC_FOX\": \"red\"}
     ).expect(\"it works\")
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
-    nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\")?)
-    if nowhere is not None:
+    _ = process.run(\"pwd\", [], cwd=\"no-such-folder\") else as nowhere:
         stdout.print(nowhere.message())
-    else:
-        stdout.print(\"ran it\")
+        all
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
-    refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\")?)
-    if refused is not None:
+    _ = only.run(\"pwd\", [], cwd=\"inside\") else as refused:
         stdout.print(refused.message())
-    else:
-        stdout.print(\"ran it\")
+        all
     fs.remove(\"inside\").expect(\"it works\")
 ";
 
@@ -10149,16 +10125,12 @@ def main(stdout: Stdout, fs: Fs):
         stdout.print(path.text, fs.metadata(path).expect(\"it works\").is_dir)
     only = fs.only(\"tree/b\")
     stdout.print([path.text for path in only.walk(\"tree/b\").expect(\"it works\")])
-    outside = failure_of(() => only.walk(\"tree\")?)
-    if outside is not None:
+    _ = only.walk(\"tree\") else:
         stdout.print(\"refused\")
-    else:
-        stdout.print(\"walked it\")
-    missing = failure_of(() => fs.walk(\"no such folder\")?)
-    if missing is not None:
+        []
+    _ = fs.walk(\"no such folder\") else as missing:
         stdout.print(missing.reason != \"\")
-    else:
-        stdout.print(\"walked it\")
+        []
 ";
 
 #[test]
@@ -10198,9 +10170,9 @@ const REAL_NETWORK: &str = "from std.net import NetError, Connection, Server
 from std.time import Duration
 
 def reason[T](run: () -> T fails NetError) -> str:
-    why = failure_of(run) else:
-        return \"it worked\"
-    why.message()
+    _ = run() else as why:
+        return why.message()
+    \"it worked\"
 
 def lines_of(connection: Connection) -> int fails NetError:
     mut count = 0
@@ -10301,26 +10273,22 @@ def talk(net: Net, stdout: Stdout) fails NetError:
             second.send_to(bytes([1, 2, 3]), packet.sender)?
             answer = first.receive(timeout=2s)?
             stdout.print(answer.data, answer.data[0])
-            waited = failure_of(() => first.receive(timeout=20ms)?)
-            if waited is not None:
+            _ = first.receive(timeout=20ms) else as waited:
                 stdout.print(waited.message())
-            else:
-                stdout.print(\"a packet from nowhere\")
-            unsent = failure_of(() => first.send_to(\"x\", \"no-such-host.invalid:9\")?)
-            if unsent is not None:
+                answer
+            first.send_to(\"x\", \"no-such-host.invalid:9\") else as unsent:
                 stdout.print(unsent.message())
-            else:
-                stdout.print(\"sent to nothing\")
             first.send_to(\"last\", f\"127.0.0.1:{second.port}\")?
             for packet in second:
                 stdout.print(packet.data.decode() else \"\")
                 second.close()
 
 def main(net: Net, stdout: Stdout):
-    talked = failure_of(() => talk(net, stdout)?)
-    if talked is not None:
+    mut talked_fine = True
+    talk(net, stdout) else as talked:
         stdout.print(talked.message())
-    else:
+        talked_fine = False
+    if talked_fine:
         stdout.print(\"done\")
     bound(net, port=99999) else:
         pass
@@ -10838,7 +10806,7 @@ fn http_requests_go_through_native_code() -> std::io::Result<()> {
     let port = listener.local_addr()?.port();
     listener.set_nonblocking(true)?;
     let source = format!(
-        r#"from std.net import NetError
+        r#"from std.net import NetError, Response
 
 def ask(net: Net, stdout: Stdout) fails NetError:
     mut answer = net.get("http://127.0.0.1:{port}/a", params={{"q": "x y"}}, headers={{"X-Mine": "yes"}}, timeout=5s)?
@@ -10851,16 +10819,12 @@ def ask(net: Net, stdout: Stdout) fails NetError:
 def main(net: Net, stdout: Stdout):
     ask(net, stdout) else as error:
         stdout.print(error.message())
-    refused = failure_of(() => net.get("http://127.0.0.1:1/")?)
-    if refused is not None:
+    _ = net.get("http://127.0.0.1:1/") else as refused:
         stdout.print(refused.message())
-    else:
-        stdout.print("an answer from nothing")
-    not_a_url = failure_of(() => net.get("not a url")?)
-    if not_a_url is not None:
+        Response(status=0)
+    _ = net.get("not a url") else as not_a_url:
         stdout.print(not_a_url.message())
-    else:
-        stdout.print("an answer from nothing")
+        Response(status=0)
 "#
     );
     let dir = folder("http_native")?;
@@ -11524,16 +11488,10 @@ def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
         sounds.send(.StopAll)?
     with launch(() => tick(stdout))?:
         pass
-    too_loud = failure_of(() => loud(stdout)?)
-    if too_loud is not None:
+    loud(stdout) else as too_loud:
         stdout.print(\"failed:\", too_loud)
-    else:
-        stdout.print(\"ended\")
-    crashed = failure_of(() => crashing(stdout)?)
-    if crashed is not None:
+    crashing(stdout) else as crashed:
         stdout.print(\"failed:\", crashed)
-    else:
-        stdout.print(\"ended\")
     for round in range(200):
         with launch((inbox) => counts(inbox, stdout), inbox_size=8)? as numbers:
             for k in range(10):
@@ -11758,11 +11716,8 @@ def waits(stdout: Stdout) fails Closed | Timeout:
         if got is not None:
             stdout.print(\"got\", got)
         ch.send(1)?
-        full = failure_of(() => ch.send(2, timeout=Duration(nanos=2_000_000))?)
-        if full is not None:
+        ch.send(2, timeout=Duration(nanos=2_000_000)) else as full:
             stdout.print(\"full:\", full)
-        else:
-            stdout.print(\"sent\")
 
 def main(stdout: Stdout) fails Closed | Timeout:
     numbers(stdout)?
@@ -12258,9 +12213,9 @@ struct Unit:
     stats: dict[str, int]
 
 def said[T](run: () -> T fails ParseError) -> str:
-    why = failure_of(run) else:
-        return "read"
-    why.message
+    _ = run() else as why:
+        return why.message
+    "read"
 
 def main(stdout: Stdout):
     ash = Unit(name="Ash \"the\" fox\n", level=3, kind=.Owl(wise=True), pet=None, at=Spot(x=1), tags=["a", "é"], stats={"hp": 10})
@@ -12301,9 +12256,9 @@ struct Spot:
     y = 2.5
 
 def said(run: () -> Spot fails ParseError) -> str:
-    why = failure_of(run) else:
-        return "read"
-    why.message
+    _ = run() else as why:
+        return why.message
+    "read"
 
 def main(stdout: Stdout):
     stdout.print(said(() => json.loads[Spot]("{\"x\": \"one\", \"x\": 2}")?))
@@ -12657,11 +12612,9 @@ def main(stdout: Stdout):
         back = json.loads[Blob](text) else Blob(data=bytes([]))
         stdout.print(text, back.data == blob.data)
     stdout.print(toml.dumps(Blob(data="hello".encode())))
-    bad = failure_of(() => json.loads[Blob]("{\"data\": \"ab=c\"}")?)
-    if bad is not None:
+    _ = json.loads[Blob]("{\"data\": \"ab=c\"}") else as bad:
         stdout.print(bad.message)
-    else:
-        stdout.print("read")
+        Blob(data=bytes([]))
 "#,
     )?;
     let executable = dir.join("blob");
@@ -12785,9 +12738,9 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(narrow.run(t"printf ok")?.stdout)
     # A value that would start an argument with `-` is refused, and nothing runs.
     upload = "--upload-pack=touch pwned"
-    refused = failure_of(() => process.run(t"printf {upload}")?)
-    if refused is not None:
+    _ = process.run(t"printf {upload}") else as refused:
         stdout.print(refused.message())
+        shown
     path = "-odd"
     stdout.print(process.run(t"SHOWER -- {path}")?.stdout.strip())
     _ = narrow.run(t"cat") else as error:
@@ -12859,10 +12812,9 @@ def main(stdout: Stdout):
             continue
         stdout.print(found)
     stdout.print(said_toml("d = 2024-02-29\n"), said_toml("d = 2023-02-29\n"), said_toml("d = 2024-02-30\n"), said_toml("d = 2024-04-31\n"))
-    if failure_of(() => csv.loads("a;;b\n", delimiter=";;")?) is not None:
+    _ = csv.loads("a;;b\n", delimiter=";;") else:
         stdout.print("refused")
-    else:
-        stdout.print("loaded")
+        []
     stdout.print("a".ljust(4, fill="x"), "a".rjust(4, fill="x"), "a".center(3, fill="x"))
     stdout.print("a".ljust(4, fill="xy"), "a".rjust(4, fill="xy"), "a".center(5, fill="xy"))
 "#,
@@ -13005,7 +12957,7 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        refused = failure_of(() => db.execute(t\"insert into m values ({{nan}})\")?)\n        if refused is not None:\n            stdout.print(refused.message())\n        else:\n            stdout.print(\"stored\")\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") else as refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {
@@ -18516,15 +18468,15 @@ def three(name: str, level: int, code: int) -> str fails NotFound | Plain | TooW
 
 ## Whether `challenge` fails with `error`, compared with the failure on the left.
 def fails_with(name: str, level: int, error: NotFound | TooWeak) -> bool:
-    why = failure_of(() => challenge(name, level)?) else:
-        return False
-    why == error
+    _ = challenge(name, level) else as why:
+        return why == error
+    False
 
 ## The same, compared with the failure on the right.
 def fails_by(name: str, level: int, error: NotFound | TooWeak) -> bool:
-    why = failure_of(() => challenge(name, level)?) else:
-        return False
-    error == why
+    _ = challenge(name, level) else as why:
+        return error == why
+    False
 
 def main(stdout: Stdout):
     for name, level in [("ash", 7), ("kit", 1), ("", 9)]:

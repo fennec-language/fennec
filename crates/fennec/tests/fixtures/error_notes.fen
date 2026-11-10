@@ -32,8 +32,7 @@ def shown(stdout: Stdout, path: str):
     stdout.print(n)
 
 def main(stdout: Stdout) fails Missing | Broken:
-    missing = failure_of(() => load("")?)
-    if missing is not None:
+    _ = load("") else as missing:
         mut m = missing
         stdout.print(m.notes(), m)
         m.add_note("first")
@@ -41,6 +40,7 @@ def main(stdout: Stdout) fails Missing | Broken:
         m.add_note("second")
         stdout.print(m.notes(), copy.notes(), m == copy, m)
         stdout.print(f"{m}", str(m))
+        0
     shown(stdout, "long name")
     stdout.print(noted("ab")?)
     stdout.print(noted("a long one")?)

@@ -303,8 +303,8 @@ pub(crate) enum Arrow {
     Twice,
     /// `tried_each` with a list, the arrow taking each item.
     Each(Expr),
-    /// `failure_of`, printing whether it gave `None`.
-    FailureOf,
+    /// `ran_fine`, printing whether it gave its value rather than failing.
+    RanFine,
     /// `either`, the arrow failing two ways: `capped(n)?`, then `shut_below(other)?`.
     Either(Expr),
 }

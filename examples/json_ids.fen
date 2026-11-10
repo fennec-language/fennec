@@ -34,9 +34,9 @@ struct Camp:
     units = Table[Unit]()
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "a world with Ids loads back the same":
     mut world = World()

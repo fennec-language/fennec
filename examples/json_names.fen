@@ -14,9 +14,9 @@ struct Player:
     _save_slot = 0
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 def ash() -> Player:
     Player(display_name="Ash", hit_points=12, main_weapon=Weapon(damage_bonus=2, max_range=1.5))

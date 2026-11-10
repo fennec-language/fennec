@@ -17,6 +17,27 @@ pub(crate) fn root(expr: &Expr) -> Option<&str> {
 }
 
 impl FnCx<'_> {
+    /// `ref unit = units[at]`: a name for a field or item of something that can change, for
+    /// the rest of the block. Its type is the place's.
+    pub(crate) fn local_ref(&mut self, name: &str, place: &Expr, at: Span) {
+        let stepped = matches!(place.kind, ExprKind::Attr { optional: false, .. } | ExprKind::Index { .. });
+        let what = "a `ref` names a field or an item, like `ref unit = units[at]`";
+        if root(place) == Some(name) {
+            let message = format!("`{name}` is already the name this `ref` reaches through");
+            self.error(Diagnostic::new(message, at).with_help("give the `ref` a name of its own"));
+        } else if stepped && root(place).is_some() {
+            self.mut_place(place, what);
+        } else {
+            let help = match &place.kind {
+                ExprKind::Name(held) => format!("`{held}` is a name already: use it as it is"),
+                _ => "name what's held in a mut name, like `ref unit = units[at]`".to_owned(),
+            };
+            self.error(Diagnostic::new(what, place.span).with_help(help));
+        }
+        let ty = self.expr(place);
+        self.declare(name, ty, true, at);
+    }
+
     /// Checks an expression names a place that can change. `what` explains what's wrong
     /// when it isn't a place at all.
     pub(crate) fn mut_place(&mut self, expr: &Expr, what: &str) {

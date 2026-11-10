@@ -288,6 +288,9 @@ struct Program:
             return .Generic("shared", [held])
         if name == "shared" and written.args.len() == 0:
             return .Unknown
+        # `ref unit = units[at]`, which takes the place's type.
+        if name == "ref" and written.args.len() == 0:
+            return .Unknown
         builtin = name in built_in_types()
         if (
             not builtin

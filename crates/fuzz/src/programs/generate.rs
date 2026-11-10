@@ -29,10 +29,23 @@ fn seeded(bytes: &[u8]) -> u64 {
 const MOST_DEPTH: usize = 3;
 /// How deep blocks nest.
 const MOST_BLOCKS: usize = 3;
-/// What prints the value `name` holds: a buffer, which can't be printed whole, by its items.
-fn printable(name: &str, ty: Ty) -> Expr {
-    let value = Expr::Name(name.to_owned());
-    if ty == Ty::Buf { Expr::BufItems(Box::new(value)) } else { value }
+/// What prints a value: a buffer, which can't be printed whole, by its items, a deep tree by how
+/// deep it is, and where the program never prints a tree, as the native-blocks work needs some
+/// programs to, a tree by its digest.
+fn printable(value: Expr, ty: Ty, digest_only: bool) -> Expr {
+    match ty {
+        Ty::Buf => Expr::BufItems(Box::new(value)),
+        Ty::Deep => Expr::DepthOf(Box::new(value)),
+        Ty::Node if digest_only => Expr::Digest(Box::new(value)),
+        Ty::Nodes if digest_only => Expr::DigestAll(Box::new(value)),
+        _ => value,
+    }
+}
+
+/// Whether a value is a tree or a list of them, whose names an expression of either holds at
+/// most one of, so trees grow by adding, never by doubling, however a loop goes.
+const fn is_tree(ty: Ty) -> bool {
+    matches!(ty, Ty::Node | Ty::Nodes)
 }
 
 /// `n` made to fit `size`, for a literal, which has to.
@@ -75,6 +88,13 @@ struct Writer<'b> {
     /// What chooses once the input's bytes run out: a stream seeded by them, so the input still
     /// decides everything, and a short one doesn't make a program of nothing but its first choice.
     stream: u64,
+    /// Whether the program never prints a tree whole, only its digest.
+    digest_only: bool,
+    /// How many more names of trees the expression being written can hold.
+    tree_names: usize,
+    /// Whether the expression being written is kept, in a name, a list or a struct, where in a
+    /// loop a name it holds is copied each round, which has to be said with `copy`.
+    storing: bool,
 }
 
 /// A name in scope.
@@ -90,6 +110,7 @@ struct InScope {
 /// The program these bytes choose.
 pub(crate) fn program(bytes: &[u8]) -> Program {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
+    let digest_only = bytes.first().is_some_and(|first| first & 0x10 != 0);
     let bytes = bytes.get(1..).unwrap_or_default();
     let mut writer = Writer {
         bytes: bytes.iter(),
@@ -99,6 +120,9 @@ pub(crate) fn program(bytes: &[u8]) -> Program {
         loops: 0,
         written: 0,
         stream: seeded(bytes),
+        digest_only,
+        tree_names: 1,
+        storing: false,
     };
     let mut body = Vec::new();
     while (writer.bytes.len() > 0 || writer.written < MOST_FROM_STREAM)
@@ -252,8 +276,15 @@ impl Writer<'_> {
     /// A value of `ty`: a name that holds one, now and then, or one made here.
     fn of(&mut self, ty: Ty, depth: usize) -> Expr {
         if ty != Ty::Int
+            && (!is_tree(ty) || self.tree_names > 0)
             && let Some(name) = self.name_of(ty, false).filter(|_| depth >= MOST_DEPTH || self.choice(2) == 0)
         {
+            if is_tree(ty) {
+                self.tree_names -= 1;
+            }
+            if self.storing && self.loops > 0 {
+                return Expr::Copy(name);
+            }
             return Expr::Name(name);
         }
         let next = depth + 1;
@@ -327,6 +358,32 @@ impl Writer<'_> {
                 _ => Expr::Ints(vec![Expr::Int(3), Expr::Int(1), Expr::Int(2)]),
             },
             Ty::Point => Expr::Point(Box::new(self.int(next)), Box::new(self.int(next))),
+            Ty::Node if depth >= MOST_DEPTH => {
+                if self.choice(2) == 0 {
+                    Expr::Leaf(Box::new(self.of(Ty::Str, next)))
+                } else {
+                    Expr::Number(Box::new(self.int(next)))
+                }
+            }
+            Ty::Node => match self.choice(6) {
+                0 => Expr::Leaf(Box::new(self.of(Ty::Str, next))),
+                // In a risky program the number can overflow as it's worked out, failing partway
+                // through building the tree around it.
+                1 => Expr::Number(Box::new(self.int(next))),
+                2 | 3 => Expr::Branch(Box::new(self.of(Ty::Str, next)), Box::new(self.of(Ty::Nodes, next))),
+                4 => {
+                    let count = self.choice(3);
+                    let tags = (0..count).map(|_| self.of(Ty::Str, next)).collect();
+                    Expr::Tagged(Box::new(Expr::Texts(tags)), Box::new(self.of(Ty::Nodes, next)))
+                }
+                _ => Expr::NodeAt(Box::new(self.of(Ty::Nodes, next)), Box::new(self.int(next))),
+            },
+            Ty::Nodes if depth >= MOST_DEPTH => Expr::NodeList(Vec::new()),
+            Ty::Nodes => {
+                let count = self.choice(4);
+                Expr::NodeList((0..count).map(|_| self.of(Ty::Node, next)).collect())
+            }
+            Ty::Deep => Expr::Deep(0, Box::new(Expr::Str("d".to_owned()))),
             Ty::Sized(size) if depth >= MOST_DEPTH => self.sized_literal(size),
             Ty::Sized(size) => match self.choice(4) {
                 0 => {
@@ -425,6 +482,14 @@ impl Writer<'_> {
         }
     }
 
+    /// A value of `ty` that's kept: in a loop, the names it holds are copied on purpose.
+    fn stored(&mut self, ty: Ty, depth: usize) -> Expr {
+        let was = std::mem::replace(&mut self.storing, true);
+        let value = self.of(ty, depth);
+        self.storing = was;
+        value
+    }
+
     fn ty(&mut self) -> Ty {
         TYPES.get(self.choice(TYPES.len())).copied().unwrap_or(Ty::Int)
     }
@@ -457,7 +522,7 @@ impl Writer<'_> {
             .iter()
             .skip(scope)
             .filter(|name| !matches!(name.ty, Ty::Shared | Ty::Tally | Ty::Bag | Ty::Count | Ty::Outer))
-            .map(|name| (printable(&name.name, name.ty), name.ty))
+            .map(|name| (printable(Expr::Name(name.name.clone()), name.ty, self.digest_only), name.ty))
             .collect();
         for chunk in values.chunks(4) {
             body.push(Stmt::Print(chunk.to_vec()));
@@ -466,8 +531,10 @@ impl Writer<'_> {
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
         self.written += 1;
-        let which = self.choice(30);
+        self.tree_names = 1;
+        let which = self.choice(32);
         match which {
+            30 | 31 => self.trees(body),
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
@@ -503,7 +570,7 @@ impl Writer<'_> {
             16..=18 => self.sharing(body, which),
             0..=2 => {
                 let ty = self.ty();
-                let value = self.of(ty, 0);
+                let value = self.stored(ty, 0);
                 // In a loop, holding a name's value while the name changes copies it each round,
                 // which is refused unless it's said on purpose.
                 let value = match value {
@@ -577,7 +644,7 @@ impl Writer<'_> {
             13 => {
                 let ty = self.ty();
                 let Some(name) = self.name_of(ty, true) else { return self.print(body) };
-                let value = self.of(ty, 1);
+                let value = self.stored(ty, 1);
                 let add = ty == Ty::Float && self.choice(2) == 0;
                 body.push(Stmt::Assign { place: Place::Name(name.clone()), value, add });
                 self.read_back(body, &name);
@@ -817,7 +884,7 @@ impl Writer<'_> {
                 let Some(lists) = self.name_of(Ty::Lists, true) else { return self.print(body) };
                 let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
                 if self.choice(2) == 0 {
-                    let list = self.of(Ty::Ints, 1);
+                    let list = self.stored(Ty::Ints, 1);
                     body.push(Stmt::PutList(lists.clone(), key, list));
                 } else {
                     let value = self.int(1);
@@ -937,13 +1004,108 @@ impl Writer<'_> {
     /// refuses, and every write is in the digest.
     fn read_back(&self, body: &mut Vec<Stmt>, name: &str) {
         if let Some(found) = self.names.iter().rev().find(|held| held.name == name) {
-            body.push(Stmt::Print(vec![(printable(&found.name, found.ty), found.ty)]));
+            let value = printable(Expr::Name(found.name.clone()), found.ty, self.digest_only);
+            body.push(Stmt::Print(vec![(value, found.ty)]));
         }
     }
 
     fn print(&mut self, body: &mut Vec<Stmt>) {
         let ty = self.ty();
         let value = self.of(ty, 0);
-        body.push(Stmt::Print(vec![(value, ty)]));
+        body.push(Stmt::Print(vec![(printable(value, ty, self.digest_only), ty)]));
+    }
+
+    /// A change to a tree or a list of them, a deep tree, one built in a loop that can fail
+    /// partway, or a copy of one kept while the first changes.
+    fn trees(&mut self, body: &mut Vec<Stmt>) {
+        match self.choice(7) {
+            0 => {
+                let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
+                let node = self.stored(Ty::Node, 1);
+                body.push(Stmt::NodesAppend(nodes.clone(), node));
+                self.read_back(body, &nodes);
+            }
+            1 => {
+                let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
+                body.push(Stmt::NodesPop(nodes.clone()));
+                self.read_back(body, &nodes);
+            }
+            2 => {
+                let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
+                let at = self.int(1);
+                let node = self.stored(Ty::Node, 1);
+                body.push(Stmt::NodesSet(nodes.clone(), at, node));
+                self.read_back(body, &nodes);
+            }
+            3 => {
+                let Some(node) = self.name_of(Ty::Node, true) else { return self.print(body) };
+                self.reshape(body, &node);
+            }
+            4 => {
+                // Deep enough to need a loop to let go of, where nothing else is repeating it.
+                const DEPTHS: [i64; 7] = [0, 1, 2, 64, 1000, 20_000, 200_000];
+                let most = if self.loops > 0 { 5 } else { DEPTHS.len() };
+                let depth = DEPTHS.get(self.choice(most)).copied().unwrap_or(0);
+                let label = self.of(Ty::Str, 2);
+                let name = self.fresh();
+                body.push(Stmt::Let {
+                    name: name.clone(),
+                    value: Expr::Deep(depth, Box::new(label)),
+                    changeable: false,
+                });
+                self.names.push(InScope { name, ty: Ty::Deep, changeable: false, held: 0 });
+            }
+            5 => {
+                // Built a branch a round, failing at round `fail` if the loop gets that far.
+                let (name, round) = (self.fresh(), self.fresh());
+                let count = 1 + i64::from(self.byte() % 6);
+                let fail = i64::from(self.byte() % 16);
+                let left =
+                    Expr::Arith(Arith::Sub, Box::new(Expr::Int(fail)), Box::new(Expr::Name(round.clone())));
+                let number =
+                    Expr::Number(Box::new(Expr::Arith(Arith::Div, Box::new(Expr::Int(100)), Box::new(left))));
+                let label = Expr::Format(Box::new(Expr::Name(round.clone())));
+                let branch = Expr::Branch(Box::new(label), Box::new(Expr::NodeList(vec![number])));
+                body.push(Stmt::Let {
+                    name: name.clone(),
+                    value: Expr::NodeList(Vec::new()),
+                    changeable: true,
+                });
+                body.push(Stmt::Range(
+                    round,
+                    Expr::Int(count),
+                    vec![Stmt::NodesAppend(name.clone(), branch)],
+                ));
+                self.names.push(InScope { name: name.clone(), ty: Ty::Nodes, changeable: true, held: 0 });
+                self.read_back(body, &name);
+            }
+            _ => {
+                // A copy kept while the first changes, which it mustn't see.
+                let ty = if self.choice(2) == 0 { Ty::Node } else { Ty::Nodes };
+                let Some(first) = self.name_of(ty, true) else { return self.print(body) };
+                let kept = self.fresh();
+                let value =
+                    if self.loops > 0 { Expr::Copy(first.clone()) } else { Expr::Name(first.clone()) };
+                body.push(Stmt::Let { name: kept.clone(), value, changeable: false });
+                self.names.push(InScope { name: kept.clone(), ty, changeable: false, held: 0 });
+                if ty == Ty::Node {
+                    self.reshape(body, &first);
+                } else {
+                    let node = self.stored(Ty::Node, 1);
+                    body.push(Stmt::NodesAppend(first.clone(), node));
+                    self.read_back(body, &first);
+                }
+                self.read_back(body, &kept);
+            }
+        }
+    }
+
+    /// `match node:` changing it through `ref`, with a child that holds no other tree's name.
+    fn reshape(&mut self, body: &mut Vec<Stmt>, node: &str) {
+        let text = self.of(Ty::Str, 2);
+        self.tree_names = 0;
+        let child = self.stored(Ty::Node, 1);
+        body.push(Stmt::Reshape(node.to_owned(), text, child));
+        self.read_back(body, node);
     }
 }

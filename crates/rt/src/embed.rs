@@ -420,6 +420,9 @@ struct State {
     /// What it was given on its command line, as `args`.
     arguments: Vec<String>,
     failure: Option<Diagnostic>,
+    /// For each of the program's shapes, whether a plain key of it is hashed by what it holds,
+    /// as its floats and blocks, rather than by its words: what a dict asks of every key.
+    keys_by_value: Box<[bool]>,
     /// The calls the failure has left so far on its way out, innermost first: where each called
     /// what it came out of. Started again by each new failure.
     trace: Trace,
@@ -497,6 +500,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
+    let keys_by_value = tables.shapes.iter().map(|shape| dicts::by_what_it_holds(shape)).collect();
     STATE.set(Some(State {
         output,
         regexes: crate::stdlib::re::Regexes::default(),
@@ -511,6 +515,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         arguments,
         tables,
         failure: None,
+        keys_by_value,
         trace: Trace::default(),
     }));
 }

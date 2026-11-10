@@ -423,10 +423,19 @@ impl Heap {
 
     /// A zeroed block of `words` words, reusing a freed one when there is one.
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
+        self.fresh_written(words, 0)
+    }
+
+    /// A block of `words` words whose first `written` the caller writes straight away: those of a
+    /// freed one reused are left as they were, and the rest are zero.
+    pub(super) fn fresh_written(&mut self, words: usize, written: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
                 self.spare_words -= block.len();
-                zero(&mut block);
+                match block.get_mut(written..) {
+                    Some(rest) if written > 0 => rest.fill(0),
+                    _ => zero(&mut block),
+                }
                 block
             }
             None => vec![0; words].into_boxed_slice(),
@@ -853,7 +862,10 @@ pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> 
         return i64::try_from(*address).unwrap_or(0);
     }
     let words = bytes.len().div_ceil(8).max(1);
-    let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    // The header and each word with bytes in it are written here, and only an empty string's one
+    // word is left to be zero.
+    let mut block =
+        state.heap.fresh_written(TEXT_HEADER_WORDS + words, TEXT_HEADER_WORDS + bytes.len().div_ceil(8));
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
     let header = [1, state.tables.str_shape, number(bytes.len()), number(chars), number(words * 8), 0];
     if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {

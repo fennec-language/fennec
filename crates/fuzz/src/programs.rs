@@ -16,7 +16,7 @@ mod source;
 /// Whether `Named` is made of native blocks in a program with no other threads, which it is once
 /// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
 /// `FENNEC_FUZZ_NAMED_NATIVE` turns the check on before then, to run against a branch that has them.
-const NAMED_GOES_NATIVE: bool = false;
+const NAMED_GOES_NATIVE: bool = true;
 
 fn named_goes_native() -> bool {
     NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
@@ -215,6 +215,27 @@ mod tests {
             }
         }
         assert!(threadless >= 32 && named >= 3, "{threadless} with no threads, {named} making Named");
+    }
+
+    /// A holder is passed a list read from its own field by a `ref self` method, in `main` and on
+    /// `parallel`'s threads, and a copy of a container of containers is changed deep inside: the
+    /// shapes of use-after-frees native code once had.
+    #[test]
+    fn it_passes_a_holder_its_own_list() {
+        let (mut plain, mut threaded, mut nested) = (0, 0, 0);
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            plain += usize::from(body.contains(".grown_by(v"));
+            nested += usize::from(body.contains("[\"a\"][0].tags.append("));
+            threaded += usize::from(body.contains("sum(regrown("));
+        }
+        assert!(plain >= 3 && threaded >= 3, "{plain} in main, {threaded} in parallel");
+        // And a copy of a container of containers is changed deep inside.
+        assert!(nested >= 1, "{nested} dicts of lists of units copied and changed");
     }
 
     #[test]

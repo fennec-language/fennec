@@ -512,6 +512,17 @@ impl FnCx<'_> {
     /// A function defined inside this one. It can read the names around it, but not change them.
     /// `work = () => ...`: an arrow function given to a name, which may capture a handle.
     fn note_arrow(&mut self, target: &Expr, value: &Expr) {
+        if let ExprKind::Name(name) = &target.kind {
+            let arrow =
+                matches!(value.kind, ExprKind::Lambda { .. }).then_some((value.span.start, value.span.end));
+            let held = match self.arrow_locals.get(name) {
+                Some(_) => None,
+                None => arrow,
+            };
+            if arrow.is_some() || self.arrow_locals.contains_key(name) {
+                self.arrow_locals.insert(name.clone(), held);
+            }
+        }
         let (ExprKind::Name(name), ExprKind::Lambda { params, body }) = (&target.kind, &value.kind) else {
             return;
         };

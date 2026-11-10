@@ -82,6 +82,9 @@ impl FnCx<'_> {
         let written = fennec_syntax::dotted(value)
             .map_or_else(|| "a lock".to_owned(), |name| format!("`{name}`'s lock"));
         self.checker.note_takes_lock(&self.key.clone(), &written);
+        for arrow in self.arrows_open.clone() {
+            self.checker.values.locks.entry(arrow).or_insert_with(|| written.clone());
+        }
         let shown: Vec<String> = names.iter().map(|held| format!("`{}`", held.name)).collect();
         let outer = self.lock.replace(format!(
             "while {} {} locked",

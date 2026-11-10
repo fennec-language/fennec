@@ -277,6 +277,42 @@ fn an_append_and_a_pop_in_place_go_back_on_a_crash_and_stay_at_an_end() {
 }
 
 #[test]
+fn an_item_set_in_place_goes_back_on_a_crash_and_stays_at_an_end() {
+    begin_run();
+    for crashed in [false, true] {
+        let cell = locked(&["one", "two"]);
+        let before = blocks();
+        let inside = word(cell, LINES_AT);
+        save_ref(cell, i64::try_from(LINES_AT).unwrap(), inside);
+        // Two sets of the last item, as native code makes them once the runtime says where: the new
+        // line goes in, and the list's owner of the old one is let go of.
+        for line in ["three", "four"] {
+            assert_eq!(
+                lists::item_unshare(inside, -1),
+                inside,
+                "a marked list with one owner is set in place"
+            );
+            let old = word(inside, LIST_HEADER_WORDS + 1);
+            set_word(inside, LIST_HEADER_WORDS + 1, string(line));
+            release(old);
+        }
+        if crashed {
+            crash(cell);
+        } else {
+            kept();
+        }
+        let now = word(cell, LINES_AT);
+        assert_eq!(now, inside, "crashed: {crashed}");
+        let wanted: &[&str] = if crashed { &["one", "two"] } else { &["one", "four"] };
+        assert_eq!(lines(now), wanted, "crashed: {crashed}");
+        assert_eq!(count_of(now), 1, "crashed: {crashed}");
+        assert_eq!(blocks(), before, "crashed: {crashed}");
+        shared_leave(cell, 1);
+    }
+    finish();
+}
+
+#[test]
 fn a_value_passed_to_be_changed_and_not_changed_is_held_once_after_either_end() {
     begin_run();
     for crashed in [false, true] {

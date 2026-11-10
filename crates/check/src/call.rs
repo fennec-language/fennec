@@ -149,12 +149,7 @@ impl FnCx<'_> {
                 let name = key.rsplit('.').next().unwrap_or_default().to_owned();
                 self.call_function(&key, &name, args, span)
             }
-            Type::Arrow(params, returns) => {
-                let params: Vec<ParamType> =
-                    params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
-                self.bind_args("this function", &params, args, span);
-                *returns
-            }
+            Type::Arrow(params, returns) => self.call_value(callee, (params, *returns), args, span),
             Type::Unknown => {
                 self.ignore_args(args);
                 Type::Unknown
@@ -164,6 +159,24 @@ impl FnCx<'_> {
                 self.unusable(Diagnostic::new(message, callee.span), args)
             }
         }
+    }
+
+    /// A call through a function value, as `work()` with `work: () -> nothing`.
+    fn call_value(
+        &mut self,
+        callee: &Expr,
+        (params, returns): (Vec<Type>, Type),
+        args: &[Arg],
+        span: Span,
+    ) -> Type {
+        self.note_value_call(callee, span);
+        let params: Vec<ParamType> =
+            params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
+        // Through a function value, what's called can't be followed by its parameters.
+        self.calling.push(String::new());
+        self.bind_args("this function", &params, args, span);
+        self.calling.pop();
+        returns
     }
 
     /// A call to a name that isn't a local: a function, a type or a builtin.
@@ -273,7 +286,9 @@ impl FnCx<'_> {
             self.note_wait(what, span);
         }
         self.note_lock_call(key, name, span);
+        self.calling.push(key.to_owned());
         self.bind_args(name, &signature.params, args, span);
+        self.calling.pop();
         self.check_bounds(chosen, span);
         self.note_source(key, &signature.returns, false, span);
         signature.returns
@@ -307,6 +322,11 @@ impl FnCx<'_> {
             };
             let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
             self.handle_passed(&arg.value, &ty);
+            if let Some((_, param)) = found
+                && matches!(self.checker.settled(&param.ty), Type::Arrow(..))
+            {
+                self.note_passed_function(&param.name, &arg.value);
+            }
             let Some((at, param)) = found else {
                 let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
                 self.error(unmatched(function, ("parameter", "argument"), &names, arg));
@@ -826,7 +846,9 @@ impl FnCx<'_> {
                 .with_help(format!("lock it to write with `as ref {name}`")),
             );
         }
+        self.calling.push(key.to_owned());
         self.bind_args(method, params, args, span);
+        self.calling.pop();
         self.note_source(key, &signature.returns, takes_self, span);
         signature.returns
     }

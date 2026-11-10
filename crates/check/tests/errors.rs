@@ -524,3 +524,28 @@ fn else_as_is_for_what_can_fail_and_its_block_leaves() {
     );
     assert_eq!(parsed.err().map(|problem| problem.message), Some("an `else:` block must leave".to_owned()));
 }
+
+/// A one-line `if` and a fallback `else` in one expression read two ways, so they need
+/// parentheses, and the fix writes them where they're read now. In parentheses they're fine,
+/// and a side of a one-line `if` that can fail says that's the problem.
+#[test]
+fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
+    let said = "a one-line `if` and a fallback `else` need parentheses to share an expression";
+    for (body, fixed) in [
+        ("int(text) else 80 if given else 8080", "int(text) else (80 if given else 8080)"),
+        ("8080 if not given else int(text) else 80", "8080 if not given else (int(text) else 80)"),
+    ] {
+        let source = format!("def port(text: str, given: bool) -> int:\n    {body}\n");
+        let problem = fennec_syntax::parse(&source).err();
+        assert_eq!(problem.as_ref().map(|problem| problem.message.as_str()), Some(said), "{body}");
+        let written = fennec_syntax::apply_fixes(&source, 0, problem.as_slice());
+        assert_eq!(written, Some(format!("def port(text: str, given: bool) -> int:\n    {fixed}\n")));
+    }
+    let parenthesized =
+        "def port(text: str, given: bool) -> int:\n    (int(text) else 80) if given else 8080\n";
+    assert!(fennec_syntax::parse(parenthesized).is_ok());
+    let chained = "def size(n: int) -> int:\n    1 if n < 1 else 2 if n < 2 else 3\n";
+    assert!(fennec_syntax::parse(chained).is_ok());
+    let unhandled = "def port(text: str, given: bool) -> int:\n    int(text) if given else 8080\n";
+    assert_eq!(problems(unhandled), ["this can fail, but nothing handles it @ int(text)"]);
+}

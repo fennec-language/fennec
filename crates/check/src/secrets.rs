@@ -136,7 +136,7 @@ impl FnCx<'_> {
             _ => return,
         };
         if has_password(&written) {
-            let help = "read the URL into a `Secret` from where it's kept, like the environment, failing when it isn't there, or leave the password out of the URL and pass it as `password=`, a `Secret`";
+            let help = "read the URL into a `Secret` from where it's kept, as `env.secret(\"DATABASE_URL\")?` does, or leave the password out of the URL and pass it as `password=`, a `Secret`";
             self.error(
                 Diagnostic::new("this database URL has its password written in the source", given.value.span)
                     .with_help(help),

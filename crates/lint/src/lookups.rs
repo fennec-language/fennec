@@ -43,7 +43,7 @@ fn lookup<'e>(expr: &'e Expr, sources: &Sources) -> Option<(&'e Expr, &'e Expr, 
 }
 
 /// `table.get(key) else default`, or just `table.get(key)` when the default is `None`.
-fn get(table: &Expr, key: &Expr, default: &Expr, span: Span) -> Expr {
+fn get(sources: &Sources, (table, key, default): (&Expr, &Expr, &Expr), span: Span) -> Expr {
     let callee = ExprKind::Attr { object: Box::new(table.clone()), name: "get".to_owned(), optional: false };
     let arg = Arg { name: None, is_mut: false, value: key.clone() };
     let call = Expr {
@@ -53,7 +53,11 @@ fn get(table: &Expr, key: &Expr, default: &Expr, span: Span) -> Expr {
     if matches!(default.kind, ExprKind::None) {
         return call;
     }
-    Expr { kind: ExprKind::Else { value: Box::new(call), default: Box::new(default.clone()) }, span }
+    let default = match lookup(default, sources) {
+        Some(parts) => get(sources, parts, default.span),
+        None => default.clone(),
+    };
+    Expr { kind: ExprKind::Else { value: Box::new(call), default: Box::new(default) }, span }
 }
 
 /// The module with the conditional at `span` written with `get`.
@@ -61,9 +65,9 @@ fn with_get(module: &Module, sources: &Sources, span: Span) -> Module {
     let mut trial = module.clone();
     fennec_syntax::visit::exprs_mut(&mut trial, &mut |expr| {
         if expr.span == span
-            && let Some((table, key, default)) = lookup(expr, sources)
+            && let Some(parts) = lookup(expr, sources)
         {
-            *expr = get(table, key, default, span);
+            *expr = get(sources, parts, span);
         }
     });
     trial
@@ -81,7 +85,16 @@ fn rewritten(sources: &Sources, whole: &Expr, table: &Expr, key: &Expr, default:
     if matches!(default.kind, ExprKind::None) {
         return Some(call);
     }
-    Some(format!("{call} else {}", written(sources, default.span)?))
+    // A lookup after it is written the same way, so a chain becomes one, and any other one-line
+    // `if` goes in parentheses, since it can't share a line with a fallback `else` without them.
+    let rest = match lookup(default, sources) {
+        Some((table, key, inner)) => rewritten(sources, default, table, key, inner)?,
+        None if matches!(default.kind, ExprKind::Cond { .. }) => {
+            format!("({})", written(sources, default.span)?)
+        }
+        None => written(sources, default.span)?,
+    };
+    Some(format!("{call} else {rest}"))
 }
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {

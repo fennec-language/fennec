@@ -449,6 +449,7 @@ score = load_score(fs, path) else as why:
         case _:
             fail why
 ```
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here: the explicit "crash here, for this reason" form. Chris decided this on 2026-11-08. Built.
 - An `else as why:` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value as its last line.
 - Different failures are handled with an ordinary `match why:` inside the block, and `_` is the only catch-all.
 - A failure passes on as `fail why`. There's no bare `fail`.

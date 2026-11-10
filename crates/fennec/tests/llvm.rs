@@ -9336,6 +9336,24 @@ def main(net: Net, stdout: Stdout):
     Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
 }
 
+/// A server built on the plain runtime, as `fennec build` makes one where the runtime with threads
+/// isn't there, closes as gently as one on the threads runtime: a refusal with what the client
+/// sent still unread reaches it whole, with no reset. `close` on the plain runtime shut the
+/// socket at once. Found by fuzzing the server (`fennec-fuzz run http-server`).
+#[test]
+fn a_server_on_the_plain_runtime_closes_gently() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let asked = [&b"NOT HTTP\r\n\r\n"[..], &b"x".repeat(100_000)].concat();
+    let said = served_on("0", "plain_runtime_close", &asked)?;
+    assert_eq!(
+        said,
+        "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line"
+    );
+    Ok(())
+}
+
 /// A `\r` is taken off a line once, with the `\n` it ends with: `\r\r\n` is a line holding a bare
 /// `\r`, which a request can't have, not a blank line. The runtime with threads took one off
 /// when it read the line and `line_value` another. Found by fuzzing the server
@@ -12029,7 +12047,7 @@ def main(stdout: Stdout, env: Env, net: Net, entropy: Entropy):
     let printed = printed_by("postgres_secret_url", source)?;
     assert_eq!(
         printed,
-        "the database URL `postgres://ann:****@db.example/shop` has a password in it, so it has to be a `Secret`, read straight from where it's kept, and never a plain `str`, which could be printed\n\
+        "the database URL `postgres://ann:****@db.example/shop` has a password in it, so it has to be a `Secret`, as `env.secret(\"DATABASE_URL\")?` reads one, and never a plain `str`, which could be printed\n\
          ann db.example 5432 shop\n\
          `password` is set in the database URL and as an argument: set it in one\n"
     );

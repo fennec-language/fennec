@@ -42,6 +42,8 @@ struct Stream {
     /// What a line read that timed out had got, for the next to go on from.
     partial_line: Mutex<Vec<u8>>,
     writing: Mutex<()>,
+    /// Whether a server took it, so closing it lingers: see `linger`.
+    served: bool,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -982,6 +984,16 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
 }
 
 fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
+    keep_stream_as(socket, peer, secured, false)
+}
+
+/// `keep_stream`, for a connection a server took when `served`.
+fn keep_stream_as(
+    socket: TcpStream,
+    peer: String,
+    secured: Option<Secured>,
+    served: bool,
+) -> Result<i64, Failure> {
     let reading = match secured {
         Some(secured) => Reading::Tls(secured),
         None => Reading::Plain(BufReader::new(
@@ -994,6 +1006,7 @@ fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Res
         reader: Mutex::new(reading),
         partial_line: Mutex::new(Vec::new()),
         writing: Mutex::new(()),
+        served,
     };
     Ok(open(|open| {
         let handle = fresh_handle(open);
@@ -1339,7 +1352,7 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
         Some(tls) => Some(accepted_securely(tls, &stream)?),
         None => None,
     };
-    Ok((keep_stream(stream, peer.clone(), secured)?, peer))
+    Ok((keep_stream_as(stream, peer.clone(), secured, true)?, peer))
 }
 
 /// How long a connection a server took has to finish its handshake.
@@ -1436,8 +1449,44 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
 /// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends.
 fn close(handle: i64) {
     if let Some(Socket::Stream(stream)) = open(|open| open.remove(&handle)) {
+        if stream.served && task_parks() {
+            let lingering = Arc::clone(&stream);
+            off_thread(move || linger(&lingering.socket));
+        } else if stream.served {
+            linger(&stream.socket);
+        }
         // It may be closed already from the other side, which is what closing wanted.
         let _ = stream.socket.shutdown(Shutdown::Both);
+    }
+}
+
+/// How long a connection a server took reads what the other side still sends, as it closes.
+pub(crate) const LINGER: Duration = Duration::from_secs(2);
+
+/// How long that waits for more once the other side has gone quiet.
+pub(crate) const LINGER_QUIET: Duration = Duration::from_millis(200);
+
+/// Closes `socket`'s sending side and reads what the other side still sends, until it closes,
+/// goes quiet for `LINGER_QUIET`, or `LINGER` passes. Closing with what it sent still unread
+/// would reset the connection, which throws away what it hadn't read yet: a server's refusal of
+/// a request still being sent, and the answers before it. A client's connection doesn't linger,
+/// as the server it talks to may keep it open, and closing would then always wait.
+fn linger(socket: &TcpStream) {
+    let _ = socket.shutdown(Shutdown::Write);
+    let until = Instant::now() + LINGER;
+    let mut sink = [0_u8; 16 * 1024];
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() || socket.set_read_timeout(Some(LINGER_QUIET.min(left))).is_err() {
+            return;
+        }
+        match (&*socket).read(&mut sink) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            // Gone quiet, timed out or reset: nothing more is coming that closing would lose.
+            Err(_) => return,
+        }
     }
 }
 

@@ -50,12 +50,19 @@ const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
 /// What an edit's verdict may run: a second.
 const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
 
-/// Not met yet: after an edit, `fennec run` checks and lints only the files that changed, but then
-/// compiles the function, links a new executable and starts it, and on macOS the first start of a
-/// new executable alone takes longer than this. Meeting it takes loading changed functions into a
-/// running program instead.
+/// After an edit, `fennec run` checks and lints only the files that changed, then compiles the
+/// function, links a new executable and starts it. It's held to a count of every instruction that
+/// takes, its own and those of LLVM's tools, the linker and the program, since its time on CI's
+/// machines ranges from 315 to 970 ms from one run to the next.
 const EDIT_RUN: Budget =
-    Budget { name: "edit to run, one function", limit: Duration::from_millis(50), enforced: false };
+    Budget { name: "edit to run, one function", limit: Duration::from_millis(500), enforced: true };
+
+/// What an edit's run may run: half a second.
+const MOST_EDIT_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 2;
+
+/// Where edit to run should get to, and isn't held to: once changed functions load into a running
+/// program, rather than a new executable being linked and started, an edit should show in 50 ms.
+const EDIT_RUN_GOAL: Duration = Duration::from_millis(50);
 
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
@@ -131,6 +138,9 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
     if let Some(growth) = growth {
         let _ = writeln!(table, "\n{}", growth.line());
     }
+    if let Some(edit_run) = measured.iter().find(|measured| measured.budget.name == EDIT_RUN.name) {
+        let _ = writeln!(table, "\n{}", goal_line(edit_run.warm));
+    }
     print!("{table}");
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
         crate::append(Path::new(&summary), &format!("## Instant-feedback budgets\n\n{table}"))
@@ -187,6 +197,15 @@ impl Growth {
     }
 }
 
+/// How far edit to run is from its goal, which nothing fails for.
+fn goal_line(warm: Duration) -> String {
+    format!(
+        "Edit to run's goal, once changed functions load into a running program, is {}; it takes {} (not enforced).",
+        millis(EDIT_RUN_GOAL),
+        millis(warm)
+    )
+}
+
 /// Whether every enforced budget is met.
 fn passes(measured: &[Measured]) -> bool {
     !measured.iter().any(Measured::fails)
@@ -215,7 +234,7 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     let mut measured = vec![check, definition, kit.format(runs)?, kit.lint(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
-    run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
+    run.counted = kit.counted_run(&["run"], MOST_RUN_INSTRUCTIONS)?;
     measured.push(run);
     measured.push(kit.edit_to_run(runs)?);
     Ok(measured)
@@ -361,9 +380,12 @@ impl Kit {
             }
             times.push(took);
         }
+        let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {}\n", 2000 + runs + 1));
+        std::fs::write(&path, edited).map_err(|err| err.to_string())?;
+        let counted = self.counted_run(&["run", "--no-test"], MOST_EDIT_RUN_INSTRUCTIONS);
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
         let cold = times.remove(0);
-        Ok(Measured { budget: EDIT_RUN, warm: median(times), cold: Some(cold), counted: None })
+        Ok(Measured { budget: EDIT_RUN, warm: median(times), cold: Some(cold), counted: counted? })
     }
 
     /// From changing one function to `fennec test` having a pass or fail, each time, which must
@@ -405,6 +427,29 @@ impl Kit {
         let program = Program { command: self.fennec.clone(), args, stdin: None };
         let instructions = counter.count_set_up(&program, |command| self.set_up(command))?;
         Some(Counted { instructions, most })
+    }
+}
+
+impl Kit {
+    /// How many instructions a `fennec run` runs, with every program it starts, against the most
+    /// it may. It waits for the program rather than becoming it, so what it did first is counted
+    /// too. None where they can't be counted, and an error where they should be and weren't, so
+    /// the budget never falls back to the clock on a machine that counts.
+    fn counted_run(&self, args: &[&str], most: u64) -> Result<Option<Counted>, String> {
+        let folder = self.dir.join("counting");
+        std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+        let Some(counter) = Counter::find(&folder).filter(Counter::counts_every_process) else {
+            return Ok(None);
+        };
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let program = Program { command: self.fennec.clone(), args: args.clone(), stdin: None };
+        let instructions = counter.count_every_process(&program, &folder, |command| {
+            self.set_up(command);
+            command.env("FENNEC_RUN_WAITS", "1");
+        });
+        let instructions = instructions
+            .ok_or_else(|| format!("couldn't count the instructions of `fennec {}`", args.join(" ")))?;
+        Ok(Some(Counted { instructions, most }))
     }
 }
 
@@ -618,6 +663,15 @@ mod tests {
         assert!(
             text.contains("didOpen") && text.contains("300 + 2") && text.ends_with("{\"method\":\"exit\"}"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn edit_to_runs_goal_is_shown_and_not_held_to() {
+        let line = super::goal_line(Duration::from_millis(340));
+        assert!(
+            line.contains("50.0 ms") && line.contains("340.0 ms") && line.contains("not enforced"),
+            "{line}"
         );
     }
 

@@ -84,7 +84,46 @@ impl Counter {
     /// How many instructions a program runs, after `set_up` gives it the folder and environment
     /// it needs.
     pub fn count_set_up(&self, program: &Program, set_up: impl FnOnce(&mut Command)) -> Option<u64> {
+        self.counted(program, None, set_up)
+    }
+
+    /// How many instructions a program and every program it starts run, for one that compiles,
+    /// links and starts what it built. `folder` takes Valgrind's report of each. None where they
+    /// can't all be counted, as on a Mac, whose `time` counts only the program it starts.
+    pub fn count_every_process(
+        &self,
+        program: &Program,
+        folder: &Path,
+        set_up: impl FnOnce(&mut Command),
+    ) -> Option<u64> {
+        self.counts_every_process().then(|| self.counted(program, Some(folder), set_up)).flatten()
+    }
+
+    /// Whether `count_every_process` can count here.
+    #[must_use]
+    pub fn counts_every_process(&self) -> bool {
+        !matches!(self, Counter::AppleTime)
+    }
+
+    /// `perf` counts the programs a program starts by itself. Valgrind is told to follow them
+    /// when there's a `folder` to put their reports in: each process writes its own, since a
+    /// program that reads what the ones it starts print would read Valgrind's report too.
+    fn counted(
+        &self,
+        program: &Program,
+        every: Option<&Path>,
+        set_up: impl FnOnce(&mut Command),
+    ) -> Option<u64> {
         let input = program.input().ok()?;
+        let reports = match (self, every) {
+            (Counter::Valgrind, Some(folder)) => {
+                let reports = folder.join("valgrind");
+                let _ = std::fs::remove_dir_all(&reports);
+                std::fs::create_dir_all(&reports).ok()?;
+                Some(reports)
+            }
+            _ => None,
+        };
         let mut command = match self {
             Counter::Perf(report) => {
                 let mut perf = Command::new("perf");
@@ -94,6 +133,9 @@ impl Counter {
             Counter::Valgrind => {
                 let mut valgrind = Command::new("valgrind");
                 valgrind.args(["--tool=cachegrind", "--cache-sim=no", "--cachegrind-out-file=/dev/null"]);
+                if let Some(reports) = &reports {
+                    valgrind.arg("--trace-children=yes").arg(format!("--log-file={}/%p", reports.display()));
+                }
                 valgrind
             }
             Counter::AppleTime => {
@@ -110,6 +152,7 @@ impl Counter {
         let stderr = String::from_utf8_lossy(&output.stderr);
         match self {
             Counter::Perf(report) => instructions(&std::fs::read_to_string(report).ok()?),
+            Counter::Valgrind if reports.is_some() => valgrind_total(reports.as_deref()?),
             Counter::Valgrind => valgrind_count(&stderr),
             Counter::AppleTime => apple_count(&stderr),
         }
@@ -171,6 +214,21 @@ fn valgrind_count(report: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// The counts in every process's report in `folder`, added up. A process that ran another in its
+/// place leaves its report without a count, and the one it ran counts what came after.
+fn valgrind_total(folder: &Path) -> Option<u64> {
+    let mut total = 0;
+    let mut counted = 0;
+    for entry in std::fs::read_dir(folder).ok()? {
+        let report = std::fs::read_to_string(entry.ok()?.path()).ok()?;
+        if let Some(count) = valgrind_count(&report) {
+            total += count;
+            counted += 1;
+        }
+    }
+    (counted > 0).then_some(total)
+}
+
 /// The count in macOS's `time -l` report, `  1234567  instructions retired`.
 fn apple_count(report: &str) -> Option<u64> {
     let line = report.lines().find(|line| line.contains("instructions retired"))?;
@@ -192,7 +250,7 @@ pub fn median<T: Copy + Ord>(values: &mut [T], mean: fn(T, T) -> T) -> Option<T>
 
 #[cfg(test)]
 mod tests {
-    use super::{apple_count, instructions, median, summary_count, valgrind_count};
+    use super::{apple_count, instructions, median, summary_count, valgrind_count, valgrind_total};
 
     #[test]
     fn perf_reports_give_their_instruction_count() {
@@ -218,6 +276,20 @@ mod tests {
         assert_eq!(valgrind_count(report), Some(1_234_567));
         assert_eq!(valgrind_count("==1== I refs: 89\n"), Some(89));
         assert_eq!(valgrind_count("==1== nothing here\n"), None);
+    }
+
+    #[test]
+    fn every_process_report_with_a_count_is_added_up() {
+        let folder = std::env::temp_dir().join(format!("fennec-count-total-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        assert_eq!(valgrind_total(&folder), None, "no reports, no count");
+        std::fs::write(folder.join("1"), "==1== I   refs:      1,000\n").unwrap();
+        std::fs::write(folder.join("2"), "==2== I   refs:      234\n").unwrap();
+        // One that became another program leaves no count of its own.
+        std::fs::write(folder.join("3"), "==3== Cachegrind, a high-precision tracing profiler\n").unwrap();
+        assert_eq!(valgrind_total(&folder), Some(1_234));
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

@@ -477,8 +477,8 @@ jobs:
           rustup component add llvm-tools-preview
           echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
-      # An edit's verdict is held to a count of instructions, which doesn't depend on which
-      # machine this lands on. Its time is shown too, and warns.
+      # An edit's verdict and edit to run are held to counts of instructions, which don't depend
+      # on which machine this lands on. Their times are shown too, and warn.
       - name: Install what counts instructions
         run: |
           sudo apt-get update -qq

@@ -706,6 +706,17 @@ impl FnCx<'_> {
                 Diagnostic::new("`expect` needs a reason this can't fail", span)
                     .with_help("write it as a string, like `.expect(\"the file was just written\")`"),
             );
+            return;
+        }
+        // A reason with nothing in it says nothing to whoever reads the program, or the crash.
+        if let [Arg { value, .. }] = args
+            && let ExprKind::Str(reason) = &value.kind
+            && reason.trim().is_empty()
+        {
+            self.error(
+                Diagnostic::new("say why this can't fail", value.span)
+                    .with_help("the reason is what a reader trusts, and what the crash says if it's wrong, like `.expect(\"the file was just written\")`"),
+            );
         }
     }
 

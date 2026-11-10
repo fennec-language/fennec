@@ -71,6 +71,21 @@ fn a_union_has_a_method_every_member_has() {
     );
 }
 
+/// A `match` case naming a member narrows the subject to it inside the case, as `is` does: a
+/// method only that member has, or a field of its own, reads there.
+#[test]
+fn a_match_case_narrows_its_subject_to_the_member_it_names() {
+    let empty: [&str; 0] = [];
+    let narrowed = format!(
+        "{SHAPES}def size(s: Shape) -> float:\n    match s:\n        case Circle(radius=_):\n            return s.radius\n        case Square(side=_):\n            return s.side\n"
+    );
+    assert_eq!(problems(&narrowed), empty);
+    let outside = format!(
+        "{SHAPES}def size(s: Shape) -> float:\n    match s:\n        case Circle(radius=_):\n            pass\n        case Square(side=_):\n            pass\n    s.radius\n"
+    );
+    assert_eq!(problems(&outside).len(), 1, "{:?}", problems(&outside));
+}
+
 #[test]
 fn a_match_over_a_union_handles_each_member() {
     let empty: [&str; 0] = [];

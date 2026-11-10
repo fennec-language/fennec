@@ -590,3 +590,60 @@ fn plain_on_threads(layouts: &Layouts, layout: &Layout) -> bool {
         _ => false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use fennec_ir::InstKind;
+
+    /// `main`'s text, and the literals the program uses, for `source` with its second lock moved
+    /// into its first: right after the first is taken, so it's taken while the first is held.
+    fn nested(source: &str) -> Result<(String, Vec<String>), String> {
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        // As a build lowers it: `parallel`'s work lifted out, so the program runs on threads.
+        let options =
+            fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: false };
+        let mut program = fennec_ir::lower_with(&module, &checked, options);
+        let main = program.functions.iter_mut().find(|function| function.name == "main").ok_or("no main")?;
+        let locks: Vec<(usize, usize)> = main
+            .blocks
+            .iter()
+            .enumerate()
+            .flat_map(|(at, block)| {
+                block.insts.iter().enumerate().filter_map(move |(index, inst)| {
+                    matches!(inst.kind, InstKind::Lock { .. }).then_some((at, index))
+                })
+            })
+            .collect();
+        let [(first_block, first), (second_block, second)] = locks[..] else {
+            return Err(format!("{} locks, not two", locks.len()));
+        };
+        let taken = main.blocks[second_block].insts.remove(second);
+        let after = if (first_block, first) < (second_block, second) { first + 1 } else { first };
+        main.blocks[first_block].insts.insert(after, taken);
+        let (units, shared, _) = crate::emit::emit(&program)?;
+        let text =
+            units.into_iter().find(|unit| unit.function == "main").map(|unit| unit.text).ok_or("no main")?;
+        Ok((text, shared.literals.into_values().collect()))
+    }
+
+    /// A lock this thread holds, taken again, ends the program, as it would wait forever. The
+    /// checker refuses every program that would get there, a closure passed to a call among them
+    /// (#1261), so nothing built from source reaches it: here the IR is built to, a lock of one
+    /// value taken inside another of it. The lock taken second still checks the lock's word and
+    /// stops, without threads; with them it also checks the lock it remembers and asks the
+    /// runtime about any others.
+    #[test]
+    fn a_lock_taken_inside_itself_stops_the_program() -> Result<(), String> {
+        let program = "struct Box:\n    total = 1\n\ndef main(stdout: Stdout):\n    shared one = Box()\n    lock one as held:\n        stdout.print(held.total)\n    lock one as again:\n        stdout.print(again.total)\n";
+        let (text, literals) = nested(program)?;
+        assert!(literals.iter().any(|literal| literal.contains(super::TAKEN_AGAIN)), "{literals:?}");
+        assert_eq!(text.matches("label %lock_stops").count(), 2, "{text}");
+        let threads = format!("{program}    stdout.print(sum(n for n in parallel([1, 2])))\n");
+        let (text, literals) = nested(&threads)?;
+        assert!(literals.iter().any(|literal| literal.contains(super::TAKEN_AGAIN)), "{literals:?}");
+        assert!(text.matches("label %lock_stops").count() >= 4, "{text}");
+        assert!(text.contains("call i64 @fennec_lock_note("), "{text}");
+        Ok(())
+    }
+}

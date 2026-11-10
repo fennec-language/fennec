@@ -147,6 +147,18 @@ mod tests {
         assert!(keeps(source, "Point") && keeps(source, "helper"));
     }
 
+    /// A `shared Point` written in a kept function means the declaration lowering made for it,
+    /// `Shared__Point`, which nothing names: it stays with the function, however the function
+    /// was reached, here by a local in `main` with the function's name.
+    #[test]
+    fn the_declaration_a_shared_type_means_stays_with_what_writes_it() {
+        let source = "struct Point:\n    x: int\n\nstruct Shared__Point:\n    value: Point\n\n\
+                      def change(box: shared Point, by: int):\n    pass\n\n\
+                      def main(stdout: Stdout):\n    for change in [1, 2]:\n        stdout.print(change)\n";
+        assert!(keeps(source, "change"));
+        assert!(keeps(source, "Shared__Point"));
+    }
+
     #[test]
     fn a_type_stays_when_something_names_it() {
         let source = "struct Point:\n    x: int\n\n    def area(self) -> int:\n        self.x\n\n\

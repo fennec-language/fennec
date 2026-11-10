@@ -287,6 +287,19 @@ fn a_program_to_emit_is_checked_through_what_lowering_calls() {
 /// `std.concurrent`'s channels check, and `with channel[Job](size=4) as jobs:`, a generic source,
 /// is written in where it's used with `Job` for its `T`, so what runs is the source's own body. A
 /// `Channel` is only made that way: its constructor's private.
+/// A leading-dot case whose name more than one enum has is written in with its enum's name, which
+/// the program needn't have imported: `.Error` for a `LogLevel`, beside an enum of the program's
+/// own with an `Error` case, still checks once resolved, as a build checks it again.
+#[test]
+fn a_case_two_enums_share_is_named_by_an_enum_the_program_never_imported() {
+    let source = "from std import log\n\nenum Mood:\n    Fine\n    Error\n\n\
+        def main(stdout: Stdout):\n    lines = log.Log(out=stdout, level=.Debug)\n    \
+        stdout.print(lines.enabled(.Error))\n    mood: Mood = .Error\n    stdout.print(mood)\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    assert_eq!(fennec_check::check_to_emit(&module).err(), None);
+}
+
 #[test]
 fn a_channel_opens_through_its_generic_source() {
     let source = "from std.concurrent import Closed, Inbox, Sender, Timeout, channel\n\n\

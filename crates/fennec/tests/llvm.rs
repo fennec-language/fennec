@@ -15768,7 +15768,7 @@ def build(depth: int, tag: int) -> Doc:
 def size(doc: Doc) -> int:
     match doc:
         case .Words(names, counts):
-            mut more = copy(names)
+            mut more = names
             more.append("x")
             sum(name.len() for name in more) + sum(counts) + names.len()
         case .Pair(left, right, title):

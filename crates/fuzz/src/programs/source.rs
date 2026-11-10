@@ -123,6 +123,61 @@ struct Holder:
     items: list[int]
     tag: int
 
+enum Node:
+    Leaf(name: str)
+    Number(value: int)
+    Branch(label: str, children: list[Node])
+    Tagged(tags: list[str], inner: list[Node])
+
+def deep(depth: int, label: str) -> Node:
+    mut node = Node.Leaf(name=label)
+    for _ in range(depth):
+        node = .Branch(label=label, children=[node])
+    node
+
+def depth_of(node: Node) -> int:
+    mut at = node
+    mut depth = 0
+    while True:
+        match at:
+            case .Branch(_, children):
+                if children.len() == 0:
+                    return depth
+                at = children[0]
+                depth += 1
+            case _:
+                return depth
+    depth
+
+def digest(node: Node) -> str:
+    match node:
+        case .Leaf(name):
+            \"L(\" + name + \")\"
+        case .Number(value):
+            f\"N({value})\"
+        case .Branch(label, children):
+            mut text = \"B(\" + label
+            for child in children:
+                text += \" \" + digest(child)
+            text + \")\"
+        case .Tagged(tags, inner):
+            mut text = \"T(\"
+            for tag in tags:
+                text += tag + \",\"
+            for child in inner:
+                text += \" \" + digest(child)
+            text + \")\"
+
+def digest_all(nodes: list[Node]) -> str:
+    mut text = \"[\"
+    for node in nodes:
+        text += digest(node) + \";\"
+    text + \"]\"
+
+def node_or_leaf(nodes: list[Node], at: int) -> Node:
+    if nodes.len() == 0: return .Leaf(name=\"none\")
+    nodes[at % nodes.len()]
+
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
     lend Tally(count=start) else:
@@ -295,6 +350,29 @@ impl Writer {
                 self.line(indent, &format!("{name}[\"{key}\"] {operator} {value}"));
             }
             Stmt::RemoveKey(name, key) => self.line(indent, &format!("_ = {name}.remove(\"{key}\")")),
+            Stmt::NodesAppend(name, node) => {
+                let node = self.expr(node, false);
+                self.line(indent, &format!("{name}.append({node})"));
+            }
+            Stmt::NodesPop(name) => self.line(indent, &format!("_ = {name}.pop()")),
+            Stmt::NodesSet(name, at, node) => {
+                let (at, node) = (self.expr(at, false), self.expr(node, true));
+                self.line(indent, &format!("if {name}.len() > 0: {name}[{at} % {name}.len()] = {node}"));
+            }
+            Stmt::Reshape(name, text, child) => {
+                let (text, child) = (self.expr(text, false), self.expr(child, false));
+                self.line(indent, &format!("match {name}:"));
+                self.line(indent + 1, "case .Branch(ref label, ref children):");
+                self.line(indent + 2, &format!("label += {text}"));
+                self.line(indent + 2, &format!("children.append({child})"));
+                self.line(indent + 1, "case .Tagged(ref tags, ref inner):");
+                self.line(indent + 2, &format!("tags.append({text})"));
+                self.line(indent + 2, &format!("inner.append({child})"));
+                self.line(indent + 1, "case .Leaf(ref name):");
+                self.line(indent + 2, &format!("name += {text}"));
+                self.line(indent + 1, "case .Number(ref value):");
+                self.line(indent + 2, "value += 1");
+            }
             Stmt::Buffered(name, op) => {
                 let line = match op {
                     BufOp::Push(value) => format!("{name}.push({})", self.expr(value, false)),
@@ -603,6 +681,43 @@ impl Writer {
             }
             Expr::BufLen(buffer) => format!("{}.len()", self.expr(buffer, false)),
             Expr::BufAt(buffer, at) => format!("{}[{}]", self.expr(buffer, false), self.expr(at, false)),
+            Expr::Leaf(name) => {
+                let start = if known { "." } else { "Node." };
+                format!("{start}Leaf(name={})", self.expr(name, false))
+            }
+            Expr::Number(value) => {
+                let start = if known { "." } else { "Node." };
+                format!("{start}Number(value={})", self.expr(value, false))
+            }
+            Expr::Branch(label, children) => {
+                let start = if known { "." } else { "Node." };
+                format!(
+                    "{start}Branch(label={}, children={})",
+                    self.expr(label, false),
+                    self.expr(children, false)
+                )
+            }
+            Expr::Tagged(tags, inner) => {
+                let start = if known { "." } else { "Node." };
+                format!("{start}Tagged(tags={}, inner={})", self.expr(tags, false), self.expr(inner, false))
+            }
+            Expr::Texts(texts) if texts.is_empty() => "list[str]()".to_owned(),
+            Expr::Texts(texts) => {
+                let texts: Vec<String> = texts.iter().map(|text| self.expr(text, false)).collect();
+                format!("[{}]", texts.join(", "))
+            }
+            Expr::NodeList(nodes) if nodes.is_empty() => "list[Node]()".to_owned(),
+            Expr::NodeList(nodes) => {
+                let nodes: Vec<String> = nodes.iter().map(|node| self.expr(node, false)).collect();
+                format!("[{}]", nodes.join(", "))
+            }
+            Expr::NodeAt(nodes, at) => {
+                format!("node_or_leaf({}, {})", self.expr(nodes, false), self.expr(at, false))
+            }
+            Expr::Digest(node) => format!("digest({})", self.expr(node, true)),
+            Expr::DigestAll(nodes) => format!("digest_all({})", self.expr(nodes, false)),
+            Expr::Deep(depth, label) => format!("deep({depth}, {})", self.expr(label, false)),
+            Expr::DepthOf(node) => format!("depth_of({})", self.expr(node, true)),
             Expr::Float(x) => super::eval::float_text(*x),
             Expr::FloatArith(operator, left, right) => {
                 let symbol = match operator {

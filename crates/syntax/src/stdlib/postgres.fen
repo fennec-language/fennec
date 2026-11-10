@@ -570,7 +570,7 @@ def hex_digit(digit: int) -> int fails SqlError:
 ## A failure the server sent, as the `SqlError` it is: class `23`, a broken rule, is `Constraint`,
 ## a serialization failure or a deadlock is `Busy`, and anything else is `Failed`, each with the
 ## server's own message and code.
-export def failure_of(fields: dict[str, str]) -> SqlError:
+export def failure_from_fields(fields: dict[str, str]) -> SqlError:
     code = fields.get("C") else ""
     said = fields.get("M") else "the server failed with no message"
     reason = f"{said} ({code})" if code != "" else said
@@ -592,25 +592,30 @@ export struct PgSettings:
 ## The settings in `url`, `postgres://user@host:port/database?pool_size=20&wait=5s`, with
 ## `pool_size`, `wait` and `tls` given beside it. `pool_size` and `wait` may be in the URL or an
 ## argument, not both, and are 10 and `30s` when neither has it. `tls` is `True` unless it's
-## given. The port is 5432 and the
-## database is the user's name unless the URL says. A password in the URL is refused: it goes in
-## `password=`, as a `Secret`, so it never shows in a URL that's printed or logged.
+## given. The port is 5432 and the database is the user's name unless the URL says. A URL with a
+## password in it, `postgres://user:password@host/database`, has to be a `Secret`, as
+## `env.secret("DATABASE_URL")?` reads one: a plain `str` with one is refused, so a
+## password is never in text that could be printed or logged. A failure shows the URL with its
+## password as `****`.
 export def settings(
-    url: str,
+    url: str | Secret[str],
     pool_size: int? = None,
     wait: Duration? = None,
     tls: bool? = None,
 ) -> PgSettings fails SqlError:
-    read = parse(url) else fail SqlError.Failed(
-        reason="the database URL isn't one, like `postgres://user@host:5432/database`",
+    written = url_text(url)
+    text = written[0]
+    read = parse(text) else fail SqlError.Failed(
+        reason=f"the database URL `{masked(text)}` isn't one, like `postgres://user@host:5432/database`",
     )
     if read.scheme != "postgres" and read.scheme != "postgresql":
         fail SqlError.Failed(reason=f"a database URL starts `postgres://`, not `{read.scheme}://`")
-    if read.user.find(":") is not None:
+    who = read.user.split(":")
+    if who.len() > 1 and not written[1]:
         fail SqlError.Failed(
-            reason="the database URL has a password in it: pass it as `password=`, a `Secret`, so it never shows where the URL does",
+            reason=f"the database URL `{masked(text)}` has a password in it, so it has to be a `Secret`, as `env.secret(\"DATABASE_URL\")?` reads one, and never a plain `str`, which could be printed",
         )
-    user = unquote(read.user)
+    user = unquote(who[0])
     if user == "":
         fail SqlError.Failed(reason="the database URL needs a user, as in `postgres://user@host`")
     if read.host == "": fail SqlError.Failed(reason="the database URL needs a host")
@@ -648,6 +653,33 @@ export def settings(
         tls=secure,
     )
 
+## A URL's text, and whether it came as a `Secret`, which only then may hold a password.
+def url_text(url: str | Secret[str]) -> (str, bool):
+    if url is str: return (url, False)
+    (url.expose_secret(), True)
+
+## The password in a URL that came as a `Secret`, or `None` when it has none.
+def password_in(url: str | Secret[str]) -> Secret[str]? fails SqlError:
+    written = url_text(url)
+    if not written[1]: return None
+    read = parse(written[0]) else return None
+    who = read.user.split(":")
+    if who.len() < 2: return None
+    Secret.of(unquote(":".join(who[1:])))
+
+## A URL as a failure shows it, with any password as `****`.
+def masked(text: str) -> str:
+    start = text.find("://") else -3
+    rest = text[start + 3:]
+    mut end = rest.len()
+    for mark in ["/", "?", "#"]:
+        found = rest.find(mark) else end
+        end = min(end, found)
+    authority = rest[:end]
+    at = authority.rfind("@") else return text
+    colon = authority[:at].find(":") else return text
+    text[:start + 3] + authority[:colon + 1] + "****" + rest[at:]
+
 def set_twice(name: str) -> SqlError:
     SqlError.Failed(reason=f"`{name}` is set in the database URL and as an argument: set it in one")
 
@@ -666,7 +698,10 @@ def duration_of(text: str) -> Duration fails SqlError:
 ## Each connection is TLS, its certificate checked against what the system trusts and the host,
 ## and a server that won't take TLS is refused rather than spoken to in the clear, since that's
 ## what someone in the middle would answer. `tls=False` connects in the clear, for a server on this
-## machine or a private network. `password` goes through SCRAM-SHA-256, which never puts it on the
+## machine or a private network. The URL is a `str`, or a `Secret` when it holds the password, as
+## as `env.secret("DATABASE_URL")?` reads one: a plain one with a password is refused,
+## at compile time when it's written in the source. Otherwise the password is `password=`. It goes
+## through SCRAM-SHA-256, which never puts it on the
 ## wire and makes the server prove it knows it too. Given a password, a server that lets the client
 ## in with no proof, or asks for the password as it is, is refused, since anything on the way could
 ## be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server set up that
@@ -679,7 +714,7 @@ def duration_of(text: str) -> Duration fails SqlError:
 export def connect(
     net: Net,
     entropy: Entropy,
-    url: str,
+    url: str | Secret[str],
     password: Secret[str]? = None,
     pool_size: int? = None,
     wait: Duration? = None,
@@ -687,10 +722,15 @@ export def connect(
     allow_weak_sign_in = False,
 ) -> with PgPool fails SqlError:
     found = settings(url, pool_size=pool_size, wait=wait, tls=tls)?
+    mut secret = password
+    in_url = password_in(url)?
+    if in_url is not None:
+        if password is not None: fail set_twice("password")
+        secret = in_url
     # The first connects here, so a wrong URL or password fails with what went wrong.
-    first = signed_in(net, entropy, found, password, allow_weak_sign_in)?
+    first = signed_in(net, entropy, found, secret, allow_weak_sign_in)?
     with pool[PgDatabase, SqlError](
-        open=() => signed_in(net, entropy, found, password, allow_weak_sign_in),
+        open=() => signed_in(net, entropy, found, secret, allow_weak_sign_in),
         size=found.pool_size,
         wait=found.wait,
         first=first,
@@ -793,7 +833,7 @@ export struct PgDatabase:
                     found.tag = tag
                 case .Failed(fields=fields):
                     failed = True
-                    failure = failure_of(fields)
+                    failure = failure_from_fields(fields)
                 case .Ready(status=_):
                     if failed: fail failure
                     return found
@@ -848,7 +888,7 @@ export struct PgDatabase:
                         reason=f"the server signs in a way this doesn't speak, number {code}: use SCRAM-SHA-256 or a password",
                     )
                 case .Failed(fields=fields):
-                    fail failure_of(fields)
+                    fail failure_from_fields(fields)
                 case .Ready(status=_):
                     return
                 case _:

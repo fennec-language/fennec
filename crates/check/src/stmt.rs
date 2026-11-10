@@ -114,7 +114,10 @@ impl FnCx<'_> {
             StmtKind::Yield(value) => self.yield_stmt(value, stmt.span),
             StmtKind::Assert(cond) => {
                 match cond.asserted_failure() {
-                    Some((value, pattern)) => self.assert_fails(value, pattern, stmt.span),
+                    Some((value, pattern)) => {
+                        self.assert_fails(value, pattern, stmt.span);
+                        self.record(cond.span, &Type::Bool);
+                    }
                     None => {
                         // What an `assert` holds holds after it, as after `if not cond: fail`:
                         // `assert problem is not None` lets `problem.message` be read.

@@ -16161,6 +16161,33 @@ def named(present: bool) -> str?:
     Ok(())
 }
 
+/// `_ = check(n) else as why:` on a call that gives nothing but can fail keeps nothing and runs
+/// the call, as the statement `check(n) else as why:` does.
+#[test]
+fn discarding_what_gives_nothing_runs_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("discard_nothing", DISCARD_NOTHING, "fine 1\nbig\nagain big\n")
+}
+
+const DISCARD_NOTHING: &str = r#"error Bad:
+    why: str
+
+def check(n: int) fails Bad:
+    if n > 1:
+        fail Bad("big")
+
+def main(stdout: Stdout):
+    for n in [1, 2]:
+        _ = check(n) else as why:
+            stdout.print(why.why)
+            continue
+        stdout.print("fine", n)
+    check(5) else as why:
+        stdout.print("again", why.why)
+"#;
+
 /// A failed `assert value fails Pattern` says what really happened, natively: what the call failed
 /// with instead, or what it gave, and stops the program as a failed `assert` does.
 #[test]

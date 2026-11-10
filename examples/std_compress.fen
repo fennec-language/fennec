@@ -29,18 +29,14 @@ test "it reads what Python's zlib writes"():
     )
 
 test "data that isn't what it says fails"():
-    match compress.gunzip("not gzip at all".encode()):
-        case Err(problem):
-            assert problem.message == "this isn't gzip data: it doesn't start as gzip data does"
-        case Ok(_):
-            assert False
+    mut problem = failure_of(() => compress.gunzip("not gzip at all".encode()))
+    assert problem is not None
+    assert problem.message == "this isn't gzip data: it doesn't start as gzip data does"
     mut numbers = [b for b in compress.gzip("fennec")]
     numbers[numbers.len() - 6] = numbers[numbers.len() - 6] ^ 1
-    match compress.gunzip(bytes(numbers)):
-        case Err(problem):
-            assert problem.message == "this isn't gzip data: its check doesn't match what it holds"
-        case Ok(_):
-            assert False
+    problem = failure_of(() => compress.gunzip(bytes(numbers)))
+    assert problem is not None
+    assert problem.message == "this isn't gzip data: its check doesn't match what it holds"
 
 test "any bytes come back as they were" for numbers: list[int]:
     data = bytes([n % 256 for n in numbers])

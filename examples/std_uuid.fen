@@ -45,11 +45,9 @@ test "text that isn't a UUID says why"():
         ("0f8fad5b+d9cb-469f-a165-70867728950e", "character 9 should be `-`"),
         ("0f8fad5b-d9cb-469f-a165-70867728950g", "character 36 isn't a hex digit"),
     ]:
-        match Uuid.parse(text):
-            case Err(problem):
-                assert problem.message == f"`{text}` isn't a UUID: {why}"
-            case Ok(_):
-                assert False
+        problem = failure_of(() => Uuid.parse(text))
+        assert problem is not None
+        assert problem.message == f"`{text}` isn't a UUID: {why}"
 
 test "a UUID saves as its text"():
     found = Uuid.parse("0f8fad5b-d9cb-469f-a165-70867728950e")?

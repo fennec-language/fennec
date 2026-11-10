@@ -132,11 +132,9 @@ test "an answer's body is read as JSON into a struct"(net: Net):
     )
     found = net.get("https://api.example.com/weather", params={"city": "Oslo"})?.json[Weather]()?
     assert found.city == "Oslo" and found.degrees == -3.5
-    match Response(status=200, body="{\"city\": 3}".encode()).json[Weather]():
-        case Err(problem):
-            assert problem.message == "`city` should be a str, but it's an int"
-        case Ok(_):
-            assert False
+    problem = failure_of(() => Response(status=200, body="{\"city\": 3}".encode()).json[Weather]())
+    assert problem is not None
+    assert problem.message == "`city` should be a str, but it's an int"
 
 test "a status that isn't a 200 is still an answer"(net: Net):
     net.script("POST https://example.com/a", Response(status=404))

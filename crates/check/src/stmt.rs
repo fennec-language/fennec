@@ -115,7 +115,14 @@ impl FnCx<'_> {
             StmtKind::Assert(cond) => {
                 match cond.asserted_failure() {
                     Some((value, pattern)) => self.assert_fails(value, pattern, stmt.span),
-                    None => self.condition(cond, "assert"),
+                    None => {
+                        // What an `assert` holds holds after it, as after `if not cond: fail`:
+                        // `assert problem is not None` lets `problem.message` be read.
+                        self.condition(cond, "assert");
+                        self.track(cond);
+                        self.narrow(&not_none(cond, true));
+                        self.narrow_members(&members(cond, true));
+                    }
                 }
                 Flow::unit()
             }

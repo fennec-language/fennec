@@ -22,11 +22,9 @@ test "a file written is there to read when its block ends"(fs: Fs):
 
 test "a block that fails leaves the old file as it was"(fs: Fs):
     save(fs, "scores.txt", scores=[120])?
-    match save(fs, "scores.txt", scores=[7, -1, 9]):
-        case Ok(_):
-            assert False
-        case Err(problem):
-            assert problem.reason == "-1 isn't a score"
+    problem = failure_of(() => save(fs, "scores.txt", scores=[7, -1, 9]))
+    assert problem is not None
+    assert problem.reason == "-1 isn't a score"
     assert load(fs, "scores.txt")? == [120]
 
 test "a file can be read in chunks"(fs: Fs):
@@ -40,17 +38,13 @@ test "a file can be read in chunks"(fs: Fs):
 test "a file is for writing or for reading, not both"(fs: Fs):
     fs.write_text("notes.txt", "fox")?
     with fs.open("notes.txt")? as file:
-        match file.write_text("den"):
-            case Ok(_):
-                assert False
-            case Err(problem):
-                assert problem.reason == "this file was opened to read, not to write"
+        mut problem = failure_of(() => file.write_text("den"))
+        assert problem is not None
+        assert problem.reason == "this file was opened to read, not to write"
     with fs.create("other.txt", durable=False)? as file:
-        match file.read_text():
-            case Ok(_):
-                assert False
-            case Err(problem):
-                assert problem.reason == "this file was made to write, not to read"
+        problem = failure_of(() => file.read_text())
+        assert problem is not None
+        assert problem.reason == "this file was made to write, not to read"
 
 def main(stdout: Stdout, fs: Fs):
     # This file doesn't exist, so opening it fails, and nothing is made.

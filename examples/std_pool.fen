@@ -72,22 +72,14 @@ test "only one opens up front, and the rest when they're needed"():
 test "a failed block's value is reset and lent again"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=False), size=1)? as links:
-        match borrowed_and_broken(links):
-            case Ok(_):
-                assert False
-            case Err(_):
-                pass
+        assert failure_of(() => borrowed_and_broken(links)) is not None
         with links.take()? as again:
             assert again.number == 1
 
 test "a value that can't be reset is replaced"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=True), size=1)? as links:
-        match borrowed_and_broken(links):
-            case Ok(_):
-                assert False
-            case Err(_):
-                pass
+        assert failure_of(() => borrowed_and_broken(links)) is not None
         with links.take()? as again:
             assert again.number == 2
 

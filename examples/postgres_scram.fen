@@ -12,19 +12,17 @@ def main(stdout: Stdout):
     stdout.print(proof.decode() else "")
     # The server's signature, which only a server that knows the password could make.
     for server_last in ["v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=", "v=AAAA"]:
-        match scram.check(server_last.encode()):
-            case Ok(_):
-                stdout.print("the server knows it")
-            case Err(err):
-                stdout.print(err.message())
+        _ = scram.check(server_last.encode()) else as err:
+            stdout.print(err.message())
+            continue
+        stdout.print("the server knows it")
     # A server that doesn't extend our nonce, or asks for too few rounds, is refused.
     mut again = PgScram.started(Secret.of("pencil"), nonce="abc")
     for weak in [
         "r=xyz,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096",
         "r=abcdef,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=10",
     ]:
-        match again.answer(weak.encode()):
-            case Ok(_):
-                stdout.print("wrongly answered")
-            case Err(err):
-                stdout.print(err.message())
+        _ = again.answer(weak.encode()) else as err:
+            stdout.print(err.message())
+            continue
+        stdout.print("wrongly answered")

@@ -24,32 +24,23 @@ test "an offset is taken off, and a fraction kept"():
     assert Time.parse("2026-11-06 21:55:56.123456789123z")?.nanosecond() == 123_456_789
 
 test "text that isn't RFC 3339 fails where it goes wrong"():
-    match Time.parse("2026-11-06T21:55"):
-        case Err(problem):
-            assert (
-                problem.message
-                == "`2026-11-06T21:55` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`"
-            )
-        case Ok(_):
-            assert False
-    match Time.parse("2026-11-06T21:55:56+0200"):
-        case Err(problem):
-            assert problem.column == 20
-        case Ok(_):
-            assert False
-    match Time.parse("2026-02-30T00:00:00Z"):
-        case Err(problem):
-            assert problem.message == "2026-02 has no day 30"
-        case Ok(_):
-            assert False
+    mut problem = failure_of(() => Time.parse("2026-11-06T21:55"))
+    assert problem is not None
+    assert (
+        problem.message == "`2026-11-06T21:55` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`"
+    )
+    problem = failure_of(() => Time.parse("2026-11-06T21:55:56+0200"))
+    assert problem is not None
+    assert problem.column == 20
+    problem = failure_of(() => Time.parse("2026-02-30T00:00:00Z"))
+    assert problem is not None
+    assert problem.message == "2026-02 has no day 30"
 
 ## Whether the calendar has this date, in the years a `Time` holds.
 def is_date(year: int, month: int, day: int) -> bool:
-    match Time.utc(year, month=month, day=day):
-        case Ok(_):
-            True
-        case Err(_):
-            False
+    _ = Time.utc(year, month=month, day=day) else:
+        return False
+    True
 
 test "the calendar has leap days where it should"():
     assert is_date(2024, month=2, day=29) and is_date(2000, month=2, day=29)
@@ -104,11 +95,9 @@ test "a time saves as RFC 3339 text and a duration as its nanoseconds"():
     text = json.dumps(visit)
     assert text == "{\"at\": \"2026-11-06T21:00:00Z\", \"stayed\": 5400000000000}"
     assert json.loads[Visit](text)? == visit
-    match json.loads[Visit]("{\"at\": \"yesterday\", \"stayed\": 0}"):
-        case Err(problem):
-            assert problem.message == "`at` is `yesterday`, which isn't an RFC 3339 time"
-        case Ok(_):
-            assert False
+    problem = failure_of(() => json.loads[Visit]("{\"at\": \"yesterday\", \"stayed\": 0}"))
+    assert problem is not None
+    assert problem.message == "`at` is `yesterday`, which isn't an RFC 3339 time"
 
 def main(stdout: Stdout, clock: Clock):
     moment = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56) else Time()

@@ -35,11 +35,9 @@ test "what can't be a URL says why"():
         ("https://example.com/a b", "it can't hold a space or a control character"),
         ("http://[::1/", "its IPv6 address has no `]`"),
     ]:
-        match url.parse(text):
-            case Err(problem):
-                assert problem.message == f"`{text}` isn't a URL: {why}"
-            case Ok(_):
-                assert False
+        problem = failure_of(() => url.parse(text))
+        assert problem is not None
+        assert problem.message == f"`{text}` isn't a URL: {why}"
 
 test "escapes and queries go both ways"():
     assert url.quote("red fox/den") == "red%20fox%2Fden"

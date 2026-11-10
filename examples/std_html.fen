@@ -97,11 +97,9 @@ LINK_REFUSED = "`{bad}` can't go there: a link has to be `http`, `https`, `mailt
 
 ## Why `page` couldn't be made, in words, or "" if it could.
 def refusal(page: Template[HtmlValue]) -> str:
-    match html.render(page):
-        case Ok(_):
-            ""
-        case Err(error):
-            error.message()
+    _ = html.render(page) else as error:
+        return error.message()
+    ""
 
 test "a value inside a script fails"():
     code = "alert(1)"

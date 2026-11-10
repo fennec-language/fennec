@@ -96,8 +96,10 @@ const MOST_CHECK_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
 /// a little, and this fails the run if that stops being little.
 const MOST_GROWTH: f64 = 1.5;
 
-/// How big a kit to measure on: files, each with this many functions and a tenth as many tests.
-const FUNCTIONS_PER_FILE: usize = 100;
+/// How big a kit to measure on: files, each with this many functions and a test for every tenth.
+/// At eight lines a function and three a test, a file is 798 lines, under the 800 that
+/// `long-file` allows, so the linter has nothing to say about it.
+const FUNCTIONS_PER_FILE: usize = 96;
 
 /// A budget and what was measured against it.
 struct Measured {
@@ -385,7 +387,8 @@ impl Kit {
         Ok(measured)
     }
 
-    /// Linting the edited file, whose lints, like functions nothing uses, don't fail this.
+    /// Linting the edited file, which has to find nothing: a kit someone works on is kept
+    /// lint-clean, and every lint found is work the other budgets would pay for too.
     fn lint(&self, runs: usize) -> Result<Measured, String> {
         let linted = || -> Result<Duration, String> {
             let start = Instant::now();
@@ -394,13 +397,14 @@ impl Kit {
                 .output()
                 .map_err(|err| format!("couldn't run fennec: {err}"))?;
             let took = start.elapsed();
-            match output.status.code() {
-                Some(0 | 1) => Ok(took),
-                _ => Err(format!(
-                    "`fennec lint {EDITED}` failed:\n{}",
+            if !output.status.success() {
+                return Err(format!(
+                    "`fennec lint {EDITED}` should find nothing in the kit, but:\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
-                )),
+                ));
             }
+            Ok(took)
         };
         let cold = linted()?;
         let times = (0..runs).map(|_| linted()).collect::<Result<Vec<_>, _>>()?;

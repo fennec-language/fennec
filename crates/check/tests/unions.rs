@@ -71,6 +71,43 @@ fn a_union_has_a_method_every_member_has() {
     );
 }
 
+/// A `match` case naming a member narrows the subject to it inside the case, as `is` does: a
+/// method only that member has, or a field of its own, reads there.
+#[test]
+fn a_match_case_narrows_its_subject_to_the_member_it_names() {
+    let empty: [&str; 0] = [];
+    let narrowed = format!(
+        "{SHAPES}def size(s: Shape) -> float:\n    match s:\n        case Circle(radius=_):\n            return s.radius\n        case Square(side=_):\n            return s.side\n"
+    );
+    assert_eq!(problems(&narrowed), empty);
+    let outside = format!(
+        "{SHAPES}def size(s: Shape) -> float:\n    match s:\n        case Circle(radius=_):\n            pass\n        case Square(side=_):\n            pass\n    s.radius\n"
+    );
+    assert_eq!(problems(&outside).len(), 1, "{:?}", problems(&outside));
+}
+
+/// A `with` source each of a union's types has runs the one the value holds only once it's
+/// narrowed, with `is` or a `match` case. Called on the union itself, which one runs would be
+/// chosen where the program's built, so it's refused there.
+#[test]
+fn a_with_source_on_a_union_is_refused_until_it_is_narrowed() {
+    let store = "error Nope:\n    why: str\n\nstruct Transaction:\n    log: str\n\nstruct Lite:\n    name: str\n\n    def transaction(self) -> with Transaction fails Nope:\n        lend Transaction(log=\"lite\") else:\n            pass\n\nstruct Postgres:\n    host: str\n\n    def transaction(self) -> with Transaction fails Nope:\n        lend Transaction(log=\"pg\") else:\n            pass\n\ntype Store = Lite | Postgres\n\n";
+    let said = "`transaction` is a `with` source each type in a Lite | Postgres has, and which one runs can't be chosen as the program runs yet @ store.transaction()";
+    let direct = format!(
+        "{store}def used(store: Store) -> str fails Nope:\n    with store.transaction()? as tx:\n        return tx.log\n    \"\"\n"
+    );
+    assert_eq!(problems(&direct), [said]);
+    let matched = format!(
+        "{store}def used(store: Store) -> str fails Nope:\n    match store:\n        case Lite(name=_):\n            with store.transaction()? as tx:\n                return tx.log\n        case Postgres(host=_):\n            return \"pg\"\n    \"\"\n"
+    );
+    assert_eq!(problems(&matched), Vec::<String>::new());
+    let narrowed = format!(
+        "{store}def used(store: Store) -> str fails Nope:\n    if store is Lite:\n        with store.transaction()? as tx:\n            return tx.log\n    \"\"\n"
+    );
+    assert_eq!(problems(&narrowed), Vec::<String>::new());
+    assert!(helps(&direct).iter().any(|help| help.contains("if store is Lite:")), "{:?}", helps(&direct));
+}
+
 #[test]
 fn a_match_over_a_union_handles_each_member() {
     let empty: [&str; 0] = [];

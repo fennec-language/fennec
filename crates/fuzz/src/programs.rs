@@ -96,6 +96,19 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
             return Err(with_program(format!("the {how} build touched memory it doesn't own: {said}")));
         }
     }
+    // A program that runs `parallel` does the same on one thread as on several.
+    if source.contains("parallel(") {
+        for threads in [1, 4, 8] {
+            let ran = crate::llvm::ran_again_on("programs", threads).map_err(with_program)?;
+            if ran != release {
+                return Err(with_program(format!(
+                    "the --release build does something else on {threads} threads:\n--- on {threads}\n{}\n--- as it ran first\n{}",
+                    shown(&ran),
+                    shown(&release)
+                )));
+            }
+        }
+    }
     if dev != release {
         return Err(with_program(format!(
             "the dev build and the --release build disagree:\n--- dev\n{}\n--- release\n{}",
@@ -172,11 +185,13 @@ mod tests {
     #[test]
     fn it_writes_local_refs_of_every_kind() {
         let mut found = [0_usize; 6];
-        for seed in 0_u8..=255 {
-            let bytes: Vec<u8> = (0_u8..160)
+        // Two lengths of input, since some kinds are rare.
+        for (seed, length) in (0_u8..=255).flat_map(|seed| [(seed, 160_u8), (seed, 96)]) {
+            let bytes: Vec<u8> = (0_u8..length)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
             let refs: Vec<&str> =
                 source.lines().map(str::trim).filter(|line| line.starts_with("ref ")).collect();
             let field = |names: &[&str]| {
@@ -188,7 +203,7 @@ mod tests {
                 field(&["x", "y"]),
                 refs.iter().any(|line| line.contains(".items[") && !line.starts_with("ref slot")),
                 refs.iter().any(|line| line.starts_with("ref slot")),
-                source.contains("bump(ref v"),
+                body.contains("bump(ref v"),
             ];
             for (count, kind) in found.iter_mut().zip(kinds) {
                 *count += usize::from(kind);
@@ -254,6 +269,20 @@ mod tests {
             }
         }
         assert!(found.iter().all(|count| *count >= 2), "{found:?}");
+    }
+
+    /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.
+    #[test]
+    fn it_plans_on_threads_then_applies() {
+        let mut found = 0;
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            found += usize::from(source.contains("for planned in v"));
+        }
+        assert!(found >= 3, "{found} programs plan and apply");
     }
 
     #[test]

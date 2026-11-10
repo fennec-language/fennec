@@ -711,18 +711,28 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
         || crate::effects::children(expr).into_iter().any(|inner| reads(inner, changed))
 }
 
-const ARGUMENT_CHANGES_FIX: &str =
-    "make that change on the line before, keeping what it gives back in a name, and pass the name";
+/// The rule behind each of these errors, said first in each one's help so they read as one rule:
+/// `f(ref xs[i], ref xs[j])`, `bag.grab(bag.items)` and an argument that changes what its call
+/// changes all reach one thing two ways while it changes.
+macro_rules! one_way_in {
+    ($fix:literal) => {
+        concat!("a call has to be the only way to reach what it changes: ", $fix)
+    };
+}
 
-const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: pass a value you made first, \
-like `item = xs[j]`, or make the changes one at a time";
+const ARGUMENT_CHANGES_FIX: &str = one_way_in!(
+    "make that change on the line before, keeping what it gives back in a name, and pass the name"
+);
 
-const RECEIVER_FIX: &str = "a `ref self` method needs what it changes to itself: pass a value you made \
-first, like `held = bag.items`";
+const OVERLAP_FIX: &str =
+    one_way_in!("pass a value you made first, like `item = xs[j]`, or make the changes one at a time");
+
+const RECEIVER_FIX: &str = one_way_in!("pass a value you made first, like `held = bag.items`");
 
 /// Two `ref`s into one collection, at indexes written apart or not.
-const ITEMS_FIX: &str = "two items of one collection are never both `ref`, even at different indexes: \
-make the changes one at a time";
+const ITEMS_FIX: &str = one_way_in!(
+    "two items of one collection may be the same one, even at different indexes, so make the changes one at a time"
+);
 
 /// Whether a value is passed as itself, leaving nothing behind that the callee could change.
 fn passed_as_a_value(ty: Option<&Type>) -> bool {

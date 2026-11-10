@@ -2,6 +2,7 @@
 # holding a comma, a quote or a line break is written in quotes, with its quotes doubled. Lines
 # can end in `\n`, `\r\n` or `\r`, and blank lines aren't rows, so `dumps` refuses a row with no fields.
 # Every field is text.
+from std.io import Reader, Writer, read_all
 
 ## The rows of `text`. Text that isn't CSV fails with a `ParseError`.
 export def loads(text: str, delimiter = ",") -> list[list[str]]:
@@ -149,3 +150,19 @@ def rows_in(text: str, delimiter: str) -> list[(int, list[str])]:
         row.append(field)
         rows.append((row_line, row))
     rows
+
+## Writes `rows` as CSV to `out`, any `Writer` from `std.io`, as `dumps` gives them.
+export def dump[W: Writer](
+    rows: list[list[str]],
+    ref out: W,
+    delimiter = ",",
+) fails InvalidValue | IoError:
+    out.write_text(dumps(rows, delimiter)?)?
+
+## The rows of what's left in `src`, any `Reader` from `std.io`, as `loads` reads them.
+export def load[R: Reader](ref src: R, delimiter = ",") -> list[
+    list[str]
+] fails ParseError | IoError:
+    data = read_all(ref src)?
+    text = data.decode() else fail ParseError(message="the CSV isn't UTF-8 text", line=1, column=1)
+    loads(text, delimiter)?

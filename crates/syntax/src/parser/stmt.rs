@@ -101,7 +101,7 @@ impl Parser {
         }
         let ty = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
         self.expect_p(Punct::Assign)?;
-        let value = self.expr()?;
+        let value = self.assigned()?;
         Ok(StmtKind::Assign { target, op: None, value, declare_mut: true, ty })
     }
 
@@ -111,7 +111,7 @@ impl Parser {
         if matches!(target.kind, ExprKind::Name(_)) && self.eat_p(Punct::Colon) {
             let ty = Some(self.type_expr()?);
             self.expect_p(Punct::Assign)?;
-            let value = self.expr()?;
+            let value = self.assigned()?;
             return Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty });
         }
         if self.at_p(Punct::Comma) {
@@ -146,8 +146,28 @@ impl Parser {
         if !assignable {
             return Err(Diagnostic::new("this can't be assigned to", target.span));
         }
-        let value = self.expr()?;
+        let value = if op.is_none() { self.assigned()? } else { self.expr()? };
         Ok(StmtKind::Assign { target, op, value, declare_mut: false, ty: None })
+    }
+
+    /// What `name = ...` is given: a value, or a `lock` block whose last line is the value, as in
+    /// `total = lock scores as current:`. A block is written in as the one case of a `match` over
+    /// nothing, as an `else:` block is. An `if` over several lines gives no value.
+    fn assigned(&mut self) -> Result<Expr, Diagnostic> {
+        if matches!(self.peek(), Tok::Name(word) if word == "lock") && matches!(self.peek_at(1), Tok::Name(_))
+        {
+            let start = self.span();
+            let locked = self.with_stmt(true)?;
+            self.block_ended = true;
+            let span = start.to(self.prev_span());
+            return Ok(super::expr::leaving_match(start, vec![locked], span));
+        }
+        if self.at(&Tok::Kw(Kw::If)) {
+            return Err(Diagnostic::new("`if` doesn't give a value over several lines", self.span()).with_help(
+                "write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
+            ));
+        }
+        self.expr()
     }
 
     fn if_stmt(&mut self) -> Result<Stmt, Diagnostic> {

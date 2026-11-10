@@ -586,7 +586,7 @@ pub(super) fn interpolated(source: &str, offset: u32, what: &str) -> Result<Expr
 
 /// What a default that leaves parses to: a `match` with one case, holding the statements that
 /// leave, which every engine and analysis already follows out of the expression.
-fn leaving_match(start: Span, body: Vec<Stmt>, span: Span) -> Expr {
+pub(super) fn leaving_match(start: Span, body: Vec<Stmt>, span: Span) -> Expr {
     let arm = MatchArm { pattern: Pattern::Wildcard, guard: None, body, span };
     // Expressions are told apart by span, and nothing's written here, so it's empty.
     let subject =

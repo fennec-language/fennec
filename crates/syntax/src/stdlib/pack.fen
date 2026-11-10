@@ -25,6 +25,7 @@
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
 from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, layout, new_tag, pack_lock, shape_hash, shape_locked, text_byte, text_size, type_name
+from std.io import Reader, Writer, read_all
 from std.json import IdsSeen, found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
@@ -1331,3 +1332,15 @@ struct PackByName:
 
     def end_member(ref self) fails ParseError:
         self._raw._depth -= 1
+
+## Writes `value` to `out`, any `Writer` from `std.io`, as `dumps` gives it.
+export def dump[T: Serializable, W: Writer](value: T, ref out: W, exact = False) fails IoError:
+    out.write(dumps(value, exact=exact))?
+
+## Reads what's left in `src`, any `Reader` from `std.io`, as a `T`, as `loads` does.
+export def load[T: Deserializable, R: Reader](
+    ref src: R,
+    limits: Limits? = None,
+) -> T fails ParseError | IoError:
+    data = read_all(ref src)?
+    loads[T](data, limits=limits)?

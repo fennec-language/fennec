@@ -10231,8 +10231,12 @@ def talk(net: Net, stdout: Stdout) fails NetError:
                 second.close()
 
 def main(net: Net, stdout: Stdout):
+    mut talked_fine = True
     talk(net, stdout) else as talked:
         stdout.print(talked.message())
+        talked_fine = False
+    if talked_fine:
+        stdout.print(\"done\")
     bound(net, port=99999) else:
         pass
 ";

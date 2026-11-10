@@ -27,8 +27,8 @@ pub use ast::{
 pub use diagnostic::{Also, Diagnostic, Edit, HELP_MARK, Hint, KIT_MARK, apply_fixes, without_kits};
 pub use doc_examples::doc_examples;
 pub use modules::{
-    Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
-    std_import,
+    Imported, dotted, importable_type, member as std_member, module_as_value, package_member,
+    shared_declaration, short_module, std_import, written_type,
 };
 pub use parser::{parse, parse_at, parse_prelude};
 pub use sources::{Sources, Trace};

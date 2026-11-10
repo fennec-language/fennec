@@ -20,6 +20,7 @@ cargo build --release -p fennec -p fennec-bench
 | Streaming | `generators`, stages chained through names and functions |
 | Closures and iterators | `comprehensions`, `closures` |
 | Object-heavy code with dispatch | `richards`, `deltablue` |
+| Shared state under a lock | `locks`, a counter and a dict changed under `lock ... as ref` in a loop |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 

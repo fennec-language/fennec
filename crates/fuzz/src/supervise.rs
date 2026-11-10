@@ -188,7 +188,9 @@ pub(crate) fn output_watched(
     };
     let stdout = read(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
     let stderr = read(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
-    let failure = watch_as(&mut child, Watched::Group, stuck, None, most_kilobytes, || false);
+    // How it ended is the status's to say: only being stopped is a failure here.
+    let failure = watch_as(&mut child, Watched::Group, stuck, None, most_kilobytes, || false)
+        .filter(|failure| matches!(failure, Failure::Stuck | Failure::TooMuchMemory));
     let status = child
         .wait()
         .map_err(|err| format!("couldn't wait for `{}`: {err}", command.get_program().display()))?;
@@ -431,6 +433,11 @@ mod tests {
         sleeps.args(["-c", "sleep 5"]);
         let (_, failure) = output_watched(&mut sleeps, Duration::from_secs(10), 1).unwrap();
         assert_eq!(failure, Some(Failure::TooMuchMemory));
+        // One that fails on its own isn't stopped, and says how it ended.
+        let mut fails = std::process::Command::new("sh");
+        fails.args(["-c", "exit 1"]);
+        let (said, failure) = output_watched(&mut fails, Duration::from_secs(10), MOST_KILOBYTES).unwrap();
+        assert_eq!((failure, said.status.code()), (None, Some(1)));
         // And one that finishes gives back what it wrote.
         let mut says = std::process::Command::new("sh");
         says.args(["-c", "echo out; echo err >&2"]);

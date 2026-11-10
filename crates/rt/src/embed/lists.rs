@@ -28,30 +28,30 @@ pub const SORT_FLOATS: i64 = 1;
 pub const SORT_STRINGS: i64 = 2;
 pub const SORT_U64S: i64 = 3;
 
-/// The bit of a list's owner count a lock's rollback log sets when it marks the list, in place of
-/// holding a count of it (see `guarded::rollback`). The count then never reads as 1, so native code
-/// asks the runtime before every change, and the list lives while the log has it. Well below
+/// The bit of a list's or a dict's owner count a lock's rollback log sets when it marks it, in place
+/// of holding a count of it (see `guarded::rollback`). The count then never reads as 1, so native
+/// code asks the runtime before every change, and the block lives while the log has it. Well below
 /// `heap::IMMORTAL`, which nothing marked comes near.
 pub const MARKED: u64 = 1 << 40;
 
-/// Whether the block at `address` is a list a log can mark: not one already, nor one that lives for
-/// the whole run.
+/// Whether the block at `address` is a list or a dict a log can mark: not one already, nor one that
+/// lives for the whole run.
 pub(super) fn markable(state: &State, address: u64) -> bool {
     state.heap.block(address).is_some_and(|block| {
-        element_of(state, block).is_some()
+        (element_of(state, block).is_some() || super::dicts::is_dict(state, block))
             && block.first().is_some_and(|count| count & MARKED == 0 && *count < super::heap::IMMORTAL)
     })
 }
 
-/// Marks a list for a lock's log.
+/// Marks a list or a dict for a lock's log.
 pub(super) fn mark(state: &mut State, address: u64) {
     if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
         *count |= MARKED;
     }
 }
 
-/// Takes a log's mark off a list. With `owner`, the mark becomes an owner, for the word the log puts
-/// it back in; otherwise the list goes if nothing else holds it.
+/// Takes a log's mark off a list or a dict. With `owner`, the mark becomes an owner, for the word the
+/// log puts it back in; otherwise it goes if nothing else holds it.
 pub(super) fn unmark(state: &mut State, address: u64, owner: bool) {
     let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) else { return };
     // An owner either way, which letting go of again, without `owner`, frees a list nothing holds.
@@ -61,8 +61,9 @@ pub(super) fn unmark(state: &mut State, address: u64, owner: bool) {
     }
 }
 
-/// Whether a list has the log's mark and, apart from it, one owner: changed in place, a log has it.
-fn marked_alone(block: &[u64]) -> bool {
+/// Whether a list or a dict has the log's mark and, apart from it, one owner: changed in place, a
+/// log has it.
+pub(super) fn marked_alone(block: &[u64]) -> bool {
     block.first().is_some_and(|count| count & MARKED != 0 && count & !MARKED == 1)
 }
 
@@ -128,6 +129,53 @@ fn marked_pop(state: &mut State, list: i64) -> Option<i64> {
         return None;
     }
     Some(list)
+}
+
+/// `fennec_list_item_unshare(list, at)`: the list an item set at `at` changes, the same when it has
+/// one owner. A marked one stays as it is, and its log holds the item as it was, for a crash to put
+/// back; any other shared list is copied. `at` counts from the end when it's below 0, as an index
+/// does.
+pub extern "C" fn item_unshare(list: i64, at: i64) -> i64 {
+    with(|state| marked_set(state, list, at).or_else(|| grow_in(state, list, 0)).unwrap_or(list))
+}
+
+fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
+    let address = u64::try_from(list).ok()?;
+    let block = state.heap.block(address)?;
+    if !marked_alone(block) {
+        return None;
+    }
+    let element = element_of(state, block)?;
+    let stride = element.words();
+    let count = i64::try_from(*block.get(2)?).ok()?;
+    // An index outside the list changes nothing: the set fails, as it would anyway.
+    let Ok(at) = usize::try_from(if at < 0 { at + count } else { at }) else { return Some(list) };
+    if at >= usize::try_from(count).ok()? {
+        return Some(list);
+    }
+    let start = LIST_HEADER_WORDS + at * stride;
+    let words = block.get(start..start + stride)?.to_vec();
+    retain_items(state, &element, &words);
+    if !super::guarded::rollback::set(address, at, words.clone()) {
+        release_items(state, &element, &words);
+        return None;
+    }
+    Some(list)
+}
+
+/// After a crash, a marked list's item at `at` as it was before it was set, with the owners the log
+/// held: what's there now is let go of.
+pub(super) fn set_back(state: &mut State, address: u64, at: usize, words: &[u64]) {
+    let Some(block) = state.heap.block(address) else { return };
+    let Some(element) = element_of(state, block) else { return };
+    let start = LIST_HEADER_WORDS + at * words.len();
+    let Some(now) = block.get(start..start + words.len()).map(<[u64]>::to_vec) else { return };
+    if let Some(slots) =
+        state.heap.block_mut(address).and_then(|block| block.get_mut(start..start + words.len()))
+    {
+        slots.copy_from_slice(words);
+    }
+    release_items(state, &element, &now);
 }
 
 /// After a crash, a marked list as long as it was before an append: what went on since is let go of.

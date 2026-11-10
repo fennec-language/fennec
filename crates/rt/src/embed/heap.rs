@@ -880,6 +880,16 @@ fn shape_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     state.tables.shapes.get(shape).cloned()
 }
 
+/// Whether a block is a struct's of plain fields, which a lock's log can mark and save word by word:
+/// no closure, generator or error, whose blocks hold more than their fields, and no enum.
+pub(super) fn is_plain_struct(state: &State, block: &[u64]) -> bool {
+    shape_word(block).is_some_and(|shape| shape < state.tables.str_shape)
+        && matches!(
+            shape_of(state, block).as_deref(),
+            Some(Element::Struct { fields, .. }) if !fields.iter().any(|(name, _)| name.starts_with('\0'))
+        )
+}
+
 /// What a block of a struct, enum or tuple is laid out as.
 pub(super) fn element_of_block(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     shape_of(state, block)

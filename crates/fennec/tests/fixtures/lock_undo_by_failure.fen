@@ -1,13 +1,16 @@
-# Thousands of random changes to two lists in a `shared` value, under `lock ... as ref`, each case
-# failing at a random step or not at all: a failure must leave the lists exactly as they were before
-# the lock, and a case that ends must leave what the same changes make of plain lists. An append and
-# a pop there are made in place and undone from the lock's log; the other changes copy the list.
+# Thousands of random changes to two lists and two dicts in a `shared` value, under `lock ... as ref`,
+# each case failing at a random step or not at all: a failure must leave them exactly as they were
+# before the lock, a dict's keys in the same order, and a case that ends must leave what the same
+# changes make of plain ones. An append, a pop, an item set and a dict's put or pop there are made in
+# place and undone from the lock's log; the other changes copy the list.
 error Boom:
     step: int
 
 struct Holder:
     words: list[str]
     numbers: list[int]
+    counts: dict[str, int]
+    names: dict[int, str]
 
 struct Random:
     state: int
@@ -20,7 +23,14 @@ struct Random:
 
 ## One random change to both lists, as a method changes a shared value's fields through `ref`. With
 ## `boom`, it crashes once the change is made.
-def change(ref words: list[str], ref numbers: list[int], ref random: Random, boom: bool) fails Boom:
+def change(
+    ref words: list[str],
+    ref numbers: list[int],
+    ref counts: dict[str, int],
+    ref names: dict[int, str],
+    ref random: Random,
+    boom: bool,
+) fails Boom:
     what = random.below(8)
     if what == 0:
         words.append(f"w{random.below(100)}")
@@ -56,6 +66,20 @@ def change(ref words: list[str], ref numbers: list[int], ref random: Random, boo
                 _ = numbers.pop()
     if words.len() > 60:
         words.clear()
+    # And a change to each dict: a key put, new or not, or one taken out, so that what's put back
+    # is in the order it was.
+    key = f"k{random.below(12)}"
+    if random.below(3) == 0:
+        if key in counts:
+            _ = counts.pop(key)
+    else:
+        counts[key] = random.below(1000)
+    number = random.below(12)
+    if random.below(3) == 0:
+        if number in names:
+            _ = names.pop(number)
+    else:
+        names[number] = f"a name long enough to be held in a block of its own, {random.below(100)}"
     if boom:
         fail Boom(step=words.len())
 
@@ -73,10 +97,29 @@ def changed(holder: shared Holder, seed: int, steps: int, crash_at: int) fails B
                 held.numbers.append(random.below(9))
                 if held.words.len() > 1:
                     _ = held.words.pop()
-            change(ref held.words, ref held.numbers, ref random, boom=step == crash_at)?
+                held.numbers[random.below(held.numbers.len())] = random.below(9)
+                held.counts[f"d{random.below(4)}"] = random.below(9)
+                held.names[random.below(4)] = "direct, and long enough to be held in a block of its own"
+                if "d0" in held.counts:
+                    _ = held.counts.pop("d0")
+            change(
+                ref held.words,
+                ref held.numbers,
+                ref held.counts,
+                ref held.names,
+                ref random,
+                boom=step == crash_at,
+            )?
 
 ## The same changes made to plain lists, for what a case that doesn't crash leaves.
-def modeled(ref words: list[str], ref numbers: list[int], seed: int, steps: int):
+def modeled(
+    ref words: list[str],
+    ref numbers: list[int],
+    ref counts: dict[str, int],
+    ref names: dict[int, str],
+    seed: int,
+    steps: int,
+):
     mut random = Random(state=seed)
     for _ in range(steps):
         if random.below(3) == 0:
@@ -84,7 +127,12 @@ def modeled(ref words: list[str], ref numbers: list[int], seed: int, steps: int)
             numbers.append(random.below(9))
             if words.len() > 1:
                 _ = words.pop()
-        change(ref words, ref numbers, ref random, boom=False) else return
+            numbers[random.below(numbers.len())] = random.below(9)
+            counts[f"d{random.below(4)}"] = random.below(9)
+            names[random.below(4)] = "direct, and long enough to be held in a block of its own"
+            if "d0" in counts:
+                _ = counts.pop("d0")
+        change(ref words, ref numbers, ref counts, ref names, ref random, boom=False) else return
 
 def ran(holder: shared Holder, seed: int, steps: int, crash_at: int) -> bool:
     _ = changed(holder, seed=seed, steps=steps, crash_at=crash_at) else:
@@ -92,9 +140,11 @@ def ran(holder: shared Holder, seed: int, steps: int, crash_at: int) -> bool:
     return True
 
 def main(stdout: Stdout):
-    shared holder = Holder(words=["a", "b"], numbers=[1, 2, 3])
+    shared holder = Holder(words=["a", "b"], numbers=[1, 2, 3], counts={"k0": 0}, names={0: "zero"})
     mut words = ["a", "b"]
     mut numbers = [1, 2, 3]
+    mut counts = {"k0": 0}
+    mut names = {0: "zero"}
     mut picker = Random(state=12345)
     mut wrong = 0
     mut crashed = 0
@@ -105,15 +155,24 @@ def main(stdout: Stdout):
         crash_at = picker.below(steps * 2)
         if ran(holder, seed=seed, steps=steps, crash_at=crash_at):
             kept += 1
-            modeled(ref words, ref numbers, seed=seed, steps=steps)
+            modeled(ref words, ref numbers, ref counts, ref names, seed=seed, steps=steps)
         else:
             crashed += 1
         lock holder as held:
-            if held.words != words or held.numbers != numbers:
+            # A dict is compared in order too.
+            if (
+                held.words != words
+                or held.numbers != numbers
+                or held.counts.items() != counts.items()
+                or held.names.items() != names.items()
+            ):
                 wrong += 1
                 if wrong < 4:
                     stdout.print("case", case, held.words, words, held.numbers, numbers)
+                    stdout.print(held.counts.items(), counts.items(), held.names.items(), names.items())
                 # Back in step with what the shared value holds, to find the next.
                 words = list(held.words)
                 numbers = list(held.numbers)
+                counts = {key: value for key, value in held.counts.items()}
+                names = {key: value for key, value in held.names.items()}
     stdout.print("wrong", wrong, "crashed", crashed > 1000, "kept", kept > 1000)

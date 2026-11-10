@@ -1502,6 +1502,51 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A dict's put and pop, and a list's item set, in a `shared` value under its lock, made in place
+/// with each change noted for a crash to undo: the lock costs what it changes, not a copy of the
+/// whole dict or list each time it's taken. A dict still copies when it grows past its room, as one
+/// with keys taken out does now and then, but no more often than that.
+#[test]
+fn changing_a_dict_or_an_item_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Table:\n    counts = dict[str, int]()\n    names = dict[int, str]()\n    \
+                 items = [0, 0, 0, 0]\n\n    def put(ref self, n: int):\n        self.counts[f\"k{n % 50}\"] = n\n\n\
+                 def main(stdout: Stdout):\n    shared table = Table()\n    mut seen = 0\n";
+    for (name, body) in [
+        (
+            "put",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n % 50}\"] = n\n            \
+             held.names[n % 50] = f\"a name long enough for a block of its own {n}\"\n    \
+             lock table as held:\n        seen = held.counts.len() + held.names.len()\n",
+        ),
+        (
+            "pop",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n}\"] = n\n        \
+             lock table as ref held:\n            seen += held.counts.pop(f\"k{n}\")\n",
+        ),
+        ("method", "    for n in range(2000):\n        lock table as ref held:\n            held.put(n)\n"),
+        (
+            "item",
+            "    for n in range(2000):\n        lock table as ref held:\n            held.items[n % 4] = n\n            \
+             held.items[-1] += 1\n    lock table as held:\n        seen = held.items[3]\n",
+        ),
+    ] {
+        let counts =
+            counts_of(&format!("shared_dict_{name}"), &format!("{types}{body}    stdout.print(seen)\n"))?;
+        let number = |what: &str| {
+            let mut words = counts.split_whitespace();
+            words.position(|word| word == what).and_then(|_| words.next()).and_then(|n| n.parse::<u64>().ok())
+        };
+        // One copy in each lock would be 2,000, of hundreds of bytes each.
+        let (copies, bytes) = (number("copies"), number("copied_bytes"));
+        assert!(copies.is_some_and(|copies| copies < 400), "{name}: {counts}");
+        assert!(bytes.is_some_and(|bytes| bytes < 50_000), "{name}: {counts}");
+    }
+    Ok(())
+}
+
 /// The same in a program with tasks, where a lock's value is read through the lock's edge: 2,000
 /// pushes under the lock in `main` and 2,000 pushes and pops in a launched task copy nothing a
 /// round. What the program copies is only what starting its task copies, the same program with no
@@ -1582,6 +1627,21 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         "lock_undo_by_crash",
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
+    )
+}
+
+/// Puts, pops and item sets made in place on a `shared` value's dicts and list, straight in the
+/// lock's block, then a failure: the dicts and the list are as they were, keys in the same order. So
+/// they are after a dict grown past its room, which copies it once the changes in place are made.
+#[test]
+fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_undo_in_place",
+        include_str!("fixtures/lock_undo_in_place.fen"),
+        include_str!("fixtures/lock_undo_in_place.out"),
     )
 }
 

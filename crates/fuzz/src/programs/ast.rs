@@ -302,12 +302,14 @@ pub(crate) enum Via {
     /// After `if store is Member:` for each member, `Lite`'s through `opened`, a function
     /// whose last line is a `with` that returns.
     Is,
-    /// `run` straight on the union, with no match; its `with` source still after `is`, which a
-    /// union needs.
+    /// `run` straight on the union, with no match, and its `with` source after `is`.
     Direct,
     /// After `if store is Lite: return`, on what's left, `Pg | Mem`: `run` called on it, it
     /// given where a `Pg | Mem` goes, and a `match` telling the two apart. Three members only.
     Rest,
+    /// `with store.session()` and `run` straight on the union, with no `is` or `match`: each
+    /// runs the member's own.
+    Plain,
 }
 
 /// The containers `CopiedNested` copies and changes deep inside.

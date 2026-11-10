@@ -224,6 +224,14 @@ def checked3(store: Three, text: str) -> str:
             return f\"{session.log} {store.run(text)}\"
     \"\"
 
+def plain2(store: Two, text: str) -> str:
+    with store.session() as session:
+        return f\"{session.log} {store.run(text)}\"
+
+def plain3(store: Three, text: str) -> str:
+    with store.session() as session:
+        return f\"{session.log} {store.run(text)}\"
+
 def rested(rest: Pg | Mem, text: str) -> int:
     rest.run(text)
 
@@ -610,6 +618,7 @@ impl Writer {
                     Via::Is => "checked",
                     Via::Direct => "direct",
                     Via::Rest => "rest",
+                    Via::Plain => "plain",
                 };
                 let made = ["Lite(name=\"a\")", "Pg(host=\"b\")", "Mem(size=1)"]
                     .get(*member)

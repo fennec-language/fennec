@@ -950,10 +950,10 @@ impl Writer<'_> {
             }
             23 if self.choice(3) == 0 => {
                 // A union's member called on through the union: after `match`, after `is`,
-                // straight on it, with its `with` source always after `is`, or on what's left
-                // of three after `is`.
-                let how = [Via::Match, Via::Is, Via::Direct, Via::Rest]
-                    .get(self.choice(4))
+                // straight on it, with its `with` source after `is` or straight on it too, or on
+                // what's left of three after `is`.
+                let how = [Via::Match, Via::Is, Via::Direct, Via::Rest, Via::Plain]
+                    .get(self.choice(5))
                     .copied()
                     .unwrap_or(Via::Match);
                 let members = if matches!(how, Via::Rest) { 3 } else { 2 + self.choice(2) };

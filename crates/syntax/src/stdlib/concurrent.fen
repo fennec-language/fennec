@@ -210,17 +210,8 @@ export struct Pool[T]:
     ## and then `give_back`, as `take()` does. Prefer `take()`.
     def borrowed(self) -> Borrowed[T] fails PoolError:
         with channel[Lent[T]](size=1) as reply:
-            match self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())):
-                case Ok(_):
-                    pass
-                case Err(_):
-                    fail .Closed
-            mut lent = Lent[T](value=None, back=None, failure="")
-            match reply.receive(timeout=self._wait):
-                case Ok(got):
-                    lent = got
-                case Err(_):
-                    fail .Timeout(waited=self._wait)
+            self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) else fail .Closed
+            lent = reply.receive(timeout=self._wait) else fail .Timeout(waited=self._wait)
             if lent.failure != "": fail .Open(reason=lent.failure)
             value = lent.value else fail .Closed
             back = lent.back else fail .Closed
@@ -272,19 +263,18 @@ STOP = 4
 
 ## What `open` gives, or its failure as a `PoolError`.
 def opened[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
-    match open():
-        case Ok(value):
-            return value
-        case Err(failure):
-            fail PoolError.Open(reason=failure.message())
+    value = open() else as failure:
+        fail PoolError.Open(reason=failure.message())
+    value
 
 ## Sends `message` if `to` still takes it: the other side may have gone, which is fine.
 def told[T](to: Sender[T], message: T):
-    match to.send(message):
-        case Ok(_):
-            pass
-        case Err(_):
-            pass
+    to.send(message) else return
+
+## Whether `to` took `message`: the other side may have gone.
+def delivered[T](to: Sender[T], message: T) -> bool:
+    to.send(message) else return False
+    True
 
 ## The pool's tasks: a keeper for each value, each launched inside the last so they all run at
 ## once, then the dispatcher that hands them out. Each `with launch` ends once its keeper has
@@ -354,25 +344,19 @@ def keep[T: Pooled, E: Explained](
         for order in orders:
             reply = order.reply else break
             if held is None:
-                match open():
-                    case Ok(value):
-                        held = value
-                    case Err(failure):
-                        told(reply, Lent[T](value=None, back=None, failure=failure.message()))
-                        told(notes, PoolNote[T](kind=EMPTY, keeper=number))
-                        continue
+                held = open() else as failure:
+                    told(reply, Lent[T](value=None, back=None, failure=failure.message()))
+                    told(notes, PoolNote[T](kind=EMPTY, keeper=number))
+                    continue
             value = held else continue
-            match reply.send(Lent[T](value=value, back=given.sender(), failure="")):
-                case Ok(_):
-                    back = given.receive() else Given[T](value=value, succeeded=False)
-                    if back.succeeded or back.value.reset():
-                        held = back.value
-                    else:
-                        back.value.close()
-                        held = None
-                case Err(_):
-                    # The borrower stopped waiting, so the value goes to the next.
-                    pass
+            # A borrower that stopped waiting takes nothing, so the value goes to the next.
+            if delivered(reply, Lent[T](value=value, back=given.sender(), failure="")):
+                back = given.receive() else Given[T](value=value, succeeded=False)
+                if back.succeeded or back.value.reset():
+                    held = back.value
+                else:
+                    back.value.close()
+                    held = None
             told(notes, PoolNote[T](kind=FREE if held is not None else EMPTY, keeper=number))
     if held is not None:
         held.close()

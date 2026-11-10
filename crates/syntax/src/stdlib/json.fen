@@ -787,23 +787,21 @@ struct JsonReader:
     def _int_otherwise(ref self) -> int fails ParseError:
         if self._in_key and text_byte(self._source, self._at) == 34:
             key = self.text()?
-            match int(key):
-                case Ok(n):
-                    # Two ways to write one key would merge into one entry.
-                    if str(n) == key: return n
-                    if not self._explain: fail no_reason()
-                    fail ParseError(
-                        message=f"{self._where()} has the key \"{key}\", which isn't how that int is written",
-                        line=0,
-                        column=0,
-                    )
-                case Err(_):
-                    if not self._explain: fail no_reason()
-                    fail ParseError(
-                        message=f"{self._where()} has the key \"{key}\", which isn't an int",
-                        line=0,
-                        column=0,
-                    )
+            n = int(key) else:
+                if not self._explain: fail no_reason()
+                fail ParseError(
+                    message=f"{self._where()} has the key \"{key}\", which isn't an int",
+                    line=0,
+                    column=0,
+                )
+            # Two ways to write one key would merge into one entry.
+            if str(n) == key: return n
+            if not self._explain: fail no_reason()
+            fail ParseError(
+                message=f"{self._where()} has the key \"{key}\", which isn't how that int is written",
+                line=0,
+                column=0,
+            )
         fail self._misfit("int")
 
     ## An int of too many digits for the quick way, or what's a float or isn't a number.
@@ -811,12 +809,9 @@ struct JsonReader:
         start = self._at
         if self._number_end(start) < 0: fail self._misfit("int")
         end = self._number_end(start)
-        match int(text_part(self._source, start, end)):
-            case Ok(n):
-                self._at = end
-                return n
-            case Err(_):
-                fail no_reason()
+        n = int(text_part(self._source, start, end)) else fail no_reason()
+        self._at = end
+        n
 
     ## Where the plain int starting here ends, or -1 if it's written as a float.
     def _number_end(self, start: int) -> int:
@@ -876,20 +871,13 @@ struct JsonReader:
         while b == 45 or b == 43 or b == 46 or b == 101 or b == 69 or (b >= 48 and b <= 57):
             at += 1
             b = text_byte(self._source, at)
-        match float(text_part(self._source, start, at)):
-            case Ok(x):
-                # A number too big for a float would come out as infinity, which isn't what it said.
-                if x == 1e308 * 10.0 or x == -1e308 * 10.0:
-                    if not self._explain: fail no_reason()
-                    fail ParseError(
-                        message=f"{self._where()} is too big for a float",
-                        line=0,
-                        column=0,
-                    )
-                self._at = at
-                return x
-            case Err(_):
-                fail no_reason()
+        x = float(text_part(self._source, start, at)) else fail no_reason()
+        # A number too big for a float would come out as infinity, which isn't what it said.
+        if x == 1e308 * 10.0 or x == -1e308 * 10.0:
+            if not self._explain: fail no_reason()
+            fail ParseError(message=f"{self._where()} is too big for a float", line=0, column=0)
+        self._at = at
+        x
 
     def bool(ref self) -> bool fails ParseError:
         b = self._space()
@@ -1439,15 +1427,12 @@ struct JsonReader:
     ## The error for a case with no data that the text gives a field.
     def _no_field(ref self, owner: str) -> ParseError:
         if not self._explain: return no_reason()
-        match self.text():
-            case Ok(key):
-                ParseError(
-                    message=f"`{owner}` has no field \"{key}\", but {self._where()} has one",
-                    line=0,
-                    column=0,
-                )
-            case Err(_):
-                no_reason()
+        key = self.text() else return no_reason()
+        ParseError(
+            message=f"`{owner}` has no field \"{key}\", but {self._where()} has one",
+            line=0,
+            column=0,
+        )
 
     def _plain_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         mut at = -1 if self._explain else self._case_in_place(cases)
@@ -1724,11 +1709,7 @@ struct JsonReader:
                 fail self._bad(f"expected a digit in the exponent, but found {self._next_char()}")
         if not is_float:
             number = text_part(self._source, start, self._at)
-            match int(number):
-                case Ok(_):
-                    pass
-                case Err(_):
-                    fail self._bad_at(f"`{number}` is too big for an int", start)
+            _ = int(number) else fail self._bad_at(f"`{number}` is too big for an int", start)
 
     def _digits(ref self):
         mut b = text_byte(self._source, self._at)
@@ -1754,11 +1735,7 @@ export def native_loads[T: Deserializable](
     spelled = names else JsonNames.snake_case
     keys = extra else JsonExtra.error
     mut src = JsonReader(_source=text, _names=spelled, _extra=keys)
-    match read_value[T](ref src):
-        case Ok(value):
-            value
-        case Err(_):
-            explained[T](text, spelled, keys)?
+    read_value[T](ref src) else explained[T](text, spelled, keys)?
 
 def read_value[T: Deserializable](ref src: JsonReader) -> T fails ParseError:
     value = T.deserialize(ref src)?

@@ -33,11 +33,8 @@ export def open(fs: Fs, path: str) -> with Database fails SqlError:
     db._close()
 
 def opened(fs: Fs, path: str) -> Database fails SqlError:
-    match fs._sqlite_open(path):
-        case Ok(db):
-            db
-        case Err(err):
-            fail .Failed(reason=err.reason)
+    fs._sqlite_open(path) else as err:
+        fail .Failed(reason=err.reason)
 
 ## A SQLite database, lent by `sqlite.open`. Its methods written in Rust, each private to it, run
 ## what the methods below give them.

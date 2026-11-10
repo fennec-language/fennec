@@ -570,7 +570,7 @@ def hex_digit(digit: int) -> int fails SqlError:
 ## A failure the server sent, as the `SqlError` it is: class `23`, a broken rule, is `Constraint`,
 ## a serialization failure or a deadlock is `Busy`, and anything else is `Failed`, each with the
 ## server's own message and code.
-export def failure_of(fields: dict[str, str]) -> SqlError:
+export def failure_from_fields(fields: dict[str, str]) -> SqlError:
     code = fields.get("C") else ""
     said = fields.get("M") else "the server failed with no message"
     reason = f"{said} ({code})" if code != "" else said
@@ -833,7 +833,7 @@ export struct PgDatabase:
                     found.tag = tag
                 case .Failed(fields=fields):
                     failed = True
-                    failure = failure_of(fields)
+                    failure = failure_from_fields(fields)
                 case .Ready(status=_):
                     if failed: fail failure
                     return found
@@ -888,7 +888,7 @@ export struct PgDatabase:
                         reason=f"the server signs in a way this doesn't speak, number {code}: use SCRAM-SHA-256 or a password",
                     )
                 case .Failed(fields=fields):
-                    fail failure_of(fields)
+                    fail failure_from_fields(fields)
                 case .Ready(status=_):
                     return
                 case _:

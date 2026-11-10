@@ -22,12 +22,6 @@ fn named_goes_native() -> bool {
     NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
 }
 
-/// Whether `Named` stays native blocks in a program calling a function that fails two ways, as
-/// `either`'s arrow, `fails Refused | Shut`, does. Today it doesn't: one such call, from an arrow or a
-/// `def`, and the whole program makes none. Until the LLVM lane turns this on, the check leaves
-/// those programs out, while everything else about them is still checked.
-const TWO_WAY_FAILURES_KEEP_NAMED_NATIVE: bool = false;
-
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
 /// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
 fn makes_native_blocks() -> Result<bool, String> {
@@ -57,8 +51,9 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     let program = generate::program(input);
     let source = source::source(&program);
     // A task needs the runtime with threads, as a release has beside `fennec`. Where there's
-    // none, a program that launches one, through `tally` or a `sent`, can't be built.
-    let launches = source.contains("match tally(") || source.contains("match sent");
+    // none, a program that may launch one, through `tally`, `guard_all` or a `sent`, can't be
+    // built.
+    let launches = !program.threadless;
     if launches && !crate::llvm::threads_runtime_here() {
         return Ok(());
     }
@@ -73,10 +68,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // leaves read `l(...)`, surely made one: code that never runs, like everything after a
     // failure the compiler can see, makes none and can be left out.
     let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
-    let two_ways = source.contains("either(() =>");
-    let checked_named = TWO_WAY_FAILURES_KEEP_NAMED_NATIVE || !two_ways;
-    if named_goes_native() && program.threadless && printed_named && checked_named && !makes_native_blocks()?
-    {
+    if named_goes_native() && program.threadless && printed_named && !makes_native_blocks()? {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));
@@ -352,6 +344,31 @@ mod tests {
             "-0.0",
         ];
         let mut found = [0_usize; 12];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            for (count, shape) in found.iter_mut().zip(shapes) {
+                *count += usize::from(body.contains(shape));
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
+    /// A source's `lend x else:` cleanup runs on a failure and on a crash, in `main` and in a
+    /// launched task.
+    #[test]
+    fn it_cleans_up_after_failures_and_crashes() {
+        let shapes = [
+            "refuse=True, crash=False, noted=True",
+            "refuse=True, crash=False, noted=False",
+            "refuse=False, crash=True",
+            "refuse=False, crash=False",
+            "guard_all([",
+        ];
+        let mut found = [0_usize; 5];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))

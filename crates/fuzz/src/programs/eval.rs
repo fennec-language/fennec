@@ -1134,6 +1134,8 @@ impl Machine {
             }
             Stmt::Summed(limit, stop) => self.summed(limit, stop)?,
             Stmt::Arrowed(how, n, limit) => self.arrowed(how, n, *limit)?,
+            Stmt::Guarded { code, refuse, crash, noted } => self.guarded(*code, *refuse, *crash, *noted)?,
+            Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1316,6 +1318,54 @@ impl Machine {
     /// `summed_until(limit, stop, stdout)`: the source opens, the generator gives `at + limit`
     /// for each `at` below `limit`, the loop sums them until one is `stop`, and the source closes
     /// as the generator's let go or ends, failing for an even `limit`.
+    /// `guarded`'s `lend x else:` cleanup, after a block that failed or crashed: the note it
+    /// leaves when it fails, with the rest of it skipped.
+    fn cleanup(&mut self, code: i64, noted: bool) -> Ran<Option<i64>> {
+        let _ = writeln!(self.out, "unguard {code}");
+        if floor_rem(code, 3)? == 0 {
+            return Ok(Some(checked(code.checked_add(1000))?));
+        }
+        if noted && code > 20 {
+            return Ok(Some(code));
+        }
+        let _ = writeln!(self.out, "unguarded {code}");
+        Ok(None)
+    }
+
+    /// `guarded_shown(code, refuse, crash, noted)`: the block refuses, crashes indexing `[1, 2]`, or
+    /// gives back `code`.
+    fn guarded(&mut self, code: i64, refuse: bool, crash: bool, noted: bool) -> Ran<()> {
+        let _ = writeln!(self.out, "guard {code}\ninside {code}");
+        if refuse {
+            let left = match self.cleanup(code, noted)? {
+                Some(note) => format!("[\"Refused(code={note})\"]"),
+                None => "[]".to_owned(),
+            };
+            let _ = writeln!(self.out, "refused {code} {left}");
+        } else if crash && !(-2..2).contains(&code) {
+            self.cleanup(code, noted)?;
+            return Err(Stop::Failed);
+        } else {
+            let _ = writeln!(self.out, "released {code}\n{code}");
+        }
+        Ok(())
+    }
+
+    /// `guard_all(items)`: the task's `with guarded(item)` for each item until one crashes, on 5,
+    /// or fails, on 7, either running the cleanup and printing `stopped`.
+    fn guard_all(&mut self, items: &[i64]) {
+        for item in items {
+            let _ = writeln!(self.out, "guard {item}\ntask {item}");
+            if *item == 5 || *item == 7 {
+                // The task's crash or failure is the block's, whatever the cleanup does.
+                let _ = self.cleanup(*item, false);
+                self.out.push_str("stopped\n");
+                return;
+            }
+            let _ = writeln!(self.out, "released {item}");
+        }
+    }
+
     /// What `tried`, `tried_twice`, `tried_each`, `failure_of` or `either` prints, given an arrow
     /// calling `capped(n, limit)?`, which fails with `n` when it's over `limit`.
     fn arrowed(&mut self, how: &Arrow, n: &Expr, limit: i64) -> Ran<()> {

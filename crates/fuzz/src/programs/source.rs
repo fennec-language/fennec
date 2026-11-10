@@ -431,6 +431,47 @@ def named_depth(named: Named) -> int:
                 return depth
     depth
 
+def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
+    stdout.print(\"guard\", code)
+    lend Tally(count=code) else:
+        stdout.print(\"unguard\", code)
+        if code % 3 == 0:
+            fail Refused(code=code + 1000)
+        stdout.print(\"unguarded\", code)
+    stdout.print(\"released\", code)
+
+def guarded_noted(code: int, stdout: Stdout) -> with Tally fails Refused:
+    stdout.print(\"guard\", code)
+    lend Tally(count=code) else:
+        stdout.print(\"unguard\", code)
+        if code % 3 == 0:
+            fail Refused(code=code + 1000)
+        kept = capped(code, limit=20)?
+        stdout.print(\"unguarded\", kept)
+    stdout.print(\"released\", code)
+
+def guarded_run(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdout) -> int fails Refused:
+    if noted:
+        with guarded_noted(code, stdout)? as tally:
+            stdout.print(\"inside\", tally.count)
+            if refuse:
+                fail Refused(code=tally.count)
+            if crash:
+                _ = [1, 2][tally.count]
+            return tally.count
+    with guarded(code, stdout)? as tally:
+        stdout.print(\"inside\", tally.count)
+        if refuse:
+            fail Refused(code=tally.count)
+        if crash:
+            _ = [1, 2][tally.count]
+        return tally.count
+
+def guarded_shown(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdout) -> str:
+    value = guarded_run(code, refuse=refuse, crash=crash, noted=noted, stdout=stdout) else as why:
+        return f\"refused {why.code} {why.notes()}\"
+    str(value)
+
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
     lend Tally(count=start) else:
@@ -449,6 +490,20 @@ const TASKS: &str = "def tallying(inbox: Inbox[int], totals: shared Point):
 
 def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeout:
     with launch((inbox) => tallying(inbox, totals))? as sends:
+        for item in items:
+            sends.send(item)?
+
+def guarding(inbox: Inbox[int], stdout: Stdout) fails Refused:
+    for number in inbox:
+        with guarded(number, stdout)? as tally:
+            stdout.print(\"task\", tally.count)
+            if number == 5:
+                _ = [1, 2][tally.count]
+            if number == 7:
+                fail Refused(code=number)
+
+def guard_all(items: list[int], stdout: Stdout) fails Crashed | Closed | Timeout | Refused:
+    with launch((inbox) => guarding(inbox, stdout)?)? as sends:
         for item in items:
             sends.send(item)?
 
@@ -937,6 +992,22 @@ impl Writer {
                         );
                     }
                 }
+            }
+            Stmt::Guarded { code, refuse, crash, noted } => {
+                let shown = |on: bool| if on { "True" } else { "False" };
+                let (refuse, crash, noted) = (shown(*refuse), shown(*crash), shown(*noted));
+                self.line(
+                    indent,
+                    &format!(
+                        "stdout.print(guarded_shown({code}, refuse={refuse}, crash={crash}, noted={noted}, \
+                         stdout=stdout))"
+                    ),
+                );
+            }
+            Stmt::GuardAll(items) => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                self.line(indent, &format!("guard_all([{}], stdout) else:", items.join(", ")));
+                self.line(indent + 1, "stdout.print(\"stopped\")");
             }
             Stmt::FloatKeys { held, names: (keyed, seen), values, probe, asked, pair: (left, right) } => {
                 let ty = match held {

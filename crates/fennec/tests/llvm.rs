@@ -17767,6 +17767,76 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A `match` case naming a union's member narrows the subject to it, natively: its own fields
+/// read there, and its own `with` source runs, for each of three members.
+#[test]
+fn a_match_case_narrows_its_subject_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "match_narrows",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="mem") else:
+            pass
+
+type Store = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    match store:
+        case Lite(name=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.name}"
+        case Postgres(host=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.host}"
+        case Mem(size=_):
+            with store.transaction()? as tx:
+                count = store.run("abc")?
+                return f"{tx.log} {count} {store.size}"
+    ""
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Mem(size=4))?)
+"#,
+        "lite 3 a pg 6 b mem 9 4\n",
+    )
+}
+
 /// A value of a union like `int | str`, read from a field or a list's item, prints and formats as
 /// itself, a string member unquoted, as in the interpreter: by `print`, `str` and an f-string.
 /// Inside a list it's shown quoted, as any string in a list is.

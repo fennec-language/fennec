@@ -591,10 +591,14 @@ impl FnCx<'_> {
             );
         }
         let Some((first, rest)) = members.split_first() else { return Type::Unknown };
-        if self.union_source(call, &union, first) {
-            self.ignore_args(call.args);
-            return Type::Unknown;
-        }
+        let dispatch = match self.union_source(call, &union, first) {
+            Some(Some(dispatch)) => Some(dispatch),
+            Some(None) => {
+                self.ignore_args(call.args);
+                return Type::Unknown;
+            }
+            None => None,
+        };
         let returns = self.method_on(call, first, false);
         let report = std::mem::replace(&mut self.report, false);
         let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
@@ -609,32 +613,71 @@ impl FnCx<'_> {
             );
             return Type::Unknown;
         }
+        // Each member's source is written in under an `is` for it, so none is kept for the call.
+        if let Some(dispatch) = dispatch {
+            let at = (call.span.start, call.span.end);
+            self.checker.sources.remove(&at);
+            self.checker.union_sources.insert(at, dispatch);
+        }
         returns
     }
 
-    /// Refuses a `with` source called on a union, saying whether it is one: what's written in for
-    /// it is one type's source, chosen where the program's built, so it would run that one
-    /// whatever the value holds. Narrowed with `is`, it's the type's own.
-    fn union_source(&mut self, call: &MethodCall<'_>, union: &Type, first: &Type) -> bool {
-        let Some(owner) = first.type_name() else { return false };
-        let Some((_, entry)) = self.checker.program.method(owner, call.method) else { return false };
+    /// A `with` source every member of a union has, `None` when it isn't one. Called on a name
+    /// whose members are named types, the `with` is written in once for each member, under an
+    /// `is` for it, where that member's own source runs. Called on anything else, as a field,
+    /// it's refused, as `Some(None)`: `is` doesn't narrow it.
+    fn union_source(
+        &mut self,
+        call: &MethodCall<'_>,
+        union: &Type,
+        first: &Type,
+    ) -> Option<Option<crate::union_sources::Dispatch>> {
+        let owner = first.type_name()?;
+        let (_, entry) = self.checker.program.method(owner, call.method)?;
         if entry.def.ret.as_ref().is_none_or(|ret| ret.name != crate::lend::WITH) {
-            return false;
+            return None;
         }
-        let named = match &call.object.kind {
-            ExprKind::Name(name) => name.clone(),
-            _ => "it".to_owned(),
+        let Type::Union(members) = union else { return None };
+        let names: Option<Vec<String>> = members
+            .iter()
+            .map(|member| match member {
+                Type::Named(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if let (ExprKind::Name(path), Some(members)) = (&call.object.kind, names) {
+            return Some(Some(crate::union_sources::Dispatch { path: path.clone(), members }));
+        }
+        let (message, help) = match &call.object.kind {
+            // A member that's a generic type's, as `Box[int]`, isn't one `is` names.
+            ExprKind::Name(named) => (
+                format!(
+                    "`{}` is a `with` source each type in {} has, and which one runs can't be chosen as the program runs yet",
+                    call.method,
+                    a(union)
+                ),
+                format!(
+                    "narrow it first, as `if {named} is {owner}:` or a `match` case for `{owner}`, where it runs that type's source"
+                ),
+            ),
+            _ => {
+                let written = fennec_syntax::dotted(call.object);
+                let named = written.as_deref().and_then(|path| path.rsplit('.').next()).unwrap_or("held");
+                let whole = written.as_deref().unwrap_or("...");
+                (
+                    format!(
+                        "`{}` is a `with` source each type in {} has, called on what `is` can't narrow",
+                        call.method,
+                        a(union)
+                    ),
+                    format!(
+                        "give it a name first, as `{named} = {whole}`, and call it on that: the source of the type it holds runs"
+                    ),
+                )
+            }
         };
-        let message = format!(
-            "`{}` is a `with` source each type in {} has, and which one runs can't be chosen as the program runs yet",
-            call.method,
-            a(union)
-        );
-        let help = format!(
-            "narrow it first, as `if {named} is {owner}:` or a `match` case for `{owner}`, where it runs that type's source"
-        );
         self.error(Diagnostic::new(message, call.object.span.to(call.span)).with_help(help));
-        true
+        Some(None)
     }
 
     /// Whether a type has a method by this name, its own or one std or the engines give it.

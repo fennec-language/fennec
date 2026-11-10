@@ -79,6 +79,8 @@ pub(crate) struct Checker {
     pub(crate) shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, by the call's span.
     pub(crate) sources: BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    /// Each `with` source called on a union, by the call's span, written in for each member.
+    pub(crate) union_sources: BTreeMap<(u32, u32), crate::union_sources::Dispatch>,
     /// The `with`s that open several handles, by their values' span, which lowering nests one
     /// inside another, innermost last.
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
@@ -197,6 +199,7 @@ impl Checker {
             named_patterns: BTreeMap::new(),
             shared_values: BTreeMap::new(),
             sources: BTreeMap::new(),
+            union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
@@ -346,6 +349,7 @@ impl Checker {
             named_patterns: self.named_patterns,
             shared_values: self.shared_values,
             sources,
+            union_sources: self.union_sources,
             opened_apart: self.opened_apart,
             launches,
             ref_matches: self.ref_matches,

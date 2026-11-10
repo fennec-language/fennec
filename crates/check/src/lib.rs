@@ -64,6 +64,7 @@ mod threading;
 pub use threading::add_capability_fixes;
 mod tuple_lowering;
 mod types;
+mod union_sources;
 mod waits;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -712,6 +713,11 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     imports_for_cases(module, &checked.cases);
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
+    // A `with` source called on a union is written in once for each member, under an `is` for
+    // it, and checked again, where each member's own source is found.
+    if union_sources::lower(module, &checked.union_sources) {
+        return Round::Again;
+    }
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
     let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
@@ -840,6 +846,8 @@ pub struct Checked {
     shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, which lowering writes in where it's used.
     sources: BTreeMap<(u32, u32), lend_lowering::Source>,
+    /// Each `with` source called on a union, which lowering writes in for each member.
+    union_sources: BTreeMap<(u32, u32), union_sources::Dispatch>,
     /// The `with`s that open several handles, which lowering nests one inside another.
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.

@@ -231,6 +231,67 @@ pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
     stmts(body, change);
 }
 
+/// Changes every span in some statements through `moved`: each statement's, each expression's,
+/// each `with` name's, each `match` case's, and each nested function's and its parameters', so a
+/// copy of them can be given spans of its own. Each span is changed once.
+pub fn respan_stmts(body: &mut [Stmt], moved: &mut dyn FnMut(crate::Span) -> crate::Span) {
+    stmt_spans(body, moved);
+    stmts(body, &mut |value| {
+        value.span = moved(value.span);
+        if let ExprKind::Match { arms, .. } = &mut value.kind {
+            for arm in arms {
+                arm.span = moved(arm.span);
+                stmt_spans(&mut arm.body, moved);
+            }
+        }
+    });
+}
+
+/// The spans of statements and what they declare, not their expressions': those inside a
+/// `match` are reached through it.
+fn stmt_spans(body: &mut [Stmt], moved: &mut dyn FnMut(crate::Span) -> crate::Span) {
+    for each in body {
+        each.span = moved(each.span);
+        match &mut each.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    stmt_spans(body, moved);
+                }
+                stmt_spans(otherwise.as_deref_mut().unwrap_or_default(), moved);
+            }
+            StmtKind::With { names, body, .. } => {
+                for name in names {
+                    name.span = moved(name.span);
+                }
+                stmt_spans(body, moved);
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Lend { otherwise: body, .. } => {
+                stmt_spans(body, moved);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                stmt_spans(cleanup, moved);
+                stmt_spans(body, moved);
+            }
+            StmtKind::Def(def) => {
+                def.span = moved(def.span);
+                for param in &mut def.params {
+                    param.span = moved(param.span);
+                }
+                stmt_spans(&mut def.body, moved);
+            }
+            StmtKind::Expr(_)
+            | StmtKind::Assign { .. }
+            | StmtKind::Return(_)
+            | StmtKind::Fail(_)
+            | StmtKind::Yield(_)
+            | StmtKind::Assert(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Pass => {}
+        }
+    }
+}
+
 /// Writes out the type of each field whose default makes a type with its type arguments, like
 /// `Table[Unit]()` or `list[str]()`, for what reads a field's type from what's written.
 pub fn type_fields_from_defaults(module: &mut Module) {

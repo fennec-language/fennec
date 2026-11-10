@@ -228,6 +228,27 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
     }
 }
 
+/// Starts the spans lowering writes below every one written in so far in `module`, so none is
+/// another's.
+pub(crate) fn below_written(module: &mut Module) {
+    let mut written_low = Span::PRELUDE;
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if written_in(expr.span) {
+            written_low = written_low.min(expr.span.start);
+        }
+    });
+    NEXT.with(|next| next.set(next.get().min(written_low - 1)));
+}
+
+/// Reserves `length` spans in a row for text written in, giving the lowest.
+pub(crate) fn reserved(length: u32) -> u32 {
+    NEXT.with(|next| {
+        let low = next.get() - length;
+        next.set(low - 1);
+        low
+    })
+}
+
 /// The lowest a span a lowering writes can be: well above any program's text, and below the
 /// standard library's.
 const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);

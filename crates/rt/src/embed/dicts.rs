@@ -998,7 +998,19 @@ fn set_at_entry(state: &mut State, dict: i64, entry: i64, key: u64, value: u64) 
     if let Some(address) = key_block(layout.key, &[key]) {
         release(state, address);
     }
+    if state.heap.counting() {
+        FOUND_PUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     Some(dict)
+}
+
+/// How many puts `set_found` made where the lookup found the key, in a run that counts what it does,
+/// for `FENNEC_COUNTS` to say.
+static FOUND_PUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many puts `set_found` made in place, while counting.
+pub(super) fn found_puts() -> u64 {
+    FOUND_PUTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `dict[key] = value` with the key's words: takes over the owners `dict`, a key held in a

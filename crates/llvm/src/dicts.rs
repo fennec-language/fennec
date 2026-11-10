@@ -760,7 +760,6 @@ impl Emit<'_, '_, '_> {
                 entry_value(key_word)
             ));
             let value_at = self.value_place(&value_kind, &value_at);
-            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
             self.line(&format!("br label %{done}"));
             self.start_block(&done);
@@ -1224,7 +1223,6 @@ found:
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
-            let value_at = self.value_place(&value_kind, &value_at);
             let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {

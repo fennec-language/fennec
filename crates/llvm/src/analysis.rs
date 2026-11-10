@@ -1311,7 +1311,12 @@ fn is_quiet(inst: &InstKind) -> bool {
 
 /// Whether an instruction could change one of these locals: write it, change what's inside it,
 /// or give it to a call as `mut`.
-fn may_change(inst: &InstKind, lenders: &[LocalId], changes: &dyn Fn(&str) -> Vec<usize>) -> bool {
+fn may_change(
+    inst: &InstKind,
+    lenders: &[LocalId],
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    roots: &Roots,
+) -> bool {
     let held = |operand: &Operand| matches!(operand, Operand::Local(local) if lenders.contains(local));
     let mut written = false;
     visit(inst, |_| {}, |local| written |= lenders.contains(&local));
@@ -1319,7 +1324,7 @@ fn may_change(inst: &InstKind, lenders: &[LocalId], changes: &dyn Fn(&str) -> Ve
         || match inst {
             InstKind::SetField { object, .. } | InstKind::SetIndex { object, .. } => lenders.contains(object),
             InstKind::Builtin { args, changes: true, .. } => args.first().is_some_and(held),
-            InstKind::Call { .. } => !leaves_alone(inst, lenders, changes),
+            InstKind::Call { .. } => !leaves_alone(inst, lenders, changes, roots),
             InstKind::Lock { .. }
             | InstKind::Unlock { .. }
             | InstKind::CrashCleanup { .. }
@@ -1362,6 +1367,7 @@ struct Candidate {
 /// from one of those.
 fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
     let is_param = |local: LocalId| local.0 < function.params;
+    let roots = roots(function, known);
     let mut candidates: HashMap<usize, Candidate> = HashMap::new();
     let mut copies: HashSet<usize> = HashSet::new();
     for (at, block) in function.blocks.iter().enumerate() {
@@ -1472,7 +1478,10 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
                 {
                     return false;
                 }
-                !(live.contains(dest) && *defined != (at, index) && may_change(&inst.kind, lenders, changes))
+                // Nor changed by what reads it last, like a call given both it and the place it
+                // was read from to change.
+                let changing = *defined != (at, index) && may_change(&inst.kind, lenders, changes, &roots);
+                !(changing && (live.contains(dest) || reads.contains(dest)))
             });
             for write in writes {
                 live.remove(&write);
@@ -1512,15 +1521,57 @@ fn owns_where_it_is(known: &Analysis, local: LocalId) -> bool {
 }
 
 /// Whether a call leaves these locals as they are: only what's given `mut` can change, and
-/// nothing else holds a local's value.
-fn leaves_alone(inst: &InstKind, lenders: &[LocalId], changes: &dyn Fn(&str) -> Vec<usize>) -> bool {
+/// nothing else holds a local's value. What's given `mut` changes what it was read out of too: a
+/// place read again from the same local, `xs[i]` for a borrow of `xs[i].tags`, is the same block.
+fn leaves_alone(
+    inst: &InstKind,
+    lenders: &[LocalId],
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    roots: &Roots,
+) -> bool {
     let InstKind::Call { dest, function, args } = inst else { return false };
     if dest.is_some_and(|dest| lenders.contains(&dest)) {
         return false;
     }
-    changes(function)
-        .iter()
-        .all(|at| !matches!(args.get(*at), Some(Operand::Local(held)) if lenders.contains(held)))
+    let lent_from: HashSet<usize> = lenders.iter().map(|lender| root_of(roots, lender.0)).collect();
+    changes(function).iter().all(|at| match args.get(*at) {
+        Some(Operand::Local(held)) => !lenders.contains(held) && !lent_from.contains(&root_of(roots, held.0)),
+        _ => true,
+    })
+}
+
+/// For each local read out of another, by a field, an item, a case's field or a copy, that local.
+pub(crate) type Roots = HashMap<usize, usize>;
+
+/// What each local of `function` was read out of, where it's written once.
+fn roots(function: &Function, known: &Analysis) -> Roots {
+    let mut from = Roots::new();
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        let (dest, source) = match &inst.kind {
+            InstKind::GetField { dest, object: Operand::Local(source), .. }
+            | InstKind::GetIndex { dest, object: Operand::Local(source), .. }
+            | InstKind::GetCaseField { dest, value: Operand::Local(source), .. }
+            | InstKind::Copy { dest, value: Operand::Local(source) } => (dest.0, source.0),
+            _ => continue,
+        };
+        if known.writes.get(dest) == Some(&1) && dest != source {
+            from.insert(dest, source);
+        }
+    }
+    from
+}
+
+/// The local `local` was read out of at the start, following `roots` back.
+fn root_of(roots: &Roots, local: usize) -> usize {
+    let mut at = local;
+    // Each step goes to a local written once before, so this ends; the bound is for safety.
+    for _ in 0..roots.len() {
+        match roots.get(&at) {
+            Some(source) if *source != local => at = *source,
+            _ => break,
+        }
+    }
+    at
 }
 
 /// Whether an instruction only looks inside `local`, taking no owner of its own.
@@ -1561,6 +1612,7 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
 /// taken out, changed and put back, with nothing able to see it in between.
 fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
     find_text_growing_in_a_field(function, known);
+    let roots = roots(function, known);
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
         // A character's block lasts the whole run.
         if let InstKind::Builtin { dest: Some(dest), name, .. } = &inst.kind
@@ -1600,7 +1652,7 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                         known.borrowed_from.insert(dest.0, source);
                         break;
                     }
-                    if !is_quiet(&next.kind) && !leaves_alone(&next.kind, &lenders, changes) {
+                    if !is_quiet(&next.kind) && !leaves_alone(&next.kind, &lenders, changes, &roots) {
                         break;
                     }
                 }
@@ -1793,8 +1845,8 @@ fn place_stays_apart(
             || written
                 .iter()
                 .any(|local| *local == place.root || parts.contains(local) || indexes.contains(local))
-            || may_change(&inst.kind, &indexes, changes)
-            || may_change(&inst.kind, std::slice::from_ref(&place.root), changes)
+            || may_change(&inst.kind, &indexes, changes, &Roots::new())
+            || may_change(&inst.kind, std::slice::from_ref(&place.root), changes, &Roots::new())
             || (changed && (reads_local(place.root) || read.contains(&held)))
         {
             return false;

@@ -48,6 +48,7 @@ mod place;
 mod privacy;
 mod program;
 mod protocols;
+mod ref_lowering;
 mod results_fix;
 mod rules;
 mod saving;
@@ -667,8 +668,14 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     let sources = cases_named(&checked.sources, &checked.cases);
     let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
     let counted = enumerate_lowering::lower(module);
+    let live = ref_lowering::lower(module, &checked.live_refs);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
-    if lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested || tuples
+    if lock_lowering::lower(module, &checked.shared_values)
+        || sources_written
+        || counted
+        || live
+        || nested
+        || tuples
     {
         return Round::Again;
     }
@@ -791,6 +798,8 @@ pub struct Checked {
     launches: BTreeMap<(u32, u32), launch::Launch>,
     /// Each `match` with a `ref` case, with the fields each such case puts back.
     ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
+    /// Each `for ref` whose body reads what it loops over, written in to go by position.
+    live_refs: BTreeMap<(u32, u32), ref_lowering::Through>,
     /// The format calls native code can make in Fennec, by the call's span.
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.

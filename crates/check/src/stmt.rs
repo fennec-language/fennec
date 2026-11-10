@@ -121,7 +121,17 @@ impl FnCx<'_> {
             }
             StmtKind::Yield(value) => self.yield_stmt(value, stmt.span),
             StmtKind::Assert(cond) => {
-                self.condition(cond, "assert");
+                if let Some((value, pattern)) = cond.asserted_failure() {
+                    self.assert_fails(value, pattern, stmt.span);
+                    self.record(cond.span, &Type::Bool);
+                } else {
+                    // What an `assert` holds holds after it, as after `if not cond: fail`:
+                    // `assert problem is not None` lets `problem.message` be read.
+                    self.condition(cond, "assert");
+                    self.track(cond);
+                    self.narrow(&not_none(cond, true));
+                    self.narrow_members(&members(cond, true));
+                }
                 Flow::unit()
             }
             StmtKind::OnFailure { name, cleanup, body } => {

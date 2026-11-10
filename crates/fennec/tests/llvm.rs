@@ -581,6 +581,33 @@ def main(stdout: Stdout):
     stdout.print(found.size)
 "#;
 
+/// `total = lock scores as current:` gives the block's last line, read or after a change, as
+/// `mut` or not, with lines before it that do something.
+#[test]
+fn a_lock_block_gives_its_last_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("lock_block_value", LOCK_BLOCK_VALUE, "7 4\nlong\n1\n")
+}
+
+const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
+    shared scores = [1, 2]
+    total = lock scores as ref current:
+        current.append(4)
+        sum(current)
+    mut count = lock scores as current:
+        current.len()
+    count += 1
+    stdout.print(total, count)
+    kept = lock scores as ref current:
+        current.append(9)
+        if current.len() > 3:
+            stdout.print("long")
+        current[0]
+    stdout.print(kept)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -6126,6 +6153,53 @@ fn fast_text_hash(text: &str) -> u64 {
         })
         .collect();
     fast_hash(u64::try_from(text.len()).unwrap_or(0), &words)
+}
+
+/// New struct keys go into a dict as compiled code adds them itself, while it has room, and through
+/// the runtime when it must grow, when another owner holds it, and when the value holds a block:
+/// every key is found again, the order they went in is kept, and a copy taken partway keeps only
+/// what it had, in a dev build and with `--release`.
+#[test]
+fn struct_keys_added_natively_are_found_in_order() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Cell:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    mut seen: dict[Cell, int] = {}
+    mut named: dict[Cell, str] = {}
+    mut kept: dict[Cell, int] = {}
+    for i in range(5000):
+        cell = Cell(x=i % 71, y=i // 71)
+        seen[cell] = (seen.get(cell) else 0) + i
+        if i % 3 == 0:
+            named[cell] = f"cell {i}"
+        if i == 2500:
+            kept = seen
+    for i in range(5000):
+        cell = Cell(x=i % 71, y=i // 71)
+        seen[cell] = (seen.get(cell) else 0) + 1
+    mut total = 0
+    for cell, count in seen.items():
+        total += cell.x * count + cell.y
+    first = Cell(x=0, y=0)
+    last = Cell(x=4999 % 71, y=4999 // 71)
+    order = [cell.x * 100 + cell.y for cell in seen.keys()]
+    stdout.print(seen.len(), kept.len(), named.len(), total, seen[first], seen[last], kept.get(last) else -1)
+    stdout.print(order[0], order[1], order[4999], named[Cell(x=3 % 71, y=3 // 71)])
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("struct_keys_native", source, how)?;
+        assert_eq!(
+            (out.as_str(), code),
+            ("5000 2501 1667 436784630 1 5000 -1\n0 100 2970 cell 3\n", Some(0)),
+            "{how:?}: {err}"
+        );
+    }
+    Ok(())
 }
 
 /// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
@@ -16728,6 +16802,67 @@ def named(present: bool) -> str?:
     {
         assert_eq!((&ours_out, ours_code), (&jit_out, jit_code), "{condition}");
         assert_eq!(ours_err, jit_err, "{condition}");
+    }
+    Ok(())
+}
+
+/// `_ = check(n) else as why:` on a call that gives nothing but can fail keeps nothing and runs
+/// the call, as the statement `check(n) else as why:` does.
+#[test]
+fn discarding_what_gives_nothing_runs_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("discard_nothing", DISCARD_NOTHING, "fine 1\nbig\nagain big\n")
+}
+
+const DISCARD_NOTHING: &str = r#"error Bad:
+    why: str
+
+def check(n: int) fails Bad:
+    if n > 1:
+        fail Bad("big")
+
+def main(stdout: Stdout):
+    for n in [1, 2]:
+        _ = check(n) else as why:
+            stdout.print(why.why)
+            continue
+        stdout.print("fine", n)
+    check(5) else as why:
+        stdout.print("again", why.why)
+"#;
+
+/// A failed `assert value fails Pattern` says what really happened, natively: what the call failed
+/// with instead, or what it gave, and stops the program as a failed `assert` does.
+#[test]
+fn a_failed_assert_that_something_fails_says_what_happened() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let setup = "error Oops:\n    line: int\n\nstruct Config:\n    size: int\n\ndef load(text: str) -> Config fails Oops:\n    if text == \"bad\":\n        fail Oops(line=4)\n    Config(size=text.len())\n";
+    for (asserted, said) in [
+        ("load(\"bad\") fails Oops(line=3)", "= help: it failed with Oops(line=4)"),
+        ("load(\"good\") fails Oops()", "= help: it gave Config(size=4)"),
+    ] {
+        let source = format!(
+            "{setup}\ndef main(stdout: Stdout):\n    assert load(\"bad\") fails Oops()\n    stdout.print(1)\n    assert {asserted}\n    stdout.print(2)\n"
+        );
+        let dir = folder("assert_fails_native")?;
+        let program = dir.join("asserted.fen");
+        std::fs::write(&program, &source)?;
+        let executable = dir.join("asserted");
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(out, "1\n", "{asserted}: {err}");
+        assert!(err.contains("this assertion failed") && err.contains(said), "{asserted}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{asserted}");
     }
     Ok(())
 }

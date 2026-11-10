@@ -282,6 +282,10 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Clock", "time") => reads(&[], Type::named("Time")),
         ("Args", "len") | ("Entropy", "seed") => reads(&[], Type::Int),
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
+        // The next line without its ending, `None` at the end, and up to `size` bytes, empty at
+        // the end: what makes `Stdin` a `Reader`.
+        ("Stdin", "read_line") => reads(&[], Type::result(Type::optional(Type::Str), Type::named("IoError"))),
+        ("Stdin", "read_chunk") => reads(&[Type::Int], Type::result(Type::Bytes, Type::named("IoError"))),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         ("Entropy", "bytes") => reads(&[Type::Int], Type::Bytes),
         _ => return stdlib::method(type_name, name),

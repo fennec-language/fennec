@@ -201,21 +201,17 @@ struct Lexer:
             self.push(.Duration(nanos), start)
             return
         if is_float:
-            match float(text):
-                case Ok(value):
-                    self.push(.Float(value), start)
-                case Err(_):
-                    fail Diagnostic(message="this isn't a valid number", span=self.span(start))
+            value = float(text) else:
+                fail Diagnostic(message="this isn't a valid number", span=self.span(start))
+            self.push(.Float(value), start)
         else:
-            match int(text):
-                case Ok(value):
-                    self.push(.Int(value), start)
-                case Err(_):
-                    fail Diagnostic(
-                        message="this number is too big for an int",
-                        span=self.span(start),
-                        help="ints are 64-bit: the largest is 9_223_372_036_854_775_807",
-                    )
+            value = int(text) else:
+                fail Diagnostic(
+                    message="this number is too big for an int",
+                    span=self.span(start),
+                    help="ints are 64-bit: the largest is 9_223_372_036_854_775_807",
+                )
+            self.push(.Int(value), start)
 
     ## The letters of a duration's unit, like `ms`.
     def unit(ref self) -> str:
@@ -332,14 +328,12 @@ struct Lexer:
                 )
             code = code * 16 + value
             self.pos += 1
-        match str.from_code(code):
-            case Ok(character):
-                character
-            case Err(_):
-                fail Diagnostic(
-                    message=f"`{self.text(at, self.pos)}` isn't the code of a character",
-                    span=self.span(at),
-                )
+        character = str.from_code(code) else:
+            fail Diagnostic(
+                message=f"`{self.text(at, self.pos)}` isn't the code of a character",
+                span=self.span(at),
+            )
+        character
 
     ## An f-string, or a template string when `template`: the same text and `{}`s, built as a
     ## `Template` instead of joined.
@@ -478,14 +472,13 @@ def part_nanos(written: str, number: str, per: int, span: Span) -> int fails Dia
                 places += 1
     mut shift = 0 - places
     if exponent != "":
-        match int(exponent):
-            case Ok(value): shift += value
-            case Err(_):
-                fail Diagnostic(
-                    message=f"`{written}` is too long for a duration",
-                    span=span,
-                    help="a duration holds up to about 292 years of nanoseconds",
-                )
+        value = int(exponent) else:
+            fail Diagnostic(
+                message=f"`{written}` is too long for a duration",
+                span=span,
+                help="a duration holds up to about 292 years of nanoseconds",
+            )
+        shift += value
     mut nanos = digits * per
     while shift > 0:
         nanos *= 10

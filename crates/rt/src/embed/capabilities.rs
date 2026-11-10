@@ -312,6 +312,18 @@ fn native_method(
             super::write_kept_output();
             crate::inputs::lines_of(&mut super::aot::StdinLines::default(), at)
         }
+        (Capability::Stdin, "read_line", []) => {
+            super::write_kept_output();
+            Ok(crate::inputs::read_line())
+        }
+        (Capability::Stdin, "read_chunk", [Value::Int(size)]) => {
+            let Ok(size) = usize::try_from(*size) else {
+                return Err(Diagnostic::new(format!("`read_chunk` can't give {size} bytes"), at)
+                    .with_help("give it how many bytes you want, 0 or more"));
+            };
+            super::write_kept_output();
+            Ok(crate::inputs::read_chunk(size))
+        }
         (Capability::Net, _, _) => {
             // What's been printed comes out first, as it does before anything else that waits.
             super::write_kept_output();

@@ -12068,6 +12068,83 @@ def main(stdout: Stdout):
     )
 }
 
+/// A union's method runs the one of the type its value holds, natively: on the union, in each
+/// `match` case and in a loop over a list of them. A `with` source does too once it's narrowed
+/// with `is`, where each branch's `store` is its own type; on the union it's refused.
+#[test]
+fn a_unions_methods_and_narrowed_sources_run_the_member_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_members_run",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+type Store = Lite | Postgres
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+type Three = Lite | Postgres | Mem
+
+def saved(store: Store) -> str fails Nope:
+    if store is Lite:
+        with store.transaction()? as tx:
+            count = store.run("abc")?
+            return f"{tx.log} {count}"
+    else:
+        with store.transaction()? as tx:
+            count = store.run("abcd")?
+            return f"{tx.log} {count}"
+    ""
+
+def ran(store: Three) -> int fails Nope:
+    match store:
+        case Lite(name=_):
+            return store.run("a")?
+        case Postgres(host=_):
+            return store.run("a")?
+        case Mem(size=_):
+            return store.run("a")?
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?)
+    stdout.print(ran(Lite(name="a"))?, ran(Postgres(host="b"))?, ran(Mem(size=1))?)
+    stores: list[Three] = [Lite(name="a"), Postgres(host="b"), Mem(size=1)]
+    for store in stores:
+        stdout.print(store.run("ab")?)
+"#,
+        "lite 3 pg 8\n1 2 3\n2\n4\n6\n",
+    )
+}
+
 /// A union with a generic struct among its members, `str | Secret[str]` or `Box[int] | int`,
 /// is held natively: passed in, told apart with `is`, and read as the member it holds.
 #[test]

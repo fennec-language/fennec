@@ -55,6 +55,10 @@ def grow_all(ref items: list[int], by: int):
     for ref item in items:
         item += by
 
+def appended_all(ref items: list[int], more: list[int]):
+    for item in more:
+        items.append(item)
+
 def buffer_of(made: Buffer[int], items: list[int]) -> Buffer[int]:
     mut buffer = made
     for item in items:
@@ -429,6 +433,12 @@ fn ops_written(ops: &[Op], indent: usize) -> String {
                     amount(*value)
                 )
             }
+            Op::CountsCopied(key, value) => format!(
+                "mut kept{number} = held.counts\n{pad}kept{number}[\"{key}\"] = {}\n{pad}held.counts = kept{number}",
+                amount(*value)
+            ),
+            Op::SelfAssigned => format!("held.items = held.items\n{pad}held.counts = held.counts"),
+            Op::PopCount(key) => format!("_ = held.counts.pop(\"{key}\")"),
         };
         let _ = writeln!(out, "{pad}{line}");
     }
@@ -578,6 +588,16 @@ impl Writer {
                     Nested::DictOfUnitLists => {
                         ("{\"a\": [Unit(tags=[1], hp=1)]}", format!("{copy}[\"a\"][0].tags.append({value})"))
                     }
+                    Nested::DictOfUnitsHp => {
+                        ("{\"a\": Unit(tags=[1], hp=1)}", format!("{copy}[\"a\"].hp += {value}"))
+                    }
+                    Nested::DictOfIntLists => {
+                        ("{\"a\": [1, 2], \"b\": list[int]()}", format!("{copy}[\"a\"].append({value})"))
+                    }
+                    Nested::ReplacedInCopy => (
+                        "{\"a\": Unit(tags=[1], hp=1), \"b\": Unit(tags=list[int](), hp=2)}",
+                        format!("{copy}[\"a\"] = Unit(tags=[{value}], hp={value})"),
+                    ),
                 };
                 self.line(indent, &format!("{given} = {made}"));
                 self.line(indent, &format!("mut {copy} = {given}"));
@@ -631,6 +651,24 @@ impl Writer {
                 );
                 let by = self.expr(by, false);
                 self.line(indent, &format!("shadowed{id}(stdout, by={by})"));
+            }
+            Stmt::LentRef(list, own) => {
+                self.line(indent, &format!("if {list}.len() < 64:"));
+                self.line(indent + 1, &format!("{own} = {list}"));
+                self.line(indent + 1, &format!("appended_all(ref {list}, {own})"));
+                self.line(indent + 1, &format!("stdout.print({list}, {own})"));
+            }
+            Stmt::LentItem(rows, own, items) => {
+                let items = self.expr(items, false);
+                self.line(indent, &format!("mut {rows} = [{items}, [7]]"));
+                self.line(indent, &format!("if {rows}[0].len() < 64:"));
+                self.line(indent + 1, &format!("{own} = {rows}[0]"));
+                self.line(indent + 1, &format!("appended_all(ref {rows}[0], {own})"));
+                self.line(indent + 1, &format!("stdout.print({rows}, {own})"));
+            }
+            Stmt::SelfField(holder) => {
+                self.line(indent, &format!("{holder}.items = {holder}.items"));
+                self.line(indent, &format!("{holder}.tag = {holder}.tag"));
             }
             Stmt::GrownBy(holder, own) => {
                 self.line(indent, &format!("if {holder}.items.len() < 64:"));

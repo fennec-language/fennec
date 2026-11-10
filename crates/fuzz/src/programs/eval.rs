@@ -314,6 +314,18 @@ impl Bag {
                     let item = self.items.get_mut(usize::try_from(at).ok()?)?;
                     *item = item.checked_add(amount(*value)?)?.checked_mul(2)?;
                 }
+                Op::CountsCopied(key, value) => {
+                    let value = amount(*value)?;
+                    match self.counts.iter_mut().find(|(held, _)| held == key) {
+                        Some((_, n)) => *n = value,
+                        None => self.counts.push(((*key).to_owned(), value)),
+                    }
+                }
+                Op::SelfAssigned => {}
+                Op::PopCount(key) => {
+                    let at = self.counts.iter().position(|(held, _)| held == key)?;
+                    self.counts.remove(at);
+                }
             }
         }
         Some(self)
@@ -836,6 +848,21 @@ impl Machine {
                         "{\"a\": [Unit(tags=[1], hp=1)]}".to_owned(),
                         format!("{{\"a\": [Unit(tags=[1, {value}], hp=1)]}}"),
                     ),
+                    Nested::DictOfUnitsHp => (
+                        "{\"a\": Unit(tags=[1], hp=1)}".to_owned(),
+                        format!("{{\"a\": Unit(tags=[1], hp={})}}", checked(value.checked_add(1))?),
+                    ),
+                    Nested::DictOfIntLists => (
+                        "{\"a\": [1, 2], \"b\": []}".to_owned(),
+                        format!("{{\"a\": [1, 2, {value}], \"b\": []}}"),
+                    ),
+                    Nested::ReplacedInCopy => {
+                        let rest = "\"b\": Unit(tags=[], hp=2)}";
+                        (
+                            format!("{{\"a\": Unit(tags=[1], hp=1), {rest}"),
+                            format!("{{\"a\": Unit(tags=[{value}], hp={value}), {rest}"),
+                        )
+                    }
                 };
                 let _ = writeln!(self.out, "{given} {copy}");
             }
@@ -878,6 +905,26 @@ impl Machine {
                 let tally = checked(bumped.checked_sub(by))?;
                 let _ = writeln!(self.out, "{change} {bumped} {tally}");
             }
+            Stmt::LentRef(list, _) => {
+                if let Value::Ints(items) = self.slot(list)?
+                    && items.len() < 64
+                {
+                    let own = items.clone();
+                    items.extend_from_slice(&own);
+                    let line = format!("{} {}", shown(&Value::Ints(items.clone())), shown(&Value::Ints(own)));
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
+            Stmt::LentItem(_, _, items) => {
+                let Value::Ints(mut first) = self.expr(items)? else { return Err(Stop::Unsure) };
+                if first.len() < 64 {
+                    let own = first.clone();
+                    first.extend_from_slice(&own);
+                    let rows = format!("[{}, [7]]", shown(&Value::Ints(first)));
+                    let _ = writeln!(self.out, "{rows} {}", shown(&Value::Ints(own)));
+                }
+            }
+            Stmt::SelfField(_) => {}
             Stmt::GrownBy(holder, _) => {
                 if let Value::Holder(items, tag) = self.slot(holder)?
                     && items.len() < 64

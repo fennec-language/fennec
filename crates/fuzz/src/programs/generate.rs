@@ -860,7 +860,10 @@ impl Writer<'_> {
             };
             let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
             let at = PLACES.get(self.choice(PLACES.len())).copied().unwrap_or(0);
-            let op = match self.choice(9) {
+            let op = match self.choice(12) {
+                9 => Op::CountsCopied(key, value),
+                10 => Op::SelfAssigned,
+                11 if !safe => Op::PopCount(key),
                 8 if !safe => Op::RefItem(at, value),
                 6 => Op::AddTwice(value),
                 7 => Op::GrowItems(value),
@@ -874,6 +877,52 @@ impl Writer<'_> {
             ops.push(op);
         }
         ops
+    }
+
+    /// A list lent to a call through `ref` beside a value read from it, the whole list or a
+    /// list's item, or a value assigned to itself, a local or a struct's fields.
+    fn lent_or_self(&mut self, body: &mut Vec<Stmt>) {
+        /// The types of locals that can be assigned to themselves: not `shared`, nor reached
+        /// only through what lends it.
+        const PLAIN: [Ty; 12] = [
+            Ty::Int,
+            Ty::Str,
+            Ty::Ints,
+            Ty::Point,
+            Ty::Shape,
+            Ty::Holder,
+            Ty::Lists,
+            Ty::Counts,
+            Ty::Buf,
+            Ty::Node,
+            Ty::Nodes,
+            Ty::Named,
+        ];
+        match self.choice(4) {
+            0 => {
+                let Some(list) = self.name_of(Ty::Ints, true) else { return self.print(body) };
+                body.push(Stmt::LentRef(list, self.fresh()));
+            }
+            1 => {
+                let items = self.of(Ty::Ints, 1);
+                body.push(Stmt::LentItem(self.fresh(), self.fresh(), items));
+            }
+            2 => {
+                let Some(holder) = self.name_of(Ty::Holder, true) else { return self.print(body) };
+                body.push(Stmt::SelfField(holder.clone()));
+                self.read_back(body, &holder);
+            }
+            _ => {
+                let ty = PLAIN.get(self.choice(PLAIN.len())).copied().unwrap_or(Ty::Int);
+                let Some(name) = self.name_of(ty, true) else { return self.print(body) };
+                body.push(Stmt::Assign {
+                    place: Place::Name(name.clone()),
+                    value: Expr::Name(name.clone()),
+                    add: false,
+                });
+                self.read_back(body, &name);
+            }
+        }
     }
 
     /// What copies are tested on: a function capturing a list that can't change, while one that
@@ -930,14 +979,18 @@ impl Writer<'_> {
                 });
                 self.names.push(InScope { name, ty: Ty::Count, changeable: false, held: 0 });
             }
+            25 if self.choice(3) == 0 => self.lent_or_self(body),
             25 if self.choice(3) == 0 => {
                 // A container of containers copied, then changed deep inside through the copy.
-                const SHAPES: [Nested; 5] = [
+                const SHAPES: [Nested; 8] = [
                     Nested::DictOfUnits,
                     Nested::ArmyOfUnits,
                     Nested::DictOfDicts,
                     Nested::ListOfDicts,
                     Nested::DictOfUnitLists,
+                    Nested::DictOfUnitsHp,
+                    Nested::DictOfIntLists,
+                    Nested::ReplacedInCopy,
                 ];
                 let shape = SHAPES.get(self.choice(SHAPES.len())).copied().unwrap_or(Nested::DictOfUnits);
                 let (given, copy) = (self.fresh(), self.fresh());

@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::io::Write;
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::{Diagnostic, Span, Trace};
 
 pub mod aot;
 pub mod bytes;
@@ -420,6 +420,9 @@ struct State {
     /// What it was given on its command line, as `args`.
     arguments: Vec<String>,
     failure: Option<Diagnostic>,
+    /// The calls the failure has left so far on its way out, innermost first: where each called
+    /// what it came out of. Started again by each new failure.
+    trace: Trace,
 }
 
 thread_local! {
@@ -508,6 +511,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         arguments,
         tables,
         failure: None,
+        trace: Trace::default(),
     }));
 }
 
@@ -562,6 +566,7 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
             let leftovers =
                 Leftovers { temps: state.temps.len(), boxes: state.heap.live(), counts: state.heap.counts };
             let finished = (state.output.0.take(), state.failure.take(), leftovers);
+            LAST_TRACE.set(std::mem::take(&mut state.trace));
             if leave {
                 // Kept until the process ends, which gives back all of it at once.
                 Box::leak(Box::new(state));
@@ -577,9 +582,54 @@ pub fn fail_with(diagnostic: Diagnostic) {
     with(|state| {
         if state.failure.is_none() {
             state.failure = Some(diagnostic);
+            state.trace = Trace::default();
         }
     });
     set_failed(1);
+}
+
+/// `fennec_trace_frame(start, end)`: a failure leaves the call at this span on its way out, which
+/// goes in its call chain. Native code only says so on that way out, so it costs nothing else.
+pub extern "C" fn trace_frame(start: i64, end: i64) {
+    let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
+    with(|state| {
+        if state.failure.is_some() {
+            state.trace.push(span, 1);
+        }
+    });
+}
+
+thread_local! {
+    /// The call chain of the failure the last run on this thread ended with.
+    static LAST_TRACE: RefCell<Trace> = RefCell::new(Trace::default());
+}
+
+/// Keeps a failure's call chain for [`take_trace`].
+pub(crate) fn keep_trace(trace: Trace) {
+    LAST_TRACE.set(trace);
+}
+
+/// The call chain of the failure the last run on this thread ended with, innermost first.
+pub(crate) fn take_trace() -> Trace {
+    LAST_TRACE.take()
+}
+
+/// Sets the call chain of the failure this thread has now.
+pub(crate) fn set_trace(trace: Trace) {
+    with(|state| state.trace = trace);
+}
+
+/// The failure this thread has now and its call chain, taken aside, for a crash's cleanup.
+pub(crate) fn take_failure() -> (Option<Diagnostic>, Trace) {
+    with(|state| (state.failure.take(), std::mem::take(&mut state.trace)))
+}
+
+/// Puts a failure taken aside back, with its call chain.
+pub(crate) fn put_failure((failure, trace): (Option<Diagnostic>, Trace)) {
+    with(|state| {
+        state.failure = failure;
+        state.trace = trace;
+    });
 }
 
 /// Whether this thread's runtime state is borrowed, as it is all through a call into the
@@ -928,6 +978,11 @@ pub mod eval {
                 state.failure = Some(super::at_failed_call(failure, span(start, end)));
             }
         });
+    }
+
+    /// `fennec_trace_frame`, where native code calls it from.
+    pub extern "C" fn trace_frame(start: i64, end: i64) {
+        super::trace_frame(start, end);
     }
 
     /// The hidden name native code passes its `index`th input under.

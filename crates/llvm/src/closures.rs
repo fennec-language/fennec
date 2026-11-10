@@ -339,7 +339,7 @@ impl Emit<'_, '_, '_> {
         let (held, failed) = (self.temp(), self.temp());
         self.line(&format!("{held} = load ptr, ptr %err"));
         self.line(&format!("{failed} = icmp ne ptr {held}, null"));
-        self.leave_if(&failed);
+        self.leave_traced(&failed, span);
         place.unwrap_or(result)
     }
 

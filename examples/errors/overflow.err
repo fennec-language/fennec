@@ -5,3 +5,5 @@ error: this calculation overflows an int
   |            ^^^^^^^^^^^^^^^^^^^^
   |
   = help: ints are 64-bit; check the values involved, or use floats for very large numbers
+  = in `factorial`
+  = called from `main` at examples/errors/overflow.fen:7:18

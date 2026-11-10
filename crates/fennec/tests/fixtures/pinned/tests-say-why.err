@@ -11,10 +11,12 @@ error: this assertion failed
 17 |     assert ready
    |            ^^^^^
 error: the test failed with Broke(why="empty")
-  --> <dir>/game.fen:19:1
-   |
-19 | test "a failure passed up":
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+ --> <dir>/game.fen:9:9
+  |
+9 |         fail Broke(why="empty")
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  = in `parse`
+  = called from `test "a failure passed up"` at <dir>/game.fen:20:12
 error: index 3 is out of range for length 2
   --> <dir>/game.fen:24:12
    |

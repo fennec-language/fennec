@@ -453,6 +453,7 @@ impl<'p> Module<'_, 'p> {
             returns,
             allocas: String::new(),
             kept_lengths: HashMap::new(),
+            zeros_counted: HashMap::new(),
             out: String::new(),
             cold: String::new(),
             next: 0,
@@ -481,6 +482,7 @@ impl<'p> Module<'_, 'p> {
             saving_slots: HashMap::new(),
             rolled_back: HashSet::new(),
             wrote_prop: false,
+            traced_calls: Vec::new(),
             leave_after_crash: None,
         };
         // A function with locks a crash gives back, or that owns anything, leaves on every failure
@@ -492,6 +494,7 @@ impl<'p> Module<'_, 'p> {
             .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
         emit.body()?;
+        emit.write_traced_exit();
         let (allocas, out, cold, failed, needs_prop) =
             (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop && !emit.wrote_prop);
         // Leaving a function that says it can't fail would be undefined, so it's refused here.
@@ -531,6 +534,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where a list a loop fills keeps its length while the loop runs, by the list's local: in
     /// a local of its own, which LLVM holds in a register, written to the list as the loop ends.
     pub(crate) kept_lengths: HashMap<usize, String>,
+    /// In a build that checks proofs, where each list made whole of zeros counts the appends it
+    /// leaves out.
+    pub(crate) zeros_counted: HashMap<usize, String>,
     out: String,
     cold: String,
     next: usize,
@@ -574,6 +580,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) rolled_back: HashSet<usize>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
+    /// The calls a failure can leave by, as the block each is at the end of and where it is from
+    /// the function's start: one way out says which, for the failure's call chain.
+    traced_calls: Vec<(String, u32)>,
     /// How the function leaves on a failure once `prop` has put back what it changed and let go
     /// of what it owns, when every failure goes through `prop`.
     leave_after_crash: Option<String>,
@@ -1150,6 +1159,35 @@ impl Emit<'_, '_, '_> {
         self.needs_prop = true;
         self.line(&format!("br i1 {failed}, label %prop, label %{ok}, !prof !0"));
         self.start_block(&ok);
+    }
+
+    /// As [`Self::leave_if`], after a call into a function of the program: a failure out of it
+    /// says this call is in its call chain on the way, away from the path that doesn't fail.
+    /// Every such call leaves by one block, which a phi tells which call it was: a branch per call
+    /// and nothing more, so the calls' code is what it would be without it.
+    pub(crate) fn leave_traced(&mut self, failed: &str, span: Span) {
+        let ok = self.label("ok");
+        self.needs_prop = true;
+        self.traced_calls.push((self.current.clone(), span.start.saturating_sub(self.start)));
+        self.line(&format!("br i1 {failed}, label %left_traced, label %{ok}, !prof !0"));
+        self.start_block(&ok);
+    }
+
+    /// The way out of the calls [`Self::leave_traced`] left by: it says which call this function
+    /// failed at, then leaves as any failure does.
+    fn write_traced_exit(&mut self) {
+        if self.traced_calls.is_empty() {
+            return;
+        }
+        self.declare("declare void @fennec_trace_frame(i64, i64) nounwind cold");
+        let arms: Vec<String> =
+            self.traced_calls.iter().map(|(block, from)| format!("[ {from}, %{block} ]")).collect();
+        let symbol = self.start_symbol.clone();
+        let _ = writeln!(
+            self.cold,
+            "left_traced:\n  %left_from = phi i64 {}\n  %left_start = load i64, ptr @\"{symbol}\"\n  %left_at = add i64 %left_start, %left_from\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
+            arms.join(", ")
+        );
     }
 
     /// As [`Self::leave_if`], after a call from the program into the standard library: a failure
@@ -2096,7 +2134,7 @@ impl Emit<'_, '_, '_> {
             if !span.in_prelude() && written_in_std(callee) {
                 self.leave_pointing_here(&failed, span);
             } else {
-                self.leave_if(&failed);
+                self.leave_traced(&failed, span);
             }
         }
         for block in lent {
@@ -2213,6 +2251,7 @@ impl Emit<'_, '_, '_> {
             channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
             "intrinsics.launch" | "intrinsics.launch_take" => self.launch_builtin(dest, name, args),
             "error.add_note" | "error.notes" => self.notes_builtin(dest, name, args),
+            "error.raised" | "error.passed" => self.error_frame(name, args, span),
             "lock.roll_back" => {
                 let [handle] = args else { return Err("a lock to put back that isn't one".to_owned()) };
                 self.roll_back_on_failure(handle)
@@ -3086,6 +3125,32 @@ def main(stdout: Stdout):
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
         assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
         assert!(text.len() > plain.len());
+        Ok(())
+    }
+
+    /// Checking proofs covers a loop filling a list too: one made whole of zeros gets one append a
+    /// turn, and one whose length is kept aside isn't changed by anything else meanwhile.
+    #[test]
+    fn checking_proofs_covers_a_list_a_loop_fills() -> Result<(), String> {
+        let source = "def made(n: int) -> int:\n    zeros = [0 for i in range(n)]\n    doubled = [i * 2 for i in range(n)]\n    zeros.len() + doubled.len()\n\ndef main(stdout: Stdout):\n    stdout.print(made(5))\n";
+        let program = lowered(source)?;
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (_, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let said: Vec<&String> = shared.literals.values().collect();
+        for proof in ["gets one a turn, from 0", "is as long as its loop", "whose length was kept aside"] {
+            assert!(said.iter().any(|text| text.contains(proof)), "{proof}: {said:?}");
+        }
+        Ok(())
+    }
+
+    /// A `list[str]` a loop fills and that's then joined is kept as the string it becomes, which
+    /// has no list length to keep aside and write back: writing one would write over the string's
+    /// own length, with a value nothing set. The build checking proofs found it.
+    #[test]
+    fn a_string_built_by_a_loop_has_no_length_written_over() -> Result<(), String> {
+        let source = "def repeated(text: str, times: int) -> str:\n    \"\".join([text for _ in range(times)])\n\ndef main(stdout: Stdout):\n    stdout.print(repeated(\"ab\", 3))\n";
+        let text = text_of(source, "repeated")?;
+        assert!(!text.contains("kept_length"), "{text}");
         Ok(())
     }
 

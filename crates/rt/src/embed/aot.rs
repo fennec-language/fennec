@@ -260,7 +260,8 @@ pub fn test_done(number: i64) {
     // what they hold outside the program, like a test's databases, is cleaned up.
     let world = with(|state: &mut State| state.world.take());
     drop(world);
-    let line = test_line(number, failure.as_ref(), &ran);
+    let trace = super::take_trace();
+    let line = test_line(number, failure.as_ref().map(|failure| (failure, &trace)), &ran);
     if real_tests() {
         // What the test printed comes first.
         super::write_kept_output();
@@ -274,8 +275,12 @@ pub fn test_done(number: i64) {
 
 /// What a test did, as a line: its number, and what it ran if it passed, as the numbers of the
 /// flags that were set, or for a failure where it is, its message and its help, in hexadecimal so
-/// that anything can be in them.
-fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>, ran: &[String]) -> String {
+/// that anything can be in them, and its call chain.
+fn test_line(
+    number: i64,
+    failure: Option<(&fennec_syntax::Diagnostic, &fennec_syntax::Trace)>,
+    ran: &[String],
+) -> String {
     let hex = |text: &str| {
         let mut hex = String::with_capacity(text.len() * 2);
         for byte in text.bytes() {
@@ -285,12 +290,13 @@ fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>, ran: &[St
     };
     match failure {
         None => format!("{number} ok {}", ran.join(",")),
-        Some(failure) => format!(
-            "{number} failed {} {} {} {}",
+        Some((failure, trace)) => format!(
+            "{number} failed {} {} {} {} {}",
             failure.span.start,
             failure.span.end,
             hex(&failure.message),
-            hex(failure.help.as_deref().unwrap_or(""))
+            hex(failure.help.as_deref().unwrap_or("")),
+            trace.encode()
         ),
     }
 }
@@ -315,7 +321,13 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
             .map(|why| fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default()))
     });
     report_counts(&leftovers.counts);
-    (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
+    (output, failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default())
+}
+
+/// A failure as it's shown when it ends the program: with its call chain under it.
+fn rendered(sources: &Sources, failure: &fennec_syntax::Diagnostic) -> String {
+    let trace = super::take_trace();
+    sources.render(failure) + &sources.render_trace(failure.span, &trace)
 }
 
 /// Native code built to trace what it costs is about to do what's at this place in the source.
@@ -401,7 +413,7 @@ pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
     let (output, failure, leftovers) = super::finish_for_exit();
     report_counts(&leftovers.counts);
-    let failure = failure.map(|failure| sources.render(&failure)).unwrap_or_default();
+    let failure = failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default();
     let code = report(&output, &failure);
     if let Some(stop) = STOP.get() {
         stop(code);

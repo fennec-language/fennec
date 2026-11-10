@@ -266,7 +266,10 @@ fn ops_written(ops: &[Op], indent: usize) -> String {
             Op::AddTwice(value) => format!("held.add_twice({})", amount(*value)),
             Op::GrowItems(value) => format!("grow_all(ref held.items, {})", amount(*value)),
             Op::RefItem(at, value) => {
-                format!("ref slot{number} = held.items[{at}]\n{pad}slot{number} += {}", amount(*value))
+                format!(
+                    "ref slot{number} = held.items[{at}]\n{pad}slot{number} += {}\n{pad}slot{number} = slot{number} * 2",
+                    amount(*value)
+                )
             }
         };
         let _ = writeln!(out, "{pad}{line}");

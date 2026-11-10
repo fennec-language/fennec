@@ -15,7 +15,12 @@ mod source;
 
 /// Whether `Named` is made of native blocks in a program with no other threads, which it is once
 /// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
+/// `FENNEC_FUZZ_NAMED_NATIVE` turns the check on before then, to run against a branch that has them.
 const NAMED_GOES_NATIVE: bool = false;
+
+fn named_goes_native() -> bool {
+    NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
+}
 
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
 /// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
@@ -59,7 +64,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     let dev = crate::llvm::built_and_run(&source, "programs", false).map_err(with_program)?;
     // In a program with no other threads, `Named` is made of native blocks, which a dev build
     // says it made by calling `fennec_native_made`.
-    if NAMED_GOES_NATIVE && program.threadless && !makes_native_blocks()? {
+    if named_goes_native() && program.threadless && !makes_native_blocks()? {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));

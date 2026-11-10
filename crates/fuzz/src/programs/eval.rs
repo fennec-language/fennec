@@ -310,7 +310,7 @@ impl Bag {
                     let len = i64::try_from(self.items.len()).ok()?;
                     let at = if *at < 0 { at + len } else { *at };
                     let item = self.items.get_mut(usize::try_from(at).ok()?)?;
-                    *item = item.checked_add(amount(*value)?)?;
+                    *item = item.checked_add(amount(*value)?)?.checked_mul(2)?;
                 }
             }
         }

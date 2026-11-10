@@ -279,8 +279,8 @@ pub(crate) enum Op {
     AddTwice(Amount),
     /// `grow_all(ref held.items, amount)`, through a `ref` parameter.
     GrowItems(Amount),
-    /// `ref slot = held.items[at]` then `slot += amount`: a place outside the list crashes at the
-    /// `ref`.
+    /// `ref slot = held.items[at]`, then `slot += amount` and `slot = slot * 2`, reading it: a
+    /// place outside the list crashes at the `ref`.
     RefItem(i64, Amount),
 }
 

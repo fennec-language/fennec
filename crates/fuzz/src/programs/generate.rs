@@ -855,7 +855,6 @@ impl Writer<'_> {
             let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
             let at = PLACES.get(self.choice(PLACES.len())).copied().unwrap_or(0);
             let op = match self.choice(9) {
-                // Only `+=` through the `ref`: reading one under a lock doesn't build yet.
                 8 if !safe => Op::RefItem(at, value),
                 6 => Op::AddTwice(value),
                 7 => Op::GrowItems(value),
@@ -1257,9 +1256,11 @@ impl Writer<'_> {
                 // A copy kept while the first changes, which it mustn't see.
                 let Some(first) = self.name_of(Ty::Named, true) else { return self.print(body) };
                 let kept = self.fresh();
-                let value =
-                    if self.loops > 0 { Expr::Copy(first.clone()) } else { Expr::Name(first.clone()) };
-                body.push(Stmt::Let { name: kept.clone(), value, changeable: false });
+                body.push(Stmt::Let {
+                    name: kept.clone(),
+                    value: Expr::Name(first.clone()),
+                    changeable: false,
+                });
                 self.names.push(InScope { name: kept.clone(), ty: Ty::Named, changeable: false, held: 0 });
                 self.rename(body, &first);
                 self.read_back(body, &kept);
@@ -1271,7 +1272,7 @@ impl Writer<'_> {
     fn rename(&mut self, body: &mut Vec<Stmt>, named: &str) {
         let text = self.of(Ty::Str, 2);
         self.tree_names = 0;
-        let left = self.stored(Ty::Named, 1);
+        let left = self.of(Ty::Named, 1);
         body.push(Stmt::Rename(named.to_owned(), text, left));
         self.read_back(body, named);
     }

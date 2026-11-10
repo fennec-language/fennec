@@ -231,10 +231,35 @@ impl FnCx<'_> {
             self.mut_place(&arg.value, MUT_ARG);
         }
         match (&arg.value.kind, expected) {
-            (ExprKind::Lambda { params: names, body }, _) => self.lambda(names, body, params, arg.value.span),
+            (ExprKind::Lambda { params: names, body }, _) => {
+                let ty = self.lambda(names, body, params, arg.value.span);
+                self.failing_arrow(body, &ty, expected);
+                ty
+            }
             (_, Some(expected)) => self.expr_as(&arg.value, expected),
             (_, None) => self.expr(&arg.value),
         }
+    }
+
+    /// Refuses an arrow function whose `?` passes a failure up, given where a function that
+    /// doesn't fail goes, as `sorted`'s `key=`: nothing there is told to expect a failure. One
+    /// whose body gives back what can fail as it is was refused for that already.
+    fn failing_arrow(&mut self, body: &Expr, ty: &Type, takes: Option<&Type>) {
+        let Type::Arrow(_, returns) = ty else { return };
+        if !matches!(self.checker.settled(returns), Type::Result(..))
+            || self.recorded(body.span).is_some_and(|ty| matches!(self.checker.settled(&ty), Type::Result(..)))
+        {
+            return;
+        }
+        if let Some(Type::Arrow(_, wanted)) = takes.map(|takes| self.checker.settled(takes))
+            && matches!(self.checker.settled(&wanted), Type::Result(..))
+        {
+            return;
+        }
+        self.error(
+            Diagnostic::new("this arrow function can fail, but where it's passed takes one that can't", body.span)
+                .with_help("give a value for a failure with `else` inside it, or write a loop, which can use `?`"),
+        );
     }
 
     /// Checks arguments to something that takes anything, like an arrow function.

@@ -285,6 +285,13 @@ pub(crate) enum Op {
     /// `ref slot = held.items[at]`, then `slot += amount` and `slot = slot * 2`, reading it: a
     /// place outside the list crashes at the `ref`.
     RefItem(i64, Amount),
+    /// `mut kept = held.counts`, `kept[key] = amount`, then `held.counts = kept`: the dict
+    /// changed through a copy and stored back, which a failure or a crash must undo too.
+    CountsCopied(&'static str, Amount),
+    /// `held.items = held.items` and `held.counts = held.counts`, which change nothing.
+    SelfAssigned,
+    /// `_ = held.counts.pop(key)`, which crashes on a key that isn't there.
+    PopCount(&'static str),
 }
 
 /// How a union's member is called on.
@@ -295,12 +302,14 @@ pub(crate) enum Via {
     /// After `if store is Member:` for each member, `Lite`'s through `opened`, a function
     /// whose last line is a `with` that returns.
     Is,
-    /// `run` straight on the union, with no match; its `with` source still after `is`, which a
-    /// union needs.
+    /// `run` straight on the union, with no match, and its `with` source after `is`.
     Direct,
     /// After `if store is Lite: return`, on what's left, `Pg | Mem`: `run` called on it, it
     /// given where a `Pg | Mem` goes, and a `match` telling the two apart. Three members only.
     Rest,
+    /// `with store.session()` and `run` straight on the union, with no `is` or `match`: each
+    /// runs the member's own.
+    Plain,
 }
 
 /// The containers `CopiedNested` copies and changes deep inside.
@@ -316,6 +325,12 @@ pub(crate) enum Nested {
     ListOfDicts,
     /// `dict[str, list[Unit]]`.
     DictOfUnitLists,
+    /// `dict[str, Unit]`, a unit's `hp` added to.
+    DictOfUnitsHp,
+    /// `dict[str, list[int]]`, a list appended to.
+    DictOfIntLists,
+    /// `dict[str, Unit]`, a unit replaced by a new one.
+    ReplacedInCopy,
 }
 
 /// What a local `ref` names: a field or an item of something held in a `mut` name, its index
@@ -484,6 +499,14 @@ pub(crate) enum Stmt {
     /// `ref self` method given a value read from the list it grows, just after that list grew in
     /// place, and both printed, under `if holder.items.len() < 64:`.
     GrownBy(String, String),
+    /// `if list.len() < 64:` then `own = list`, `appended_all(ref list, own)` and both printed:
+    /// a list lent to a call through `ref` beside a value read from it.
+    LentRef(String, String),
+    /// `mut rows = [items, [7]]`, then under `if rows[0].len() < 64:`, `own = rows[0]`,
+    /// `appended_all(ref rows[0], own)` and the rows and `own` printed: a list's item lent.
+    LentItem(String, String, Expr),
+    /// `holder.items = holder.items` and `holder.tag = holder.tag`, which change nothing.
+    SelfField(String),
     /// `shadowed<id>(stdout, by=value)`, a function whose locals are named `change`,
     /// `bump_outer` and `tally`, like functions that take a `shared` value and may go uncalled.
     Shadowed(usize, Expr),

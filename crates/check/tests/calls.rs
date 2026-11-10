@@ -233,7 +233,7 @@ fn builtin_values_have_their_methods() {
             "use `upper()`",
             "use `lower()`",
             "use `stdout.print(...)`",
-            "write `copy(value)`",
+            "a plain `=` makes a copy already: `kept = value`",
             "use `.len()`",
             "",
         ]
@@ -404,12 +404,16 @@ fn result_expect_needs_a_reason() {
         def main(stdout: Stdout):
             stdout.print(risky(1).expect('it is small') + 1)
             _ = risky(1).expect()
+            _ = risky(1).expect('')
+            _ = risky(1).expect('   ')
             risky(1).expect(5)
     ";
     assert_eq!(
         problems(program),
         [
             "`expect` needs a reason this can't fail @ risky(1).expect()",
+            "say why this can't fail @ \"\"",
+            "say why this can't fail @ \"   \"",
             "`expect` needs a reason this can't fail @ risky(1).expect(5)",
         ]
     );

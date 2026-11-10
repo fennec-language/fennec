@@ -1,8 +1,8 @@
 //! A collection can't change while a loop goes over it. Inside `for x in xs:`, nothing may
 //! append to `xs`, remove from it, set one of its items, write through it with another `for mut`,
 //! or pass it as `mut`, and neither may a function the body calls: each function's summary says
-//! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
-//! collects the changes and makes them after.
+//! which places under its `mut` parameters it changes. The loop goes over a value made first,
+//! `before = xs`, instead, or collects the changes and makes them after.
 //!
 //! A `ref` argument has its place to itself the same way: nothing else in the call can reach it,
 //! not even another item of the same collection, as `f(ref xs[0], ref xs[2])` would.
@@ -130,6 +130,7 @@ pub(crate) fn check_function(
         problems: Vec::new(),
     };
     loops.loops_in(&def.body, checker.typed.get(key));
+    loops.local_refs_in(&def.body, checker.typed.get(key));
     loops.arguments_changing_their_call(&def.body, checker.typed.get(key));
     loops.generators_in(&def.body, checker.typed.get(key));
     loops.problems
@@ -161,6 +162,55 @@ impl Loops<'_, '_> {
             }
             for block in blocks(stmt) {
                 self.loops_in(block, body);
+            }
+        }
+    }
+
+    /// Reports each change to what a `ref name = place` names, made another way while the name
+    /// is in use: from the `ref` to the last statement in its block that uses it.
+    fn local_refs_in(&mut self, stmts: &[Stmt], body: Option<&Body>) {
+        for (at, stmt) in stmts.iter().enumerate() {
+            if let Some((name, held)) = stmt.kind.local_ref()
+                && let Some(named) = place(held)
+            {
+                let rest = stmts.get(at + 1..).unwrap_or_default();
+                let alive = rest
+                    .iter()
+                    .rposition(|later| mentions(later, name))
+                    .map_or(&[][..], |last| rest.get(..=last).unwrap_or_default());
+                let shown = place_text(held);
+                let mut refs = Vec::new();
+                refs_in(alive, &mut refs);
+                for (changed, span) in self.changes_in(alive, body) {
+                    if !changed.overlaps(&named) {
+                        continue;
+                    }
+                    let problem = match refs.iter().find(|(_, value)| *value == span) {
+                        Some((other, _)) => Diagnostic::new(
+                            format!("`{other}` is a second `ref` into `{}` while `{name}` is still in use", changed.shown()),
+                            span,
+                        )
+                        .with_help(format!("one `ref` into a place at a time: declare `{other}` after the last line that uses `{name}`")),
+                        None => Diagnostic::new(
+                            format!("this changes `{}` while `{name}` is a `ref` to `{shown}`", changed.shown()),
+                            span,
+                        )
+                        .with_help(format!("change it through `{name}`, or after the last line that uses `{name}`")),
+                    };
+                    self.problems.push(problem);
+                }
+            }
+            for block in blocks(stmt) {
+                self.local_refs_in(block, body);
+            }
+            for value in exprs(stmt) {
+                fennec_syntax::read::in_expr(value, &mut |inner| {
+                    if let ExprKind::Match { arms, .. } = &inner.kind {
+                        for arm in arms {
+                            self.local_refs_in(&arm.body, body);
+                        }
+                    }
+                });
             }
         }
     }
@@ -345,6 +395,12 @@ impl Loops<'_, '_> {
                         found.push((changed, target.span));
                     }
                 }
+            }
+            // A `ref` can change what it names.
+            if let Some((_, held)) = stmt.kind.local_ref()
+                && let Some(named) = place(held)
+            {
+                found.push((named, held.span));
             }
             // A `for mut` writes each item back, whatever its body does with it.
             if let StmtKind::For { iter, is_mut: true, .. } = &stmt.kind {
@@ -658,10 +714,11 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
 const ARGUMENT_CHANGES_FIX: &str =
     "make that change on the line before, keeping what it gives back in a name, and pass the name";
 
-const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
-it reads, or make the changes one at a time";
+const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: pass a value you made first, \
+like `item = xs[j]`, or make the changes one at a time";
 
-const RECEIVER_FIX: &str = "a `ref self` method needs what it changes to itself: pass `copy(...)` of it";
+const RECEIVER_FIX: &str = "a `ref self` method needs what it changes to itself: pass a value you made \
+first, like `held = bag.items`";
 
 /// Two `ref`s into one collection, at indexes written apart or not.
 const ITEMS_FIX: &str = "two items of one collection are never both `ref`, even at different indexes: \
@@ -730,5 +787,26 @@ pub(crate) fn exprs(stmt: &Stmt) -> Vec<&Expr> {
         | StmtKind::Break
         | StmtKind::Continue
         | StmtKind::Pass => Vec::new(),
+    }
+}
+
+/// Whether a statement uses a name anywhere in it.
+fn mentions(stmt: &Stmt, name: &str) -> bool {
+    let mut found = false;
+    fennec_syntax::read::in_stmts(std::slice::from_ref(stmt), &mut |expr| {
+        found |= matches!(&expr.kind, ExprKind::Name(named) if named == name);
+    });
+    found
+}
+
+/// Each `ref name = place` in some statements, with the span of its place.
+fn refs_in(stmts: &[Stmt], found: &mut Vec<(String, Span)>) {
+    for stmt in stmts {
+        if let Some((name, held)) = stmt.kind.local_ref() {
+            found.push((name.to_owned(), held.span));
+        }
+        for block in blocks(stmt) {
+            refs_in(block, found);
+        }
     }
 }

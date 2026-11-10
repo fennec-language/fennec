@@ -158,13 +158,6 @@ fn a_mut_name_read_from_a_place_is_a_copy_when_the_place_is_read_after() {
 }
 
 #[test]
-fn an_explicit_copy_is_never_reported() {
-    let source = "def f(n: int) -> int:\n    xs = [n]\n    mut mine = copy(xs)\n    mine.append(1)\n    \
-                  mine.len() + xs.len()\n";
-    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
-}
-
-#[test]
 fn allocations_say_what_and_how_many_loops_theyre_in() {
     let source = "def f(n: int) -> int:\n    mut total = 0\n    for at in range(n):\n        \
                   for other in range(n):\n            xs = [at, other]\n            total += xs.len()\n    total\n";

@@ -1,0 +1,21 @@
+## Standard output, given to `main` or a test: what the program says. Its methods written in Rust
+## are `print(...)`, which writes what it's given with spaces between and a new line after, and
+## `write(...)`, which writes it with no new line. What's written is held and goes out in pieces.
+## A test's `Stdout` is a fake that keeps what's printed, for the test's `captured()`. Only `main`
+## and tests are given one: it can't be made.
+export struct Stdout:
+    _given: int
+
+## Standard input, given to `main`: what's typed or piped in. Its method written in Rust is
+## `lines()`, every line to the end. Only `main` is given one: it can't be made.
+export struct Stdin:
+    _given: int
+
+## Standard error, given to `main` or a test: what isn't the program's output, like warnings, errors
+## and logs. Its methods written in Rust are `write(data)` for bytes, `write_text(text)`,
+## `write_line(text)`, which adds a new line, and `flush()`. Each goes out at once, after what's
+## been printed to standard output, and fails with an `IoError` when standard error is closed. A
+## test's `Stderr` is a fake that keeps what's written, for the test's `captured()`. Only `main`
+## and tests are given one: it can't be made.
+export struct Stderr:
+    _given: int

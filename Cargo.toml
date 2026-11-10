@@ -86,6 +86,13 @@ libm = { version = "=0.2.16", default-features = false }
 # and libsqlite3-sys. Without default features, there's no statement cache to pull in a second
 # hashbrown. Not on WebAssembly, where there's no disk. Under MIT, with SQLite in the public domain.
 rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
+# Catching the signals that ask a program to stop, for `Signals`: on Unix, a handler that sets a
+# flag and wakes a thread, and gives a second signal its default action, so nothing of ours is
+# `unsafe`. Its iterator is the thread's. Under MIT or Apache-2.0.
+signal-hook = { version = "=0.3.18", default-features = false, features = ["iterator"] }
+# The same on Windows, for Ctrl-C and Ctrl-Break, through `SetConsoleCtrlHandler`, its handler run
+# on a thread of its own. Under MIT or Apache-2.0.
+ctrlc = { version = "=3.4.7", default-features = false }
 fennec-bench = { path = "crates/bench" }
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }

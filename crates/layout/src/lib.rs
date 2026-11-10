@@ -209,6 +209,8 @@ pub enum Cap {
     Entropy,
     Net,
     Env,
+    Signals,
+    Stderr,
 }
 
 impl Cap {
@@ -223,6 +225,8 @@ impl Cap {
             "Entropy" => Some(Cap::Entropy),
             "Net" => Some(Cap::Net),
             "Env" => Some(Cap::Env),
+            "Signals" => Some(Cap::Signals),
+            "Stderr" => Some(Cap::Stderr),
             _ => None,
         }
     }
@@ -238,6 +242,8 @@ impl Cap {
             Cap::Entropy => "Entropy",
             Cap::Net => "Net",
             Cap::Env => "Env",
+            Cap::Signals => "Signals",
+            Cap::Stderr => "Stderr",
         }
     }
 
@@ -253,6 +259,8 @@ impl Cap {
             Cap::Entropy => 6,
             Cap::Net => 7,
             Cap::Env => 8,
+            Cap::Signals => 9,
+            Cap::Stderr => 10,
         }
     }
 }

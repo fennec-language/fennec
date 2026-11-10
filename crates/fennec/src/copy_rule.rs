@@ -1,12 +1,11 @@
-//! A copy made each time round a loop without saying so is a compile error. Changing a value
-//! something else still holds copies it first. When a loop does that every time round, here or
-//! further up the calls, the program says so with `copy(...)` or stops sharing the value. A copy
-//! made once, the first time round, stays a hint.
+//! What a program costs that it must not: anything that may allocate or copy in a `@hot`
+//! function or what it calls, and any check native code keeps there apart from overflow. Changing
+//! a value something else still holds copies it first; anywhere else, that's a hint, since every
+//! copy is a snapshot as the program says, but a hot path refuses it.
 
 use fennec_syntax::{Diagnostic, Module, Sources};
 
-/// Each copy a resolved module makes each time round a loop without saying so, anything that may
-/// allocate or copy in a `@hot` function or what it calls, or any check native code keeps there
+/// Anything a resolved module may allocate or copy in a `@hot` function or what it calls, or any check native code keeps there
 /// apart from overflow, and each call whose positional arguments are easy to get backwards.
 pub(crate) fn implicit_copies(
     module: &Module,
@@ -15,7 +14,7 @@ pub(crate) fn implicit_copies(
 ) -> Vec<Diagnostic> {
     let lowered = fennec_ir::lower(module, signatures);
     let findings = fennec_ir::costs(&lowered);
-    let mut problems = fennec_lint::implicit_copies(&findings);
+    let mut problems = Vec::new();
     problems.extend(positional_arguments(module, sources));
     let hot = hot_functions(module);
     if hot.is_empty() {
@@ -124,7 +123,7 @@ fn hot_functions(module: &Module) -> Vec<(String, fennec_syntax::Span)> {
     found
 }
 
-/// Checks a program to run, with its implicit copies each time round a loop as errors, and its
+/// Checks a program to run, with what its `@hot` code may not cost as errors, and its
 /// constants worked out while compiling.
 pub(crate) fn check_to_run(
     module: &mut Module,

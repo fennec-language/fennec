@@ -59,7 +59,7 @@ extend Parser:
         if word == "mut":
             return self.mut_declaration()?
         if word == "ref":
-            fail no_inline_ref(self.span())
+            return self.ref_declaration()?
         if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
             return self.expr_or_assign()?
         _ = self.advance()
@@ -104,6 +104,23 @@ extend Parser:
         _ = self.expect_punct("=")?
         value = self.expr()?
         ty = TypeExpr(name="shared", args=[], optional=False, span=word)
+        .Assign(target, None, value, declare_mut=False, ty=ty)
+
+    ## `ref unit = units[at]`, written in as `unit: ref = units[at]`: a type of `ref` with
+    ## nothing in its brackets, which names the place for the rest of the block.
+    def ref_declaration(ref self) -> StmtKind fails Diagnostic:
+        word = self.advance().span
+        at = self.span()
+        message = "`ref` declares a name for a place, like `ref unit = units[at]`"
+        if not is_name(self.peek()):
+            fail Diagnostic(message=message, span=at)
+        name = self.name("a name after `ref`")?
+        target = Expr(kind=.Name(name), span=at)
+        if self.peek() != .Punct("="):
+            fail Diagnostic(message=message, span=word.to(at))
+        _ = self.advance()
+        value = self.expr()?
+        ty = TypeExpr(name="ref", args=[], optional=False, span=word)
         .Assign(target, None, value, declare_mut=False, ty=ty)
 
     ## A simple statement's end: its line, and its span from `start`.
@@ -311,10 +328,6 @@ def assignment_op(tok: Tok) -> BinOp?:
 ## Whether a token makes what's before it the target of an assignment.
 def starts_assignment(tok: Tok) -> bool:
     tok == .Punct("=") or assignment_op(tok) is not None
-
-def no_inline_ref(span: Span) -> Diagnostic:
-    help = "`ref` is for loops and parameters. To change something in a list, write to it there, like `units[0].health -= 1`; to make a name that can change, write `mut`"
-    Diagnostic(message="there's no inline `ref`", span=span, help=help)
 
 def python_only(word: str, span: Span) -> Diagnostic:
     mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"

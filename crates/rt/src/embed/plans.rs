@@ -136,7 +136,7 @@ fn case_of<T>(cases: &[T], fields: &[u64]) -> Option<usize> {
 
 /// The non-zero addresses in a block's fields, if the plan says where they are without
 /// walking. `None` means walk it.
-pub(super) fn addresses(plan: &Plan, fields: &[u64], found: &mut Vec<u64>) -> Option<()> {
+pub(super) fn addresses(plan: &Plan, fields: &[u64], found: &mut impl Extend<u64>) -> Option<()> {
     let words = match plan {
         Plan::Fixed(words) => words,
         Plan::Cases(cases) => cases.get(case_of(cases, fields)?)?,
@@ -154,7 +154,7 @@ pub(super) fn addresses(plan: &Plan, fields: &[u64], found: &mut Vec<u64>) -> Op
     Some(())
 }
 
-fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut Vec<u64>) {
+fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
     found.extend(holds.blocks_in(fields).filter(|address| *address != 0));
     found.extend(holds.texts_in(fields).filter(|address| *address != 0));
 }

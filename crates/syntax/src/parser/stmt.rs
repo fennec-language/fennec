@@ -1,7 +1,7 @@
 //! Statements and blocks.
 
 use super::Parser;
-use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, TypeExpr, WithName};
+use crate::ast::{BinOp, Expr, ExprKind, REF, Stmt, StmtKind, TypeExpr, WithName};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Kw, Punct, Tok};
@@ -64,7 +64,7 @@ impl Parser {
             {
                 self.shared_declaration()?
             }
-            Tok::Kw(Kw::Ref) => return Err(no_inline_ref(start)),
+            Tok::Kw(Kw::Ref) => self.ref_declaration()?,
             Tok::Name(word) if self.is_python_only(&word) => return Err(python_only(&word, start)),
             _ => self.expr_or_assign()?,
         };
@@ -325,6 +325,31 @@ impl Parser {
         Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty: Some(ty) })
     }
 
+    /// `ref unit = units[at]`, written in as `unit: ref = units[at]`: a type of `ref` with
+    /// nothing in its brackets, which names the place for the rest of the block.
+    fn ref_declaration(&mut self) -> Result<StmtKind, Diagnostic> {
+        let word = self.advance().span;
+        let at = self.span();
+        let Tok::Name(name) = self.peek().clone() else {
+            return Err(Diagnostic::new(
+                "`ref` declares a name for a place, like `ref unit = units[at]`",
+                at,
+            ));
+        };
+        self.advance();
+        let target = Expr { kind: ExprKind::Name(name), span: at };
+        if !matches!(self.peek(), Tok::P(Punct::Assign)) {
+            return Err(Diagnostic::new(
+                "`ref` declares a name for a place, like `ref unit = units[at]`",
+                word.to(at),
+            ));
+        }
+        self.advance();
+        let value = self.expr()?;
+        let ty = TypeExpr { name: REF.to_owned(), args: Vec::new(), optional: false, span: word };
+        Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty: Some(ty) })
+    }
+
     /// Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
     /// value: `ref` or `mut`, or a name and then `,` or `:`.
     fn at_with_name(&self) -> bool {
@@ -332,12 +357,6 @@ impl Parser {
             || matches!(self.peek(), Tok::Name(_))
                 && matches!(self.peek_at(1), Tok::P(Punct::Comma | Punct::Colon))
     }
-}
-
-fn no_inline_ref(span: Span) -> Diagnostic {
-    Diagnostic::new("there's no inline `ref`", span).with_help(
-        "`ref` is for loops and parameters. To change something in a list, write to it there, like `units[0].health -= 1`; to make a name that can change, write `mut`",
-    )
 }
 
 fn python_only(word: &str, span: Span) -> Diagnostic {

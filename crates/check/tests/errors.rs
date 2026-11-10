@@ -570,7 +570,7 @@ fn a_plain_else_cant_handle_a_failure_and_a_none_alike() {
         let program = format!("{declared}\ndef main(stdout: Stdout):\n    {line}\n    stdout.print(found)\n");
         assert_eq!(
             problems(&program),
-            [format!("{said} @ cached({})", if line.contains("7") { 7 } else { 1 })],
+            [format!("{said} @ cached({})", if line.contains('7') { 7 } else { 1 })],
             "{line}"
         );
     }

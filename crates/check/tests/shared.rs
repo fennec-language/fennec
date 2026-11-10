@@ -553,9 +553,9 @@ fn a_function_value_called_inside_a_lock_is_followed_to_what_it_holds() {
         empty
     );
     assert_eq!(
-        found("    locked(scores, () => sender.send(1))?\n"),
+        found("    locked(scores, () => sender.send(1)?)?\n"),
         [
-            "`locked` calls `work` while `held` is locked, and this waits on a channel's `send` @ () => sender.send(1)"
+            "`locked` calls `work` while `held` is locked, and this waits on a channel's `send` @ () => sender.send(1)?"
         ]
     );
     assert_eq!(

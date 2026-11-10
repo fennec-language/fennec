@@ -3086,7 +3086,7 @@ fn two_channels_of_different_types_in_one_function_lower() {
 /// `intrinsics.launch`, and its end through `intrinsics.launch_end`.
 #[test]
 fn with_launch_lowers() {
-    let source = "from std.concurrent import Closed, Crashed, Inbox, Timeout\n\nenum Sound:\n    Play(name: str, volume: float)\n    StopAll\n\nerror Muted:\n    why: str\n\ndef audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:\n    for sound in inbox:\n        match sound:\n            case .Play(name, volume):\n                if volume > 1.0: fail Muted(why=\"too loud\")\n                stdout.print(f\"play {name}\")\n            case .StopAll:\n                stdout.print(\"stop\")\n\ndef tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\ndef main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:\n    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:\n        sounds.send(.Play(name=\"jump\", volume=0.8))?\n        sounds.send(.StopAll)?\n    with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
+    let source = "from std.concurrent import Closed, Crashed, Inbox, Timeout\n\nenum Sound:\n    Play(name: str, volume: float)\n    StopAll\n\nerror Muted:\n    why: str\n\ndef audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:\n    for sound in inbox:\n        match sound:\n            case .Play(name, volume):\n                if volume > 1.0: fail Muted(why=\"too loud\")\n                stdout.print(f\"play {name}\")\n            case .StopAll:\n                stdout.print(\"stop\")\n\ndef tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\ndef main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:\n    with launch((inbox) => audio(inbox, stdout)?, stop_after=5s, inbox_size=4)? as sounds:\n        sounds.send(.Play(name=\"jump\", volume=0.8))?\n        sounds.send(.StopAll)?\n    with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
 }
@@ -3098,7 +3098,7 @@ fn a_task_failing_several_ways_lowers() {
     let source = "from std.concurrent import Channel, Closed, Crashed, Timeout, channel\n\n\
         def tell(replies: Channel[int]) fails Closed | Timeout:\n    replies.send(1)?\n\n\
         def main(stdout: Stdout) fails Closed | Crashed | Timeout:\n    \
-        with channel[int](size=4) as replies:\n        with launch(() => tell(replies))?:\n            pass\n        \
+        with channel[int](size=4) as replies:\n        with launch(() => tell(replies)?)?:\n            pass\n        \
         stdout.print(replies.receive()?)\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);

@@ -49,23 +49,23 @@ test "folders list, measure and remove"(fs: Fs):
     fs.make_dir("saves/today")?
 
 test "the fake fails the way files do"(fs: Fs):
-    assert failed(() => fs.read_text("gone"))
-    assert failed(() => fs.metadata("gone"))
-    assert failed(() => fs.list_dir("gone"))
-    assert failed(() => fs.remove("gone"))
-    assert failed(() => fs.remove("."))
-    assert failed(() => fs.read_text("."))
-    assert failed(() => fs.write_text("no/folder.txt", "x"))
+    assert failed(() => fs.read_text("gone")?)
+    assert failed(() => fs.metadata("gone")?)
+    assert failed(() => fs.list_dir("gone")?)
+    assert failed(() => fs.remove("gone")?)
+    assert failed(() => fs.remove(".")?)
+    assert failed(() => fs.read_text(".")?)
+    assert failed(() => fs.write_text("no/folder.txt", "x")?)
     fs.make_dir("box")?
     fs.write_text("box/lid", "x")?
-    assert failed(() => fs.read_text("box"))
-    assert failed(() => fs.write_text("box", "x"))
-    assert failed(() => fs.remove("box"))
-    assert failed(() => fs.make_dir("box/lid/deep"))
-    assert failed(() => fs.list_dir("box/lid"))
-    assert failed(() => fs.write_text("box/lid/under", "x"))
+    assert failed(() => fs.read_text("box")?)
+    assert failed(() => fs.write_text("box", "x")?)
+    assert failed(() => fs.remove("box")?)
+    assert failed(() => fs.make_dir("box/lid/deep")?)
+    assert failed(() => fs.list_dir("box/lid")?)
+    assert failed(() => fs.write_text("box/lid/under", "x")?)
     fs.write_bytes("box/raw", bytes([255]))?
-    assert failed(() => fs.read_text("box/raw"))
+    assert failed(() => fs.read_text("box/raw")?)
 
 test "the clock is fixed, and sleeping takes no time"(clock: Clock):
     assert clock.now().nanos == 0

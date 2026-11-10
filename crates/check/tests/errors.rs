@@ -3,6 +3,13 @@
 
 use crate::{helps, problems};
 
+/// A program with the fixes of its problems made, the way `fennec fix` makes them.
+fn fixed(source: &str) -> String {
+    let Ok(module) = fennec_syntax::parse(source) else { return source.to_owned() };
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    fennec_syntax::apply_fixes(source, 0, &diagnostics).unwrap_or_else(|| source.to_owned())
+}
+
 const RISKY: &str = "
 error Oops:
     why: str
@@ -340,9 +347,9 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
          read(path)?\n\n\
          def main(stdout: Stdout):\n    n = load(\"a\") else as why:\n        match why:\n            \
          case .NotFound(path): stdout.print(path)\n            case .Bad(text): stdout.print(text)\n            \
-         case _: pass\n        -1\n    stdout.print(n)\n    stdout.print(apply(path => load(path), \"b\") else 0)\n    \
-         reader: (str) -> int fails LoadError | ParseError = path => load(path)\n    \
-         stdout.print(said(() => reader(\"c\")))\n\n\
+         case _: pass\n        -1\n    stdout.print(n)\n    stdout.print(apply(path => load(path)?, \"b\") else 0)\n    \
+         reader: (str) -> int fails LoadError | ParseError = path => load(path)?\n    \
+         stdout.print(said(() => reader(\"c\")?))\n\n\
          def said(run: () -> int fails LoadError | ParseError) -> int:\n    run() else -1\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
@@ -434,15 +441,25 @@ fn leaving_with_else_is_checked_like_the_statement() {
     assert_eq!(problems(cant_fail).len(), 1, "{:?}", problems(cant_fail));
 }
 
-/// Nothing is told to expect a failure from a function used as a value. Where this got through,
-/// the JIT ended the program there with no error and an exit code of 0.
+/// A failure passes up from an arrow function only with `?`, as from a `def`, and `fennec fix`
+/// adds it. What it passes up is the arrow's own failure, not one more way the function around it
+/// fails. An arrow that can fail is refused where a builtin takes a function, as `sorted`'s
+/// `key=`: nothing there is told to expect a failure. Where this got through, the JIT ended the
+/// program there with no error and an exit code of 0.
 #[test]
-fn an_arrow_function_cant_pass_a_failure_up() {
-    let said = "an arrow function can't pass a failure up with `?`";
+fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
+    let unmarked = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(why=\"neg\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)) is None)\n";
+    assert_eq!(problems(unmarked), ["this can fail, and a failure passes up only with `?` @ half(-1)"]);
+    assert!(fixed(unmarked).contains("failure_of(() => half(-1)?)"), "{}", fixed(unmarked));
+    assert_eq!(problems(&fixed(unmarked)), Vec::<String>::new());
+    // The arrow's `?`s, with `from` too, pass up its own failures, and a `def` takes it as one
+    // that fails.
+    let marked = "error Bad:\n    why: str\n\ndef twice(run: () -> int fails Bad | InvalidValue) -> int fails Bad | InvalidValue:\n    run()? + run()?\n\ndef main(stdout: Stdout):\n    stdout.print(twice(() => int(\"1\")? + (int(\"2\")? from Bad(why=\"no\"))) else 0)\n";
+    assert_eq!(problems(marked), Vec::<String>::new());
+    let said = "this arrow function can fail, but where it's passed takes one that can't";
     for body in [
         "kept = sorted(['1'], key=text => int(text)?)\nstdout.print(kept)",
         "kept = sorted(['1'], key=text => [int(part)? for part in [text]][0])\nstdout.print(kept)",
-        "kept = sorted(['1'], key=text => int(text)? from Bad(why=text))\nstdout.print(kept)",
     ] {
         let source = format!(
             "error Bad:\n    why: str\n\ndef main(stdout: Stdout):\n    {}\n",
@@ -452,8 +469,8 @@ fn an_arrow_function_cant_pass_a_failure_up() {
         assert_eq!(found.iter().filter(|one| one.starts_with(said)).count(), 1, "{body}: {found:?}");
         assert_eq!(found.len(), 1, "{body}: {found:?}");
     }
-    // The failure is the arrow's mistake, not one more way the function around it fails.
-    let around = "error Bad:\n    why: str\n\ndef around() -> list[str] fails Bad:\n    fail Bad(why=\"no\")\n    _ = sorted(['1'], key=text => int(text)?)\n";
+    // The failure is the arrow's, not one more way the function around it fails.
+    let around = "def around() -> list[str]:\n    sorted(['1'], key=text => int(text)?)\n";
     let found = problems(around);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|one| one.starts_with(said)), "{found:?}");
@@ -678,7 +695,7 @@ fn what_can_fail_is_never_a_plain_value() {
         assert_eq!(crate::problems_as_written(&program), [format!("{said} @ {call}")], "{line}");
     }
     let fine = format!(
-        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(3) else 0, half(3).expect(\"3 is big enough\"))\n    held = half(3) else as why:\n        stdout.print(why.why)\n        0\n    problem = failure_of(() => half(-1))\n    stdout.print(held, problem is None)\n"
+        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(3) else 0, half(3).expect(\"3 is big enough\"))\n    held = half(3) else as why:\n        stdout.print(why.why)\n        0\n    problem = failure_of(() => half(-1)?)\n    stdout.print(held, problem is None)\n"
     );
     assert_eq!(crate::problems_as_written(&fine), Vec::<String>::new());
     // In a function that fails with what the call does, the fix passes the failure up.

@@ -49,5 +49,5 @@ def main(stdout: Stdout):
     results = [level(text) else -1 for text in ["1", "q", "99"]]
     kept = [level(text) else -1 for text in ["5", "", "50"]]
     stdout.print(results.len(), kept.len(), [level(t) else -1 for t in ["8", "z", "10"]])
-    stdout.print(through(level, "6") else 0, through(level, "") else 0, through(text => level(text), "77") else 0)
+    stdout.print(through(level, "6") else 0, through(level, "") else 0, through(text => level(text)?, "77") else 0)
     stdout.print(lookup(table, "d")?)

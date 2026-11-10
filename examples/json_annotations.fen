@@ -41,13 +41,15 @@ test "a saved name wins over names=":
 
 test "the field's own name isn't read":
     assert (
-        failure(() => json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}"))
+        failure(() => json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}")?)
         == "`Account` saves `id` as \"uid\", but the text has \"id\""
     )
 
 test "a skipped field in the text is a field it doesn't have":
     assert (
-        failure(() => json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}"))
+        failure(
+            () => json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}")?,
+        )
         == "`Account` doesn't save `cache`, which has `@skip`, but the text has it"
     )
 

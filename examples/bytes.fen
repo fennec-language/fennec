@@ -32,6 +32,6 @@ test "bytes are written and read as hex, as in Python":
 
 test "fromhex fails on text that isn't pairs of hex digits":
     for text in ["8", "zz", "8 9"]:
-        error = failure_of(() => bytes.fromhex(text))
+        error = failure_of(() => bytes.fromhex(text)?)
         assert error is not None
         assert error.message.startswith("`fromhex` needs two hex digits for each byte")

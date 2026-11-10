@@ -302,8 +302,9 @@ impl FnCx<'_> {
             wanted => wanted,
         };
         if matches!(&wanted, Type::Named(name) if name == written) && self.has_case(written, case) {
-            // Code the checker writes, like a generated `serialize`, has its spans in the prelude.
-            if object.span.in_prelude() {
+            // Code the checker writes, like a generated `serialize`, has its spans in the prelude,
+            // and a program rewritten after it checked was held to this as written.
+            if object.span.in_prelude() || self.checker.again {
                 return;
             }
             let shown = match &object.kind {

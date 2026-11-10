@@ -8231,6 +8231,36 @@ fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::i
     Ok(())
 }
 
+/// What a program writes to `Stderr` goes out at once, after what it printed before, so the two read
+/// in order where they're shown together, as on a terminal.
+#[cfg(unix)]
+#[test]
+fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stderr_in_order")?;
+    let program = dir.join("warn.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, stderr: Stderr):
+    stdout.print(\"first\")
+    stderr.write_line(\"then a warning\")?
+    stdout.print(\"last\")
+",
+    )?;
+    let executable = dir.join("warn");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Both to one pipe, as a terminal shows them.
+    let ran =
+        Command::new("sh").arg("-c").arg("\"$0\" 2>&1").arg(&executable).output_before(FENNEC_DEADLINE)?;
+    assert!(ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "first\nthen a warning\nlast\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A server built on the runtime `threads` names, `"1"` with threads and `"0"` without, serving
 /// HTTP until the program's asked to stop, with 2 seconds' grace. Gives it running, the port it
 /// listens on, and what it prints after.

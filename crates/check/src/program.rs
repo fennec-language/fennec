@@ -415,7 +415,7 @@ impl Program {
             "Id" => Type::Id(arg()),
             "Table" => Type::Table(arg()),
             "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" | "Env"
-            | "Signals" => Type::named(name),
+            | "Signals" | "Stderr" => Type::named(name),
             name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
             name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
             name if self.types.contains_key(name) => Type::named(name),
@@ -519,7 +519,7 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 40] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 41] = [
     "int",
     "float",
     "i8",
@@ -557,6 +557,7 @@ pub(crate) const BUILT_IN_TYPES: [&str; 40] = [
     "Net",
     "Env",
     "Signals",
+    "Stderr",
     "Result",
     "Iterator",
     "->",

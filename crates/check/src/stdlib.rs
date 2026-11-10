@@ -51,6 +51,7 @@ modules! {
     crypto,
     env,
     fs,
+    io,
     json,
     math,
     net,

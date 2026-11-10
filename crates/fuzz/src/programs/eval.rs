@@ -14,11 +14,6 @@ use std::fmt::Write as _;
 
 use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Size, Stmt};
 
-/// Reported to the checker lane: in a `for ref` loop, the item changed through the `ref` reads
-/// back by its place as it was, in the same round. While it is, the evaluator doesn't say what
-/// such a loop prints, and only the two builds are compared there. Set to `false` once it's fixed.
-const STALE_READ_REPORTED: bool = true;
-
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Value {
@@ -572,9 +567,6 @@ impl Machine {
                 }
             }
             Stmt::EachRefThenRead(_, list, at) => {
-                if STALE_READ_REPORTED {
-                    return Err(Stop::Unsure);
-                }
                 let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
                 for place in 0..items.len() {
                     let changed = match self.slot(list)? {
@@ -589,6 +581,29 @@ impl Machine {
                     let read = usize::try_from(floor_rem(*at, len)?).map_err(|_| Stop::Unsure)?;
                     let _ = writeln!(self.out, "{}", changed.get(read).copied().ok_or(Stop::Unsure)?);
                 }
+            }
+            Stmt::TableRound { xs, removed, read, by, .. } => {
+                let mut slots: Vec<Option<i64>> = Vec::with_capacity(xs.len());
+                for x in xs {
+                    slots.push(Some(int(&self.expr(x)?)?));
+                }
+                if let Some(slot) = removed.and_then(|at| slots.get_mut(at)) {
+                    *slot = None;
+                }
+                for place in 0..slots.len() {
+                    let Some(Some(x)) = slots.get(place).copied() else { continue };
+                    let by = int(&self.expr(by)?)?;
+                    let changed = checked(x.checked_add(by))?;
+                    if let Some(slot) = slots.get_mut(place) {
+                        *slot = Some(changed);
+                    }
+                    // Read live, by `Id`, after the change through the `ref`.
+                    let read = slots.get(*read).copied().flatten().ok_or(Stop::Unsure)?;
+                    let _ = writeln!(self.out, "{read}");
+                }
+                let points: Vec<String> =
+                    slots.iter().flatten().map(|x| format!("Point(x={x}, y=0)")).collect();
+                let _ = writeln!(self.out, "Table([{}])", points.join(", "));
             }
             Stmt::ShareOuter(name, _) => {
                 self.outers.push(0);

@@ -466,12 +466,28 @@ impl Writer<'_> {
 
     fn statement(&mut self, body: &mut Vec<Stmt>, depth: usize) {
         self.written += 1;
-        let which = self.choice(29);
+        let which = self.choice(30);
         match which {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
             27 => self.change_buffer(body),
+            29 => {
+                let table = self.fresh();
+                let count = 1 + self.choice(3);
+                let ids: Vec<String> = (0..count).map(|_| self.fresh()).collect();
+                let xs = (0..count).map(|_| self.int(1)).collect();
+                let removed = if count > 1 && self.choice(3) == 0 { Some(self.choice(count)) } else { None };
+                // The point read by its `Id` is never the one taken out, which would fail.
+                let start = self.choice(count);
+                let read = (0..count)
+                    .map(|step| (start + step) % count)
+                    .find(|at| Some(*at) != removed)
+                    .unwrap_or(0);
+                let by = self.int(1);
+                let by = self.bounded(by);
+                body.push(Stmt::TableRound { table, ids, xs, removed, read, by });
+            }
             28 => {
                 // A generator lending from a source, let go partway or run out.
                 let limit = Expr::Int(i64::from(self.byte() % 6));

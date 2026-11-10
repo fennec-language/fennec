@@ -7,7 +7,8 @@ use std::fmt::Write as _;
 use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, Stmt};
 
 /// What every program starts with, for its body to use.
-const HEADER: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
+const HEADER: &str = "from std.collections import Table
+from std.concurrent import Closed, Crashed, Inbox, Timeout
 
 struct Point:
     x: int
@@ -387,6 +388,22 @@ impl Writer {
             Stmt::PrintOuter(name) => {
                 self.line(indent, &format!("lock {name} as held:"));
                 self.line(indent + 1, "stdout.print(held.n)");
+            }
+            Stmt::TableRound { table, ids, xs, removed, read, by } => {
+                self.line(indent, &format!("mut {table} = Table[Point]()"));
+                for (id, x) in ids.iter().zip(xs) {
+                    let x = self.expr(x, false);
+                    self.line(indent, &format!("{id} = {table}.add(Point(x={x}, y=0))"));
+                }
+                if let Some(id) = removed.and_then(|at| ids.get(at)) {
+                    self.line(indent, &format!("_ = {table}.remove({id})"));
+                }
+                let by = self.expr(by, false);
+                let read = ids.get(*read).cloned().unwrap_or_default();
+                self.line(indent, &format!("for ref point in {table}:"));
+                self.line(indent + 1, &format!("point.x += {by}"));
+                self.line(indent + 1, &format!("stdout.print({table}[{read}].x)"));
+                self.line(indent, &format!("stdout.print({table})"));
             }
             Stmt::ShareOuter(name, bag) => {
                 self.line(indent, &format!("shared {name} = Outer(inner={bag}, n=0)"));

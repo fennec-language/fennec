@@ -294,10 +294,22 @@ pub(crate) enum Stmt {
     /// changing: at a fixed place, or where the item itself says when `at` is None.
     EachRefRead(String, String, Option<i64>),
     /// `for ref name in list:` with `name += 1`, then printing `list[at]`: the item changed
-    /// through the `ref` has to read back changed by its place, in the same round.
+    /// through the `ref` has to read back changed by its place, in the same round, which #1202
+    /// fixed.
     EachRefThenRead(String, String, i64),
     /// `lock name as held:` printing an `Outer`'s number.
     PrintOuter(String),
+    /// A `Table[Point]` made with a point for each of `xs`, one of them taken out when `removed`
+    /// says, then `for ref point in table:` adding `by` to each point's `x` and printing the `x` of
+    /// the point at `read` by its `Id`, which has to read live, then the table.
+    TableRound {
+        table: String,
+        ids: Vec<String>,
+        xs: Vec<Expr>,
+        removed: Option<usize>,
+        read: usize,
+        by: Expr,
+    },
     /// `shared name = Outer(inner=bag, n=0)`.
     ShareOuter(String, String),
     /// `bump_outer(name, by, refuse=...)`: adds to its number under its lock, and a refusal

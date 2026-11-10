@@ -181,6 +181,9 @@ impl FnCx<'_> {
 
     /// A call to a name that isn't a local: a function, a type or a builtin.
     fn call_by_name(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Option<Type> {
+        if let Some(refused) = self.test_only_function(name, span) {
+            self.error(refused);
+        }
         if self.checker.program.functions.contains_key(name) {
             self.record(callee.span, &Type::Function(name.to_owned()));
             return Some(self.call_function(name, name, args, span));
@@ -203,6 +206,17 @@ impl FnCx<'_> {
             return Some(self.launch(args, span));
         }
         None
+    }
+
+    /// `failure_of` is only for tests: anywhere else a failure is named where it happens, with
+    /// `else as why:`. The standard library's own code may still call it.
+    fn test_only_function(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        let entry = self.checker.program.functions.get(name)?;
+        if name != "failure_of" || !entry.prelude || self.in_a_test() || span.in_prelude() {
+            return None;
+        }
+        let help = "outside a test, name a failure where it happens with `x = f() else as why:`; a test checks one with `assert f() fails Oops()`";
+        Some(Diagnostic::new("`failure_of` is only for tests", span).with_help(help))
     }
 
     /// `json.loads` or `toml.loads`, imported by module or by name, without being called.
@@ -234,11 +248,50 @@ impl FnCx<'_> {
             (ExprKind::Lambda { params: names, body }, _) => {
                 let ty = self.lambda(names, body, params, arg.value.span);
                 self.failing_arrow(body, &ty, expected);
+                match self.widened_arrow(&ty, expected) {
+                    Some(widened) => {
+                        self.record(arg.value.span, &widened);
+                        widened
+                    }
+                    None => ty,
+                }
+            }
+            // A function named as a value fails as its own type says, so one failing fewer ways
+            // than the function type it's given for is written in as an arrow calling it.
+            (ExprKind::Name(_), Some(expected)) => {
+                let ty = self.expr_as(&arg.value, expected);
+                let arrow = match &ty {
+                    Type::Function(key) => self.checker.signature(key).map(|signature| {
+                        let params = signature.params.iter().map(|param| param.ty.clone()).collect();
+                        Type::Arrow(params, Box::new(signature.returns))
+                    }),
+                    other => Some(other.clone()),
+                };
+                if let Some(Type::Arrow(params, _)) =
+                    arrow.and_then(|arrow| self.widened_arrow(&arrow, Some(expected)))
+                {
+                    let at = (arg.value.span.start, arg.value.span.end);
+                    self.checker.widened_values.insert(at, params.len());
+                }
                 ty
             }
             (_, Some(expected)) => self.expr_as(&arg.value, expected),
             (_, None) => self.expr(&arg.value),
         }
+    }
+
+    /// An arrow function that fails fewer ways than the function type it's given for, as one
+    /// failing with `Refused` where `() -> str fails Refused | Shut` goes, typed as failing all of
+    /// its ways: it's made as that function, whose `?`s pass each failure up as one of them, as a
+    /// `def`'s do.
+    pub(crate) fn widened_arrow(&mut self, ty: &Type, takes: Option<&Type>) -> Option<Type> {
+        let Type::Arrow(params, returns) = ty else { return None };
+        let Type::Result(value, error) = self.checker.settled(returns) else { return None };
+        let Type::Arrow(_, wanted) = self.checker.settled(takes?) else { return None };
+        let Type::Result(_, wider) = self.checker.settled(&wanted) else { return None };
+        let (error, wider) = (self.checker.settled(&error), self.checker.settled(&wider));
+        (wider.is_known() && error.is_known() && error != wider && self.checker.fits(&wider, &error))
+            .then(|| Type::Arrow(params.clone(), Box::new(Type::Result(value, Box::new(wider)))))
     }
 
     /// Refuses an arrow function whose `?` passes a failure up, given to a builtin, as `sorted`'s

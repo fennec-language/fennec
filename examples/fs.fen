@@ -34,5 +34,6 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(sources(fs, folder="no/such/folder"))
     fs.remove("no/such/folder/save.txt") else:
         stdout.print("there's nothing to remove")
-    if failure_of(() => fs.metadata("no/such/folder/save.txt")?) is not None:
+    _ = fs.metadata("no/such/folder/save.txt") else:
         stdout.print("there's nothing to look at")
+        return

@@ -16,10 +16,82 @@ pub(crate) enum TypeKind {
     Error,
 }
 
+/// A declaration's definition: the standard library's, held where its parse is kept for the
+/// whole process, or the program's own. The library's are the same for every program, so they're
+/// never copied.
+#[derive(Debug)]
+pub(crate) enum Held<T: 'static> {
+    Library(&'static T),
+    Own(std::sync::Arc<T>),
+}
+
+impl<T> Clone for Held<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Held::Library(def) => Held::Library(def),
+            Held::Own(def) => Held::Own(std::sync::Arc::clone(def)),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Held<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        match self {
+            Held::Library(def) => def,
+            Held::Own(def) => def,
+        }
+    }
+}
+
+impl<T: Clone> Held<T> {
+    /// The definition as a value of its own, shared: the program's is, and the library's is
+    /// copied, which only the few written in where they're used need.
+    pub(crate) fn shared(&self) -> std::sync::Arc<T> {
+        match self {
+            Held::Library(def) => std::sync::Arc::new((*def).clone()),
+            Held::Own(def) => std::sync::Arc::clone(def),
+        }
+    }
+}
+
+/// How declarations added to a program hold their definitions.
+pub(crate) trait Holds<'m> {
+    fn function(&self, def: &'m FnDef) -> Held<FnDef>;
+    fn type_def(&self, def: &'m TypeDef) -> Held<TypeDef>;
+}
+
+/// A program's own declarations, copied, since its module can change after it's checked.
+pub(crate) struct Copies;
+
+impl<'m> Holds<'m> for Copies {
+    fn function(&self, def: &'m FnDef) -> Held<FnDef> {
+        Held::Own(std::sync::Arc::new(def.clone()))
+    }
+
+    fn type_def(&self, def: &'m TypeDef) -> Held<TypeDef> {
+        Held::Own(std::sync::Arc::new(def.clone()))
+    }
+}
+
+/// The standard library's, held where its parse is kept for the whole process.
+pub(crate) struct Library;
+
+impl Holds<'static> for Library {
+    fn function(&self, def: &'static FnDef) -> Held<FnDef> {
+        Held::Library(def)
+    }
+
+    fn type_def(&self, def: &'static TypeDef) -> Held<TypeDef> {
+        Held::Library(def)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct TypeInfo {
     pub(crate) kind: TypeKind,
-    pub(crate) def: std::sync::Arc<TypeDef>,
+    pub(crate) def: Held<TypeDef>,
     /// Whether it comes from the standard library rather than the program.
     pub(crate) prelude: bool,
 }
@@ -35,7 +107,7 @@ pub(crate) struct ConstEntry {
 
 #[derive(Clone)]
 pub(crate) struct FnEntry {
-    pub(crate) def: std::sync::Arc<FnDef>,
+    pub(crate) def: Held<FnDef>,
     /// The type a method belongs to.
     pub(crate) owner: Option<String>,
     pub(crate) prelude: bool,
@@ -81,12 +153,18 @@ pub(crate) struct Program {
 const ALIAS_DEPTH: usize = 16;
 
 impl Program {
+    /// Adds a program's own declarations.
     pub(crate) fn add(&mut self, module: &Module, prelude: bool) {
+        self.add_with(module, prelude, &Copies);
+    }
+
+    /// Adds a module's declarations, each held as `hold` says.
+    pub(crate) fn add_with<'m>(&mut self, module: &'m Module, prelude: bool, hold: &impl Holds<'m>) {
         for item in &module.items {
             match item {
                 Item::Function(def) => {
                     let entry = FnEntry {
-                        def: def.clone().into(),
+                        def: hold.function(def),
                         owner: None,
                         prelude,
                         inherited: Vec::new(),
@@ -94,9 +172,9 @@ impl Program {
                     };
                     self.functions.insert(def.name.clone(), entry);
                 }
-                Item::Struct(def) => self.add_type(def, TypeKind::Struct, prelude),
-                Item::Enum(def) => self.add_type(def, TypeKind::Enum, prelude),
-                Item::Error(def) => self.add_type(def, TypeKind::Error, prelude),
+                Item::Struct(def) => self.add_type(def, TypeKind::Struct, prelude, hold),
+                Item::Enum(def) => self.add_type(def, TypeKind::Enum, prelude, hold),
+                Item::Error(def) => self.add_type(def, TypeKind::Error, prelude, hold),
                 Item::TypeAlias { name, ty, .. } => {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
@@ -115,7 +193,7 @@ impl Program {
         // Extensions come last, so the type they extend is known wherever it's declared.
         for item in &module.items {
             if let Item::Extend(extension) = item {
-                self.add_extension(extension, prelude);
+                self.add_extension(extension, prelude, hold);
             }
         }
     }
@@ -181,14 +259,14 @@ impl Program {
         }
     }
 
-    fn add_type(&mut self, def: &TypeDef, kind: TypeKind, prelude: bool) {
+    fn add_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, prelude: bool, hold: &impl Holds<'m>) {
         // A program's own type replaces a standard library type of the same name, methods too.
         let methods = format!("{}.", def.name);
         self.functions.retain(|key, entry| !(!prelude && entry.prelude && key.starts_with(&methods)));
         for method in &def.methods {
-            self.add_method(&def.name, method, prelude, &[]);
+            self.add_method(&def.name, method, prelude, &[], hold);
         }
-        self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone().into(), prelude });
+        self.types.insert(def.name.clone(), TypeInfo { kind, def: hold.type_def(def), prelude });
     }
 
     /// The type a parameter with no written type takes from its default: an `int`, `float`,

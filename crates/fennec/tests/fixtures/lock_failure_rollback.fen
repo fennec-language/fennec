@@ -61,9 +61,12 @@ def main(stdout: Stdout):
     shared b = Account(balance=20, name="bob", log=[])
     stdout.print(spend(a, 3) else -1)
     show(a, stdout)
-    stdout.print(failure_of(() => spend(a, 50)?))
+    _ = spend(a, 50) else as why:
+        stdout.print(why)
+        0
     show(a, stdout)
-    stdout.print(failure_of(() => both(a, b)?))
+    both(a, b) else as why:
+        stdout.print(why)
     show(a, stdout)
     show(b, stdout)
     stdout.print(early(a), in_a_loop(a))

@@ -58,9 +58,9 @@ test "records use the first row's names":
     assert csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";")? == "b;a\n;1\n"
 
 def problem[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "no problem"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "no problem"
 
 test "text that isn't CSV says where":
     assert problem(() => csv.loads("a,\"b\nc\nd")?) == "this quote never ends at line 1, column 3"
@@ -97,6 +97,6 @@ def main(stdout: Stdout):
     stdout.write(csv.dumps([["name", "note"], ["ash", "likes, commas"]]) else "")
 
 def problem_of[T](run: () -> T fails InvalidValue) -> str:
-    error = failure_of(run) else:
-        return ""
-    error.message
+    _ = run() else as why:
+        return why.message
+    ""

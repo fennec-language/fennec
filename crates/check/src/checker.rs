@@ -79,6 +79,9 @@ pub(crate) struct Checker {
     pub(crate) shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, by the call's span.
     pub(crate) sources: BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    /// Each name of a function passed where one failing more ways goes, by its span, with how many
+    /// parameters it takes: it's written in as an arrow calling it, which fails all those ways.
+    pub(crate) widened_values: BTreeMap<(u32, u32), usize>,
     /// Each generic function that calls a `with` source an interface gives its type parameter,
     /// which is copied for each type it's called with, where that type's own source is written in.
     pub(crate) generic_sources: BTreeSet<String>,
@@ -140,16 +143,19 @@ const REVISITS: usize = 16;
 /// The program's declarations, with the standard library's modules added first.
 #[cfg(test)]
 fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Module) -> Program {
-    let mut program = library_alone(library);
+    let mut program = library_alone(library, &crate::program::Copies);
     program.add(module, false);
     program
 }
 
-/// The standard library's declarations, which a program's are added to.
-fn library_alone<'m>(library: impl IntoIterator<Item = &'m Module>) -> Program {
+/// The standard library's declarations, which a program's are added to, each held as `hold` says.
+fn library_alone<'m>(
+    library: impl IntoIterator<Item = &'m Module>,
+    hold: &impl crate::program::Holds<'m>,
+) -> Program {
     let mut program = Program::default();
     for prelude in library {
-        program.add(prelude, true);
+        program.add_with(prelude, true, hold);
         program.problems.extend(crate::privacy::top_level_underscores(prelude));
     }
     program.prelude_imports = std::mem::take(&mut program.imports);
@@ -162,10 +168,13 @@ fn library_alone<'m>(library: impl IntoIterator<Item = &'m Module>) -> Program {
 }
 
 /// The standard library's declarations, worked out once and copied for each program: they're
-/// the same every time.
+/// the same every time. Each holds its definition where std's parse is kept for the whole
+/// process, so none is copied, here or for a program.
 fn library() -> &'static Program {
     static LIBRARY: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
-    LIBRARY.get_or_init(|| library_alone(fennec_syntax::prelude_modules().unwrap_or_default()))
+    LIBRARY.get_or_init(|| {
+        library_alone(fennec_syntax::prelude_modules().unwrap_or_default(), &crate::program::Library)
+    })
 }
 
 impl Checker {
@@ -175,7 +184,7 @@ impl Checker {
         // The library's functions as this program runs them, rewritten as its own code is.
         for (key, def) in &module.std_rewritten {
             if let Some(entry) = program.functions.get_mut(key) {
-                entry.def = std::sync::Arc::new(def.clone());
+                entry.def = crate::program::Held::Own(std::sync::Arc::new(def.clone()));
             }
         }
         let mut diagnostics = std::mem::take(&mut program.problems);
@@ -204,6 +213,7 @@ impl Checker {
             named_patterns: BTreeMap::new(),
             shared_values: BTreeMap::new(),
             sources: BTreeMap::new(),
+            widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
             union_sources: BTreeMap::new(),
@@ -360,6 +370,7 @@ impl Checker {
             named_patterns: self.named_patterns,
             shared_values: self.shared_values,
             sources,
+            widened_values: self.widened_values,
             generic_sources: self.generic_sources,
             generic_calls,
             union_sources: self.union_sources,
@@ -604,8 +615,13 @@ impl Checker {
         if let Some(State::Done(signature)) = self.states.get(key) {
             self.previous.insert(key.to_owned(), known_errors(signature.clone()));
         }
-        let entry =
-            FnEntry { def: def.clone().into(), owner: None, prelude, inherited, extension: Vec::new() };
+        let entry = FnEntry {
+            def: crate::program::Held::Own(std::sync::Arc::new(def.clone())),
+            owner: None,
+            prelude,
+            inherited,
+            extension: Vec::new(),
+        };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }
@@ -1025,7 +1041,7 @@ impl Checker {
 
     /// Every enum's cases, with the types of their fields, and every error's that has cases.
     fn enums(&mut self) -> BTreeMap<String, crate::Enum> {
-        let enums: Vec<std::sync::Arc<fennec_syntax::TypeDef>> = self
+        let enums: Vec<crate::program::Held<fennec_syntax::TypeDef>> = self
             .program
             .types
             .values()

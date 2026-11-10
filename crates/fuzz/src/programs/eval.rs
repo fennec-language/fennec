@@ -13,7 +13,8 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Size, Stmt,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    RefPlace, Size, Stmt,
 };
 
 /// A value while the program runs.
@@ -1132,6 +1133,11 @@ impl Machine {
                 let _ = writeln!(self.out, "{n}");
             }
             Stmt::Summed(limit, stop) => self.summed(limit, stop)?,
+            Stmt::Arrowed(how, n, limit) => self.arrowed(how, n, *limit)?,
+            Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
+                let line = float_keys(*held, values, *probe, *asked, *pair);
+                self.out.push_str(&line);
+            }
             Stmt::EachRef(_, list, by) => {
                 let Value::Ints(items) = self.get(list)? else { return Err(Stop::Unsure) };
                 for at in 0..items.len() {
@@ -1310,6 +1316,44 @@ impl Machine {
     /// `summed_until(limit, stop, stdout)`: the source opens, the generator gives `at + limit`
     /// for each `at` below `limit`, the loop sums them until one is `stop`, and the source closes
     /// as the generator's let go or ends, failing for an even `limit`.
+    /// What `tried`, `tried_twice`, `tried_each`, `ran_fine` or `either` prints, given an arrow
+    /// calling `capped(n, limit)?`, which fails with `n` when it's over `limit`.
+    fn arrowed(&mut self, how: &Arrow, n: &Expr, limit: i64) -> Ran<()> {
+        let line = if let Arrow::Each(list) = how {
+            let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+            match items.iter().position(|item| *item > limit) {
+                Some(at) => {
+                    let kept = shown(&Value::Ints(items.get(..at).unwrap_or_default().to_vec()));
+                    format!("refused {} after {kept}", items.get(at).copied().unwrap_or(0))
+                }
+                None => shown(&Value::Ints(items)),
+            }
+        } else {
+            let n = int(&self.expr(n)?)?;
+            let fine = n <= limit;
+            match how {
+                Arrow::Tried if fine => n.to_string(),
+                Arrow::Tried => format!("refused {n}"),
+                Arrow::Twice if fine => format!("{n} {n}"),
+                Arrow::Twice => "refused".to_owned(),
+                Arrow::RanFine => shown(&Value::Bool(fine)),
+                Arrow::Either(_) if !fine => format!("refused {n}"),
+                Arrow::Either(other) => {
+                    // The second call is reached only once the first gave its value.
+                    let other = int(&self.expr(other)?)?;
+                    if other < checked(limit.checked_neg())? {
+                        format!("shut {other}")
+                    } else {
+                        format!("{n} {other}")
+                    }
+                }
+                Arrow::Each(_) => return Err(Stop::Unsure),
+            }
+        };
+        let _ = writeln!(self.out, "{line}");
+        Ok(())
+    }
+
     fn summed(&mut self, limit: &Expr, stop: &Expr) -> Ran<()> {
         let limit = int(&self.expr(limit)?)?;
         let stop = int(&self.expr(stop)?)?;
@@ -1784,6 +1828,28 @@ impl Machine {
             }
         })
     }
+}
+
+/// What `FloatKeys` prints: how many keys and set items there are, the last place given the key
+/// `values[probe]` is, whether `FLOATS[asked]` is in the set, then `==` and `!=` on `pair`.
+fn float_keys(held: FloatHeld, values: &[usize], probe: usize, asked: usize, pair: (usize, usize)) -> String {
+    let key = |value: usize| FLOATS.get(value).map_or(0, |(_, key)| *key);
+    let at = |place: usize| key(values.get(place).copied().unwrap_or(0));
+    let mut keys: Vec<u8> = values.iter().map(|value| key(*value)).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let marked = usize::from(matches!(held, FloatHeld::Marked));
+    let found = values.iter().rposition(|value| key(*value) == at(probe)).unwrap_or(0);
+    let asked = keys.contains(&key(asked));
+    let same = at(pair.0) == at(pair.1);
+    format!(
+        "{} {found} {} {} {} {}\n",
+        keys.len(),
+        keys.len() + marked,
+        shown(&Value::Bool(asked)),
+        shown(&Value::Bool(same)),
+        shown(&Value::Bool(!same))
+    )
 }
 
 #[cfg(test)]

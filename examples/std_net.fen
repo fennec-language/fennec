@@ -7,9 +7,9 @@ from std.net import Connection, NetError, Response
 from std.time import Duration
 
 def reason[T](run: () -> T fails NetError) -> str:
-    error = failure_of(run) else:
-        return "it worked"
-    error.message()
+    _ = run() else as why:
+        return why.message()
+    "it worked"
 
 ## The next line a connection is sent, or "" once the other side is done.
 def line_of(conn: Connection) -> str fails NetError:

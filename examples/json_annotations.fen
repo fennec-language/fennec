@@ -14,12 +14,10 @@ struct Account:
     @skip
     seen = set[str]()
 
-def failure[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Err(error):
-            error.message
-        case _:
-            "loaded"
+def failure[T](run: () -> T fails ParseError) -> str:
+    error = failure_of(run) else:
+        return "loaded"
+    error.message
 
 def ash() -> Account:
     mut account = Account(id=7, display_name="Ash")
@@ -43,14 +41,15 @@ test "a saved name wins over names=":
 
 test "the field's own name isn't read":
     assert (
-        failure(json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}"))
+        failure(() => json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}"))
         == "`Account` saves `id` as \"uid\", but the text has \"id\""
     )
 
 test "a skipped field in the text is a field it doesn't have":
     found = json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}")
     assert (
-        failure(found) == "`Account` doesn't save `cache`, which has `@skip`, but the text has it"
+        failure(() => found)
+        == "`Account` doesn't save `cache`, which has `@skip`, but the text has it"
     )
 
 def main(stdout: Stdout):

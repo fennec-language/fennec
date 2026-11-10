@@ -2,22 +2,16 @@ from std.concurrent import Channel, Closed, Crashed, Timeout, channel
 
 def first(ping: Channel[int], pong: Channel[int], stdout: Stdout):
     stdout.print("1 first prints, then sends")
-    match ping.send(1):
-        case Ok(_):
-            pass
-        case Err(_):
-            pass
+    ping.send(1) else:
+        pass
     got = pong.receive() else 0
     stdout.print("3 first again, after the reply", got)
 
 def second(ping: Channel[int], pong: Channel[int], stdout: Stdout):
     got = ping.receive() else 0
     stdout.print("2 second, after it was told", got)
-    match pong.send(1):
-        case Ok(_):
-            pass
-        case Err(_):
-            pass
+    pong.send(1) else:
+        pass
 
 def main(stdout: Stdout) fails Closed | Crashed | Timeout:
     with channel[int](size=1) as ping:

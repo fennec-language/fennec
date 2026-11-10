@@ -1,6 +1,6 @@
-source 415eb12ae9ae354f52a355746bcbd9e76f9af6d9c7c5f21b58922c3712cbe2c6
+source 628f928c918834b5e81fd88fd282baf2d65dd3625a1ae9ebd8ec77d95403e1e6
 code 0
-stdout 467
+stdout 389
 0
 -1 -1
 Held(items=[2, 2], table={"k": 2})
@@ -12,21 +12,16 @@ Short(why="too big")
 1
 coded 2
 short too big
-Ok(-5)
 -5
-Ok(-4)
 -4
-Err(Coded(code=2))
 Coded(code=2)
 Coded(code=2)
 [Coded(code=2)]
 Coded(code=2)
-Err(Coded(code=2))
 Coded(code=2)
 Coded(code=2)
 [Coded(code=2)]
 Coded(code=2)
-Err(Short(why="too big"))
 Short(why="too big")
 Short(why="too big")
 [Short(why="too big")]

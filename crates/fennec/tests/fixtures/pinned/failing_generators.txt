@@ -1,12 +1,12 @@
-source 7a54c69f6e166259bf36ba7ad6addb84c6ccca79a0c148cac5003d95af30159c
+source dd970c3b35763d95f568e106eb5ea22b2c9b8e7b4abf3fa7670e4244e5a5cb42
 code 0
-stdout 198
-Ok(10) Err(TooBig(at=2))
+stdout 160
+10 TooBig(at=2)
 too big 2
-Err(Named(who="a long name for number 3 in a block")) Ok("01234")
+Named(who="a long name for number 3 in a block") 01234
 a long name for number 1 in a block
-0 Err(Named(who="none"))
-1 Ok(1)
-2 Ok(3)
-3 Err(TooBig(at=2))
+0 Named(who="none")
+1 1
+2 3
+3 TooBig(at=2)
 stderr 0

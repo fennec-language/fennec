@@ -1,6 +1,6 @@
 # `Tree` keeps parents and children in sync, on top of `Table`, with no references. A scene:
 # what's attached to what, read and changed through IDs.
-from std.collections import Id, Tree, TreeCycle, TreeNode
+from std.collections import Id, Tree, TreeNode
 
 struct Part:
     name: str
@@ -60,16 +60,10 @@ def main(stdout: Stdout):
     stdout.print(world_x(scene, hub), world_x(saved, hub))
 
     # A node can't end up below itself.
-    match scene.move(trailer, parent=hub):
-        case Ok():
-            stdout.print("moved")
-        case Err(TreeCycle(message=message)):
-            stdout.print(message)
-    match scene.move(hub, parent=hub):
-        case Ok():
-            stdout.print("moved")
-        case Err(TreeCycle(message=message)):
-            stdout.print(message)
+    scene.move(trailer, parent=hub) else as why:
+        stdout.print(why.message)
+    scene.move(hub, parent=hub) else as why:
+        stdout.print(why.message)
 
     scene.make_root(wheel)
     stdout.print(names(scene, scene.roots()), scene.parent(wheel))

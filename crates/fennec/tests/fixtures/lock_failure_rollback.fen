@@ -13,8 +13,7 @@ def spend(a: shared Account, amount: int) -> int fails Nope:
         held.name = held.name + " spent"
         held.log.append("spent")
         changed = 1
-        if held.balance < 0:
-            fail Nope(why=f"{held.name} is short")
+        if held.balance < 0: fail Nope(why=f"{held.name} is short")
     changed
 
 def both(a: shared Account, b: shared Account) fails Nope:
@@ -34,18 +33,14 @@ def in_a_loop(a: shared Account) -> int:
     for at in range(3):
         lock a as ref held:
             held.balance += 1
-            if at == 1:
-                break
+            if at == 1: break
         rounds += 1
     rounds
 
 def kept_local(a: shared Account) -> int:
     mut seen = 0
-    match set_and_fail(a, ref seen):
-        case Ok(_):
-            pass
-        case Err(_):
-            pass
+    set_and_fail(a, ref seen) else:
+        pass
     seen
 
 def set_and_fail(a: shared Account, ref seen: int) fails Nope:

@@ -2130,8 +2130,10 @@ impl Emit<'_, '_, '_> {
         }
         if flagged && is_attempt(&self.function.name) {
             // An attempt of a property test's shrinking finds out whether the test fails, so a
-            // failure is cleared, as one test's is before the next, and the attempt goes on to say
-            // so. Built in place of `with launch`, which the test entry can use once it's emitted.
+            // failure is cleared, as one test's is before the next, and the attempt says it
+            // failed at once. What the call gave back was never written, so nothing may look at
+            // it, and the attempt owns nothing yet: the call is its first. Built in place of `with
+            // launch`, which the test entry can use once it's emitted.
             let (held, failed) = (self.temp(), self.temp());
             self.line(&format!("{held} = load ptr, ptr %err"));
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
@@ -2139,9 +2141,13 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("br i1 {failed}, label %{caught}, label %{after}"));
             self.start_block(&caught);
             self.declare("declare void @fennec_aot_attempt_failed()");
+            self.declare("declare i8 @fennec_aot_attempt_passed()");
             self.line("store ptr null, ptr %err");
             self.line("call void @fennec_aot_attempt_failed()");
-            self.line(&format!("br label %{after}"));
+            // Taken back, so the next attempt starts afresh, as `test:passed` would have.
+            self.line("call i8 @fennec_aot_attempt_passed()");
+            let ret = self.module.ret_text(self.function)?;
+            self.line(&format!("ret {ret} 0"));
             self.start_block(&after);
         } else if flagged {
             let (held, failed) = (self.temp(), self.temp());

@@ -184,7 +184,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 **`Table` and `Id[T]` are the way to point at things.** `Table` was called `IdMap`, in `std.game`, until 2026-11-05; both are in `std.collections` now. An `Id[Enemy]` is an index, a generation and a tag for its map, made by a `Table[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
 - `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
-- `map.update(id, value) -> bool` puts a new value at a live ID and says whether it was there, for when the item may be gone. Chris decided this on 2026-11-09. Not built yet.
+- `map.update(id, value) -> bool` puts a new value at a live ID and says whether it was there, for when the item may be gone. Chris decided this on 2026-11-09. Built for `Table`.
 - A map reports how many items are live, which makes a forgotten item visible.
 - Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
 - A copy of a `Table` keeps its tag, so an `Id` made before the copy finds its item in both. Generations are unique across copies, so an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Not built yet: today an item added to each copy can get the same `Id`, so one copy's `Id` finds the other's item.

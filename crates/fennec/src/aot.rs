@@ -645,8 +645,8 @@ fn link_failure(linked: &std::process::Output) -> String {
 #[cfg(not(windows))]
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Command {
     let mut command = Command::new("cc");
+    name_objects(&mut command, objects);
     command
-        .args(objects)
         .arg(runtime)
         .args(SYSTEM_LIBRARIES)
         .args(if tls { TLS_LIBRARIES } else { &[] })
@@ -701,8 +701,9 @@ fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command 
     command
         .arg(musl.join("crt1.o"))
         .arg(musl.join("crti.o"))
-        .arg(musl.join("crtbegin.o"))
-        .args(objects)
+        .arg(musl.join("crtbegin.o"));
+    name_objects(&mut command, objects);
+    command
         .arg(format!("{pass}--start-group"))
         .arg(runtime)
         .arg(musl.join("libunwind.a"))
@@ -742,26 +743,36 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, _tls: bool) -> Com
         .arg("-L")
         .arg(&libraries)
         .arg(libraries.join("crt2.o"));
-    // Windows takes a command line of 32,767 characters at most, and a program built in many
-    // parts names more objects than that holds, so they go in a file LLD reads with `@`.
-    match response_file(objects) {
-        Some(file) => command.arg(format!("@{}", file.display())),
-        None => command.args(objects),
-    };
+    name_objects(&mut command, objects);
     command.arg(runtime).args(WINDOWS_LIBRARIES).arg("-o").arg(output);
     command
 }
 
-/// A file naming each object on a line of its own, quoted and with `/` for each backslash, as LLD
-/// reads a backslash in one as an escape. It's beside the first of them: `None` when there are none, or it
-/// couldn't be written.
-#[cfg(any(windows, test))]
+/// Names the objects a linker links, in a file it reads with `@`. A command line holds only so
+/// much: 32,767 characters on Windows, and on macOS and Linux as much as `ARG_MAX` allows, about a
+/// megabyte. A program built in many parts names more objects than that, as a kit's tests do that
+/// reach 14,000 functions. `cc` reads the file on macOS and Linux, and hands its linker one of its
+/// own when the line it runs it with would be too long. LLD reads it everywhere. Where the file
+/// can't be written, they go on the command line as before.
+fn name_objects(command: &mut Command, objects: &[PathBuf]) {
+    match response_file(objects) {
+        Some(file) => command.arg(format!("@{}", file.display())),
+        None => command.args(objects),
+    };
+}
+
+/// A file naming each object on a line of its own, quoted, beside the first of them: `None` when
+/// there are none, or it couldn't be written. LLD and `cc` read a backslash in one as an escape:
+/// on Windows each becomes `/`, which it takes in a path as well, and elsewhere, where one can
+/// be part of a name, it's escaped, as a quote is.
 fn response_file(objects: &[PathBuf]) -> Option<PathBuf> {
     use std::fmt::Write as _;
     let file = objects.first()?.parent()?.join("objects.rsp");
     let mut named = String::new();
     for object in objects {
-        let _ = writeln!(named, "\"{}\"", object.display().to_string().replace('\\', "/"));
+        let path = object.display().to_string();
+        let path = if cfg!(windows) { path.replace('\\', "/") } else { path.replace('\\', "\\\\") };
+        let _ = writeln!(named, "\"{}\"", path.replace('"', "\\\""));
     }
     std::fs::write(&file, named).ok()?;
     Some(file)
@@ -921,8 +932,48 @@ mod tests {
         assert!(super::SYSTEM_LIBRARIES.contains(&flag.as_str()), "{flag}");
     }
 
-    /// The objects LLD is given on Windows go in a file, each quoted on a line of its own, so a
-    /// program in many parts doesn't make a command line longer than Windows takes.
+    /// A program in more parts than a command line can name links, as a kit's tests that reach
+    /// 14,000 functions do: 20,000 objects, with paths that come to several megabytes, past the
+    /// megabyte or two `ARG_MAX` allows on macOS and Linux. They go to `cc` in a file. Named on
+    /// the command line, running the linker failed with "Argument list too long".
+    #[test]
+    #[cfg(not(windows))]
+    fn a_program_of_more_objects_than_a_command_line_holds_links() {
+        use std::process::Command;
+        let work = std::env::temp_dir().join(format!("fennec-many-objects-{}", std::process::id()));
+        // A quote and a backslash, which the file escapes, and spaces, which it quotes.
+        let parts = work.join(format!("{}\"quoted\" and back\\slashed", "a folder with a long name, ".repeat(4)));
+        std::fs::create_dir_all(&parts).unwrap();
+        let compile = |name: &str, text: &str| {
+            let (source, object) = (work.join(format!("{name}.c")), work.join(format!("{name}.o")));
+            std::fs::write(&source, text).unwrap();
+            let built = Command::new("cc").arg("-c").arg(&source).arg("-o").arg(&object).output().unwrap();
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            object
+        };
+        let main = compile("main", "int main(void) { return 7; }\n");
+        let empty = compile("empty", "/* Nothing: a part with no code. */\n");
+        let objects: Vec<_> = (0..20_000)
+            .map(|at| {
+                let object = parts.join(format!("part {at}.o"));
+                std::fs::hard_link(&empty, &object).unwrap();
+                object
+            })
+            .collect();
+        let named: usize = objects.iter().map(|object| object.as_os_str().len() + 1).sum();
+        assert!(named > 4 << 20, "{named} bytes of names, more than a command line holds");
+        let output = work.join("linked");
+        let mut linking = super::linker(&objects, &main, &output, false);
+        let line: usize = linking.get_args().map(|arg| arg.len() + 1).sum();
+        assert!(line < 64 << 10, "{line} bytes on the command line");
+        let linked = linking.output().unwrap();
+        assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
+        assert_eq!(Command::new(&output).status().unwrap().code(), Some(7));
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    /// The objects a linker is given go in a file, each quoted on a line of its own, so a
+    /// program in many parts doesn't make a command line longer than the system takes.
     #[test]
     fn the_objects_to_link_go_in_a_file_each_on_a_line() {
         let work = std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id()));
@@ -932,9 +983,12 @@ mod tests {
         assert_eq!(file, work.join("objects.rsp"));
         let named = std::fs::read_to_string(&file).unwrap();
         assert_eq!(named.lines().count(), 2_000);
-        let first = objects[0].display().to_string().replace('\\', "/");
+        let first = objects[0].display().to_string();
+        let first = if cfg!(windows) { first.replace('\\', "/") } else { first.replace('\\', "\\\\") };
         assert_eq!(named.lines().next(), Some(format!("\"{first}\"").as_str()));
-        assert!(!named.contains('\\'), "a backslash would be read as an escape");
+        if cfg!(windows) {
+            assert!(!named.contains('\\'), "a backslash would be read as an escape");
+        }
         assert!(named.len() > 32_767, "a file this size wouldn't fit on a command line");
         assert_eq!(super::response_file(&[]), None);
         std::fs::remove_dir_all(&work).unwrap();

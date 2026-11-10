@@ -17,6 +17,22 @@ mod source;
 /// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
 const NAMED_GOES_NATIVE: bool = false;
 
+/// Whether the dev build just made calls `fennec_native_made`, as code making a native block
+/// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
+fn makes_native_blocks() -> Result<bool, String> {
+    let built = crate::llvm::built_executable("programs");
+    let listed = std::process::Command::new("objdump")
+        .args(["-d", "--no-show-raw-insn"])
+        .arg(&built)
+        .output()
+        .map_err(|err| format!("couldn't run objdump: {err}"))?;
+    Ok(String::from_utf8_lossy(&listed.stdout).lines().any(|line| {
+        let mut words = line.split_whitespace().skip(1);
+        let call = matches!(words.next(), Some("bl" | "call" | "callq"));
+        call && (line.ends_with("<fennec_native_made>") || line.ends_with("<_fennec_native_made>"))
+    }))
+}
+
 /// Prints the program an input writes, for `fennec-fuzz show programs <file>`.
 pub(crate) fn written(input: &[u8]) -> String {
     source::source(&generate::program(input))
@@ -43,14 +59,10 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     let dev = crate::llvm::built_and_run(&source, "programs", false).map_err(with_program)?;
     // In a program with no other threads, `Named` is made of native blocks, which a dev build
     // says it made by calling `fennec_native_made`.
-    if NAMED_GOES_NATIVE && program.threadless {
-        let built =
-            std::fs::read(crate::llvm::built_executable("programs")).map_err(|err| err.to_string())?;
-        if !built.windows(b"fennec_native_made".len()).any(|window| window == b"fennec_native_made") {
-            return Err(with_program(
-                "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
-            ));
-        }
+    if NAMED_GOES_NATIVE && program.threadless && !makes_native_blocks()? {
+        return Err(with_program(
+            "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
+        ));
     }
     let release = crate::llvm::built_and_run(&source, "programs", true).map_err(with_program)?;
     let shown = |(printed, said, succeeded): &(Vec<u8>, String, bool)| {

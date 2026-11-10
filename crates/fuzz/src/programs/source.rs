@@ -4,7 +4,9 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Stmt};
+use super::ast::{
+    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Stmt, Via,
+};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -127,6 +129,114 @@ struct Unit:
 
 struct Army:
     units: dict[str, Unit]
+
+struct Session:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int:
+        text.len()
+
+    def session(self) -> with Session:
+        lend Session(log=\"lite\") else:
+            pass
+
+struct Pg:
+    host: str
+
+    def run(self, text: str) -> int:
+        text.len() * 2
+
+    def session(self) -> with Session:
+        lend Session(log=\"pg\") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int:
+        text.len() * 3
+
+    def session(self) -> with Session:
+        lend Session(log=\"mem\") else:
+            pass
+
+type Two = Lite | Pg
+type Three = Lite | Pg | Mem
+
+def matched2(store: Two, text: str) -> str:
+    match store:
+        case Lite(name=_):
+            if store is Lite:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+        case Pg(host=_):
+            if store is Pg:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def checked2(store: Two, text: str) -> str:
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def direct2(store: Two, text: str) -> str:
+    count = store.run(text)
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    \"\"
+
+def matched3(store: Three, text: str) -> str:
+    match store:
+        case Lite(name=_):
+            if store is Lite:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+        case Pg(host=_):
+            if store is Pg:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+        case Mem(size=_):
+            if store is Mem:
+                with store.session() as session:
+                    return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def checked3(store: Three, text: str) -> str:
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    if store is Mem:
+        with store.session() as session:
+            return f\"{session.log} {store.run(text)}\"
+    \"\"
+
+def direct3(store: Three, text: str) -> str:
+    count = store.run(text)
+    if store is Lite:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    if store is Pg:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    if store is Mem:
+        with store.session() as session:
+            return f\"{session.log} {count}\"
+    \"\"
 
 def regrown(seed: int) -> int:
     mut holder = Holder(items=[seed, seed + 1], tag=seed)
@@ -448,6 +558,19 @@ impl Writer {
                 self.line(indent, &format!("mut {copy} = {given}"));
                 self.line(indent, &change);
                 self.line(indent, &format!("stdout.print({given}, {copy})"));
+            }
+            Stmt::UnionCall(how, members, member, text) => {
+                let how = match how {
+                    Via::Match => "matched",
+                    Via::Is => "checked",
+                    Via::Direct => "direct",
+                };
+                let made = ["Lite(name=\"a\")", "Pg(host=\"b\")", "Mem(size=1)"]
+                    .get(*member)
+                    .copied()
+                    .unwrap_or_default();
+                let text = self.expr(text, false);
+                self.line(indent, &format!("stdout.print({how}{members}({made}, {text}))"));
             }
             Stmt::GrownBy(holder, own) => {
                 self.line(indent, &format!("if {holder}.items.len() < 64:"));

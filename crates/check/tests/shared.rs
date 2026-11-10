@@ -523,6 +523,65 @@ fn an_interface_method_inside_a_lock_counts_if_any_type_s_waits() {
     assert!(found[0].starts_with("`nap` waits on `Clock.sleep` while `held` is locked"), "{found:?}");
 }
 
+/// A function value called inside a lock is followed to what it could hold. What each caller
+/// passes for a function parameter that's called under a lock, directly or through another
+/// function it's passed to, is checked where it's passed: an arrow function by its body, a named
+/// function by what it calls. A function value whose source can't be known, like one from a list,
+/// is refused where it's called.
+#[test]
+fn a_function_value_called_inside_a_lock_is_followed_to_what_it_holds() {
+    let declared = "from std.concurrent import Closed, Sender, Timeout\n\n\
+        struct Scores:\n    total = 0\n\n\
+        def locked(scores: shared Scores, work: () -> nothing fails Closed | Timeout) fails Closed | Timeout:\n    \
+        lock scores as held:\n        work()?\n        _ = held\n\n\
+        def calls(work: () -> nothing):\n    work()\n\n\
+        def handed(scores: shared Scores, work: () -> nothing):\n    lock scores as held:\n        calls(work)\n        _ = held\n\n\
+        def quiet():\n    pass\n\n\
+        def twice(run: (() -> nothing) -> nothing):\n    run(quiet)\n\n\
+        def kept() fails Closed | Timeout:\n    pass\n\n\
+        def nap(clock: Clock):\n    clock.sleep(1s)\n\n";
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!(
+            "{declared}def main(stdout: Stdout, clock: Clock, sender: Sender[int]) fails Closed | Timeout:\n    shared scores = Scores()\n{body}"
+        ))
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found(
+            "    handed(scores, () => stdout.print(1))\n    handed(scores, quiet)\n    locked(scores, kept)?\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        found("    locked(scores, () => sender.send(1))?\n"),
+        [
+            "`locked` calls `work` while `held` is locked, and this waits on a channel's `send` @ () => sender.send(1)"
+        ]
+    );
+    assert_eq!(
+        found("    handed(scores, () => nap(clock))\n"),
+        ["`handed` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)"]
+    );
+    assert_eq!(
+        found("    lock scores as held:\n        calls(() => nap(clock))\n        _ = held\n"),
+        ["`nap` waits on `Clock.sleep` while `held` is locked @ nap(clock)"]
+    );
+    assert_eq!(
+        found("    twice(calls)\n"),
+        [
+            "`calls` calls the function it's given as `work`, so it's called only by name, where what it's given can be checked @ calls"
+        ]
+    );
+    let each = "struct Scores:\n    total = 0\n\ndef each(scores: shared Scores, works: list[() -> nothing]):\n    \
+        for work in works:\n        lock scores as held:\n            work()\n            _ = held\n";
+    assert_eq!(
+        problems(each),
+        [
+            "what `work` holds can't be known here, so it can't be shown not to wait while `held` is locked @ work()"
+        ]
+    );
+}
+
 /// A source can't lend while it holds a lock it took: the block lent to runs inside the lock.
 #[test]
 fn a_source_cant_lend_inside_a_lock() {

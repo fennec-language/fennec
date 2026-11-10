@@ -114,6 +114,12 @@ pub(crate) struct FnCx<'c> {
     pub(crate) returned_errs: std::collections::HashMap<(u32, u32), Span>,
     /// How many generators kept for later this is inside.
     pub(crate) kept_generators: usize,
+    /// The arrow functions being checked, innermost last, by span: what each waits on and calls
+    /// is kept for wherever it's called.
+    pub(crate) arrows_open: Vec<(u32, u32)>,
+    /// The functions whose arguments are being matched, innermost last, for what's passed for a
+    /// function parameter.
+    pub(crate) calling: Vec<String>,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// How many loops this is inside, which `break` and `continue` need.
@@ -167,6 +173,8 @@ impl<'c> FnCx<'c> {
             int_divisions: std::collections::HashSet::new(),
             returned_errs: std::collections::HashMap::new(),
             kept_generators: 0,
+            arrows_open: Vec::new(),
+            calling: Vec::new(),
             value_functions: 0,
             loops: 0,
             arrows: 0,

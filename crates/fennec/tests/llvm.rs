@@ -4842,6 +4842,31 @@ fn a_sum_of_sized_numbers_is_of_their_size_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A function that takes a `shared` value and isn't called stays in the build when a local in
+/// `main` has its name, and so does the declaration its `shared Point` means, which nothing
+/// names: the program builds, rather than failing to check once trimmed.
+#[test]
+fn a_local_named_like_a_locking_function_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "local_named_like_locking",
+        r"struct Point:
+    x: int
+
+def change(box: shared Point, by: int):
+    lock box as ref held:
+        held.x += by
+
+def main(stdout: Stdout):
+    for change in [1, 2]:
+        stdout.print(change)
+",
+        "1\n2\n",
+    )
+}
+
 /// A `shared` value of a program's own type named like a standard library type, as `Log` is, is
 /// locked in a function of its own. A `ref self` method called under a write lock in a loop
 /// changes the cell where it is, which copies nothing for the handle.

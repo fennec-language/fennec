@@ -1,8 +1,8 @@
 //! `stale-copy`: a struct copied from one place into another, like
 //! `world.selected = world.units[i]`, while what it came from can still change. Every copy is a
-//! snapshot, so a later change to one won't reach the other. A program that meant a link wants the
-//! item's position or `Id`. It's a hint, since a snapshot may be what's meant, and there's nothing
-//! else to write to say so.
+//! snapshot, so a later change to one won't reach the other. A program that meant a link wants a
+//! `ref`, or the item's position or `Id`. It's a hint, since a snapshot may be what's meant, and
+//! there's nothing else to write to say so.
 
 use std::collections::{HashMap, HashSet};
 
@@ -38,7 +38,7 @@ fn holder(expr: &Expr) -> Option<&Expr> {
 }
 
 /// The names in a function that can change what they hold: `ref` parameters, `ref self`, and
-/// names declared `mut`, or given by `for ref`.
+/// names declared `mut` or `ref`, or given by `for ref`.
 fn changeable(def: &FnDef) -> HashSet<&str> {
     fn block<'a>(stmts: &'a [Stmt], found: &mut HashSet<&'a str>) {
         for stmt in stmts {
@@ -49,7 +49,7 @@ fn changeable(def: &FnDef) -> HashSet<&str> {
                     }
                 }
                 StmtKind::For { names, is_mut: true, .. } => found.extend(names.iter().map(String::as_str)),
-                _ => {}
+                kind => found.extend(kind.local_ref().map(|(name, _)| name)),
             }
             for inner in blocks(stmt) {
                 block(inner, found);
@@ -117,6 +117,9 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
 }
 
 fn stale(to: &str, from: &str, at: Span) -> Diagnostic {
+    let named = to.rsplit(['.', '[']).next().unwrap_or(to).trim_end_matches(']');
     Diagnostic::new(format!("`{to}` gets a copy of `{from}`, and a change to one won't reach the other"), at)
-        .with_help("to keep track of it, hold its position or `Id` instead")
+        .with_help(format!(
+            "to keep track of it, hold its position or `Id`; to change it where it is, use `ref {named} = {from}`"
+        ))
 }

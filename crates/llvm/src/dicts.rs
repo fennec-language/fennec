@@ -544,14 +544,36 @@ impl Emit<'_, '_, '_> {
         };
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
-        // A short new key held inline, for values holding no block, goes straight in.
-        let absent = if key_word == Word::Text && plain_value(value_word) {
+        // A short new key held inline, or a plain key compared by its words, for values holding
+        // no block, goes straight in.
+        let words_key = matches!(key_word, Word::Plain(id) if !self.key_by_value(id));
+        let absent = if (key_word == Word::Text || words_key) && plain_value(value_word) {
             self.label("absent")
         } else {
             slow.clone()
         };
         self.line(&format!("br i1 {missing}, label %{absent}, label %{change}"));
-        if absent != slow {
+        if absent != slow && words_key {
+            self.start_block(&absent);
+            // The dict keeps the key as a block of its own, made once here: given to the runtime
+            // with it, when there's no room for it here.
+            let add = self.add_plain_key_helper();
+            let hash = self.hash(key_word, &key);
+            let key_held = self.key_word(key_word, &key)?;
+            let word = self.dict_word(&value_kind, &held, false);
+            let (added, not_added) = (self.temp(), self.label("not_added"));
+            self.line(&format!(
+                "{added} = call i1 @{add}(ptr {dict}, i64 {hash}, i64 {key_held}, i64 {word})"
+            ));
+            self.line(&format!("br i1 {added}, label %{done}, label %{not_added}"));
+            self.start_block(&not_added);
+            let changed = self.temp();
+            self.line(&format!(
+                "{changed} = call ptr @fennec_dict_set(ptr {dict}, i64 {key_held}, i64 {word})"
+            ));
+            self.line(&format!("store ptr {changed}, ptr {place}"));
+            self.line(&format!("br label %{done}"));
+        } else if absent != slow {
             self.start_block(&absent);
             let add = self.add_short_key_helper(KeyBytes::Header);
             let (bytes, length) = (self.header_bytes(&key), self.header_byte_length(&key));
@@ -840,6 +862,76 @@ no:
             ),
         );
         name
+    }
+
+    /// Defines `@fen_add_plain(dict, hash, key, value)`, which adds a key that isn't there, the
+    /// address of a plain struct's block compared by its words, to a dict that's alone, hashed
+    /// the fast way and with room, and says whether it did. Anything else, it leaves alone for
+    /// the runtime: a dict to grow, or a key too far from its slot, which the runtime answers by
+    /// hashing the dict the strong way.
+    fn add_plain_key_helper(&mut self) -> String {
+        let header = header_bytes();
+        let name = "fen_add_plain";
+        self.module.add_helper(
+            name,
+            format!(
+                "define internal i1 @{name}(ptr %d, i64 %hash, i64 %key, i64 %value) #0 {{
+entry:
+  %how_at = getelementptr inbounds i8, ptr %d, i64 {HOW_HASHED}
+  %how = load i64, ptr %how_at
+  %is_fast = icmp eq i64 %how, 0
+  br i1 %is_fast, label %room, label %no
+room:
+  %used_at = getelementptr inbounds i8, ptr %d, i64 {USED}
+  %used = load i64, ptr %used_at
+  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
+  %mask = load i64, ptr %mask_at
+  %count = add i64 %mask, 1
+  %quarter = lshr i64 %count, 2
+  %holds = sub i64 %count, %quarter
+  %fits = icmp ult i64 %used, %holds
+  br i1 %fits, label %add, label %no
+add:
+  %slots = getelementptr inbounds i8, ptr %d, i64 {header}
+  %first = and i64 %hash, %mask
+  br label %probe
+probe:
+  %at = phi i64 [ %first, %add ], [ %after, %taken ]
+  %slot = getelementptr inbounds i64, ptr %slots, i64 %at
+  %held = load i64, ptr %slot
+  %empty = icmp eq i64 %held, 0
+  br i1 %empty, label %place, label %taken
+taken:
+  %stepped = add i64 %at, 1
+  %after = and i64 %stepped, %mask
+  %gone = sub i64 %after, %first
+  %distance = and i64 %gone, %mask
+  %too_far = icmp ugt i64 %distance, {LONGEST_PROBE}
+  br i1 %too_far, label %no, label %probe
+place:
+  %number = add i64 %used, 1
+  store i64 %number, ptr %slot
+  %entries = getelementptr inbounds i64, ptr %slots, i64 %count
+  %added = getelementptr inbounds [{ENTRY_WORDS} x i64], ptr %entries, i64 %used
+  store i64 %hash, ptr %added
+  %key_to = getelementptr inbounds i64, ptr %added, i64 1
+  store i64 %key, ptr %key_to
+  %value_to = getelementptr inbounds i64, ptr %added, i64 2
+  store i64 %value, ptr %value_to
+  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
+  %keys = load i64, ptr %keys_at
+  %more_keys = add i64 %keys, 1
+  store i64 %more_keys, ptr %keys_at
+  store i64 %number, ptr %used_at
+  ret i1 true
+no:
+  ret i1 false
+}}
+
+"
+            ),
+        );
+        name.to_owned()
     }
 
     /// Defines `@fen_find_short_<from>(dict, bytes, length)`: the entry of a key of 23 bytes or

@@ -212,6 +212,43 @@ fn stdin_reads_a_line_or_a_chunk_at_a_time() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A signal sent to `fennec run`, like a supervisor's SIGTERM, reaches the program, which can stop
+/// cleanly, and `fennec run` exits as the program does. It once ran the program as a child it
+/// didn't pass signals to, so the SIGTERM ended `fennec run` and left the program running.
+#[cfg(unix)]
+#[test]
+fn a_signal_sent_to_run_reaches_the_program() -> std::io::Result<()> {
+    use std::io::BufRead;
+    let dir = scratch("run-signal")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(
+        &program,
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):\n    stdout.print(\"ready\")\n    \
+         while not signals.stopping():\n        clock.sleep(10ms)\n    stdout.print(\"stopped cleanly\")\n",
+    )?;
+    let mut run = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(&program)
+        .env("FENNEC_HOME", &dir)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let stdout = run.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+    let (says, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = says.send(line);
+        }
+    });
+    let line = || said.recv_timeout(std::time::Duration::from_secs(120));
+    assert_eq!(line().as_deref(), Ok("ready"));
+    let sent = std::process::Command::new("kill").args(["-TERM", &run.id().to_string()]).status()?;
+    assert!(sent.success(), "couldn't send SIGTERM");
+    assert_eq!(line().as_deref(), Ok("stopped cleanly"));
+    assert_eq!(run.wait()?.code(), Some(0));
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
@@ -310,6 +347,17 @@ fn test_fails_when_a_test_fails() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(text(&output.stdout), "  ✗ one is two\n1 passed, 1 failed\n");
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
+}
+
+/// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
+/// failed one says what really happened: what it failed with instead, or what it gave.
+#[test]
+fn an_assert_that_something_fails_says_what_really_happened() {
+    let output = fennec(&["test", "crates/fennec/tests/fixtures/assert_fails.fen"], "").unwrap();
+    assert_eq!(text(&output.stdout), "  ✗ fails some other way\n  ✗ gives a value\n1 passed, 2 failed\n");
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("= help: it failed with Oops(line=4, why=\"worse\")"), "{stderr}");
+    assert!(stderr.contains("= help: it gave Config(size=4)"), "{stderr}");
 }
 
 #[test]
@@ -680,6 +728,41 @@ fn a_double_lookup_fixed_prints_the_same() {
     let now = std::fs::read_to_string(&program).unwrap();
     assert_eq!(now.matches(".get(").count(), 3, "{now}");
     assert!(!now.contains("in counts") && !now.contains("in names"), "{now}");
+    let output = fennec(&["run", path], "").unwrap();
+    assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "", "it ran as asked");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `fennec fix` writes a `match` on `Ok` and `Err` with `else`: a function's last line returns
+/// from its failure case, a named value keeps its name, and a loop's last statement continues.
+/// The program prints the same before and after.
+#[test]
+fn a_match_on_ok_and_err_fixed_prints_the_same() {
+    let dir = scratch("results-fix").unwrap();
+    let program = dir.join("results_fix.fen");
+    let source = "error Bad:\n    why: str\n\ndef lower(n: int) -> int fails Bad:\n    if n < 1:\n        \
+                  fail Bad(\"small\")\n    n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        \
+                  case Ok(lowered): lowered\n        case Err(_): 0\n\ndef main(stdout: Stdout):\n    \
+                  for n in [0, 3]:\n        given = match lower(n):\n            case Ok(lowered): lowered\n            \
+                  case Err(_): 9\n        stdout.print(given, first(n))\n        match lower(n):\n            \
+                  case Ok(lowered):\n                stdout.print(lowered)\n            case Err(problem):\n                \
+                  stdout.print(problem.why)\n";
+    std::fs::write(&program, source).unwrap();
+    let path = program.to_str().unwrap();
+    let expected = "9 0\nsmall\n2 2\n2\n";
+    assert_eq!(text(&fennec(&["run", path], "").unwrap().stdout), expected);
+    let fixed = fennec(&["fix", path], "").unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    let now = std::fs::read_to_string(&program).unwrap();
+    assert!(!now.contains("Ok(") && !now.contains("Err("), "{now}");
+    for written in [
+        "lowered = lower(n) else:\n        return 0\n    lowered\n",
+        "given = lower(n) else:\n            9\n",
+        "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",
+    ] {
+        assert!(now.contains(written), "{now}");
+    }
     let output = fennec(&["run", path], "").unwrap();
     assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
     assert_eq!(text(&output.stderr), "", "it ran as asked");

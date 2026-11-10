@@ -17,14 +17,12 @@ def both(path: str) -> int fails Missing | Broken:
     parse(load(path)?)?
 
 def noted(path: str) -> int fails Missing | Broken:
-    match both(path):
-        case Ok(n):
-            n
-        case Err(problem):
-            mut kept = problem
-            kept.add_note(f"while loading {path}")
-            kept.add_note("second line\nand a third")
-            fail kept
+    n = both(path) else as problem:
+        mut kept = problem
+        kept.add_note(f"while loading {path}")
+        kept.add_note("second line\nand a third")
+        fail kept
+    n
 
 def main(stdout: Stdout) fails Missing | Broken:
     match load(""):

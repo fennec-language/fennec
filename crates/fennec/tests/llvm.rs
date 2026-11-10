@@ -542,6 +542,45 @@ def main(stdout: Stdout):
         stdout.print(held)
 "#;
 
+/// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
+/// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
+#[test]
+fn a_failure_and_a_none_are_handled_apart() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("failure_and_none", FAILURE_AND_NONE, "1 -1 -9\nfailed: broken\nTrue\n1\n")
+}
+
+const FAILURE_AND_NONE: &str = r#"error Bad:
+    why: str
+
+struct Entry:
+    size: int
+
+def cached(n: int) -> Entry? fails Bad:
+    if n > 5:
+        fail Bad("broken")
+    if n > 2:
+        return None
+    Entry(size=n)
+
+def lookup(n: int) -> int fails Bad:
+    entry = cached(n)? else Entry(size=-1)
+    entry.size
+
+def main(stdout: Stdout):
+    stdout.print(lookup(1) else -9, lookup(3) else -9, lookup(7) else -9)
+    held = cached(7) else as why:
+        stdout.print(f"failed: {why.why}")
+        None
+    stdout.print(held is None)
+    other = cached(1) else as why:
+        Entry(size=0)
+    found = other else Entry(size=-2)
+    stdout.print(found.size)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;

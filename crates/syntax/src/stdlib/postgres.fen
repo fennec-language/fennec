@@ -593,8 +593,8 @@ export struct PgSettings:
 ## `pool_size`, `wait` and `tls` given beside it. `pool_size` and `wait` may be in the URL or an
 ## argument, not both, and are 10 and `30s` when neither has it. `tls` is `True` unless it's
 ## given. The port is 5432 and the database is the user's name unless the URL says. A URL with a
-## password in it, `postgres://user:password@host/database`, has to be a `Secret`, as
-## `Secret.of(env.get("DATABASE_URL") else "")` reads it: a plain `str` with one is refused, so a
+## password in it, `postgres://user:password@host/database`, has to be a `Secret`, read straight
+## from where it's kept, like the environment: a plain `str` with one is refused, so a
 ## password is never in text that could be printed or logged. A failure shows the URL with its
 ## password as `****`.
 export def settings(
@@ -613,7 +613,7 @@ export def settings(
     who = read.user.split(":")
     if who.len() > 1 and not written[1]:
         fail SqlError.Failed(
-            reason=f"the database URL `{masked(text)}` has a password in it, so it has to be a `Secret`, as `Secret.of(env.get(\"DATABASE_URL\") else \"\")` reads it, and never a plain `str`, which could be printed",
+            reason=f"the database URL `{masked(text)}` has a password in it, so it has to be a `Secret`, read straight from where it's kept, and never a plain `str`, which could be printed",
         )
     user = unquote(who[0])
     if user == "":
@@ -699,7 +699,7 @@ def duration_of(text: str) -> Duration fails SqlError:
 ## and a server that won't take TLS is refused rather than spoken to in the clear, since that's
 ## what someone in the middle would answer. `tls=False` connects in the clear, for a server on this
 ## machine or a private network. The URL is a `str`, or a `Secret` when it holds the password, as
-## `Secret.of(env.get("DATABASE_URL") else "")` reads one: a plain one with a password is refused,
+## read straight from where it's kept, like the environment: a plain one with a password is refused,
 ## at compile time when it's written in the source. Otherwise the password is `password=`. It goes
 ## through SCRAM-SHA-256, which never puts it on the
 ## wire and makes the server prove it knows it too. Given a password, a server that lets the client

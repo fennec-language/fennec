@@ -11940,7 +11940,7 @@ def main(stdout: Stdout, env: Env, net: Net, entropy: Entropy):
     let printed = printed_by("postgres_secret_url", source)?;
     assert_eq!(
         printed,
-        "the database URL `postgres://ann:****@db.example/shop` has a password in it, so it has to be a `Secret`, as `Secret.of(env.get(\"DATABASE_URL\") else \"\")` reads it, and never a plain `str`, which could be printed\n\
+        "the database URL `postgres://ann:****@db.example/shop` has a password in it, so it has to be a `Secret`, read straight from where it's kept, and never a plain `str`, which could be printed\n\
          ann db.example 5432 shop\n\
          `password` is set in the database URL and as an argument: set it in one\n"
     );

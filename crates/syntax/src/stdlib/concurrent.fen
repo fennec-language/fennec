@@ -197,21 +197,22 @@ export struct Pool[T]:
     _notes: Sender[PoolNote[T]]
     _wait: Duration
 
-    ## A value from the pool for a `with` block, waiting up to the pool's `wait` for one to come
-    ## free. It goes back when the block ends; after a block that failed or crashed, it's reset
-    ## first, or replaced.
-    def take(self) -> with T fails PoolError:
-        borrowed = self.borrowed()?
+    ## A value from the pool for a `with` block, waiting up to `wait`, or the pool's `wait` when
+    ## it isn't given, for one to come free. It goes back when the block ends; after a block that
+    ## failed or crashed, it's reset first, or replaced.
+    def take(self, wait: Duration? = None) -> with T fails PoolError:
+        borrowed = self.borrowed(wait=wait)?
         lend borrowed.value else:
             borrowed.give_back(False)
         borrowed.give_back(True)
 
     ## A value from the pool, waiting as `take()` does, for a library's own `with` source to lend
     ## and then `give_back`, as `take()` does. Prefer `take()`.
-    def borrowed(self) -> Borrowed[T] fails PoolError:
+    def borrowed(self, wait: Duration? = None) -> Borrowed[T] fails PoolError:
+        waiting = wait else self._wait
         with channel[Lent[T]](size=1) as reply:
             self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) else fail .Closed
-            lent = reply.receive(timeout=self._wait) else fail .Timeout(waited=self._wait)
+            lent = reply.receive(timeout=waiting) else fail .Timeout(waited=waiting)
             if lent.failure != "": fail .Open(reason=lent.failure)
             value = lent.value else fail .Closed
             back = lent.back else fail .Closed

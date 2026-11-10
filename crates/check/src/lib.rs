@@ -474,6 +474,37 @@ fn imports_for_std_calls<'a>(module: &mut Module, functions: impl Iterator<Item 
     }
 }
 
+/// A leading-dot case whose name more than one enum has is written in with its enum's name, which
+/// a program needn't have imported when it's the standard library's: `.Error` for a `LogLevel`.
+/// Such an enum is imported where it runs. A program's own type by that name was renamed apart
+/// already, so the name is free.
+fn imports_for_cases<'a>(module: &mut Module, owners: impl Iterator<Item = &'a String>) {
+    let mut wanted: Vec<(&str, &str)> =
+        owners.filter_map(|owner| Some((fennec_syntax::importable_type(owner)?, owner.as_str()))).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    for (from, owner) in wanted {
+        let seen = module.items.iter().any(|item| match item {
+            Item::Import(import) => import.bound().any(|(_, bound)| bound == owner),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.name == owner,
+            _ => false,
+        });
+        if seen {
+            continue;
+        }
+        module.items.insert(
+            0,
+            Item::Import(fennec_syntax::Import {
+                module: vec!["std".to_owned(), from.to_owned()],
+                names: vec![owner.to_owned()],
+                aliases: vec![None],
+                alias: None,
+                span: Span::default(),
+            }),
+        );
+    }
+}
+
 /// The start the checker writes into a `sum` with none: a float's zero for floats and `f32`s, and
 /// an int's for the other sized numbers.
 fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
@@ -673,6 +704,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         });
     }
     imports_for_std_calls(module, checked.std_calls.values());
+    imports_for_cases(module, checked.cases.values());
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);

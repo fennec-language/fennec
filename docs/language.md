@@ -428,6 +428,7 @@ score = load_score(fs, path) else as why:
 ```
 
 - A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built, apart from the removal: `Ok`, `Err` and a written `Result` still work today.
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. Built.
 - An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs. Leaving is built. Giving a value isn't yet: today it's refused with "an `else:` block must leave".
 - Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
 - `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. Built.

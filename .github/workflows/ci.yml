@@ -474,11 +474,16 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The tests of the kit it times run through LLVM. It runs them in a folder of its own, outside
       # this repository's toolchain file, so it's told where this toolchain's tools are.
-      - name: Install LLVM's tools
+      - name: Install LLVM's tools, and musl's C compiler
         run: |
           rustup component add llvm-tools-preview
           echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
+          sudo apt-get install -y -qq musl-tools
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
+      # The `musl` folder a release has beside `fennec`, so builds here link as an installed
+      # Fennec's do: on their own, with LLD, rather than through the system's `cc` and its linker.
+      - name: Build the runtime libraries for musl
+        run: .github/scripts/musl-runtime.sh target/release/musl
       # An edit's verdict and edit to run are held to counts of instructions, which don't depend
       # on which machine this lands on. Their times are shown too, and warn.
       - name: Install what counts instructions

@@ -5,7 +5,8 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Stmt, Via,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    RefPlace, Stmt, Via,
 };
 
 /// What every program starts with, for its body to use.
@@ -260,6 +261,67 @@ def direct3(store: Three, text: str) -> str:
         with store.session() as session:
             return f\"{session.log} {count}\"
     \"\"
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+    n
+
+def shut_below(n: int, limit: int) -> int fails Shut:
+    if n < -limit:
+        fail Shut(code=n)
+    n
+
+def tried(run: () -> int fails Refused) -> str:
+    value = run() else as why:
+        return f\"refused {why.code}\"
+    str(value)
+
+def tried_twice(run: () -> int fails Refused) -> str fails Refused:
+    first = run()?
+    second = run()?
+    f\"{first} {second}\"
+
+def tried_each(items: list[int], run: (int) -> int fails Refused) -> str:
+    mut kept = list[int]()
+    for item in items:
+        value = run(item) else as why:
+            return f\"refused {why.code} after {kept}\"
+        kept.append(value)
+    str(kept)
+
+def paired(a: int, b: int) -> str:
+    f\"{a} {b}\"
+
+def either(run: () -> str fails Refused | Shut) -> str:
+    text = run() else as why:
+        match why:
+            case Refused(code=code):
+                return f\"refused {code}\"
+            case Shut(code=code):
+                return f\"shut {code}\"
+    text
+
+struct Gauge:
+    at: float
+    n: int
+
+struct Gauge32:
+    at: f32
+
+enum Level:
+    At(value: float)
+    Off
+
+enum Level32:
+    At(value: f32)
+    Off
+
+type Marked = Gauge | str
+
+def nan() -> float:
+    big = 1e308 * 10.0
+    big - big
 
 struct Spot:
     label: str
@@ -842,6 +904,71 @@ impl Writer {
                     &format!("stdout.print(summed_shown({limit}, stop={stop}, stdout=stdout))"),
                 );
             }
+            Stmt::Arrowed(how, n, limit) => {
+                let n = self.expr(n, false);
+                let capped = format!("capped({n}, limit={limit})?");
+                match how {
+                    Arrow::Tried => self.line(indent, &format!("stdout.print(tried(() => {capped}))")),
+                    Arrow::Twice => {
+                        self.line(
+                            indent,
+                            &format!("stdout.print(tried_twice(() => {capped}) else \"refused\")"),
+                        );
+                    }
+                    Arrow::Each(list) => {
+                        let list = self.expr(list, false);
+                        self.line(
+                            indent,
+                            &format!(
+                                "stdout.print(tried_each({list}, item => capped(item, limit={limit})?))"
+                            ),
+                        );
+                    }
+                    Arrow::FailureOf => {
+                        self.line(indent, &format!("stdout.print(failure_of(() => {capped}) is None)"));
+                    }
+                    Arrow::Either(other) => {
+                        let other = self.expr(other, false);
+                        self.line(
+                            indent,
+                            &format!(
+                                "stdout.print(either(() => paired({capped}, shut_below({other}, limit={limit})?)))"
+                            ),
+                        );
+                    }
+                }
+            }
+            Stmt::FloatKeys { held, names: (keyed, seen), values, probe, asked, pair: (left, right) } => {
+                let ty = match held {
+                    FloatHeld::Gauge => "Gauge",
+                    FloatHeld::Gauge32 => "Gauge32",
+                    FloatHeld::Level => "Level",
+                    FloatHeld::Level32 => "Level32",
+                    FloatHeld::Marked => "Marked",
+                };
+                self.line(indent, &format!("mut {keyed} = dict[{ty}, int]()"));
+                for (at, value) in values.iter().enumerate() {
+                    self.line(indent, &format!("{keyed}[{}] = {at}", float_held(*held, *value, false)));
+                }
+                let mut items: Vec<String> =
+                    values.iter().map(|value| float_held(*held, *value, false)).collect();
+                if matches!(held, FloatHeld::Marked) {
+                    items.push("\"a\"".to_owned());
+                }
+                let typed = if matches!(held, FloatHeld::Marked) { ": set[Marked]" } else { "" };
+                self.line(indent, &format!("{seen}{typed} = {{{}}}", items.join(", ")));
+                let at = |place: &usize| values.get(*place).copied().unwrap_or(0);
+                let probe = float_held(*held, at(probe), false);
+                let asked = float_held(*held, *asked, false);
+                let (left, right) = (float_held(*held, at(left), false), float_held(*held, at(right), true));
+                self.line(
+                    indent,
+                    &format!(
+                        "stdout.print({keyed}.len(), {keyed}[{probe}], {seen}.len(), {asked} in {seen}, \
+                         {left} == {right}, {left} != {right})"
+                    ),
+                );
+            }
             Stmt::ShareBag(name, items, counts) => {
                 let items = self.expr(items, false);
                 let counts = if counts.is_empty() {
@@ -1086,5 +1213,20 @@ impl Writer {
             Expr::FloatOf(value) => format!("float({})", self.expr(value, false)),
             Expr::Truncated(value) => format!("int({})", self.expr(value, false)),
         }
+    }
+}
+
+/// The value holding `FLOATS[value]`, `Off` only for an enum. On the right of `==`, an enum's case
+/// leaves its type out, as the linter has it.
+fn float_held(held: FloatHeld, value: usize, right: bool) -> String {
+    let (float, _) = FLOATS.get(value).copied().unwrap_or(("0.0", 0));
+    let enum_named = |name: &str| if right { String::new() } else { name.to_owned() };
+    match held {
+        FloatHeld::Gauge | FloatHeld::Marked => format!("Gauge(at={float}, n=1)"),
+        FloatHeld::Gauge32 => format!("Gauge32(at=f32({float}))"),
+        FloatHeld::Level if float == "Off" => format!("{}.Off", enum_named("Level")),
+        FloatHeld::Level => format!("{}.At(value={float})", enum_named("Level")),
+        FloatHeld::Level32 if float == "Off" => format!("{}.Off", enum_named("Level32")),
+        FloatHeld::Level32 => format!("{}.At(value=f32({float}))", enum_named("Level32")),
     }
 }

@@ -3283,6 +3283,16 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// What fails two ways holds only what its errors hold, so a function or an arrow failing
+    /// `Refused | Shut` elsewhere in a program leaves a tree's blocks native.
+    #[test]
+    fn failing_two_ways_leaves_blocks_native() -> Result<(), String> {
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\nerror Refused:\n    code: int\n\nerror Shut:\n    code: int\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef both(a: int) -> str fails Refused | Shut:\n    if a < 0: fail Refused(code=a)\n    if a == 0: fail Shut(code=a)\n    \"open\"\n\ndef either(run: () -> str fails Refused | Shut) -> str:\n    run() else \"failed\"\n\ndef main(stdout: Stdout):\n    stdout.print(both(-1) else \"failed\", either(() => both(1)?), count(build(4)))\n";
+        let (_, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Twig's blocks are native");
+        Ok(())
+    }
+
     /// A new struct key compared by its words goes into a dict that's alone, with room, by
     /// compiled code itself, and only to the runtime otherwise.
     #[test]

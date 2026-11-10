@@ -72,19 +72,15 @@ def respond(stats: shared Stats, db: Database, fs: Fs, dir: str, request: Reques
         case "/count":
             text(200, said=f"{hit(stats)}")
         case "/note":
-            match keep_note(db, n, body):
-                case Ok(count):
-                    noted(stats, kept=True)
-                    text(200, said=f"{count}")
-                case Err(why):
-                    noted(stats, kept=False)
-                    text(500, said=f"{why}")
+            count = keep_note(db, n, body) else as why:
+                noted(stats, kept=False)
+                return text(500, said=f"{why}")
+            noted(stats, kept=True)
+            text(200, said=f"{count}")
         case "/file":
-            match round_trip(fs, dir, n, body):
-                case Ok(length):
-                    text(200, said=f"{length}")
-                case Err(why):
-                    text(500, said=f"{why}")
+            length = round_trip(fs, dir, n, body) else as why:
+                return text(500, said=f"{why}")
+            text(200, said=f"{length}")
         case "/crash":
             text(200, said=f"{overflowed(n)}")
         case "/stats":

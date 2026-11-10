@@ -123,9 +123,9 @@ struct Checker:
     def check_written(ref self, written: TypeExpr?, generics: list[str]):
         if written is None:
             return
-        match self.program.resolve_in(written, generics):
-            case Ok(_): pass
-            case Err(problem): self.diagnostics.append(problem)
+        _ = self.program.resolve_in(written, generics) else as problem:
+            self.diagnostics.append(problem)
+            return
 
     ## The types written inside a body: typed names, the types a call gives in brackets, and
     ## the bodies of nested functions.

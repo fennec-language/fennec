@@ -290,14 +290,17 @@ pub(crate) enum Op {
 /// How a union's member is called on.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Via {
-    /// After `match store:` with a case for each member, which doesn't narrow, so each case
-    /// also has `if store is Member:`.
+    /// After `match store:` with a case for each member, which narrows it as `is` does.
     Match,
-    /// After `if store is Member:` for each member but the last.
+    /// After `if store is Member:` for each member, `Lite`'s through `opened`, a function
+    /// whose last line is a `with` that returns.
     Is,
     /// `run` straight on the union, with no match; its `with` source still after `is`, which a
     /// union needs.
     Direct,
+    /// After `if store is Lite: return`, on what's left, `Pg | Mem`: `run` called on it, it
+    /// given where a `Pg | Mem` goes, and a `match` telling the two apart. Three members only.
+    Rest,
 }
 
 /// The containers `CopiedNested` copies and changes deep inside.
@@ -481,6 +484,9 @@ pub(crate) enum Stmt {
     /// `ref self` method given a value read from the list it grows, just after that list grew in
     /// place, and both printed, under `if holder.items.len() < 64:`.
     GrownBy(String, String),
+    /// `shadowed<id>(stdout, by=value)`, a function whose locals are named `change`,
+    /// `bump_outer` and `tally`, like functions that take a `shared` value and may go uncalled.
+    Shadowed(usize, Expr),
     /// Collect, then apply: `mut world = [Spot(...), ...]`, then `changes = [plan(item, world)
     /// for item in parallel(xs)]`, a `Change` for each item worked out on the threads from the
     /// world as it is, then a plain loop applying them in order through a local `ref`, and the

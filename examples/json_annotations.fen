@@ -35,8 +35,8 @@ test "loading fills a skipped field in from its default":
     assert loaded.cache.len() == 0 and loaded.seen.len() == 0
 
 test "a saved name wins over names=":
-    assert json.dumps(ash(), names=.camel_case) == "{\"uid\": 7, \"displayName\": \"Ash\"}"
-    loaded = json.loads[Account]("{\"uid\": 7, \"displayName\": \"Ash\"}", names=.camel_case)?
+    assert json.dumps(ash(), names=.CamelCase) == "{\"uid\": 7, \"displayName\": \"Ash\"}"
+    loaded = json.loads[Account]("{\"uid\": 7, \"displayName\": \"Ash\"}", names=.CamelCase)?
     assert loaded.id == 7
 
 test "the field's own name isn't read":

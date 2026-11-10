@@ -166,22 +166,22 @@ struct Mem:
 type Two = Lite | Pg
 type Three = Lite | Pg | Mem
 
+def opened(store: Lite, text: str) -> str:
+    with store.session() as session:
+        return f\"{session.log} {store.run(text)}\"
+
 def matched2(store: Two, text: str) -> str:
     match store:
         case Lite(name=_):
-            if store is Lite:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
         case Pg(host=_):
-            if store is Pg:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
-    \"\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
 
 def checked2(store: Two, text: str) -> str:
     if store is Lite:
-        with store.session() as session:
-            return f\"{session.log} {store.run(text)}\"
+        return opened(store, text)
     if store is Pg:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
@@ -200,23 +200,18 @@ def direct2(store: Two, text: str) -> str:
 def matched3(store: Three, text: str) -> str:
     match store:
         case Lite(name=_):
-            if store is Lite:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
         case Pg(host=_):
-            if store is Pg:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
         case Mem(size=_):
-            if store is Mem:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
-    \"\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
 
 def checked3(store: Three, text: str) -> str:
     if store is Lite:
-        with store.session() as session:
-            return f\"{session.log} {store.run(text)}\"
+        return opened(store, text)
     if store is Pg:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
@@ -224,6 +219,22 @@ def checked3(store: Three, text: str) -> str:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
     \"\"
+
+def rested(rest: Pg | Mem, text: str) -> int:
+    rest.run(text)
+
+def rest3(store: Three, text: str) -> str:
+    if store is Lite:
+        return opened(store, text)
+    count = store.run(text)
+    given = rested(store, text)
+    match store:
+        case Pg(host=_):
+            with store.session() as session:
+                return f\"{session.log} {count}\"
+        case Mem(size=_):
+            with store.session() as session:
+                return f\"{session.log} {given}\"
 
 def direct3(store: Three, text: str) -> str:
     count = store.run(text)
@@ -578,6 +589,7 @@ impl Writer {
                     Via::Match => "matched",
                     Via::Is => "checked",
                     Via::Direct => "direct",
+                    Via::Rest => "rest",
                 };
                 let made = ["Lite(name=\"a\")", "Pg(host=\"b\")", "Mem(size=1)"]
                     .get(*member)
@@ -599,10 +611,10 @@ impl Writer {
                     indent,
                     &format!("{changes} = [plan({item}, {world}) for {item} in parallel({xs})]"),
                 );
-                // Not `change`, the name of a function every program has: a loop name the same as a
-                // function's fails once trimmed, a bug of its own (2026-11-10).
-                self.line(indent, &format!("for planned in {changes}:"));
-                self.line(indent + 1, "match planned:");
+                // `change` is also a function every program has, one taking a `shared` value, which
+                // a local of its name once left out of the trimmed program (#1270).
+                self.line(indent, &format!("for change in {changes}:"));
+                self.line(indent + 1, "match change:");
                 self.line(indent + 2, "case .Move(at, by):");
                 self.line(indent + 3, &format!("ref spot = {world}[at]"));
                 self.line(indent + 3, "spot.x += by");
@@ -610,6 +622,15 @@ impl Writer {
                 self.line(indent + 3, &format!("ref spot = {world}[at]"));
                 self.line(indent + 3, "spot.label += label");
                 self.line(indent, &format!("stdout.print({world}, {changes}.len())"));
+            }
+            Stmt::Shadowed(id, by) => {
+                let _ = write!(
+                    self.helpers,
+                    "def shadowed{id}(stdout: Stdout, by: int):\n    change = by * 2\n    bump_outer = change + 1\n    \
+                     tally = bump_outer - by\n    stdout.print(change, bump_outer, tally)\n\n"
+                );
+                let by = self.expr(by, false);
+                self.line(indent, &format!("shadowed{id}(stdout, by={by})"));
             }
             Stmt::GrownBy(holder, own) => {
                 self.line(indent, &format!("if {holder}.items.len() < 64:"));

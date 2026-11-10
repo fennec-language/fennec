@@ -100,6 +100,12 @@ impl Lowering<'_> {
     pub(super) fn match_expr(&mut self, subject: &Expr, arms: &[MatchArm], tail: Tail) -> Lowered<()> {
         let ty = self.ty(subject)?;
         let value = self.expr(subject)?;
+        // What's left of a union after an `is` is held as the union it was, whose members are
+        // told apart by where they are in it.
+        let ty = match (super::type_in(&self.locals, &value), ty) {
+            (Some(held @ Type::Union(_)), Type::Union(_)) => held,
+            (_, ty) => ty,
+        };
         let join = self.new_block();
         for arm in arms {
             let next = self.new_block();

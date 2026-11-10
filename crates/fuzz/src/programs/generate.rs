@@ -893,12 +893,21 @@ impl Writer<'_> {
                 let (world, changes) = (self.fresh(), self.fresh());
                 body.push(Stmt::PlanApply(world, spots, xs, changes));
             }
+            23 if self.choice(4) == 0 => {
+                // Locals named like functions that take a `shared` value.
+                self.made += 1;
+                let by = self.int(1);
+                body.push(Stmt::Shadowed(self.made, self.bounded(by)));
+            }
             23 if self.choice(3) == 0 => {
-                // A union's member called on through the union: after `match`, after `is`, or
-                // straight on it, with its `with` source always after `is`.
-                let how =
-                    [Via::Match, Via::Is, Via::Direct].get(self.choice(3)).copied().unwrap_or(Via::Match);
-                let members = 2 + self.choice(2);
+                // A union's member called on through the union: after `match`, after `is`,
+                // straight on it, with its `with` source always after `is`, or on what's left
+                // of three after `is`.
+                let how = [Via::Match, Via::Is, Via::Direct, Via::Rest]
+                    .get(self.choice(4))
+                    .copied()
+                    .unwrap_or(Via::Match);
+                let members = if matches!(how, Via::Rest) { 3 } else { 2 + self.choice(2) };
                 let member = self.choice(members);
                 let text = self.of(Ty::Str, 2);
                 body.push(Stmt::UnionCall(how, members, member, text));

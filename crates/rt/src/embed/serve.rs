@@ -203,6 +203,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 impl Conn {
     /// Takes a connection, registering it with this thread's poll when this is an I/O worker.
     pub fn new(mut stream: TcpStream) -> Conn {
+        crate::stdlib::net::bound_send_buffer(&stream);
         let token = Token(NEXT_TOKEN.get());
         NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
         let registered = REGISTRY.with_borrow(|registry| {
@@ -429,7 +430,7 @@ impl Conn {
             return self.write_securely(data, until);
         }
         while !data.is_empty() {
-            let wrote = self.stream.borrow_mut().write(data);
+            let wrote = self.stream.borrow_mut().write(crate::stdlib::net::piece(data));
             match wrote {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
@@ -1331,7 +1332,7 @@ pub(crate) fn fail_as_stopped() {
 
 /// Whether this is a launched task that's been stopped. If so, it fails, as a crash does, so it
 /// ends with its locks put back and let go; that it was stopped keeps its end quiet.
-fn cut_short() -> bool {
+pub(crate) fn cut_short() -> bool {
     let stopped = super::threads::stopped();
     if stopped {
         fail_as_stopped();

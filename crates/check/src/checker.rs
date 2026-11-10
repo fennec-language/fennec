@@ -87,6 +87,8 @@ pub(crate) struct Checker {
     /// Each `match` with a `ref` case, by its span: for each of its cases, the fields of the case
     /// it matches when it has a `ref`, which lowering puts back where the case ends.
     pub(crate) ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
+    /// Each `for ref` whose body reads what it loops over, written in to go by position.
+    pub(crate) live_refs: BTreeMap<(u32, u32), crate::ref_lowering::Through>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -195,6 +197,7 @@ impl Checker {
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
+            live_refs: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
             saved_types: BTreeSet::new(),
@@ -342,6 +345,7 @@ impl Checker {
             opened_apart: self.opened_apart,
             launches,
             ref_matches: self.ref_matches,
+            live_refs: self.live_refs,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,
@@ -491,11 +495,14 @@ impl Checker {
             .map(|(key, _)| key.clone())
             .collect();
         let mut settled = crate::loops::Settled::default();
+        let mut live = Vec::new();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
             problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
+            live.extend(crate::ref_lowering::live_loops(self, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
             problems.extend(crate::once::check_function(self, key, &entry.def));
         }
+        self.live_refs.extend(live);
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));
         }

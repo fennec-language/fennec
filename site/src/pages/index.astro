@@ -71,7 +71,7 @@ if shape is Circle:
     status: 'Mostly built',
     code: `score = load_score(path)?
 score = load_score(path) else 0`,
-    body: 'No exceptions. `fails Name` in the signature says how a function can fail, and `?` marks every line it can leave from. Planned: narrowing with `if x is Err(...)`.',
+    body: 'No exceptions. `fails Name` in the signature says how a function can fail, and `?` marks every line it can leave from. A failure is handled at the call, with `?`, `else` or `else as`.',
   },
   {
     title: 'Lazy streams',

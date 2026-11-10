@@ -4798,7 +4798,7 @@ fn a_local_named_like_a_locking_function_builds_natively() -> std::io::Result<()
     }
     prints_in_both_builds(
         "local_named_like_locking",
-        r#"struct Point:
+        r"struct Point:
     x: int
 
 def change(box: shared Point, by: int):
@@ -4808,7 +4808,7 @@ def change(box: shared Point, by: int):
 def main(stdout: Stdout):
     for change in [1, 2]:
         stdout.print(change)
-"#,
+",
         "1\n2\n",
     )
 }

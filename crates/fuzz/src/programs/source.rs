@@ -178,6 +178,7 @@ def matched2(store: Two, text: str) -> str:
         case Pg(host=_):
             with store.session() as session:
                 return f\"{session.log} {store.run(text)}\"
+    \"\"
 
 def checked2(store: Two, text: str) -> str:
     if store is Lite:
@@ -208,6 +209,7 @@ def matched3(store: Three, text: str) -> str:
         case Mem(size=_):
             with store.session() as session:
                 return f\"{session.log} {store.run(text)}\"
+    \"\"
 
 def checked3(store: Three, text: str) -> str:
     if store is Lite:
@@ -232,6 +234,20 @@ def direct3(store: Three, text: str) -> str:
         with store.session() as session:
             return f\"{session.log} {count}\"
     \"\"
+
+struct Spot:
+    label: str
+    x: int
+
+enum Change:
+    Move(at: int, by: int)
+    Rename(at: int, label: str)
+
+def plan(x: int, world: list[Spot]) -> Change:
+    at = x % world.len()
+    if x % 2 == 0:
+        return .Move(at=at, by=x)
+    .Rename(at=at, label=f\"<{x}>\")
 
 def regrown(seed: int) -> int:
     mut holder = Holder(items=[seed, seed + 1], tag=seed)

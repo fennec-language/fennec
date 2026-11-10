@@ -290,10 +290,10 @@ pub(crate) enum Op {
 /// How a union's member is called on.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Via {
-    /// After `match store:` with a case for each member, which doesn't narrow, so each case
-    /// also has `if store is Member:`.
+    /// After `match store:` with a case for each member, which narrows it as `is` does.
     Match,
-    /// After `if store is Member:` for each member but the last.
+    /// After `if store is Member:` for each member, `Lite`'s through `opened`, a function
+    /// whose last line is a `with` that returns.
     Is,
     /// `run` straight on the union, with no match; its `with` source still after `is`, which a
     /// union needs.

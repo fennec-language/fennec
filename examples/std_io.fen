@@ -1,0 +1,91 @@
+# `std.io`: a `Writer` and a `Reader` are whatever bytes go to and come from, so one function serves
+# a file, a connection and memory alike. Formats write to and read from them, as `json.dump` and
+# `json.load` do.
+from std import csv, json, pack
+from std.io import MemoryStream, Reader, Writer
+
+struct Score:
+    name: str
+    points: int
+
+## Writes a short report to any writer.
+def report[W: Writer](ref out: W, scores: list[Score]) fails IoError:
+    for score in scores:
+        out.write_line(f"{score.name}: {score.points}")?
+    out.flush()?
+
+## The lines any reader has left.
+def lines_of[R: Reader](ref src: R) -> list[str] fails IoError:
+    mut found = list[str]()
+    while True:
+        line = src.read_line()?
+        if line is None: return found
+        found.append(line)
+    found
+
+SCORES = [Score(name="ana", points=3), Score(name="bo", points=5)]
+
+test "a memory stream gives back what was written"():
+    mut out = MemoryStream()
+    report(ref out, SCORES)?
+    assert out.text()? == "ana: 3\nbo: 5\n"
+    mut back = MemoryStream.of(out.bytes())
+    assert lines_of(ref back)? == ["ana: 3", "bo: 5"]
+    assert back.read_line()? is None
+
+test "a memory stream reads in chunks, and lines end with or without a carriage return"():
+    mut src = MemoryStream.of("one\r\ntwo\nthree".encode())
+    assert src.read_chunk(2)? == "on".encode()
+    assert src.read_line()? == "e"
+    assert [line for line in src.lines()?] == ["two", "three"]
+    assert src.read_line()? == "two"
+    assert src.read_chunk(100)? == "three".encode()
+    assert src.read_chunk(100)? == bytes([])
+
+test "a file is a writer and a reader"(fs: Fs):
+    with fs.create("scores.txt")? as file:
+        mut out = file
+        report(ref out, SCORES)?
+    with fs.open("scores.txt")? as file:
+        mut src = file
+        assert lines_of(ref src)? == ["ana: 3", "bo: 5"]
+
+test "a connection is a writer and a reader"(net: Net):
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            with server.accept()? as served:
+                mut out = client.writer()
+                report(ref out, SCORES)?
+                mut src = served.reader()
+                assert src.read_line()? == "ana: 3"
+                assert src.read_line()? == "bo: 5"
+
+test "standard error is a writer, and standard output is one through writer()"(
+    stdout: Stdout,
+    stderr: Stderr,
+):
+    mut err = stderr
+    report(ref err, SCORES)?
+    assert stderr.captured() == "ana: 3\nbo: 5\n"
+    mut out = stdout.writer()
+    report(ref out, SCORES)?
+    assert stdout.captured() == "ana: 3\nbo: 5\n"
+
+test "json, csv and pack write to and read from any stream"():
+    mut written = MemoryStream()
+    json.dump(SCORES, ref written)?
+    mut src = MemoryStream.of(written.bytes())
+    assert json.load[list[Score]](ref src)? == SCORES
+    mut table = MemoryStream()
+    csv.dump([["name", "points"], ["ana", "3"]], ref table)?
+    mut rows = MemoryStream.of(table.bytes())
+    assert csv.load(ref rows)? == [["name", "points"], ["ana", "3"]]
+    mut packed = MemoryStream()
+    pack.dump(SCORES, ref packed)?
+    mut unpacked = MemoryStream.of(packed.bytes())
+    assert pack.load[list[Score]](ref unpacked)? == SCORES
+
+def main(stdout: Stdout) fails IoError:
+    mut out = MemoryStream()
+    report(ref out, SCORES)?
+    stdout.write(out.text()?)

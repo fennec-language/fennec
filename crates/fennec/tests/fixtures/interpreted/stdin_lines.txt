@@ -1,6 +1,6 @@
 source b7ca410b0ab3b95641fe77b9b24baff6489bc4a78ba02e3d0eace99e7f5a6593
 code 0
-stdout 218
+stdout 217
 False
 one
 two
@@ -10,7 +10,7 @@ two
 one
 two
 
-False
+True
 False
 True
 0 hello

@@ -2828,7 +2828,7 @@ fn a_yield_method_unpacking_a_tuple_fuses() {
     items: list[(int, int)]
 
     def iter(self) -> Iterator[int]:
-        mut trail = copy(self.items)
+        mut trail = self.items
         while trail.len() > 0:
             first, second = trail[-1]
             _ = trail.pop()

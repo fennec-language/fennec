@@ -28,6 +28,7 @@
 //! failure, so that one does too.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use fennec_syntax::{
     Diagnostic, Expr, ExprKind, FnDef, MatchArm, Module, Pattern, Sources, Span, Stmt, StmtKind,
@@ -47,7 +48,7 @@ pub fn result_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
                 def.methods.iter().for_each(|def| functions(def, &mut defs));
             }
             fennec_syntax::Item::Extend(extension) => {
-                extension.methods.iter().for_each(|def| functions(def, &mut defs))
+                extension.methods.iter().for_each(|def| functions(def, &mut defs));
             }
             fennec_syntax::Item::Test(test) => {
                 let mut taken: HashSet<String> =
@@ -77,11 +78,11 @@ fn mut_when_given_again(found: &mut [Diagnostic], rewrites: &[usize]) {
         let (name, _) = text.split_once(" = ")?;
         (name != "_" && name.chars().all(|c| c.is_alphanumeric() || c == '_')).then(|| name.to_owned())
     };
-    let names: Vec<(usize, String)> =
+    let given: Vec<(usize, String)> =
         rewrites.iter().filter_map(|&at| Some((at, named(found.get(at)?)?))).collect();
-    for (at, name) in &names {
-        let first = names.iter().find(|(_, other)| other == name).map(|(first, _)| *first);
-        let again = names.iter().filter(|(_, other)| other == name).count() > 1;
+    for (at, name) in &given {
+        let first = given.iter().find(|(_, other)| other == name).map(|(first, _)| *first);
+        let again = given.iter().filter(|(_, other)| other == name).count() > 1;
         if first == Some(*at)
             && again
             && let Some(edit) = found.get_mut(*at).and_then(|fix| fix.fixes.first_mut())
@@ -189,7 +190,7 @@ fn cases(arms: &[MatchArm]) -> Option<Cases<'_>> {
         match &arm.pattern {
             Pattern::Variant { name, args, .. } if name == "Ok" => match args.as_slice() {
                 [inner @ (Pattern::Bind(_) | Pattern::Wildcard)] if ok.is_none() => {
-                    ok = Some((inner, arm.body.as_slice()))
+                    ok = Some((inner, arm.body.as_slice()));
                 }
                 _ => return None,
             },
@@ -251,7 +252,6 @@ fn rewritten(stmt: &Stmt, place: Place, (sources, taken): Around<'_>) -> Option<
             None
         }
     };
-    let pad = " ".repeat(indent);
     let mut out = String::new();
     // `x = match ...:` keeps its name only when the `Ok` case gives back what it holds, as it is.
     match named {
@@ -264,40 +264,13 @@ fn rewritten(stmt: &Stmt, place: Place, (sources, taken): Around<'_>) -> Option<
                 return None;
             }
             let word = if declare_mut { "mut " } else { "" };
-            out.push_str(&format!("{word}{name} = {called} else"));
+            let _ = write!(out, "{word}{name} = {called} else");
         }
-        None => out.push_str(&format!("{ok_name} = {called} else")),
-    }
-    match cases.failed.as_slice() {
-        [(arm, inner @ (Failure::Rest | Failure::Wrapped(Pattern::Bind(_) | Pattern::Wildcard)))] => {
-            let name = match inner {
-                Failure::Wrapped(Pattern::Bind(name)) => Some(name.as_str()),
-                _ => None,
-            };
-            out.push_str(&name.map_or_else(|| ":\n".to_owned(), |name| format!(" as {name}:\n")));
-            out.push_str(&text.body(&arm.body, indent + 4, ending(&arm.body)?)?);
-        }
-        failed => {
-            let why = "why";
-            out.push_str(&format!(" as {why}:\n{pad}    match {why}:\n"));
-            for (arm, inner) in failed {
-                let shown = match inner {
-                    Failure::Rest => "_".to_owned(),
-                    Failure::Wrapped(Pattern::Bind(name)) => {
-                        out.push_str(&format!("{pad}        case _:\n"));
-                        let mut body = format!("{pad}            {name} = {why}\n");
-                        body.push_str(&text.body(&arm.body, indent + 12, ending(&arm.body)?)?);
-                        out.push_str(&body);
-                        continue;
-                    }
-                    Failure::Wrapped(_) => text.err_pattern(arm.span)?,
-                    Failure::Bare => text.bare_pattern(arm.span)?,
-                };
-                out.push_str(&format!("{pad}        case {shown}:\n"));
-                out.push_str(&text.body(&arm.body, indent + 12, ending(&arm.body)?)?);
-            }
+        None => {
+            let _ = write!(out, "{ok_name} = {called} else");
         }
     }
+    failure_cases(&mut out, &cases.failed, (&text, indent), &ending)?;
     let rest = ok_body.iter().all(|stmt| matches!(stmt.kind, StmtKind::Pass));
     if named.is_none() && !rest {
         out.push_str(&text.body(ok_body, indent, Ending::AsItIs)?);
@@ -310,6 +283,53 @@ fn rewritten(stmt: &Stmt, place: Place, (sources, taken): Around<'_>) -> Option<
             .with_help("`fennec fix` writes this `match` with `else as`")
             .with_fix(written, replaced.trim_start().to_owned()),
     )
+}
+
+/// The failure cases of a `match` written as an `else` block on `out`: one case as the block
+/// itself, and several as a `match why:` in it, each ending as `ending` says.
+fn failure_cases(
+    out: &mut String,
+    failed: &[(&MatchArm, Failure<'_>)],
+    (text, indent): (&Text<'_>, usize),
+    ending: &dyn Fn(&[Stmt]) -> Option<Ending>,
+) -> Option<()> {
+    let pad = " ".repeat(indent);
+    match failed {
+        [(arm, inner @ (Failure::Rest | Failure::Wrapped(Pattern::Bind(_) | Pattern::Wildcard)))] => {
+            let name = match inner {
+                Failure::Wrapped(Pattern::Bind(name)) => Some(name.as_str()),
+                _ => None,
+            };
+            match name {
+                Some(name) => {
+                    let _ = writeln!(out, " as {name}:");
+                }
+                None => out.push_str(":\n"),
+            }
+            out.push_str(&text.body(&arm.body, indent + 4, ending(&arm.body)?)?);
+        }
+        failed => {
+            let why = "why";
+            let _ = writeln!(out, " as {why}:\n{pad}    match {why}:");
+            for (arm, inner) in failed {
+                let shown = match inner {
+                    Failure::Rest => "_".to_owned(),
+                    Failure::Wrapped(Pattern::Bind(name)) => {
+                        let _ = writeln!(out, "{pad}        case _:");
+                        let mut body = format!("{pad}            {name} = {why}\n");
+                        body.push_str(&text.body(&arm.body, indent + 12, ending(&arm.body)?)?);
+                        out.push_str(&body);
+                        continue;
+                    }
+                    Failure::Wrapped(_) => text.err_pattern(arm.span)?,
+                    Failure::Bare => text.bare_pattern(arm.span)?,
+                };
+                let _ = writeln!(out, "{pad}        case {shown}:");
+                out.push_str(&text.body(&arm.body, indent + 12, ending(&arm.body)?)?);
+            }
+        }
+    }
+    Some(())
 }
 
 /// The two ways a test checks a call with `match`: that it fails, with `case Ok(_): assert False`
@@ -344,12 +364,10 @@ fn in_test(
         let quiet = arm.body.iter().all(|stmt| matches!(stmt.kind, StmtKind::Pass));
         match failure {
             Failure::Wrapped(Pattern::Bind(name)) if !taken.contains(name.as_str()) => {
-                out.push_str(&format!(
-                    "{name} = failure_of(() => {called})\n{pad}assert {name} is not None\n"
-                ));
+                let _ = writeln!(out, "{name} = failure_of(() => {called})\n{pad}assert {name} is not None");
             }
             Failure::Rest | Failure::Wrapped(Pattern::Wildcard) => {
-                out.push_str(&format!("assert failure_of(() => {called}) is not None\n"));
+                let _ = writeln!(out, "assert failure_of(() => {called}) is not None");
             }
             _ => return None,
         }
@@ -368,7 +386,7 @@ fn in_test(
             Pattern::Bind(_) => return None,
             _ => "_",
         };
-        out.push_str(&format!("{name} = {called}?\n"));
+        let _ = writeln!(out, "{name} = {called}?");
         if !ok_body.iter().all(|stmt| matches!(stmt.kind, StmtKind::Pass)) {
             out.push_str(&text.body(ok_body, indent, Ending::AsItIs)?);
         }
@@ -502,7 +520,9 @@ impl<'a> Text<'a> {
                 }
                 out.insert_str(into, "return ");
             }
-            Ending::Continue => out.push_str(&format!("\n{pad}continue")),
+            Ending::Continue => {
+                let _ = write!(out, "\n{pad}continue");
+            }
         }
         out.push('\n');
         Some(out)

@@ -32,11 +32,17 @@ pub(crate) enum Ty {
     Buf,
     /// `shared Outer`: a number and a `shared Bag`.
     Outer,
+    /// `Node`: an enum whose cases hold `str`, `list[str]` and `list[Node]`, a tree.
+    Node,
+    /// `list[Node]`.
+    Nodes,
+    /// A `Node` from `deep`, thousands of levels deep, only measured, never printed whole.
+    Deep,
 }
 
 /// The types a value made anywhere can have. A `shared Point` and a lent `Tally` come from their
 /// own statements.
-pub(crate) const TYPES: [Ty; 14] = [
+pub(crate) const TYPES: [Ty; 16] = [
     Ty::Int,
     Ty::Bool,
     Ty::Str,
@@ -51,6 +57,8 @@ pub(crate) const TYPES: [Ty; 14] = [
     Ty::Sized(Size::U64),
     Ty::Counts,
     Ty::Buf,
+    Ty::Node,
+    Ty::Nodes,
 ];
 
 /// A sized integer type.
@@ -115,9 +123,6 @@ pub(crate) enum Expr {
     Bool(bool),
     Str(String),
     Name(String),
-    /// `copy(name)`: a name's value, copied on purpose, which a loop needs where the name may
-    /// change while the copy's held.
-    Copy(String),
     Arith(Arith, Box<Expr>, Box<Expr>),
     /// `left % 1009`, keeping a number small where a program isn't meant to fail.
     Small(Box<Expr>),
@@ -198,6 +203,28 @@ pub(crate) enum Expr {
     BufLen(Box<Expr>),
     /// `buffer[at]`, which fails outside what's filled.
     BufAt(Box<Expr>, Box<Expr>),
+    /// `Node.Leaf(name=text)`.
+    Leaf(Box<Expr>),
+    /// `Node.Number(value=int)`.
+    Number(Box<Expr>),
+    /// `Node.Branch(label=text, children=nodes)`.
+    Branch(Box<Expr>, Box<Expr>),
+    /// `Node.Tagged(tags=texts, inner=nodes)`.
+    Tagged(Box<Expr>, Box<Expr>),
+    /// A `list[str]` written out.
+    Texts(Vec<Expr>),
+    /// A `list[Node]` written out.
+    NodeList(Vec<Expr>),
+    /// `node_or_leaf(nodes, at)`, which never fails.
+    NodeAt(Box<Expr>, Box<Expr>),
+    /// `digest(node)`: the tree as text, through the program's own recursive function.
+    Digest(Box<Expr>),
+    /// `digest_all(nodes)`.
+    DigestAll(Box<Expr>),
+    /// `deep(depth, label)`: a chain of branches `depth` deep, built in a loop.
+    Deep(i64, Box<Expr>),
+    /// `depth_of(node)`, walking first children in a loop.
+    DepthOf(Box<Expr>),
     /// A float written out.
     Float(f64),
     /// `left + - * / right` on floats: `/` by zero fails.
@@ -235,6 +262,27 @@ pub(crate) enum Op {
     AddTwice(Amount),
     /// `grow_all(ref held.items, amount)`, through a `ref` parameter.
     GrowItems(Amount),
+    /// `ref slot = held.items[at]` then `slot += amount`: a place outside the list crashes at the
+    /// `ref`.
+    RefItem(i64, Amount),
+}
+
+/// What a local `ref` names: a field or an item of something held in a `mut` name, its index
+/// worked out once, at the `ref`.
+#[derive(Clone, Debug)]
+pub(crate) enum RefPlace {
+    /// `list[at]`.
+    Item(String, Expr),
+    /// `point.x` or `point.y`.
+    Field(String, bool),
+    /// `holder.items[at]`.
+    HeldItem(String, Expr),
+    /// `holder.items`, the whole list.
+    HeldList(String),
+    /// `holder.tag`.
+    Tag(String),
+    /// `nodes[at]`, a tree.
+    NodeItem(String, Expr),
 }
 
 /// A change to a `Buffer[int]`. Each fails where a list's would, and `pop` on an empty one.
@@ -369,6 +417,17 @@ pub(crate) enum Stmt {
     RemoveKey(String, &'static str),
     /// A change to a `Buffer[int]`.
     Buffered(String, BufOp),
+    /// A change to a `list[Node]`: an append, a pop, or an item set where it's kept in the list.
+    NodesAppend(String, Expr),
+    NodesPop(String),
+    /// `if nodes.len() > 0: nodes[at % nodes.len()] = node`.
+    NodesSet(String, Expr, Expr),
+    /// `match node:` changing whichever case it is through `ref`: a branch's label grows by `text`
+    /// and its children by `child`, a tagged node's tags and inner nodes likewise, a leaf's name
+    /// grows and a number counts up.
+    Reshape(String, Expr, Expr),
+    /// `ref name = place`, then the statements that use it, the last of them its last use.
+    LocalRef(String, RefPlace, Vec<Stmt>),
     /// `holder.items.append(value)`.
     HolderAppend(String, Expr),
     /// `holder.tag += value`.

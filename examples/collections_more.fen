@@ -71,7 +71,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.write("then one\n")
 
     # Files. Paths in a folder that doesn't exist fail without touching the disk.
-    stdout.print(fs.exists("no/such/folder/save.txt"))
+    stdout.print(fs.exists("no/such/folder/save.txt")?)
     stdout.print(describe(() => fs.read_text("no/such/folder/save.txt")))
     fs.write_text("no/such/folder/save.txt", "saved") else:
         stdout.print("couldn't write it")

@@ -70,3 +70,13 @@ test "attacking a removed enemy fails":
     id = world.enemies.add(Enemy(position=Vec3.zero))
     _ = world.enemies.remove(id)
     assert attack(ref world, id) fails TargetGone(id)
+
+test "update replaces a live enemy, and leaves a removed one's Id alone"():
+    mut world = World()
+    id = world.enemies.add(Enemy(position=Vec3.zero))
+    moved = Enemy(position=Vec3(x=1.0, y=0.0, z=0.0))
+    assert world.enemies.update(id, moved)
+    assert world.enemies[id].position.x == 1.0
+    _ = world.enemies.remove(id)
+    assert not world.enemies.update(id, moved)
+    assert world.enemies.len() == 0

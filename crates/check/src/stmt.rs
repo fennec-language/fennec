@@ -76,6 +76,14 @@ impl FnCx<'_> {
                 if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
             }
             StmtKind::Assign { target, value, ty: Some(written), .. }
+                if written.name == fennec_syntax::REF && written.args.is_empty() =>
+            {
+                if let ExprKind::Name(name) = &target.kind {
+                    self.local_ref(name, value, target.span);
+                }
+                Flow::unit()
+            }
+            StmtKind::Assign { target, value, ty: Some(written), .. }
                 if written.name == crate::lock::SHARED && written.args.is_empty() =>
             {
                 if let ExprKind::Name(name) = &target.kind {
@@ -113,19 +121,16 @@ impl FnCx<'_> {
             }
             StmtKind::Yield(value) => self.yield_stmt(value, stmt.span),
             StmtKind::Assert(cond) => {
-                match cond.asserted_failure() {
-                    Some((value, pattern)) => {
-                        self.assert_fails(value, pattern, stmt.span);
-                        self.record(cond.span, &Type::Bool);
-                    }
-                    None => {
-                        // What an `assert` holds holds after it, as after `if not cond: fail`:
-                        // `assert problem is not None` lets `problem.message` be read.
-                        self.condition(cond, "assert");
-                        self.track(cond);
-                        self.narrow(&not_none(cond, true));
-                        self.narrow_members(&members(cond, true));
-                    }
+                if let Some((value, pattern)) = cond.asserted_failure() {
+                    self.assert_fails(value, pattern, stmt.span);
+                    self.record(cond.span, &Type::Bool);
+                } else {
+                    // What an `assert` holds holds after it, as after `if not cond: fail`:
+                    // `assert problem is not None` lets `problem.message` be read.
+                    self.condition(cond, "assert");
+                    self.track(cond);
+                    self.narrow(&not_none(cond, true));
+                    self.narrow_members(&members(cond, true));
                 }
                 Flow::unit()
             }

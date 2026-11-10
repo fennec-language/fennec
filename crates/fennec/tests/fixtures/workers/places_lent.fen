@@ -47,7 +47,8 @@ def given_place(captured: list[Unit], grid: list[list[Unit]], at: int) -> int:
     mut copy_of = captured
     mut rows = grid
     copy_of[at % 2].grown_by(theirs)
-    copy_of[at % 2].grown_by(copy(copy_of[at % 2].tags))
+    own_tags = copy_of[at % 2].tags
+    copy_of[at % 2].grown_by(own_tags)
     rows[at % 2][-1].grow(at)
     rows[at % 2][0].inner.grow(at)
     rows[at % 2][0].inner.tags.extend(first)

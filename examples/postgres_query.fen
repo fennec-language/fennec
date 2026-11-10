@@ -1,7 +1,7 @@
 # A query to Postgres goes as the extended protocol's messages: the template's text with `$1` for
 # each value, then the values apart, so no value can change what the text means. What comes back
 # is turned into rows by each column's type, ready to read into a struct.
-from std.postgres import PgMessage, failure_of, query_messages, rows_of
+from std.postgres import PgMessage, failure_from_fields, query_messages, rows_of
 from std.sql import SqlRows
 
 def main(stdout: Stdout):
@@ -42,9 +42,12 @@ def main(stdout: Stdout):
             pass
     # A broken `unique` rule comes back as `Constraint`, with the server's words and code.
     stdout.print(
-        failure_of({"C": "23505", "M": "duplicate key value violates unique constraint"}).message(),
+        failure_from_fields({
+            "C": "23505",
+            "M": "duplicate key value violates unique constraint",
+        }).message(),
     )
-    stdout.print(failure_of({"C": "40P01", "M": "deadlock detected"}).message())
+    stdout.print(failure_from_fields({"C": "40P01", "M": "deadlock detected"}).message())
     # A float column can hold what isn't a number, and that isn't a failure.
     nan = PgMessage.Row(cells=["NaN".encode()], present=[True])
     match rows_of(["ratio"], types=[701], rows=[nan]):

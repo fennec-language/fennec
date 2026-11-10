@@ -232,6 +232,21 @@ test \"any list\" for items: list[int], n: int:
         "test \"load\":\n    assert load(\"bad\") fails Oops(line=3)\n    assert load(\"x\") fails .Missing | Oops()\n",
     ),
     ("fails_only_in_assert", "def f():\n    if load(\"bad\") fails Oops():\n        pass\n"),
+    (
+        "one_line_if_in_a_fallback",
+        "def port(text: str, given: bool) -> int:\n    int(text) else 80 if given else 8080\n",
+    ),
+    (
+        "fallback_in_a_one_line_if",
+        "def port(text: str, given: bool) -> int:\n    8080 if not given else int(text) else 80\n",
+    ),
+    (
+        "one_line_if_and_fallback_apart",
+        "def port(text: str, given: bool) -> int:\n    (int(text) else 80) if given else (8080 else 1)\n",
+    ),
+    ("local_ref", "def main():\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n"),
+    ("local_ref_without_a_name", "def main():\n    ref units[0] = 1\n"),
+    ("local_ref_without_a_value", "def main():\n    ref first\n"),
 ];
 
 /// Small programs that reach the checker's errors about written types, and the places
@@ -242,6 +257,11 @@ const CHECK_CASES: &[(&str, &str)] = &[
     (
         "own_type_named_like_std",
         "struct Heap:\n    size = 0\n\ndef main(stdout: Stdout):\n    stdout.print(Heap().size)\n",
+    ),
+    // `ref first = units[0]` is written in with `ref` as its type, which takes the place's.
+    (
+        "local_ref",
+        "def main(stdout: Stdout):\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n    stdout.print(units)\n",
     ),
     (
         "call_type_arguments",

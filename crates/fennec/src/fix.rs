@@ -15,6 +15,9 @@ pub(crate) fn fix(path: &str) -> ExitCode {
     if let Err(code) = moved_imports(path) {
         return code;
     }
+    if let Err(code) = loops_over_copies(path) {
+        return code;
+    }
     for _ in 0..ROUNDS {
         let Some(program) = crate::load(path, fennec_kit::Entry::Everything) else {
             return ExitCode::FAILURE;
@@ -23,7 +26,6 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         // and those are for `fennec lint` to report.
         let Err(mut diagnostics) = fennec_check::check(&program.module) else {
             let mut lints = fennec_lint::lint(&program.module, &program.sources);
-            lints.extend(fennec_lint::needless_copies(&program.module, &program.sources));
             lints.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
             lints.extend(fennec_lint::double_lookups(&program.module, &program.sources));
             lints.extend(fennec_lint::self_compares(&program.module, &program.sources));
@@ -130,6 +132,86 @@ fn moved_imports(path: &str) -> Result<(), ExitCode> {
         }
     }
     write_all(changed)
+}
+
+/// Rewrites each loop that goes over `copy(xs)` to go over a name made the line before,
+/// `xs_before = xs`, as the loop rule says to. It comes before the checker's own fix for a plain
+/// `copy(...)`, which takes the call off: a loop over `xs` itself couldn't change `xs`, which is
+/// what the copy was there for.
+fn loops_over_copies(path: &str) -> Result<(), ExitCode> {
+    let mut files = Vec::new();
+    if crate::fmt::collect(Path::new(path), true, &mut files).is_err() {
+        // Loading says what's wrong with the path.
+        return Ok(());
+    }
+    let mut changed = Vec::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(&file) else { continue };
+        let mut lines: Vec<String> = Vec::new();
+        for line in source.split_inclusive('\n') {
+            match loop_over_copy(line, &source) {
+                Some((named, looped)) => {
+                    lines.push(named);
+                    lines.push(looped);
+                }
+                None => lines.push(line.to_owned()),
+            }
+        }
+        let text = lines.concat();
+        if text != source {
+            changed.push((file.to_string_lossy().into_owned(), text));
+        }
+    }
+    write_all(changed)
+}
+
+/// A line `for ... in ...copy(xs)...:` as the line that names `xs` first and the loop over that
+/// name, or None for any other line, or a `copy` with fields to change, which stays.
+fn loop_over_copy(line: &str, source: &str) -> Option<(String, String)> {
+    let indent = line.get(..line.len() - line.trim_start().len())?;
+    let rest = line.trim_start().strip_prefix("for ")?;
+    let head = rest.find(" in ")? + " in ".len();
+    let opened = rest.get(head..)?.find("copy(")? + head;
+    let inside = opened + "copy(".len();
+    let mut depth = 0_usize;
+    let mut closed = None;
+    for (at, ch) in rest.get(inside..)?.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' if depth == 0 => {
+                closed = Some(inside + at);
+                break;
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' | '=' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    let closed = closed?;
+    let copied = rest.get(inside..closed)?.trim();
+    let last = copied.rsplit(['.', '[']).next()?.trim_end_matches(']');
+    let stem: String = last.chars().filter(|ch| ch.is_alphanumeric() || *ch == '_').collect();
+    if stem.is_empty() {
+        return None;
+    }
+    // A name the file doesn't use already.
+    let word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let taken = |name: &str| {
+        source.match_indices(name).any(|(at, _)| {
+            let before = source.get(..at).and_then(|text| text.chars().next_back());
+            let after = source.get(at + name.len()..).and_then(|text| text.chars().next());
+            !before.is_some_and(word) && !after.is_some_and(word)
+        })
+    };
+    let mut name = format!("{stem}_before");
+    let mut count = 2;
+    while taken(&name) {
+        name = format!("{stem}_before_{count}");
+        count += 1;
+    }
+    let named = format!("{indent}{name} = {copied}\n");
+    let looped = format!("{indent}for {}{name}{}", rest.get(..opened)?, rest.get(closed + 1..)?);
+    Some((named, looped))
 }
 
 /// Writes each changed file, saying so.

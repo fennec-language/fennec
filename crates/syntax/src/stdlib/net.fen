@@ -102,6 +102,59 @@ export shared Connection:
             if line is None: return
             yield line
 
+    ## This connection as a `Writer`, from `std.io`, for code written for any stream. A failure
+    ## of the network comes through as an `IoError`, with the network's own words in a note.
+    def writer(self) -> ConnectionWriter:
+        ConnectionWriter(_conn=self)
+
+    ## This connection as a `Reader`, from `std.io`, buffered as the connection is.
+    def reader(self) -> ConnectionReader:
+        ConnectionReader(_conn=self)
+
+## A connection as a `Writer`, from `conn.writer()`. Each write is sent at once, so `flush` has
+## nothing to do.
+export struct ConnectionWriter:
+    _conn: Connection
+
+    def write(self, data: bytes) fails IoError:
+        self._conn.write(data) else as why:
+            fail io_failure(why)
+
+    def write_text(self, text: str) fails IoError:
+        self._conn.write(text) else as why:
+            fail io_failure(why)
+
+    def write_line(self, text: str) fails IoError:
+        self._conn.write(text + "\n") else as why:
+            fail io_failure(why)
+
+    def flush(self) fails IoError:
+        pass
+
+## A connection as a `Reader`, from `conn.reader()`.
+export struct ConnectionReader:
+    _conn: Connection
+
+    def read_chunk(self, size: int) -> bytes fails IoError:
+        self._conn.read(size) else as why:
+            fail io_failure(why)
+
+    def read_line(self) -> str? fails IoError:
+        self._conn.read_line() else as why:
+            fail io_failure(why)
+
+    def lines(self) -> Iterator[str] fails IoError:
+        while True:
+            line = self.read_line()?
+            if line is None: return
+            yield line
+
+## A failure of the network as the `IoError` a stream fails with, keeping what the network said.
+def io_failure(why: NetError) -> IoError:
+    mut failure = IoError(reason=why.message())
+    failure.add_note(f"the network failed: {why.message()}")
+    failure
+
 ## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
 export struct Packet:
     data: bytes
@@ -187,11 +240,29 @@ export shared Server:
                 case Err(_):
                     return
 
+    ## Has the server drain when the program's asked to stop, by SIGTERM or Ctrl-C say: it takes no
+    ## more connections, and a connection waiting for its next message ends, while one partway
+    ## through a message goes on. Those still running after `grace` are cut short. The loop over the
+    ## server then ends, and the program goes on past it.
+    def stop_on(self, signals: Signals, grace = 20s):
+        _ = signals
+        self._stop_on(grace)
+
     ## Answers HTTP/1.1 with `respond`, each connection its own task, until the server is closed. A
     ## connection is kept open for more requests unless either side says to close it, and one that
     ## sends nothing for `timeout` is closed. A request that's too big, or isn't HTTP, is answered
-    ## with the 4xx status that says so, without calling `respond`.
-    def serve(self, respond: (Request) -> Response, timeout = 30s):
+    ## with the 4xx status that says so, without calling `respond`. Given `until=signals`, it stops
+    ## when the program's asked to, as `stop_on` says: requests being answered are finished, within
+    ## `grace`, and then it returns.
+    def serve(
+        self,
+        respond: (Request) -> Response,
+        timeout = 30s,
+        until: Signals? = None,
+        grace = 20s,
+    ):
+        if until is not None:
+            self.stop_on(until, grace=grace)
         for connection in parallel(self):
             _ = answer_all(connection, respond, timeout)
 
@@ -231,8 +302,10 @@ def answer_all(
     while True:
         match next_request(connection, timeout)?:
             case .Got(request, keep):
-                write_response(connection, respond(request), keep, request.method == "HEAD")?
-                if not keep:
+                # A server draining answers this request, then closes.
+                still = keep and not connection.draining()
+                write_response(connection, respond(request), still, request.method == "HEAD")?
+                if not still:
                     connection.close()
                     return
             case .Bad(status, reason):

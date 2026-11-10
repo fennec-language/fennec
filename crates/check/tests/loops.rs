@@ -30,7 +30,7 @@ fn changes(body: &str) -> Vec<String> {
 fn a_loop_can_change_what_it_doesnt_go_over() {
     let empty: [&str; 0] = [];
     assert_eq!(changes("for name in team.names:\n    team.win()\n"), empty);
-    assert_eq!(changes("for name in copy(names):\n    names.append(name)\n"), empty);
+    assert_eq!(changes("before = names\nfor name in before:\n    names.append(name)\n"), empty);
     assert_eq!(changes("for name in names[1:]:\n    names.append(name)\n"), empty);
     assert_eq!(
         changes("mut found = list[str]()\nfor name in names:\n    found.append(name)\nnames = found\n"),
@@ -74,6 +74,33 @@ fn a_loop_cant_change_what_it_goes_over() {
             "{TEAM}\ndef main(stdout: Stdout):\n    mut names = [\"ash\"]\n    for name in names:\n        names.append(name)\n"
         )),
         ["use `for ref`, or loop over indexes"]
+    );
+}
+
+/// `ref first = names[0]` has its place to itself from the `ref` to the last line that uses it:
+/// nothing else may change what it's in, and it's one `ref` into it at a time. Reads are fine,
+/// and so is a change once its last use is past, or to another field.
+#[test]
+fn a_local_ref_has_its_place_to_itself_while_its_in_use() {
+    let empty: [&str; 0] = [];
+    assert_eq!(changes("ref first = names[0]\nfirst = first.upper()\nnames.append(\"z\")\n"), empty);
+    assert_eq!(changes("ref first = names[0]\nfirst += names[1]\n"), empty);
+    assert_eq!(changes("ref wins = team.wins\nteam.names.append(\"z\")\nwins += 1\n"), empty);
+    assert_eq!(
+        changes("ref first = names[0]\nnames.append(\"z\")\nfirst += \"!\"\n"),
+        vec!["this changes `names` while `first` is a `ref` to `names[0]` @ names.append(\"z\")"]
+    );
+    assert_eq!(
+        changes("ref first = names[0]\nif first == \"ash\":\n    grow(ref names)\nfirst += \"!\"\n"),
+        vec!["this changes `names` while `first` is a `ref` to `names[0]` @ names"]
+    );
+    assert_eq!(
+        changes("ref first = names[0]\nref second = names[1]\nfirst += second\n"),
+        vec!["`second` is a second `ref` into `names[...]` while `first` is still in use @ names[1]"]
+    );
+    assert_eq!(
+        changes("for name in names:\n    ref first = names[0]\n    first += name\n"),
+        vec!["you can't change `names` while looping over it @ names[0]"]
     );
 }
 
@@ -200,7 +227,7 @@ fn a_ref_self_method_needs_its_value_to_itself() {
         ("bag.rename(bag.name)", &["`bag.name` overlaps `bag`, which this method changes"]),
         ("bags[i].absorb(bags[j])", &["`bags[j]` overlaps `bags[i]`, which this method changes"]),
         ("bag.grow(bag.size)", &[]),
-        ("bag.absorb(copy(bag))", &[]),
+        ("held = bag\nbag.absorb(held)", &[]),
         ("bags[0].absorb(bags[1])", &[]),
         ("stdout.print(bag.has(bag))", &[]),
     ];
@@ -326,7 +353,7 @@ fn different_places_can_be_given_as_mut_together() {
         "units[i].look(ref unit.home)",
         // What's worked out from a place is a value of its own.
         "more(ref spots, spots.len())",
-        "read(ref spots[i], copy(spots[j]))",
+        "other = spots[j]\nread(ref spots[i], other)",
         // A method keeping what it reads from its own value isn't given it as `mut`.
         "unit.keep(unit.position)",
     ] {

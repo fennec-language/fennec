@@ -1,6 +1,7 @@
 from std import base64
 from std.collections import Id
 from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_size, type_name
+from std.io import Reader, Writer, read_all
 
 ## How field names are spelled in JSON, set with `names=`. `snake_case` writes them as the
 ## program does. The keys of a dict are written as they are.
@@ -1779,3 +1780,21 @@ def explained[T: Deserializable](
     check._whole()?
     mut src = JsonReader(_source=text, _names=names, _extra=extra, _explain=True)
     read_value[T](ref src)?
+
+## Writes `value` as JSON to `out`, any `Writer` from `std.io`, as `dumps` gives it.
+export def dump[T: Serializable, W: Writer](
+    value: T,
+    ref out: W,
+    names: JsonNames? = None,
+    indent = -1,
+) fails IoError:
+    out.write_text(native_dumps(value, names=names, indent=indent))?
+
+## Reads what's left in `src`, any `Reader` from `std.io`, as JSON for a `T`, as `loads` does.
+export def load[T: Deserializable, R: Reader](
+    ref src: R,
+    names: JsonNames? = None,
+) -> T fails ParseError | IoError:
+    data = read_all(ref src)?
+    text = data.decode() else fail ParseError(message="the JSON isn't UTF-8 text", line=1, column=1)
+    native_loads[T](text, names=names)?

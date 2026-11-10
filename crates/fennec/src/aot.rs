@@ -491,6 +491,9 @@ fn emitted_as_written(
 
 /// Lowers what the program reaches and compiles it.
 fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
+    // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
+    // the runtime of each, for it to stop if it's ever given one.
+    fennec_llvm::trust_native_blocks(release);
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
     let emitted = emitted(&reached, false)?;

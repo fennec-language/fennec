@@ -30,18 +30,10 @@ pub(crate) fn listen() {
 /// What to do when a stop's asked for, by a number to forget it by: a server draining.
 type OnStop = Box<dyn Fn() + Send + Sync>;
 static ON_STOP: Mutex<Vec<(u64, OnStop)>> = Mutex::new(Vec::new());
-#[cfg_attr(
-    not(any(test, feature = "threads")),
-    expect(dead_code, reason = "only a server on the threads runtime drains")
-)]
 static NEXT_ON_STOP: AtomicU64 = AtomicU64::new(0);
 
 /// Runs `then` when a stop's asked for, on the thread that saw it, or now if one has been. Gives
 /// the number to forget it by.
-#[cfg_attr(
-    not(any(test, feature = "threads")),
-    expect(dead_code, reason = "only a server on the threads runtime drains")
-)]
 pub(crate) fn on_stop(then: OnStop) -> u64 {
     let number = NEXT_ON_STOP.fetch_add(1, Ordering::Relaxed);
     let mut waiting = ON_STOP.lock().unwrap_or_else(PoisonError::into_inner);
@@ -56,10 +48,6 @@ pub(crate) fn on_stop(then: OnStop) -> u64 {
 }
 
 /// Forgets what `on_stop` gave `number`, once there's nothing left for it to do.
-#[cfg_attr(
-    not(any(test, feature = "threads")),
-    expect(dead_code, reason = "only a server on the threads runtime drains")
-)]
 pub(crate) fn forget(number: u64) {
     ON_STOP.lock().unwrap_or_else(PoisonError::into_inner).retain(|(waiting, _)| *waiting != number);
 }

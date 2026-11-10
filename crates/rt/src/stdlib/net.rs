@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,9 @@ struct Stream {
     writing: Mutex<()>,
     /// Whether a server took it, so closing it lingers: see `linger`.
     served: bool,
+    /// Whether anything's been read since it last wrote: before anything has, a read is waiting
+    /// for a next message, which a server draining ends.
+    read_since_write: AtomicBool,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -646,8 +650,11 @@ pub(crate) fn real_connection(
         }
         // What a task serving a connection makes its `Connection` from.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
-        // A connection taken one at a time is served whole, so it's never draining.
-        ("draining", []) => return Ok(Value::Bool(false)),
+        // Its server's draining, when it was told to `stop_on` signals and one has come.
+        ("draining", []) => {
+            let draining = PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping();
+            return Ok(Value::Bool(draining && stream(handle).is_ok_and(|stream| stream.served)));
+        }
         _ => return Err(wrong(method, span)),
     };
     Ok(done_or_failed(done))
@@ -1019,6 +1026,7 @@ fn keep_stream_as(
         partial_line: Mutex::new(Vec::new()),
         writing: Mutex::new(()),
         served,
+        read_since_write: AtomicBool::new(false),
     };
     Ok(open(|open| {
         let handle = fresh_handle(open);
@@ -1068,6 +1076,9 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
     let mut data = vec![0; count];
     let read = reading(&stream, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
+    if read > 0 {
+        stream.read_since_write.store(true, Ordering::SeqCst);
+    }
     Ok(data)
 }
 
@@ -1091,7 +1102,9 @@ fn read_line_crlf(handle: i64, timeout: Option<Duration>, crlf: bool) -> Result<
         *stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner) = line;
         return read.map(|_| None);
     }
-    read?;
+    if read? > 0 {
+        stream.read_since_write.store(true, Ordering::SeqCst);
+    }
     if let Some(why) = line_refused(&line, crlf) {
         return Err(Failure::Other(why));
     }
@@ -1107,6 +1120,7 @@ fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
 fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    stream.read_since_write.store(false, Ordering::SeqCst);
     let _writing = lock_parking(&stream.writing);
     if matches!(&*stream.reader.lock().unwrap_or_else(PoisonError::into_inner), Reading::Tls(_)) {
         return write_securely(&stream, data, (timeout, deadline));
@@ -1391,6 +1405,54 @@ pub(crate) fn accepted(server: i64) -> Result<i64, Failure> {
 #[cfg(not(any(test, feature = "threads")))]
 pub(crate) fn closed(connection: i64) {
     close(connection);
+}
+
+/// Whether a server taking its connections one at a time was told to `stop_on` signals, so its
+/// connections are draining once one comes.
+static PLAIN_DRAINS: AtomicBool = AtomicBool::new(false);
+
+/// The connection a server taking them one at a time is serving, for a stop to reach.
+#[cfg(not(any(test, feature = "threads")))]
+static SERVING: Mutex<Option<Arc<Stream>>> = Mutex::new(None);
+
+/// Says which connection a server taking them one at a time is serving, or that it's serving none.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn serving(connection: Option<i64>) {
+    *SERVING.lock().unwrap_or_else(PoisonError::into_inner) =
+        connection.and_then(|handle| stream(handle).ok());
+}
+
+/// For a server taking connections one at a time that was told to `stop_on` signals: when one
+/// comes, the `accept` waiting is woken by a connection of the server's own, which it then drops,
+/// a connection waiting for its next message ends, and the one being served is cut short once
+/// `grace` is up. Gives what `signals::forget` takes, when it was told to.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn drain_on_stop(server: i64) -> Option<u64> {
+    let Some(Socket::Listener(listening)) = open(|open| open.get(&server).cloned()) else { return None };
+    let grace = (*listening.stop.lock().unwrap_or_else(PoisonError::into_inner))?;
+    let mut address = listening.listener.local_addr().ok()?;
+    if address.ip().is_unspecified() {
+        let loopback: std::net::IpAddr = if address.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        };
+        address.set_ip(loopback);
+    }
+    PLAIN_DRAINS.store(true, Ordering::SeqCst);
+    let served = || SERVING.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    Some(crate::signals::on_stop(Box::new(move || {
+        let _ = TcpStream::connect_timeout(&address, Duration::from_secs(1));
+        if let Some(stream) = served().filter(|stream| !stream.read_since_write.load(Ordering::SeqCst)) {
+            let _ = stream.socket.shutdown(Shutdown::Read);
+        }
+        let _ = std::thread::Builder::new().name("fennec-grace".to_owned()).spawn(move || {
+            std::thread::sleep(grace);
+            if let Some(stream) = served() {
+                let _ = stream.socket.shutdown(Shutdown::Both);
+            }
+        });
+    })))
 }
 
 fn udp(port: u16) -> Result<Made, Failure> {

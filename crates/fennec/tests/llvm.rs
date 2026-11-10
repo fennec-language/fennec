@@ -8188,19 +8188,18 @@ fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::i
     Ok(())
 }
 
-/// A server told to `stop_on(signals)` drains when the program's asked to stop, on the runtime
-/// with threads: a connection waiting for its next request ends at once rather than at its
-/// timeout, one partway through a request is answered, one that never finishes is cut short when
-/// `grace` is up, and the program goes on past the server and exits 0.
+/// A server built on the runtime `threads` names, `"1"` with threads and `"0"` without, serving
+/// HTTP until the program's asked to stop, with 2 seconds' grace. Gives it running, the port it
+/// listens on, and what it prints after.
 #[cfg(unix)]
-#[test]
-fn a_server_told_to_stop_on_signals_drains_when_asked() -> std::io::Result<()> {
-    use std::io::{Read, Write};
-    if !ready() {
-        return Ok(());
+fn stopping_server(
+    threads: &str,
+    name: &str,
+) -> std::io::Result<(PathBuf, Running, u16, std::io::BufReader<std::process::ChildStdout>)> {
+    if threads == "1" {
+        assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
     }
-    assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
-    let dir = folder("server_stop_on")?;
+    let dir = folder(name)?;
     let program = dir.join("serve.fen");
     std::fs::write(
         &program,
@@ -8211,9 +8210,8 @@ def respond(request: Request) -> Response:
 
 def main(net: Net, signals: Signals, stdout: Stdout):
     with net.listen(0)? as server:
-        server.stop_on(signals, grace=2s)
         stdout.print(server.port)
-        server.serve(respond, timeout=60s)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
     stdout.print(\"stopped\")
 ",
     )?;
@@ -8221,7 +8219,7 @@ def main(net: Net, signals: Signals, stdout: Stdout):
     let built = crate::executables::fennec_command()
         .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
         .env("FENNEC_HOME", &dir)
-        .env("FENNEC_THREADS_RUNTIME", "1")
+        .env("FENNEC_THREADS_RUNTIME", threads)
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
@@ -8229,28 +8227,67 @@ def main(net: Net, signals: Signals, stdout: Stdout):
     let mut port = String::new();
     std::io::BufRead::read_line(&mut printed, &mut port)?;
     let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
-    let connect = || -> std::io::Result<std::net::TcpStream> {
-        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
-        Ok(stream)
-    };
+    Ok((dir, server, port, printed))
+}
+
+/// Sends SIGTERM to `running`.
+#[cfg(unix)]
+fn terminate(running: &Running) -> std::io::Result<()> {
+    let sent = Command::new("kill").args(["-TERM", &running.0.id().to_string()]).status()?;
+    assert!(sent.success(), "couldn't send SIGTERM");
+    Ok(())
+}
+
+/// What a server serving until it's asked to stop prints after, and that it then exits 0.
+#[cfg(unix)]
+fn stopped_cleanly(
+    mut server: Running,
+    mut printed: std::io::BufReader<std::process::ChildStdout>,
+) -> std::io::Result<()> {
+    use std::io::Read;
+    let mut last = String::new();
+    printed.read_to_string(&mut last)?;
+    assert_eq!(last, "stopped\n");
+    assert_eq!(server.0.wait()?.code(), Some(0));
+    Ok(())
+}
+
+/// A connection to the server on `port`, whose reads give up after 30 seconds.
+#[cfg(unix)]
+fn connected(port: u16) -> std::io::Result<std::net::TcpStream> {
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    Ok(stream)
+}
+
+/// A server serving `until=signals` drains when the program's asked to stop, on the runtime with
+/// threads: a connection waiting for its next request ends at once rather than at its timeout,
+/// one partway through a request is answered and closed, one that never finishes is cut short
+/// when `grace` is up, and the program goes on past the server and exits 0.
+#[cfg(unix)]
+#[test]
+fn a_server_serving_until_signals_drains_when_asked() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let (dir, server, port, printed) = stopping_server("1", "server_until_threads")?;
     let answer = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/a";
     // Kept alive, answered, and then waiting for a next request.
-    let mut idle = connect()?;
+    let mut idle = connected(port)?;
     idle.write_all(b"GET /a HTTP/1.1\r\n\r\n")?;
     let mut first = vec![0; answer.len()];
     idle.read_exact(&mut first)?;
     assert_eq!(first, answer);
     // Partway through a request, finished after the stop.
-    let mut partway = connect()?;
+    let mut partway = connected(port)?;
     partway.write_all(b"GET /b HTTP/1.1\r\n")?;
     // Partway through one it never finishes.
-    let mut stuck = connect()?;
+    let mut stuck = connected(port)?;
     stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
     // The server has taken each before it's asked to stop.
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let sent = Command::new("kill").args(["-TERM", &server.0.id().to_string()]).status()?;
-    assert!(sent.success(), "couldn't send SIGTERM");
+    terminate(&server)?;
     let asked = std::time::Instant::now();
     let mut rest = Vec::new();
     idle.read_to_end(&mut rest)?;
@@ -8262,15 +8299,61 @@ def main(net: Net, signals: Signals, stdout: Stdout):
     partway.write_all(b"\r\n")?;
     let mut answered = Vec::new();
     partway.read_to_end(&mut answered)?;
-    assert_eq!(String::from_utf8_lossy(&answered), "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/b");
+    assert_eq!(
+        String::from_utf8_lossy(&answered),
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b"
+    );
     let mut cut = Vec::new();
     let _ = stuck.read_to_end(&mut cut);
     assert!(cut.is_empty(), "{}", String::from_utf8_lossy(&cut));
-    let mut last = String::new();
-    printed.read_to_string(&mut last)?;
-    assert_eq!(last, "stopped\n");
-    assert_eq!(server.0.wait()?.code(), Some(0));
-    drop(server);
+    stopped_cleanly(server, printed)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The same on the runtime without threads, which serves a connection at a time: the one being
+/// served is answered and closed when it's partway through a request, and one waiting for its next
+/// request ends at once. A server waiting for a connection stops at once.
+#[cfg(unix)]
+#[test]
+fn a_server_on_the_plain_runtime_serving_until_signals_stops_when_asked() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let answer = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n/a";
+    let (dir, server, port, printed) = stopping_server("0", "server_until_plain_partway")?;
+    let mut partway = connected(port)?;
+    partway.write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n")?;
+    let mut first = vec![0; answer.len()];
+    partway.read_exact(&mut first)?;
+    assert_eq!(String::from_utf8_lossy(&first), answer);
+    terminate(&server)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    partway.write_all(b"\r\n")?;
+    let mut answered = Vec::new();
+    partway.read_to_end(&mut answered)?;
+    assert_eq!(
+        String::from_utf8_lossy(&answered),
+        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n/b"
+    );
+    stopped_cleanly(server, printed)?;
+    std::fs::remove_dir_all(&dir)?;
+    let (dir, server, port, printed) = stopping_server("0", "server_until_plain_idle")?;
+    let mut idle = connected(port)?;
+    idle.write_all(b"GET /a HTTP/1.1\r\n\r\n")?;
+    let mut first = vec![0; answer.len()];
+    idle.read_exact(&mut first)?;
+    assert_eq!(String::from_utf8_lossy(&first), answer);
+    terminate(&server)?;
+    let mut rest = Vec::new();
+    idle.read_to_end(&mut rest)?;
+    assert!(rest.is_empty(), "{}", String::from_utf8_lossy(&rest));
+    stopped_cleanly(server, printed)?;
+    std::fs::remove_dir_all(&dir)?;
+    let (dir, server, _, printed) = stopping_server("0", "server_until_plain_waiting")?;
+    terminate(&server)?;
+    stopped_cleanly(server, printed)?;
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

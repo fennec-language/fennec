@@ -1258,7 +1258,7 @@ impl Machine {
             Expr::Int(n) => Value::Int(*n),
             Expr::Bool(value) => Value::Bool(*value),
             Expr::Str(text) => Value::Str(text.clone()),
-            Expr::Name(name) | Expr::Copy(name) => self.get(name)?.clone(),
+            Expr::Name(name) => self.get(name)?.clone(),
             Expr::Arith(operator, left, right) => {
                 let (left, right) = (int(&self.expr(left)?)?, int(&self.expr(right)?)?);
                 Value::Int(match operator {

@@ -176,7 +176,7 @@ target = units.get(enemy.target_id) else return    # may be gone
 units[unit_id].health -= 1                         # sure: stops loudly if wrong
 ```
 
-`units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone. Not built yet.
+`units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone. Built.
 
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
@@ -432,7 +432,7 @@ score = load_score(fs, path) else as why:
 - `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. The reason has to say something: `.expect("")` is a compile error, "say why this can't fail". Built.
 - An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs, and what its last line is. Built.
 - Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
-- `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. Built.
+- `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. A plain `else` there would handle both, so it's a compile error, and `else as why:` handles only the failure, its block giving a `T?`. Built.
 - `T fails E` is made only by the runtime, as for the results of parallel work, and read only through `?` and `else`.
 - A block that stands where a value goes ends with that value, or leaves. That's `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`, and not bare blocks or a multi-line `if`, which the one-line `x if c else y` covers. `x = match ...:` is built. `x = lock ... as ...:` isn't yet.
 

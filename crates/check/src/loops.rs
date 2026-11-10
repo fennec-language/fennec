@@ -1,8 +1,8 @@
 //! A collection can't change while a loop goes over it. Inside `for x in xs:`, nothing may
 //! append to `xs`, remove from it, set one of its items, write through it with another `for mut`,
 //! or pass it as `mut`, and neither may a function the body calls: each function's summary says
-//! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
-//! collects the changes and makes them after.
+//! which places under its `mut` parameters it changes. The loop goes over a value made first,
+//! `before = xs`, instead, or collects the changes and makes them after.
 //!
 //! A `ref` argument has its place to itself the same way: nothing else in the call can reach it,
 //! not even another item of the same collection, as `f(ref xs[0], ref xs[2])` would.
@@ -714,10 +714,11 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
 const ARGUMENT_CHANGES_FIX: &str =
     "make that change on the line before, keeping what it gives back in a name, and pass the name";
 
-const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
-it reads, or make the changes one at a time";
+const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: pass a value you made first, \
+like `item = xs[j]`, or make the changes one at a time";
 
-const RECEIVER_FIX: &str = "a `ref self` method needs what it changes to itself: pass `copy(...)` of it";
+const RECEIVER_FIX: &str = "a `ref self` method needs what it changes to itself: pass a value you made \
+first, like `held = bag.items`";
 
 /// Two `ref`s into one collection, at indexes written apart or not.
 const ITEMS_FIX: &str = "two items of one collection are never both `ref`, even at different indexes: \

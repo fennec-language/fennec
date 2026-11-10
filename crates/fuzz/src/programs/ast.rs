@@ -130,9 +130,6 @@ pub(crate) enum Expr {
     Bool(bool),
     Str(String),
     Name(String),
-    /// `copy(name)`: a name's value, copied on purpose, which a loop needs where the name may
-    /// change while the copy's held.
-    Copy(String),
     Arith(Arith, Box<Expr>, Box<Expr>),
     /// `left % 1009`, keeping a number small where a program isn't meant to fail.
     Small(Box<Expr>),

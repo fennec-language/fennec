@@ -320,6 +320,59 @@ pub(super) fn words_for(header: usize, count: usize, each: usize) -> usize {
     }
 }
 
+thread_local! {
+    /// The blocks generated code made itself and hasn't freed, by address, in a build that watches
+    /// them: a dev build, or one checking proofs (see the LLVM backend's `native` module). The
+    /// runtime must never be given one, and does nothing with an address it holds no block for, so
+    /// without this a mistake there would leak or corrupt what the block holds, silently. Each
+    /// thread knows the ones it made.
+    static NATIVE: RefCell<std::collections::HashSet<u64, BuildHasherDefault<AddressHasher>>> =
+        RefCell::new(std::collections::HashSet::default());
+}
+
+/// Whether a build watches native blocks: none is ever looked up in one that doesn't.
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `fennec_native_made(block)`: generated code made a block itself, in a build that watches them.
+pub extern "C" fn native_made(address: i64) {
+    WATCHING.store(true, std::sync::atomic::Ordering::Relaxed);
+    NATIVE.with_borrow_mut(|made| made.insert(address.cast_unsigned()));
+}
+
+/// `fennec_native_freed(block)`: generated code freed a block it made, in a build that watches them.
+pub extern "C" fn native_freed(address: i64) {
+    NATIVE.with_borrow_mut(|made| made.remove(&address.cast_unsigned()));
+}
+
+/// Stops the program if `address`, which the runtime holds no block for, is a block generated
+/// code made, saying what it was asked to do with it: a bug in the compiler, which would
+/// otherwise leak or corrupt what the block holds. Only a build that watches them can tell.
+pub(in crate::embed) fn not_native(address: u64, what: &str) {
+    if WATCHING.load(std::sync::atomic::Ordering::Relaxed)
+        && NATIVE.with_borrow(|made| made.contains(&address))
+    {
+        unowned(what);
+    }
+}
+
+/// Stops the program: the runtime was handed a block generated code made. This is reached with
+/// the runtime's state borrowed, so it says so itself.
+#[cfg(not(test))]
+#[cold]
+#[inline(never)]
+fn unowned(what: &str) -> ! {
+    super::write_kept_output();
+    let _ =
+        writeln!(std::io::stderr(), "error: the runtime was handed a native block it doesn't own: {what}");
+    super::aot::stop_now(1)
+}
+
+/// [`unowned`] in a test, which goes on to be caught, where a program stops.
+#[cfg(test)]
+fn unowned(what: &str) -> ! {
+    panic!("the runtime was handed a native block it doesn't own: {what}");
+}
+
 /// Stops the program: it asked for a block too big to exist. This is reached with the runtime's
 /// state borrowed, so it says so itself.
 pub(super) fn too_big() -> ! {
@@ -1235,7 +1288,10 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 pub extern "C" fn unshare(address: i64) -> i64 {
     with(|state| {
         let address = u64::try_from(address).unwrap_or(0);
-        let Some(block) = state.heap.block(address) else { return 0 };
+        let Some(block) = state.heap.block(address) else {
+            not_native(address, "copy, to change");
+            return 0;
+        };
         let mut copy: Box<[u64]> = block.into();
         // The block copied loses an owner, in its count, or for its lender to take off.
         if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
@@ -1274,8 +1330,11 @@ pub extern "C" fn to_value(address: i64) -> i64 {
 pub(super) fn retain(state: &mut State, address: u64) {
     if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
         *count += 1;
-    } else if !state.heap.change_lent_owners(address, 1) && super::guarded::is_handle(address) {
+    } else if state.heap.change_lent_owners(address, 1) {
+    } else if super::guarded::is_handle(address) {
         super::guarded::count_handle(address);
+    } else {
+        not_native(address, "retain");
     }
 }
 
@@ -1303,7 +1362,10 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     {
         return Value::Str(Rc::clone(text));
     }
-    let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else { return Value::None };
+    let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else {
+        not_native(address, "read");
+        return Value::None;
+    };
     if let Some(value) = cell_value(state, &block) {
         return state.expanded(value);
     }
@@ -1592,7 +1654,11 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     if a == b {
         return true;
     }
-    let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
+    let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else {
+        not_native(a, "compare");
+        not_native(b, "compare");
+        return false;
+    };
     let shape = shape_word(left);
     if shape != shape_word(right) {
         return false;

@@ -114,8 +114,9 @@ fn pattern_names(pattern: &Pattern, names: &mut Vec<String>) {
     }
 }
 
-/// Moves each stage kept in a name and used once to where it's used, in every function.
-pub fn stored_stages(module: &mut Module) {
+/// Moves each stage kept in a name and used once to where it's used, in every function. Says
+/// whether it looked: a module with no generator and no stage is left as it was.
+pub fn stored_stages(module: &mut Module) -> bool {
     let generators: HashSet<String> = module
         .items
         .iter()
@@ -125,7 +126,7 @@ pub fn stored_stages(module: &mut Module) {
         })
         .collect();
     if generators.is_empty() && !has_stage_expression(module) {
-        return;
+        return false;
     }
     for item in &mut module.items {
         match item {
@@ -143,6 +144,7 @@ pub fn stored_stages(module: &mut Module) {
             _ => {}
         }
     }
+    true
 }
 
 fn has_stage_expression(module: &mut Module) -> bool {

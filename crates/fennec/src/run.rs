@@ -52,7 +52,7 @@ pub(crate) fn run_logged(
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
     // standard error. It's found while the program is built, which takes as long or longer.
     crate::lint::find_errors_beside(path);
-    let (program, _, kept) = match reached(path) {
+    let (program, checked, kept) = match reached(path) {
         Ok(prepared) => prepared,
         Err(code) => {
             crate::lint::show_errors_found();
@@ -61,7 +61,7 @@ pub(crate) fn run_logged(
     };
     // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
     // says it.
-    match built_and_run((&program, kept.as_deref()), path, arguments, logged) {
+    match built_and_run((&program, checked, kept.as_deref()), path, arguments, logged) {
         Ok(code) => code,
         Err(why) => {
             crate::lint::show_errors_found();
@@ -74,7 +74,7 @@ pub(crate) fn run_logged(
 /// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
 /// this process's input and output, and its exit code.
 fn built_and_run(
-    (program, kept): (&fennec_kit::Program, Option<&str>),
+    (program, checked, kept): (&fennec_kit::Program, Option<fennec_check::Signatures>, Option<&str>),
     path: &str,
     arguments: &[String],
     logged: Option<&Logged>,
@@ -99,7 +99,7 @@ fn built_and_run(
             .is_some_and(|root| crate::aot::stored_executable(cache, &root, &executable).is_some())
     });
     if !ready {
-        let built = build_for_run(program, path, &executable)?;
+        let built = build_for_run((program, checked), path, &executable)?;
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
             // A store that can't be written only means building it again next time.
             let _ = cache.write(RUN_ROOTS, name, root.as_bytes());
@@ -113,8 +113,9 @@ fn built_and_run(
 const RUN_ROOTS: &str = "run-roots";
 
 /// Builds the program to `executable` through LLVM's cached dev build.
+/// What the run's check worked out, when it's what a build of the program would check again.
 fn build_for_run(
-    program: &fennec_kit::Program,
+    (program, checked): (&fennec_kit::Program, Option<fennec_check::Signatures>),
     path: &str,
     executable: &std::path::Path,
 ) -> Result<crate::aot::Built, String> {
@@ -136,7 +137,7 @@ fn build_for_run(
     } else {
         program
     };
-    crate::aot::executable(program, executable, false)
+    crate::aot::executable_checked(program, executable, false, checked)
 }
 
 /// Runs what was built at `executable` as the program at `path`, then lets go of it.
@@ -226,12 +227,15 @@ fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), 
 /// with everything else in its kit. All of it is checked the first time, and again whenever
 /// its text changes; the cache remembers the text that passed. The cut-down program is what
 /// always runs, so its machine code is reused from the very first run.
-fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures, Option<String>), ExitCode> {
+/// With the program, the signatures a build of it would work out, when its check gave them.
+fn reached(
+    path: &str,
+) -> Result<(fennec_kit::Program, Option<fennec_check::Signatures>, Option<String>), ExitCode> {
     let Some(cache) = cache() else {
-        return whole(path).map(|(program, signatures)| (program, signatures, None));
+        return whole(path).map(|(program, _)| (program, None, None));
     };
     if let Some((mut program, kept)) = crate::image::load(path, &cache)
-        && let Ok(signatures) = fennec_check::check_to_run(&mut program.module)
+        && let Ok(signatures) = fennec_check::check_to_build(&mut program.module)
     {
         crate::lint::lend_loaded(None, path);
         return Ok((program, signatures, Some(kept)));
@@ -275,10 +279,10 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures,
     if let Some(files) = &files {
         crate::image::store(path, &cache, files, &program);
     }
-    match fennec_check::check_to_run(&mut program.module) {
+    match fennec_check::check_to_build(&mut program.module) {
         Ok(signatures) => Ok((program, signatures, None)),
         // Cutting it down missed something the whole program has.
-        Err(_) => whole(path).map(|(program, signatures)| (program, signatures, None)),
+        Err(_) => whole(path).map(|(program, _)| (program, None, None)),
     }
 }
 

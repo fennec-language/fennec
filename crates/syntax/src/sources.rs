@@ -85,9 +85,10 @@ impl Sources {
         if trace.is_empty() {
             return String::new();
         }
-        let named = |span: Span| {
-            self.function_at(span)
-                .map_or_else(|| "the standard library".to_owned(), |name| format!("`{name}`"))
+        let named = |span: Span| match self.function_at(span) {
+            Some(name) => format!("`{name}`"),
+            None if self.file(span).is_some() => "the program's top level".to_owned(),
+            None => "the standard library".to_owned(),
         };
         let mut text = format!("  = in {}\n", named(failed_at));
         // Calls the standard library's code makes among its own functions all say the same, once.
@@ -158,6 +159,12 @@ impl Sources {
             }
             indent = this;
             let written = written.strip_prefix("export ").unwrap_or(written);
+            // A test's body is named as the test, as `test "its name"`.
+            if function.is_none()
+                && let Some(test) = written.strip_prefix("test ").and_then(|rest| rest.strip_suffix(':'))
+            {
+                return Some(format!("test {test}"));
+            }
             match &function {
                 None => function = written.strip_prefix("def ").and_then(words),
                 Some(name) => {
@@ -259,5 +266,66 @@ impl Trace {
 
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty() && self.skipped == 0
+    }
+
+    /// The chain up to the first call that `stop` says is past what matters, which is left out with
+    /// everything after it.
+    #[must_use]
+    pub fn until(&self, stop: impl Fn(Span) -> bool) -> Trace {
+        let mut kept = Trace::default();
+        for (span, times) in &self.inner {
+            if stop(*span) {
+                return kept;
+            }
+            kept.push(*span, *times);
+        }
+        kept.skip(self.skipped);
+        for (span, times) in &self.outer {
+            if stop(*span) {
+                return kept;
+            }
+            kept.push(*span, *times);
+        }
+        kept
+    }
+
+    /// The chain as text with no spaces, for a test program to tell `fennec test`: each end's
+    /// entries as `start-end*times`, split by `,`, with how many went between them, all split by
+    /// `;`. Nothing for an empty chain.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        let entries = |entries: &mut dyn Iterator<Item = &(Span, u64)>| {
+            entries
+                .map(|(span, times)| format!("{}-{}*{times}", span.start, span.end))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!("{};{};{}", entries(&mut self.inner.iter()), self.skipped, entries(&mut self.outer.iter()))
+    }
+
+    /// A chain [`Trace::encode`] wrote, or `None` if it isn't one.
+    #[must_use]
+    pub fn decode(text: &str) -> Option<Trace> {
+        if text.is_empty() {
+            return Some(Trace::default());
+        }
+        let entries = |text: &str| -> Option<Vec<(Span, u64)>> {
+            text.split(',')
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    let (span, times) = entry.split_once('*')?;
+                    let (start, end) = span.split_once('-')?;
+                    Some((Span { start: start.parse().ok()?, end: end.parse().ok()? }, times.parse().ok()?))
+                })
+                .collect()
+        };
+        let mut parts = text.split(';');
+        let inner = entries(parts.next()?)?;
+        let skipped = parts.next()?.parse().ok()?;
+        let outer = entries(parts.next()?)?.into_iter().collect();
+        Some(Trace { inner, outer, skipped })
     }
 }

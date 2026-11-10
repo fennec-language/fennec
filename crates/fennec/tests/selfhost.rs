@@ -227,6 +227,7 @@ test \"any list\" for items: list[int], n: int:
         "if_over_lines_gives_no_value",
         "def f(n: int) -> int:\n    x = if n > 2:\n        1\n    else:\n        2\n    x\n",
     ),
+    (
         "one_line_if_in_a_fallback",
         "def port(text: str, given: bool) -> int:\n    int(text) else 80 if given else 8080\n",
     ),

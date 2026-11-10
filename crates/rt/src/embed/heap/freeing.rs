@@ -24,12 +24,36 @@ pub extern "C" fn free(address: i64) {
             free_waiting(state);
         }
         let address = u64::try_from(address).unwrap_or(0);
-        free_block(state, address);
+        if !free_plain_list(state, address) {
+            free_block(state, address);
+        }
         !state.heap.abandoning.is_empty()
     });
     if abandoning {
         run_abandons();
     }
+}
+
+/// Frees a list of this thread's whose items hold nothing, the most usual block let go of: out
+/// of the table and kept for reuse, with nothing to walk. False, having done nothing, for any
+/// other block, which [`free_block`] frees.
+fn free_plain_list(state: &mut State, address: u64) -> bool {
+    if crate::embed::threads::held_elsewhere(address) {
+        return false;
+    }
+    let Some(block) = state.heap.block(address) else { return false };
+    let plain = !super::is_handle_block(block)
+        && shape_word(block).is_some_and(|shape| shape > state.tables.str_shape)
+        && crate::embed::lists::element_number(state, block)
+            .is_some_and(|number| state.heap.items_hold_nothing(number));
+    if !plain {
+        return false;
+    }
+    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) else {
+        return false;
+    };
+    state.heap.recycle(block);
+    true
 }
 
 /// Frees what other threads let go of last, which waits for this one, which made it.
@@ -625,6 +649,37 @@ mod tests {
         with(|state| super::release(state, address.cast_unsigned() + 64));
         super::super::native_made(address);
         with(|state| super::release(state, address.cast_unsigned()));
+    }
+
+    /// A list of numbers is freed on the quick way when its owner lets go of it, and not while
+    /// another thread still counts it: then it waits, as any block does, until that thread lets go,
+    /// and is freed where it was made the next time that thread frees something.
+    #[test]
+    fn a_list_another_thread_counts_waits_for_it() {
+        let elements = vec![Rc::new(Element::Int), Rc::new(Element::Str)];
+        start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
+        let before = with(|state| state.heap.live());
+        let alone = crate::embed::lists::new(0, 1);
+        crate::embed::heap::free(alone);
+        with(|state| assert_eq!(state.heap.live(), before, "a list no one else counts is freed at once"));
+        // A list of strings goes the long way, letting go of each string it holds.
+        let long = |at: usize| crate::value::Value::str(&format!("string {at}, long enough to need a block"));
+        let pushed = with(|state| state.push(crate::value::Value::list((0..3).map(long).collect())));
+        let texts = crate::embed::lists::from_value(pushed, 1, 0, 0);
+        assert!(with(|state| state.heap.live()) >= before + 4, "the list and its three strings");
+        crate::embed::heap::free(texts);
+        with(|state| assert_eq!(state.heap.live(), before, "a list of strings lets go of its strings"));
+        let counted = crate::embed::lists::new(0, 1);
+        crate::embed::threads::retain_shared(counted, 0);
+        crate::embed::heap::free(counted);
+        with(|state| {
+            assert!(state.heap.block(counted.cast_unsigned()).is_some(), "freed while another counted it");
+        });
+        crate::embed::threads::release_shared(counted, 0);
+        let other = crate::embed::lists::new(0, 1);
+        crate::embed::heap::free(other);
+        with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));
+        finish();
     }
 
     #[test]

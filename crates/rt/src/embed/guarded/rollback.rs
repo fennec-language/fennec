@@ -77,9 +77,52 @@ struct Log {
     depth: usize,
     saved: Vec<Saved>,
     /// Where each save is for, so that a place written again and again is saved once.
-    places: HashSet<u64, BuildHasherDefault<AddressHasher>>,
+    places: Places,
     /// What was changed in place in the lists it marked, by list, oldest first.
     changes: Vec<(u64, Change)>,
+}
+
+/// Where a log's saves are for. Most locks save a few words, so a short list is looked through one
+/// by one, which costs less than hashing; past that, they're hashed.
+#[derive(Default)]
+struct Places {
+    few: Vec<u64>,
+    many: HashSet<u64, BuildHasherDefault<AddressHasher>>,
+}
+
+/// How many places a log looks through one by one before it hashes them.
+const FEW_PLACES: usize = 16;
+
+impl Places {
+    /// Adds a place, saying whether it's new.
+    fn insert(&mut self, place: u64) -> bool {
+        if self.many.is_empty() {
+            if self.few.contains(&place) {
+                return false;
+            }
+            if self.few.len() < FEW_PLACES {
+                self.few.push(place);
+                return true;
+            }
+            self.many.extend(self.few.drain(..));
+        }
+        self.many.insert(place)
+    }
+
+    fn contains(&self, place: u64) -> bool {
+        self.few.contains(&place) || self.many.contains(&place)
+    }
+
+    fn clear(&mut self) {
+        self.few.clear();
+        if !self.many.is_empty() {
+            self.many.clear();
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.many.capacity()
+    }
 }
 
 /// The address of the word a save is for, which only that word has.
@@ -97,29 +140,44 @@ enum Pushed {
     NoLog,
 }
 
-thread_local! {
+/// This thread's logs, in one place so that taking and letting go of a lock looks it up once.
+struct Logs {
     /// The logs of the locks this thread holds that may crash, innermost last.
-    static LOGS: RefCell<Vec<Log>> = const { RefCell::new(Vec::new()) };
-    /// For a crash, what goes back in the lock's own cell, by word, for native code to write.
-    static CELL: RefCell<HashMap<usize, Saved>> = RefCell::new(HashMap::new());
+    held: Vec<Log>,
     /// Logs of locks let go of, emptied, for the next locks taken to fill without asking for memory.
-    static SPARE: RefCell<Vec<Log>> = const { RefCell::new(Vec::new()) };
+    spare: Vec<Log>,
 }
 
-/// A log done with, emptied and kept for another lock. A few are kept, as many as locks are held
-/// inside one another at once, and none too big to hold on to.
-fn spare(mut log: Log) {
-    if log.saved.capacity() > 4096 || log.places.capacity() > 4096 {
-        return;
+thread_local! {
+    static LOGS: RefCell<Logs> = const { RefCell::new(Logs { held: Vec::new(), spare: Vec::new() }) };
+    /// For a crash, what goes back in the lock's own cell, by word, for native code to write.
+    static CELL: RefCell<HashMap<usize, Saved>> = RefCell::new(HashMap::new());
+}
+
+/// The logs of the locks this thread holds, innermost last, to change.
+fn with_logs<T>(f: impl FnOnce(&mut Vec<Log>) -> T) -> T {
+    LOGS.with_borrow_mut(|logs| f(&mut logs.held))
+}
+
+/// The logs of the locks this thread holds, innermost last.
+fn read_logs<T>(f: impl FnOnce(&[Log]) -> T) -> T {
+    LOGS.with_borrow(|logs| f(&logs.held))
+}
+
+/// Keeps an empty log for another lock. A few are kept, as many as locks are held inside one another
+/// at once, and none too big to hold on to.
+fn keep_spare(spare: &mut Vec<Log>, log: Log) {
+    if spare.len() < 8 && log.saved.capacity() <= 4096 && log.places.capacity() <= 4096 {
+        spare.push(log);
     }
+}
+
+/// A log done with, emptied and kept for another lock.
+fn spare(mut log: Log) {
     log.saved.clear();
     log.places.clear();
     log.changes.clear();
-    SPARE.with_borrow_mut(|spare| {
-        if spare.len() < 8 {
-            spare.push(log);
-        }
-    });
+    LOGS.with_borrow_mut(|logs| keep_spare(&mut logs.spare, log));
 }
 
 fn address(value: i64) -> u64 {
@@ -128,26 +186,25 @@ fn address(value: i64) -> u64 {
 
 /// `fennec_lock_begin(cell)`: a lock that may crash is taken, after its table, if it has one.
 pub extern "C" fn begin(cell: i64) {
-    attempt(|state: &mut State| {
-        let depth = state.heap.tables_behind();
-        let log = SPARE.with_borrow_mut(Vec::pop).map_or_else(
-            || Log {
+    let depth = with(|state| state.heap.tables_behind());
+    LOGS.with_borrow_mut(|logs| {
+        let log = match logs.spare.pop() {
+            Some(spare) => Log { cell: address(cell), depth, ..spare },
+            None => Log {
                 cell: address(cell),
                 depth,
                 saved: Vec::new(),
-                places: HashSet::default(),
+                places: Places::default(),
                 changes: Vec::new(),
             },
-            |spare| Log { cell: address(cell), depth, ..spare },
-        );
-        LOGS.with_borrow_mut(|logs| logs.push(log));
-        Ok(())
+        };
+        logs.held.push(log);
     });
 }
 
 /// Adds a save to the log of the lock it's for: the log whose cell it is, or the innermost.
 fn push(saved: Saved) -> Pushed {
-    LOGS.with_borrow_mut(|logs| {
+    with_logs(|logs| {
         let at = logs.iter().rposition(|log| log.cell == saved.block).or(logs.len().checked_sub(1));
         let Some(log) = at.and_then(|at| logs.get_mut(at)) else { return Pushed::NoLog };
         // A loop writes the same place, so the last save is looked at first.
@@ -158,6 +215,21 @@ fn push(saved: Saved) -> Pushed {
         log.saved.push(saved);
         Pushed::Added
     })
+}
+
+/// Adds saves of one block's words, as `push` adds each, looking the logs up once.
+fn push_all(saves: impl Iterator<Item = Saved>) {
+    with_logs(|logs| {
+        let mut saves = saves.peekable();
+        let Some(first) = saves.peek() else { return };
+        let at = logs.iter().rposition(|log| log.cell == first.block).or(logs.len().checked_sub(1));
+        let Some(log) = at.and_then(|at| logs.get_mut(at)) else { return };
+        for saved in saves {
+            if log.places.insert(place(&saved)) {
+                log.saved.push(saved);
+            }
+        }
+    });
 }
 
 /// `fennec_lock_save(block, word, old, holds)`: the word at `word` in `block` is about to change from
@@ -212,15 +284,18 @@ pub extern "C" fn save_ref(block: i64, word: i64, old: i64) {
 
 fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
     let saved = Saved { block, word, old, held: old != 0, marked: false };
-    let known = LOGS.with_borrow(|logs| logs.iter().any(|log| log.places.contains(&place(&saved))));
+    let known = read_logs(|logs| logs.iter().any(|log| log.places.contains(place(&saved))));
     if known {
         return;
     }
-    let fields = state.heap.block(old).is_some_and(|words| {
-        heap::is_plain_struct(state, words)
-            && words.first().is_some_and(|count| count & lists::MARKED == 0 && *count < heap::IMMORTAL)
+    // One look at the block says how it's saved.
+    let (fields, markable) = state.heap.block(old).map_or((false, false), |words| {
+        let unmarked =
+            words.first().is_some_and(|count| count & lists::MARKED == 0 && *count < heap::IMMORTAL);
+        let fields = unmarked && heap::is_plain_struct(state, words);
+        (fields, fields || lists::markable_block(state, words))
     });
-    if fields || lists::markable(state, old) {
+    if markable {
         let saved = Saved { held: false, marked: true, ..saved };
         if push(saved) == Pushed::Added {
             lists::mark(state, old);
@@ -238,14 +313,59 @@ fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
 /// Saves every field of a struct's block a log just marked, before anything changes it: a word that
 /// holds a block as `save_ref` saves it, and any other as it is.
 fn save_fields(state: &mut State, at: u64) {
-    let Some(words) = state.heap.block(at).map(<[u64]>::to_vec) else { return };
-    let mut places = Vec::new();
-    let _ = heap::child_places(state, &words, &mut places);
-    for (word, old) in words.iter().enumerate().skip(heap::HEADER_WORDS) {
-        if places.contains(&word) {
-            save_ref_in(state, at, word, *old);
+    // A struct's few words, copied once where they're found, so nothing is asked for.
+    let mut few = [0_u64; 16];
+    let mut many = Vec::new();
+    let mut places = FewPlaces::default();
+    let words: &[u64] = {
+        let Some(block) = state.heap.block(at) else { return };
+        heap::struct_places(state, block, &mut places);
+        if let Some(copy) = few.get_mut(..block.len()) {
+            copy.copy_from_slice(block);
+            copy
         } else {
-            push(Saved { block: at, word, old: *old, held: false, marked: false });
+            many.extend_from_slice(block);
+            &many
+        }
+    };
+    // The words that hold no block are saved as they are, in one go.
+    let plain = words
+        .iter()
+        .enumerate()
+        .skip(heap::HEADER_WORDS)
+        .filter(|(word, _)| !places.contains(*word))
+        .map(|(word, old)| Saved { block: at, word, old: *old, held: false, marked: false });
+    push_all(plain);
+    for (word, old) in words.iter().enumerate().skip(heap::HEADER_WORDS) {
+        if places.contains(word) {
+            save_ref_in(state, at, word, *old);
+        }
+    }
+}
+
+/// Where a struct's block holds others: a few, kept where they're found, or more, asked for.
+#[derive(Default)]
+struct FewPlaces {
+    few: [usize; 8],
+    count: usize,
+    more: Vec<usize>,
+}
+
+impl FewPlaces {
+    fn contains(&self, place: usize) -> bool {
+        self.few.get(..self.count).is_some_and(|few| few.contains(&place)) || self.more.contains(&place)
+    }
+}
+
+impl Extend<usize> for FewPlaces {
+    fn extend<I: IntoIterator<Item = usize>>(&mut self, places: I) {
+        for place in places {
+            if let Some(slot) = self.few.get_mut(self.count) {
+                *slot = place;
+                self.count += 1;
+            } else {
+                self.more.push(place);
+            }
         }
     }
 }
@@ -259,13 +379,38 @@ pub extern "C" fn to_change(block: i64) -> i64 {
     if marked { block } else { heap::unshare(block) }
 }
 
+/// Ends the innermost lock if it saved only plain words, with no lock around it to pass them to:
+/// it holds nothing to let go of, so its log is emptied and kept, with no look at the heap. Says
+/// whether it did.
+fn end_holding_nothing() -> bool {
+    LOGS.with_borrow_mut(|logs| {
+        let outermost = logs.held.len() == 1;
+        let Some(log) = logs.held.last() else { return false };
+        let plain = log.changes.is_empty()
+            && (log.saved.is_empty()
+                || (outermost && log.saved.iter().all(|saved| !saved.held && !saved.marked)));
+        if !plain {
+            return false;
+        }
+        if let Some(mut log) = logs.held.pop() {
+            log.saved.clear();
+            log.places.clear();
+            keep_spare(&mut logs.spare, log);
+        }
+        true
+    })
+}
+
 /// `fennec_lock_kept()`: the innermost lock that may crash ends normally, keeping what it changed.
 /// What the log held is let go of. Saves of what's not this lock's, written while it was held, go to
 /// the log of the lock around it, for its own crash to put back.
 pub extern "C" fn kept() {
+    if end_holding_nothing() {
+        return;
+    }
     attempt(|state: &mut State| {
-        let Some(mut log) = LOGS.with_borrow_mut(Vec::pop) else { return Ok(()) };
-        let outer = LOGS.with_borrow(|logs| logs.last().map(|outer| outer.depth));
+        let Some(mut log) = with_logs(Vec::pop) else { return Ok(()) };
+        let outer = read_logs(|logs| logs.last().map(|outer| outer.depth));
         let own_table = outer.is_none_or(|depth| log.depth > depth);
         let mut passed = Vec::new();
         let mut changes = std::mem::take(&mut log.changes);
@@ -290,25 +435,30 @@ pub extern "C" fn kept() {
                 passed.push(saved);
             }
         }
-        let (repeated, marked) = LOGS.with_borrow_mut(|logs| {
-            let (mut repeated, mut marked) = (Vec::new(), Vec::new());
-            if let Some(outer) = logs.last_mut() {
-                for saved in passed {
-                    if outer.places.insert(place(&saved)) {
-                        // A list this lock marked is the outer one's to undo now, with its changes.
-                        if saved.marked {
-                            outer.changes.extend(take_changes(&mut changes, saved.old));
+        // With nothing to pass on, the lock around it, if any, needn't be looked at.
+        let (repeated, marked) = if passed.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            with_logs(|logs| {
+                let (mut repeated, mut marked) = (Vec::new(), Vec::new());
+                if let Some(outer) = logs.last_mut() {
+                    for saved in passed {
+                        if outer.places.insert(place(&saved)) {
+                            // A list this lock marked is the outer one's to undo now, with its changes.
+                            if saved.marked {
+                                outer.changes.extend(take_changes(&mut changes, saved.old));
+                            }
+                            outer.saved.push(saved);
+                        } else if saved.held {
+                            repeated.push(saved.old);
+                        } else if saved.marked {
+                            marked.push((saved.old, take_changes(&mut changes, saved.old)));
                         }
-                        outer.saved.push(saved);
-                    } else if saved.held {
-                        repeated.push(saved.old);
-                    } else if saved.marked {
-                        marked.push((saved.old, take_changes(&mut changes, saved.old)));
                     }
                 }
-            }
-            (repeated, marked)
-        });
+                (repeated, marked)
+            })
+        };
         for old in repeated {
             heap::release(state, old);
         }
@@ -335,7 +485,7 @@ pub extern "C" fn kept() {
 /// table goes.
 pub extern "C" fn undo() {
     attempt(|state: &mut State| {
-        let Some(mut log) = LOGS.with_borrow_mut(Vec::pop) else { return Ok(()) };
+        let Some(mut log) = with_logs(Vec::pop) else { return Ok(()) };
         // Each list it marked is put back as it was, its changes undone newest first, and its mark
         // becomes an owner, for the word that held it to hold again: what's there now, the same list
         // or a copy, is let go of below as any saved word's is.
@@ -429,7 +579,7 @@ fn marking(logs: &mut [Log], block: u64) -> Option<&mut Log> {
 /// Notes a change in place to a list a log marked, in that log. Appends one after another undo as
 /// one, back to the length before the first.
 fn note(list: u64, change: Change) -> bool {
-    LOGS.with_borrow_mut(|logs| {
+    with_logs(|logs| {
         let Some(log) = marking(logs, list) else { return false };
         let again = matches!(change, Change::Grew { .. })
             && log
@@ -447,7 +597,7 @@ fn note(list: u64, change: Change) -> bool {
 
 /// A marked list moved from `from` to `to`, to have room: the log that marked it goes by where it is.
 pub(in crate::embed) fn moved(from: u64, to: u64) {
-    LOGS.with_borrow_mut(|logs| {
+    with_logs(|logs| {
         for log in logs.iter_mut() {
             for saved in log.saved.iter_mut().filter(|saved| saved.marked && saved.old == from) {
                 saved.old = to;
@@ -484,7 +634,7 @@ pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>) -> bool {
 /// anyway. A word saved already holds what was made under the lock, which needs no saving.
 pub(in crate::embed) fn changing(state: &mut State, block: u64, word: usize, old: u64, holds: bool) {
     let saved = Saved { block, word, old, held: holds && old != 0, marked: false };
-    let pushed = LOGS.with_borrow_mut(|logs| {
+    let pushed = with_logs(|logs| {
         let Some(log) = marking(logs, block) else { return Pushed::NoLog };
         if !log.places.insert(place(&saved)) {
             return Pushed::Repeated;
@@ -524,13 +674,13 @@ pub extern "C" fn undo_word(word: i64, now: i64, now_holds: i64) -> i64 {
 /// How many locks that may crash this thread holds, for tests.
 #[cfg(test)]
 fn held() -> usize {
-    LOGS.with_borrow(Vec::len)
+    read_logs(<[Log]>::len)
 }
 
 /// How many saves the logs hold.
 #[cfg(test)]
 fn saved_entries() -> usize {
-    LOGS.with_borrow(|logs| logs.iter().map(|log| log.saved.len()).sum())
+    read_logs(|logs| logs.iter().map(|log| log.saved.len()).sum())
 }
 
 #[cfg(test)]

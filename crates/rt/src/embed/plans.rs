@@ -154,6 +154,33 @@ pub(super) fn addresses(plan: &Plan, fields: &[u64], found: &mut impl Extend<u64
     Some(())
 }
 
+/// Where among a struct's fields its blocks are, each `base` on from its first field: each word
+/// holding a block's address that isn't zero, and the first word of each string held in a block.
+/// `None` for an enum's plan, or one that's walked, which says nothing without the value.
+pub(super) fn places(plan: &Plan, fields: &[u64], base: usize, found: &mut impl Extend<usize>) -> Option<()> {
+    let holds_block = |at: &usize| fields.get(*at).is_some_and(|word| *word != 0);
+    match plan {
+        Plan::Fixed(words) => found.extend(words.iter().copied().filter(holds_block).map(|at| at + base)),
+        Plan::FixedWithTexts(holds) => {
+            found.extend(holds.blocks.iter().copied().filter(holds_block).map(|at| at + base));
+            found.extend(
+                holds
+                    .texts
+                    .iter()
+                    .copied()
+                    .filter(|at| {
+                        let header =
+                            fields.get(*at..*at + 3).and_then(|words| <&[u64; 3]>::try_from(words).ok());
+                        header.and_then(super::text::block_of).is_some_and(|block| block != 0)
+                    })
+                    .map(|at| at + base),
+            );
+        }
+        Plan::Cases(_) | Plan::CasesWithTexts(_) | Plan::Walk => return None,
+    }
+    Some(())
+}
+
 fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
     found.extend(holds.blocks_in(fields).filter(|address| *address != 0));
     found.extend(holds.texts_in(fields).filter(|address| *address != 0));

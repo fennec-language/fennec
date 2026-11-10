@@ -80,14 +80,16 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     }
 }
 
-/// The program handed over, `length` bytes of it, ready for workers to start from.
-fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
+/// The program handed over, `length` bytes of it, ready for workers to start from. They share it
+/// with this thread, so it's never copied.
+fn program_handed_over(length: i64, stop: fn(i32)) -> std::sync::Arc<Vec<u8>> {
     let _ = STOP.set(stop);
     super::write_kept_output_on_panic();
     let mut bytes = IMAGE.take();
     bytes.truncate(usize::try_from(length).unwrap_or(0));
+    let bytes = std::sync::Arc::new(bytes);
     // Each worker `parallel` runs on starts a runtime of its own, holding the program.
-    let program = std::sync::Arc::new(bytes.clone());
+    let program = std::sync::Arc::clone(&bytes);
     super::parallel::set_worker_setup(Box::new(move || {
         if let Some(Image { sources, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
@@ -228,7 +230,8 @@ pub fn failed_for(text: i64) {
 /// by the one before.
 pub fn test_world(fakes: i64) {
     with(|state: &mut State| {
-        state.world = (fakes != 0 && !real_tests()).then(|| TestWorld::new(TestCapabilities::Fakes));
+        state.world = (fakes != 0 && !real_tests())
+            .then(|| Box::new(TestWorld::new(TestCapabilities::Fakes)) as Box<dyn std::any::Any>);
     });
 }
 

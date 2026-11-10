@@ -8272,6 +8272,41 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(entropy.seed() != entropy.seed())
 ";
 
+/// A program links only what the capabilities it's given need: a hello world catches no signals, so
+/// it has none of the thread and socket pair catching them takes, and its runtime's state holds a
+/// test's fakes only behind a box, so none of what cleaning up after them takes either. Each
+/// symbol a program takes from the system costs it at every start. A program given `Signals` has
+/// what catching them needs.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_program_links_only_what_its_capabilities_need() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("links_what_it_needs")?;
+    let imports = |name: &str, source: &str| -> std::io::Result<String> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built =
+            fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let listed = Command::new("nm").arg("-u").arg(&executable).output()?;
+        Ok(String::from_utf8_lossy(&listed.stdout).into_owned())
+    };
+    let hello = imports("hello", "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    for unneeded in ["_socketpair", "_pthread_create", "_sigprocmask", "_fdopendir", "_unlinkat"] {
+        assert!(!hello.lines().any(|line| line.trim() == unneeded), "a hello world takes {unneeded}");
+    }
+    let stopping = imports(
+        "stopping",
+        "def main(signals: Signals, stdout: Stdout):\n    stdout.print(signals.stopping())\n",
+    )?;
+    assert!(stopping.lines().any(|line| line.trim() == "_socketpair"), "{stopping}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program given `Signals` catches SIGTERM, SIGINT and SIGHUP, so it can finish what it's doing:
 /// it sees `stopping()` turn true, says so and exits 0. A second signal, once a stop's been asked
 /// for, ends it at once, as it would have without Fennec, so a stuck program can still be stopped.

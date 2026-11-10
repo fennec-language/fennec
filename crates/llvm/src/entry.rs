@@ -345,6 +345,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     // Each capability `main` takes is the runtime's whole one of its kind.
     let mut args = Vec::with_capacity(main.params + 1);
     let mut capabilities = String::new();
+    let mut listens = false;
     for (at, local) in main.locals.iter().take(main.params).enumerate() {
         match capability_kind(&local.ty) {
             Some(kind) => {
@@ -352,6 +353,12 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
                     capabilities,
                     "  %cap{at} = call i64 @fennec_capability_block(i64 {kind})\n  %capability{at} = inttoptr i64 %cap{at} to ptr"
                 );
+                // Catching the signals that ask a program to stop is linked into a program, and
+                // started, only when `main` takes `Signals`.
+                if kind == fennec_layout::Cap::Signals.kind() {
+                    capabilities.push_str("  call void @fennec_signals_listen()\n");
+                    listens = true;
+                }
                 args.push(format!("ptr %capability{at}"));
             }
             None => args.push("ptr null".to_owned()),
@@ -370,6 +377,9 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     if !capabilities.is_empty() {
         out += &capabilities;
         thunks += "declare i64 @fennec_capability_block(i64)\n";
+    }
+    if listens {
+        thunks += "declare void @fennec_signals_listen()\n";
     }
     let _ = writeln!(out, "  call swiftcc void @\"f_main\"({})\n  ret void\n}}\n", args.join(", "));
     out += &thunks;

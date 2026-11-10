@@ -290,14 +290,17 @@ pub(crate) enum Op {
 /// How a union's member is called on.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Via {
-    /// After `match store:` with a case for each member, which doesn't narrow, so each case
-    /// also has `if store is Member:`.
+    /// After `match store:` with a case for each member, which narrows it as `is` does.
     Match,
-    /// After `if store is Member:` for each member but the last.
+    /// After `if store is Member:` for each member, `Lite`'s through `opened`, a function
+    /// whose last line is a `with` that returns.
     Is,
     /// `run` straight on the union, with no match; its `with` source still after `is`, which a
     /// union needs.
     Direct,
+    /// After `if store is Lite: return`, on what's left, `Pg | Mem`: `run` called on it, it
+    /// given where a `Pg | Mem` goes, and a `match` telling the two apart. Three members only.
+    Rest,
 }
 
 /// The containers `CopiedNested` copies and changes deep inside.

@@ -166,22 +166,22 @@ struct Mem:
 type Two = Lite | Pg
 type Three = Lite | Pg | Mem
 
+def opened(store: Lite, text: str) -> str:
+    with store.session() as session:
+        return f\"{session.log} {store.run(text)}\"
+
 def matched2(store: Two, text: str) -> str:
     match store:
         case Lite(name=_):
-            if store is Lite:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
         case Pg(host=_):
-            if store is Pg:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
-    \"\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
 
 def checked2(store: Two, text: str) -> str:
     if store is Lite:
-        with store.session() as session:
-            return f\"{session.log} {store.run(text)}\"
+        return opened(store, text)
     if store is Pg:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
@@ -200,23 +200,18 @@ def direct2(store: Two, text: str) -> str:
 def matched3(store: Three, text: str) -> str:
     match store:
         case Lite(name=_):
-            if store is Lite:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
         case Pg(host=_):
-            if store is Pg:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
         case Mem(size=_):
-            if store is Mem:
-                with store.session() as session:
-                    return f\"{session.log} {store.run(text)}\"
-    \"\"
+            with store.session() as session:
+                return f\"{session.log} {store.run(text)}\"
 
 def checked3(store: Three, text: str) -> str:
     if store is Lite:
-        with store.session() as session:
-            return f\"{session.log} {store.run(text)}\"
+        return opened(store, text)
     if store is Pg:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
@@ -224,6 +219,22 @@ def checked3(store: Three, text: str) -> str:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
     \"\"
+
+def rested(rest: Pg | Mem, text: str) -> int:
+    rest.run(text)
+
+def rest3(store: Three, text: str) -> str:
+    if store is Lite:
+        return opened(store, text)
+    count = store.run(text)
+    given = rested(store, text)
+    match store:
+        case Pg(host=_):
+            with store.session() as session:
+                return f\"{session.log} {count}\"
+        case Mem(size=_):
+            with store.session() as session:
+                return f\"{session.log} {given}\"
 
 def direct3(store: Three, text: str) -> str:
     count = store.run(text)
@@ -578,6 +589,7 @@ impl Writer {
                     Via::Match => "matched",
                     Via::Is => "checked",
                     Via::Direct => "direct",
+                    Via::Rest => "rest",
                 };
                 let made = ["Lite(name=\"a\")", "Pg(host=\"b\")", "Mem(size=1)"]
                     .get(*member)

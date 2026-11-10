@@ -900,11 +900,14 @@ impl Writer<'_> {
                 body.push(Stmt::Shadowed(self.made, self.bounded(by)));
             }
             23 if self.choice(3) == 0 => {
-                // A union's member called on through the union: after `match`, after `is`, or
-                // straight on it, with its `with` source always after `is`.
-                let how =
-                    [Via::Match, Via::Is, Via::Direct].get(self.choice(3)).copied().unwrap_or(Via::Match);
-                let members = 2 + self.choice(2);
+                // A union's member called on through the union: after `match`, after `is`,
+                // straight on it, with its `with` source always after `is`, or on what's left
+                // of three after `is`.
+                let how = [Via::Match, Via::Is, Via::Direct, Via::Rest]
+                    .get(self.choice(4))
+                    .copied()
+                    .unwrap_or(Via::Match);
+                let members = if matches!(how, Via::Rest) { 3 } else { 2 + self.choice(2) };
                 let member = self.choice(members);
                 let text = self.of(Ty::Str, 2);
                 body.push(Stmt::UnionCall(how, members, member, text));

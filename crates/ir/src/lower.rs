@@ -766,6 +766,12 @@ impl<'a> Lowering<'a> {
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };
+        // `_ = save(path) else as why:` keeps nothing, and what gives nothing is only run.
+        let discarded =
+            name.strip_prefix('_').is_some_and(|rest| rest.starts_with(fennec_syntax::visit::HIDDEN));
+        if discarded && op.is_none() && self.type_at(value.span) == Some(Type::Unit) {
+            return self.effect(value);
+        }
         // A name made while fusing a stage is new, and holds what it's first given.
         let binds_item = declares && target.span == value.span && op.is_none();
         if binds_item || (name.starts_with('\0') && self.lookup(name).is_none()) {

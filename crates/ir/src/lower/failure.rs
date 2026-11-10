@@ -95,8 +95,37 @@ impl Lowering<'_> {
                 self.emit(InstKind::MakeMember { dest, value, member }, span);
                 Ok(Operand::Local(dest))
             }
+            // One union where another goes, as what's left after an `is` given where `Pg | Mem`
+            // goes, or that given where `Three` goes: remade as the other, member by member.
+            Type::Union(members) if let Type::Union(held) = &from => {
+                self.union_as_union(value, held, members, span)
+            }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
+    }
+
+    /// A union's value remade as another union's: a test for each member they share, that
+    /// member read out and tagged as the other's. The checker has shown the value holds one of
+    /// them; one that doesn't ends the program, as a `match` it gets past does.
+    fn union_as_union(&mut self, value: Operand, held: &[Type], to: &[Type], span: Span) -> Lowered<Operand> {
+        let union = Type::Union(to.to_vec());
+        let dest = self.temporary(union.clone());
+        let join = self.new_block();
+        for (at, member) in held.iter().enumerate() {
+            let Some(into) = to.iter().position(|each| each == member) else { continue };
+            let next = self.new_block();
+            let test = self.temporary(Type::Bool);
+            self.emit(InstKind::IsMember { dest: test, value: value.clone(), member: at }, span);
+            self.branch_or(Operand::Local(test), next);
+            let one = self.temporary(member.clone());
+            self.emit(InstKind::GetMember { dest: one, value: value.clone(), member: at }, span);
+            self.emit(InstKind::MakeMember { dest, value: Operand::Local(one), member: into }, span);
+            self.finish(Terminator::Jump(join));
+            self.current = next;
+        }
+        self.finish(Terminator::NoMatch { value, span });
+        self.current = join;
+        Ok(Operand::Local(dest))
     }
 
     /// A value read as the type the typed tree has for `expr`, which is narrower than it's
@@ -127,6 +156,14 @@ impl Lowering<'_> {
                 let dest = self.temporary(read);
                 self.emit(InstKind::GetMember { dest, value, member }, expr.span);
                 Ok(Operand::Local(dest))
+            }
+            // A union the checker narrowed to some of its members, as what's left after
+            // `if s is Circle: return`, is held as it was: which member it holds, and each
+            // member, are read by the union it is.
+            (Type::Union(members), Type::Union(left))
+                if left.iter().all(|member| members.contains(member)) =>
+            {
+                Ok(value)
             }
             // An error from a set the checker narrowed to one, as a `match` whose earlier cases
             // took the others.

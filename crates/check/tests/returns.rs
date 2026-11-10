@@ -365,3 +365,15 @@ fn a_last_match_whose_cases_all_leave_gives_back_what_they_do() {
     let falls = "def pick(n: int) -> str:\n    match n:\n        case 0:\n            return \"a\"\n        case _:\n            n + 1\n";
     assert_eq!(problems_as_written(falls).len(), 1, "{:?}", problems_as_written(falls));
 }
+
+/// A case that ends in a `with` block whose body returns leaves too, as a plain `return` does,
+/// so a last `match` of such cases gives back what they do. A `with` whose body can get past
+/// its end doesn't.
+#[test]
+fn a_last_match_whose_cases_end_in_a_with_that_returns_gives_back_what_they_do() {
+    let source = "struct Session:\n    log: str\n\nstruct Lite:\n    name: str\n\n    def session(self) -> with Session:\n        lend Session(log=\"lite\") else:\n            pass\n\n\
+        def pick(store: Lite, n: int) -> int:\n    match n:\n        case 0:\n            with store.session() as session:\n                return session.log.len()\n        case _:\n            with store.session() as session:\n                if n > 1:\n                    return 2\n                else:\n                    return 3\n";
+    assert_eq!(problems_as_written(source), Vec::<String>::new());
+    let falls = source.replace("                    return 3\n", "                    pass\n");
+    assert_eq!(problems_as_written(&falls).len(), 1, "{:?}", problems_as_written(&falls));
+}

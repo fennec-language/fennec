@@ -278,6 +278,8 @@ struct Program:
         if name == "fails" and written.args.len() == 2:
             returns = self.resolve_within(written.args[0], generics, depth)?
             return .Result(returns, error=self.resolve_within(written.args[1], generics, depth)?)
+        # `Result` is gone: what can fail says so with `fails`.
+        if name == "Result": fail result_type_gone(written.span)
         # `with Transaction`: what a source lends.
         if name == "with" and written.args.len() == 1:
             lent = self.resolve_within(written.args[0], generics, depth)?
@@ -385,6 +387,14 @@ def builtin_type(name: str, args: list[Type]) -> Type:
             .Table(args[0])
         case _:
             .Named(name)
+
+## `Result[T, E]` where a type is written, which `fails` has taken the place of.
+def result_type_gone(span: Span) -> Diagnostic:
+    Diagnostic(
+        message="`Result` is gone: what can fail says so with `fails`",
+        span=span,
+        help="a function that gives back `T` or fails with `E` says `-> T fails E`; to hand one on, take a function, `run: () -> T fails E`",
+    )
 
 ## An interface written where a type goes, as in `list[Shape]`.
 def interface_as_type(name: str, span: Span) -> Diagnostic:

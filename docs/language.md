@@ -351,7 +351,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - `None` is never a member: `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`.
 - Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
 - A function that can fail says `fails` in its signature, so a reader sees how it can fail there. One that leaves it out is a compile error, and `fennec fix` writes it, as `-> str fails TooBig`, `fails IoError` for one that gives back nothing, or `fails ParseError | RangeError`. `main` doesn't say it, since nothing calls `main`. Built.
-- A failure is always an `error` type, and `fail` takes one. Built. There's no `Ok`, `Err` or `Result`: a failure is handled at the call, under Failures. Not built yet: `Ok`, `Err` and a written `Result` still work today.
+- A failure is always an `error` type, and `fail` takes one. Built. There's no `Ok`, `Err` or `Result`: a failure is handled at the call, under Failures. Built: writing one is a compile error that says what to write instead, and `fennec fix` rewrites most of them.
 
 ## Named arguments
 
@@ -428,7 +428,7 @@ score = load_score(fs, path) else as why:
             fail why
 ```
 
-- A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built, apart from the removal: `Ok`, `Err` and a written `Result` still work today.
+- A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built.
 - `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. The reason has to say something: `.expect("")` is a compile error, "say why this can't fail". Built.
 - An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs, and what its last line is. Built.
 - Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.

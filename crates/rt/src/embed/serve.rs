@@ -24,7 +24,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -91,6 +91,9 @@ thread_local! {
     /// it doesn't wait for would, like a socket that keeps saying it's writable.
     #[cfg(test)]
     static WAKE_ALL: Cell<bool> = const { Cell::new(false) };
+    /// The tokens of connections parked in a read with nothing of a next message in hand, on a
+    /// server that stops when the program's asked to: what its drain wakes, to end them.
+    static IDLE_READS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     /// When the task running on this worker was last resumed.
     static SLICE: Cell<Option<Instant>> = const { Cell::new(None) };
     /// Whether, when it was, anything else on the worker wanted the thread: another task ready or
@@ -186,6 +189,12 @@ pub struct Conn {
     parked: Cell<bool>,
     /// Its TLS, when its server has some.
     tls: RefCell<Option<Box<dyn ServerSession>>>,
+    /// Whether its server's draining, when its server stops when the program's asked to: a read
+    /// with nothing of a next message in hand then ends, as at the end of what was sent.
+    draining: Option<Arc<AtomicBool>>,
+    /// Whether anything's been read since it last wrote: a read before anything has is waiting
+    /// for a next message, not partway through one.
+    read_since_write: Cell<bool>,
 }
 
 /// How long a connection has to finish its TLS handshake.
@@ -208,7 +217,39 @@ impl Conn {
             registered,
             parked: Cell::new(false),
             tls: RefCell::new(None),
+            draining: None,
+            read_since_write: Cell::new(false),
         }
+    }
+
+    /// It, ending a read that's waiting for a next message once `draining` is set.
+    fn ending_when(mut self, draining: Arc<AtomicBool>) -> Conn {
+        self.draining = Some(draining);
+        self
+    }
+
+    /// Whether its server's draining.
+    pub fn draining(&self) -> bool {
+        self.draining.as_ref().is_some_and(|draining| draining.load(Ordering::SeqCst))
+    }
+
+    /// Waits to read, or gives true when the read should end instead: when nothing's been read
+    /// since it last wrote, and its server's draining. While such a read waits, its server's drain
+    /// wakes it, so it ends at once rather than when the other side next sends.
+    fn wait_to_read(&self, until: Until, call: &'static str) -> Result<bool, Failure> {
+        let idle = self.draining.is_some() && !self.read_since_write.get() && self.ahead.borrow().is_empty();
+        if !idle {
+            self.wait(self.read_interest(), until, call)?;
+            return Ok(false);
+        }
+        if self.draining() {
+            return Ok(true);
+        }
+        IDLE_READS.with_borrow_mut(|idle| idle.insert(self.token.0));
+        let waited = self.wait(self.read_interest(), until, call);
+        IDLE_READS.with_borrow_mut(|idle| idle.remove(&self.token.0));
+        // Woken, it reads again: what came may be the next message, which is read whole.
+        waited.map(|()| false)
     }
 
     /// Does the server's half of a TLS handshake, parking while it waits.
@@ -234,10 +275,14 @@ impl Conn {
     /// Up to `count` more bytes onto `bytes`, through TLS if it has any.
     fn fill(&self, bytes: &mut Vec<u8>, count: usize) -> std::io::Result<usize> {
         let mut stream = self.stream.borrow_mut();
-        match &mut *self.tls.borrow_mut() {
+        let filled = match &mut *self.tls.borrow_mut() {
             Some(session) => session.read_onto(&mut *stream, bytes, count),
             None => read_onto(&mut stream, bytes, count),
+        };
+        if filled.as_ref().is_ok_and(|read| *read > 0) {
+            self.read_since_write.set(true);
         }
+        filled
     }
 
     /// What a read that would block is waiting for: TLS may have something to send first.
@@ -264,7 +309,9 @@ impl Conn {
             match self.fill(&mut bytes, count) {
                 Ok(_) => return Ok(bytes),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(self.read_interest(), until, "read")?;
+                    if self.wait_to_read(until, "read")? {
+                        return Ok(Vec::new());
+                    }
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -325,7 +372,9 @@ impl Conn {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(self.read_interest(), until, "read_line")?;
+                    if self.wait_to_read(until, "read_line")? {
+                        return Ok(None);
+                    }
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -375,6 +424,7 @@ impl Conn {
     /// `write`, giving up once `timeout` passes, as for a client that never reads.
     pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
         let until = Until::after(timeout);
+        self.read_since_write.set(false);
         if self.tls.borrow().is_some() {
             return self.write_securely(data, until);
         }
@@ -566,6 +616,10 @@ struct Server {
     replayed: Option<(Replayed, AtomicU64)>,
     /// The TLS each connection starts with, if it has any.
     tls: Option<Arc<dyn TlsServer>>,
+    /// Whether it's draining because the program was asked to stop, when `stop_on` asked it to:
+    /// how long its rounds then have to finish.
+    stop: Option<Duration>,
+    draining: Arc<AtomicBool>,
 }
 
 /// A recorded round, replayed: what it runs with the handle of its connection.
@@ -814,8 +868,12 @@ impl Io {
         let Some(here) = self.servers.get_mut(&id) else { return };
         let handler = Arc::clone(&here.server.handler);
         let tls = here.server.tls.clone();
+        let draining = here.server.stop.map(|_| Arc::clone(&here.server.draining));
         let made = self.scheduler.spawn(move || {
-            let conn = Conn::new(stream);
+            let conn = match draining {
+                Some(draining) => Conn::new(stream).ending_when(draining),
+                None => Conn::new(stream),
+            };
             // A connection that fails its handshake closes, and its round never runs.
             if let Some(tls) = &tls
                 && conn.secure(tls).is_err()
@@ -999,6 +1057,22 @@ impl Io {
 
     /// Stops a server taking connections, after a round's `break`: its listener goes, and its
     /// rounds here finish, after which it's left.
+    /// Drains the server `id` because the program was asked to stop: its rounds waiting for a
+    /// next message are woken, to end, before it drains as `break` does.
+    fn drain_stopping(&mut self, id: u64) {
+        if let Some(here) = self.servers.get(&id) {
+            let idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
+            for token in idle {
+                let parked = self.waiting.get(&token).map(|(task, ..)| *task);
+                if let Some(task) = parked.filter(|task| here.tasks.contains(task)) {
+                    self.waiting.remove(&token);
+                    self.ready.push_back((task, Wake::Ready(READY)));
+                }
+            }
+        }
+        self.drain(id);
+    }
+
     fn drain(&mut self, id: u64) {
         let Some(here) = self.servers.get_mut(&id) else { return };
         here.draining = true;
@@ -1405,6 +1479,33 @@ impl Stopper {
             self.pool.run_on(at, Box::new(move |io: &mut Io| io.leave(id)));
         }
     }
+
+    /// Drains the server because the program was asked to stop, once: it takes no more
+    /// connections, its rounds waiting for a next message end, and those still running after
+    /// `grace` are cut short.
+    fn drain_for(&self, grace: Duration) {
+        if self.server.draining.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let id = self.server.id;
+        for at in 0..self.pool.threads() {
+            self.pool.run_on(at, Box::new(move |io: &mut Io| io.drain_stopping(id)));
+        }
+        let stopping = Stopper { server: Arc::clone(&self.server), pool: self.pool };
+        let _ = std::thread::Builder::new().name("fennec-grace".to_owned()).spawn(move || {
+            std::thread::sleep(grace);
+            // A server that's ended by then has nothing left to stop.
+            stopping.stop();
+        });
+    }
+}
+
+/// What a server's listener came with: its TLS, and how long its rounds have to finish once the
+/// program's asked to stop, when it drains then.
+#[derive(Default)]
+pub(crate) struct Listened {
+    pub(crate) tls: Option<Arc<dyn TlsServer>>,
+    pub(crate) stop: Option<Duration>,
 }
 
 /// Serves `listener` on `pool`'s workers, running `handler` on each connection as a parked task,
@@ -1415,7 +1516,7 @@ pub(super) fn serve(
     pool: &'static Pool,
     lent: Option<&Arc<super::table::Table>>,
     handler: &Handler,
-    (started, replay, tls): (impl FnOnce(Stopper), Option<&crate::replay::Task>, Option<Arc<dyn TlsServer>>),
+    (started, replay, Listened { tls, stop }): (impl FnOnce(Stopper), Option<&crate::replay::Task>, Listened),
 ) -> Served {
     let workers = pool.threads();
     let server = Arc::new(Server {
@@ -1429,6 +1530,8 @@ pub(super) fn serve(
         accepted: AtomicU64::new(0),
         replayed: None,
         tls,
+        stop,
+        draining: Arc::new(AtomicBool::new(false)),
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -1438,7 +1541,16 @@ pub(super) fn serve(
         pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, given)));
     }
     started(Stopper { server: Arc::clone(&server), pool });
+    // A server that stops when the program's asked to drains then, and its rounds have `grace` to
+    // finish before they're cut short.
+    let listening = stop.map(|grace| {
+        let stopping = Stopper { server: Arc::clone(&server), pool };
+        crate::signals::on_stop(Box::new(move || stopping.drain_for(grace)))
+    });
     wait_for_every_worker(&server.left);
+    if let Some(listening) = listening {
+        crate::signals::forget(listening);
+    }
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
@@ -1465,6 +1577,8 @@ pub(super) fn serve_replayed(
         accepted: AtomicU64::new(0),
         replayed: Some((replayed, AtomicU64::new(rounds))),
         tls: None,
+        stop: None,
+        draining: Arc::new(AtomicBool::new(false)),
     });
     for at in 0..workers {
         let joining = Arc::clone(&server);

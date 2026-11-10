@@ -7,7 +7,7 @@
 //! What runs in a handler is theirs: a flag set, and a byte written for a thread of theirs or ours
 //! to wake on.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, Once, PoisonError};
 
 /// Whether a stop has been asked for, set by the handler itself.
@@ -27,9 +27,54 @@ pub(crate) fn listen() {
     LISTENING.call_once(install);
 }
 
-/// Wakes what waits for a stop, once the flag's set.
+/// What to do when a stop's asked for, by a number to forget it by: a server draining.
+type OnStop = Box<dyn Fn() + Send + Sync>;
+static ON_STOP: Mutex<Vec<(u64, OnStop)>> = Mutex::new(Vec::new());
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only a server on the threads runtime drains")
+)]
+static NEXT_ON_STOP: AtomicU64 = AtomicU64::new(0);
+
+/// Runs `then` when a stop's asked for, on the thread that saw it, or now if one has been. Gives
+/// the number to forget it by.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only a server on the threads runtime drains")
+)]
+pub(crate) fn on_stop(then: OnStop) -> u64 {
+    let number = NEXT_ON_STOP.fetch_add(1, Ordering::Relaxed);
+    let mut waiting = ON_STOP.lock().unwrap_or_else(PoisonError::into_inner);
+    // Looked at under the lock `asked` takes, so a stop is never missed between the two.
+    if stopping() {
+        drop(waiting);
+        then();
+    } else {
+        waiting.push((number, then));
+    }
+    number
+}
+
+/// Forgets what `on_stop` gave `number`, once there's nothing left for it to do.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only a server on the threads runtime drains")
+)]
+pub(crate) fn forget(number: u64) {
+    ON_STOP.lock().unwrap_or_else(PoisonError::into_inner).retain(|(waiting, _)| *waiting != number);
+}
+
+/// Wakes what waits for a stop, once the flag's set, and does what was asked for then.
 fn asked() {
-    ASKED.store(true, Ordering::SeqCst);
+    let waiting = {
+        let mut waiting = ON_STOP.lock().unwrap_or_else(PoisonError::into_inner);
+        // Set under the lock, so `on_stop` either sees it or leaves what it's given here.
+        ASKED.store(true, Ordering::SeqCst);
+        std::mem::take(&mut *waiting)
+    };
+    for (_, then) in &waiting {
+        then();
+    }
     let _held = WOKEN.0.lock().unwrap_or_else(PoisonError::into_inner);
     WOKEN.1.notify_all();
 }

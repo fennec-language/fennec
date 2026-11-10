@@ -114,6 +114,9 @@ struct Udp {
 struct Listening {
     listener: TcpListener,
     tls: Option<Arc<dyn TlsServer>>,
+    /// How long its rounds have to finish once the program's asked to stop, when `stop_on` said
+    /// to drain then.
+    stop: Mutex<Option<Duration>>,
 }
 
 #[derive(Clone)]
@@ -236,6 +239,9 @@ impl Fake {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
             ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
+            // A test's server never drains: its connections are taken one at a time.
+            ("Server", "_stop_on", _) => return Ok(Value::Unit),
+            ("Connection", "draining", []) => return Ok(Value::Bool(false)),
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -640,6 +646,8 @@ pub(crate) fn real_connection(
         }
         // What a task serving a connection makes its `Connection` from.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
+        // A connection taken one at a time is served whole, so it's never draining.
+        ("draining", []) => return Ok(Value::Bool(false)),
         _ => return Err(wrong(method, span)),
     };
     Ok(done_or_failed(done))
@@ -657,6 +665,10 @@ pub(crate) fn real_server(
         ("_accept", []) => Ok(made_or_failed(accept(handle, timeout).map(connection_made))),
         ("close", []) => {
             close(handle);
+            Ok(Value::Unit)
+        }
+        ("_stop_on", [grace]) => {
+            stop_on(handle, duration_of(grace, span)?);
             Ok(Value::Unit)
         }
         _ => Err(wrong(method, span)),
@@ -1025,7 +1037,7 @@ fn listen(port: u16, tls: Option<Arc<dyn TlsServer>>) -> Result<Made, Failure> {
     let port = listener.local_addr().map_or(port, |address| address.port());
     let handle = open(|open| {
         let handle = fresh_handle(open);
-        open.insert(handle, Socket::Listener(Arc::new(Listening { listener, tls })));
+        open.insert(handle, Socket::Listener(Arc::new(Listening { listener, tls, stop: Mutex::new(None) })));
         handle
     });
     Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
@@ -1490,14 +1502,22 @@ fn linger(socket: &TcpStream) {
     }
 }
 
+/// Has the server `handle` drain when the program's asked to stop, its rounds given `grace`.
+fn stop_on(handle: i64, grace: Duration) {
+    if let Some(Socket::Listener(listening)) = open(|open| open.get(&handle).cloned()) {
+        *listening.stop.lock().unwrap_or_else(PoisonError::into_inner) = Some(grace);
+    }
+}
+
 /// Takes a real server's listener out of the open sockets, for `parallel(server)` to serve from.
 /// One already closed has none.
 #[cfg(any(test, feature = "threads"))]
-pub(crate) fn take_listener(handle: i64) -> Option<(TcpListener, Option<Arc<dyn TlsServer>>)> {
+pub(crate) fn take_listener(handle: i64) -> Option<(TcpListener, crate::embed::serve::Listened)> {
     open(|open| match open.remove(&handle) {
         Some(Socket::Listener(listening)) => {
             let tls = listening.tls.clone();
-            Some((listening.listener.try_clone().ok()?, tls))
+            let stop = *listening.stop.lock().unwrap_or_else(PoisonError::into_inner);
+            Some((listening.listener.try_clone().ok()?, crate::embed::serve::Listened { tls, stop }))
         }
         Some(other) => {
             open.insert(handle, other);

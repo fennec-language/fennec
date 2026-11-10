@@ -95,6 +95,8 @@ struct Writer<'b> {
     stream: u64,
     /// Whether the program never prints a tree whole, only its digest.
     digest_only: bool,
+    /// Whether the program launches no task and runs nothing `parallel`.
+    threadless: bool,
     /// How many more names of trees the expression being written can hold.
     tree_names: usize,
     /// Whether the expression being written is kept, in a name, a list or a struct, where in a
@@ -116,6 +118,9 @@ struct InScope {
 pub(crate) fn program(bytes: &[u8]) -> Program {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let digest_only = bytes.first().is_some_and(|first| first & 0x10 != 0);
+    // One program in four has no other threads, which an enum holding strings needs to be made
+    // of native blocks.
+    let threadless = bytes.first().is_some_and(|first| first & 0x60 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
     let mut writer = Writer {
         bytes: bytes.iter(),
@@ -126,6 +131,7 @@ pub(crate) fn program(bytes: &[u8]) -> Program {
         written: 0,
         stream: seeded(bytes),
         digest_only,
+        threadless,
         tree_names: 1,
         storing: false,
     };
@@ -137,7 +143,7 @@ pub(crate) fn program(bytes: &[u8]) -> Program {
         writer.statement(&mut body, 0);
     }
     writer.print_from(&mut body, 0);
-    Program { body }
+    Program { body, threadless }
 }
 
 impl Writer<'_> {
@@ -211,7 +217,7 @@ impl Writer<'_> {
                 let key = KEYS.get(self.choice(KEYS.len())).copied().unwrap_or("a");
                 Expr::CountOf(Box::new(self.of(Ty::Counts, next)), key)
             }
-            21 => {
+            21 if !self.threadless => {
                 let list = self.of(Ty::Ints, next);
                 let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
                 let sum = Expr::ParallelSum(Box::new(list), Box::new(by));
@@ -351,7 +357,8 @@ impl Writer<'_> {
                     let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
                     let plus = self.int(MOST_DEPTH);
                     let plus = self.bounded(plus);
-                    Expr::Mapped(Box::new(list), Box::new(by), Box::new(plus), self.choice(3) == 0)
+                    let parallel = self.choice(3) == 0 && !self.threadless;
+                    Expr::Mapped(Box::new(list), Box::new(by), Box::new(plus), parallel)
                 }
                 2 => Expr::Ints(Vec::new()),
                 3 => Expr::HeldItems(Box::new(self.of(Ty::Holder, next))),
@@ -795,7 +802,7 @@ impl Writer<'_> {
             return;
         }
         let Some(shared) = self.name_of(Ty::Shared, false) else { return self.print(body) };
-        if which == 18 {
+        if which == 18 && !self.threadless {
             let items = self.of(Ty::Ints, 1);
             body.push(Stmt::Tally(shared, items));
             return;
@@ -838,7 +845,7 @@ impl Writer<'_> {
         }
         self.made += 1;
         let id = self.made;
-        if which == 17 {
+        if which == 17 || self.threadless {
             // From `main`, a crash would end the program, where the undoing can't be seen, so
             // only a risky program's changes can crash there.
             let ops = self.ops(!self.risky, false);

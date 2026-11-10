@@ -49,17 +49,6 @@ def change(box: shared Point, by: int, refuse: bool) fails Refused:
         if refuse:
             fail Refused(code=by)
 
-def tallying(inbox: Inbox[int], totals: shared Point):
-    for number in inbox:
-        lock totals as ref held:
-            held.y += 1
-            held.x += number
-
-def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeout:
-    with launch((inbox) => tallying(inbox, totals))? as sends:
-        for item in items:
-            sends.send(item)?
-
 def grow_all(ref items: list[int], by: int):
     for ref item in items:
         item += by
@@ -219,11 +208,26 @@ def tallied(start: int, stdout: Stdout) -> with Tally:
 ";
 
 /// The program as Fennec source.
+/// The functions that launch a task, left out of a program that has no other threads.
+const TASKS: &str = "def tallying(inbox: Inbox[int], totals: shared Point):
+    for number in inbox:
+        lock totals as ref held:
+            held.y += 1
+            held.x += number
+
+def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeout:
+    with launch((inbox) => tallying(inbox, totals))? as sends:
+        for item in items:
+            sends.send(item)?
+
+";
+
 pub(crate) fn source(program: &Program) -> String {
     let mut writer = Writer { out: String::new(), helpers: String::new(), made: 0 };
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
-    format!("{HEADER}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    let tasks = if program.threadless { "" } else { TASKS };
+    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
 struct Writer {

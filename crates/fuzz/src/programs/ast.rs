@@ -472,4 +472,7 @@ pub(crate) enum Stmt {
 #[derive(Clone, Debug)]
 pub(crate) struct Program {
     pub(crate) body: Vec<Stmt>,
+    /// Whether nothing in it launches a task or runs `parallel`, so its `Named` values can be
+    /// native blocks.
+    pub(crate) threadless: bool,
 }

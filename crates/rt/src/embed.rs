@@ -591,6 +591,9 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         Some(mut state) => {
             state.temps.clear();
             state.let_go();
+            if !leave {
+                guarded::forget_ending(&state.heap);
+            }
             aot::report_sites(&state.heap.sites);
             let leftovers =
                 Leftovers { temps: state.temps.len(), boxes: state.heap.live(), counts: state.heap.counts };

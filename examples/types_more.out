@@ -2,8 +2,8 @@ Light.Red Light.Red Light.Green
 [Coin.Heads, Coin.Tails] Light.Green
 True False False True True
 Money(cents=4) Money(cents=1)
-Ok(Score(value=5))
-Err(InvalidValue(message="Score.value breaks its `where` rule"))
+Score(value=5)
+InvalidValue(message="Score.value breaks its `where` rule")
 nobody hi, Kit True False
 42 5 2
 {"a": 1} {1, 2} [1] (1,)

@@ -4491,25 +4491,28 @@ def inner_returns(stdout: Stdout) -> int fails Boom:
                 return first
     return 0
 
+## The run numbered `run`, passing its failure up.
+def ran(stdout: Stdout, run: int) fails Boom:
+    match run:
+        case 0:
+            through_a_name(stdout)?
+        case 1:
+            looped(stdout)?
+        case 2:
+            summed(stdout)?
+        case 3:
+            nested(stdout)?
+        case 4:
+            rounds(stdout)?
+        case _:
+            noted(stdout)?
+
 def main(stdout: Stdout):
     value = inner_returns(stdout) else as problem:
         problem.at
     stdout.print(value)
     for run in [0, 1, 2, 3, 4, 6]:
-        ran = match run:
-            case 0:
-                through_a_name(stdout)
-            case 1:
-                looped(stdout)
-            case 2:
-                summed(stdout)
-            case 3:
-                nested(stdout)
-            case 4:
-                rounds(stdout)
-            case _:
-                noted(stdout)
-        _ = ran else as problem:
+        ran(stdout, run) else as problem:
             stdout.print(\"failed\", problem.at, problem.notes())
             continue
         stdout.print(\"no failure\")
@@ -10098,8 +10101,8 @@ fn a_failure_out_of_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
     let after_spending = "Account(balance=7, name=\"ann spent\", log=[\"start\", \"spent\"])";
     let after_leaving = "Account(balance=109, name=\"ann spent\", log=[\"start\", \"spent\"])";
     let wanted = format!(
-        "Ok(1)\n{after_spending}\nErr(Nope(why=\"ann spent spent is short\"))\n{after_spending}\n\
-         Err(Nope(why=\"both undone\"))\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
+        "1\n{after_spending}\nNope(why=\"ann spent spent is short\")\n{after_spending}\n\
+         Nope(why=\"both undone\")\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
          107 1\n{after_leaving}\n114\n{after_leaving}\n-16\n{after_leaving}\n"
     );
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {

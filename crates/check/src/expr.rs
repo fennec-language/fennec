@@ -1,7 +1,7 @@
 //! Checking expressions and working out their types: names, operators, fields, indexing,
 //! comprehensions, arrow functions, and `?`, `?.` and `else`.
 
-use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, Span, UnaryOp};
+use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, Span, StmtKind, UnaryOp};
 
 use crate::builtins;
 use crate::function::FnCx;
@@ -1010,7 +1010,7 @@ impl FnCx<'_> {
         for step in &steps {
             self.else_chain.remove(step);
         }
-        let leaves = default.leaves();
+        let mut leaves = default.leaves();
         if leaves && self.value_functions > 0 {
             let message = "an arrow function or comprehension can't leave with `else`";
             self.error(
@@ -1018,8 +1018,19 @@ impl FnCx<'_> {
                     .with_help("write a loop, or give a value after `else`"),
             );
         }
-        let default = match default.failure_named() {
-            Some((failure, block)) => self.else_as(failure, block, &value, written),
+        let default = match default.else_block() {
+            Some((failure, block)) => {
+                let given = self.else_block(failure, block, &value, written);
+                leaves |= given.is_none();
+                let given = given.unwrap_or(Type::Unit);
+                // The block is an expression too, typed as what it gives, over the value nothing
+                // wrote that it's written in with.
+                self.record(default.span, &given);
+                if let ExprKind::Match { subject, .. } = &default.kind {
+                    self.record(subject.span, &Type::Bool);
+                }
+                given
+            }
             None => self.expr(default),
         };
         match value {
@@ -1039,11 +1050,20 @@ impl FnCx<'_> {
         }
     }
 
-    /// `else as failure:`, whose block sees what failed under that name.
-    fn else_as(&mut self, failure: &str, block: &[fennec_syntax::Stmt], value: &Type, written: Span) -> Type {
+    /// An `else:` block, or `else as failure:`, whose block sees what failed under that name. It
+    /// leaves, and then gives `None` here, or its last line is the value in place of the one that
+    /// failed or was `None`, of that one's type.
+    fn else_block(
+        &mut self,
+        failure: Option<&str>,
+        block: &[fennec_syntax::Stmt],
+        value: &Type,
+        written: Span,
+    ) -> Option<Type> {
+        let settled = self.checker.settled(value);
         let error =
-            match self.checker.settled(value) {
-                Type::Result(_, error) => *error,
+            failure.map(|_| match &settled {
+                Type::Result(_, error) => (**error).clone(),
                 Type::Unknown => Type::Unknown,
                 _ => {
                     let message = "this can't fail, so `else as` has no failure to name";
@@ -1052,12 +1072,33 @@ impl FnCx<'_> {
                     ));
                     Type::Unknown
                 }
-            };
+            });
+        let instead = match &settled {
+            Type::Optional(inner) | Type::Result(inner, _) => Some((**inner).clone()),
+            _ => None,
+        };
         self.push(false);
-        self.declare(failure, error, false, written);
-        self.stmts(block, false);
+        if let (Some(failure), Some(error)) = (failure, error) {
+            self.declare(failure, error, false, written);
+        }
+        let tail = std::mem::replace(&mut self.tail, instead.clone());
+        let flow = self.stmts(block, true);
+        self.tail = tail;
         self.pop();
-        Type::Unit
+        if flow.exits {
+            return None;
+        }
+        let gives_nothing = matches!(self.checker.settled(&flow.ty), Type::Unit)
+            || !matches!(block.last().map(|last| &last.kind), Some(StmtKind::Expr(_)));
+        match instead {
+            Some(instead) if gives_nothing && !matches!(self.checker.settled(&instead), Type::Unit) => {
+                if let Some(last) = block.last() {
+                    self.error(gives_nothing_or_leaves(&instead, last));
+                }
+                Some(instead)
+            }
+            _ => Some(flow.ty),
+        }
     }
 
     /// An arrow function. Its parameters' types come from where it's passed, so it has to
@@ -1184,4 +1225,35 @@ fn convert_help(to: &Type) -> String {
 fn mixed_sizes(op: BinOp, left: &Type, right: &Type, span: Span) -> Diagnostic {
     Diagnostic::new(format!("can't mix {left} and {right} in `{}`", op.symbol()), span)
         .with_help(convert_help(left))
+}
+
+/// An `else` block that ends without a value or a way out, said with what it has to give and what
+/// its last line is.
+fn gives_nothing_or_leaves(instead: &Type, last: &fennec_syntax::Stmt) -> Diagnostic {
+    let shown = a(instead);
+    let wanted = match shown.split_once(' ') {
+        Some((word @ ("a" | "an"), name)) => format!("{word} `{name}`"),
+        _ => format!("`{shown}`"),
+    };
+    let message = format!(
+        "this `else` block must give {wanted} or leave; its last line {} gives nothing",
+        line_shown(last)
+    );
+    Diagnostic::new(message, last.span).with_help("add a value, or `return`, `fail`, `break` or `continue`")
+}
+
+/// A line as a message shows it, short: `log.warn(...)`, `total = ...`, or what kind of line it is.
+fn line_shown(line: &fennec_syntax::Stmt) -> String {
+    match &line.kind {
+        StmtKind::Expr(Expr { kind: ExprKind::Call { callee, .. }, .. }) => fennec_syntax::dotted(callee)
+            .map_or_else(|| "a call".to_owned(), |called| format!("`{called}(...)`")),
+        StmtKind::Assign { target, .. } => fennec_syntax::dotted(target)
+            .map_or_else(|| "an assignment".to_owned(), |name| format!("`{name} = ...`")),
+        StmtKind::If { .. } => "an `if`".to_owned(),
+        StmtKind::For { .. } => "a `for` loop".to_owned(),
+        StmtKind::While { .. } => "a `while` loop".to_owned(),
+        StmtKind::With { .. } => "a `with` block".to_owned(),
+        StmtKind::Pass => "`pass`".to_owned(),
+        _ => "this".to_owned(),
+    }
 }

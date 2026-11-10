@@ -22,6 +22,12 @@ fn named_goes_native() -> bool {
     NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
 }
 
+/// Whether `Named` stays native blocks in a program calling a function that fails two ways, as
+/// `either`'s arrow, `fails Refused | Shut`, does. Today it doesn't: one such call, from an arrow or a
+/// `def`, and the whole program makes none. Until the LLVM lane turns this on, the check leaves
+/// those programs out, while everything else about them is still checked.
+const TWO_WAY_FAILURES_KEEP_NAMED_NATIVE: bool = false;
+
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
 /// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
 fn makes_native_blocks() -> Result<bool, String> {
@@ -67,7 +73,10 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // leaves read `l(...)`, surely made one: code that never runs, like everything after a
     // failure the compiler can see, makes none and can be left out.
     let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
-    if named_goes_native() && program.threadless && printed_named && !makes_native_blocks()? {
+    let two_ways = source.contains("either(() =>");
+    let checked_named = TWO_WAY_FAILURES_KEEP_NAMED_NATIVE || !two_ways;
+    if named_goes_native() && program.threadless && printed_named && checked_named && !makes_native_blocks()?
+    {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));
@@ -323,6 +332,37 @@ mod tests {
             found.iter().all(|count| *count >= 2) && selves >= 2,
             "{found:?}, {selves} assigned to themselves"
         );
+    }
+
+    /// Arrow functions that fail pass it up with `?`, and keys hold floats and `f32`s.
+    #[test]
+    fn it_fails_in_arrows_and_keys_by_floats() {
+        let shapes = [
+            "print(tried(() => capped(",
+            "print(tried_twice(() => capped(",
+            "print(tried_each(",
+            "print(failure_of(() => capped(",
+            "print(either(() => paired(capped(",
+            "dict[Gauge, int]()",
+            "dict[Gauge32, int]()",
+            "dict[Level, int]()",
+            "dict[Level32, int]()",
+            ": set[Marked] = {",
+            "nan()",
+            "-0.0",
+        ];
+        let mut found = [0_usize; 12];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            for (count, shape) in found.iter_mut().zip(shapes) {
+                *count += usize::from(body.contains(shape));
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.

@@ -1,2 +1,2 @@
 {"uid": 7, "display_name": "Ash"}
-Ok(Account(id=7, display_name="Ash", cache={}, seen=set()))
+Account(id=7, display_name="Ash", cache={}, seen=set())

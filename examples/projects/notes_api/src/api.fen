@@ -49,21 +49,19 @@ export def respond(
                 lock notes as current:
                     return answer(request, status=200, text=json.dumps(current.find(words)))
             case "POST":
-                match json.loads[Draft](request.body.decode() else ""):
-                    case Ok(draft):
-                        now = clock.time()
-                        note = Note(
-                            id=str(uuid.v7(entropy, clock)),
-                            title=draft.title,
-                            body=draft.body,
-                            created=now,
-                            changed=now,
-                        )
-                        lock notes as ref current:
-                            current.add(note)
-                        return answer(request, status=201, text=json.dumps(note))
-                    case Err(why):
-                        return problem(request, status=400, message=why.message)
+                draft = json.loads[Draft](request.body.decode() else "") else as why:
+                    return problem(request, status=400, message=why.message)
+                now = clock.time()
+                note = Note(
+                    id=str(uuid.v7(entropy, clock)),
+                    title=draft.title,
+                    body=draft.body,
+                    created=now,
+                    changed=now,
+                )
+                lock notes as ref current:
+                    current.add(note)
+                return answer(request, status=201, text=json.dumps(note))
             case _:
                 return problem(
                     request,
@@ -80,14 +78,12 @@ export def respond(
         case "GET":
             answer(request, status=200, text=json.dumps(found))
         case "PUT":
-            match json.loads[Draft](request.body.decode() else ""):
-                case Ok(draft):
-                    changed = copy(found, title=draft.title, body=draft.body, changed=clock.time())
-                    lock notes as ref current:
-                        current.add(changed)
-                    answer(request, status=200, text=json.dumps(changed))
-                case Err(why):
-                    problem(request, status=400, message=why.message)
+            draft = json.loads[Draft](request.body.decode() else "") else as why:
+                return problem(request, status=400, message=why.message)
+            changed = copy(found, title=draft.title, body=draft.body, changed=clock.time())
+            lock notes as ref current:
+                current.add(changed)
+            answer(request, status=200, text=json.dumps(changed))
         case "DELETE":
             lock notes as ref current:
                 _ = current.remove(id)

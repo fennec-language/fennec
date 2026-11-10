@@ -8,7 +8,7 @@ error LoadError:
     BadRow(line: int)
 
 def amount(value: float, line: int) -> float fails LoadError:
-    if value < 0.0: return Err(LoadError.BadRow(line))
+    if value < 0.0: fail .BadRow(line)
     value
 
 def total(rows: list[float]) -> float fails LoadError:
@@ -16,13 +16,13 @@ def total(rows: list[float]) -> float fails LoadError:
     sum([amount(value, line + 1)? for line, value in enumerate(rows)])
 
 def report(rows: list[float]) -> str:
-    match total(rows):
-        case Ok(found):
-            f"total {found}"
-        case Err(BadRow(line)):
-            f"row {line} is negative"
-        case Err(Missing(name)):
-            f"no {name}"
+    found = total(rows) else as why:
+        match why:
+            case .BadRow(line):
+                return f"row {line} is negative"
+            case .Missing(name):
+                return f"no {name}"
+    f"total {found}"
 
 def main(stdout: Stdout):
     stdout.print(report([1.5, 2.25]))

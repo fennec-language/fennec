@@ -9,8 +9,9 @@
 //! For now that's enums whose fields are numbers, strings, lists of numbers or strings, or the
 //! enum itself. A string or a list is the runtime's as ever, held by its header or its address,
 //! which a native block's drop lets go of; an enum holding one gets native blocks only in a
-//! program with no other threads, which would count their owners their own way. While a run counts what it allocates, under `FENNEC_COUNTS` or the copy
-//! tracer, each native block made says so.
+//! program with no other threads, which would count their owners their own way. While a run
+//! counts what it allocates, under `FENNEC_COUNTS` or the copy tracer, each native block made
+//! says so.
 
 use std::collections::{BTreeSet, HashSet};
 

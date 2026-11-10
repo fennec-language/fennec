@@ -29,7 +29,8 @@ pub(crate) fn fix(path: &str) -> ExitCode {
             lints.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
             lints.extend(fennec_lint::double_lookups(&program.module, &program.sources));
             lints.extend(fennec_lint::self_compares(&program.module, &program.sources));
-            let diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
+            let mut diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
+            diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
             let changed = program.sources.fixed(&diagnostics);
             if changed.is_empty() {
                 return ExitCode::SUCCESS;
@@ -42,6 +43,7 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         fennec_check::add_rename_fixes(&mut diagnostics, &program.module, &program.sources);
         fennec_check::add_pattern_fixes(&mut diagnostics, &program.sources);
         fennec_check::add_capability_fixes(&mut diagnostics, &program.module, &program.sources);
+        diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
         let changed = program.sources.fixed(&diagnostics);
         if changed.is_empty() {
             eprint!("{}", program.sources.render_all(&diagnostics));

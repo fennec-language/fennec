@@ -161,11 +161,16 @@ export struct Time:
         else:
             fail Time._not_rfc3339(text, at=at)
         if at != text.len(): fail Time._not_rfc3339(text, at=at)
-        match Time.utc(year, month=month, day=day, hour=hour, minute=minute, second=second):
-            case Ok(found):
-                Time(nanos=found.nanos + fraction - offset)
-            case Err(problem):
-                fail ParseError(message=problem.message, line=1, column=1)
+        found = Time.utc(
+            year,
+            month=month,
+            day=day,
+            hour=hour,
+            minute=minute,
+            second=second,
+        ) else as problem:
+            fail ParseError(message=problem.message, line=1, column=1)
+        Time(nanos=found.nanos + fraction - offset)
 
     ## The year, like 2026.
     def year(self) -> int:
@@ -351,11 +356,7 @@ extend Time:
 
     def deserialize(ref src: Deserializer) -> Time fails ParseError:
         text = src.text()?
-        match Time.parse(text):
-            case Ok(found):
-                found
-            case Err(_):
-                fail src.here(f"is `{text}`, which isn't an RFC 3339 time")
+        Time.parse(text) else fail src.here(f"is `{text}`, which isn't an RFC 3339 time")
 
 extend Duration:
     def serialize(self, ref out: Serializer):

@@ -35,7 +35,7 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("File", "write") => reads(&[Type::Unknown], io(Type::Unit)),
         ("File", "read") => reads(&[], io(Type::Bytes)),
         ("File", "read_chunk") => reads(&[Type::Int], io(Type::Bytes)),
-        ("File", "sync") => reads(&[], io(Type::Unit)),
+        ("File", "sync" | "flush") => reads(&[], io(Type::Unit)),
         ("File", "read_line") => reads(&[], io(Type::optional(Type::Str))),
         _ => return None,
     })

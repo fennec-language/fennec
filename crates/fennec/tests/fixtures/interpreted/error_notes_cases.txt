@@ -1,4 +1,4 @@
-source 8be604048080967debeab6b610e022d022ab41d518c0677156c629fc1dcaf5da
+source 4d07f265f45557eb33074a8371646e3de903ce8931ac0a91ff0918b01a28e4ef
 code 1
 stdout 344
 [] Dial.Closed
@@ -9,7 +9,7 @@ matched db -1
 ["refused once"] [] [] [Dial.Refused(host="db", port=-1), Dial.Refused(host="db", port=-1), Dial.Closed]
 ["while dialing -2", "second line\nand a third"] Dial.Refused(host="db", port=-2)
 2
-stderr 401
+stderr 400
 error: `main` failed: Dial.Refused(host="db", port=-3)
 note: while dialing -3
 note: second line
@@ -20,5 +20,5 @@ note: second line
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
   = in `connect`
   = called from `both` at <dir>/cases.fen:18:11
-  = called from `noted` at <dir>/cases.fen:28:13
-  = called from `main` at <dir>/cases.fen:62:18
+  = called from `noted` at <dir>/cases.fen:25:9
+  = called from `main` at <dir>/cases.fen:59:18

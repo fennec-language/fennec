@@ -121,13 +121,8 @@ def main(stdout: Stdout):
     for n in holding(stdout):
         stdout.print("got", n)
 
-    match total_up_to(5):
-        case Ok(total):
-            stdout.print(total)
-        case Err(failure):
-            stdout.print("failed", failure)
-    match total_up_to(2):
-        case Ok(total):
-            stdout.print(total)
-        case Err(failure):
-            stdout.print("failed", failure)
+    for limit in [5, 2]:
+        total = total_up_to(limit) else as why:
+            stdout.print("failed", why)
+            continue
+        stdout.print(total)

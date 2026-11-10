@@ -13,10 +13,10 @@ def crashing(counts: shared Tally, stdout: Stdout) fails Crashed:
 
 def main(stdout: Stdout):
     shared counts = Tally()
-    match crashing(counts, stdout):
-        case Ok():
-            stdout.print("fine")
-        case Err(failure):
-            stdout.print("failed:", failure)
+    failure = failure_of(() => crashing(counts, stdout))
+    if failure is None:
+        stdout.print("fine")
+    else:
+        stdout.print("failed:", failure)
     lock counts as current:
         stdout.print(current.items[1])

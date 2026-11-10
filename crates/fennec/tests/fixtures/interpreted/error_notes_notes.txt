@@ -1,4 +1,4 @@
-source 604718a1562135d4cc4e8098fd71fb9137bf1e50e75fde67be83fe5a35fea060
+source f13ffb43a97e1151d25a1a28f4275d14f8c21934621e6b6faaac3d599b58e19c
 code 1
 stdout 219
 [] Missing(path="(none)")
@@ -6,7 +6,7 @@ stdout 219
 Missing(path="(none)") Missing(path="(none)")
 ["while loading long name", "second line\nand a third"] Broken(code=9, why="too long")
 2
-stderr 419
+stderr 418
 error: `main` failed: Broken(code=10, why="too long")
 note: while loading a long one
 note: second line
@@ -17,5 +17,5 @@ note: second line
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   = in `parse`
   = called from `both` at <dir>/notes.fen:17:5
-  = called from `noted` at <dir>/notes.fen:27:13
-  = called from `main` at <dir>/notes.fen:47:18
+  = called from `noted` at <dir>/notes.fen:24:9
+  = called from `main` at <dir>/notes.fen:46:18

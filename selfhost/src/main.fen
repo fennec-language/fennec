@@ -27,9 +27,9 @@ def main(stdout: Stdout, fs: Fs, stdin: Stdin):
         path = line[space + 1:]
         source = fs.read_text(path)?
         if mode == "std":
-            match parse(source):
-                case Ok(module): library.append(module)
-                case Err(_): pass
+            module = parse(source) else:
+                continue
+            library.append(module)
             continue
         stdout.print(f"== {path}")
         if mode == "tokens":

@@ -102,7 +102,19 @@ pub(crate) fn built_and_run(
         return Err(format!("it didn't build {how}:\n{}", String::from_utf8_lossy(&built.stderr)));
     }
     let (printed, said, succeeded) = ran(&executable, &[], &work)?;
-    Ok((printed, said.lines().next().unwrap_or_default().to_owned(), succeeded))
+    // The first line, or the first that says what a watching build caught, which a sanitizer's
+    // report doesn't start with.
+    let caught = said.lines().find(|line| CAUGHT.iter().any(|what| line.contains(what)));
+    Ok((printed, caught.or_else(|| said.lines().next()).unwrap_or_default().to_owned(), succeeded))
+}
+
+/// What a build that watches itself says when it catches something: a false proof, memory the
+/// program doesn't own, a native block handed to the runtime.
+pub(crate) const CAUGHT: [&str; 3] = ["proof broken", "AddressSanitizer", "handed a native block"];
+
+/// The executable `built_and_run` last made under `name`.
+pub(crate) fn built_executable(name: &str) -> PathBuf {
+    work().join(name).join("program")
 }
 
 /// What an executable printed, what it said on standard error, and whether it succeeded. One

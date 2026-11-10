@@ -6,12 +6,10 @@
 from std.net import Connection, NetError, Response
 from std.time import Duration
 
-def reason[T](found: Result[T, NetError]) -> str:
-    match found:
-        case Err(error):
-            error.message()
-        case _:
-            "it worked"
+def reason[T](run: () -> T fails NetError) -> str:
+    error = failure_of(run) else:
+        return "it worked"
+    error.message()
 
 ## The next line a connection is sent, or "" once the other side is done.
 def line_of(conn: Connection) -> str fails NetError:
@@ -79,22 +77,18 @@ test "bytes go as they are"(net: Net):
                 assert conn.read(10)? == bytes([10, 7])
 
 test "a failure is a case of NetError"(net: Net):
-    match connecting(net, host="localhost", port=9001):
-        case Err(Refused(host=host, port=port)):
-            assert host == "localhost" and port == 9001
-        case _:
-            assert False
+    assert connecting(net, host="localhost", port=9001) fails.Refused(host="localhost", port=9001)
 
 test "failures are NetError values"(net: Net):
     assert (
-        reason(connecting(net, host="localhost", port=9001))
+        reason(() => connecting(net, host="localhost", port=9001))
         == "`localhost` refused a connection on port 9001"
     )
-    assert reason(connecting(net, host="example.com", port=80)).startswith(
+    assert reason(() => connecting(net, host="example.com", port=80)).startswith(
         "the test's fake `Net` reaches only",
     )
     with net.listen(9000)? as _:
-        assert reason(listening(net, port=9000)) == "port 9000 is already in use"
+        assert reason(() => listening(net, port=9000)) == "port 9000 is already in use"
 
 test "a packet goes to a port, and an answer goes to who sent it"(net: Net):
     with net.udp(port=9001)? as first:
@@ -132,11 +126,9 @@ test "an answer's body is read as JSON into a struct"(net: Net):
     )
     found = net.get("https://api.example.com/weather", params={"city": "Oslo"})?.json[Weather]()?
     assert found.city == "Oslo" and found.degrees == -3.5
-    match Response(status=200, body="{\"city\": 3}".encode()).json[Weather]():
-        case Err(problem):
-            assert problem.message == "`city` should be a str, but it's an int"
-        case Ok(_):
-            assert False
+    problem = failure_of(() => Response(status=200, body="{\"city\": 3}".encode()).json[Weather]())
+    assert problem is not None
+    assert problem.message == "`city` should be a str, but it's an int"
 
 test "a status that isn't a 200 is still an answer"(net: Net):
     net.script("POST https://example.com/a", Response(status=404))
@@ -147,7 +139,7 @@ test "a status that isn't a 200 is still an answer"(net: Net):
 test "a request nothing scripted fails and says so"(net: Net):
     assert (
         "no answer for `DELETE https://example.com/`"
-        in reason(net.request("delete", "https://example.com/"))
+        in reason(() => net.request("delete", "https://example.com/"))
     )
 
 def main(stdout: Stdout, net: Net):
@@ -162,8 +154,10 @@ def main(stdout: Stdout, net: Net):
                 stdout.print(client.read_line()?)
                 # The server's end is still open but sends nothing more, so a read with a
                 # timeout gives up.
-                match client.read_line(timeout=Duration.millis(50)):
-                    case Err(TimedOut(after=after)):
-                        stdout.print("nothing came in", after.as_millis(), "ms")
-                    case _:
-                        stdout.print("something came")
+                _ = client.read_line(timeout=Duration.millis(50)) else as why:
+                    match why:
+                        case .TimedOut(after=after):
+                            stdout.print("nothing came in", after.as_millis(), "ms")
+                        case _:
+                            stdout.print("something came")
+                    ""

@@ -66,7 +66,6 @@ fn results_are_dealt_with_before_use() {
         stdout.print(player('a').name, player('a').name.upper(), names()[0])
         for name in names():
             pass
-        stdout.print(risky(1) == risky(2), risky(1) != Err(Oops('x')))
     ";
     assert_eq!(
         with_risky(program),
@@ -84,55 +83,32 @@ fn results_are_dealt_with_before_use() {
 }
 
 #[test]
-fn question_mark_else_and_match_get_the_value_out() {
+fn question_mark_and_else_get_the_value_out() {
     let program = "
         def total(n: int):
             a = risky(n)? + 1
             b = (risky(n) else 0) + 1
             c = (player('x')?).name.upper()
-            d = match risky(n):
-                case Ok(value): value + 1
-                case Oops(why): why.len()
-                case Err(error): 0
+            d = risky(n) else as oops:
+                oops.why.len()
             e = risky(n).expect('small') + 1
             a + b + d + e
     ";
     assert_eq!(problems(&format!("{RISKY}\n{}", crate::dedent(program))), Vec::<String>::new());
 }
 
-/// A `match` over what something that can fail gives back handles its value and its failure, or
-/// has `case _`, as any `match` handles every case: a failure would otherwise stop the program.
+/// A `match` over the failure `else as` names handles each of an error's cases, or has `case _`,
+/// as any `match` over an enum does.
 #[test]
-fn a_match_over_a_result_handles_the_value_and_the_failure() {
-    let found =
-        |arms: &str| problems(&format!("{RISKY}\ndef f(n: int) -> int:\n    match risky(n):\n{arms}"));
-    let empty: [&str; 0] = [];
-    assert_eq!(
-        found("        case Ok(value): value\n"),
-        ["this `match` doesn't handle the failure @ risky(n)"]
-    );
-    assert_eq!(
-        found("        case Err(error): 0\n"),
-        ["this `match` doesn't handle the value it gives when it works @ risky(n)"]
-    );
-    // A guarded case might not be taken, so it covers nothing.
-    assert_eq!(
-        found("        case Ok(value): value\n        case Err(error) if n > 0: 0\n"),
-        ["this `match` doesn't handle the failure @ risky(n)"]
-    );
-    assert_eq!(found("        case Ok(value): value\n        case Oops(why): why.len()\n"), empty);
-    assert_eq!(found("        case Ok(value): value\n        case _: 0\n"), empty);
-    assert_eq!(found("        case Ok(value): value\n        case Err(_): 0\n"), empty);
-    // A name is bound to the value, so it doesn't handle the failure, as `_` does.
-    assert_eq!(found("        case value: value\n"), ["this `match` doesn't handle the failure @ risky(n)"]);
-    assert_eq!(found("        case _: 0\n"), empty);
-    // Several errors are handled one by one, an enum's case by case.
-    let several = "error Gone:\n    path: str\n\nerror Bad:\n    Empty\n    Long(size: int)\n\n\
-        def load(n: int) -> int fails Gone | Bad:\n    if n == 0: fail Gone(path=\"a\")\n    if n == 1: fail .Empty\n    n\n\n\
-        def f(n: int) -> int:\n    match load(n):\n        case Ok(value): value\n        case Err(Gone(path)): 0\n        case Err(.Empty): 1\n";
-    assert_eq!(problems(several), ["this `match` doesn't handle the failure @ load(n)"]);
-    let all = format!("{several}        case Err(.Long(size)): size\n");
-    assert_eq!(problems(&all), empty);
+fn a_match_over_a_failure_handles_each_case() {
+    let one = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    n\n\n\
+        def f(n: int) -> int:\n    load(n) else as why:\n        match why:\n            case .Empty: 1\n";
+    assert_eq!(problems(one), ["this `match` doesn't handle `Bad.Long` @ why"]);
+    let all = format!("{one}            case .Long(size): size\n");
+    assert_eq!(problems(&all), Vec::<String>::new());
+    let caught = format!("{one}            case _: 0\n");
+    assert_eq!(problems(&caught), Vec::<String>::new());
 }
 
 /// A function that can fail says so in its signature, with `fails`, and `fennec fix` writes
@@ -172,20 +148,16 @@ fn an_error_carries_notes() {
     let empty: [&str; 0] = [];
     assert_eq!(
         found(
-            "match risky(5):\n    case Ok(n): pass\n    case Err(failure):\n        mut noted = failure\n        noted.add_note('while loading')\n        texts: list[str] = noted.notes()\n        _ = texts\n"
+            "_ = risky(5) else as failure:\n    mut noted = failure\n    noted.add_note('while loading')\n    texts: list[str] = noted.notes()\n    _ = texts\n    0\n"
         ),
         empty
     );
     assert_eq!(
-        found(
-            "match risky(5):\n    case Ok(n): pass\n    case Err(failure):\n        failure.add_note('x')\n"
-        ),
+        found("_ = risky(5) else as failure:\n    failure.add_note('x')\n    0\n"),
         ["`failure` isn't mut @ failure"]
     );
     assert_eq!(
-        found(
-            "match risky(5):\n    case Ok(n): pass\n    case Err(failure):\n        mut noted = failure\n        noted.add_note(3)\n"
-        ),
+        found("_ = risky(5) else as failure:\n    mut noted = failure\n    noted.add_note(3)\n    0\n"),
         ["`add_note` takes the note's text, a str, but this is an int @ 3"]
     );
     assert_eq!(found("p = player('a')?\n_ = p.notes()\n").len(), 1);
@@ -310,10 +282,10 @@ fn an_error_with_cases_fails_and_is_matched_like_an_enum() {
     let text = format!(
         "{NET_ERROR}def connect(host: str, port: int) -> int fails DialError:\n    if host == \"\":\n        \
          fail .NotFound(host)\n    if port == 0:\n        fail .Closed\n    port\n\n\
-         def described(port: int) -> str:\n    match connect(\"db\", port):\n        \
-         case Err(Refused(host, port)): f\"refused {{host}}:{{port}}\"\n        \
-         case Err(NotFound(host)): f\"no {{host}}\"\n        case Err(error): f\"failed: {{error}}\"\n        \
-         case Ok(port): f\"port {{port}}\"\n"
+         def described(port: int) -> str:\n    got = connect(\"db\", port) else as why:\n        match why:\n            \
+         case .Refused(host, port): return f\"refused {{host}}:{{port}}\"\n            \
+         case .NotFound(host): return f\"no {{host}}\"\n            case _: return f\"failed: {{why}}\"\n    \
+         f\"port {{got}}\"\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
 }
@@ -349,7 +321,7 @@ const LOAD_ERROR: &str =
 fn fails_names_the_one_error_a_function_can_fail_with() {
     let text = format!(
         "{LOAD_ERROR}def load(path: str) -> float fails LoadError:\n    if path == \"\":\n        \
-         fail .NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
+         fail .NotFound(path)\n    if path == \"bad\":\n        fail .BadRow(3)\n    1.5\n\n\
          def total(paths: list[str]) -> float fails LoadError:\n    mut sum = 0.0\n    for path in paths:\n        \
          sum += load(path)?\n    sum\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
          fail .BadRow(0)\n"
@@ -366,12 +338,12 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
          fail .NotFound(path)\n    parse(path)?\n\n\
          def apply(read: (str) -> int fails LoadError | ParseError, path: str) -> int fails LoadError | ParseError:\n    \
          read(path)?\n\n\
-         def main(stdout: Stdout):\n    match load(\"a\"):\n        case Ok(n): stdout.print(n)\n        \
-         case Err(.NotFound(path)): stdout.print(path)\n        case Err(.Bad(text)): stdout.print(text)\n        \
-         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n    \
+         def main(stdout: Stdout):\n    n = load(\"a\") else as why:\n        match why:\n            \
+         case .NotFound(path): stdout.print(path)\n            case .Bad(text): stdout.print(text)\n            \
+         case _: pass\n        -1\n    stdout.print(n)\n    stdout.print(apply(path => load(path), \"b\") else 0)\n    \
          reader: (str) -> int fails LoadError | ParseError = path => load(path)\n    \
-         stdout.print(said(reader(\"c\")))\n\n\
-         def said(found: Result[int, LoadError | ParseError]) -> int:\n    found else -1\n"
+         stdout.print(said(() => reader(\"c\")))\n\n\
+         def said(run: () -> int fails LoadError | ParseError) -> int:\n    run() else -1\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     assert_eq!(
@@ -397,13 +369,6 @@ fn only_the_error_fails_names_can_escape() {
              fail Other(why=\"empty\")\n    1\n"
         )),
         ["`load` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError"]
-    );
-    assert_eq!(
-        problems(&format!(
-            "{LOAD_ERROR}def load(path: str) -> int fails LoadError:\n    if path == \"\":\n        \
-             return Err(Other(why=\"empty\"))\n    1\n"
-        )),
-        ["`load` says it fails with a LoadError, but this fails with an Other @ Err(Other(why=\"empty\"))"]
     );
     assert_eq!(
         problems("struct Point:\n    x = 0\n\ndef load() -> int fails Point:\n    1\n"),
@@ -603,4 +568,63 @@ fn a_plain_else_cant_handle_a_failure_and_a_none_alike() {
         "{declared}\ndef first(n: int) -> int fails Bad:\n    cached(n)? else 0\n\ndef main(stdout: Stdout):\n    held = cached(7) else as why:\n        None\n    stdout.print(held, first(1) else 2)\n"
     );
     assert_eq!(problems(&fine), Vec::<String>::new());
+}
+
+/// A block gives a value to a name only as `x = match`, `x = lock ... as`, or `x = f() else as
+/// why:`. An `if` over several lines doesn't, and says what to write instead.
+#[test]
+fn an_if_over_several_lines_gives_no_value() {
+    let parsed = fennec_syntax::parse(
+        "def f(n: int) -> int:\n    x = if n > 2:\n        1\n    else:\n        2\n    x\n",
+    );
+    let problem = parsed.err();
+    assert_eq!(
+        problem.as_ref().map(|problem| problem.message.as_str()),
+        Some("`if` doesn't give a value over several lines")
+    );
+    assert!(
+        problem
+            .and_then(|problem| problem.help)
+            .is_some_and(|help| help.contains("x = a if condition else b"))
+    );
+    let locked = "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    total\n";
+    assert_eq!(problems(locked), Vec::<String>::new());
+}
+
+/// `assert value fails Pattern` is for what can fail, with a pattern of what it fails with, and
+/// `fails` checks a failure only there.
+#[test]
+fn an_assert_that_something_fails_takes_what_can_fail() {
+    let declared = "error Oops:\n    line: int\n\ndef load(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops(line=n)\n    n\n\ndef plain(n: int) -> int:\n    n\n";
+    let fine = format!(
+        "{declared}\ntest \"load\":\n    assert load(3) fails Oops(line=3)\n    assert load(3) fails Oops()\n"
+    );
+    assert_eq!(problems(&fine), Vec::<String>::new());
+    let plain = format!("{declared}\ntest \"plain\":\n    assert plain(3) fails Oops()\n");
+    assert_eq!(problems(&plain), ["this can't fail, so `assert ... fails` has nothing to check @ plain(3)"]);
+    let parsed = fennec_syntax::parse(&format!(
+        "{declared}\ndef main():\n    if load(3) fails Oops():\n        pass\n"
+    ));
+    assert_eq!(
+        parsed.err().map(|problem| problem.message),
+        Some("`fails` checks a failure only in `assert`".to_owned())
+    );
+}
+
+/// What `else as why:` names when a call can fail several ways is matched as any union is: each
+/// error has a case or `_` catches the rest, a later case holds what the earlier ones left, and
+/// what can fail can't be compared as it is.
+#[test]
+fn a_failure_of_several_kinds_is_matched_case_by_case() {
+    let declared = "error Gone:\n    path: str\n\nerror Bad:\n    line: int\n\n    def said(self) -> str:\n        f\"line {self.line}\"\n\ndef load(n: int) -> int fails Gone | Bad:\n    if n == 1:\n        fail Gone(path='x')\n    if n == 2:\n        fail Bad(line=2)\n    n\n";
+    let missing = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    got = load(1) else as why:\n        match why:\n            case Gone(path):\n                stdout.print(path)\n        0\n    stdout.print(got)\n"
+    );
+    assert_eq!(problems(&missing), ["this `match` doesn't handle `Bad` @ why"]);
+    let narrowed = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    got = load(2) else as why:\n        match why:\n            case Gone(path):\n                stdout.print(path)\n            case rest:\n                stdout.print(rest.said())\n        0\n    stdout.print(got)\n"
+    );
+    assert_eq!(problems(&narrowed), Vec::<String>::new());
+    let compared = format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(load(1) == load(2))\n");
+    assert_eq!(problems(&compared), ["this is the result of something that can fail @ load(1) == load(2)"]);
 }

@@ -4,6 +4,7 @@ from span import Span, Diagnostic
 from token import Tok, is_reserved
 from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, WithName
 from parser import Parser, is_name
+from parser.expr import leaving_match
 
 extend Parser:
     ## The body after a `:`: an indented block, or one simple statement on the same line.
@@ -69,7 +70,7 @@ extend Parser:
                 .Return(self.expr()?)
             case "fail": .Fail(self.expr()?)
             case "yield": .Yield(self.expr()?)
-            case "assert": .Assert(self.expr()?)
+            case "assert": self.asserted()?
             case "break": .Break
             case "continue": .Continue
             case _: .Pass
@@ -137,7 +138,7 @@ extend Parser:
         if self.eat_punct(":"):
             ty = self.type_expr()?
         _ = self.expect_punct("=")?
-        value = self.expr()?
+        value = self.assigned()?
         .Assign(target, None, value, declare_mut=True, ty=ty)
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
@@ -146,7 +147,7 @@ extend Parser:
         if is_name_expr(target) and self.eat_punct(":"):
             ty = self.type_expr()?
             _ = self.expect_punct("=")?
-            value = self.expr()?
+            value = self.assigned()?
             return .Assign(target, None, value, declare_mut=False, ty=ty)
         if self.at_punct(","):
             mut items = [target]
@@ -161,8 +162,25 @@ extend Parser:
         op = assignment_op(self.advance().tok)
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
-        value = self.expr()?
+        value = self.assigned()? if op is None else self.expr()?
         .Assign(target, op, value, declare_mut=False, ty=None)
+
+    ## What `name = ...` is given: a value, or a `lock` block whose last line is the value, written
+    ## in as the one case of a `match` over nothing, as an `else:` block is. An `if` over several
+    ## lines gives no value.
+    def assigned(ref self) -> Expr fails Diagnostic:
+        if self.at_soft("lock") and is_name(self.peek_at(1)):
+            start = self.span()
+            locked = self.with_stmt(True)?
+            self.block_ended = True
+            return leaving_match(start, [locked], start.to(self.prev_span()))
+        if self.at_keyword("if"):
+            fail Diagnostic(
+                message="`if` doesn't give a value over several lines",
+                span=self.span(),
+                help="write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
+            )
+        self.expr()?
 
     def if_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.advance().span
@@ -179,8 +197,26 @@ extend Parser:
                 break
         Stmt(kind=.If(branches, otherwise), span=start.to(self.prev_span()))
 
+    ## What `assert` checks: a condition, or `value fails Pattern`, written in as a `match` with one
+    ## case and nothing in it, which nothing else parses to.
+    def asserted(ref self) -> StmtKind fails Diagnostic:
+        value = self.expr()?
+        if not self.at_fails():
+            return .Assert(value)
+        _ = self.advance()
+        at = self.span()
+        pattern = self.pattern()?
+        arm = MatchArm(pattern=pattern, guard=None, body=[], span=at.to(self.prev_span()))
+        .Assert(Expr(kind=.Match(value, arms=[arm]), span=value.span.to(self.prev_span())))
+
     def condition_and_block(ref self) -> (Expr, list[Stmt]) fails Diagnostic:
         cond = self.expr()?
+        if self.at_fails():
+            fail Diagnostic(
+                message="`fails` checks a failure only in `assert`",
+                span=self.span(),
+                help="to act on a failure, handle it with `else as why:`, and tell failures apart with `match why:` in its block",
+            )
         _ = self.expect_punct(":")?
         (cond, self.block()?)
 

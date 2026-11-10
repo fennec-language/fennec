@@ -1,7 +1,7 @@
 //! Statements and blocks.
 
 use super::Parser;
-use crate::ast::{BinOp, Expr, ExprKind, REF, Stmt, StmtKind, TypeExpr, WithName};
+use crate::ast::{BinOp, Expr, ExprKind, MatchArm, REF, Stmt, StmtKind, TypeExpr, WithName};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Kw, Punct, Tok};
@@ -51,7 +51,7 @@ impl Parser {
             }
             Tok::Kw(Kw::Fail) => self.keyword_with_expr(StmtKind::Fail)?,
             Tok::Kw(Kw::Yield) => self.keyword_with_expr(StmtKind::Yield)?,
-            Tok::Kw(Kw::Assert) => self.keyword_with_expr(StmtKind::Assert)?,
+            Tok::Kw(Kw::Assert) => self.assert_stmt()?,
             Tok::Kw(Kw::Break) => self.keyword_stmt(StmtKind::Break),
             Tok::Kw(Kw::Continue) => self.keyword_stmt(StmtKind::Continue),
             Tok::Kw(Kw::Pass) => self.keyword_stmt(StmtKind::Pass),
@@ -88,6 +88,26 @@ impl Parser {
         kind
     }
 
+    /// `assert condition`, or `assert load(text) fails Oops(line=3)`, which checks a call fails
+    /// with what a `case` pattern matches. That's written in as a `match` with one case and nothing
+    /// in it, which nothing else parses to.
+    fn assert_stmt(&mut self) -> Result<StmtKind, Diagnostic> {
+        self.advance();
+        let value = self.expr()?;
+        if !self.at_fails() {
+            return Ok(StmtKind::Assert(value));
+        }
+        self.advance();
+        let at = self.span();
+        let pattern = self.pattern()?;
+        let arm = MatchArm { pattern, guard: None, body: Vec::new(), span: at.to(self.prev_span()) };
+        let span = value.span.to(self.prev_span());
+        Ok(StmtKind::Assert(Expr {
+            kind: ExprKind::Match { subject: Box::new(value), arms: vec![arm] },
+            span,
+        }))
+    }
+
     fn keyword_with_expr(&mut self, kind: fn(Expr) -> StmtKind) -> Result<StmtKind, Diagnostic> {
         self.advance();
         Ok(kind(self.expr()?))
@@ -101,7 +121,7 @@ impl Parser {
         }
         let ty = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
         self.expect_p(Punct::Assign)?;
-        let value = self.expr()?;
+        let value = self.assigned()?;
         Ok(StmtKind::Assign { target, op: None, value, declare_mut: true, ty })
     }
 
@@ -111,7 +131,7 @@ impl Parser {
         if matches!(target.kind, ExprKind::Name(_)) && self.eat_p(Punct::Colon) {
             let ty = Some(self.type_expr()?);
             self.expect_p(Punct::Assign)?;
-            let value = self.expr()?;
+            let value = self.assigned()?;
             return Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty });
         }
         if self.at_p(Punct::Comma) {
@@ -146,8 +166,28 @@ impl Parser {
         if !assignable {
             return Err(Diagnostic::new("this can't be assigned to", target.span));
         }
-        let value = self.expr()?;
+        let value = if op.is_none() { self.assigned()? } else { self.expr()? };
         Ok(StmtKind::Assign { target, op, value, declare_mut: false, ty: None })
+    }
+
+    /// What `name = ...` is given: a value, or a `lock` block whose last line is the value, as in
+    /// `total = lock scores as current:`. A block is written in as the one case of a `match` over
+    /// nothing, as an `else:` block is. An `if` over several lines gives no value.
+    fn assigned(&mut self) -> Result<Expr, Diagnostic> {
+        if matches!(self.peek(), Tok::Name(word) if word == "lock") && matches!(self.peek_at(1), Tok::Name(_))
+        {
+            let start = self.span();
+            let locked = self.with_stmt(true)?;
+            self.block_ended = true;
+            let span = start.to(self.prev_span());
+            return Ok(super::expr::leaving_match(start, vec![locked], span));
+        }
+        if self.at(&Tok::Kw(Kw::If)) {
+            return Err(Diagnostic::new("`if` doesn't give a value over several lines", self.span()).with_help(
+                "write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
+            ));
+        }
+        self.expr()
     }
 
     fn if_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -170,6 +210,11 @@ impl Parser {
 
     fn condition_and_block(&mut self) -> Result<(Expr, Vec<Stmt>), Diagnostic> {
         let cond = self.expr()?;
+        if self.at_fails() {
+            return Err(Diagnostic::new("`fails` checks a failure only in `assert`", self.span()).with_help(
+                "to act on a failure, handle it with `else as why:`, and tell failures apart with `match why:` in its block",
+            ));
+        }
         self.expect_p(Punct::Colon)?;
         Ok((cond, self.block()?))
     }

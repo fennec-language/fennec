@@ -39,11 +39,9 @@ def by_return(n: int) -> int fails Coded | Short:
 
 def by_copy(n: int) -> str:
     answer = short_or_coded(n) if n > 0 else short(n)
-    match answer:
-        case Ok(value):
-            f"{value}"
-        case Err(error):
-            f"{error}"
+    value = answer else as error:
+        return f"{error}"
+    f"{value}"
 
 def in_a_loop(n: int) -> int fails Coded | Held | Short:
     for step in range(3):
@@ -62,41 +60,42 @@ def nothing_back(n: int) fails Coded | Short:
     check_short(n - 1)?
     check_coded(n)?
 
+## Prints what a call gave, or what it failed with.
+def shown(stdout: Stdout, run: () -> int fails Coded | Held | Short):
+    value = run() else as error:
+        stdout.print(error)
+        return
+    stdout.print(value)
+
 def main(stdout: Stdout):
     for n in [-1, 0, 1, 2]:
-        match any_of_three(n):
-            case Ok(value):
-                stdout.print(value)
-            case Err(error):
-                stdout.print(error)
+        shown(stdout, () => any_of_three(n))
         stdout.print(by_return(n) else -1, by_copy(n))
     for n in [0, 1, 2]:
-        match short_or_coded(n):
-            case Ok(value):
-                stdout.print(value)
-            case Err(Short(why)):
-                stdout.print(f"short {why}")
-            case Err(Coded(code)):
-                stdout.print(f"coded {code}")
+        value = short_or_coded(n) else as why:
+            match why:
+                case Short(why):
+                    stdout.print(f"short {why}")
+                    continue
+                case Coded(code):
+                    stdout.print(f"coded {code}")
+                    continue
+        stdout.print(value)
     for n in [-5, -4, 0, 1, 20]:
-        result = in_a_loop(n)
-        stdout.print(result)
-        match result:
-            case Ok(value):
-                stdout.print(value)
-            case Err(error):
-                stdout.print(error)
-                stdout.print(f"{error}")
-                stdout.print([error])
-                kept = error
-                stdout.print(kept)
-    match nothing_back(2):
-        case Ok(_):
-            stdout.print("fine")
-        case Err(error):
+        value = in_a_loop(n) else as error:
             stdout.print(error)
-    match by_return(6):
-        case Ok(value):
-            stdout.print(value)
-        case Err(error):
-            stdout.print(error)
+            stdout.print(f"{error}")
+            stdout.print([error])
+            kept = error
+            stdout.print(kept)
+            continue
+        stdout.print(value)
+    failure = failure_of(() => nothing_back(2))
+    if failure is None:
+        stdout.print("fine")
+    else:
+        stdout.print(failure)
+    value = by_return(6) else as error:
+        stdout.print(error)
+        return
+    stdout.print(value)

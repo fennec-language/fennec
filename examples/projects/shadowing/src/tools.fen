@@ -30,4 +30,4 @@ def find(items: list[int], value: int) -> int fails Missing:
     fail Missing(value)
 
 test "find gives the position":
-    assert find([1, 2], 2) == Ok(1)
+    assert find([1, 2], 2)? == 1

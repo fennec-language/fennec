@@ -200,7 +200,7 @@ def step(ref world: World, dt: float) -> (int, str)?:
         case .Circle(r): r
         case Rect(w, h): w * h
         case (1, -2, -3.5, -1e999, -0.0, \"s\", True, False, None, _): 0
-        case Ok(value):
+        case Wrapped(value):
             value
         case name: name
     z = [
@@ -219,6 +219,19 @@ test \"any list\" for items: list[int], n: int:
     assert items.len() >= 0
 ",
     ),
+    (
+        "lock_gives_a_value",
+        "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    total\n",
+    ),
+    (
+        "if_over_lines_gives_no_value",
+        "def f(n: int) -> int:\n    x = if n > 2:\n        1\n    else:\n        2\n    x\n",
+    ),
+    (
+        "assert_fails",
+        "test \"load\":\n    assert load(\"bad\") fails Oops(line=3)\n    assert load(\"x\") fails .Missing | Oops()\n",
+    ),
+    ("fails_only_in_assert", "def f():\n    if load(\"bad\") fails Oops():\n        pass\n"),
     (
         "one_line_if_in_a_fallback",
         "def port(text: str, given: bool) -> int:\n    int(text) else 80 if given else 8080\n",
@@ -262,7 +275,7 @@ const CHECK_CASES: &[(&str, &str)] = &[
     ),
     (
         "bracket_counts",
-        "def f(a: dict[int], b: int[str], c: Result[int], d: list, e: (int, str) -> bool):\n    pass\n",
+        "def f(a: dict[int], b: int[str], c: list[int, str], d: list, e: (int, str) -> bool):\n    pass\n",
     ),
     ("alias_loop", "type Loop = Loop\ntype Pair = (int, Loop)\n\ndef f(p: Pair):\n    pass\n"),
     (

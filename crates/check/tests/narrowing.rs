@@ -334,9 +334,11 @@ def label(point: Point) -> str:
         case Point(x, y): y
 
 def read(fs: Fs) -> str:
-    match fs.read_text(\"a\"):
-        case Ok(text): text
-        case Err(IoError(reason=why)): why
+    text = fs.read_text(\"a\") else as why:
+        match why:
+            case IoError(reason=why):
+                return why
+    text
 ";
     assert_eq!(fields(program), ["can't mix int and float in `*`"]);
     let unknown = "
@@ -350,9 +352,11 @@ def f(point: Point) -> int:
     assert_eq!(fields(unknown), ["`Point` has no field `z`: it has `x`"]);
     let positional = "
 def read(fs: Fs) -> str:
-    match fs.read_text(\"a\"):
-        case Ok(text): text
-        case Err(IoError(why)): why
+    text = fs.read_text(\"a\") else as why:
+        match why:
+            case IoError(why):
+                return why
+    text
 ";
     assert_eq!(
         fields(positional),
@@ -366,9 +370,11 @@ def read(fs: Fs) -> str:
     );
     let none_read = "
 def read(fs: Fs) -> str:
-    match fs.read_text(\"a\"):
-        case Ok(text): text
-        case Err(IoError()): \"failed\"
+    text = fs.read_text(\"a\") else as why:
+        match why:
+            case IoError():
+                return \"failed\"
+    text
 ";
     assert_eq!(fields(none_read), Vec::<String>::new());
 }
@@ -449,9 +455,9 @@ fn match_cases_bind_typed_values() {
             n
 
         def a(n: int):
-            match risky(n):
-                case Ok(value): value + 'a'
-                case Err(error): error + 1
+            value = risky(n) else as error:
+                error + 1
+            value + 'a'
 
         def b(shape: Shape, other: T):
             match shape:
@@ -471,8 +477,8 @@ fn match_cases_bind_typed_values() {
     assert_eq!(
         problems(program),
         [
-            "can't use `+` on an int and a str @ value + \"a\"",
             "can't use `+` on an Oops and an int @ error + 1",
+            "can't use `+` on an int and a str @ value + \"a\"",
             "`T` isn't a type @ T",
             "can't mix int and float in `+` @ r + 1",
             "can't mix int and float in `+` @ dotted + 1",

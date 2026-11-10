@@ -9,12 +9,10 @@ def greet() -> Cli:
     cli = cli.option("to", help="who it's from")
     cli.positional("names", help="who to greet", required=False, many=True)
 
-def problem(found: Result[CliArgs, CliError]) -> str:
-    match found:
-        case Err(error):
-            error.message
-        case _:
-            "no problem"
+def problem(run: () -> CliArgs fails CliError) -> str:
+    error = failure_of(run) else:
+        return "no problem"
+    error.message
 
 test "flags and options are read in any order":
     given = greet().parse(["ash", "--loud", "--times", "3", "vex", "--to=kit"])?
@@ -49,24 +47,26 @@ test "help is asked for, not an error":
     assert (greet().parse(["ash", "-h"])?).wants_help
 
 test "arguments that don't fit say why":
-    assert problem(greet().parse(["--quiet"])) == "there's no option `--quiet`"
-    assert problem(greet().parse(["-q"])) == "there's no option `-q`"
-    assert problem(greet().parse(["--times"])) == "`--times` needs a value"
-    assert problem(greet().parse(["-t"])) == "`-t` needs a value"
-    assert problem(greet().parse(["--loud=yes"])) == "`--loud` is a flag, so it takes no value"
+    assert problem(() => greet().parse(["--quiet"])) == "there's no option `--quiet`"
+    assert problem(() => greet().parse(["-q"])) == "there's no option `-q`"
+    assert problem(() => greet().parse(["--times"])) == "`--times` needs a value"
+    assert problem(() => greet().parse(["-t"])) == "`-t` needs a value"
+    assert (
+        problem(() => greet().parse(["--loud=yes"])) == "`--loud` is a flag, so it takes no value"
+    )
 
 test "positional arguments are given in order":
     copy = Cli(name="copy").positional("from").positional("to", required=False)
     given = copy.parse(["a", "b"])?
     assert given.value("from") == "a" and given.value("to") == "b"
     assert (copy.parse(["a"])?).value("to") is None
-    assert problem(copy.parse([])) == "<from> is required"
-    assert problem(copy.parse(["a", "b", "c"])) == "`c` wasn't expected"
+    assert problem(() => copy.parse([])) == "<from> is required"
+    assert problem(() => copy.parse(["a", "b", "c"])) == "`c` wasn't expected"
     assert (copy.parse(["--help"])?).wants_help
 
 test "a required option has to be given":
     login = Cli(name="login").option("user", short="u", required=True)
-    assert problem(login.parse([])) == "`--user` is required"
+    assert problem(() => login.parse([])) == "`--user` is required"
     assert (login.parse(["-u", "ash"])?).value("user") == "ash"
 
 test "the help lists everything":
@@ -88,15 +88,13 @@ test "the help lists everything":
 
 def main(stdout: Stdout, args: Args):
     cli = greet()
-    found = cli.parse([arg for arg in args])
-    match found:
-        case Err(error):
-            stdout.print(f"{error.message}; `--help` lists what it takes")
-        case Ok(given):
-            if given.wants_help:
-                stdout.write(cli.help())
-            else:
-                say_hello(stdout, given)
+    given = cli.parse([arg for arg in args]) else as why:
+        stdout.print(f"{why.message}; `--help` lists what it takes")
+        return
+    if given.wants_help:
+        stdout.write(cli.help())
+    else:
+        say_hello(stdout, given)
 
 def say_hello(stdout: Stdout, given: CliArgs):
     names = given.many() if given.many().len() > 0 else ["world"]

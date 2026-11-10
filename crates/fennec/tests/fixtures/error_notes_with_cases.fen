@@ -18,45 +18,42 @@ def both(port: int) -> int fails Dial | Broken:
     parse(connect("db", port)?)?
 
 def noted(port: int) -> int fails Dial | Broken:
-    match both(port):
-        case Ok(n):
-            n
-        case Err(problem):
-            mut kept = problem
-            kept.add_note(f"while dialing {port}")
-            kept.add_note("second line\nand a third")
-            fail kept
+    n = both(port) else as problem:
+        mut kept = problem
+        kept.add_note(f"while dialing {port}")
+        kept.add_note("second line\nand a third")
+        fail kept
+    n
+
+## Prints what `noted` gave, or the notes on what it failed with and the failure.
+def shown(stdout: Stdout, port: int):
+    n = noted(port) else as problem:
+        stdout.print(problem.notes(), problem)
+        return
+    stdout.print(n)
 
 def main(stdout: Stdout) fails Dial | Broken:
-    match connect("db", 0):
-        case Ok(_):
-            pass
-        case Err(closed):
-            mut c = closed
-            stdout.print(c.notes(), c)
-            c.add_note("first")
-            copy = c
-            c.add_note("second")
-            stdout.print(c.notes(), copy.notes(), c == copy, c)
-            stdout.print(f"{c}", str(c))
-    match connect("db", -1):
-        case Ok(_):
-            pass
-        case Err(refused):
-            mut r = refused
-            r.add_note("refused once")
-            stdout.print(r.notes(), r, r == refused)
-            match r:
-                case .Refused(host, port):
-                    stdout.print("matched", host, port)
-                case .Closed:
-                    stdout.print("closed")
-            kept = [r, refused, Dial.Closed]
-            stdout.print(kept[0].notes(), kept[1].notes(), kept[2].notes(), kept)
-    match noted(-2):
-        case Ok(n):
-            stdout.print(n)
-        case Err(problem):
-            stdout.print(problem.notes(), problem)
+    closed = failure_of(() => connect("db", 0))
+    if closed is not None:
+        mut c = closed
+        stdout.print(c.notes(), c)
+        c.add_note("first")
+        copy = c
+        c.add_note("second")
+        stdout.print(c.notes(), copy.notes(), c == copy, c)
+        stdout.print(f"{c}", str(c))
+    refused = failure_of(() => connect("db", -1))
+    if refused is not None:
+        mut r = refused
+        r.add_note("refused once")
+        stdout.print(r.notes(), r, r == refused)
+        match r:
+            case .Refused(host, port):
+                stdout.print("matched", host, port)
+            case .Closed:
+                stdout.print("closed")
+        kept = [r, refused, Dial.Closed]
+        stdout.print(kept[0].notes(), kept[1].notes(), kept[2].notes(), kept)
+    shown(stdout, -2)
     stdout.print(noted(2)?)
     stdout.print(noted(-3)?)

@@ -142,26 +142,51 @@ impl FnCx<'_> {
     /// holds a `SqlError`.
     fn without_taken(&self, subject: &Type, taken: &[String]) -> Type {
         let settled = self.checker.settled(subject);
-        let Type::Result(value, error) = &settled else { return subject.clone() };
-        let Type::Errors(members) = error.as_ref() else { return subject.clone() };
-        let left: Vec<String> = members.iter().filter(|member| !taken.contains(member)).cloned().collect();
-        let [one] = left.as_slice() else { return subject.clone() };
-        let error = Type::Named(one.clone());
-        Type::Result(value.clone(), Box::new(error))
+        let left = |members: &[String]| -> Option<Type> {
+            let left: Vec<String> =
+                members.iter().filter(|member| !taken.contains(member)).cloned().collect();
+            let [one] = left.as_slice() else { return None };
+            Some(Type::Named(one.clone()))
+        };
+        match &settled {
+            Type::Result(value, error) => match error.as_ref() {
+                Type::Errors(members) => left(members)
+                    .map_or_else(|| subject.clone(), |error| Type::Result(value.clone(), Box::new(error))),
+                _ => subject.clone(),
+            },
+            // What `else as why:` names when a call can fail several ways: `match why:`, whose
+            // later cases hold what the earlier ones left.
+            Type::Errors(members) => left(members).unwrap_or_else(|| subject.clone()),
+            _ => subject.clone(),
+        }
     }
 
     /// The error a `case Err(X(...))` takes all of: a plain error `X` of the result's union, with
     /// nothing but names and `_` inside.
     fn error_taken(&self, pattern: &Pattern, subject: &Type) -> Option<String> {
-        let Type::Result(_, error) = self.checker.settled(subject) else { return None };
-        let Type::Errors(members) = *error else { return None };
-        let Pattern::Variant { name, dotted: false, args, .. } = pattern else { return None };
-        let [Pattern::Variant { name: taken, dotted: false, args: inner, .. }] = args.as_slice() else {
-            return None;
-        };
-        let plain = self.checker.program.type_info(taken).is_some_and(|info| info.def.cases.is_empty());
-        (name == "Err" && plain && members.contains(taken) && inner.iter().all(always_matches))
-            .then(|| taken.clone())
+        let plain =
+            |taken: &str| self.checker.program.type_info(taken).is_some_and(|info| info.def.cases.is_empty());
+        match self.checker.settled(subject) {
+            Type::Result(_, error) => {
+                let Type::Errors(members) = *error else { return None };
+                let Pattern::Variant { name, dotted: false, args, .. } = pattern else { return None };
+                let [Pattern::Variant { name: taken, dotted: false, args: inner, .. }] = args.as_slice()
+                else {
+                    return None;
+                };
+                (name == "Err" && plain(taken) && members.contains(taken) && inner.iter().all(always_matches))
+                    .then(|| taken.clone())
+            }
+            // `case Gone(path):` on what failed one of several ways takes all of `Gone`.
+            Type::Errors(members) => {
+                let Pattern::Variant { name: taken, dotted: false, args: inner, .. } = pattern else {
+                    return None;
+                };
+                (plain(taken) && members.contains(taken) && inner.iter().all(always_matches))
+                    .then(|| taken.clone())
+            }
+            _ => None,
+        }
     }
 
     /// Notes a `case` that names a case of the enum or error being matched without its dot. On a
@@ -203,6 +228,27 @@ impl FnCx<'_> {
                     .with_fix(Span { start, end: start }, "."),
             );
         }
+    }
+
+    /// `assert load(text) fails Oops(line=3)`: what's asserted can fail, and the pattern is a case
+    /// of what it fails with, its names seen only in it.
+    pub(crate) fn assert_fails(&mut self, value: &Expr, pattern: &Pattern, span: Span) {
+        let ty = self.expr(value);
+        let error = match self.checker.settled(&ty) {
+            Type::Result(_, error) => *error,
+            Type::Unknown => Type::Unknown,
+            other => {
+                let message = "this can't fail, so `assert ... fails` has nothing to check";
+                self.error(
+                    Diagnostic::new(message, value.span)
+                        .with_help(format!("it gives {}: compare it with `==` instead", a(&other))),
+                );
+                Type::Unknown
+            }
+        };
+        self.push(false);
+        self.bind_pattern(pattern, &error, span);
+        self.pop();
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
@@ -542,6 +588,26 @@ impl FnCx<'_> {
         if let Type::Union(members) = subject {
             return self.check_members(members, arms, span);
         }
+        // What `else as why:` names when a call can fail several ways: each has a case, or `_`.
+        if let Type::Errors(members) = subject {
+            let unguarded: Vec<&Pattern> = arms
+                .iter()
+                .filter(|arm| arm.guard.is_none())
+                .flat_map(|arm| alternatives(&arm.pattern))
+                .collect();
+            let missing: Vec<String> = members
+                .iter()
+                .filter(|member| !self.covers(&Type::named(member.as_str()), &unguarded))
+                .map(|member| format!("`{}`", fennec_syntax::rename::shown_type_name(member)))
+                .collect();
+            if !missing.is_empty() {
+                let message = format!("this `match` doesn't handle {}", missing.join(" or "));
+                self.error(Diagnostic::new(message, span).with_help(
+                    "add a case for each error it can fail with, or `case _:` for everything else",
+                ));
+            }
+            return;
+        }
         let Type::Named(owner) = subject else { return };
         let Some(info) = self.checker.program.type_info(owner).filter(|info| !info.def.cases.is_empty())
         else {
@@ -670,9 +736,16 @@ impl FnCx<'_> {
                 .iter()
                 .all(|member| whole.contains(&member.to_string().as_str()) || self.covers(member, patterns)),
             Type::Named(owner) => match self.checker.program.type_info(owner) {
-                Some(info) if !info.def.cases.is_empty() => {
-                    info.def.cases.iter().all(|case| whole.contains(&case.name.as_str()))
-                }
+                // A case is named on its own, `.Stuck`, or with its type, `Shut.Stuck`.
+                Some(info) if !info.def.cases.is_empty() => info.def.cases.iter().all(|case| {
+                    whole.iter().any(|written| {
+                        let (owner_written, case_written) = written.rsplit_once('.').unwrap_or(("", written));
+                        case_written == case.name
+                            && (owner_written.is_empty()
+                                || owner_written == owner.as_str()
+                                || owner_written == fennec_syntax::rename::shown_type_name(owner))
+                    })
+                }),
                 _ => whole.contains(&owner.as_str()),
             },
             Type::Bool => {

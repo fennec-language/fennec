@@ -41,7 +41,7 @@ impl Parser {
     }
 
     /// A pattern, or several separated by `|`, any of which matches.
-    fn pattern(&mut self) -> Result<Pattern, Diagnostic> {
+    pub(super) fn pattern(&mut self) -> Result<Pattern, Diagnostic> {
         let first = self.one_pattern()?;
         if !self.at_p(Punct::Pipe) {
             return Ok(first);

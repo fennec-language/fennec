@@ -290,22 +290,20 @@ extend u64:
     ## The u64 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     ## What's past the largest `int` is read a digit at a time.
     def parse(text: str) -> u64 fails InvalidValue:
-        match int(text):
-            case Ok(n):
-                u64.from(n)?
-            case Err(problem):
-                if not text.isdigit(): fail problem
-                top = u64(9223372036854775807) * 2 + 1
-                mut value = u64(0)
-                for c in text:
-                    digit = u64(c.code() - 48)
-                    # Checked before it's multiplied, so it never goes past the top.
-                    if value > (top - digit) // 10:
-                        fail InvalidValue(
-                            message=f"{text} doesn't fit in u64, which holds 0 to 18446744073709551615",
-                        )
-                    value = value * 10 + digit
-                value
+        n = int(text) else as problem:
+            if not text.isdigit(): fail problem
+            top = u64(9223372036854775807) * 2 + 1
+            mut value = u64(0)
+            for c in text:
+                digit = u64(c.code() - 48)
+                # Checked before it's multiplied, so it never goes past the top.
+                if value > (top - digit) // 10:
+                    fail InvalidValue(
+                        message=f"{text} doesn't fit in u64, which holds 0 to 18446744073709551615",
+                    )
+                value = value * 10 + digit
+            return value
+        u64.from(n)?
 
     ## `self + other`, wrapping round past the end, as a u64's bits do.
     def wrapping_add(self, other: u64) -> u64:

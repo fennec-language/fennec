@@ -97,11 +97,9 @@ LINK_REFUSED = "`{bad}` can't go there: a link has to be `http`, `https`, `mailt
 
 ## Why `page` couldn't be made, in words, or "" if it could.
 def refusal(page: Template[HtmlValue]) -> str:
-    match html.render(page):
-        case Ok(_):
-            ""
-        case Err(error):
-            error.message()
+    _ = html.render(page) else as error:
+        return error.message()
+    ""
 
 test "a value inside a script fails"():
     code = "alert(1)"
@@ -139,8 +137,7 @@ test "a format spec fails rather than being dropped"():
     assert refusal(t"<td>{price:.2f}</td>").startswith("`{price}` has a format spec")
 
 def main(stdout: Stdout):
-    match page(Visitor(name="Ann & Bo", site="https://example.com"), ["one", "<two>"]):
-        case Ok(made):
-            stdout.print(made)
-        case Err(error):
-            stdout.print(error.message())
+    made = page(Visitor(name="Ann & Bo", site="https://example.com"), ["one", "<two>"]) else as why:
+        stdout.print(why.message())
+        return
+    stdout.print(made)

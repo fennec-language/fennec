@@ -376,7 +376,7 @@ fn a_with_source_lends_once_to_a_with_block() {
 /// expected type would say which enum it's from.
 #[test]
 fn a_failing_else_with_a_leading_dot_case_is_written_in() {
-    let source = "error Shut:\n    Stuck(name: str)\n    Jammed\n\ndef opened(name: str) -> with str fails Shut:\n    lend name else:\n        fail .Stuck(name=name)\n\ndef single() fails Shut:\n    with opened(\"single\")? as door:\n        fail .Jammed\n\ndef main(stdout: Stdout):\n    match single():\n        case Ok(_):\n            stdout.print(\"worked\")\n        case Err(why):\n            stdout.print(\"failed\", why, why.notes())\n";
+    let source = "error Shut:\n    Stuck(name: str)\n    Jammed\n\ndef opened(name: str) -> with str fails Shut:\n    lend name else:\n        fail .Stuck(name=name)\n\ndef single() fails Shut:\n    with opened(\"single\")? as door:\n        fail .Jammed\n\ndef main(stdout: Stdout):\n    single() else as why:\n        stdout.print(\"failed\", why, why.notes())\n        return\n    stdout.print(\"worked\")\n";
     let mut module = fennec_syntax::parse(source).unwrap();
     let resolved = fennec_check::check_and_resolve(&mut module);
     assert!(resolved.is_ok(), "{:?}", resolved.err());

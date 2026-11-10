@@ -13,6 +13,31 @@ mod eval;
 mod generate;
 mod source;
 
+/// Whether `Named` is made of native blocks in a program with no other threads, which it is once
+/// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
+/// `FENNEC_FUZZ_NAMED_NATIVE` turns the check on before then, to run against a branch that has them.
+const NAMED_GOES_NATIVE: bool = false;
+
+fn named_goes_native() -> bool {
+    NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
+}
+
+/// Whether the dev build just made calls `fennec_native_made`, as code making a native block
+/// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
+fn makes_native_blocks() -> Result<bool, String> {
+    let built = crate::llvm::built_executable("programs");
+    let listed = std::process::Command::new("objdump")
+        .args(["-d", "--no-show-raw-insn"])
+        .arg(&built)
+        .output()
+        .map_err(|err| format!("couldn't run objdump: {err}"))?;
+    Ok(String::from_utf8_lossy(&listed.stdout).lines().any(|line| {
+        let mut words = line.split_whitespace().skip(1);
+        let call = matches!(words.next(), Some("bl" | "call" | "callq"));
+        call && (line.ends_with("<fennec_native_made>") || line.ends_with("<_fennec_native_made>"))
+    }))
+}
+
 /// Prints the program an input writes, for `fennec-fuzz show programs <file>`.
 pub(crate) fn written(input: &[u8]) -> String {
     source::source(&generate::program(input))
@@ -37,6 +62,16 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     fennec_check::check(&module)
         .map_err(|err| with_program(format!("it wrote code the checker refuses: {err:?}")))?;
     let dev = crate::llvm::built_and_run(&source, "programs", false).map_err(with_program)?;
+    // In a program with no other threads, `Named` is made of native blocks, which a dev build
+    // says it made by calling `fennec_native_made`. Only one that printed a `Named`'s digest, whose
+    // leaves read `l(...)`, surely made one: code that never runs, like everything after a
+    // failure the compiler can see, makes none and can be left out.
+    let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
+    if named_goes_native() && program.threadless && printed_named && !makes_native_blocks()? {
+        return Err(with_program(
+            "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
+        ));
+    }
     let release = crate::llvm::built_and_run(&source, "programs", true).map_err(with_program)?;
     let shown = |(printed, said, succeeded): &(Vec<u8>, String, bool)| {
         let ended = if *succeeded { "ran to the end".to_owned() } else { format!("failed: {said}") };
@@ -44,8 +79,14 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     };
     // Built checking proofs (`FENNEC_CHECK_PROOFS=1`), a stop on one is a false proof, whether or
     // not both builds stop the same way. Built with AddressSanitizer (`FENNEC_SANITIZE=address`),
-    // a report is memory touched that the program doesn't own, which both builds can share.
+    // a report is memory touched that the program doesn't own, which both builds can share. A
+    // dev build stops when a native block reaches the runtime.
     for (how, (_, said, _)) in [("dev", &dev), ("--release", &release)] {
+        if said.contains("handed a native block") {
+            return Err(with_program(format!(
+                "the {how} build handed a native block to the runtime: {said}"
+            )));
+        }
         if said.contains("proof broken") {
             return Err(with_program(format!(
                 "a proof the compiler made is false, in the {how} build: {said}"
@@ -97,19 +138,28 @@ mod tests {
         assert!(failed > 0, "no program failed, so failures are never compared");
     }
 
-    /// Trees are built, changed through `ref`, copied while they change, built deep, and built in
-    /// loops that fail partway, often enough to matter.
+    /// Trees, `Node` and `Named`, are built, changed through `ref`, copied while they change,
+    /// built deep, and built in loops that fail partway, often enough to matter.
     #[test]
     fn it_writes_trees_of_every_kind() {
-        let mut found = [0_usize; 5];
+        let mut found = [0_usize; 9];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
             let body = source.split("def main").last().unwrap_or_default();
-            let marks =
-                ["case .Branch(ref label", "deep(20000", "100 // (", "Node.Tagged(tags=[", "digest_all("];
+            let marks = [
+                "case .Branch(ref label",
+                "deep(20000",
+                "100 // (",
+                "Node.Tagged(tags=[",
+                "digest_all(",
+                "named_digest(.Pair(",
+                "case .Pair(ref left",
+                "chain(20000",
+                "f\"<{(100 // (",
+            ];
             for (count, mark) in found.iter_mut().zip(marks) {
                 *count += usize::from(body.contains(mark));
             }
@@ -145,6 +195,26 @@ mod tests {
             }
         }
         assert!(found.iter().all(|count| *count >= 3), "{found:?}");
+    }
+
+    /// One program in four has no other threads anywhere, which `Named` needs to be made of
+    /// native blocks, and builds `Named` values.
+    #[test]
+    fn some_programs_have_no_other_threads() {
+        let (mut threadless, mut named) = (0, 0);
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let program = generate::program(&bytes);
+            let source = source::source(&program);
+            if program.threadless {
+                assert!(!source.contains("launch(") && !source.contains("parallel("), "{source}");
+                threadless += 1;
+                named += usize::from(source.contains("named_digest(.Pair("));
+            }
+        }
+        assert!(threadless >= 32 && named >= 3, "{threadless} with no threads, {named} making Named");
     }
 
     #[test]

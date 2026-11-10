@@ -65,17 +65,17 @@ fn plain(state: &mut State, kind: i64) -> i64 {
 /// `fennec_capability_block(kind)`: the block of the plain capability of a kind, which
 /// native code needn't count.
 pub extern "C" fn block(kind: i64) -> i64 {
-    let (address, real) = with(|state| {
-        let real = state.world.as_ref().is_none_or(crate::fakes::TestWorld::real);
-        Some((plain(state, kind), real))
-    })
-    .unwrap_or((0, false));
-    // `main` given `Signals` catches the signals that ask a program to stop, from the start. A
-    // test's fake catches nothing, and a replay's stops come from its recording.
-    if kind == kind_of(Capability::Signals) && real && !crate::replay::replaying() {
+    with(|state| plain(state, kind))
+}
+
+/// `fennec_signals_listen()`: `main` was given `Signals`, so the signals that ask a program to stop
+/// are caught from the start. Native code calls it only then, so a program that isn't given
+/// `Signals` links none of what catching them takes, a thread and a socket pair among it. A
+/// replay's stops come from its recording, so it catches nothing.
+pub extern "C" fn signals_listen() {
+    if !crate::replay::replaying() {
         crate::signals::listen();
     }
-    address
 }
 
 /// What a `Value` holds for a capability word: a kind, or a capability's block.
@@ -149,7 +149,7 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     // A test's capabilities are fakes the runtime holds, which never wait, so they run with the
     // state borrowed. What they leave to the real ones, like `only`, runs below.
     let faked = attempt(|state: &mut State| {
-        let Some(fakes) = state.world.as_mut() else { return Ok(None) };
+        let Some(fakes) = state.world_mut() else { return Ok(None) };
         let done = match &receiver {
             Value::Capability(capability) => fakes.method(*capability, &name, &given, at),
             Value::Limited(limited) => {
@@ -249,9 +249,9 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     // A test's network is a fake the runtime holds, which never waits, so it runs here with the
     // state borrowed. The real one runs below with nothing borrowed, so a socket's wait can park
     // its task.
-    if with(|state| state.world.as_ref().is_some_and(|world| !world.real())) {
+    if with(|state| state.world().is_some_and(|world| !world.real())) {
         return attempt(|state: &mut State| {
-            let done = match state.world.as_mut() {
+            let done = match state.world_mut() {
                 Some(world) => world.net.socket_method(handle, &name, &given, at)?,
                 None => crate::stdlib::net::failed(&crate::stdlib::net::Failure::Closed),
             };
@@ -312,6 +312,18 @@ fn native_method(
             super::write_kept_output();
             crate::inputs::lines_of(&mut super::aot::StdinLines::default(), at)
         }
+        (Capability::Stdin, "read_line", []) => {
+            super::write_kept_output();
+            Ok(crate::inputs::read_line())
+        }
+        (Capability::Stdin, "read_chunk", [Value::Int(size)]) => {
+            let Ok(size) = usize::try_from(*size) else {
+                return Err(Diagnostic::new(format!("`read_chunk` can't give {size} bytes"), at)
+                    .with_help("give it how many bytes you want, 0 or more"));
+            };
+            super::write_kept_output();
+            Ok(crate::inputs::read_chunk(size))
+        }
         (Capability::Net, _, _) => {
             // What's been printed comes out first, as it does before anything else that waits.
             super::write_kept_output();
@@ -365,7 +377,7 @@ pub extern "C" fn clock_now() -> i64 {
 
 /// A test's fake clock's reading, which stands still but for sleeping, if a test's running.
 fn fake_clock() -> Option<i64> {
-    with(|state| state.world.as_ref().filter(|world| !world.real()).map(crate::fakes::TestWorld::now))
+    with(|state| state.world().filter(|world| !world.real()).map(crate::fakes::TestWorld::now))
 }
 
 /// A word an outside call gives, recorded and replayed (see `crate::replay`). A replay that's
@@ -390,7 +402,7 @@ pub extern "C" fn clock_time() -> i64 {
 /// so a replay doesn't wait it out, and a replay that sleeps where its recording didn't stops.
 pub extern "C" fn clock_sleep(nanos: i64) {
     // A test's sleep passes no time at all.
-    let faked = with(|state| match state.world.as_mut().filter(|world| !world.real()) {
+    let faked = with(|state| match state.world_mut().filter(|world| !world.real()) {
         Some(world) => {
             world.sleep(u64::try_from(nanos).unwrap_or(0));
             true

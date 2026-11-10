@@ -2,25 +2,24 @@
 
 from std.math import PI, ceil, cos, floor, sin, sqrt
 
-error Failed:
-    why: str
-
 def square(n: int) -> int:
     n * n
-
-def checked(n: int) fails IoError:
-    if n < 0: fail IoError("it's negative")
 
 def main(stdout: Stdout):
     # Converting between numbers. `int` truncates toward zero.
     stdout.print(float(2), 0.5, int(2.9), int(-2.9), int(-9223372036854775808.0), 7)
     # Text might not be a number, so reading one can fail with an `InvalidValue`.
-    stdout.print(float("2.5"), float(" 1e3 ") else 0.0, int(" 42 ") else 0, int("4x2") else -1)
-    match int("twelve"):
-        case Ok(n):
-            stdout.print(n)
-        case InvalidValue(message=message):
-            stdout.print(message)
+    stdout.print(
+        float("2.5") else 0.0,
+        float(" 1e3 ") else 0.0,
+        int(" 42 ") else 0,
+        int("4x2") else -1,
+    )
+    # `else as why:` names the failure; its block gives a value in its place, or leaves.
+    twelve = int("twelve") else as why:
+        stdout.print(why.message)
+        12
+    stdout.print(twelve)
 
     # Rounding goes to the even neighbour on a tie, as in Python.
     stdout.print((-3).abs(), (-2.5).abs(), 4.abs())
@@ -44,11 +43,6 @@ def main(stdout: Stdout):
     stdout.print(sorted([3, 1, 2]), min(3, 1, 2), max([3, 1, 2]), sum([1, 2, 3]), sum([0.5, 1.5]))
     stdout.print(list("abc"), enumerate(["a", "b"]), zip([1, 2], ["a", "b"]))
     stdout.print(any([False, True]), all([True, False]), all([]), any([]))
-
-    # Results.
-    three: Result[int, Failed] = Ok(3)
-    no: Result[int, Failed] = Err(Failed(why="no"))
-    stdout.print(checked(1), three, no)
 
     # Calls that return don't count toward the depth limit.
     stdout.print(sum(square(n) for n in range(2000)))

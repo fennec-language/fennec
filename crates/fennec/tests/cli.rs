@@ -191,6 +191,86 @@ fn run_hands_main_its_arguments_and_input() {
     assert_eq!(text(&output.stdout), "True\n");
 }
 
+/// `stdin.read_line()` and `stdin.read_chunk(size)` read standard input a piece at a time, through
+/// the one buffer `lines()` reads too, so nothing's lost between them: a line without its ending,
+/// `\r\n` too, then bytes, then the lines left, and `None` and empty bytes at the end.
+#[test]
+fn stdin_reads_a_line_or_a_chunk_at_a_time() -> std::io::Result<()> {
+    let dir = scratch("stdin-pieces")?;
+    let program = dir.join("pieces.fen");
+    std::fs::write(
+        &program,
+        "def main(stdin: Stdin, stdout: Stdout) fails IoError:\n    stdout.print(stdin.read_line()?)\n    \
+         stdout.print(stdin.read_line()?)\n    stdout.print(stdin.read_chunk(5)?.decode() else \"?\")\n    \
+         stdout.print(stdin.lines())\n    stdout.print(stdin.read_line()?, stdin.read_chunk(5)?.len())\n",
+    )?;
+    let output =
+        fennec_in(&dir, &["run", "--no-test", &program.to_string_lossy()], "one\ntwo\r\nthree four\nlast\n")?;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "one\ntwo\nthree\n[\" four\", \"last\"]\nNone 0\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// `stdin.reader()` makes standard input a `Reader`, from `std.io`, so code written for any
+/// stream reads it: here a line, then the lines left, through a function that takes any reader.
+#[test]
+fn stdin_is_a_reader_through_reader() -> std::io::Result<()> {
+    let dir = scratch("stdin-reader")?;
+    let program = dir.join("reader.fen");
+    std::fs::write(
+        &program,
+        "from std.io import Reader\n\n\
+         def counted[R: Reader](ref src: R) -> int fails IoError:\n    \
+         mut count = 0\n    for _ in src.lines()?:\n        count += 1\n    count\n\n\
+         def main(stdin: Stdin, stdout: Stdout) fails IoError:\n    mut src = stdin.reader()\n    \
+         stdout.print(src.read_line()?)\n    stdout.print(counted(ref src)?)\n",
+    )?;
+    let output =
+        fennec_in(&dir, &["run", "--no-test", &program.to_string_lossy()], "first\nsecond\r\nthird\n")?;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "first\n2\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A signal sent to `fennec run`, like a supervisor's SIGTERM, reaches the program, which can stop
+/// cleanly, and `fennec run` exits as the program does. It once ran the program as a child it
+/// didn't pass signals to, so the SIGTERM ended `fennec run` and left the program running.
+#[cfg(unix)]
+#[test]
+fn a_signal_sent_to_run_reaches_the_program() -> std::io::Result<()> {
+    use std::io::BufRead;
+    let dir = scratch("run-signal")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(
+        &program,
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):\n    stdout.print(\"ready\")\n    \
+         while not signals.stopping():\n        clock.sleep(10ms)\n    stdout.print(\"stopped cleanly\")\n",
+    )?;
+    let mut run = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(&program)
+        .env("FENNEC_HOME", &dir)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let stdout = run.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+    let (says, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = says.send(line);
+        }
+    });
+    let line = || said.recv_timeout(std::time::Duration::from_secs(120));
+    assert_eq!(line().as_deref(), Ok("ready"));
+    let sent = std::process::Command::new("kill").args(["-TERM", &run.id().to_string()]).status()?;
+    assert!(sent.success(), "couldn't send SIGTERM");
+    assert_eq!(line().as_deref(), Ok("stopped cleanly"));
+    assert_eq!(run.wait()?.code(), Some(0));
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
@@ -289,6 +369,17 @@ fn test_fails_when_a_test_fails() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(text(&output.stdout), "  ✗ one is two\n1 passed, 1 failed\n");
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
+}
+
+/// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
+/// failed one says what really happened: what it failed with instead, or what it gave.
+#[test]
+fn an_assert_that_something_fails_says_what_really_happened() {
+    let output = fennec(&["test", "crates/fennec/tests/fixtures/assert_fails.fen"], "").unwrap();
+    assert_eq!(text(&output.stdout), "  ✗ fails some other way\n  ✗ gives a value\n1 passed, 2 failed\n");
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("= help: it failed with Oops(line=4, why=\"worse\")"), "{stderr}");
+    assert!(stderr.contains("= help: it gave Config(size=4)"), "{stderr}");
 }
 
 #[test]
@@ -504,7 +595,7 @@ fn fs_makes_lists_and_removes_files_and_folders() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "Ok() Ok() True\n\
+        "True\n\
          [\"saves/slots/a.txt\", \"saves/slots/b.txt\"] ay\n\
          3 True False False True\n\
          a folder has to be empty to remove\n\
@@ -536,16 +627,19 @@ const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
 
 def main(stdout: Stdout, fs: Fs):
     slots = Path("saves") / "slots"
-    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots)?)
+    fs.make_dir(slots)?
+    # Making a folder that's already there is fine.
+    fs.make_dir(slots)?
+    stdout.print(fs.exists(slots)?)
     fs.write_text(slots / "b.txt", "bee")?
     fs.write_text("saves/slots/a.txt", "ay")?
     stdout.print([path.text for path in fs.list_dir(slots)?], fs.read_text(slots / "a.txt")?)
     found = fs.metadata(slots / "b.txt")?
     folder = fs.metadata(slots)?
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
-    match fs.remove("saves"):
-        case Ok(_): stdout.print("removed a folder that isn't empty")
-        case IoError(): stdout.print("a folder has to be empty to remove")
+    fs.remove("saves") else as why:
+        match why:
+            case IoError(): stdout.print("a folder has to be empty to remove")
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -659,6 +753,41 @@ fn a_double_lookup_fixed_prints_the_same() {
     let now = std::fs::read_to_string(&program).unwrap();
     assert_eq!(now.matches(".get(").count(), 3, "{now}");
     assert!(!now.contains("in counts") && !now.contains("in names"), "{now}");
+    let output = fennec(&["run", path], "").unwrap();
+    assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "", "it ran as asked");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `fennec fix` writes a `match` on `Ok` and `Err` with `else`: a function's last line returns
+/// from its failure case, a named value keeps its name, and a loop's last statement continues.
+/// The program prints the same before and after.
+#[test]
+fn a_match_on_ok_and_err_fixed_prints_the_same() {
+    let dir = scratch("results-fix").unwrap();
+    let program = dir.join("results_fix.fen");
+    let source = "error Bad:\n    why: str\n\ndef lower(n: int) -> int fails Bad:\n    if n < 1:\n        \
+                  fail Bad(\"small\")\n    n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        \
+                  case Ok(lowered): lowered\n        case Err(_): 0\n\ndef main(stdout: Stdout):\n    \
+                  for n in [0, 3]:\n        given = match lower(n):\n            case Ok(lowered): lowered\n            \
+                  case Err(_): 9\n        stdout.print(given, first(n))\n        match lower(n):\n            \
+                  case Ok(lowered):\n                stdout.print(lowered)\n            case Err(problem):\n                \
+                  stdout.print(problem.why)\n";
+    std::fs::write(&program, source).unwrap();
+    let path = program.to_str().unwrap();
+    let expected = "9 0\nsmall\n2 2\n2\n";
+    assert_eq!(text(&fennec(&["run", path], "").unwrap().stdout), expected);
+    let fixed = fennec(&["fix", path], "").unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    let now = std::fs::read_to_string(&program).unwrap();
+    assert!(!now.contains("Ok(") && !now.contains("Err("), "{now}");
+    for written in [
+        "lowered = lower(n) else:\n        return 0\n    lowered\n",
+        "given = lower(n) else:\n            9\n",
+        "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",
+    ] {
+        assert!(now.contains(written), "{now}");
+    }
     let output = fennec(&["run", path], "").unwrap();
     assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
     assert_eq!(text(&output.stderr), "", "it ran as asked");
@@ -1771,15 +1900,15 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     let dir = std::env::temp_dir().join(format!("fennec-cli-{}-named-pattern", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
-    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    match fs.read_text(\"/nothing/here\"):\n        case Ok(text): stdout.print(text)\n        case Err(IoError(why)): stdout.print(why != \"\")\n    match fs.read_text(\"/nothing/here\"):\n        case Ok(_): stdout.print(\"read\")\n        case Err(IoError(_)): stdout.print(\"failed\")\n").unwrap();
+    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    text = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(why): str(why != \"\")\n    stdout.print(text)\n    said = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(_): \"failed\"\n    stdout.print(said)\n").unwrap();
     let path = program.to_string_lossy().into_owned();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let ran = fennec(&["run", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
-    assert!(written.contains("case Err(IoError(reason=why)):"), "{written}");
-    assert!(written.contains("case Err(IoError()):"), "{written}");
+    assert!(written.contains("case IoError(reason=why):"), "{written}");
+    assert!(written.contains("case IoError():"), "{written}");
     assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
 }
 
@@ -1815,12 +1944,12 @@ def shown(color: Color) -> str:
         case Red: \"red\"
         case Green(shade): f\"green {shade}\"
 
-def dial(n: int) -> int fails DialError:
+def dial(n: int) -> str fails DialError:
     if n == 0:
         fail DialError.Closed
     fail DialError.NotFound(\"host\")
 
-def unsaid() -> int:
+def unsaid() -> str:
     fail DialError.Closed
 
 def main(stdout: Stdout):
@@ -1834,13 +1963,12 @@ def main(stdout: Stdout):
     warm: Color = Color.warm()
     stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), many.len(), light == Light.Off)
     stdout.print(shown(warm), maybe() == Color.Red)
-    match dial(0):
-        case Err(Closed): stdout.print(\"closed\")
-        case Err(_): stdout.print(\"other\")
-        case Ok(_): stdout.print(\"open\")
-    match unsaid():
-        case Err(_): stdout.print(\"failed\")
-        case Ok(_): stdout.print(\"fine\")
+    dialled = dial(0) else as why:
+        match why:
+            case Closed: \"closed\"
+            case _: \"other\"
+    stdout.print(dialled)
+    stdout.print(unsaid() else \"failed\")
 ";
 
 /// What `CASES_AFTER` prints, as the interpreter printed it.
@@ -1879,12 +2007,12 @@ def shown(color: Color) -> str:
         case .Red: \"red\"
         case .Green(shade): f\"green {shade}\"
 
-def dial(n: int) -> int fails DialError:
+def dial(n: int) -> str fails DialError:
     if n == 0:
         fail .Closed
     fail .NotFound(\"host\")
 
-def unsaid() -> int fails DialError:
+def unsaid() -> str fails DialError:
     fail .Closed
 
 def main(stdout: Stdout):
@@ -1898,13 +2026,12 @@ def main(stdout: Stdout):
     warm: Color = Color.warm()
     stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), many.len(), light == .Off)
     stdout.print(shown(warm), maybe() == .Red)
-    match dial(0):
-        case Err(Closed): stdout.print(\"closed\")
-        case Err(_): stdout.print(\"other\")
-        case Ok(_): stdout.print(\"open\")
-    match unsaid():
-        case Err(_): stdout.print(\"failed\")
-        case Ok(_): stdout.print(\"fine\")
+    dialled = dial(0) else as why:
+        match why:
+            case .Closed: \"closed\"
+            case _: \"other\"
+    stdout.print(dialled)
+    stdout.print(unsaid() else \"failed\")
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
@@ -2288,9 +2415,10 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
         stdout.print(describe(.Liquid(depth=3)))\n    \
         stdout.print(Circle(name=\"own\").name + helper())\n    \
         stdout.print(f\"{body}\")\n    \
-        match total([body]):\n        \
-        case Err(Over(by=n)):\n            stdout.print(n)\n        \
-        case Ok(n):\n            stdout.print(n)\n";
+        weighed = total([body]) else as why:\n        \
+        match why:\n            \
+        case .Over(by=n): n\n    \
+        stdout.print(weighed)\n";
     let manifest = "[dependencies]\nphysics = { path = \"../physics\" }\n";
     write_kit(&kit, "game", manifest, &[("main.fen", main)]).unwrap();
     let home = dir.join("home");

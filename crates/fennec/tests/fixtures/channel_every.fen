@@ -16,7 +16,12 @@ def adds(hits: Channel[int], replies: Sender[int]) fails Closed | Timeout:
     replies.send(total)?
 
 # As `adds`, but once it's listening it waits for `gate`, falling behind meanwhile.
-def lags(hits: Channel[int], replies: Sender[int], gate: Channel[int], when_behind: Behind) fails Closed | Timeout:
+def lags(
+    hits: Channel[int],
+    replies: Sender[int],
+    gate: Channel[int],
+    when_behind: Behind,
+) fails Closed | Timeout:
     mut heard = False
     mut total = 0
     for hit in hits.listen(when_behind=when_behind):
@@ -38,11 +43,10 @@ def until_heard(hits: Channel[int], replies: Channel[int], listeners: int) fails
     mut answered = 0
     while answered < listeners:
         hits.send(-1)?
-        match replies.receive(timeout=Duration(nanos=250_000_000)):
-            case Ok(_):
-                answered += 1
-            case Err(_):
-                pass
+        _ = replies.receive(timeout=Duration(nanos=250_000_000)) else:
+            pass
+            continue
+        answered += 1
 
 def fan_out(stdout: Stdout) fails Closed | Crashed | Timeout:
     with channel[int](size=1024, to=.Every) as hits:
@@ -75,8 +79,7 @@ def behind(when_behind: Behind) -> int fails Closed | Crashed | Timeout:
 def main(stdout: Stdout) fails Closed | Crashed | Timeout:
     fan_out(stdout)?
     stdout.print(behind(.DropOldest)?)
-    match behind(.Fail):
-        case Ok(total):
-            stdout.print("kept up", total)
-        case Err(problem):
-            stdout.print("failed:", problem)
+    total = behind(.Fail) else as problem:
+        stdout.print("failed:", problem)
+        return
+    stdout.print("kept up", total)

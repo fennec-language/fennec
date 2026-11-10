@@ -17,7 +17,12 @@ struct C:
     pair: (str, list[int])
 
 def made() -> C:
-    C(shape=.Tagged(name="a name long enough to need a block", tags=[1, 2]), inner=Inner(shape=.Circle(r=1.5), n=1), maybe=[7], pair=("first text, long enough for a block", [3]))
+    C(
+        shape=.Tagged(name="a name long enough to need a block", tags=[1, 2]),
+        inner=Inner(shape=.Circle(r=1.5), n=1),
+        maybe=[7],
+        pair=("first text, long enough for a block", [3]),
+    )
 
 def fails_after(c: shared C, which: int) fails Nope:
     lock c as ref c:
@@ -43,11 +48,8 @@ def main(stdout: Stdout):
     for round in range(700):
         which = round % 7
         shared c = made()
-        match fails_after(c, which):
-            case Ok(_):
-                stdout.print("it didn't fail")
-            case Err(_):
-                pass
+        if failure_of(() => fails_after(c, which)) is None:
+            stdout.print("it didn't fail")
         mut now = ""
         lock c as held:
             now = str(held)

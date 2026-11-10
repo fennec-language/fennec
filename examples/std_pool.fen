@@ -72,22 +72,14 @@ test "only one opens up front, and the rest when they're needed"():
 test "a failed block's value is reset and lent again"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=False), size=1)? as links:
-        match borrowed_and_broken(links):
-            case Ok(_):
-                assert False
-            case Err(_):
-                pass
+        assert borrowed_and_broken(links) fails Broke()
         with links.take()? as again:
             assert again.number == 1
 
 test "a value that can't be reset is replaced"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=True), size=1)? as links:
-        match borrowed_and_broken(links):
-            case Ok(_):
-                assert False
-            case Err(_):
-                pass
+        assert borrowed_and_broken(links) fails Broke()
         with links.take()? as again:
             assert again.number == 2
 
@@ -95,30 +87,18 @@ test "a borrower waits up to wait, then fails"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=False), size=1, wait=20ms)? as links:
         with taken_soon(links)? as _:
-            match taken_number(links):
-                case Ok(_):
-                    assert False
-                case Err(failure):
-                    assert failure.message() == "no value came free in 0.02s"
+            problem = failure_of(() => taken_number(links))
+            assert problem is not None
+            assert problem.message() == "no value came free in 0.02s"
 
 test "a pool that can't open one fails at its with"():
-    match pool_that_cant_open():
-        case Ok(_):
-            assert False
-        case Err(.Open(reason=reason)):
-            assert reason == "the server's away"
-        case Err(_):
-            assert False
+    assert pool_that_cant_open() fails Open(reason="the server's away")
 
 test "many tasks share a few values"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=False), size=3)? as links:
         for _ in parallel(range(12)):
-            match served_once(links, count):
-                case Ok(_):
-                    pass
-                case Err(_):
-                    pass
+            served_once(links, count) else continue
     assert opens(count) <= 3
     lock count as counts:
         assert counts.served == 12
@@ -145,14 +125,15 @@ def taken_soon(links: Pool[Link]) -> with Link fails PoolError:
 def borrowed_soon(links: Pool[Link]) -> Borrowed[Link] fails PoolError:
     mut tries = 0
     while True:
-        match links.borrowed():
-            case Ok(borrowed):
-                return borrowed
-            case Err(.Timeout(waited=waited)):
-                tries += 1
-                if tries == 500: fail .Timeout(waited=waited)
-            case Err(failure):
-                fail failure
+        borrowed = links.borrowed() else as failure:
+            match failure:
+                case .Timeout(waited=waited):
+                    tries += 1
+                    if tries == 500: fail .Timeout(waited=waited)
+                    continue
+                case _:
+                    fail failure
+        return borrowed
     fail .Closed
 
 ## The number of the link `take()` lends.

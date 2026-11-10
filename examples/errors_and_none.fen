@@ -31,17 +31,22 @@ def main(stdout: Stdout):
     stdout.print(find(players, "Vex").level else 0)
 
     for name in ["Ash", "Kit", "Vex"]:
-        match challenge(players, name):
-            case Ok(message):
-                stdout.print(message)
-            case TooWeak(level):
-                stdout.print(f"{name} is only level {level}")
-            case Err(error):
-                stdout.print(f"no luck: {error}")
+        message = challenge(players, name) else as why:
+            match why:
+                case TooWeak(level):
+                    stdout.print(f"{name} is only level {level}")
+                    continue
+                case _:
+                    error = why
+                    stdout.print(f"no luck: {error}")
+                    continue
+        stdout.print(message)
 
     nobody = Player(name="nobody", level=-1)
     level = (require(players, "Vex") else nobody).level
     stdout.print(level)
     found = require(players, "Ash").expect("Ash was added above")
     stdout.print(found.name)
-    stdout.print(challenge(players, "Kit") == Err(TooWeak(level=1)))
+    _ = challenge(players, "Kit") else as why:
+        stdout.print(why == TooWeak(level=1))
+        ""

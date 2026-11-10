@@ -31,8 +31,8 @@ test "a written file reads back"(fs: Fs):
     assert fs.read_text("./saves/x/../today/raw")? == "hi"
 
 test "each test starts with nothing"(fs: Fs):
-    assert not fs.exists("saves")
-    assert fs.exists(".")
+    assert not fs.exists("saves")?
+    assert fs.exists(".")?
     assert (fs.list_dir(".")?).len() == 0
 
 test "folders list, measure and remove"(fs: Fs):
@@ -47,7 +47,7 @@ test "folders list, measure and remove"(fs: Fs):
     assert folder.is_dir and not folder.is_file
     assert (fs.metadata(".")?).is_dir
     fs.remove("saves/b.txt")?
-    assert not fs.exists("saves/b.txt")
+    assert not fs.exists("saves/b.txt")?
     fs.make_dir("saves/today")?
 
 test "the fake fails the way files do"(fs: Fs):
@@ -81,11 +81,11 @@ test "output is captured"(stdout: Stdout, fs: Fs):
     assert stdout.captured() == "saved: 9\ndone"
 
 test "any capability name will do"(out: Stdout, files: Fs, time: Clock):
-    out.print(files.exists("a"), time.now().nanos)
+    out.print(files.exists("a")?, time.now().nanos)
     assert out.captured() == "False 0\n"
 
 test "a property gets fresh fakes for each input"(fs: Fs) for score: int:
-    assert not fs.exists("saves")
+    assert not fs.exists("saves")?
     save_score(fs, score)?
     assert fs.read_text("saves/today/score.txt")? == f"{score}"
 

@@ -115,8 +115,16 @@ pub(crate) fn unhandled(span: Span) -> Diagnostic {
         .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")
 }
 
-/// A condition that isn't a bool: Fennec has no truthiness.
+/// A condition that isn't a bool: Fennec has no truthiness. A bool from something that can fail,
+/// like `fs.exists(path)`, gets `?` from `fennec fix`, which passes the failure up.
 pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
+    if let Type::Result(value, _) = ty
+        && **value == Type::Bool
+    {
+        return Diagnostic::new(format!("`{keyword}` needs a bool, but this can fail"), span)
+            .with_help("pass the failure up with `?`, or give the answer for a failure with `else`")
+            .with_fix(Span { start: span.end, end: span.end }, "?");
+    }
     let help = if ty.is_collection() {
         "Fennec has no truthiness: write `x.len() > 0`"
     } else if ty.maybe_none() {

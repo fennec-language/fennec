@@ -542,7 +542,7 @@ fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
                 test \"flags\" for flag: bool:\n    assert not flag\n\n\
                 test \"two at once\" for a: int, b: int:\n    assert a + b < 50\n\n\
                 test \"passes\" for n: int:\n    assert n == n\n\n\
-                test \"files\" (fs: Fs) for n: int:\n    assert not fs.exists(\"seen\")\n    fs.write_text(\"seen\", \"1\")?\n    assert n < 100\n";
+                test \"files\" (fs: Fs) for n: int:\n    assert not fs.exists(\"seen\")?\n    fs.write_text(\"seen\", \"1\")?\n    assert n < 100\n";
     std::fs::write(dir.join("game.fen"), text).unwrap();
     let llvm = run_tests(&dir, &["--all", "--verbose"]).unwrap();
     let said = String::from_utf8_lossy(&llvm.stderr);

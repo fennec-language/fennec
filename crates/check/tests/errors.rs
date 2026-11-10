@@ -278,7 +278,7 @@ fn files_can_fail_to_read() {
 
         def read(fs: Fs, path: str):
             text = fs.read_text(path)? from Unreadable(path)
-            if fs.exists(path):
+            if fs.exists(path)?:
                 fs.write_text(path, text)?
             text.strip()
 

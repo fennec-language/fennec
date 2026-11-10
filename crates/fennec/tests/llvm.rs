@@ -4945,7 +4945,7 @@ def main(stdout: Stdout):
     )
 }
 
-/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// A `JsonNames` case written with its enum, as `JsonNames.CamelCase`, in a `json.dumps` or a
 /// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
 /// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
 /// leaves the enum out where it's known: that's for the program as written.
@@ -4963,9 +4963,9 @@ struct Player:
     display_name: str
 
 def main(stdout: Stdout):
-    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    text = json.dumps(Player(display_name="a"), names=JsonNames.CamelCase)
     stdout.print(text)
-    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+    stdout.print(json.loads[Player](text, names=JsonNames.CamelCase) else Player(display_name="b"))
 "#,
         "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
     )

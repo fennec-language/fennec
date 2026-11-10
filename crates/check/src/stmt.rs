@@ -634,6 +634,9 @@ fn block_leaves(stmts: &[Stmt]) -> bool {
             branches.iter().all(|(_, body)| block_leaves(body)) && block_leaves(otherwise)
         }
         Some(StmtKind::Expr(inner)) => always_leaves(inner),
+        // A `with` block leaves when its body does: what the source runs after giving way,
+        // and a lock let go of, come before it leaves.
+        Some(StmtKind::With { body, .. }) => block_leaves(body),
         _ => false,
     }
 }

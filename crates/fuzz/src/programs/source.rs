@@ -599,10 +599,10 @@ impl Writer {
                     indent,
                     &format!("{changes} = [plan({item}, {world}) for {item} in parallel({xs})]"),
                 );
-                // Not `change`, the name of a function every program has: a loop name the same as a
-                // function's fails once trimmed, a bug of its own (2026-11-10).
-                self.line(indent, &format!("for planned in {changes}:"));
-                self.line(indent + 1, "match planned:");
+                // `change` is also a function every program has, one taking a `shared` value, which
+                // a local of its name once left out of the trimmed program (#1270).
+                self.line(indent, &format!("for change in {changes}:"));
+                self.line(indent + 1, "match change:");
                 self.line(indent + 2, "case .Move(at, by):");
                 self.line(indent + 3, &format!("ref spot = {world}[at]"));
                 self.line(indent + 3, "spot.x += by");
@@ -610,6 +610,15 @@ impl Writer {
                 self.line(indent + 3, &format!("ref spot = {world}[at]"));
                 self.line(indent + 3, "spot.label += label");
                 self.line(indent, &format!("stdout.print({world}, {changes}.len())"));
+            }
+            Stmt::Shadowed(id, by) => {
+                let _ = write!(
+                    self.helpers,
+                    "def shadowed{id}(stdout: Stdout, by: int):\n    change = by * 2\n    bump_outer = change + 1\n    \
+                     tally = bump_outer - by\n    stdout.print(change, bump_outer, tally)\n\n"
+                );
+                let by = self.expr(by, false);
+                self.line(indent, &format!("shadowed{id}(stdout, by={by})"));
             }
             Stmt::GrownBy(holder, own) => {
                 self.line(indent, &format!("if {holder}.items.len() < 64:"));

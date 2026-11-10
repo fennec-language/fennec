@@ -1077,9 +1077,10 @@ fn set_marked(state: &mut State, at: u64, layout: Layout, key: &[u64], value: u6
 /// first, and gives back what was there. With `holds`, that's a block's address the dict owns, and
 /// the log takes an owner of its own.
 fn noted_write(state: &mut State, at: u64, word: usize, new: u64, holds: bool) -> Option<u64> {
-    let old = *state.heap.block(at)?.get(word)?;
+    // Written first, with one look for the block: what was there is still alive, for the log to
+    // take an owner of, since nothing lets go of it until this returns.
+    let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, new);
     super::guarded::rollback::changing(state, at, word, old, holds);
-    *state.heap.block_mut(at)?.get_mut(word)? = new;
     Some(old)
 }
 

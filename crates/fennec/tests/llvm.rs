@@ -4945,7 +4945,7 @@ def main(stdout: Stdout):
     )
 }
 
-/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// A `JsonNames` case written with its enum, as `JsonNames.CamelCase`, in a `json.dumps` or a
 /// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
 /// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
 /// leaves the enum out where it's known: that's for the program as written.
@@ -4963,9 +4963,9 @@ struct Player:
     display_name: str
 
 def main(stdout: Stdout):
-    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    text = json.dumps(Player(display_name="a"), names=JsonNames.CamelCase)
     stdout.print(text)
-    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+    stdout.print(json.loads[Player](text, names=JsonNames.CamelCase) else Player(display_name="b"))
 "#,
         "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
     )
@@ -5328,7 +5328,8 @@ def used(fine: bool, stdout: Stdout) fails Second:
 }
 
 /// A function whose last line is a `with` whose block always returns gives back a value on every
-/// way, once the source is written in: alone, and in each branch of an `if`.
+/// way, once the source is written in: alone, in each branch of an `if`, and in each case of
+/// a `match`.
 #[test]
 fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
     if !ready() {
@@ -5358,11 +5359,21 @@ def branched(store: Lite, long: bool) -> int:
         with store.session() as session:
             return session.log.len()
 
+def matched(store: Lite, n: int) -> int:
+    match n:
+        case 0:
+            with store.session() as session:
+                return session.log.len() * 100
+        case _:
+            with store.session() as session:
+                return session.log.len() + n
+
 def main(stdout: Stdout):
     store = Lite(name="a")
     stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+    stdout.print(matched(store, 0), matched(store, 3))
 "#,
-        "lite x 40 4\n",
+        "lite x 40 4\n400 7\n",
     )
 }
 
@@ -12210,6 +12221,79 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// What's left of a three-member union after `if store is Lite: return` is the other two, read
+/// natively as the union it was: its members told apart with `is` and `match`, each one's
+/// fields read once it's narrowed to it, a method all of them have called on it, and it given
+/// where a `Pg | Mem` goes, and that where the whole union goes.
+#[test]
+fn what_is_left_of_a_union_after_is_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_rest",
+        r#"struct Lite:
+    name: str
+
+    def label(self) -> str:
+        f"lite {self.name}"
+
+struct Pg:
+    host: str
+
+    def label(self) -> str:
+        f"pg {self.host}"
+
+struct Mem:
+    size: int
+
+    def label(self) -> str:
+        f"mem {self.size}"
+
+type Three = Lite | Pg | Mem
+
+def which(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    if store is Pg:
+        return f"pg {store.host}"
+    f"mem {store.size}"
+
+def kind(store: Three) -> str:
+    if store is Mem:
+        return "mem"
+    stdout_text = f"{store}"
+    match store:
+        case Lite(name=_):
+            return f"lite {store.name} {stdout_text}"
+        case Pg(host=_):
+            return f"pg {store.host} {stdout_text}"
+
+def label(store: Three) -> str:
+    if store is Lite:
+        return "skip"
+    store.label()
+
+def two(store: Pg | Mem) -> str:
+    if store is Pg:
+        return store.host
+    which(store)
+
+def passed(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    two(store)
+
+def main(stdout: Stdout):
+    stdout.print(which(Lite(name="a")), which(Pg(host="b")), which(Mem(size=1)))
+    stdout.print(kind(Lite(name="a")), kind(Pg(host="b")), kind(Mem(size=1)))
+    stdout.print(label(Lite(name="a")), label(Pg(host="b")), label(Mem(size=1)))
+    stdout.print(passed(Lite(name="a")), passed(Pg(host="b")), passed(Mem(size=1)))
+"#,
+        "lite pg b mem 1\nlite a Lite(name=\"a\") pg b Pg(host=\"b\") mem\nskip pg b mem 1\nlite b mem 1\n",
+    )
+}
+
 /// A `with` source called on a name holding a union runs the source of the member it holds,
 /// natively: on two members and on three, twice in one function, and on a name given a union
 /// from a field.
@@ -15483,7 +15567,7 @@ def main(stdout: Stdout):
     stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
     stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
     tool = Tool(main_weapon="bow", uses=3)
-    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(json.dumps(tool, names=.CamelCase), json.dumps(tool, names=.KebabCase))
     stdout.print(toml.dumps(tool) else "no")
     stdout.print(shown(() => toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n")))
     stdout.print(shown(() => toml.loads[Tool]("not toml")))

@@ -240,11 +240,10 @@ def main(stdout: Stdout):
         case Err(error):
             stdout.print(error.message)
     for hex in ["00ff", "00 FF", "", "abc", "zz", "a é"]:
-        match bytes.fromhex(hex):
-            case Ok(made):
-                stdout.print(made)
-            case Err(error):
-                stdout.print(error.message)
+        made = bytes.fromhex(hex) else as error:
+            stdout.print(error.message)
+            continue
+        stdout.print(made)
     packet = Packet(id=1, data=data[:2])
     copied = packet
     stdout.print(packet, copied.data, packet.data == copied.data, packet == copied)
@@ -3147,11 +3146,10 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
         "def main(stdout: Stdout):
     stdout.print(u8.from(200), u8.parse(\"17\"), i8.from(-5), u32.parse(\"4294967295\"))
     for text in [\"300\", \"-1\", \"seven\"]:
-        match u8.parse(text):
-            case Ok(n):
-                stdout.print(\"fit\", n)
-            case Err(problem):
-                stdout.print(\"failed:\", problem.message)
+        n = u8.parse(text) else as problem:
+            stdout.print(\"failed:\", problem.message)
+            continue
+        stdout.print(\"fit\", n)
     small = u8.parse(\"250\") else u8(0)
     stdout.print(small + 5, i16.from(40000) else i16(-1))
 ",
@@ -3328,11 +3326,10 @@ def main(args: Args, stdout: Stdout):
     stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
     stdout.print("héllo".codes(), "".codes(), "€".code())
     for code in [65, 233, 8364, -1, 55296, 1114112]:
-        match str.from_code(code):
-            case Ok(text):
-                stdout.print(text, text.len())
-            case Err(error):
-                stdout.print(error.message)
+        text = str.from_code(code) else as error:
+            stdout.print(error.message)
+            continue
+        stdout.print(text, text.len())
     mut numbers = {1: 2, 3: 4}
     shared = numbers
     numbers.clear()
@@ -4352,11 +4349,10 @@ def main(stdout: Stdout):
                 rounds(stdout)
             case _:
                 noted(stdout)
-        match ran:
-            case Ok(_):
-                stdout.print(\"no failure\")
-            case Err(problem):
-                stdout.print(\"failed\", problem.at, problem.notes())
+        _ = ran else as problem:
+            stdout.print(\"failed\", problem.at, problem.notes())
+            continue
+        stdout.print(\"no failure\")
     mut kind = Kind.Button(clicks=1)
     match put_back(ref kind):
         case Ok(_):
@@ -4405,13 +4401,15 @@ def main(stdout: Stdout):
             case Err(problem):
                 stdout.print(\"failed\", problem.at)
     for flag in [0, 1, 2]:
-        match opened(flag):
-            case Ok(value):
-                stdout.print(\"ok\", value)
-            case NotFound(path):
-                stdout.print(\"not found\", path)
-            case Denied:
-                stdout.print(\"denied\")
+        value = opened(flag) else as why:
+            match why:
+                case NotFound(path):
+                    stdout.print(\"not found\", path)
+                    continue
+                case Denied:
+                    stdout.print(\"denied\")
+                    continue
+        stdout.print(\"ok\", value)
 ",
     )?;
     assert_eq!(printed, "failed 0\ncircle 3\nnot found a\ndenied\nok 2\n");
@@ -4512,11 +4510,9 @@ def print_nothing(n: int):
 
 ## Runs a job in a task of its own, and says how its task ended.
 def ran(done: Sender[str], at: int) -> str:
-    match launched(done, at=at):
-        case Ok(_):
-            return "ended"
-        case Err(_):
-            return "crashed"
+    _ = launched(done, at=at) else:
+        return "crashed"
+    return "ended"
 
 def launched(done: Sender[str], at: int) fails Crashed:
     with launch(() => job(done, at)) as task:
@@ -4875,11 +4871,10 @@ def run(bad: bool, stdout: Stdout) fails Outer:
 
 def main(stdout: Stdout):
     for bad in [False, True]:
-        match run(bad, stdout):
-            case Ok(_):
-                stdout.print("worked")
-            case Err(why):
-                stdout.print("failed", why)
+        _ = run(bad, stdout) else as why:
+            stdout.print("failed", why)
+            continue
+        stdout.print("worked")
 "#,
     )?;
     assert_eq!(printed, "got 2\nworked\nfailed Outer(why=\"the inner source failed\")\n");
@@ -4916,15 +4911,19 @@ def run(n: int) fails Shut | Late:
 
 def main(stdout: Stdout):
     for n in [0, 1, 2, 3]:
-        match run(n):
-            case Ok(_):
-                stdout.print("went through")
-            case Err(Late(waited=_)):
-                stdout.print("late")
-            case Err(Shut.Stuck(name=name)):
-                stdout.print("named", name)
-            case Err(error):
-                stdout.print(error.said())
+        _ = run(n) else as why:
+            match why:
+                case Late(waited=_):
+                    stdout.print("late")
+                    continue
+                case Shut.Stuck(name=name):
+                    stdout.print("named", name)
+                    continue
+                case _:
+                    error = why
+                    stdout.print(error.said())
+                    continue
+        stdout.print("went through")
 "#,
     )?;
     assert_eq!(printed, "named door\nlate\njammed\nwent through\n");
@@ -4966,11 +4965,10 @@ def used(n: int, stdout: Stdout) fails Boom:
 
 def main(stdout: Stdout):
     for n in [1, -1]:
-        match used(n, stdout):
-            case Ok(_):
-                stdout.print("worked")
-            case Err(why):
-                stdout.print("failed", why)
+        _ = used(n, stdout) else as why:
+            stdout.print("failed", why)
+            continue
+        stdout.print("worked")
 "#,
     )?;
     assert_eq!(
@@ -5045,11 +5043,10 @@ def outer(fine: bool) -> with int fails Second:
 
 def main(stdout: Stdout):
     for fine in [True, False]:
-        match used(fine, stdout):
-            case Ok(_):
-                stdout.print(\"worked\")
-            case Err(problem):
-                stdout.print(\"failed\", problem)
+        _ = used(fine, stdout) else as problem:
+            stdout.print(\"failed\", problem)
+            continue
+        stdout.print(\"worked\")
 
 def used(fine: bool, stdout: Stdout) fails Second:
     with outer(fine)? as value:
@@ -5140,9 +5137,10 @@ def main(stdout: Stdout):
     stdout.print(first_big(db, ref log, limit=50) else -9)
     stdout.print(count(db, ref log) else -9)
     for held in [1, 9]:
-        match poked(held, ref log):
-            case Ok(_): stdout.print(\"poked\")
-            case Err(error): stdout.print(error.why)
+        _ = poked(held, ref log) else as error:
+            stdout.print(error.why)
+            continue
+        stdout.print(\"poked\")
     for line in log.lines:
         stdout.print(line)
 ";
@@ -5163,21 +5161,17 @@ def made() -> int fails Boom:
     return 5
 
 def held_open(stdout: Stdout) -> with int fails Boom:
-    match made():
-        case Ok(conn):
-            lend conn
-            stdout.print(\"done\", conn)
-        case Err(problem):
-            fail problem
+    conn = made() else as problem:
+        fail problem
+    lend conn
+    stdout.print(\"done\", conn)
 
 def later(stdout: Stdout) -> with int fails Boom:
     conn = 3
     lend conn
-    match made():
-        case Ok(found):
-            stdout.print(found + conn)
-        case Err(problem):
-            fail problem
+    found = made() else as problem:
+        fail problem
+    stdout.print(found + conn)
 
 def bound_then_assigned(stdout: Stdout) -> with int fails Boom:
     lend 1
@@ -7299,11 +7293,11 @@ def half(n: int) -> int fails Fault:
     n // 2
 
 def show(n: int) -> str:
-    match half(n):
-        case Ok(got):
-            f"half is {got}"
-        case Fault(reason):
-            reason
+    got = half(n) else as why:
+        match why:
+            case Fault(reason):
+                return reason
+    f"half is {got}"
 
 def main(stdout: Stdout):
     stdout.print(sum(n for n in running(odd_squares(count_up(30)))))
@@ -8855,11 +8849,9 @@ def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlErr
 
 ## Signs in with `secret`, and says how it went.
 def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) -> str:
-    match signed_in(server, secret=secret, net=net, entropy=entropy):
-        case Ok(_):
-            return "signed in"
-        case Err(error):
-            return said_of(error)
+    _ = signed_in(server, secret=secret, net=net, entropy=entropy) else as error:
+        return said_of(error)
+    return "signed in"
 
 def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError | Timeout:
     with postgres.connect(net, entropy, url_of(server), password=secret, tls=False)? as pool:
@@ -8879,12 +8871,9 @@ def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
         database=rest.split("/")[1],
         secret=Secret.of(who.split(":")[1]),
     )
-    match run(server, stdout=stdout, net=net, entropy=entropy):
-        case Ok(_):
-            pass
-        case Err(error):
-            stdout.print(said_of(error).startswith(f"couldn't connect to {server.host}:{server.port}"))
-            return
+    _ = run(server, stdout=stdout, net=net, entropy=entropy) else as error:
+        stdout.print(said_of(error).startswith(f"couldn't connect to {server.host}:{server.port}"))
+        return
     stdout.print("28P01" in signing_in(server, secret=Secret.of("not the password"), net=net, entropy=entropy))
     stdout.print(signing_in(server, secret=None, net=net, entropy=entropy))
 "#;
@@ -11270,11 +11259,9 @@ struct Point:
     y = 0
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(_):
-            return "refused"
+    _ = found else:
+        return "refused"
+    return "loaded"
 
 def main(stdout: Stdout):
     stdout.print(said(json.loads[float]("1e400")), said(json.loads[float]("-1e400")), said(json.loads[float]("1e300")))
@@ -11367,29 +11354,24 @@ fn small_std_answers_are_right_or_refused() -> std::io::Result<()> {
 from std.path import Path
 
 def said[T](found: Result[T, InvalidValue]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(_):
-            return "refused"
+    _ = found else:
+        return "refused"
+    return "loaded"
 
 def said_toml(text: str) -> str:
-    match toml.loads[dict[str, str]](text):
-        case Ok(_):
-            return "loaded"
-        case Err(_):
-            return "refused"
+    _ = toml.loads[dict[str, str]](text) else:
+        return "refused"
+    return "loaded"
 
 def main(stdout: Stdout):
     stdout.print(said(base64.decode("aGk=")), said(base64.decode("aGl=")), said(base64.decode("aA==")), said(base64.decode("aB==")))
     stdout.print(Path("..").parent(), Path("a/..").parent(), Path("a/b").parent())
     root = Path("static")
     for asked in ["/a/b.txt", "a.txt", "/../secret", "a/../../b", "a\x00b", "a\\b"]:
-        match root.inside(asked):
-            case Ok(found):
-                stdout.print(found)
-            case Err(_):
-                stdout.print("refused")
+        found = root.inside(asked) else:
+            stdout.print("refused")
+            continue
+        stdout.print(found)
     stdout.print(said_toml("d = 2024-02-29\n"), said_toml("d = 2023-02-29\n"), said_toml("d = 2024-02-30\n"), said_toml("d = 2024-04-31\n"))
     match csv.loads("a;;b\n", delimiter=";;"):
         case Ok(_):
@@ -11421,11 +11403,9 @@ fn csv_dumps_writes_what_loads_reads_back_as_the_same_rows() -> std::io::Result<
 
 def back(rows: list[list[str]]) -> str:
     text = csv.dumps(rows) else return "refused"
-    match csv.loads(text):
-        case Ok(read):
-            return str(read == rows)
-        case Err(_):
-            return "False"
+    read = csv.loads(text) else:
+        return "False"
+    return str(read == rows)
 
 def main(stdout: Stdout):
     stdout.print(back([["﻿a", "b"]]), back([["﻿"]]), back([["a"], [], ["b"]]))
@@ -11494,7 +11474,7 @@ fn a_response_cant_make_the_client_hold_without_end() -> std::io::Result<()> {
         Ok(())
     });
     let source = format!(
-        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    match net.get(\"http://127.0.0.1:{port}/\", timeout=10s):\n        case Ok(answer):\n            return answer.text()\n        case Err(_):\n            return \"refused\"\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
+        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    answer = net.get(\"http://127.0.0.1:{port}/\", timeout=10s) else:\n        return \"refused\"\n    return answer.text()\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
     );
     let printed = printed_by("client_holds", &source)?;
     server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
@@ -11563,17 +11543,15 @@ fn a_url_prints_as_written_and_a_host_stays_a_host() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     for text in ["mailto:a@b", "/a%2Fb", "/%ff", "http://x/a%20b", "file:///x", "https://me@example.com:8/a?b=1#c"]:
-        match url.parse(text):
-            case Ok(found):
-                stdout.print(str(found) == text, str(found))
-            case Err(error):
-                stdout.print("refused", text, error.message)
+        found = url.parse(text) else as error:
+            stdout.print("refused", text, error.message)
+            continue
+        stdout.print(str(found) == text, str(found))
     for text in ["http://a@b@c/", "http://good.com%2f.evil.com/", "http://a%40b/"]:
-        match url.parse(text):
-            case Ok(found):
-                stdout.print("host", found.host)
-            case Err(_):
-                stdout.print("refused")
+        found = url.parse(text) else:
+            stdout.print("refused")
+            continue
+        stdout.print("host", found.host)
 "#,
     )?;
     assert_eq!(
@@ -11704,7 +11682,7 @@ fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> 
     std::os::unix::fs::symlink(place.join("outside"), place.join("inside/door"))?;
     let folder = place.to_string_lossy().into_owned();
     let source = format!(
-        "def read_out(fs: Fs, path: str) -> str:\n    match fs.read_text(path):\n        case Ok(text):\n            return text\n        case Err(_):\n            return \"refused\"\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    match narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\"):\n        case Ok(_):\n            stdout.print(\"wrote\")\n        case Err(_):\n            stdout.print(\"refused\")\n"
+        "def read_out(fs: Fs, path: str) -> str:\n    text = fs.read_text(path) else:\n        return \"refused\"\n    return text\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    match narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\"):\n        case Ok(_):\n            stdout.print(\"wrote\")\n        case Err(_):\n            stdout.print(\"refused\")\n"
     );
     let printed = printed_by("fs_only_link", &source)?;
     let escaped = place.join("outside/new.txt").exists();
@@ -11821,11 +11799,10 @@ def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError | Time
 
 def main(stdout: Stdout, net: Net, entropy: Entropy):
     for at, port in enumerate(PORTS):
-        match run(port, weak=at >= STRICT, net=net, entropy=entropy):
-            case Ok(_):
-                stdout.print("went through")
-            case Err(error):
-                stdout.print(said_of(error))
+        _ = run(port, weak=at >= STRICT, net=net, entropy=entropy) else as error:
+            stdout.print(said_of(error))
+            continue
+        stdout.print("went through")
 "#;
 
 /// A server can't trick the driver. A commit the server answers with `ROLLBACK` fails. A server
@@ -11898,11 +11875,9 @@ from std.postgres import PgMessage, PgReader
 def read(data: bytes) -> str:
     mut reader = PgReader()
     reader.feed(data)
-    match reader.next():
-        case Ok(_):
-            return "read"
-        case Err(_):
-            return "refused"
+    _ = reader.next() else:
+        return "refused"
+    return "read"
 
 def main(stdout: Stdout):
     stdout.print(read(bytes([84, 0, 0, 0, 6, 255, 255])))
@@ -12004,7 +11979,7 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let folder = place.to_string_lossy().replace('\\', "\\\\");
     let source = format!(
-        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    match found:\n        case Ok(n):\n            return f\"read {{n}}\"\n        case Err(_):\n            return \"failed\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
+        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(found: Result[int, IoError]) -> str:\n    n = found else:\n        return \"failed\"\n    return f\"read {{n}}\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(chunked(fs, path=\"{folder}/folder\")), said(chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(lined(fs, path=\"{folder}/bad.txt\")), said(lined(fs, path=\"{folder}/good.txt\")))\n"
     );
     let printed = printed_by("iter_fail", &source)?;
     std::fs::remove_dir_all(&place)?;
@@ -12039,7 +12014,7 @@ fn postgres_asks_for_tls_and_never_falls_back_to_the_clear() -> std::io::Result<
     let refused = postgres_tls_answering(b"N")?;
     let injected = postgres_tls_answering(b"SR\0\0\0\x08\0\0\0\0")?;
     let source = format!(
-        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, f\"postgres://u@localhost:{{port}}/d\", password=Secret.of(\"pw\"))? as _:\n        pass\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        match run(port, net=net, entropy=entropy):\n            case Ok(_):\n                stdout.print(\"went through\")\n            case Err(error):\n                stdout.print(error.message())\n"
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, f\"postgres://u@localhost:{{port}}/d\", password=Secret.of(\"pw\"))? as _:\n        pass\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        _ = run(port, net=net, entropy=entropy) else as error:\n            stdout.print(error.message())\n            continue\n        stdout.print(\"went through\")\n"
     );
     let printed = printed_by("postgres_tls", &source)?;
     let lines: Vec<&str> = printed.lines().collect();
@@ -12082,11 +12057,9 @@ struct Link:
     next: Link? = None
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(error):
-            return error.message
+    _ = found else as error:
+        return error.message
+    return "loaded"
 
 def changed(data: bytes, at: int, to: int) -> bytes:
     mut items = list[int]()
@@ -12180,11 +12153,9 @@ def step(seed: int) -> int:
     (seed * 1103515245 + 12345) % 2147483648
 
 def tried(data: bytes, limits: Limits) -> int:
-    match pack.loads[Node](data, limits=limits):
-        case Ok(_):
-            return 1
-        case Err(_):
-            return 0
+    _ = pack.loads[Node](data, limits=limits) else:
+        return 0
+    return 1
 
 ## Where the value starts: after the header, and the layout saved with it.
 def body(data: bytes) -> int:
@@ -12364,11 +12335,9 @@ def names(node: NewNode) -> list[str]:
     [node.name] + names(rest)
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(error):
-            return error.message
+    _ = found else as error:
+        return error.message
+    return "loaded"
 
 def main(stdout: Stdout):
     chain = Node(name="a", next=Node(name="b", next=Node(name="c")))
@@ -12521,13 +12490,11 @@ def main(stdout: Stdout):
     mut read = 0
     mut failed = ""
     while True:
-        match cut.next[Event]():
-            case Ok(found):
-                if found is None: break
-                read += 1
-            case Err(error):
-                failed = error.message
-                break
+        found = cut.next[Event]() else as error:
+            failed = error.message
+            break
+        if found is None: break
+        read += 1
     stdout.print(read, failed)
     # `take` gives what's new since the last, to send.
     mut sending = Packer()
@@ -12585,11 +12552,9 @@ def asking(start: bytes, count: int) -> bytes:
     start + bytes(varint(count))
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(error):
-            return error.message
+    _ = found else as error:
+        return error.message
+    return "loaded"
 
 def main(stdout: Stdout):
     empty = pack.dumps([Hollow()])
@@ -12673,11 +12638,9 @@ struct Scene:
     shapes: list[Shape]
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(error):
-            return error.message
+    _ = found else as error:
+        return error.message
+    return "loaded"
 
 ## Where the value starts: after the header, and the layout saved with it.
 def body(data: bytes) -> int:
@@ -12753,11 +12716,9 @@ struct Log:
     picked: (Circle | int)? = None
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(error):
-            return error.message
+    _ = found else as error:
+        return error.message
+    return "loaded"
 
 def main(stdout: Stdout):
     scene = Scene(main=Square(side=2.0), count="many", shapes=[Circle(radius=1.5), 7], named={"a": Circle(radius=2.0)})
@@ -12810,11 +12771,9 @@ struct World:
     last: Id[Unit]? = None
 
 def said[T](found: Result[T, ParseError]) -> str:
-    match found:
-        case Ok(_):
-            return "loaded"
-        case Err(error):
-            return error.message
+    _ = found else as error:
+        return error.message
+    return "loaded"
 
 def changed(data: bytes, at: int, to: int) -> bytes:
     mut items = list[int]()
@@ -14953,11 +14912,10 @@ def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
     # Results holding them.
     for at in range(3):
-        match get(at):
-            case Ok(value):
-                stdout.print("ok", value)
-            case Err(failure):
-                stdout.print("err", failure)
+        value = get(at) else as failure:
+            stdout.print("err", failure)
+            continue
+        stdout.print("ok", value)
     # JSON of them.
     d = Doc(.Word(long), [Token.Blank, Token.Num(2), Token.Word("x")], long)
     text = json.dumps(d)
@@ -16700,23 +16658,30 @@ def main(stdout: Stdout):
     for name, level in [("ash", 7), ("kit", 1), ("", 9)]:
         result = challenge(name, level)
         stdout.print(result)
-        match result:
-            case Ok(text):
-                stdout.print(text)
-            case TooWeak(level):
-                stdout.print("weak", level)
-            case Err(error):
-                stdout.print("other", error, f"{error}")
+        text = result else as why:
+            match why:
+                case TooWeak(level):
+                    stdout.print("weak", level)
+                    continue
+                case _:
+                    error = why
+                    stdout.print("other", error, f"{error}")
+                    continue
+        stdout.print(text)
     for code in [0, 3]:
-        match three("", level=1, code=code):
-            case Ok(text):
-                stdout.print(text)
-            case Plain(code):
-                stdout.print("plain", code)
-            case NotFound(name):
-                stdout.print("not found", name.len())
-            case Err(error):
-                stdout.print("other", error)
+        text = three("", level=1, code=code) else as why:
+            match why:
+                case Plain(code):
+                    stdout.print("plain", code)
+                    continue
+                case NotFound(name):
+                    stdout.print("not found", name.len())
+                    continue
+                case _:
+                    error = why
+                    stdout.print("other", error)
+                    continue
+        stdout.print(text)
     match three("kit", level=1, code=0):
         case Err(error):
             stdout.print(error)
@@ -16827,19 +16792,15 @@ struct Words:
 
     def int(ref self) -> int fails ParseError:
         word = self.next()?
-        match int(word):
-            case Ok(n):
-                n
-            case Err(_):
-                fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
+        n = int(word) else:
+            fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
+        n
 
     def float(ref self) -> float fails ParseError:
         word = self.next()?
-        match float(word):
-            case Ok(x):
-                x
-            case Err(_):
-                fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
+        x = float(word) else:
+            fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
+        x
 
     def bool(ref self) -> bool fails ParseError:
         self.next()? == "yes"
@@ -16992,13 +16953,11 @@ def read(text: str) -> Unit fails ParseError:
     src.value[Unit]()?
 
 def shown(text: str) -> str:
-    match read(text):
-        case Ok(unit):
-            orders = " ".join([str(order) for order in unit.orders])
-            pet = unit.pet else "no pet"
-            f"{unit.name} {unit.health} {pet} {unit.pace} {unit.ready} {unit.tags} {unit.seen.len()} {unit.scores} {orders}"
-        case Err(error):
-            f"failed: {error.message} at {error.column}"
+    unit = read(text) else as error:
+        return f"failed: {error.message} at {error.column}"
+    orders = " ".join([str(order) for order in unit.orders])
+    pet = unit.pet else "no pet"
+    f"{unit.name} {unit.health} {pet} {unit.pace} {unit.ready} {unit.tags} {unit.seen.len()} {unit.scores} {orders}"
 
 def main(stdout: Stdout):
     stdout.print(shown("Unit name ash hp 3 pet - pace 0.5 ready yes tags 2 a b seen 2 7 7 scores 1 hits 9 orders 2 Hold Move Move x 4 end end end"))
@@ -17226,25 +17185,22 @@ def add(a: str, b: str) -> int fails InvalidValue:
 
 def main(stdout: Stdout):
     for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
-        match int(text):
-            case Ok(n):
-                stdout.print(n)
-            case Err(error):
-                stdout.print(error.message)
+        n = int(text) else as error:
+            stdout.print(error.message)
+            continue
+        stdout.print(n)
     for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
-        match float(text):
-            case Ok(x):
-                stdout.print(x)
-            case Err(error):
-                stdout.print(error.message)
+        x = float(text) else as error:
+            stdout.print(error.message)
+            continue
+        stdout.print(x)
     stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
     stdout.print(add("1", b="2") else -1, add("1", b="two") else -1)
     for pattern in ["[0-9]+", "[0-9+"]:
-        match Regex(pattern):
-            case Ok(regex):
-                stdout.print(regex.pattern)
-            case Err(error):
-                stdout.print(error.message)
+        regex = Regex(pattern) else as error:
+            stdout.print(error.message)
+            continue
+        stdout.print(regex.pattern)
     stdout.print(list("héllo"), list(""), set("hello").len(), "l" in set("hello"), set(""))
     stdout.print(set([3, 1, 3, 2, 1]), set(["b", "a", "b", "a key long enough for a block", "a key long enough for a block"]))
     stdout.print(set([(1, 2), (1, 2), (3, 4)]).len())

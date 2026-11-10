@@ -35,19 +35,21 @@ test "loading fills a skipped field in from its default":
     assert loaded.cache.len() == 0 and loaded.seen.len() == 0
 
 test "a saved name wins over names=":
-    assert json.dumps(ash(), names=.camel_case) == "{\"uid\": 7, \"displayName\": \"Ash\"}"
-    loaded = json.loads[Account]("{\"uid\": 7, \"displayName\": \"Ash\"}", names=.camel_case)?
+    assert json.dumps(ash(), names=.CamelCase) == "{\"uid\": 7, \"displayName\": \"Ash\"}"
+    loaded = json.loads[Account]("{\"uid\": 7, \"displayName\": \"Ash\"}", names=.CamelCase)?
     assert loaded.id == 7
 
 test "the field's own name isn't read":
     assert (
-        failure(() => json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}"))
+        failure(() => json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}")?)
         == "`Account` saves `id` as \"uid\", but the text has \"id\""
     )
 
 test "a skipped field in the text is a field it doesn't have":
     assert (
-        failure(() => json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}"))
+        failure(
+            () => json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}")?,
+        )
         == "`Account` doesn't save `cache`, which has `@skip`, but the text has it"
     )
 

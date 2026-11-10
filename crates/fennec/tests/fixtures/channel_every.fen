@@ -53,8 +53,8 @@ def fan_out(stdout: Stdout) fails Closed | Crashed | Timeout:
         with channel[int](size=8) as replies:
             # Made outside the arrows, which take what they call as written.
             back = replies.sender()
-            with launch(() => adds(hits, back))?:
-                with launch(() => adds(hits, back))?:
+            with launch(() => adds(hits, back)?)?:
+                with launch(() => adds(hits, back)?)?:
                     until_heard(hits, replies=replies, listeners=2)?
                     for k in range(1, 101):
                         hits.send(k)?
@@ -67,7 +67,7 @@ def behind(when_behind: Behind) -> int fails Closed | Crashed | Timeout:
         with channel[int](size=8) as replies:
             with channel[int](size=1) as gate:
                 back = replies.sender()
-                with launch(() => lags(hits, back, gate, when_behind))?:
+                with launch(() => lags(hits, back, gate, when_behind)?)?:
                     until_heard(hits, replies=replies, listeners=1)?
                     for k in range(1, 101):
                         hits.send(k)?

@@ -1,0 +1,7 @@
+error: `Name` can't be a dict key or set item, because `Name` has its own `==`
+ --> examples/errors/dict_key_with_its_own_equality.fen:8:5
+  |
+8 |     seen = {Name(text="Ash"): 1}
+  |     ^^^^
+  |
+  = help: key it by one of its fields instead

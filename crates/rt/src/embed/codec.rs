@@ -17,14 +17,25 @@ use crate::packed::Element;
 #[derive(Default)]
 pub struct Writer {
     bytes: Vec<u8>,
+    /// What's taken off every span written, so they're kept as from the start of their file.
+    spans_from: u32,
 }
 
 /// Bytes being read. Every read gives `None` once the bytes run out or don't make sense.
 pub struct Reader<'b> {
     bytes: &'b [u8],
+    /// What's added to every span read, to put them at their file's offset among a program's.
+    spans_at: u32,
 }
 
 impl Writer {
+    /// A writer that keeps spans as offsets from `base`, for something parsed at `base` that may
+    /// be read back at another, as `Reader::with_spans_at` reads it.
+    #[must_use]
+    pub fn with_spans_from(base: u32) -> Self {
+        Writer { bytes: Vec::new(), spans_from: base }
+    }
+
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
@@ -40,7 +51,13 @@ impl Writer {
 
 impl<'b> Reader<'b> {
     pub fn new(bytes: &'b [u8]) -> Self {
-        Reader { bytes }
+        Reader { bytes, spans_at: 0 }
+    }
+
+    /// A reader that puts every span `base` bytes later, for what `Writer::with_spans_from` wrote.
+    #[must_use]
+    pub fn with_spans_at(bytes: &'b [u8], base: u32) -> Self {
+        Reader { bytes, spans_at: base }
     }
 
     fn word(&mut self) -> Option<u64> {
@@ -291,14 +308,15 @@ impl<A: Decode, B: Decode> Decode for (A, B) {
 
 impl Encode for Span {
     fn encode(&self, to: &mut Writer) {
-        self.start.encode(to);
-        self.end.encode(to);
+        self.start.saturating_sub(to.spans_from).encode(to);
+        self.end.saturating_sub(to.spans_from).encode(to);
     }
 }
 
 impl Decode for Span {
     fn decode(from: &mut Reader<'_>) -> Option<Self> {
-        Some(Span { start: u32::decode(from)?, end: u32::decode(from)? })
+        let at = from.spans_at;
+        Some(Span { start: u32::decode(from)?.checked_add(at)?, end: u32::decode(from)?.checked_add(at)? })
     }
 }
 

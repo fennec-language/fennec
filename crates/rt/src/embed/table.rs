@@ -132,15 +132,22 @@ impl Table {
         self.regions.iter().map(|(_, pages)| pages.iter().flatten().count()).sum()
     }
 
-    /// How many blocks it holds of each size, in words, for counting what's live.
+    /// How many blocks it holds of each size, in words, for counting what's live, and apart from
+    /// them how many are never freed: each a literal's, a constant's, a capability's or a case's
+    /// with no fields, made once, the first time it's asked for, and kept for the run.
     #[cfg(any(test, feature = "threads"))]
-    pub(super) fn sizes(&self) -> std::collections::BTreeMap<usize, usize> {
+    pub(super) fn sizes(&self) -> (std::collections::BTreeMap<usize, usize>, usize) {
         let mut sizes = std::collections::BTreeMap::new();
+        let mut never_freed = 0;
         let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
         for block in placed.flat_map(|page| page.iter().flatten()).chain(self.short.values()) {
-            *sizes.entry(block.len()).or_default() += 1;
+            if super::heap::is_never_freed(block) {
+                never_freed += 1;
+            } else {
+                *sizes.entry(block.len()).or_default() += 1;
+            }
         }
-        sizes
+        (sizes, never_freed)
     }
 
     fn slot(&self, address: usize) -> Option<&[u64]> {
@@ -280,6 +287,26 @@ impl Table {
         self.remove_any(address)
     }
 
+    /// Takes the block at `address` out when `wanted` says so of it, finding it once. `None`,
+    /// having changed nothing, when it isn't here or isn't wanted.
+    pub(super) fn take_if(
+        &mut self,
+        address: usize,
+        wanted: impl FnOnce(&[u64]) -> bool,
+    ) -> Option<Box<[u64]>> {
+        let taken = match slot_mut(&mut self.regions, address) {
+            Some(slot) => slot.take_if(|block| wanted(block)),
+            None if self.short.get(&address).is_some_and(|block| wanted(block)) => {
+                self.short.remove(&address)
+            }
+            None => None,
+        };
+        if taken.is_some() {
+            self.len -= 1;
+        }
+        taken
+    }
+
     /// `remove` for what can't yet tell whether this is a string, and so forgets its place after.
     pub(super) fn remove_any(&mut self, address: usize) -> Option<Box<[u64]>> {
         let removed = match slot_mut(&mut self.regions, address) {
@@ -310,6 +337,27 @@ mod tests {
     }
 
     #[test]
+    fn takes_a_block_only_when_wanted() {
+        let mut table = Table::default();
+        let placed: Box<[u64]> = vec![7; PLACED_WORDS].into_boxed_slice();
+        let short: Box<[u64]> = vec![8; 2].into_boxed_slice();
+        let (placed_at, short_at) = (at(&placed), at(&short));
+        table.insert(placed);
+        table.insert(short);
+        for address in [placed_at, short_at] {
+            assert!(table.take_if(address, |_| false).is_none());
+            assert!(table.get(address).is_some(), "a block not wanted stays");
+        }
+        assert_eq!(table.len(), 2);
+        assert!(table.take_if(placed_at + 8, |_| true).is_none(), "nothing's taken from inside a block");
+        assert_eq!(table.take_if(placed_at, |block| block[0] == 7).map(|block| at(&block)), Some(placed_at));
+        assert_eq!(table.take_if(short_at, |block| block[0] == 8).map(|block| at(&block)), Some(short_at));
+        assert_eq!(table.len(), 0);
+        assert!(table.get(placed_at).is_none() && table.get(short_at).is_none());
+        assert!(table.take_if(placed_at, |_| true).is_none(), "a block's taken once");
+    }
+
+    #[test]
     fn gives_back_pages_whose_blocks_have_all_left() {
         let mut table = Table::default();
         // Kept outside the table, so each round's blocks land where no earlier round's did, as a
@@ -326,6 +374,20 @@ mod tests {
         }
         assert_eq!(table.len(), 0);
         assert!(table.pages() < 200, "{} pages kept for no blocks", table.pages());
+    }
+
+    /// A block that's never freed is counted apart from the live ones, by its count or its owner:
+    /// a case's block whose count has drifted below the mark is still its case's.
+    #[test]
+    fn blocks_never_freed_are_counted_apart() {
+        use super::super::heap::{IMMORTAL, NEVER_FREED_OWNER, OWNER_SHIFT};
+        let mut table = Table::default();
+        table.insert(vec![1, 2, 3].into_boxed_slice());
+        table.insert(vec![IMMORTAL, 2, 3, 4].into_boxed_slice());
+        table.insert(
+            vec![IMMORTAL - 2, (NEVER_FREED_OWNER << OWNER_SHIFT) | 0x17, 2, 0, 0].into_boxed_slice(),
+        );
+        assert_eq!(table.sizes(), ([(3, 1)].into(), 2));
     }
 
     #[test]

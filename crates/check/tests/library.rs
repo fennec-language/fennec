@@ -118,6 +118,35 @@ fn a_database_url_written_with_its_password_is_refused() {
     assert_eq!(with_imports(imports, program), [refused, refused]);
 }
 
+/// Every case of every enum and error in the standard library is capitalized, as language.md says
+/// a case is, so an option reads like any other case: `extra=.Ignore`, `names=.CamelCase`.
+#[test]
+fn std_cases_are_capitalized() {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../syntax/src/stdlib");
+    let mut lower = Vec::new();
+    let mut read = 0;
+    for entry in std::fs::read_dir(&folder).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "fen") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let module = fennec_syntax::parse_prelude(&source).unwrap();
+        read += 1;
+        for item in &module.items {
+            if let fennec_syntax::Item::Enum(def) | fennec_syntax::Item::Error(def) = item {
+                for case in &def.cases {
+                    if !case.name.starts_with(|first: char| first.is_ascii_uppercase()) {
+                        lower.push(format!("{}.{}", def.name, case.name));
+                    }
+                }
+            }
+        }
+    }
+    assert!(read > 20, "the standard library's files weren't found in {}", folder.display());
+    assert_eq!(lower, Vec::<String>::new());
+}
+
 #[test]
 fn json_and_toml_are_called_the_right_way() {
     let program = "
@@ -362,7 +391,7 @@ fn a_static_method_takes_its_types_from_the_type_written() {
 /// checks it again once trimmed.
 #[test]
 fn with_launch_is_written_in_around_the_launch_intrinsics() {
-    let source = "from std.concurrent import Closed, Crashed, Inbox, Timeout\n\nenum Sound:\n    Play(name: str, volume: float)\n    StopAll\n\nerror Muted:\n    why: str\n\ndef audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:\n    for sound in inbox:\n        match sound:\n            case .Play(name, volume):\n                if volume > 1.0: fail Muted(why=\"too loud\")\n                stdout.print(f\"play {name}\")\n            case .StopAll:\n                stdout.print(\"stop\")\n\ndef tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\ndef main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:\n    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:\n        sounds.send(.Play(name=\"jump\", volume=0.8))?\n        sounds.send(.StopAll)?\n    with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
+    let source = "from std.concurrent import Closed, Crashed, Inbox, Timeout\n\nenum Sound:\n    Play(name: str, volume: float)\n    StopAll\n\nerror Muted:\n    why: str\n\ndef audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:\n    for sound in inbox:\n        match sound:\n            case .Play(name, volume):\n                if volume > 1.0: fail Muted(why=\"too loud\")\n                stdout.print(f\"play {name}\")\n            case .StopAll:\n                stdout.print(\"stop\")\n\ndef tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\ndef main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:\n    with launch((inbox) => audio(inbox, stdout)?, stop_after=5s, inbox_size=4)? as sounds:\n        sounds.send(.Play(name=\"jump\", volume=0.8))?\n        sounds.send(.StopAll)?\n    with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
     let mut module = fennec_syntax::parse(source).unwrap();
     fennec_check::check_and_resolve(&mut module).unwrap();
     assert_eq!(fennec_check::check(&module).err(), None);

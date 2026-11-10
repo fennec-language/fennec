@@ -239,11 +239,19 @@ impl Lowering<'_> {
             return Err("it calls a method on a union that isn't a name or a field".to_owned());
         }
         let union = self.expr(object)?;
+        // What's left of a union after an `is` is held as the union it was, so each member is
+        // tested by where it is in that one.
+        let Some(Type::Union(held)) = type_in(&self.locals, &union) else {
+            return Err("it calls a method on a union that isn't held as one".to_owned());
+        };
         let dest = keep.map(|ty| self.temporary(ty.clone()));
         let join = self.new_block();
-        for (member, ty) in members.iter().enumerate() {
-            let next = (member + 1 < members.len()).then(|| self.new_block());
+        for (at, ty) in members.iter().enumerate() {
+            let next = (at + 1 < members.len()).then(|| self.new_block());
             if let Some(next) = next {
+                let member = held.iter().position(|each| each == ty);
+                let member =
+                    member.ok_or_else(|| format!("`{ty}` isn't one of {}", Type::Union(held.clone())))?;
                 let test = self.temporary(Type::Bool);
                 self.emit(InstKind::IsMember { dest: test, value: union.clone(), member }, span);
                 self.branch_or(Operand::Local(test), next);

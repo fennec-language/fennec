@@ -60,10 +60,11 @@ for unit_id, ref unit in units.items(): ...
 `enumerate` takes anything you can loop over and gives `(index, value)`, and `for i, ref x in enumerate(xs)` is allowed when `xs` has positions, `len` and `[]`. `ref` over a generator is a compile error. `items()` is for keyed things: a dict, a `Table`, and a user type that gives `len`, `[]` and `key(i)`. Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built, apart from `items()` on a user type.
 *Why:* `enumerate` is what Python people expect, a generator's items aren't anywhere to change, and the compiler's own tables need an `Id` and a `ref` in one loop.
 
-Adding and removing happen outside the loop. In a plain loop the item is a plain value, so the body can write to other items through the collection:
+Adding and removing happen outside the loop, and so does writing to other items: a loop's collection can't be changed while it's looped over, even in a plain loop. Collect the changes first and apply them after:
 ```fennec
-for attacker_id, attacker in units.items():
-    units[attacker.target_id].health -= attacker.damage
+hits = [(attacker.target_id, attacker.damage) for _, attacker in units.items()]
+for target_id, damage in hits:
+    units[target_id].health -= damage
 ```
 
 **Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. A `ref self` method can't be given what it changes either: `bag.grab(bag.items)` is refused when `grab` changes `items`, and `bag.grow(bag.size)` is fine, since a number is passed as its value. `xs.swap(i, j)` swaps two items, and `pair` is gone. Built, `swap` too. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
@@ -71,7 +72,7 @@ for attacker_id, attacker in units.items():
 for ref unit in units:
     units[unit.target_id].health -= 1    # error: the target may be `unit`
 ```
-*Why:* The compiler can't tell whether a unit targets itself, and two names for one slot are the aliasing Fennec leaves out. The plain loop above says the same thing with no overlap.
+*Why:* The compiler can't tell whether a unit targets itself, and two names for one slot are the aliasing Fennec leaves out. Collecting the hits first says the same thing with no overlap.
 
 **Everything is a value unless the code says otherwise.** Structs nest freely and are stored in place. Nothing is shared unless the code says `ref`, `Id` or `shared`.
 *Why:* A reader can see every place two names reach the same thing, and the compiler keeps flat memory and every optimization everywhere else.
@@ -460,7 +461,7 @@ score = load_score(fs, path) else as why:
 - Chris decided this on 2026-11-09, after three reviews. Built: `?`, `else value`, `else as why:` with a block that leaves, `match why:` inside it, `fail why`, refusing a bare `fail`, refusing `else as` on a plain optional, and `?` then `else` on `T? fails E`. Not built yet: removing `Ok`, `Err` and `Result`, which a `match` and a written `Result[int, Bad]` still take, and an `else` block giving a value, which is refused today with "an `else:` block must leave". This replaces matching on `Ok` and `Err`, `Result` types written in code, `return Err(...)`, and narrowing with `if x is Err(...)`.
 *Why:* One failure system instead of two: a failure is never a value that can be stored and forgotten, so nothing silently becomes a placeholder. It's close to Zig's `catch |err| switch`.
 
-**A block that stands where a value goes ends with that value, or leaves.** Three blocks can: `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`. Bare blocks and a multi-line `if` can't, since the one-line `x if c else y` covers that. Chris decided this on 2026-11-09. Built: `x = match ...:`, and refusing a multi-line `if` as a value. Not built yet: `x = lock ... as ...:`, which doesn't parse today, and the `else as` block's value.
+**A block that stands where a value goes ends with that value, or leaves.** Three blocks can: `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`. Bare blocks and a multi-line `if` can't, since the one-line `x if c else y` covers that. Chris decided this on 2026-11-09. Built: all three, and refusing a multi-line `if` as a value.
 *Why:* One rule covers every block that gives a value, and a value that depends on a condition already has a one-line form.
 
 **An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
@@ -747,7 +748,7 @@ with db.transaction()? as tx, fs.open(path)? as file:
 There are no moves. A resource that has to live a long time, like a pooled database connection, lives inside one keeper task's `with`, and everyone else sends it messages. This replaces the rule that a long-lived resource is an owned value that moves and closes when its last owner goes away.
 *Why:* If everything temporary lives inside a block, there's nothing for lifetime annotations to describe.
 
-**`with` is only for real lifecycles:** things that begin and have to end, like files, connections, transactions and tasks. A `with` block's last line is its value. `with` never locks: that's `lock`, under Concurrency.
+**`with` is only for real lifecycles:** things that begin and have to end, like files, connections, transactions and tasks. A `with` block isn't a value: what it works out goes in a name declared before it, or it returns. `with` never locks: that's `lock`, under Concurrency.
 *Why:* Every `with` then means the same thing, so a reader knows something gets closed at the end of the block. Claims about a function, like `@hot`, go on the function.
 
 **Names don't leak out of blocks, and reusing a name still in scope is a compile error.** There's no `const` or `let`: `a = 5` is immutable and `mut a = 5` isn't.
@@ -853,11 +854,11 @@ json.dumps(Upload(at=clock.time(), data="hi".encode(), id=9007199254740993))
 There's no per-format override, like a `def json` method on a type; one `def serialize` and `def deserialize` serve every format. This replaces the earlier rule that a type overrides one format with a method named for it.
 *Why:* What's on the wire is what's in the struct, with nothing hidden.
 
-**Case style is an option on each call,** not on the type: `json.dumps(x, names=.camel_case)` and `json.loads[T](text, names=.camel_case)`. The styles are `.snake_case`, the default, `.camel_case`, `.pascal_case` and `.kebab_case`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
+**Case style is an option on each call,** not on the type: `json.dumps(x, names=.CamelCase)` and `json.loads[T](text, names=.CamelCase)`. The styles are `.SnakeCase`, the default, `.CamelCase`, `.PascalCase` and `.KebabCase`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
 
 **`@serialize(name="uid")` on a field renames it,** for the rare real case like an API's `"uid"`. A key that isn't a word, like `"first name"`, loads into a dict instead. This replaces `@json(name=...)`.
 
-**Unknown keys are an error when loading,** and `extra=.ignore` skips them: `json.loads[T](text, extra=.ignore)`. Against mass assignment, load a request body into a type that holds only the fields a caller may set.
+**Unknown keys are an error when loading,** and `extra=.Ignore` skips them: `json.loads[T](text, extra=.Ignore)`. Against mass assignment, load a request body into a type that holds only the fields a caller may set.
 
 **Every field is serialized by default, private `_` fields included.** This replaces the rule that `_name` fields are skipped.
 - `@skip` on a field leaves it out, and the field must have a default, so loading still builds a valid value. `@skip` on a field without a default is a compile error.

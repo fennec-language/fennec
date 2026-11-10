@@ -148,19 +148,25 @@ impl Diagnostic {
 
     /// Renders the diagnostic with the line it points at, for a terminal.
     pub fn render(&self, path: &str, source: &str) -> String {
-        let also = self.also().map(|span| place(path, source, span));
-        self.render_with(path, source, also.as_deref())
+        let line = |at| line_of(source, at);
+        let also = self.also().map(|span| place(path, source, span, &line));
+        self.render_with(path, source, also.as_deref(), &line)
     }
 
-    /// Like `render`, with where `also` points written out, as `path:line:column`.
-    pub(crate) fn render_with(&self, path: &str, source: &str, also: Option<&str>) -> String {
+    /// Like `render`, with where `also` points written out, as `path:line:column`, and `line_of`
+    /// saying which line of `source` an offset is on, as the free function does.
+    pub(crate) fn render_with(
+        &self,
+        path: &str,
+        source: &str,
+        also: Option<&str>,
+        line_of: &dyn Fn(usize) -> (usize, usize),
+    ) -> String {
         if self.span.in_prelude() {
             return format!("error: {}\n --> the standard library\n{}", self.message, self.notes(" "));
         }
         let start = usize::try_from(self.span.start).unwrap_or(0).min(source.len());
-        let before = source.get(..start).unwrap_or("");
-        let line_number = before.matches('\n').count() + 1;
-        let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+        let (line_number, line_start) = line_of(start);
         let line_end =
             source.get(start..).and_then(|rest| rest.find('\n')).map_or(source.len(), |at| start + at);
         let line = source.get(line_start..line_end).unwrap_or("");
@@ -184,12 +190,22 @@ impl Diagnostic {
     }
 }
 
-/// Where a span starts, as `path:line:column`.
-pub(crate) fn place(path: &str, source: &str, span: Span) -> String {
+/// The line an offset into `source` is on, from 1, and where that line starts, by reading up to it.
+/// An offset inside a character is on the first line.
+pub(crate) fn line_of(source: &str, at: usize) -> (usize, usize) {
+    let before = source.get(..at).unwrap_or("");
+    (before.matches('\n').count() + 1, before.rfind('\n').map_or(0, |newline| newline + 1))
+}
+
+/// Where a span starts, as `path:line:column`, with `line_of` as `render_with` takes it.
+pub(crate) fn place(
+    path: &str,
+    source: &str,
+    span: Span,
+    line_of: &dyn Fn(usize) -> (usize, usize),
+) -> String {
     let start = usize::try_from(span.start).unwrap_or(0).min(source.len());
-    let before = source.get(..start).unwrap_or("");
-    let line = before.matches('\n').count() + 1;
-    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    let (line, line_start) = line_of(start);
     let column = source.get(line_start..start).map_or(0, |text| text.chars().count()) + 1;
     format!("{path}:{line}:{column}")
 }

@@ -36,11 +36,10 @@ pub const MARKED: u64 = 1 << 40;
 
 /// Whether the block at `address` is a list or a dict a log can mark: not one already, nor one that
 /// lives for the whole run.
-pub(super) fn markable(state: &State, address: u64) -> bool {
-    state.heap.block(address).is_some_and(|block| {
-        (element_of(state, block).is_some() || super::dicts::is_dict(state, block))
-            && block.first().is_some_and(|count| count & MARKED == 0 && *count < super::heap::IMMORTAL)
-    })
+pub(super) fn markable_block(state: &State, block: &[u64]) -> bool {
+    block.first().is_some_and(|count| count & MARKED == 0 && *count < super::heap::IMMORTAL)
+        && (element_number(state, block).is_some_and(|at| at < state.tables.elements.len())
+            || super::dicts::is_dict(state, block))
 }
 
 /// Marks a list or a dict for a lock's log.
@@ -54,10 +53,16 @@ pub(super) fn mark(state: &mut State, address: u64) {
 /// log puts it back in; otherwise it goes if nothing else holds it.
 pub(super) fn unmark(state: &mut State, address: u64, owner: bool) {
     let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) else { return };
-    // An owner either way, which letting go of again, without `owner`, frees a list nothing holds.
-    *count = (*count & !MARKED) + 1;
-    if !owner {
-        release(state, address);
+    // An owner either way, which letting go of again, without `owner`, frees one nothing else holds.
+    // Mostly something else does, so that's let go of here, with no second look for the block.
+    let left = *count & !MARKED;
+    if owner || left == 0 {
+        *count = left + 1;
+        if !owner {
+            release(state, address);
+        }
+    } else {
+        *count = left;
     }
 }
 
@@ -235,8 +240,13 @@ pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Elem
 
 /// The number of the kind of item a list's block holds.
 pub(super) fn element_number(state: &State, block: &[u64]) -> Option<usize> {
-    let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    let at = shape_word(block)?.checked_sub(first_list_shape(state))?;
     usize::try_from(at).ok()
+}
+
+/// The shape of a list of the first kind of item: lists' shapes follow strings' and dicts'.
+pub(super) fn first_list_shape(state: &State) -> u64 {
+    state.tables.str_shape + 1 + super::dicts::SHAPES
 }
 
 /// The number of a kind of item and how many words one takes, worked out once by the heap where

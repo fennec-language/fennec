@@ -1080,7 +1080,8 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => self.float_compare(BinOp::Eq, (&x, &y)),
+                        // An `f32` is held as the `double` that's exactly its value.
+                        Kind::Float | Kind::F32 => self.float_compare(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
@@ -1127,7 +1128,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{less} = icmp ult i1 {x}, {y}"));
                             self.line(&format!("{more} = icmp ugt i1 {x}, {y}"));
                         }
-                        Kind::Float => {
+                        Kind::Float | Kind::F32 => {
                             let (is_less, is_more) = (
                                 self.float_compare(BinOp::Lt, (&x, &y)),
                                 self.float_compare(BinOp::Gt, (&x, &y)),
@@ -1206,7 +1207,7 @@ impl Emit<'_, '_, '_> {
         let Some(layout) = self.module.layouts.get(id) else { return false };
         let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
         fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
-            Some(Kind::Float) => true,
+            Some(Kind::Float | Kind::F32) => true,
             Some(Kind::Struct(inner) | Kind::Enum(inner)) => self.holds_a_float(inner),
             _ => false,
         })
@@ -1741,6 +1742,17 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Whether `local` was read from `object` along `path`, a field at a time.
+    fn reads_from(&self, local: LocalId, object: LocalId, path: &[String]) -> bool {
+        match path.split_last() {
+            None => local == object,
+            Some((last, rest)) => self
+                .known
+                .field_of(local)
+                .is_some_and(|(from, name)| name == last && self.reads_from(*from, object, rest)),
+        }
+    }
+
     pub(crate) fn set_index(
         &mut self,
         object: LocalId,
@@ -1783,7 +1795,25 @@ impl Emit<'_, '_, '_> {
             {
                 return self.slice_set(&place, (key, value_word), (&slice, found), value);
             }
-            return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
+            // In a function whose locks keep what they change ready to put back, where a dict the
+            // lock marked is changed in place: a lookup on a local read from this place however
+            // deep, as a lock's `held.counts` is the shared value's `value.counts`. Only for the
+            // runtime, which checks the entry is still that key's in this dict before writing
+            // there. Other functions' stores are as they were.
+            let checked = if self.saving.is_empty() {
+                None
+            } else {
+                found.clone().or_else(|| {
+                    self.found_entries
+                        .iter()
+                        .rev()
+                        .find(|(dict, looked_up, _)| {
+                            self.reads_from(*dict, object, path) && looked_up == index
+                        })
+                        .map(|(_, _, entry)| entry.clone())
+                })
+            };
+            return self.dict_store_checked(&place, (key, value_word), index, value, (found, checked));
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;

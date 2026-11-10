@@ -66,20 +66,20 @@ test "a whole level saves and loads with one call":
 
 test "a case that doesn't exist says where":
     assert (
-        failure(() => json.loads[list[Order]]("[\"Hold\", \"Run\"]"))
+        failure(() => json.loads[list[Order]]("[\"Hold\", \"Run\"]")?)
         == "`[1]` is \"Run\", which isn't a case of `Order`"
     )
     assert (
-        failure(() => json.loads[Order]("\"Move\""))
+        failure(() => json.loads[Order]("\"Move\"")?)
         == "the text is `Order.Move`, which needs its fields"
     )
     assert (
-        failure(() => json.loads[Order]("{\"Move\": {\"to\": [1, 2], \"fast\": true}}"))
+        failure(() => json.loads[Order]("{\"Move\": {\"to\": [1, 2], \"fast\": true}}")?)
         == "`Order.Move` has no field \"fast\", but the text has one"
     )
-    assert failure(() => json.loads[Order]("3")) == "the text should be an Order, but it's an int"
+    assert failure(() => json.loads[Order]("3")?) == "the text should be an Order, but it's an int"
     assert (
-        failure(() => json.loads[Order]("{\"Hold\": 1, \"Move\": 2}"))
+        failure(() => json.loads[Order]("{\"Hold\": 1, \"Move\": 2}")?)
         == "the text should be an Order, but it's a table"
     )
 

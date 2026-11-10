@@ -92,7 +92,7 @@ impl FnCx<'_> {
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
             ExprKind::Else { value, default } => self.else_value(value, default, span),
-            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
             ExprKind::Index { object, index } => self.index(object, index, span),
@@ -1142,29 +1142,36 @@ impl FnCx<'_> {
         self.value_functions += 1;
         self.arrows += 1;
         self.arrows_open.push((span.start, span.end));
-        let returns = self.expr(body);
+        // What its `?`s pass up is the arrow's own failure, not the function's around it.
+        let around = std::mem::take(&mut self.errors);
+        let mut returns = self.expr(body);
+        let errors = std::mem::replace(&mut self.errors, around);
         self.arrows_open.pop();
         self.arrows -= 1;
         self.value_functions -= 1;
         self.pop();
+        if matches!(self.checker.settled(&returns), Type::Result(..)) {
+            // A failure passes up only with `?`, from an arrow as from a `def`.
+            let end = Span { start: body.span.end, end: body.span.end };
+            self.error(
+                Diagnostic::new("this can fail, and a failure passes up only with `?`", body.span)
+                    .with_help("write `?` after it: `fennec fix` makes this change")
+                    .with_fix(end, "?"),
+            );
+        } else if !errors.is_empty() {
+            let error = self.checker.join_all(&errors).unwrap_or(Type::Unknown);
+            returns = Type::Result(Box::new(returns), Box::new(error));
+        }
         let ty = Type::Arrow(known, Box::new(returns));
         self.record(span, &ty);
         ty
     }
 
     /// `value?`: the value inside a result, passing its error up.
-    fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Type {
-        // A function used as a value says nothing of failing, so nothing is told to expect it.
-        let in_arrow = self.arrows > 0;
-        if in_arrow {
-            self.error(
-                Diagnostic::new("an arrow function can't pass a failure up with `?`", span)
-                    .with_help("give a value with `else` here, or write a loop, which can use `?`"),
-            );
-        }
+    fn try_value(&mut self, value: &Expr, context: Option<&Expr>) -> Type {
+        // Inside an arrow function, what's passed up is the arrow's failure.
         let ty = self.expr(value);
         let inner = match &ty {
-            Type::Result(inner, _) if in_arrow => inner.as_ref().clone(),
             Type::Result(inner, error) => {
                 if context.is_none() {
                     self.errors.push(error.as_ref().clone());
@@ -1189,9 +1196,7 @@ impl FnCx<'_> {
                 let message = format!("`from` needs an error, but this is {}", a(&error));
                 self.error(Diagnostic::new(message, context.span));
             }
-            if !in_arrow {
-                self.errors.push(error);
-            }
+            self.errors.push(error);
         }
         inner
     }

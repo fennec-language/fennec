@@ -253,22 +253,76 @@ mod tests {
         assert!(nested >= 1, "{nested} dicts of lists of units copied and changed");
     }
 
-    /// A union's members are called on through the union in every way, two and three of them.
+    /// A union's members are called on through the union in every way, two and three of them,
+    /// and on what's left of three after `is`.
     #[test]
     fn it_calls_on_unions_every_way() {
-        let mut found = [0_usize; 6];
+        let calls = [
+            "matched2(",
+            "matched3(",
+            "checked2(",
+            "checked3(",
+            "direct2(",
+            "direct3(",
+            "rest3(",
+            "plain2(",
+            "plain3(",
+        ];
+        let mut found = [0_usize; 9];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
             let body = source.split("def main").last().unwrap_or_default();
-            let calls = ["matched2(", "matched3(", "checked2(", "checked3(", "direct2(", "direct3("];
             for (count, call) in found.iter_mut().zip(calls) {
                 *count += usize::from(body.contains(call));
             }
         }
         assert!(found.iter().all(|count| *count >= 2), "{found:?}");
+    }
+
+    /// Lists are lent to calls through `ref` beside values read from them, values are assigned to
+    /// themselves, dicts are changed through copies, and under locks too, where it's undone.
+    #[test]
+    fn it_lends_copies_and_assigns_to_itself() {
+        let shapes = [
+            "appended_all(ref v",
+            "[0], ",
+            ".items = ",
+            "held.counts = kept",
+            "held.counts = held.counts",
+            "held.counts.pop(",
+            "].hp += ",
+            "\"].append(",
+            "\"] = Unit(",
+        ];
+        let mut found = [0_usize; 9];
+        let mut selves = 0_usize;
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            let body = source.split("def main").last().unwrap_or_default();
+            let made: String = source
+                .split("\ndef ")
+                .filter(|def| def.starts_with("locked") || def.starts_with("worker"))
+                .collect();
+            for (count, shape) in found.iter_mut().zip(shapes) {
+                *count += usize::from(body.contains(shape) || made.contains(shape));
+            }
+            // A local assigned to itself: `name = name`.
+            selves += usize::from(body.lines().any(|line| {
+                line.trim().split_once(" = ").is_some_and(|(left, right)| {
+                    left == right && left.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+            }));
+        }
+        assert!(
+            found.iter().all(|count| *count >= 2) && selves >= 2,
+            "{found:?}, {selves} assigned to themselves"
+        );
     }
 
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.
@@ -280,7 +334,7 @@ mod tests {
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
             let source = source::source(&generate::program(&bytes));
-            found += usize::from(source.contains("for planned in v"));
+            found += usize::from(source.contains("for change in v"));
         }
         assert!(found >= 3, "{found} programs plan and apply");
     }

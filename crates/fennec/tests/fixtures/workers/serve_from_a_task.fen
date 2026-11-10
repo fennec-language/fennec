@@ -14,6 +14,6 @@ def serve(net: Net, greeting: str, names: list[str], stdout: Stdout) fails NetEr
 def main(net: Net, stdout: Stdout) fails NetError | Crashed:
     greeting = "a greeting long enough to need a block of its own:"
     names = ["the first name, also long enough", "the second"]
-    with launch(() => serve(net, greeting, names, stdout))?:
+    with launch(() => serve(net, greeting, names, stdout)?)?:
         pass
     stdout.print("done", names[1])

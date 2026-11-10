@@ -1002,6 +1002,42 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     Err(failure)
 }
 
+/// How much of what a connection writes the kernel holds before a write waits for the other side to
+/// read: Linux's most by default.
+#[cfg(windows)]
+const SEND_BUFFER_BYTES: usize = 4 << 20;
+
+/// Gives a connection a send buffer of a fixed size. Windows otherwise grows it to take whatever's
+/// written, so a client that never reads can make the kernel hold unbounded memory for each
+/// connection, and a write's `timeout=` never comes. Elsewhere the kernel bounds it already.
+#[cfg(windows)]
+pub(crate) fn bound_send_buffer(socket: &impl std::os::windows::io::AsSocket) {
+    let _ = socket2::SockRef::from(socket).set_send_buffer_size(SEND_BUFFER_BYTES);
+}
+
+/// Gives a connection a send buffer of a fixed size, which only Windows needs.
+#[cfg(not(windows))]
+pub(crate) fn bound_send_buffer<S>(_socket: &S) {}
+
+/// The most of a write handed to Windows at once. Windows takes the whole of a `send` into the kernel
+/// if its send buffer has any room at all, so a big write would go in whole, however small the
+/// buffer: in pieces, a write holds at most one piece more than the buffer, and waits, and times out,
+/// as it does elsewhere.
+#[cfg(windows)]
+const WRITE_PIECE: usize = 256 << 10;
+
+/// What of `data` to hand the kernel in one write.
+pub(crate) fn piece(data: &[u8]) -> &[u8] {
+    #[cfg(windows)]
+    {
+        data.get(..WRITE_PIECE).unwrap_or(data)
+    }
+    #[cfg(not(windows))]
+    {
+        data
+    }
+}
+
 fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
     keep_stream_as(socket, peer, secured, false)
 }
@@ -1013,6 +1049,7 @@ fn keep_stream_as(
     secured: Option<Secured>,
     served: bool,
 ) -> Result<i64, Failure> {
+    bound_send_buffer(&socket);
     let reading = match secured {
         Some(secured) => Reading::Tls(secured),
         None => Reading::Plain(BufReader::new(
@@ -1134,7 +1171,7 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
             let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
             let _ = socket.set_write_timeout(Some(left));
         }
-        let wrote = socket.write(data);
+        let wrote = socket.write(piece(data));
         if deadline.is_some() {
             let _ = socket.set_write_timeout(None);
         }
@@ -1262,7 +1299,7 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
 /// otherwise waiting at most `timeout`. A task holds the connection only while it tries, never
 /// while it waits, so another task can write to it meanwhile.
 fn reading<T>(
-    stream: &Stream,
+    stream: &Arc<Stream>,
     timeout: Option<Duration>,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
@@ -1282,10 +1319,20 @@ fn reading<T>(
             Reading::Tls(secured) => secured.socket(),
         };
         wait_at_most(socket, timeout)?;
+        // A launched task blocks its thread here, so a stop shuts the socket from where it's made,
+        // and the read, ended, fails as stopped. Told before it began, the read never starts.
+        let blocked = BlockedRead::of(stream);
+        if stopped_while_reading() {
+            return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+        }
         let done = match &mut *reader {
             Reading::Plain(plain) => read(plain),
             Reading::Tls(secured) => read(&mut **secured),
         };
+        drop(blocked);
+        if stopped_while_reading() {
+            return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+        }
         return done.map_err(|error| Failure::of(&error, timeout));
     }
     let socket = &stream.socket;
@@ -1310,6 +1357,70 @@ fn reading<T>(
     let done = done?;
     blocking.map_err(|error| Failure::Other(error.to_string()))?;
     Ok(done)
+}
+
+/// Whether this is a launched task that's been stopped, which then fails as a stopped one does.
+fn stopped_while_reading() -> bool {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        crate::embed::serve::cut_short()
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        false
+    }
+}
+
+/// The connections launched tasks are blocked reading, each by its task's stop. On Windows a task's
+/// read blocks its thread, so nothing run there can end it: its stop shuts the socket instead.
+#[cfg(any(test, feature = "threads"))]
+static BLOCKED_READS: Mutex<Vec<(usize, Arc<Stream>)>> = Mutex::new(Vec::new());
+
+/// A launched task's read blocking its thread, noted while it lasts.
+struct BlockedRead {
+    #[cfg(any(test, feature = "threads"))]
+    stop: Option<usize>,
+}
+
+impl BlockedRead {
+    fn of(stream: &Arc<Stream>) -> BlockedRead {
+        #[cfg(any(test, feature = "threads"))]
+        {
+            let stop = crate::embed::threads::task_stop().map(|stop| Arc::as_ptr(&stop).addr());
+            if let Some(stop) = stop {
+                BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner).push((stop, Arc::clone(stream)));
+            }
+            BlockedRead { stop }
+        }
+        #[cfg(not(any(test, feature = "threads")))]
+        {
+            let _ = stream;
+            BlockedRead {}
+        }
+    }
+}
+
+impl Drop for BlockedRead {
+    fn drop(&mut self) {
+        #[cfg(any(test, feature = "threads"))]
+        if let Some(stop) = self.stop {
+            let mut blocked = BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = blocked.iter().position(|(task, _)| *task == stop) {
+                blocked.swap_remove(at);
+            }
+        }
+    }
+}
+
+/// Ends the read the launched task with this stop is blocked in, if it's in one, by shutting its
+/// socket: the read then finds the task stopped.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
+    let stop = Arc::as_ptr(stop).addr();
+    let blocked = BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner);
+    for (_, stream) in blocked.iter().filter(|(task, _)| *task == stop) {
+        let _ = stream.socket.shutdown(Shutdown::Both);
+    }
 }
 
 /// Parks this task until `socket` may be readable or `deadline` passes: true if it passed, or the

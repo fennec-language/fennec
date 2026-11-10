@@ -228,6 +228,27 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
     }
 }
 
+/// Starts the spans lowering writes below every one written in so far in `module`, so none is
+/// another's.
+pub(crate) fn below_written(module: &mut Module) {
+    let mut written_low = Span::PRELUDE;
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if written_in(expr.span) {
+            written_low = written_low.min(expr.span.start);
+        }
+    });
+    NEXT.with(|next| next.set(next.get().min(written_low - 1)));
+}
+
+/// Reserves `length` spans in a row for text written in, giving the lowest.
+pub(crate) fn reserved(length: u32) -> u32 {
+    NEXT.with(|next| {
+        let low = next.get() - length;
+        next.set(low - 1);
+        low
+    })
+}
+
 /// The lowest a span a lowering writes can be: well above any program's text, and below the
 /// standard library's.
 const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
@@ -626,7 +647,7 @@ fn match_params(
 
 /// A type as written where a type goes and as written in brackets, parsed from its source and
 /// moved to spans of its own, which no program's text reaches.
-fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
+pub(crate) fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
     let source = ty.source()?;
     let text = format!("def held__(held: {source}):\n    _ = held[{source}]\n");
     let module = fennec_syntax::parse(&text).ok()?;
@@ -656,7 +677,7 @@ fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
 
 /// Writes in what each type parameter stands for: in written types, as in `held: list[T]`, and in
 /// brackets, as in `Channel[T](...)`.
-fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
+pub(crate) fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
     // What's written in can name the caller's own type parameters, like `T` in `Box[T]` for a
     // source's `T`, and the walk goes on into it: each name is marked first, then the marks are
     // written in, so nothing written in is retyped again.
@@ -752,7 +773,7 @@ fn untyped_where_unknown(body: &mut [Stmt], unknown: &[&str]) {
     }
 }
 
-fn retype_one(written: &mut TypeExpr, given: &BTreeMap<String, (TypeExpr, Expr)>) {
+pub(crate) fn retype_one(written: &mut TypeExpr, given: &BTreeMap<String, (TypeExpr, Expr)>) {
     if written.args.is_empty()
         && let Some((ty, _)) = given.get(&written.name)
     {
@@ -1324,11 +1345,25 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
 }
 
 /// A source's body as `with src else fail E:` writes it in: each `fail` does what the `else` does
-/// instead, and so does each `?`, through `else`.
+/// instead, and so does each `?`, through `else`. A `?` in an arrow function passes the arrow's
+/// own failure up, not the source's, so it stays.
 fn fail_instead(body: &mut [Stmt], instead: &Expr) {
     instead_of_fails(body, instead);
     let leaving = Box::new(instead.clone());
+    let mut in_arrows = std::collections::BTreeSet::new();
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Lambda { body, .. } = &mut expr.kind {
+            fennec_syntax::visit::in_expr(body, &mut |inner| {
+                if matches!(inner.kind, ExprKind::Try { .. }) {
+                    in_arrows.insert((inner.span.start, inner.span.end));
+                }
+            });
+        }
+    });
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if in_arrows.contains(&(expr.span.start, expr.span.end)) {
+            return;
+        }
         match &mut expr.kind {
             ExprKind::Try { value, context: None } => {
                 let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };

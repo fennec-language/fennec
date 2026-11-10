@@ -310,6 +310,13 @@ pub(super) fn task_mark(task: u64) -> u64 {
 /// this, in the shape word, which doesn't change once the block's in use.
 pub const NEVER_FREED_OWNER: u64 = 0xFFFD;
 
+/// Whether a block is never freed: by its owner, or by a count no thread's owners can reach.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn is_never_freed(block: &[u64]) -> bool {
+    block.first().is_some_and(|count| *count >= IMMORTAL)
+        || block.get(1).is_some_and(|shape| *shape >> OWNER_SHIFT == NEVER_FREED_OWNER)
+}
+
 /// Marks a block as never freed, by its owner.
 pub(super) fn mark_never_freed(block: &mut [u64]) {
     mark_owner(block, NEVER_FREED_OWNER << OWNER_SHIFT);
@@ -567,9 +574,9 @@ impl Heap {
         }
     }
 
-    /// Its live blocks, by how many words each takes, the statics among them.
+    /// Its live blocks, by how many words each takes, and apart from them how many are never freed.
     #[cfg(any(test, feature = "threads"))]
-    pub(crate) fn live_by_size(&self) -> std::collections::BTreeMap<usize, usize> {
+    pub(crate) fn live_by_size(&self) -> (std::collections::BTreeMap<usize, usize>, usize) {
         self.blocks.sizes()
     }
 
@@ -777,6 +784,13 @@ impl Heap {
         self.behind.len()
     }
 
+    /// Whether the block at `address` is in this heap's own table or one behind it: one that goes
+    /// when this heap does.
+    pub(super) fn holds_block(&self, address: usize) -> bool {
+        self.blocks.get(address).is_some()
+            || self.behind.iter().any(|(table, _)| table.get(address).is_some())
+    }
+
     /// Takes the current table back out, leaving the one behind it current.
     #[expect(
         clippy::unnecessary_box_returns,
@@ -822,6 +836,19 @@ impl Heap {
 
     pub(super) fn lent_has(&self, address: u64) -> bool {
         usize::try_from(address).is_ok_and(|at| self.lent.as_ref().is_some_and(|lent| lent.get(at).is_some()))
+    }
+
+    /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
+    /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
+    /// `None`, having taken nothing, for any other block.
+    pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
+        let empty_items = &self.empty_items;
+        self.blocks.take_if(at, |block| {
+            !is_handle_block(block)
+                && shape_word(block)
+                    .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
+                    .is_some_and(|number| empty_items.get(number).copied().unwrap_or(false))
+        })
     }
 
     /// Takes a block out of the current table or one behind it.
@@ -898,11 +925,26 @@ fn shape_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
 /// Whether a block is a struct's of plain fields, which a lock's log can mark and save word by word:
 /// no closure, generator or error, whose blocks hold more than their fields, and no enum.
 pub(super) fn is_plain_struct(state: &State, block: &[u64]) -> bool {
-    shape_word(block).is_some_and(|shape| shape < state.tables.str_shape)
-        && matches!(
-            shape_of(state, block).as_deref(),
-            Some(Element::Struct { fields, .. }) if !fields.iter().any(|(name, _)| name.starts_with('\0'))
-        )
+    let Some(shape) = shape_word(block).filter(|shape| *shape < state.tables.str_shape) else { return false };
+    let element = usize::try_from(shape).ok().and_then(|shape| state.tables.shapes.get(shape));
+    matches!(
+        element.map(AsRef::as_ref),
+        Some(Element::Struct { fields, .. }) if !fields.iter().any(|(name, _)| name.starts_with('\0'))
+    )
+}
+
+/// Where a struct's block holds others, as `child_places` finds them, from the plan its shape has.
+pub(super) fn struct_places(state: &State, block: &[u64], found: &mut impl Extend<usize>) {
+    let fields = block.get(HEADER_WORDS..).unwrap_or_default();
+    let plan = shape_word(block)
+        .and_then(|shape| usize::try_from(shape).ok())
+        .and_then(|at| state.heap.plans.get(at));
+    if plan.and_then(|plan| super::plans::places(plan, fields, HEADER_WORDS, found)).is_some() {
+        return;
+    }
+    let mut walked = Vec::new();
+    let _ = child_places(state, block, &mut walked);
+    found.extend(walked);
 }
 
 /// What a block of a struct, enum or tuple is laid out as.

@@ -141,6 +141,16 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     Ok(program)
 }
 
+/// Whether a program loaded from the kit at `dir` has every one of the kit's own modules, as
+/// `kit` shows them.
+pub(crate) fn holds_every_file(program: &Program, dir: &Path, shown_as: &str) -> bool {
+    let Some((root, shown_root)) = find_root(dir, shown_as) else { return false };
+    let mut modules = Vec::new();
+    find_modules(&root.join("src"), &mut Vec::new(), &mut modules);
+    let loaded: HashSet<&str> = program.sources.files().map(|(shown, _)| shown).collect();
+    modules.iter().all(|module| loaded.contains(format!("{shown_root}src/{}.fen", module.join("/")).as_str()))
+}
+
 /// The name a kit's `pack.lock` is held under in its program: one no program can write.
 pub const PACK_LOCK: &str = "\0pack_lock";
 
@@ -369,8 +379,22 @@ pub(crate) fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec
 /// only reserved, not used, until a file nests deeply.
 const PARSING_STACK: usize = 1 << 30;
 
-/// Parses a file at its offset, with the examples in its doc comments as tests if asked.
+/// Parses a file at its offset, with the examples in its doc comments as tests if asked, or takes
+/// its parse from where parses are kept, when one of its text is.
 fn parse_file(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
+    let parses = crate::PARSES.get();
+    if let Some(kept) = parses.and_then(|parses| parses.kept(text, shown, doc_examples, base)) {
+        return Ok(kept);
+    }
+    let fresh = parsed(text, base, shown, doc_examples);
+    if let (Some(parses), Ok(module)) = (parses, &fresh) {
+        parses.keep(text, shown, doc_examples, base, module);
+    }
+    fresh
+}
+
+/// Parses a file at its offset, with the examples in its doc comments as tests if asked.
+fn parsed(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
     let mut module = fennec_syntax::parse_at(text, base)?;
     if doc_examples {
         module.items.extend(fennec_syntax::doc_examples(text, base, shown)?);

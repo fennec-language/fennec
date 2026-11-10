@@ -1,4 +1,4 @@
-from std.concurrent import Crashed
+from std.concurrent import Closed, Crashed, Inbox, Timeout
 
 def sleeper(clock: Clock, fs: Fs, stdout: Stdout):
     clock.sleep(5s)
@@ -6,20 +6,24 @@ def sleeper(clock: Clock, fs: Fs, stdout: Stdout):
     data = fs.read_bytes("no such file") else bytes([1])
     stdout.print("sleeper read", data.len())
 
-def other(clock: Clock, stdout: Stdout):
-    mut total = 0
-    for turn in range(10000):
-        clock.sleep(50us)
-        parts = f"{turn},x".split(",")
-        total += parts.len()
-    stdout.print("other ended fine", total)
+## Waits on its inbox while the sleeper is stopped, and is told once it has been, so on one thread
+## it's the task the thread runs next: what it does that can fail, it does with no failure of the
+## stopped one's.
+def other(inbox: Inbox[int], stdout: Stdout):
+    for rounds in inbox:
+        mut total = 0
+        for turn in range(rounds):
+            parts = f"{turn},x".split(",")
+            total += parts.len()
+        stdout.print("other ended fine", total)
 
 def pair(clock: Clock, fs: Fs, stdout: Stdout) fails Crashed:
     with launch(() => sleeper(clock, fs, stdout), stop_after=20ms)?:
         pass
     stdout.print("the stopped one is over")
 
-def main(clock: Clock, fs: Fs, stdout: Stdout) fails Crashed:
-    with launch(() => other(clock, stdout))?:
+def main(clock: Clock, fs: Fs, stdout: Stdout) fails Closed | Crashed | Timeout:
+    with launch((inbox) => other(inbox, stdout))? as told:
         pair(clock, fs, stdout)?
+        told.send(10000)?
     stdout.print("done")

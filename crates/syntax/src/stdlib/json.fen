@@ -3,18 +3,18 @@ from std.collections import Id
 from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_size, type_name
 from std.io import Reader, Writer, read_all
 
-## How field names are spelled in JSON, set with `names=`. `snake_case` writes them as the
+## How field names are spelled in JSON, set with `names=`. `.SnakeCase` writes them as the
 ## program does. The keys of a dict are written as they are.
 export enum JsonNames:
-    snake_case
-    camel_case
-    pascal_case
-    kebab_case
+    SnakeCase
+    CamelCase
+    PascalCase
+    KebabCase
 
 ## What reading does with a key no field has, set with `extra=`.
 export enum JsonExtra:
-    error
-    ignore
+    Error
+    Ignore
 
 ## A field's name as `names` spells it. Leading underscores stay as they are.
 def spelled_as(name: str, names: JsonNames) -> str:
@@ -30,14 +30,14 @@ def spelled_as(name: str, names: JsonNames) -> str:
             if at > start:
                 part = text_part(name, start, at)
                 match names:
-                    case .snake_case:
+                    case .SnakeCase:
                         return name
-                    case .kebab_case:
+                    case .KebabCase:
                         out += "-" if word > 0 else ""
                         out += part
-                    case .camel_case:
+                    case .CamelCase:
                         out += capital(part) if word > 0 else part
-                    case .pascal_case:
+                    case .PascalCase:
                         out += capital(part)
                 word += 1
             start = at + 1
@@ -178,7 +178,7 @@ struct JsonKey:
 ## Writes JSON into one growing text.
 struct JsonWriter:
     _text = ""
-    _names = JsonNames.snake_case
+    _names = JsonNames.SnakeCase
     _indent = -1
     _depth = 0
     _first = True
@@ -336,7 +336,7 @@ struct JsonWriter:
 
     def field[T: Serializable](ref self, name: str, x: T):
         # Written on one line with names as they are, as most output is, a field takes three pieces.
-        if self._indent < 0 and self._names == .snake_case:
+        if self._indent < 0 and self._names == .SnakeCase:
             if self._first:
                 self._first = False
                 self._text += "\"" + name + "\": "
@@ -347,7 +347,7 @@ struct JsonWriter:
         self._entry()
         self._text += "\""
         match self._names:
-            case .snake_case:
+            case .SnakeCase:
                 self._text += name
             case _:
                 self._text += spelled_as(name, self._names)
@@ -399,7 +399,7 @@ struct JsonWriter:
 ## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
 ## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
 export def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent = -1) -> str:
-    spelled = names else JsonNames.snake_case
+    spelled = names else JsonNames.SnakeCase
     mut out = JsonWriter(_names=spelled, _indent=indent)
     value.serialize(ref out)
     if not out._wants_tables: return out.written()
@@ -682,8 +682,8 @@ def same_bytes(text: str, start: int, word: str, size: int) -> bool:
 ## nothing about what's wrong; only a failed one is read again, keeping track of where it is.
 struct JsonReader:
     _source: str
-    _names = JsonNames.snake_case
-    _extra = JsonExtra.error
+    _names = JsonNames.SnakeCase
+    _extra = JsonExtra.Error
     _explain = False
     _at = 0
     _place = 0
@@ -1157,7 +1157,7 @@ struct JsonReader:
                 self._hint = self._hints.pop() else 0
                 self._seen = self._seens.pop() else 0
                 return False
-            if self._explain and self._extra == .error:
+            if self._explain and self._extra == .Error:
                 self._unknown_first(fields)?
         else:
             if self._explain:
@@ -1170,7 +1170,7 @@ struct JsonReader:
                 return False
             if b != 44: fail no_reason()
             self._at += 1
-        if not self._explain and self._names == .snake_case:
+        if not self._explain and self._names == .SnakeCase:
             at = self._key_in_place(fields)
             if at >= 0:
                 self._place = at
@@ -1238,13 +1238,13 @@ struct JsonReader:
                 self._path.append(key)
             return True
         match self._extra:
-            case .ignore:
+            case .Ignore:
                 self._skip(self._depth)?
                 self._first = False
                 if self._explain:
                     self._path.append(key)
                 return self.next_field(fields)?
-            case .error:
+            case .Error:
                 fail self._unknown(key, fields)
 
     ## Which of `fields` a key is, as a place in it, or -1 for none.
@@ -1255,13 +1255,13 @@ struct JsonReader:
                 saved == key
                 and not (
                     saved == own
-                    and self._names != .snake_case
+                    and self._names != .SnakeCase
                     and spelled_as(own, self._names) != key
                 )
             ):
                 return at
             at += 1
-        if self._names != .snake_case:
+        if self._names != .SnakeCase:
             at = 0
             for saved, own in fields:
                 if saved == own and spelled_as(own, self._names) == key: return at
@@ -1732,8 +1732,8 @@ export def native_loads[T: Deserializable](
     names: JsonNames? = None,
     extra: JsonExtra? = None,
 ) -> T fails ParseError:
-    spelled = names else JsonNames.snake_case
-    keys = extra else JsonExtra.error
+    spelled = names else JsonNames.SnakeCase
+    keys = extra else JsonExtra.Error
     mut src = JsonReader(_source=text, _names=spelled, _extra=keys)
     read_value[T](ref src) else explained[T](text, spelled, keys)?
 

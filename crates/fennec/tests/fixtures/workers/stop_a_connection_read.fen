@@ -9,7 +9,7 @@ def serving(net: Net, stdout: Stdout) fails NetError | Crashed:
     with net.listen(0)? as server:
         stdout.print(server.port)
         for conn in parallel(server):
-            with launch(() => reader(conn, stdout), stop_after=100ms)?:
+            with launch(() => reader(conn, stdout)?, stop_after=100ms)?:
                 pass
             stdout.print("the block ended")
             break

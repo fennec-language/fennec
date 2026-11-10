@@ -376,10 +376,10 @@ fn in_test(
         let quiet = arm.body.iter().all(|stmt| matches!(stmt.kind, StmtKind::Pass));
         match failure {
             Failure::Wrapped(Pattern::Bind(name)) if !taken.contains(name.as_str()) => {
-                let _ = writeln!(out, "{name} = failure_of(() => {called})\n{pad}assert {name} is not None");
+                let _ = writeln!(out, "{name} = failure_of(() => {called}?)\n{pad}assert {name} is not None");
             }
             Failure::Rest | Failure::Wrapped(Pattern::Wildcard) => {
-                let _ = writeln!(out, "assert failure_of(() => {called}) is not None");
+                let _ = writeln!(out, "assert failure_of(() => {called}?) is not None");
             }
             _ => return None,
         }

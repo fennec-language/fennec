@@ -1699,6 +1699,53 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
     )
 }
 
+/// A put after a lookup of the same key under a lock writes where the lookup found it, unless what
+/// came between grew the dict, popped the key or put another: each kept, and each put back by a
+/// failure.
+#[test]
+fn a_put_after_a_lookup_under_a_lock_is_right_whatever_came_between() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("lock_found_entry", include_str!("fixtures/lock_found_entry.fen"))
+}
+
+/// A put after a lookup under a lock, of a number and of a string held in a block, takes and lets go
+/// of the same owners whether it's kept or a failure puts the old value back: twice the rounds hold
+/// no more at the end. The puts are made where the lookup found the key (`found_puts`), so the
+/// rolled-back ones are undone from what that path noted.
+#[test]
+fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) else 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) else:\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
+    let dir = folder("lock_found_counts")?;
+    let program = dir.join("found.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("found");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let run = |rounds: &str| -> std::io::Result<(String, String)> {
+        let ran = Command::new(&executable).arg(rounds).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
+    };
+    let (fewer, more) = (run("60")?, run("120")?);
+    std::fs::remove_dir_all(&dir)?;
+    let names = "name 2, long enough to be held in a block of its own name 1, long enough to be held in a block of its own";
+    assert_eq!((fewer.0, more.0), (format!("20 20 20 {names}\n"), format!("40 40 40 {names}\n")));
+    let field = |counts: &str, name: &str| {
+        counts.split_whitespace().skip_while(|word| *word != name).nth(1).unwrap_or_default().to_owned()
+    };
+    // Both puts of every round, rolled back or kept, but for the six whose key wasn't there yet:
+    // rounds 0, 1 and 2, as round 0's were put back.
+    assert_eq!(field(&fewer.1, "found_puts"), "114", "{}", fewer.1);
+    assert_eq!(field(&fewer.1, "live"), field(&more.1, "live"), "{} / {}", fewer.1, more.1);
+    Ok(())
+}
+
 /// What's changed in place stays right when it's read while changing, and when something still holds
 /// the list as it was.
 #[test]
@@ -3460,7 +3507,7 @@ fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Resu
 def main(stdout: Stdout):
     top = u64.parse(\"18446744073709551615\") else u64(0)
     half = u64.parse(\"9223372036854775808\") else u64(0)
-    stdout.print(top, half, said(() => u64.parse(\"42\")), said(() => u64.from(7)), said(() => u64.from(-1)), said(() => u64.parse(\"18446744073709551616\")), said(() => u64.parse(\"-3\")), said(() => u64.parse(\"seven\")))
+    stdout.print(top, half, said(() => u64.parse(\"42\")?), said(() => u64.from(7)?), said(() => u64.from(-1)?), said(() => u64.parse(\"18446744073709551616\")?), said(() => u64.parse(\"-3\")?), said(() => u64.parse(\"seven\")?))
     stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
     stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
     stdout.print(i8(u64(100)), u32(half >> 33), top << 4, u64(3) << 63)
@@ -4411,6 +4458,37 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// An arrow function's `?` passes its failure up as the arrow's own, natively: `failure_of` gets
+/// it, or doesn't, and a function taking one that fails runs it twice, passing its failure on.
+#[test]
+fn an_arrow_functions_question_mark_passes_its_failure_up_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "arrow_fails",
+        r#"error Bad:
+    why: str
+
+def half(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad(why="neg")
+    n // 2
+
+def twice(run: () -> int fails Bad) -> int fails Bad:
+    run()? + run()?
+
+def main(stdout: Stdout) fails Bad:
+    problem = failure_of(() => half(-1)?)
+    fine = failure_of(() => half(4)?)
+    stdout.print(problem is None, fine is None)
+    stdout.print(twice(() => half(8)? + 1)?)
+    stdout.print(twice(() => half(-2)?) else 99)
+"#,
+        "False True\n10\n99\n",
+    )
+}
+
 /// `else as name:` gives the block what failed, and it still has to leave: by `return`, `continue`
 /// or `fail`, here with a failure that's counted, after a call that gives nothing and one that
 /// gives a value.
@@ -4945,7 +5023,7 @@ def main(stdout: Stdout):
     )
 }
 
-/// A `JsonNames` case written with its enum, as `JsonNames.camel_case`, in a `json.dumps` or a
+/// A `JsonNames` case written with its enum, as `JsonNames.CamelCase`, in a `json.dumps` or a
 /// `json.loads` builds natively as a leading dot does. The calls rewritten to std's code in
 /// Fennec, whose `names` has a type the builtin's doesn't, aren't held again to the rule that
 /// leaves the enum out where it's known: that's for the program as written.
@@ -4963,9 +5041,9 @@ struct Player:
     display_name: str
 
 def main(stdout: Stdout):
-    text = json.dumps(Player(display_name="a"), names=JsonNames.camel_case)
+    text = json.dumps(Player(display_name="a"), names=JsonNames.CamelCase)
     stdout.print(text)
-    stdout.print(json.loads[Player](text, names=JsonNames.camel_case) else Player(display_name="b"))
+    stdout.print(json.loads[Player](text, names=JsonNames.CamelCase) else Player(display_name="b"))
 "#,
         "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
     )
@@ -5327,8 +5405,74 @@ def used(fine: bool, stdout: Stdout) fails Second:
     Ok(())
 }
 
+/// A generic function calling a `with` source its interface gives, `db.transaction()` for
+/// `D: Database`, runs the source of the type it's called with: a copy of it is made for each
+/// type, once each, through another generic function, with the type written in brackets, and for
+/// a parameter typed by the interface itself.
+#[test]
+fn an_interface_source_in_a_generic_runs_each_types_own_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "interface_source",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+interface Database:
+    def run(self, text: str) -> int fails Nope
+    def transaction(self) -> with Transaction fails Nope
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+def saved[D: Database](db: D) -> str fails Nope:
+    with db.transaction()? as tx:
+        count = db.run("abc")?
+        return f"{tx.log} {count}"
+    ""
+
+def twice[D: Database](db: D) -> str fails Nope:
+    first = saved(db)?
+    f"{first}/{saved(db)?}"
+
+def plain(db: Database) -> int fails Nope:
+    with db.transaction()? as tx:
+        return tx.log.len()
+    0
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Lite(name="c"))?)
+    stdout.print(twice(Postgres(host="d"))?, saved[Lite](Lite(name="e"))?)
+    stdout.print(plain(Lite(name="f"))?, plain(Postgres(host="g"))?)
+"#,
+        "lite 3 pg 6 lite 3\npg 6/pg 6 lite 3\n4 2\n",
+    )
+}
+
 /// A function whose last line is a `with` whose block always returns gives back a value on every
-/// way, once the source is written in: alone, and in each branch of an `if`.
+/// way, once the source is written in: alone, in each branch of an `if`, and in each case of
+/// a `match`.
 #[test]
 fn a_function_ending_in_a_with_that_returns_builds_natively() -> std::io::Result<()> {
     if !ready() {
@@ -5358,11 +5502,21 @@ def branched(store: Lite, long: bool) -> int:
         with store.session() as session:
             return session.log.len()
 
+def matched(store: Lite, n: int) -> int:
+    match n:
+        case 0:
+            with store.session() as session:
+                return session.log.len() * 100
+        case _:
+            with store.session() as session:
+                return session.log.len() + n
+
 def main(stdout: Stdout):
     store = Lite(name="a")
     stdout.print(direct(store, "x"), branched(store, long=True), branched(store, long=False))
+    stdout.print(matched(store, 0), matched(store, 3))
 "#,
-        "lite x 40 4\n",
+        "lite x 40 4\n400 7\n",
     )
 }
 
@@ -7097,10 +7251,10 @@ def said[T](run: () -> T fails IoError) -> str:
     f\"{value}\"
 
 def main(stdout: Stdout):
-    stdout.print(said(() => in_a_name(5)), said(() => in_a_name(2)))
-    stdout.print(said(() => in_with(5)), said(() => in_with(2)))
-    stdout.print(said(() => nested(5)), said(() => nested(2)))
-    stdout.print(said(() => listed(5)), said(() => listed(2)))
+    stdout.print(said(() => in_a_name(5)?), said(() => in_a_name(2)?))
+    stdout.print(said(() => in_with(5)?), said(() => in_with(2)?))
+    stdout.print(said(() => nested(5)?), said(() => nested(2)?))
+    stdout.print(said(() => listed(5)?), said(() => listed(2)?))
 ";
     let stop = "IoError(reason=\"stop\")";
     let wanted = format!("{stop} 1\n{stop} 3\n{stop} 5\n{stop} [0, 2]\n");
@@ -7192,12 +7346,12 @@ def joined_or_who(limit: int, stdout: Stdout):
     stdout.print(text)
 
 def main(stdout: Stdout):
-    stdout.print(said(() => total(9)), said(() => total(2)))
+    stdout.print(said(() => total(9)?), said(() => total(2)?))
     total_or_why(2, stdout)
-    stdout.print(said(() => joined(3)), said(() => joined(9)))
+    stdout.print(said(() => joined(3)?), said(() => joined(9)?))
     joined_or_who(1, stdout)
     for limit in [0, 1, 2, 3]:
-        stdout.print(limit, said(() => looped(limit)))
+        stdout.print(limit, said(() => looped(limit)?))
 "#,
     )
 }
@@ -8761,12 +8915,12 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(only.read_text(file).expect(\"it works\"))
     # Outside its folder it can't look at all, which fails rather than saying no.
     stdout.print(only.exists(\"/\") else True)
-    hosts = failure_of(() => only.read_text(\"/etc/hosts\"))
+    hosts = failure_of(() => only.read_text(\"/etc/hosts\")?)
     if hosts is not None:
         stdout.print(hosts.reason.endswith(\"native-capabilities\"))
     else:
         stdout.print(\"read it\")
-    missing = failure_of(() => fs.read_text(\"no such file\"))
+    missing = failure_of(() => fs.read_text(\"no such file\")?)
     if missing is not None:
         stdout.print(missing.reason != \"\")
     else:
@@ -8775,14 +8929,14 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     fs.remove(folder).expect(\"it works\")
     done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
     stdout.print(done.status, done.stdout, done.stderr == \"\")
-    unknown = failure_of(() => process.run(\"no-such-program-at-all\", []))
+    unknown = failure_of(() => process.run(\"no-such-program-at-all\", [])?)
     if unknown is not None:
         stdout.print(unknown.program())
     else:
         stdout.print(\"ran it\")
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
-    refused = failure_of(() => echo.run(\"ls\", []))
+    refused = failure_of(() => echo.run(\"ls\", [])?)
     if refused is not None:
         stdout.print(refused.message())
     else:
@@ -9170,7 +9324,7 @@ def main(stdout: Stdout, fs: Fs):
     only = fs.only(folder)
     write(only, path=folder + \"/b.txt\", text=\"den\").expect(\"it works\")
     stdout.print(read(Saves(fs=only, folder=folder), \"b.txt\").expect(\"it works\"))
-    outside = failure_of(() => write(only, path=\"outside.txt\", text=\"no\"))
+    outside = failure_of(() => write(only, path=\"outside.txt\", text=\"no\")?)
     if outside is not None:
         stdout.print(\"outside what this Fs can reach\" in outside.reason)
     else:
@@ -9230,7 +9384,7 @@ def blocked(fs: Fs) fails IoError:
         fs.write_text(\"taken.txt/inside.txt\", \"here first\")?
 
 def main(fs: Fs, stdout: Stdout):
-    problem = failure_of(() => blocked(fs))
+    problem = failure_of(() => blocked(fs)?)
     if problem is not None:
         stdout.print(\"the block failed:\", problem.reason != \"\")
     else:
@@ -9556,7 +9710,7 @@ test "each test has its own databases"(fs: Fs):
 test "a transaction that fails keeps nothing"(fs: Fs):
     made(fs, "index.db")?
     add(fs, "index.db", [Entry(path="a", size=1, status=.Clean)])?
-    problem = failure_of(() => add(fs, "index.db", [Entry(path="b", size=2, status=.Clean), Entry(path="a", size=9, status=.Clean)]))
+    problem = failure_of(() => add(fs, "index.db", [Entry(path="b", size=2, status=.Clean), Entry(path="a", size=9, status=.Clean)])?)
     assert problem is not None
     match problem:
         case .Constraint(reason=reason):
@@ -9580,7 +9734,7 @@ test "a column that doesn't fit fails with its name"(fs: Fs):
     made(fs, "index.db")?
     add(fs, "index.db", [Entry(path="a", size=4, status=.Clean)])?
     with sqlite.open(fs, "index.db")? as db:
-        text_size = failure_of(() => db.query[Entry](t"select path, path as size, status from entries"))
+        text_size = failure_of(() => db.query[Entry](t"select path, path as size, status from entries")?)
         assert text_size is not None
         match text_size:
             case .Column(name=name, reason=reason):
@@ -9588,14 +9742,14 @@ test "a column that doesn't fit fails with its name"(fs: Fs):
             case _:
                 assert False
         assert db.query[Entry](t"select path, status from entries") fails .Column(name="size")
-        extra = failure_of(() => db.query[Entry](t"select path, size, status, 1 as extra from entries"))
+        extra = failure_of(() => db.query[Entry](t"select path, size, status, 1 as extra from entries")?)
         assert extra is not None
         match extra:
             case .Column(name=name, reason=reason):
                 assert name == "extra" and reason == "`Entry` has no field called `extra`"
             case _:
                 assert False
-        two = failure_of(() => db.query[int](t"select size, path from entries"))
+        two = failure_of(() => db.query[int](t"select size, path from entries")?)
         assert two is not None
         match two:
             case .Column(reason=reason):
@@ -9605,7 +9759,7 @@ test "a column that doesn't fit fails with its name"(fs: Fs):
 
 test "a query is one statement"(fs: Fs):
     with sqlite.open(fs, "index.db")? as db:
-        problem = failure_of(() => db.execute(t"create table a (x int); create table b (x int)"))
+        problem = failure_of(() => db.execute(t"create table a (x int); create table b (x int)")?)
         assert problem is not None
         match problem:
             case .Failed(reason=reason):
@@ -9615,7 +9769,7 @@ test "a query is one statement"(fs: Fs):
 
 test "a narrowed Fs opens only what it reaches"(fs: Fs):
     fs.make_dir("data")?
-    problem = failure_of(() => made(fs.only("data"), "elsewhere.db"))
+    problem = failure_of(() => made(fs.only("data"), "elsewhere.db")?)
     assert problem is not None
     match problem:
         case .Failed(reason=reason):
@@ -9688,7 +9842,7 @@ def opened(fs: Fs, path: str) fails SqlError:
         _ = db.execute(t"select 1")?
 
 test "a folder that isn't there fails it"(fs: Fs):
-    problem = failure_of(() => opened(fs, "no/such/folder/a.db"))
+    problem = failure_of(() => opened(fs, "no/such/folder/a.db")?)
     assert problem is not None
     match problem:
         case .Failed(reason=reason):
@@ -9899,11 +10053,11 @@ def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlErr
             stdout.print(rows_in(db)?)
             # Failures say what they are, and the connection goes on.
             path = "p0"
-            stdout.print(told(() => db.execute(t"insert into fennec_entries values ({path}, {0}, {0.0}, {none}, {False})"), worked="inserted twice"))
-            stdout.print(told(() => db.execute(t"select from no_such_table"), worked="no error"))
-            stdout.print(told(() => db.query[PathOnly](t"select path from fennec_entries"), worked="read a column that isn't there"))
+            stdout.print(told(() => db.execute(t"insert into fennec_entries values ({path}, {0}, {0.0}, {none}, {False})")?, worked="inserted twice"))
+            stdout.print(told(() => db.execute(t"select from no_such_table")?, worked="no error"))
+            stdout.print(told(() => db.query[PathOnly](t"select path from fennec_entries")?, worked="read a column that isn't there"))
             # A transaction that fails changes nothing; one that ends is kept.
-            rolled_back = failure_of(() => adds_then_fails(db))
+            rolled_back = failure_of(() => adds_then_fails(db)?)
             if rolled_back is not None:
                 stdout.print(said(rolled_back), rows_in(db)?)
             else:
@@ -9983,14 +10137,14 @@ def main(stdout: Stdout, process: Process, fs: Fs):
         \"sh\", [\"-c\", \"cat; pwd; printenv FENNEC_FOX\"], input=\"in\\n\", cwd=\"inside\", env={\"FENNEC_FOX\": \"red\"}
     ).expect(\"it works\")
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
-    nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\"))
+    nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\")?)
     if nowhere is not None:
         stdout.print(nowhere.message())
     else:
         stdout.print(\"ran it\")
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
-    refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\"))
+    refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\")?)
     if refused is not None:
         stdout.print(refused.message())
     else:
@@ -10030,12 +10184,12 @@ def main(stdout: Stdout, fs: Fs):
         stdout.print(path.text, fs.metadata(path).expect(\"it works\").is_dir)
     only = fs.only(\"tree/b\")
     stdout.print([path.text for path in only.walk(\"tree/b\").expect(\"it works\")])
-    outside = failure_of(() => only.walk(\"tree\"))
+    outside = failure_of(() => only.walk(\"tree\")?)
     if outside is not None:
         stdout.print(\"refused\")
     else:
         stdout.print(\"walked it\")
-    missing = failure_of(() => fs.walk(\"no such folder\"))
+    missing = failure_of(() => fs.walk(\"no such folder\")?)
     if missing is not None:
         stdout.print(missing.reason != \"\")
     else:
@@ -10098,8 +10252,8 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
             with server.accept()? as conn:
                 stdout.print(conn.read_line()?)
                 stdout.print(conn.read_line()?)
-                stdout.print(reason(() => conn.read_line(timeout=20ms)))
-                stdout.print(reason(() => accepting(server, wait=20ms)))
+                stdout.print(reason(() => conn.read_line(timeout=20ms)?))
+                stdout.print(reason(() => accepting(server, wait=20ms)?))
                 client.write(\"\\n\")?
                 stdout.print(conn.read_line()?)
                 client.write(\"one\\ntwo\\n\")?
@@ -10107,8 +10261,8 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(lines_of(conn)?)
                 stdout.print(conn.read_line()?)
                 conn.close()
-                stdout.print(reason(() => conn.read_line()))
-                stdout.print(reason(() => conn.write(\"gone\")))
+                stdout.print(reason(() => conn.read_line()?))
+                stdout.print(reason(() => conn.write(\"gone\")?))
     7
 
 def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
@@ -10134,14 +10288,14 @@ def looped(net: Net, stdout: Stdout) -> int fails NetError:
             break
         port = server.port
         server.close()
-        stdout.print(reason(() => accepting(server, wait=1s)))
+        stdout.print(reason(() => accepting(server, wait=1s)?))
         return port
     0
 
 def main(net: Net, stdout: Stdout):
-    stdout.print(reason(() => talk(net, stdout)))
+    stdout.print(reason(() => talk(net, stdout)?))
     port = looped(net, stdout) else 0
-    stdout.print(reason(() => connecting(net, host=\"127.0.0.1\", port=port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+    stdout.print(reason(() => connecting(net, host=\"127.0.0.1\", port=port)?) == f\"`127.0.0.1` refused a connection on port {port}\")
 ";
 
 #[test]
@@ -10182,12 +10336,12 @@ def talk(net: Net, stdout: Stdout) fails NetError:
             second.send_to(bytes([1, 2, 3]), packet.sender)?
             answer = first.receive(timeout=2s)?
             stdout.print(answer.data, answer.data[0])
-            waited = failure_of(() => first.receive(timeout=20ms))
+            waited = failure_of(() => first.receive(timeout=20ms)?)
             if waited is not None:
                 stdout.print(waited.message())
             else:
                 stdout.print(\"a packet from nowhere\")
-            unsent = failure_of(() => first.send_to(\"x\", \"no-such-host.invalid:9\"))
+            unsent = failure_of(() => first.send_to(\"x\", \"no-such-host.invalid:9\")?)
             if unsent is not None:
                 stdout.print(unsent.message())
             else:
@@ -10198,7 +10352,7 @@ def talk(net: Net, stdout: Stdout) fails NetError:
                 second.close()
 
 def main(net: Net, stdout: Stdout):
-    talked = failure_of(() => talk(net, stdout))
+    talked = failure_of(() => talk(net, stdout)?)
     if talked is not None:
         stdout.print(talked.message())
     else:
@@ -10732,12 +10886,12 @@ def ask(net: Net, stdout: Stdout) fails NetError:
 def main(net: Net, stdout: Stdout):
     ask(net, stdout) else as error:
         stdout.print(error.message())
-    refused = failure_of(() => net.get("http://127.0.0.1:1/"))
+    refused = failure_of(() => net.get("http://127.0.0.1:1/")?)
     if refused is not None:
         stdout.print(refused.message())
     else:
         stdout.print("an answer from nothing")
-    not_a_url = failure_of(() => net.get("not a url"))
+    not_a_url = failure_of(() => net.get("not a url")?)
     if not_a_url is not None:
         stdout.print(not_a_url.message())
     else:
@@ -11385,7 +11539,7 @@ def crashes(xs: list[int], stdout: Stdout):
     stdout.print(xs[5])
 
 def loud(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
-    with launch((inbox) => audio(inbox, stdout), inbox_size=4)? as sounds:
+    with launch((inbox) => audio(inbox, stdout)?, inbox_size=4)? as sounds:
         sounds.send(.Play(name=\"boom\", volume=3.0))?
 
 def crashing(stdout: Stdout) fails Closed | Crashed | Timeout:
@@ -11400,17 +11554,17 @@ def counts(inbox: Inbox[int], stdout: Stdout):
     stdout.print(\"sum\", sum)
 
 def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
-    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:
+    with launch((inbox) => audio(inbox, stdout)?, stop_after=5s, inbox_size=4)? as sounds:
         sounds.send(.Play(name=\"jump\", volume=0.8))?
         sounds.send(.StopAll)?
     with launch(() => tick(stdout))?:
         pass
-    too_loud = failure_of(() => loud(stdout))
+    too_loud = failure_of(() => loud(stdout)?)
     if too_loud is not None:
         stdout.print(\"failed:\", too_loud)
     else:
         stdout.print(\"ended\")
-    crashed = failure_of(() => crashing(stdout))
+    crashed = failure_of(() => crashing(stdout)?)
     if crashed is not None:
         stdout.print(\"failed:\", crashed)
     else:
@@ -11639,7 +11793,7 @@ def waits(stdout: Stdout) fails Closed | Timeout:
         if got is not None:
             stdout.print(\"got\", got)
         ch.send(1)?
-        full = failure_of(() => ch.send(2, timeout=Duration(nanos=2_000_000)))
+        full = failure_of(() => ch.send(2, timeout=Duration(nanos=2_000_000))?)
         if full is not None:
             stdout.print(\"full:\", full)
         else:
@@ -12150,16 +12304,16 @@ def main(stdout: Stdout):
     stdout.print(json.dumps([ash, ash], indent=2))
     back = json.loads[Unit](text) else ash
     stdout.print(back == ash, json.dumps(back) == text)
-    stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\"}")))
-    stdout.print(said(() => json.loads[Unit]("{\"name\": 1, \"level\": 2}")))
-    stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\", \"at\": {\"x\": 1, \"z\": 2}, \"extra\": 1}")))
-    stdout.print(said(() => json.loads[Unit]("[1, 2")))
-    stdout.print(said(() => json.loads[list[int]]("[1, \"two\"]")))
+    stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\"}")?))
+    stdout.print(said(() => json.loads[Unit]("{\"name\": 1, \"level\": 2}")?))
+    stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\", \"at\": {\"x\": 1, \"z\": 2}, \"extra\": 1}")?))
+    stdout.print(said(() => json.loads[Unit]("[1, 2")?))
+    stdout.print(said(() => json.loads[list[int]]("[1, \"two\"]")?))
     stdout.print(json.loads[Spot]("{\"x\": 1, \"x\": 2}") else Spot(x=0))
     spot_text = toml.dumps(Spot(x=4))
     stdout.print(spot_text)
     stdout.print(toml.loads[Spot](spot_text) else Spot(x=0))
-    stdout.print(said(() => toml.loads[Spot]("x = \"a\"")))
+    stdout.print(said(() => toml.loads[Spot]("x = \"a\"")?))
 "#,
     )
 }
@@ -12187,8 +12341,8 @@ def said(run: () -> Spot fails ParseError) -> str:
     why.message
 
 def main(stdout: Stdout):
-    stdout.print(said(() => json.loads[Spot]("{\"x\": \"one\", \"x\": 2}")))
-    stdout.print(said(() => json.loads[Spot]("{\"y\": \"no\", \"x\": \"one\"}")))
+    stdout.print(said(() => json.loads[Spot]("{\"x\": \"one\", \"x\": 2}")?))
+    stdout.print(said(() => json.loads[Spot]("{\"y\": \"no\", \"x\": \"one\"}")?))
 "#,
     )?;
     assert_eq!(ours, "`x` should be an int, but it's a str\n`y` should be a float, but it's a str\n");
@@ -12223,7 +12377,7 @@ def main(stdout: Stdout):
 
 /// A union's method runs the one of the type its value holds, natively: on the union, in each
 /// `match` case and in a loop over a list of them. A `with` source does too once it's narrowed
-/// with `is`, where each branch's `store` is its own type; on the union it's refused.
+/// with `is`, where each branch's `store` is its own type.
 #[test]
 fn a_unions_methods_and_narrowed_sources_run_the_member_it_holds() -> std::io::Result<()> {
     if !ready() {
@@ -12295,6 +12449,161 @@ def main(stdout: Stdout) fails Nope:
         stdout.print(store.run("ab")?)
 "#,
         "lite 3 pg 8\n1 2 3\n2\n4\n6\n",
+    )
+}
+
+/// What's left of a three-member union after `if store is Lite: return` is the other two, read
+/// natively as the union it was: its members told apart with `is` and `match`, each one's
+/// fields read once it's narrowed to it, a method all of them have called on it, and it given
+/// where a `Pg | Mem` goes, and that where the whole union goes.
+#[test]
+fn what_is_left_of_a_union_after_is_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_rest",
+        r#"struct Lite:
+    name: str
+
+    def label(self) -> str:
+        f"lite {self.name}"
+
+struct Pg:
+    host: str
+
+    def label(self) -> str:
+        f"pg {self.host}"
+
+struct Mem:
+    size: int
+
+    def label(self) -> str:
+        f"mem {self.size}"
+
+type Three = Lite | Pg | Mem
+
+def which(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    if store is Pg:
+        return f"pg {store.host}"
+    f"mem {store.size}"
+
+def kind(store: Three) -> str:
+    if store is Mem:
+        return "mem"
+    stdout_text = f"{store}"
+    match store:
+        case Lite(name=_):
+            return f"lite {store.name} {stdout_text}"
+        case Pg(host=_):
+            return f"pg {store.host} {stdout_text}"
+
+def label(store: Three) -> str:
+    if store is Lite:
+        return "skip"
+    store.label()
+
+def two(store: Pg | Mem) -> str:
+    if store is Pg:
+        return store.host
+    which(store)
+
+def passed(store: Three) -> str:
+    if store is Lite:
+        return "lite"
+    two(store)
+
+def main(stdout: Stdout):
+    stdout.print(which(Lite(name="a")), which(Pg(host="b")), which(Mem(size=1)))
+    stdout.print(kind(Lite(name="a")), kind(Pg(host="b")), kind(Mem(size=1)))
+    stdout.print(label(Lite(name="a")), label(Pg(host="b")), label(Mem(size=1)))
+    stdout.print(passed(Lite(name="a")), passed(Pg(host="b")), passed(Mem(size=1)))
+"#,
+        "lite pg b mem 1\nlite a Lite(name=\"a\") pg b Pg(host=\"b\") mem\nskip pg b mem 1\nlite b mem 1\n",
+    )
+}
+
+/// A `with` source called on a name holding a union runs the source of the member it holds,
+/// natively: on two members and on three, twice in one function, and on a name given a union
+/// from a field.
+#[test]
+fn a_with_source_on_a_union_runs_the_member_it_holds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_sources",
+        r#"error Nope:
+    why: str
+
+struct Transaction:
+    log: str
+
+struct Lite:
+    name: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len()
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="lite") else:
+            pass
+
+struct Mem:
+    size: int
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 3
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log=f"mem{self.size}") else:
+            pass
+
+struct Postgres:
+    host: str
+
+    def run(self, text: str) -> int fails Nope:
+        text.len() * 2
+
+    def transaction(self) -> with Transaction fails Nope:
+        lend Transaction(log="pg") else:
+            pass
+
+type Store = Lite | Postgres
+
+type Three = Lite | Postgres | Mem
+
+struct Holder:
+    db: Three
+
+def saved(store: Store) -> str fails Nope:
+    with store.transaction()? as tx:
+        count = store.run("abc")?
+        return f"{tx.log} {count}"
+    ""
+
+def three(store: Three) -> str fails Nope:
+    mut seen = ""
+    with store.transaction()? as tx:
+        seen = tx.log
+    with store.transaction()? as tx:
+        seen = f"{seen}+{tx.log}"
+    seen
+
+def held(holder: Holder) -> int fails Nope:
+    db = holder.db
+    with db.transaction()? as tx:
+        return tx.log.len()
+    0
+
+def main(stdout: Stdout) fails Nope:
+    stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?)
+    stdout.print(three(Lite(name="a"))?, three(Postgres(host="b"))?, three(Mem(size=7))?)
+    stdout.print(held(Holder(db=Mem(size=42)))?, held(Holder(db=Lite(name="x")))?)
+"#,
+        "lite 3 pg 6\nlite+lite pg+pg mem7+mem7\n5 4\n",
     )
 }
 
@@ -12383,7 +12692,7 @@ def main(stdout: Stdout):
         back = json.loads[Blob](text) else Blob(data=bytes([]))
         stdout.print(text, back.data == blob.data)
     stdout.print(toml.dumps(Blob(data="hello".encode())))
-    bad = failure_of(() => json.loads[Blob]("{\"data\": \"ab=c\"}"))
+    bad = failure_of(() => json.loads[Blob]("{\"data\": \"ab=c\"}")?)
     if bad is not None:
         stdout.print(bad.message)
     else:
@@ -12442,12 +12751,12 @@ def said[T](run: () -> T fails ParseError) -> str:
     return "loaded"
 
 def main(stdout: Stdout):
-    stdout.print(said(() => json.loads[float]("1e400")), said(() => json.loads[float]("-1e400")), said(() => json.loads[float]("1e300")))
-    stdout.print(said(() => toml.loads[dict[str, float]]("a = 1e400\n")), said(() => toml.loads[dict[str, float]]("a = 1e300\n")))
-    stdout.print(said(() => json.loads[Point]("{\"x\": 1, \"x\": 2}")), said(() => json.loads[Point]("{\"x\": 1, \"y\": 2}")))
+    stdout.print(said(() => json.loads[float]("1e400")?), said(() => json.loads[float]("-1e400")?), said(() => json.loads[float]("1e300")?))
+    stdout.print(said(() => toml.loads[dict[str, float]]("a = 1e400\n")?), said(() => toml.loads[dict[str, float]]("a = 1e300\n")?))
+    stdout.print(said(() => json.loads[Point]("{\"x\": 1, \"x\": 2}")?), said(() => json.loads[Point]("{\"x\": 1, \"y\": 2}")?))
     for key in ["1", "-1", "+1", "01", " 1"]:
-        stdout.print(said(() => json.loads[dict[int, int]](f"{{\"{key}\": 2}}")))
-    stdout.print(said(() => json.loads[dict[int, int]]("{1: 2}")))
+        stdout.print(said(() => json.loads[dict[int, int]](f"{{\"{key}\": 2}}")?))
+    stdout.print(said(() => json.loads[dict[int, int]]("{1: 2}")?))
 "#,
     )?;
     assert_eq!(
@@ -12511,7 +12820,7 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(narrow.run(t"printf ok")?.stdout)
     # A value that would start an argument with `-` is refused, and nothing runs.
     upload = "--upload-pack=touch pwned"
-    refused = failure_of(() => process.run(t"printf {upload}"))
+    refused = failure_of(() => process.run(t"printf {upload}")?)
     if refused is not None:
         stdout.print(refused.message())
     path = "-odd"
@@ -12576,7 +12885,7 @@ def said_toml(text: str) -> str:
     return "loaded"
 
 def main(stdout: Stdout):
-    stdout.print(said(() => base64.decode("aGk=")), said(() => base64.decode("aGl=")), said(() => base64.decode("aA==")), said(() => base64.decode("aB==")))
+    stdout.print(said(() => base64.decode("aGk=")?), said(() => base64.decode("aGl=")?), said(() => base64.decode("aA==")?), said(() => base64.decode("aB==")?))
     stdout.print(Path("..").parent(), Path("a/..").parent(), Path("a/b").parent())
     root = Path("static")
     for asked in ["/a/b.txt", "a.txt", "/../secret", "a/../../b", "a\x00b", "a\\b"]:
@@ -12585,7 +12894,7 @@ def main(stdout: Stdout):
             continue
         stdout.print(found)
     stdout.print(said_toml("d = 2024-02-29\n"), said_toml("d = 2023-02-29\n"), said_toml("d = 2024-02-30\n"), said_toml("d = 2024-04-31\n"))
-    if failure_of(() => csv.loads("a;;b\n", delimiter=";;")) is not None:
+    if failure_of(() => csv.loads("a;;b\n", delimiter=";;")?) is not None:
         stdout.print("refused")
     else:
         stdout.print("loaded")
@@ -12731,7 +13040,7 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        refused = failure_of(() => db.execute(t\"insert into m values ({{nan}})\"))\n        if refused is not None:\n            stdout.print(refused.message())\n        else:\n            stdout.print(\"stored\")\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        refused = failure_of(() => db.execute(t\"insert into m values ({{nan}})\")?)\n        if refused is not None:\n            stdout.print(refused.message())\n        else:\n            stdout.print(\"stored\")\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {
@@ -13190,7 +13499,7 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let folder = place.to_string_lossy().replace('\\', "\\\\");
     let source = format!(
-        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(run: () -> int fails IoError) -> str:\n    n = run() else:\n        return \"failed\"\n    return f\"read {{n}}\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(() => chunked(fs, path=\"{folder}/folder\")), said(() => chunked(fs, path=\"{folder}/good.txt\")))\n    stdout.print(said(() => lined(fs, path=\"{folder}/bad.txt\")), said(() => lined(fs, path=\"{folder}/good.txt\")))\n"
+        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(run: () -> int fails IoError) -> str:\n    n = run() else:\n        return \"failed\"\n    return f\"read {{n}}\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(() => chunked(fs, path=\"{folder}/folder\")?), said(() => chunked(fs, path=\"{folder}/good.txt\")?))\n    stdout.print(said(() => lined(fs, path=\"{folder}/bad.txt\")?), said(() => lined(fs, path=\"{folder}/good.txt\")?))\n"
     );
     let printed = printed_by("iter_fail", &source)?;
     std::fs::remove_dir_all(&place)?;
@@ -13350,22 +13659,22 @@ def main(stdout: Stdout):
     back = pack.loads[list[Unit]](data) else []
     stdout.print(data.len(), back == units, back[1].name, back[1].at.x, back[1].tags, back[0].items[0].weight)
     stdout.print(pack.loads[float](pack.dumps(-0.1)) else 0.0, pack.loads[str](pack.dumps("")) else "x")
-    stdout.print(said(() => pack.loads[list[Place]](data)))
-    stdout.print(said(() => pack.loads[list[Unit]](data[0:data.len() - 1])))
-    stdout.print(said(() => pack.loads[int](bytes([1, 2, 3]))))
-    stdout.print(said(() => pack.loads[int](pack.dumps(5) + bytes([0]))))
-    stdout.print(said(() => pack.loads[str](pack.dumps("hello world"), limits=Limits(length=4))))
+    stdout.print(said(() => pack.loads[list[Place]](data)?))
+    stdout.print(said(() => pack.loads[list[Unit]](data[0:data.len() - 1])?))
+    stdout.print(said(() => pack.loads[int](bytes([1, 2, 3]))?))
+    stdout.print(said(() => pack.loads[int](pack.dumps(5) + bytes([0]))?))
+    stdout.print(said(() => pack.loads[str](pack.dumps("hello world"), limits=Limits(length=4))?))
     mut deep = Link()
     for _ in range(10):
         deep = Link(next=deep)
-    stdout.print(said(() => pack.loads[Link](pack.dumps(deep), limits=Limits(depth=4))), said(() => pack.loads[Link](pack.dumps(deep))))
+    stdout.print(said(() => pack.loads[Link](pack.dumps(deep), limits=Limits(depth=4))?), said(() => pack.loads[Link](pack.dumps(deep))?))
     medic = pack.dumps(Kind.Medic)
-    stdout.print(said(() => pack.loads[Kind](changed(medic, at=body(medic), to=9))))
+    stdout.print(said(() => pack.loads[Kind](changed(medic, at=body(medic), to=9))?))
     truth = pack.dumps(True)
-    stdout.print(said(() => pack.loads[bool](changed(truth, at=body(truth), to=2))))
+    stdout.print(said(() => pack.loads[bool](changed(truth, at=body(truth), to=2))?))
     one = pack.dumps(Guarded(points=1))
     # The points, 1, are the zigzag byte 2, and 1 is -1.
-    stdout.print(said(() => pack.loads[Guarded](changed(one, at=body(one), to=1))))
+    stdout.print(said(() => pack.loads[Guarded](changed(one, at=body(one), to=1))?))
 "#;
 
 /// `std.pack` reads back what it wrote, ints at both ends, a name that isn't ASCII, a case with
@@ -13625,14 +13934,14 @@ def main(stdout: Stdout):
     )
     data = pack.dumps(old)
     show_after(data, stdout)
-    stdout.print(said(() => pack.loads[NeedsRank](data)))
-    stdout.print(said(() => pack.loads[NameAsInt](data)))
-    stdout.print(said(() => pack.loads[MoodGone](data)))
-    stdout.print(said(() => pack.loads[NoCode](data)))
-    stdout.print(said(() => pack.loads[ShortPair](data)))
+    stdout.print(said(() => pack.loads[NeedsRank](data)?))
+    stdout.print(said(() => pack.loads[NameAsInt](data)?))
+    stdout.print(said(() => pack.loads[MoodGone](data)?))
+    stdout.print(said(() => pack.loads[NoCode](data)?))
+    stdout.print(said(() => pack.loads[ShortPair](data)?))
     # Data from before layouts loads into the same shape, and only that.
     first = without_layout(data)
-    stdout.print(said(() => pack.loads[Before](first)), said(() => pack.loads[After](first)))
+    stdout.print(said(() => pack.loads[Before](first)?), said(() => pack.loads[After](first)?))
     stdout.print(data.len(), first.len())
 
 ## The same data as `FPK1` wrote it: the header, then the value, with no layout between.
@@ -13817,22 +14126,22 @@ def main(stdout: Stdout):
     empty = pack.dumps([Hollow()])
     start = empty[0:empty.len() - 1]
     # The same shape: a list of what saves nothing.
-    stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 2_000_000))))
+    stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 2_000_000))?))
     # A layout written by hand, of structs with no fields, loaded by name into a bigger struct.
     layout = "l S 0".encode()
     named = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, layout.len()]) + layout
-    stdout.print(said(() => pack.loads[list[Big]](asking(named, 2_000_000))))
+    stdout.print(said(() => pack.loads[list[Big]](asking(named, 2_000_000))?))
     # What's honest loads.
-    stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 1000))))
-    stdout.print(said(() => pack.loads[list[Big]](asking(named, 1000))))
+    stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 1000))?))
+    stdout.print(said(() => pack.loads[list[Big]](asking(named, 1000))?))
     # The limit is the program's to set.
     small = pack.Limits(empty=10)
-    stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 100), limits=small)))
+    stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 100), limits=small)?))
     # Fields filled from defaults count against the items a load may read.
     few = pack.Limits(length=500)
     one_byte = "l S 1 x b".encode()
     filled = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, one_byte.len()]) + one_byte + bytes(varint(100)) + bytes([1 for _ in range(100)])
-    stdout.print(said(() => pack.loads[list[Big]](filled, limits=few)))
+    stdout.print(said(() => pack.loads[list[Big]](filled, limits=few)?))
 "#;
 
 /// Bytes can't ask for far more memory than they are. Items that take no bytes count against
@@ -13923,14 +14232,14 @@ def main(stdout: Stdout):
     data = pack.dumps(scene)
     packed = pack.loads[Scene](data) else Scene(shapes=[])
     stdout.print(json.dumps(packed) == text)
-    stdout.print(said(() => json.loads[Scene]("{\"shapes\": [{\"Triangle\": {}}]}")))
-    stdout.print(said(() => json.loads[Scene]("{\"shapes\": [5]}")))
-    stdout.print(said(() => toml.loads[Scene]("[[shapes]]\nTriangle = 1\n")))
+    stdout.print(said(() => json.loads[Scene]("{\"shapes\": [{\"Triangle\": {}}]}")?))
+    stdout.print(said(() => json.loads[Scene]("{\"shapes\": [5]}")?))
+    stdout.print(said(() => toml.loads[Scene]("[[shapes]]\nTriangle = 1\n")?))
     mut items = list[int]()
     for at in range(data.len()):
         items.append(data[at])
     items[body(data) + 1] = 9
-    stdout.print(said(() => pack.loads[Scene](bytes(items))))
+    stdout.print(said(() => pack.loads[Scene](bytes(items))?))
 "#;
 
 /// A union's member is saved tagged with its type's name in JSON and TOML, and by its place in
@@ -13993,9 +14302,9 @@ def main(stdout: Stdout):
     stdout.print((pack.loads[Log](pack.dumps(Log(events=[]))) else log).picked is None)
     # A default that's one of a union's members, and what doesn't load.
     stdout.print((json.loads[Scene]("{\"main\": {\"Circle\": {\"radius\": 1.0}}, \"shapes\": [], \"named\": {}}") else scene).count)
-    stdout.print(said(() => json.loads[Scene]("{\"main\": {\"Triangle\": {}}, \"shapes\": [], \"named\": {}}")))
-    stdout.print(said(() => json.loads[Scene]("{\"main\": {\"radius\": 1.0}, \"shapes\": [], \"named\": {}}")))
-    stdout.print(said(() => json.loads[Log]("{\"events\": [], \"picked\": {\"str\": \"x\"}}")))
+    stdout.print(said(() => json.loads[Scene]("{\"main\": {\"Triangle\": {}}, \"shapes\": [], \"named\": {}}")?))
+    stdout.print(said(() => json.loads[Scene]("{\"main\": {\"radius\": 1.0}, \"shapes\": [], \"named\": {}}")?))
+    stdout.print(said(() => json.loads[Log]("{\"events\": [], \"picked\": {\"str\": \"x\"}}")?))
 "#;
 
 /// A field that holds a union, as it is, in a list, a dict's values, an optional or an enum's
@@ -14077,16 +14386,16 @@ def main(stdout: Stdout):
     _ = same.units.add(Unit(name="fox"))
     stdout.print(pack.dumps(same, exact=True) == pack.dumps(world, exact=True))
     # What doesn't load.
-    stdout.print(said(() => pack.loads[World](changed(data, at=body(data) + 6, to=9))))
-    stdout.print(said(() => pack.loads[World](changed(exact, at=body(exact), to=2))))
-    stdout.print(said(() => pack.loads[World](changed(exact, at=body(exact) + 20, to=20))))
-    stdout.print(said(() => pack.loads[World](changed(exact, at=body(exact) + 1, to=200))))
+    stdout.print(said(() => pack.loads[World](changed(data, at=body(data) + 6, to=9))?))
+    stdout.print(said(() => pack.loads[World](changed(exact, at=body(exact), to=2))?))
+    stdout.print(said(() => pack.loads[World](changed(exact, at=body(exact) + 20, to=20))?))
+    stdout.print(said(() => pack.loads[World](changed(exact, at=body(exact) + 1, to=200))?))
     # Every truncation fails, and every byte changed loads or fails, in both modes.
     mut seed = 11
     for good in [data, exact]:
         mut cut = 0
         for size in range(good.len()):
-            if said(() => pack.loads[World](good[0:size])) == "loaded":
+            if said(() => pack.loads[World](good[0:size])?) == "loaded":
                 cut += 1
         mut changes = 0
         for at in range(good.len()):
@@ -14786,6 +15095,69 @@ fn float_keys_hash_as_decided() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ran.0, "True\n1 True\n1 True\n1 1\nTrue\n", "{}", ran.1);
     Ok(())
+}
+
+/// A struct, enum or union holding a float is a key, and hashes as `==` has it: `-0.0` is `0.0`
+/// and every NaN is one key, in a `float` field or an `f32` one, at run time and in a constant
+/// worked out while compiling. An enum with an `f32` field compared by its bits, so
+/// `.At(value=f32(0.0)) == .At(value=f32(-0.0))` was `False`, and a struct with one was two keys.
+#[test]
+fn keys_holding_floats_hash_as_they_compare_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_field_keys",
+        r#"struct Point:
+    x: float
+    y: float
+
+struct Small:
+    at: f32
+
+enum Reading32:
+    At(value: f32)
+    Gone
+
+enum Reading:
+    Level(value: float)
+    Off
+
+type Mark = Point | str
+
+def nan() -> float:
+    big = 1e308 * 10.0
+    big - big
+
+def counted() -> int:
+    other = -nan()
+    seen = {Point(x=0.0, y=1.0), Point(x=-0.0, y=1.0), Point(x=nan(), y=2.0), Point(x=other, y=2.0)}
+    seen.len()
+
+SEEN = counted()
+
+def main(stdout: Stdout):
+    missing = nan()
+    other = -missing
+    mut names = {Point(x=0.0, y=1.0): "zero"}
+    names[Point(x=-0.0, y=1.0)] = "negative zero"
+    names[Point(x=missing, y=2.0)] = "nan"
+    names[Point(x=other, y=2.0)] = "nan again"
+    stdout.print(names.len(), names[Point(x=0.0, y=1.0)], names[Point(x=missing, y=2.0)])
+    stdout.print(Point(x=-0.0, y=1.0) in names, Point(x=0.5, y=1.0) in names)
+    small = {Small(at=f32(0.0)), Small(at=f32(-0.0)), Small(at=f32(missing)), Small(at=f32(other))}
+    readings = {Reading.Level(value=-0.0): 1, Reading.Level(value=0.0): 2, Reading.Off: 3}
+    marks: set[Mark] = {Point(x=0.0, y=0.0), Point(x=-0.0, y=-0.0), "a"}
+    stdout.print(small.len(), readings.len(), readings[Reading.Level(value=0.0)], marks.len())
+    stdout.print(SEEN, counted())
+    zero = f32(0.0)
+    stdout.print(Reading32.At(value=zero) == .At(value=-zero), Small(at=zero) == Small(at=-zero))
+    stdout.print(Reading.Level(value=0.0) == .Level(value=-0.0), Reading32.At(value=f32(missing)) == .At(value=f32(other)))
+    sized = {Reading32.At(value=zero): 1, Reading32.At(value=-zero): 2, Reading32.At(value=f32(missing)): 3, Reading32.At(value=f32(other)): 4}
+    stdout.print(sized.len(), sized[Reading32.At(value=zero)], {f32(0.0), f32(-0.0), f32(missing), f32(other)}.len())
+"#,
+        "2 negative zero nan again\nTrue False\n2 2 2 2\n2 2\nTrue True\nTrue True\n2 2 2\n",
+    )
 }
 
 /// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
@@ -15489,10 +15861,10 @@ def main(stdout: Stdout):
     stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
     stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
     tool = Tool(main_weapon="bow", uses=3)
-    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(json.dumps(tool, names=.CamelCase), json.dumps(tool, names=.KebabCase))
     stdout.print(toml.dumps(tool) else "no")
-    stdout.print(shown(() => toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n")))
-    stdout.print(shown(() => toml.loads[Tool]("not toml")))
+    stdout.print(shown(() => toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n")?))
+    stdout.print(shown(() => toml.loads[Tool]("not toml")?))
     stdout.print(outer(1) else -1, outer(2) else -1)
 "#,
     )
@@ -18179,13 +18551,13 @@ def three(name: str, level: int, code: int) -> str fails NotFound | Plain | TooW
 
 ## Whether `challenge` fails with `error`, compared with the failure on the left.
 def fails_with(name: str, level: int, error: NotFound | TooWeak) -> bool:
-    why = failure_of(() => challenge(name, level)) else:
+    why = failure_of(() => challenge(name, level)?) else:
         return False
     why == error
 
 ## The same, compared with the failure on the right.
 def fails_by(name: str, level: int, error: NotFound | TooWeak) -> bool:
-    why = failure_of(() => challenge(name, level)) else:
+    why = failure_of(() => challenge(name, level)?) else:
         return False
     error == why
 
@@ -18804,7 +19176,7 @@ test \"an hour goes by at once\"(clock: Clock):
     assert clock.now().nanos == 3600000000000
 
 test \"nothing runs\"(process: Process):
-    problem = failure_of(() => process.run(\"echo\", [\"hello\"]))
+    problem = failure_of(() => process.run(\"echo\", [\"hello\"])?)
     assert problem is not None
     assert problem.program() == \"echo\"
     assert process.ran().len() == 1

@@ -482,7 +482,7 @@ impl Emit<'_, '_, '_> {
         } else {
             item
         };
-        self.dict_store_word(&slot, (key, value), &item, "", None)?;
+        self.dict_store_word(&slot, (key, value), &item, "", (None, None))?;
         self.loop_end(&end);
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {slot}"));
@@ -515,6 +515,21 @@ impl Emit<'_, '_, '_> {
             Some(value) => self.operand(value)?.0,
             None => String::new(),
         };
+        self.dict_store_word(place, (key_word, value_word), &key, &held, (found.clone(), found))
+    }
+
+    /// [`Self::dict_store_at`] with a value, given apart where a lookup found the key for the store
+    /// itself to use, and where one found it for the runtime, which checks it first.
+    pub(crate) fn dict_store_checked(
+        &mut self,
+        place: &str,
+        (key_word, value_word): (Word, Word),
+        key: &Operand,
+        value: &Operand,
+        found: (Option<String>, Option<String>),
+    ) -> Result<(), String> {
+        let key = self.key_value(key, key_word)?;
+        let held = self.operand(value)?.0;
         self.dict_store_word(place, (key_word, value_word), &key, &held, found)
     }
 
@@ -525,7 +540,7 @@ impl Emit<'_, '_, '_> {
         (key_word, value_word): (Word, Word),
         key: &str,
         held: &str,
-        found: Option<String>,
+        (found, checked): (Option<String>, Option<String>),
     ) -> Result<(), String> {
         let (key, held) = (key.to_owned(), held.to_owned());
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
@@ -623,6 +638,28 @@ impl Emit<'_, '_, '_> {
             self.line(&format!(
                 "{changed} = call ptr @fennec_dict_set_header(ptr {dict}, i64 {a}, i64 {b}, i64 {c}, i64 {value_held})"
             ));
+        } else if let Some(entry) = checked {
+            // Where the lookup found the key, for a dict a lock changes in place to write the
+            // value there without a second search: the runtime checks it's still that key's entry.
+            // Any other dict goes to `set` as before.
+            let key_held = self.key_word(key_word, &key)?;
+            let marked = self.marked_alone(&dict);
+            let (in_place, other, joined) = (self.label("in_place"), self.label("other"), self.label("set"));
+            self.line(&format!("br i1 {marked}, label %{in_place}, label %{other}"));
+            self.start_block(&in_place);
+            let (written, set) = (self.temp(), self.temp());
+            self.declare("declare ptr @fennec_dict_set_found(ptr, ptr, i64, i64) nounwind");
+            self.line(&format!(
+                "{written} = call ptr @fennec_dict_set_found(ptr {dict}, ptr {entry}, i64 {key_held}, i64 {value_held})"
+            ));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&other);
+            self.line(&format!(
+                "{set} = call ptr @fennec_dict_set(ptr {dict}, i64 {key_held}, i64 {value_held})"
+            ));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            self.line(&format!("{changed} = phi ptr [ {written}, %{in_place} ], [ {set}, %{other} ]"));
         } else {
             let key_held = self.key_word(key_word, &key)?;
             self.line(&format!(
@@ -722,7 +759,6 @@ impl Emit<'_, '_, '_> {
                 "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
                 entry_value(key_word)
             ));
-            let value_at = self.value_place(&value_kind, &value_at);
             let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
             self.line(&format!("br label %{done}"));
@@ -1187,7 +1223,6 @@ found:
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
-            let value_at = self.value_place(&value_kind, &value_at);
             let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {

@@ -113,6 +113,38 @@ fn a_run_after_an_edit_shows_the_lints_all_of_the_kit_has() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A run lints from the program it loaded when `main` reaches every file of the kit, and loads
+/// all of it again when it doesn't, so a file nothing imports is linted too: after an edit, what
+/// a run shows is what `fennec lint` shows, either way.
+#[test]
+fn a_run_lints_the_files_main_doesnt_import_too() {
+    let dir = scratch("unimported_linted").unwrap();
+    assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
+    let kit = dir.join("demo");
+    let main = "def main(stdout: Stdout):\n    mut doubled = 42\n    stdout.print(doubled)\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let spare = "## Half the number.\nexport def half(number: int) -> int:\n    mut halved = number / 2\n    halved\n";
+    std::fs::write(kit.join("src/spare.fen"), spare).unwrap();
+    let fennec = |args: &[&str]| {
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE");
+        command.output().unwrap()
+    };
+    for edit in ["42", "43"] {
+        std::fs::write(kit.join("src/main.fen"), main.replace("42", edit)).unwrap();
+        let ran = fennec(&["run", "--no-test"]);
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        let said = text(&ran.stderr);
+        assert!(said.contains("src/spare.fen") && said.contains("src/main.fen"), "after {edit}: {said}");
+        assert!(said.contains("2 lints, 2 of which `fennec fix` can fix"), "after {edit}: {said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The README's sample is the first Fennec code most people see, so it has to run as it's
 /// shown, formatted and with nothing for the linter to say.
 #[test]
@@ -815,6 +847,29 @@ fn run_exits_with_1_when_the_program_fails() {
         let code = fennec(&["run", "--no-test", path], "").unwrap().status.code();
         assert_eq!(code, Some(i32::from(!succeeds)), "{path}");
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// With `FENNEC_RUN_WAITS`, `fennec run` starts the program and waits for it rather than becoming
+/// it, as the edit-to-run budget counts it, and the run is otherwise the same: what it prints, and
+/// the exit code `main` gives back.
+#[test]
+fn a_run_that_waits_for_its_program_prints_and_exits_the_same() {
+    let dir = scratch("run-waits").unwrap();
+    let program = dir.join("two.fen");
+    std::fs::write(&program, "def main(stdout: Stdout) -> int:\n    stdout.print(\"ran\")\n    return 2\n")
+        .unwrap();
+    let path = program.to_str().unwrap();
+    let mut command = crate::executables::fennec_command();
+    let output = command
+        .args(["run", "--no-test", path])
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_RUN_WAITS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "ran\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

@@ -581,6 +581,33 @@ def main(stdout: Stdout):
     stdout.print(found.size)
 "#;
 
+/// `total = lock scores as current:` gives the block's last line, read or after a change, as
+/// `mut` or not, with lines before it that do something.
+#[test]
+fn a_lock_block_gives_its_last_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("lock_block_value", LOCK_BLOCK_VALUE, "7 4\nlong\n1\n")
+}
+
+const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
+    shared scores = [1, 2]
+    total = lock scores as ref current:
+        current.append(4)
+        sum(current)
+    mut count = lock scores as current:
+        current.len()
+    count += 1
+    stdout.print(total, count)
+    kept = lock scores as ref current:
+        current.append(9)
+        if current.len() > 3:
+            stdout.print("long")
+        current[0]
+    stdout.print(kept)
+"#;
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;

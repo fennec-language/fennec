@@ -434,7 +434,7 @@ score = load_score(fs, path) else as why:
 - Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
 - `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. A plain `else` there would handle both, so it's a compile error, and `else as why:` handles only the failure, its block giving a `T?`. Built.
 - `T fails E` is made only by the runtime, as for the results of parallel work, and read only through `?` and `else`.
-- A block that stands where a value goes ends with that value, or leaves. That's `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`, and not bare blocks or a multi-line `if`, which the one-line `x if c else y` covers. `x = match ...:` is built. `x = lock ... as ...:` isn't yet.
+- A block that stands where a value goes ends with that value, or leaves. That's `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`, and not bare blocks or a multi-line `if`, which the one-line `x if c else y` covers. Built, and `x = if ...:` over several lines is a compile error that points at `x = a if c else b` or `match`.
 
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
 - A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. Built for `def`s; a lambda's body still passes one up as it is.

@@ -479,9 +479,13 @@ fn imports_for_std_calls<'a>(module: &mut Module, functions: impl Iterator<Item 
 /// a program needn't have imported when it's the standard library's: `.Error` for a `LogLevel`.
 /// Such an enum is imported where it runs. A program's own type by that name was renamed apart
 /// already, so the name is free.
-fn imports_for_cases<'a>(module: &mut Module, owners: impl Iterator<Item = &'a String>) {
-    let mut wanted: Vec<(&str, &str)> =
-        owners.filter_map(|owner| Some((fennec_syntax::importable_type(owner)?, owner.as_str()))).collect();
+fn imports_for_cases(module: &mut Module, cases: &BTreeMap<(u32, u32), String>) {
+    // Only a case the program writes: the library's own code sees its enums where it's written.
+    let mut wanted: Vec<(&str, &str)> = cases
+        .iter()
+        .filter(|((start, _), _)| !Span { start: *start, end: *start }.in_prelude())
+        .filter_map(|(_, owner)| Some((fennec_syntax::importable_type(owner)?, owner.as_str())))
+        .collect();
     wanted.sort_unstable();
     wanted.dedup();
     for (from, owner) in wanted {
@@ -705,15 +709,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         });
     }
     imports_for_std_calls(module, checked.std_calls.values());
-    // Only a case the program writes: the library's own code sees its enums where it's written.
-    imports_for_cases(
-        module,
-        checked
-            .cases
-            .iter()
-            .filter(|((start, _), _)| !Span { start: *start, end: *start }.in_prelude())
-            .map(|(_, owner)| owner),
-    );
+    imports_for_cases(module, &checked.cases);
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);

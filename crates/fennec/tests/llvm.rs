@@ -6155,6 +6155,53 @@ fn fast_text_hash(text: &str) -> u64 {
     fast_hash(u64::try_from(text.len()).unwrap_or(0), &words)
 }
 
+/// New struct keys go into a dict as compiled code adds them itself, while it has room, and through
+/// the runtime when it must grow, when another owner holds it, and when the value holds a block:
+/// every key is found again, the order they went in is kept, and a copy taken partway keeps only
+/// what it had, in a dev build and with `--release`.
+#[test]
+fn struct_keys_added_natively_are_found_in_order() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Cell:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    mut seen: dict[Cell, int] = {}
+    mut named: dict[Cell, str] = {}
+    mut kept: dict[Cell, int] = {}
+    for i in range(5000):
+        cell = Cell(x=i % 71, y=i // 71)
+        seen[cell] = (seen.get(cell) else 0) + i
+        if i % 3 == 0:
+            named[cell] = f"cell {i}"
+        if i == 2500:
+            kept = seen
+    for i in range(5000):
+        cell = Cell(x=i % 71, y=i // 71)
+        seen[cell] = (seen.get(cell) else 0) + 1
+    mut total = 0
+    for cell, count in seen.items():
+        total += cell.x * count + cell.y
+    first = Cell(x=0, y=0)
+    last = Cell(x=4999 % 71, y=4999 // 71)
+    order = [cell.x * 100 + cell.y for cell in seen.keys()]
+    stdout.print(seen.len(), kept.len(), named.len(), total, seen[first], seen[last], kept.get(last) else -1)
+    stdout.print(order[0], order[1], order[4999], named[Cell(x=3 % 71, y=3 // 71)])
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("struct_keys_native", source, how)?;
+        assert_eq!(
+            (out.as_str(), code),
+            ("5000 2501 1667 436784630 1 5000 -1\n0 100 2970 cell 3\n", Some(0)),
+            "{how:?}: {err}"
+        );
+    }
+    Ok(())
+}
+
 /// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
 /// up itself, and keeps working when it's copied and when keys come out. If compiled code and the
 /// runtime hashed a key differently for it, these lookups would miss.

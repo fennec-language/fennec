@@ -5,7 +5,7 @@
 //! `serialize`. Printed some other way, as through a generic function's `T`, it shows only
 //! `Secret(hidden)`.
 
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FStrPart, Span};
 
 use crate::function::FnCx;
 use crate::types::Type;
@@ -95,4 +95,60 @@ impl FnCx<'_> {
         }
         None
     }
+}
+
+/// The `std.postgres` functions that take a database URL, with where the URL goes when it's
+/// given by position.
+const URL_TAKERS: [(&str, usize); 2] = [("postgres.connect", 2), ("postgres.settings", 0)];
+
+impl FnCx<'_> {
+    /// `connect(...)` after `from std.postgres import connect`, checked as `postgres.connect` is
+    /// where it's found through the module.
+    pub(crate) fn no_password_in_imported_url(&mut self, callee: &Expr, args: &[Arg]) {
+        if let ExprKind::Name(name) = &callee.kind
+            && self.lookup(name).is_none()
+            && let Some(function) = self.checker.program.std_functions.get(name).cloned()
+        {
+            self.no_password_in_written_url(&function, args);
+        }
+    }
+
+    /// A database URL written in the source with a password in it is refused: the password would
+    /// be in a plain `str`, and in the source too. A URL with a password has to be a `Secret`,
+    /// read from where it's kept, and `postgres.connect` refuses a plain one with a password
+    /// when it runs as well.
+    pub(crate) fn no_password_in_written_url(&mut self, function: &str, args: &[Arg]) {
+        let Some((_, at)) = URL_TAKERS.iter().find(|(name, _)| *name == function) else { return };
+        let given = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("url"))
+            .or_else(|| args.iter().filter(|arg| arg.name.is_none()).nth(*at));
+        let Some(given) = given else { return };
+        let written = match &given.value.kind {
+            ExprKind::Str(text) => text.clone(),
+            ExprKind::FStr(parts) => parts
+                .iter()
+                .map_while(|part| match part {
+                    FStrPart::Text(text) => Some(text.as_str()),
+                    FStrPart::Expr { .. } => None,
+                })
+                .collect(),
+            _ => return,
+        };
+        if has_password(&written) {
+            let help = "read the URL into a `Secret` from where it's kept, as `env.secret(\"DATABASE_URL\")?` does, or leave the password out of the URL and pass it as `password=`, a `Secret`";
+            self.error(
+                Diagnostic::new("this database URL has its password written in the source", given.value.span)
+                    .with_help(help),
+            );
+        }
+    }
+}
+
+/// Whether a URL's text has a password: a `:` in what comes before the `@` that ends who's
+/// connecting, as in `postgres://user:password@host`.
+pub(crate) fn has_password(url: &str) -> bool {
+    let after = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = after.split(['/', '?', '#']).next().unwrap_or_default();
+    authority.rsplit_once('@').is_some_and(|(who, _)| who.contains(':'))
 }

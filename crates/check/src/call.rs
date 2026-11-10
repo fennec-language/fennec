@@ -87,6 +87,7 @@ impl FnCx<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
         self.closure_locks_again(callee);
         self.note_generator_worked_out_here(callee, args);
+        self.no_password_in_imported_url(callee, args);
         match &callee.kind {
             ExprKind::Attr { object, name, .. } if self.is_built_in_function(object, name) => {
                 return self.built_in_function(name, args, span);
@@ -94,6 +95,7 @@ impl FnCx<'_> {
             ExprKind::Attr { object, name, optional } => {
                 return match self.module_member(object, name, callee.span) {
                     Some(Member::Name(member)) => {
+                        self.no_password_in_written_url(&member, args);
                         self.call(&Expr { kind: ExprKind::Name(member), span: callee.span }, args, span)
                     }
                     Some(Member::Missing) => {

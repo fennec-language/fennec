@@ -15,6 +15,7 @@
 
 use super::ast::{
     Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Size, Stmt, TYPES, Ty,
+    Via,
 };
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
@@ -879,6 +880,16 @@ impl Writer<'_> {
     /// shares its value can; a struct holding a list, changed; and lists stored into a dict.
     fn copies(&mut self, body: &mut Vec<Stmt>, which: usize) {
         match which {
+            23 if self.choice(3) == 0 => {
+                // A union's member called on through the union: after `match`, after `is`, or
+                // straight on it, with its `with` source always after `is`.
+                let how =
+                    [Via::Match, Via::Is, Via::Direct].get(self.choice(3)).copied().unwrap_or(Via::Match);
+                let members = 2 + self.choice(2);
+                let member = self.choice(members);
+                let text = self.of(Ty::Str, 2);
+                body.push(Stmt::UnionCall(how, members, member, text));
+            }
             23 => {
                 let fixed: Vec<String> = self
                     .names

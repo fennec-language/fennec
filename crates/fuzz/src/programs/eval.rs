@@ -839,6 +839,13 @@ impl Machine {
                 };
                 let _ = writeln!(self.out, "{given} {copy}");
             }
+            Stmt::UnionCall(_, _, member, text) => {
+                let text = self.text_of(text)?;
+                let log = ["lite", "pg", "mem"].get(*member).ok_or(Stop::Unsure)?;
+                let length = i64::try_from(text.chars().count()).map_err(|_| Stop::Unsure)?;
+                let times = i64::try_from(*member + 1).map_err(|_| Stop::Unsure)?;
+                let _ = writeln!(self.out, "{log} {}", checked(length.checked_mul(times))?);
+            }
             Stmt::GrownBy(holder, _) => {
                 if let Value::Holder(items, tag) = self.slot(holder)?
                     && items.len() < 64

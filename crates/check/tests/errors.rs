@@ -625,3 +625,23 @@ fn an_if_over_several_lines_gives_no_value() {
     let locked = "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    total\n";
     assert_eq!(problems(locked), Vec::<String>::new());
 }
+
+/// `assert value fails Pattern` is for what can fail, with a pattern of what it fails with, and
+/// `fails` checks a failure only there.
+#[test]
+fn an_assert_that_something_fails_takes_what_can_fail() {
+    let declared = "error Oops:\n    line: int\n\ndef load(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops(line=n)\n    n\n\ndef plain(n: int) -> int:\n    n\n";
+    let fine = format!(
+        "{declared}\ntest \"load\":\n    assert load(3) fails Oops(line=3)\n    assert load(3) fails Oops()\n"
+    );
+    assert_eq!(problems(&fine), Vec::<String>::new());
+    let plain = format!("{declared}\ntest \"plain\":\n    assert plain(3) fails Oops()\n");
+    assert_eq!(problems(&plain), ["this can't fail, so `assert ... fails` has nothing to check @ plain(3)"]);
+    let parsed = fennec_syntax::parse(&format!(
+        "{declared}\ndef main():\n    if load(3) fails Oops():\n        pass\n"
+    ));
+    assert_eq!(
+        parsed.err().map(|problem| problem.message),
+        Some("`fails` checks a failure only in `assert`".to_owned())
+    );
+}

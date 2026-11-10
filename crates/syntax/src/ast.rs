@@ -616,6 +616,16 @@ impl Expr {
         }
     }
 
+    /// What `assert value fails Pattern` checks, when this is what one parsed to: a `match` with one
+    /// case and nothing in it.
+    pub fn asserted_failure(&self) -> Option<(&Expr, &Pattern)> {
+        let ExprKind::Match { subject, arms } = &self.kind else { return None };
+        match arms.as_slice() {
+            [MatchArm { pattern, guard: None, body, .. }] if body.is_empty() => Some((subject, pattern)),
+            _ => None,
+        }
+    }
+
     /// The name `else as name:` gives the failure and the block it holds, when this is what one
     /// parsed to.
     pub fn failure_named(&self) -> Option<(&str, &[Stmt])> {

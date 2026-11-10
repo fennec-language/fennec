@@ -85,11 +85,11 @@ def main(stdout: Stdout):
     mut scored = 0
     mut same = 0
     for _ in range(40):
-        match pack.loads[list[Unit]](data):
-            case Ok(units):
-                scored += score(units)
-                if pack.dumps(units) == data:
-                    same += 1
-            case Err(error):
-                stdout.print(error.message)
+        units = pack.loads[list[Unit]](data) else as error:
+            stdout.print(error.message)
+            continue
+        scored += score(units)
+        if pack.dumps(units) == data:
+            same += 1
+
     stdout.print(scored, same)

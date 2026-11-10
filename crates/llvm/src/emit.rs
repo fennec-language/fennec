@@ -3201,6 +3201,17 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A new struct key compared by its words goes into a dict that's alone, with room, by
+    /// compiled code itself, and only to the runtime otherwise.
+    #[test]
+    fn a_new_struct_key_is_added_natively() -> Result<(), String> {
+        let source = "struct Cell:\n    x: int\n    y: int\n\ndef main(stdout: Stdout):\n    mut seen: dict[Cell, int] = {}\n    for i in range(10):\n        seen[Cell(x=i, y=i)] = i\n    stdout.print(seen.len())\n";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("call i1 @fen_add_plain("), "{text}");
+        assert!(text.contains("call ptr @fennec_dict_set("), "{text}");
+        Ok(())
+    }
+
     #[test]
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";

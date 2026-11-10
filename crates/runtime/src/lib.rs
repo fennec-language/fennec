@@ -33,6 +33,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_channel_new_every",
     "fennec_bytes_of_list",
     "fennec_assert_sides",
+    "fennec_assert_said",
     "fennec_list_sorted_with",
     "fennec_list_sorted_by_keys_with",
     "fennec_regex_split",
@@ -260,6 +261,7 @@ export! {
     fennec_bytes_from_hex_problem(a0: i64) -> i64 => bytes::from_hex_problem(a0);
     fennec_str_encode(a0: i64) -> i64 => bytes::encode(a0);
     fennec_assert_sides(a0: i64, a1: i64, a2: i64, a3: i64) => checks::assert_sides(a0, a1, a2, a3);
+    fennec_assert_said(a0: i64, a1: i64, a2: i64) => checks::assert_said(a0, a1, a2);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_list_sorted_by_keys_with(a0: i64, a1: i64, a2: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_by_keys_with(a0, a1, a2);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);

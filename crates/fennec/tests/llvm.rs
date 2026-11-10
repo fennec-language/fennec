@@ -4017,9 +4017,10 @@ def main(stdout: Stdout):
         stdout.print("before", x.total)
 "#;
 
-/// A way a function can still take a lock its caller holds, past what the checker sees: a closure
-/// that takes it, passed to a call. The checker refuses the rest, a nested function kept in a list
-/// among them.
+/// The last way a function could take a lock its caller holds past what the checker saw: a
+/// closure that takes it, passed to a call. The checker follows it now, so the program is refused
+/// where it's built; the runtime's check, which ends a program that takes a held lock, stays as
+/// the backstop.
 const TAKEN_AGAIN: [(&str, &str); 1] = [(
     "closure_passed",
     "    reader = () => through_holder(holder)\n    lock one as ref x:\n        x.total = called(reader)\n",
@@ -4045,9 +4046,11 @@ def main(stdout: Stdout):
     stdout.print("before", through_holder(holder))
 "#;
 
-/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
+/// A lock this thread holds, taken again through a closure passed to a call, is refused where the
+/// program's built: the closure is followed to the lock it takes. It once built, and ended the
+/// program where it ran, as it would wait forever otherwise.
 #[test]
-fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
+fn taking_a_lock_already_held_through_a_closure_is_refused_where_its_built() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -4058,11 +4061,12 @@ fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
         std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
         let executable = dir.join(name);
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let ran = outcome(&Command::new(&executable).output_within()?);
-        assert_eq!(ran.2, Some(1), "{name}");
-        assert_eq!(ran.0, "before 1\n", "{name}");
-        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name} built");
+        assert!(
+            said.contains("`called` calls `read` while `x` is locked, and this takes `holder.box`'s lock"),
+            "{name}: {said}"
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -4491,25 +4495,28 @@ def inner_returns(stdout: Stdout) -> int fails Boom:
                 return first
     return 0
 
+## The run numbered `run`, passing its failure up.
+def ran(stdout: Stdout, run: int) fails Boom:
+    match run:
+        case 0:
+            through_a_name(stdout)?
+        case 1:
+            looped(stdout)?
+        case 2:
+            summed(stdout)?
+        case 3:
+            nested(stdout)?
+        case 4:
+            rounds(stdout)?
+        case _:
+            noted(stdout)?
+
 def main(stdout: Stdout):
     value = inner_returns(stdout) else as problem:
         problem.at
     stdout.print(value)
     for run in [0, 1, 2, 3, 4, 6]:
-        ran = match run:
-            case 0:
-                through_a_name(stdout)
-            case 1:
-                looped(stdout)
-            case 2:
-                summed(stdout)
-            case 3:
-                nested(stdout)
-            case 4:
-                rounds(stdout)
-            case _:
-                noted(stdout)
-        _ = ran else as problem:
+        ran(stdout, run) else as problem:
             stdout.print(\"failed\", problem.at, problem.notes())
             continue
         stdout.print(\"no failure\")
@@ -6125,6 +6132,117 @@ def main(stdout: Stdout):
     }
     Ok(())
 }
+
+/// A field of a dict's item changed through a copy of the dict another still holds, as
+/// `mut units = given` then `units["a"].tags.append(x)`: the item is read out to change and put
+/// back, so it owns what it holds, and the dict it goes back into is the copy's own. Taken out as a
+/// list's item is, with no owner of its own and the dict still shared, putting it back let go of
+/// the list the other dict still held.
+#[test]
+fn a_dict_items_field_changed_through_a_copy_leaves_the_other_dict_be() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("dict_item_through_copy", DICT_ITEM_THROUGH_COPY, how)?;
+        assert_eq!(
+            (out.as_str(), code),
+            (
+                "400 1050\nUnit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5, 6])\nUnit(hp=1, tags=[1, 2, 3, 7]) Unit(hp=20, tags=[4, 5, 6]) Unit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5, 6])\n",
+                Some(0)
+            ),
+            "{how:?}: {err}"
+        );
+    }
+    Ok(())
+}
+
+const DICT_ITEM_THROUGH_COPY: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+    def grown_by(ref self, values: list[int]):
+        for value in values:
+            self.tags.append(value)
+
+def appended(given: dict[str, Unit], at: int) -> int:
+    mut units = given
+    units["a"].tags.append(at)
+    units["a"].tags.len()
+
+def doubled(given: dict[str, Unit], at: int) -> int:
+    mut units = given
+    key = "a" if at % 2 == 0 else "b"
+    units[key].tags.append(at)
+    own = units[key].tags
+    units[key].grown_by(own)
+    units[key].hp += 1
+    units[key].tags.len() + units[key].hp
+
+def main(stdout: Stdout):
+    given = {"a": Unit(1, [1, 2, 3]), "b": Unit(2, [4, 5, 6])}
+    stdout.print(sum(appended(given, x) for x in range(100)), sum(doubled(given, x) for x in range(100)))
+    stdout.print(given["a"], given["b"])
+    mut mine = given
+    mine["a"].tags.append(7)
+    mine["b"].hp = 20
+    stdout.print(mine["a"], mine["b"], given["a"], given["b"])
+"#;
+
+/// The same through a copy of something holding the dict or list: a struct's dict field, a dict of
+/// dicts, a list of dicts and a dict of lists. A list's item holding a list is made alone, as a list
+/// item is, before it's taken out; it wasn't, which let go of the other list's.
+#[test]
+fn nested_items_changed_through_a_copy_leave_the_original_be() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "60 30\n20 50\nUnit(hp=1, tags=[1, 2, 3]) Unit(hp=2, tags=[4, 5]) Unit(hp=3, tags=[6]) Unit(hp=4, tags=[7, 8, 9, 10])\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("nested_through_copy", NESTED_THROUGH_COPY, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const NESTED_THROUGH_COPY: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+struct Box:
+    units: dict[str, Unit]
+    n: int
+
+def in_field(given: Box, at: int) -> int:
+    mut b = given
+    b.units["a"].tags.append(at)
+    b.units["a"].hp += 1
+    b.units["a"].tags.len() + b.units["a"].hp
+
+def in_dicts(given: dict[str, dict[str, Unit]], at: int) -> int:
+    mut dd = given
+    dd["x"]["a"].tags.append(at)
+    dd["x"]["a"].tags.len()
+
+def in_list_of_dicts(given: list[dict[str, Unit]], at: int) -> int:
+    mut xs = given
+    xs[0]["a"].tags.append(at)
+    xs[0]["a"].tags.len()
+
+def in_dict_of_lists(given: dict[str, list[Unit]], at: int) -> int:
+    mut d = given
+    d["a"][0].tags.append(at)
+    d["a"][0].tags.len()
+
+def main(stdout: Stdout):
+    boxed = Box(units={"a": Unit(1, [1, 2, 3])}, n=0)
+    dicts = {"x": {"a": Unit(2, [4, 5])}}
+    lists_of = [{"a": Unit(3, [6])}]
+    of_lists = {"a": [Unit(4, [7, 8, 9, 10])]}
+    stdout.print(sum(in_field(boxed, x) for x in range(10)), sum(in_dicts(dicts, x) for x in range(10)))
+    stdout.print(sum(in_list_of_dicts(lists_of, x) for x in range(10)), sum(in_dict_of_lists(of_lists, x) for x in range(10)))
+    stdout.print(boxed.units["a"], dicts["x"]["a"], lists_of[0]["a"], of_lists["a"][0])
+"#;
 
 /// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
 /// up itself, and keeps working when it's copied and when keys come out. If compiled code and the
@@ -8256,14 +8374,14 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(done.status, done.stdout, done.stderr == \"\")
     unknown = failure_of(() => process.run(\"no-such-program-at-all\", []))
     if unknown is not None:
-        stdout.print(unknown.program)
+        stdout.print(unknown.program())
     else:
         stdout.print(\"ran it\")
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
     refused = failure_of(() => echo.run(\"ls\", []))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     stdout.print(stdin.lines())
@@ -9464,14 +9582,14 @@ def main(stdout: Stdout, process: Process, fs: Fs):
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
     nowhere = failure_of(() => process.run(\"pwd\", [], cwd=\"no-such-folder\"))
     if nowhere is not None:
-        stdout.print(nowhere.message)
+        stdout.print(nowhere.message())
     else:
         stdout.print(\"ran it\")
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
     refused = failure_of(() => only.run(\"pwd\", [], cwd=\"inside\"))
     if refused is not None:
-        stdout.print(refused.message)
+        stdout.print(refused.message())
     else:
         stdout.print(\"ran it\")
     fs.remove(\"inside\").expect(\"it works\")
@@ -9987,8 +10105,8 @@ fn a_failure_out_of_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
     let after_spending = "Account(balance=7, name=\"ann spent\", log=[\"start\", \"spent\"])";
     let after_leaving = "Account(balance=109, name=\"ann spent\", log=[\"start\", \"spent\"])";
     let wanted = format!(
-        "Ok(1)\n{after_spending}\nErr(Nope(why=\"ann spent spent is short\"))\n{after_spending}\n\
-         Err(Nope(why=\"both undone\"))\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
+        "1\n{after_spending}\nNope(why=\"ann spent spent is short\")\n{after_spending}\n\
+         Nope(why=\"both undone\")\n{after_spending}\nAccount(balance=20, name=\"bob\", log=[])\n\
          107 1\n{after_leaving}\n114\n{after_leaving}\n-16\n{after_leaving}\n"
     );
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
@@ -11908,13 +12026,25 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(process.run(t"cat", input="fed in")?.stdout)
     narrow = process.only("printf")
     stdout.print(narrow.run(t"printf ok")?.stdout)
+    # A value that would start an argument with `-` is refused, and nothing runs.
+    upload = "--upload-pack=touch pwned"
+    refused = failure_of(() => process.run(t"printf {upload}"))
+    if refused is not None:
+        stdout.print(refused.message())
+    path = "-odd"
+    stdout.print(process.run(t"printf [%s] -- {path}")?.stdout)
     _ = narrow.run(t"cat") else as error:
-        stdout.print(error.program)
+        stdout.print(error.program())
         return
     stdout.print("ran")
 "#,
     )?;
-    assert_eq!(printed, "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\ncat\n");
+    assert_eq!(
+        printed,
+        "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\n\
+         `{upload}` starts an argument with `-`, so `printf` would read it as an option: put `--` before it, if `printf` takes that, to mean it isn't one\n\
+         [--][-odd]\ncat\n"
+    );
     Ok(())
 }
 
@@ -13587,6 +13717,77 @@ def main(stdout: Stdout):
         total += given(captured, x)
     stdout.print(total, captured[0].tags, captured[1].tags)
 ";
+
+/// A name given its own value, `x = x`, keeps what it holds: an enum or struct held in place,
+/// one inside another, a field, a list's item, a boxed enum and a parameter's copy given back.
+/// Written as a copy, it let go of the lists it held before taking them again, so the next lists
+/// made took their memory, and its value printed theirs. The random programs found it.
+#[test]
+fn a_name_given_its_own_value_keeps_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let expected = "B(a) Unit(hp=1, tags=[1, 2]) Pack(unit=Unit(hp=2, tags=[3]), names=[\"n\"]) [Unit(hp=3, tags=[4, 5])] Unit(hp=4, tags=[7]) 2 3\n[6]\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (out, err, code) = both_built_unpinned("own_value", OWN_VALUE, how)?;
+        assert_eq!((out.as_str(), code), (expected, Some(0)), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+const OWN_VALUE: &str = r#"enum Node:
+    Leaf(name: str)
+    Branch(label: str, children: list[Node])
+
+enum Tree:
+    Leaf
+    Pair(left: Tree, right: Tree, tags: list[int])
+
+struct Unit:
+    hp: int
+    tags: list[int]
+
+struct Pack:
+    unit: Unit
+    names: list[str]
+
+def show(node: Node) -> str:
+    match node:
+        case .Leaf(name):
+            "L(" + name + ")"
+        case .Branch(label, children):
+            mut text = "B(" + label
+            for child in children:
+                text += " " + show(child)
+            text + ")"
+
+def last_use(given: Unit) -> Unit:
+    mut u = given
+    u = u
+    u
+
+def main(stdout: Stdout):
+    mut t = Node.Branch(label="a", children=list[Node]())
+    t = t
+    mut u = Unit(hp=1, tags=[1, 2])
+    u = u
+    mut p = Pack(unit=Unit(hp=2, tags=[3]), names=["n"])
+    p = p
+    p.unit = p.unit
+    mut xs = [Unit(hp=3, tags=[4, 5])]
+    xs[0] = xs[0]
+    mut tree = Tree.Pair(left=.Leaf, right=.Leaf, tags=[6])
+    tree = tree
+    ys = last_use(Unit(hp=4, tags=[7]))
+    other = [Node.Leaf(name="x"), Node.Leaf(name="y")]
+    junk = [[9, 9, 9], [8, 8], [7]]
+    stdout.print(show(t), u, p, xs, ys, other.len(), junk.len())
+    match tree:
+        case .Pair(_, _, tags):
+            stdout.print(tags)
+        case .Leaf:
+            pass
+"#;
 
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
@@ -18031,7 +18232,7 @@ test \"an hour goes by at once\"(clock: Clock):
 test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"]))
     assert problem is not None
-    assert problem.program == \"echo\"
+    assert problem.program() == \"echo\"
     assert process.ran().len() == 1
 ",
     )?;

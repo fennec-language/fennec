@@ -15,21 +15,15 @@ from std import csv, json
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    match csv.loads(text):
-        case Ok(rows):
-            stdout.print(\"ok \" + json.dumps(rows))
-        case Err(_):
-            stdout.print(\"err\")
+    loaded: list[list[str]]? = csv.loads(text) else None
+    stdout.print(\"err\" if loaded is None else \"ok \" + json.dumps(loaded))
     rows = [part.split(\"\\u001f\") for part in text.split(\"\\u001e\")]
-    match csv.dumps(rows):
-        case Ok(written):
-            match csv.loads(written):
-                case Ok(back):
-                    stdout.print(\"ok \" + json.dumps(back))
-                case Err(_):
-                    stdout.print(\"err\")
-        case Err(_):
-            stdout.print(\"unwritten\")
+    written: str? = csv.dumps(rows) else None
+    if written is None:
+        stdout.print(\"unwritten\")
+    else:
+        back: list[list[str]]? = csv.loads(written) else None
+        stdout.print(\"err\" if back is None else \"ok \" + json.dumps(back))
     stdout.print(json.dumps(rows))
 ";
 

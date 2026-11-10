@@ -252,6 +252,8 @@ test \"any list\" for items: list[int], n: int:
 /// Small programs that reach the checker's errors about written types, and the places
 /// types are written.
 const CHECK_CASES: &[(&str, &str)] = &[
+    // `Result` is gone: what can fail says so with `fails`.
+    ("result_type_gone", "error Bad:\n    why: str\n\ndef half(n: int) -> Result[int, Bad]:\n    n\n"),
     // A program's own `Heap`, which isn't generic, where std's `PriorityQueue` holds its own
     // `Heap[(P, int)]`: the library's declarations keep meaning the library's type.
     (
@@ -663,6 +665,7 @@ const CHECK_KINDS: &[&str] = &[
     "isn't an interface",
     "is an interface, not a type",
     "so it has no arrow",
+    "`Result` is gone",
 ];
 
 /// The Rust checker's diagnostics of the kinds in `CHECK_KINDS`, as `fennec dev check`

@@ -1,7 +1,7 @@
 error: `IoError` comes from another kit, so this pattern names the fields it reads
- --> examples/errors/positional_pattern.fen:6:9
+ --> examples/errors/positional_pattern.fen:5:13
   |
-6 |         case Err(IoError(why)):
-  |         ^^^^^^^^^^^^^^^^^^^^^^^
+5 |             case IoError(why):
+  |             ^^^^^^^^^^^^^^^^^^
   |
   = help: write `IoError(reason=...)`, or `IoError()` to read none, and a field added to it never breaks this; `fennec fix` adds the names

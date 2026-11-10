@@ -47,8 +47,6 @@ fn removing_from_an_id_map_might_find_nothing() {
 
 #[test]
 fn builtins_give_back_their_types() {
-    plus_one("", "Ok(1)", "this is the result of something that can fail");
-    plus_one("", "Err(IoError('x'))", "this is the result of something that can fail");
     plus_one("", "list(set([1.5]))[0]", "can't mix int and float in `+`");
     assert_eq!(in_main("stdout.print(list(set())[0] + 1)"), Vec::<String>::new());
 }
@@ -238,10 +236,10 @@ fn every_modules_names_have_to_be_imported() {
 #[test]
 fn capabilities_and_errors_need_no_import() {
     let program = "
-        def read(fs: Fs, path: str):
-            match fs.read_text(path):
-                case Ok(text): text
-                case IoError(reason=reason): reason
+        def read(fs: Fs, path: str) -> str:
+            fs.read_text(path) else as why:
+                match why:
+                    case IoError(reason=reason): reason
 
         def main(stdout: Stdout, fs: Fs, clock: Clock):
             stdout.print(read(fs, 'a.txt'), InvalidValue('no'), ParseError('no', 1, 1), clock.now())

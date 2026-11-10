@@ -34,37 +34,38 @@ def streamed(data: bytes) -> int:
     mut read = 0
     mut values = Unpacker.of(data)
     while read < 1000:
-        match values.next[Scene]():
-            case Ok(found):
-                if found is None:
-                    return read
-                read += 1
-            case Err(_):
-                return -1 - read
+        found = values.next[Scene]() else as _:
+            return -1 - read
+        if found is None:
+            return read
+        read += 1
     read
 
 ";
 
 /// The program that reads the file it's given as each of `TYPES`, a line each, then as a stream.
+/// The `n`th type is read by its own function, `read_as_n`.
 pub(crate) fn reader() -> String {
     let mut source = DECLARED.to_owned();
+    for (n, ty) in TYPES.iter().enumerate() {
+        let _ = write!(
+            source,
+            "def read_as_{n}(data: bytes, longer: bytes, shorter: bytes) -> str:\n    \
+             value = pack.loads[{ty}](data) else:\n        return \"err\"\n    \
+             back: {ty}? = pack.loads[{ty}](pack.dumps(value)) else None\n    \
+             same = back is not None and back == value\n    \
+             grown = \"ok\" if failure_of(() => pack.loads[{ty}](longer)) is None else \"err\"\n    \
+             cut = \"ok\" if failure_of(() => pack.loads[{ty}](shorter)) is None else \"err\"\n    \
+             f\"ok {{same}} {{grown}} {{cut}}\"\n\n",
+        );
+    }
     source.push_str(
         "def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    data = fs.read_bytes(args[0])?\n    \
          longer = data + bytes([0])\n    mut shorter = data\n    if data.len() > 0:\n        \
          shorter = data[0:data.len() - 1]\n",
     );
-    for ty in TYPES {
-        let _ = write!(
-            source,
-            "    match pack.loads[{ty}](data):\n        case Ok(value):\n            mut same = False\n            \
-             match pack.loads[{ty}](pack.dumps(value)):\n                case Ok(back):\n                    \
-             same = back == value\n                case Err(_):\n                    pass\n            \
-             mut grown = \"err\"\n            match pack.loads[{ty}](longer):\n                case Ok(_):\n                    \
-             grown = \"ok\"\n                case Err(_):\n                    pass\n            \
-             mut cut = \"err\"\n            match pack.loads[{ty}](shorter):\n                case Ok(_):\n                    \
-             cut = \"ok\"\n                case Err(_):\n                    pass\n            \
-             stdout.print(\"ok\", same, grown, cut)\n        case Err(_):\n            stdout.print(\"err\")\n",
-        );
+    for n in 0..TYPES.len() {
+        let _ = writeln!(source, "    stdout.print(read_as_{n}(data, longer=longer, shorter=shorter))");
     }
     source.push_str("    stdout.print(\"stream\", streamed(data))\n");
     source

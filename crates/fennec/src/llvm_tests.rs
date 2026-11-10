@@ -317,9 +317,7 @@ fn shrinking_functions(
     let ran = if tried.is_empty() {
         format!("    {PREFIX}{number}_body({given})\n")
     } else {
-        format!(
-            "    match {PREFIX}{number}_body({given}):\n        case Err(_):\n            return False\n        case _:\n            pass\n"
-        )
+        format!("    {PREFIX}{number}_body({given}) else:\n        return False\n")
     };
     let _ = write!(source, "def {PREFIX}{number}_attempt({params}) -> bool:\n{ran}    {PREFIX}passed()\n\n");
     let _ = writeln!(source, "def {PREFIX}{number}_shrunk({params}):");

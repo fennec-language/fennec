@@ -61,6 +61,7 @@ pub fn result_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
         }
     }
     for def in defs.into_iter().filter(|def| !def.span.in_prelude()) {
+        found.extend(result_return(def, sources));
         let gives = def.ret.as_ref().is_some_and(|written| written.name != "None");
         let mut taken: HashSet<String> = def.params.iter().map(|param| param.name.clone()).collect();
         declared(&def.body, &mut taken);
@@ -68,6 +69,17 @@ pub fn result_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
         block(&def.body, place, (sources, &taken), &mut found);
     }
     found
+}
+
+/// `-> Result[T, E]` on a function, written `-> T fails E`, which means the same.
+fn result_return(def: &FnDef, sources: &Sources) -> Option<Diagnostic> {
+    let ret = def.ret.as_ref().filter(|ret| ret.name == "Result" && !ret.optional && def.fails.is_none())?;
+    let [value, error] = ret.args.as_slice() else { return None };
+    let text = Text::of(sources, ret.span)?;
+    // A function that gives nothing back says only what it fails with, and that's written apart.
+    let value = text.get(value.span).filter(|value| *value != "nothing")?;
+    let written = format!("{value} fails {}", text.get(error.span)?);
+    Some(crate::gone::result_type(ret.span).with_fix(ret.span, written))
 }
 
 /// Makes the first of a block's rewrites that names something `mut`, when a later one in the same

@@ -52,15 +52,13 @@ def shown(message: PgMessage) -> str:
 def read_all(ref reader: PgReader) -> list[str]:
     mut said = list[str]()
     while said.len() < 10000:
-        match reader.next():
-            case Ok(message):
-                if message is None:
-                    said.append(\"end\")
-                    return said
-                said.append(shown(message))
-            case Err(_):
-                said.append(\"fail\")
-                return said
+        message = reader.next() else as _:
+            said.append(\"fail\")
+            return said
+        if message is None:
+            said.append(\"end\")
+            return said
+        said.append(shown(message))
     said
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
@@ -81,16 +79,14 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
         size = size % 7 + 1
         mut more = True
         while more:
-            match pieces.next():
-                case Ok(message):
-                    if message is None:
-                        more = False
-                    else:
-                        said.append(shown(message))
-                case Err(_):
-                    said.append(\"fail\")
-                    more = False
-                    at = data.len() + 1
+            message = pieces.next() else as _:
+                said.append(\"fail\")
+                at = data.len() + 1
+                break
+            if message is None:
+                more = False
+            else:
+                said.append(shown(message))
     if at == data.len() + 1:
         for line in said:
             stdout.print(line)

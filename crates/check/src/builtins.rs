@@ -700,9 +700,17 @@ impl FnCx<'_> {
         let (first, at) = plain.first().cloned().unwrap_or((Type::Unit, span));
         match name {
             "copy" => first,
-            "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
+            "Ok" => {
+                if crate::gone::written_by_hand(span) {
+                    self.error(crate::gone::ok_call(span, plain.first().map(|(_, value)| *value)));
+                }
+                Type::result(first, self.checker.fresh(span, Hole::OkError))
+            }
             "Err" => {
-                if !self.checker.program.can_fail_with(&self.checker.settled(&first)) {
+                if crate::gone::written_by_hand(span) {
+                    let returned = self.returned_errs.get(&(span.start, span.end)).copied();
+                    self.error(crate::gone::err_call(span, at, returned));
+                } else if !self.checker.program.can_fail_with(&self.checker.settled(&first)) {
                     self.error(crate::program::not_an_error(
                         "`Err` holds an error, as `fail` does",
                         &first,

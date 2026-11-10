@@ -628,3 +628,28 @@ fn a_failure_of_several_kinds_is_matched_case_by_case() {
     let compared = format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(load(1) == load(2))\n");
     assert_eq!(problems(&compared), ["this is the result of something that can fail @ load(1) == load(2)"]);
 }
+
+/// `Ok`, `Err` and `Result` are gone. Where a program writes one, it's refused with what to write
+/// instead, and the fix writes `return Err(e)` as `fail e` and `Ok(x)` as `x`. What lowering
+/// writes of them, for `?` and `else`, still checks.
+#[test]
+fn ok_err_and_result_are_refused_with_what_to_write() {
+    let program = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        return Err(Bad(\"small\"))\n    return Ok(n - 1)\n\ndef show(n: int) -> str:\n    match half(n):\n        case Ok(value): str(value)\n        case Err(problem): problem.why\n\ndef held(found: Result[int, Bad]) -> int:\n    0\n";
+    assert_eq!(
+        crate::problems_as_written(program),
+        [
+            "`Err` is gone: a function fails with `fail error` @ Err(Bad(\"small\"))",
+            "`Ok` is gone: a value is given as it is @ Ok(n - 1)",
+            "`Ok` and `Err` are gone: a failure is handled with `else as why:` @ case Ok(value): str(value)\n",
+            "`Result` is gone: what can fail says so with `fails` @ Result[int, Bad]",
+        ]
+    );
+    let module = fennec_syntax::parse(program).unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    let fixed = fennec_syntax::apply_fixes(program, 0, &diagnostics).unwrap();
+    for written in ["        fail Bad(\"small\")\n", "    return n - 1\n"] {
+        assert!(fixed.contains(written), "{fixed}");
+    }
+    let lowered = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n\ndef twice(n: int) -> int fails Bad:\n    half(n)? + (half(n) else 0)\n";
+    assert_eq!(crate::problems_as_written(lowered), Vec::<String>::new());
+}

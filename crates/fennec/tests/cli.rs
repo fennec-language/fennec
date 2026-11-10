@@ -759,15 +759,16 @@ fn a_double_lookup_fixed_prints_the_same() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// `fennec fix` writes a `match` on `Ok` and `Err` with `else`: a function's last line returns
-/// from its failure case, a named value keeps its name, and a loop's last statement continues.
-/// The program prints the same before and after.
+/// `fennec fix` writes what used `Ok`, `Err` and `Result`, which are refused now: a `match` on
+/// `Ok` and `Err` with `else`, where a function's last line returns from its failure case, a named
+/// value keeps its name, and a loop's last statement continues; `-> Result[T, E]` as
+/// `-> T fails E`; and `return Err(e)` as `fail e`. The program runs once fixed.
 #[test]
-fn a_match_on_ok_and_err_fixed_prints_the_same() {
+fn what_used_ok_err_and_result_is_fixed_and_runs() {
     let dir = scratch("results-fix").unwrap();
     let program = dir.join("results_fix.fen");
-    let source = "error Bad:\n    why: str\n\ndef lower(n: int) -> int fails Bad:\n    if n < 1:\n        \
-                  fail Bad(\"small\")\n    n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        \
+    let source = "error Bad:\n    why: str\n\ndef lower(n: int) -> Result[int, Bad]:\n    if n < 1:\n        \
+                  return Err(Bad(\"small\"))\n    n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        \
                   case Ok(lowered): lowered\n        case Err(_): 0\n\ndef main(stdout: Stdout):\n    \
                   for n in [0, 3]:\n        given = match lower(n):\n            case Ok(lowered): lowered\n            \
                   case Err(_): 9\n        stdout.print(given, first(n))\n        match lower(n):\n            \
@@ -776,12 +777,15 @@ fn a_match_on_ok_and_err_fixed_prints_the_same() {
     std::fs::write(&program, source).unwrap();
     let path = program.to_str().unwrap();
     let expected = "9 0\nsmall\n2 2\n2\n";
-    assert_eq!(text(&fennec(&["run", path], "").unwrap().stdout), expected);
+    let refused = fennec(&["run", path], "").unwrap();
+    assert!(text(&refused.stderr).contains("`Ok` and `Err` are gone"), "{}", text(&refused.stderr));
     let fixed = fennec(&["fix", path], "").unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     let now = std::fs::read_to_string(&program).unwrap();
-    assert!(!now.contains("Ok(") && !now.contains("Err("), "{now}");
+    assert!(!now.contains("Ok(") && !now.contains("Err(") && !now.contains("Result["), "{now}");
     for written in [
+        "def lower(n: int) -> int fails Bad:\n",
+        "        fail Bad(\"small\")\n",
         "lowered = lower(n) else:\n        return 0\n    lowered\n",
         "given = lower(n) else:\n            9\n",
         "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",

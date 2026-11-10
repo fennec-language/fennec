@@ -52,11 +52,10 @@ pub(crate) const CLIENT: &str = "\
 from std import json
 
 def main(net: Net, args: Args, stdout: Stdout):
-    match net.get(f\"http://127.0.0.1:{args[0]}/\", timeout=5s):
-        case Ok(response):
-            stdout.print(\"ok\", response.status, json.dumps([b for b in response.body]))
-        case Err(_):
-            stdout.print(\"err\")
+    response = net.get(f\"http://127.0.0.1:{args[0]}/\", timeout=5s) else:
+        stdout.print(\"err\")
+        return
+    stdout.print(\"ok\", response.status, json.dumps([b for b in response.body]))
 ";
 
 /// The most a request's headers may hold, in lines and in bytes, and the most its body may be,

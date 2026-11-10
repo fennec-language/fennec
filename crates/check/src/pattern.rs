@@ -27,6 +27,16 @@ impl FnCx<'_> {
         let mut values = Vec::new();
         // The errors earlier cases took all of, which a later `case Err(name)` can't hold.
         let mut taken: Vec<String> = Vec::new();
+        // One `case Ok` or `case Err` a program wrote is enough to say they're gone.
+        let gone = arms.iter().find(|arm| {
+            crate::gone::written_by_hand(arm.span)
+                && alternatives(&arm.pattern).iter().any(|pattern| {
+                    matches!(pattern, Pattern::Variant { name, dotted: false, .. } if name == "Ok" || name == "Err")
+                })
+        });
+        if let Some(arm) = gone {
+            self.error(crate::gone::result_case(arm.span));
+        }
         for arm in arms {
             self.push(false);
             self.note_undotted_case(&arm.pattern, &ty, arm.span);

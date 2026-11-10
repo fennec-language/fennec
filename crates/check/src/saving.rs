@@ -569,10 +569,8 @@ fn made(out: &mut String, indent: &str, make: &str, all: &[Field]) {
         return;
     }
     let value = make.strip_prefix("return ").unwrap_or(make);
-    let _ = writeln!(out, "{indent}match {value}({}):", given(all));
-    let _ = writeln!(out, "{indent}    case Ok(value__):\n{indent}        return value__");
-    let _ =
-        writeln!(out, "{indent}    case Err(broken__):\n{indent}        fail src__.rule(broken__.message)");
+    let _ = writeln!(out, "{indent}value__ = {value}({}) else as broken__:", given(all));
+    let _ = writeln!(out, "{indent}    fail src__.rule(broken__.message)\n{indent}return value__");
 }
 
 /// Reads fields that come in order, every one there, as a format that saves no names gives them,
@@ -608,12 +606,8 @@ fn load_in_order(
         let _ = writeln!(out, "{indent}    return {value}({})", given.join(", "));
         return;
     }
-    let _ = writeln!(out, "{indent}    match {value}({}):", given.join(", "));
-    let _ = writeln!(out, "{indent}        case Ok(value__):\n{indent}            return value__");
-    let _ = writeln!(
-        out,
-        "{indent}        case Err(broken__):\n{indent}            fail src__.rule(broken__.message)"
-    );
+    let _ = writeln!(out, "{indent}    value__ = {value}({}) else as broken__:", given.join(", "));
+    let _ = writeln!(out, "{indent}        fail src__.rule(broken__.message)\n{indent}    return value__");
 }
 
 fn load_struct(name: &str, all: &[Field], fields: &Fields<'_>) -> String {

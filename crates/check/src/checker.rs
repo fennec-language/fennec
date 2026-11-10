@@ -120,6 +120,9 @@ pub(crate) struct Checker {
     pub(crate) takes_locks: BTreeMap<String, String>,
     /// The calls made inside lock bodies, judged once every function's waits are known.
     pub(crate) lock_calls: Vec<crate::waits::LockCall>,
+    /// What's followed through function values: which function parameters are called, what's
+    /// passed for them, and what each arrow function waits on.
+    pub(crate) values: crate::waits::Values,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -210,6 +213,7 @@ impl Checker {
             again: false,
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
+            values: crate::waits::Values::default(),
             diagnostics,
         }
     }

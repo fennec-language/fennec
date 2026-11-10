@@ -4017,9 +4017,10 @@ def main(stdout: Stdout):
         stdout.print("before", x.total)
 "#;
 
-/// A way a function can still take a lock its caller holds, past what the checker sees: a closure
-/// that takes it, passed to a call. The checker refuses the rest, a nested function kept in a list
-/// among them.
+/// The last way a function could take a lock its caller holds past what the checker saw: a
+/// closure that takes it, passed to a call. The checker follows it now, so the program is refused
+/// where it's built; the runtime's check, which ends a program that takes a held lock, stays as
+/// the backstop.
 const TAKEN_AGAIN: [(&str, &str); 1] = [(
     "closure_passed",
     "    reader = () => through_holder(holder)\n    lock one as ref x:\n        x.total = called(reader)\n",
@@ -4045,9 +4046,11 @@ def main(stdout: Stdout):
     stdout.print("before", through_holder(holder))
 "#;
 
-/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
+/// A lock this thread holds, taken again through a closure passed to a call, is refused where the
+/// program's built: the closure is followed to the lock it takes. It once built, and ended the
+/// program where it ran, as it would wait forever otherwise.
 #[test]
-fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
+fn taking_a_lock_already_held_through_a_closure_is_refused_where_its_built() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -4058,11 +4061,12 @@ fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
         std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
         let executable = dir.join(name);
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let ran = outcome(&Command::new(&executable).output_within()?);
-        assert_eq!(ran.2, Some(1), "{name}");
-        assert_eq!(ran.0, "before 1\n", "{name}");
-        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name} built");
+        assert!(
+            said.contains("`called` calls `read` while `x` is locked, and this takes `holder.box`'s lock"),
+            "{name}: {said}"
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

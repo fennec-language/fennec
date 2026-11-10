@@ -5,7 +5,7 @@
 //! `serialize`. Printed some other way, as through a generic function's `T`, it shows only
 //! `Secret(hidden)`.
 
-use fennec_syntax::{Arg, Diagnostic, ExprKind, FStrPart, Span};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FStrPart, Span};
 
 use crate::function::FnCx;
 use crate::types::Type;
@@ -102,6 +102,17 @@ impl FnCx<'_> {
 const URL_TAKERS: [(&str, usize); 2] = [("postgres.connect", 2), ("postgres.settings", 0)];
 
 impl FnCx<'_> {
+    /// `connect(...)` after `from std.postgres import connect`, checked as `postgres.connect` is
+    /// where it's found through the module.
+    pub(crate) fn no_password_in_imported_url(&mut self, callee: &Expr, args: &[Arg]) {
+        if let ExprKind::Name(name) = &callee.kind
+            && self.lookup(name).is_none()
+            && let Some(function) = self.checker.program.std_functions.get(name).cloned()
+        {
+            self.no_password_in_written_url(&function, args);
+        }
+    }
+
     /// A database URL written in the source with a password in it is refused: the password would
     /// be in a plain `str`, and in the source too. A URL with a password has to be a `Secret`,
     /// read from where it's kept, and `postgres.connect` refuses a plain one with a password

@@ -147,7 +147,11 @@ fn mentions(program: &Program, ty: &Type, target: &str, seen: &mut HashSet<Strin
         Type::Generic(name, args) => {
             name == target || args.iter().any(&mut inside) || named_mentions(program, name, target, seen)
         }
-        // A function value, a type parameter, several errors or one not worked out yet.
+        // What fails more than one way holds what each of its errors holds.
+        Type::Errors(names) => {
+            names.iter().any(|name| name == target || named_mentions(program, name, target, seen))
+        }
+        // A function value, a type parameter, or one not worked out yet.
         _ => true,
     }
 }

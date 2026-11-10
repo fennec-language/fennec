@@ -309,13 +309,12 @@ fn file_work(
             out.get_ref().sync_all().map_err(io)?;
             Ok(Given::Nothing)
         }
-        ("sync", _) => Ok(Given::Nothing),
         // What's been written goes to the file now, without waiting for the disk.
         ("flush", OpenFile::Writing { out, .. }) => {
             out.flush().map_err(io)?;
             Ok(Given::Nothing)
         }
-        ("flush", _) => Ok(Given::Nothing),
+        ("sync" | "flush", _) => Ok(Given::Nothing),
         ("write", _) => Err("this file was opened to read, not to write".to_owned()),
         ("read", OpenFile::Reading(reader)) => {
             let mut all = Vec::new();

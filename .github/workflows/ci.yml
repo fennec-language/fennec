@@ -182,7 +182,7 @@ jobs:
       # binary has `llvm::` in its name.
       - name: Run every test but the LLVM ones
         if: runner.os == 'Windows' && matrix.part == 'main'
-        run: cargo test --locked --no-fail-fast -p fennec --test fennec 'live::'
+        run: cargo test --locked --no-fail-fast -- --skip 'llvm::'
       - name: Run the LLVM tests
         if: matrix.part == 'llvm'
         run: cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'

@@ -1,5 +1,6 @@
 //! What can be a dict key or a set item: not a type with its own `def ==`, whose hash could
-//! disagree with it, wherever that type is held.
+//! disagree with it, wherever that type is held. A float field is fine, since floats hash as they
+//! compare.
 
 use crate::problems;
 
@@ -42,4 +43,14 @@ fn a_struct_or_enum_holding_one_cant_be_a_key() {
     rejected("stdout.print({Holder(set=SortedSet.of([1])): 1})", "Holder");
     rejected("stdout.print({Held.Nothing: 1})", "Held");
     rejected("stdout.print({(1, SortedSet.of([1]))})", "(int, SortedSet[int])");
+}
+
+/// A struct or enum holding a float, `float` or `f32`, is a key: `-0.0` is `0.0` and NaN is NaN,
+/// for `==` and hashing alike.
+#[test]
+fn a_struct_or_enum_holding_a_float_is_a_key() {
+    let text = "struct Point:\n    x: float\n    y: f32\n\nenum Reading:\n    Level(value: float)\n    Off\n\n\
+        def main(stdout: Stdout):\n    seen = {Point(x=0.0, y=f32(1.0)), Point(x=-0.0, y=f32(1.0))}\n    \
+        named = {Reading.Level(value=-0.0): 1, Reading.Off: 2}\n    stdout.print(seen, named)\n";
+    assert_eq!(problems(text), Vec::<String>::new());
 }

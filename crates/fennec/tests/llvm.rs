@@ -4852,8 +4852,7 @@ def main(stdout: Stdout):
                 case Shut.Stuck(name=name):
                     stdout.print("named", name)
                     continue
-                case _:
-                    error = why
+                case error:
                     stdout.print(error.said())
                     continue
         stdout.print("went through")

@@ -427,6 +427,14 @@ impl FnCx<'_> {
         spans: (Span, Span),
     ) -> Type {
         let (left, right) = self.settle_sides(left, right);
+        // What can fail is read only through `?` or `else`: compared as it is, the failure would
+        // be read as a value.
+        if matches!(op, BinOp::Eq | BinOp::NotEq)
+            && (matches!(left, Type::Result(..)) || matches!(right, Type::Result(..)))
+        {
+            self.error(unhandled_result(span));
+            return Type::Bool;
+        }
         // Literals joined are a literal; with anything else a `LiteralStr` is a `str`.
         if op == BinOp::Add && matches!((&left, &right), (Type::LiteralStr, Type::LiteralStr)) {
             return Type::LiteralStr;

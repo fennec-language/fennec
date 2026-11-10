@@ -153,15 +153,11 @@ fn an_error_carries_notes() {
         empty
     );
     assert_eq!(
-        found(
-            "_ = risky(5) else as failure:\n    failure.add_note('x')\n    0\n"
-        ),
+        found("_ = risky(5) else as failure:\n    failure.add_note('x')\n    0\n"),
         ["`failure` isn't mut @ failure"]
     );
     assert_eq!(
-        found(
-            "_ = risky(5) else as failure:\n    mut noted = failure\n    noted.add_note(3)\n    0\n"
-        ),
+        found("_ = risky(5) else as failure:\n    mut noted = failure\n    noted.add_note(3)\n    0\n"),
         ["`add_note` takes the note's text, a str, but this is an int @ 3"]
     );
     assert_eq!(found("p = player('a')?\n_ = p.notes()\n").len(), 1);
@@ -588,4 +584,22 @@ fn an_assert_that_something_fails_takes_what_can_fail() {
         parsed.err().map(|problem| problem.message),
         Some("`fails` checks a failure only in `assert`".to_owned())
     );
+}
+
+/// What `else as why:` names when a call can fail several ways is matched as any union is: each
+/// error has a case or `_` catches the rest, a later case holds what the earlier ones left, and
+/// what can fail can't be compared as it is.
+#[test]
+fn a_failure_of_several_kinds_is_matched_case_by_case() {
+    let declared = "error Gone:\n    path: str\n\nerror Bad:\n    line: int\n\n    def said(self) -> str:\n        f\"line {self.line}\"\n\ndef load(n: int) -> int fails Gone | Bad:\n    if n == 1:\n        fail Gone(path='x')\n    if n == 2:\n        fail Bad(line=2)\n    n\n";
+    let missing = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    got = load(1) else as why:\n        match why:\n            case Gone(path):\n                stdout.print(path)\n        0\n    stdout.print(got)\n"
+    );
+    assert_eq!(problems(&missing), ["this `match` doesn't handle `Bad` @ why"]);
+    let narrowed = format!(
+        "{declared}\ndef main(stdout: Stdout):\n    got = load(2) else as why:\n        match why:\n            case Gone(path):\n                stdout.print(path)\n            case rest:\n                stdout.print(rest.said())\n        0\n    stdout.print(got)\n"
+    );
+    assert_eq!(problems(&narrowed), Vec::<String>::new());
+    let compared = format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(load(1) == load(2))\n");
+    assert_eq!(problems(&compared), ["this is the result of something that can fail @ load(1) == load(2)"]);
 }

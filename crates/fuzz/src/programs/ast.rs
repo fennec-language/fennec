@@ -287,6 +287,21 @@ pub(crate) enum Op {
     RefItem(i64, Amount),
 }
 
+/// The containers `CopiedNested` copies and changes deep inside.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Nested {
+    /// `dict[str, Unit]`, a unit's `tags` appended to.
+    DictOfUnits,
+    /// `Army`, a struct holding a `dict[str, Unit]`.
+    ArmyOfUnits,
+    /// `dict[str, dict[str, int]]`, an inner number added to.
+    DictOfDicts,
+    /// `list[dict[str, int]]`.
+    ListOfDicts,
+    /// `dict[str, list[Unit]]`.
+    DictOfUnitLists,
+}
+
 /// What a local `ref` names: a field or an item of something held in a `mut` name, its index
 /// worked out once, at the `ref`.
 #[derive(Clone, Debug)]
@@ -453,6 +468,9 @@ pub(crate) enum Stmt {
     /// `ref self` method given a value read from the list it grows, just after that list grew in
     /// place, and both printed, under `if holder.items.len() < 64:`.
     GrownBy(String, String),
+    /// `given = <a container holding containers>`, `mut copy = given`, a change deep inside the
+    /// copy by `value`, then both printed: the original mustn't see it, and must still be whole.
+    CopiedNested(Nested, String, String, Expr),
     /// `ref name = place`, then the statements that use it, the last of them its last use.
     LocalRef(String, RefPlace, Vec<Stmt>),
     /// `holder.items.append(value)`.

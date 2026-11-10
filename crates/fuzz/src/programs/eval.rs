@@ -12,7 +12,9 @@
 
 use std::fmt::Write as _;
 
-use super::ast::{Amount, Arith, BufOp, Case, Compare, Expr, Op, Place, Program, RefPlace, Size, Stmt};
+use super::ast::{
+    Amount, Arith, BufOp, Case, Compare, Expr, Nested, Op, Place, Program, RefPlace, Size, Stmt,
+};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -807,6 +809,36 @@ impl Machine {
             Stmt::Reshape(name, text, child) => self.reshape(name, text, child)?,
             Stmt::Rename(name, text, left) => self.rename(name, text, left)?,
             Stmt::LocalRef(name, place, body) => self.local_ref(name, place, body)?,
+            Stmt::CopiedNested(shape, _, _, value) => {
+                let value = int(&self.expr(value)?)?;
+                // What `given` holds, which the change to the copy mustn't reach, and the copy.
+                let (given, copy) = match shape {
+                    Nested::DictOfUnits => {
+                        let rest = "\"b\": Unit(tags=[], hp=2)}";
+                        (
+                            format!("{{\"a\": Unit(tags=[1], hp=1), {rest}"),
+                            format!("{{\"a\": Unit(tags=[1, {value}], hp=1), {rest}"),
+                        )
+                    }
+                    Nested::ArmyOfUnits => (
+                        "Army(units={\"a\": Unit(tags=[1], hp=1)})".to_owned(),
+                        format!("Army(units={{\"a\": Unit(tags=[1, {value}], hp=1)}})"),
+                    ),
+                    Nested::DictOfDicts => (
+                        "{\"a\": {\"x\": 1}, \"b\": {}}".to_owned(),
+                        format!("{{\"a\": {{\"x\": {}}}, \"b\": {{}}}}", checked(value.checked_add(1))?),
+                    ),
+                    Nested::ListOfDicts => (
+                        "[{\"x\": 1}, {\"y\": 2}]".to_owned(),
+                        format!("[{{\"x\": {}}}, {{\"y\": 2}}]", checked(value.checked_add(1))?),
+                    ),
+                    Nested::DictOfUnitLists => (
+                        "{\"a\": [Unit(tags=[1], hp=1)]}".to_owned(),
+                        format!("{{\"a\": [Unit(tags=[1, {value}], hp=1)]}}"),
+                    ),
+                };
+                let _ = writeln!(self.out, "{given} {copy}");
+            }
             Stmt::GrownBy(holder, _) => {
                 if let Value::Holder(items, tag) = self.slot(holder)?
                     && items.len() < 64

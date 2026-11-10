@@ -1,0 +1,17 @@
+## Whether the program's been asked to stop, given to `main` or a test: by SIGTERM, Ctrl-C or
+## SIGHUP on Unix, and Ctrl-C or Ctrl-Break on Windows. A program given `Signals` catches them
+## from the start, so it can finish what it's doing; a second one ends it at once. One that isn't
+## given `Signals` ends at the first, as any program does.
+##
+## Its methods written in Rust are `stopping()`, whether a stop's been asked for, and `wait()`,
+## which waits until one is; a task parks on it. A test's `Signals` is a fake that stops only when
+## the test calls `stop()`. Only `main` and tests are given one: it can't be made.
+##
+## ```fennec
+## def main(signals: Signals, stdout: Stdout):
+##     while not signals.stopping():
+##         frame()
+##     stdout.print("saved and stopped")
+## ```
+export struct Signals:
+    _given: int

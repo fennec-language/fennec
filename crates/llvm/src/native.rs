@@ -205,6 +205,10 @@ impl crate::emit::Emit<'_, '_, '_> {
         // by the allocator's call to clear it.
         self.line(&format!("store [{} x i64] zeroinitializer, ptr {made}", bytes / 8));
         self.count_native(bytes);
+        if self.module.shared.native_blocks == crate::NativeBlocks::Watched {
+            self.declare("declare void @fennec_native_made(ptr) nounwind");
+            self.line(&format!("call void @fennec_native_made(ptr {made})"));
+        }
         self.line(&format!("store i64 1, ptr {made}{}", crate::emit::HEADER_ACCESS));
         let shape_at = self.offset(&made, 8);
         self.line(&format!("store i64 {shape}, ptr {shape_at}{}", crate::emit::HEADER_ACCESS));
@@ -266,6 +270,12 @@ impl crate::emit::Emit<'_, '_, '_> {
         let (_, free) = allocator();
         self.declare(free);
         let free_call = if free.contains("@free") { "@free" } else { "@mi_free" };
+        // A build that watches native blocks tells the runtime each one's gone.
+        let watched = self.module.shared.native_blocks == crate::NativeBlocks::Watched;
+        if watched {
+            self.declare("declare void @fennec_native_freed(ptr) nounwind");
+        }
+        let freed = if watched { "call void @fennec_native_freed(ptr %block)\n  " } else { "" };
         let layout = self.layout_of(id)?;
         let fields_at = u64::from(FIELDS.unsigned_abs());
         let mut cases = Vec::new();
@@ -333,11 +343,11 @@ impl crate::emit::Emit<'_, '_, '_> {
                 ));
             }
             text.push_str(&format!(
-                "  %last_at{number} = getelementptr inbounds i8, ptr %block, i64 {last}\n  %last{number} = load ptr, ptr %last_at{number}\n  call void {free_call}(ptr %block)\n  %count{number} = load i64, ptr %last{number}\n  %left{number} = sub i64 %count{number}, 1\n  store i64 %left{number}, ptr %last{number}\n  %gone{number} = icmp eq i64 %left{number}, 0\n  br i1 %gone{number}, label %again{number}, label %done\nagain{number}:\n  br label %top\n"
+                "  %last_at{number} = getelementptr inbounds i8, ptr %block, i64 {last}\n  %last{number} = load ptr, ptr %last_at{number}\n  {freed}call void {free_call}(ptr %block)\n  %count{number} = load i64, ptr %last{number}\n  %left{number} = sub i64 %count{number}, 1\n  store i64 %left{number}, ptr %last{number}\n  %gone{number} = icmp eq i64 %left{number}, 0\n  br i1 %gone{number}, label %again{number}, label %done\nagain{number}:\n  br label %top\n"
             ));
         }
         text.push_str(&format!(
-            "free:\n  call void {free_call}(ptr %block)\n  br label %done\ndone:\n  ret void\n}}\n\n"
+            "free:\n  {freed}call void {free_call}(ptr %block)\n  br label %done\ndone:\n  ret void\n}}\n\n"
         ));
         self.module.add_helper(&format!("fen_drop_{id}"), text);
         Ok(())

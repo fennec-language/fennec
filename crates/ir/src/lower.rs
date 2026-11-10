@@ -276,8 +276,8 @@ struct Loop {
 }
 
 /// The capabilities, whose methods the engines provide.
-pub(crate) const CAPABILITIES: [&str; 9] =
-    ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Env"];
+pub(crate) const CAPABILITIES: [&str; 10] =
+    ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Env", "Signals"];
 
 /// What's known about the whole program.
 struct Context<'a> {

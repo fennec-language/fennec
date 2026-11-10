@@ -2512,6 +2512,59 @@ def main(stdout: Stdout):
         stdout.print(unit.seen)
 ";
 
+/// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
+/// read back through the list and through the name, its index worked out once at the `ref`, and
+/// passed on as `ref`. It's declared again each time round a loop.
+#[test]
+fn a_local_ref_changes_its_place_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("local_ref", LOCAL_REF, "25 15 0\n15 hit 110 1\n[[1, 2], [30, 4]]\n125\n17\n")
+}
+
+const LOCAL_REF: &str = r#"struct Unit:
+    health: int
+    status: str
+
+struct World:
+    units: list[Unit]
+    score: int
+
+def total(units: list[Unit]) -> int:
+    sum(unit.health for unit in units)
+
+def hit(ref unit: Unit, by: int):
+    unit.health -= by
+
+def main(stdout: Stdout):
+    mut world = World(units=[Unit(health=10, status="ok"), Unit(health=20, status="ok")], score=0)
+    mut actor = 1
+    ref unit = world.units[actor]
+    actor = 0
+    unit.health -= 3
+    unit.status = "hit"
+    hit(ref unit, by=2)
+    world.score += 1
+    stdout.print(total(world.units), unit.health, actor)
+    world.units[0].health += 100
+    stdout.print(world.units[1].health, world.units[1].status, world.units[0].health, world.score)
+    mut grid = [[1, 2], [3, 4]]
+    ref cell = grid[1][0]
+    cell *= 10
+    stdout.print(grid)
+    ref first = world.units[0]
+    bonus = sum(other.health for other in world.units if other.health < first.health)
+    first.health += bonus
+    stdout.print(first.health)
+    for turn in range(3):
+        ref last = world.units[world.units.len() - 1]
+        if turn == 1:
+            continue
+        last.health += turn
+    stdout.print(world.units[1].health)
+"#;
+
 /// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively as
 /// in the interpreter: a case that finishes, one that leaves by `return`, and one that fails, each
 /// putting the case back, and a `_` field kept as it was.
@@ -8045,6 +8098,95 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(stdin.lines())
     stdout.print(entropy.seed() != entropy.seed())
 ";
+
+/// A program given `Signals` catches SIGTERM, SIGINT and SIGHUP, so it can finish what it's doing:
+/// it sees `stopping()` turn true, says so and exits 0. A second signal, once a stop's been asked
+/// for, ends it at once, as it would have without Fennec, so a stuck program can still be stopped.
+#[cfg(unix)]
+#[test]
+fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::io::Result<()> {
+    use std::os::unix::process::ExitStatusExt;
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("signals_stop")?;
+    let build = |name: &str, source: &str| -> std::io::Result<PathBuf> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built =
+            fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        Ok(executable)
+    };
+    let cleanly = build(
+        "cleanly",
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):
+    stdout.print(\"ready\")
+    while not signals.stopping():
+        clock.sleep(10ms)
+    stdout.print(\"stopped cleanly\")
+",
+    )?;
+    let stuck = build(
+        "stuck",
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):
+    stdout.print(\"ready\")
+    signals.wait()
+    stdout.print(\"asked\")
+    # It goes on as though nothing asked, as a stuck program would.
+    while True:
+        clock.sleep(10ms)
+",
+    )?;
+    // Starts `executable`, and gives it with a way to read each line it prints as it comes.
+    let start = |executable: &Path| -> std::io::Result<(Running, std::sync::mpsc::Receiver<String>)> {
+        use std::io::BufRead;
+        let mut running = Running(Command::new(executable).stdout(std::process::Stdio::piped()).spawn()?);
+        let stdout = running.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        let (says, said) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = says.send(line);
+            }
+        });
+        Ok((running, said))
+    };
+    let line =
+        |said: &std::sync::mpsc::Receiver<String>| said.recv_timeout(std::time::Duration::from_secs(30));
+    let send = |running: &Running, signal: &str| -> std::io::Result<()> {
+        let sent =
+            Command::new("kill").args([&format!("-{signal}"), &running.0.id().to_string()]).status()?;
+        assert!(sent.success(), "couldn't send SIG{signal}");
+        Ok(())
+    };
+    let wait = |running: &mut Running| -> std::io::Result<std::process::ExitStatus> {
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(status) = running.0.try_wait()? {
+                return Ok(status);
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(30), "it didn't end");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    for signal in ["TERM", "INT", "HUP"] {
+        let (mut running, said) = start(&cleanly)?;
+        assert_eq!(line(&said).as_deref(), Ok("ready"));
+        send(&running, signal)?;
+        assert_eq!(line(&said).as_deref(), Ok("stopped cleanly"), "SIG{signal}");
+        assert_eq!(wait(&mut running)?.code(), Some(0), "SIG{signal}");
+    }
+    let (mut running, said) = start(&stuck)?;
+    assert_eq!(line(&said).as_deref(), Ok("ready"));
+    send(&running, "TERM")?;
+    assert_eq!(line(&said).as_deref(), Ok("asked"));
+    send(&running, "TERM")?;
+    assert_eq!(wait(&mut running)?.signal(), Some(15));
+    drop(running);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
 
 #[test]
 fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {

@@ -216,6 +216,33 @@ fn fields_and_items_change_only_through_mut_names() {
     assert_eq!(with_enemy(program), ["`enemy` isn't mut @ enemy.health", "`scores` isn't mut @ scores[0]"]);
 }
 
+/// `ref target = enemies[0]` names a field or an item of something held in a mut name, under a
+/// name of its own: not a whole name, not something worked out, and not through itself.
+#[test]
+fn a_ref_names_a_field_or_item_of_a_mut_name() {
+    let program = "
+        enemies = [Enemy()]
+        ref first = enemies[0]
+        first.health = 1
+        mut others = [Enemy()]
+        ref other = others[0]
+        other.health = 2
+        ref whole = others
+        ref made = Enemy()
+        ref others = others[0]
+    ";
+    let a_place = "a `ref` names a field or an item, like `ref unit = units[at]`";
+    assert_eq!(
+        with_enemy(program),
+        [
+            "`enemies` isn't mut @ enemies[0]".to_owned(),
+            format!("{a_place} @ others"),
+            format!("{a_place} @ Enemy()"),
+            "`others` is already the name this `ref` reaches through @ others".to_owned(),
+        ]
+    );
+}
+
 #[test]
 fn methods_that_change_their_value_need_a_mut_place() {
     let program = "

@@ -9,7 +9,28 @@ export struct Output:
     def ok(self) -> bool:
         self.status == 0
 
-## A program that couldn't be run at all, like one that isn't installed.
+## Why a program couldn't be run.
 export error ProcessError:
-    program: str
-    message: str
+    ## It couldn't be run at all, like one that isn't installed.
+    NotRun(program: str, reason: str)
+    ## A value in `process.run(t"...")` starts an argument with `-`, so the program would read it
+    ## as an option, rather than as what it was meant to be: `--upload-pack=` names a program
+    ## for git to run. It's named as it's written in its `{}`. A value later in an argument, like
+    ## `t"--depth={depth}"`, is fine, and so is one after an argument the template writes as `--`,
+    ## which tells most programs nothing after it is an option.
+    LooksLikeAnOption(program: str, expression: str)
+
+    ## The program it was asked to run.
+    def program(self) -> str:
+        match self:
+            case .NotRun(program, _):
+                program
+            case .LooksLikeAnOption(program, _):
+                program
+
+    def message(self) -> str:
+        match self:
+            case .NotRun(_, reason):
+                reason
+            case .LooksLikeAnOption(program, expression):
+                f"`{{{expression}}}` starts an argument with `-`, so `{program}` would read it as an option: put `--` before it, if `{program}` takes that, to mean it isn't one"

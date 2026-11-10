@@ -41,6 +41,105 @@ enum Value {
     Buf(Vec<i64>),
     /// A `shared Outer`, by where its number is.
     Outer(usize),
+    Node(Tree),
+    Nodes(Vec<Tree>),
+    Texts(Vec<String>),
+    /// A tree from `deep`, by how deep it is.
+    Deep(i64),
+}
+
+/// A `Node`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Tree {
+    Leaf(String),
+    Number(i64),
+    Branch(String, Vec<Tree>),
+    Tagged(Vec<String>, Vec<Tree>),
+}
+
+/// How deep a tree the evaluator follows, and how many nodes it holds, past which it's unsure:
+/// the program is about memory and its own stack there, not what it computes.
+const MOST_TREE_DEPTH: usize = 2000;
+const MOST_TREE_NODES: usize = 1 << 16;
+
+impl Tree {
+    /// How deep it goes and how many nodes it holds.
+    fn measure(&self) -> (usize, usize) {
+        let (texts, children) = match self {
+            Tree::Leaf(_) | Tree::Number(_) => return (1, 1),
+            Tree::Branch(_, children) => (0, children),
+            Tree::Tagged(tags, inner) => (tags.len(), inner),
+        };
+        children.iter().fold((1, 1 + texts), |(depth, nodes), child| {
+            let (below, held) = child.measure();
+            (depth.max(below + 1), nodes + held)
+        })
+    }
+
+    /// As `stdout.print` writes it.
+    fn shown(&self) -> String {
+        match self {
+            Tree::Leaf(name) => format!("Node.Leaf(name=\"{name}\")"),
+            Tree::Number(value) => format!("Node.Number(value={value})"),
+            Tree::Branch(label, children) => {
+                format!("Node.Branch(label=\"{label}\", children={})", trees_shown(children))
+            }
+            Tree::Tagged(tags, inner) => {
+                format!("Node.Tagged(tags={}, inner={})", texts_shown(tags), trees_shown(inner))
+            }
+        }
+    }
+
+    /// As the program's `digest` writes it.
+    fn digest(&self, text: &mut String) {
+        match self {
+            Tree::Leaf(name) => {
+                let _ = write!(text, "L({name})");
+            }
+            Tree::Number(value) => {
+                let _ = write!(text, "N({value})");
+            }
+            Tree::Branch(label, children) => {
+                let _ = write!(text, "B({label}");
+                for child in children {
+                    text.push(' ');
+                    child.digest(text);
+                }
+                text.push(')');
+            }
+            Tree::Tagged(tags, inner) => {
+                text.push_str("T(");
+                for tag in tags {
+                    text.push_str(tag);
+                    text.push(',');
+                }
+                for child in inner {
+                    text.push(' ');
+                    child.digest(text);
+                }
+                text.push(')');
+            }
+        }
+    }
+}
+
+fn trees_shown(trees: &[Tree]) -> String {
+    let trees: Vec<String> = trees.iter().map(Tree::shown).collect();
+    format!("[{}]", trees.join(", "))
+}
+
+fn texts_shown(texts: &[String]) -> String {
+    let texts: Vec<String> = texts.iter().map(|text| format!("\"{text}\"")).collect();
+    format!("[{}]", texts.join(", "))
+}
+
+/// A tree made, or unsure past what the evaluator follows.
+fn kept(tree: Tree) -> Ran<Tree> {
+    let (depth, nodes) = tree.measure();
+    if depth > MOST_TREE_DEPTH || nodes > MOST_TREE_NODES {
+        return Err(Stop::Unsure);
+    }
+    Ok(tree)
 }
 
 /// Why running stopped before the end.
@@ -280,7 +379,12 @@ fn shown(value: &Value) -> String {
         Value::Shape(Case::Empty, _) => "Shape.Empty".to_owned(),
         Value::Sized(_, n) => n.to_string(),
         Value::Tally(count) => format!("Tally(count={count})"),
-        Value::Shared(_) | Value::Bag(_) | Value::Count(_) | Value::Outer(_) => "shared".to_owned(),
+        Value::Shared(_) | Value::Bag(_) | Value::Count(_) | Value::Outer(_) | Value::Deep(_) => {
+            "shared".to_owned()
+        }
+        Value::Node(tree) => tree.shown(),
+        Value::Nodes(trees) => trees_shown(trees),
+        Value::Texts(texts) => texts_shown(texts),
         // A buffer prints as a list does.
         Value::Buf(items) => shown(&Value::Ints(items.clone())),
         Value::Float(bits) => float_text(f64::from_bits(*bits)),
@@ -362,6 +466,59 @@ impl Machine {
         Ok(())
     }
 
+    fn tree_of(&mut self, expr: &Expr) -> Ran<Tree> {
+        match self.expr(expr)? {
+            Value::Node(tree) => Ok(tree),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
+    fn trees_of(&mut self, expr: &Expr) -> Ran<Vec<Tree>> {
+        match self.expr(expr)? {
+            Value::Nodes(trees) => Ok(trees),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
+    fn text_of(&mut self, expr: &Expr) -> Ran<String> {
+        match self.expr(expr)? {
+            Value::Str(text) => Ok(text),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
+    fn trees_in(&mut self, name: &str) -> Ran<&mut Vec<Tree>> {
+        match self.slot(name)? {
+            Value::Nodes(trees) => Ok(trees),
+            _ => Err(Stop::Unsure),
+        }
+    }
+
+    /// `match name:` changing whichever case it holds through `ref`, the text and the child
+    /// worked out only in the cases that use them, as the program does.
+    fn reshape(&mut self, name: &str, text: &Expr, child: &Expr) -> Ran<()> {
+        let Value::Node(tree) = self.get(name)? else { return Err(Stop::Unsure) };
+        let tree = match tree.clone() {
+            Tree::Number(value) => Tree::Number(checked(value.checked_add(1))?),
+            Tree::Leaf(mut held) => {
+                held.push_str(&self.text_of(text)?);
+                Tree::Leaf(held)
+            }
+            Tree::Branch(mut label, mut children) => {
+                label.push_str(&self.text_of(text)?);
+                children.push(self.tree_of(child)?);
+                Tree::Branch(label, children)
+            }
+            Tree::Tagged(mut tags, mut inner) => {
+                tags.push(self.text_of(text)?);
+                inner.push(self.tree_of(child)?);
+                Tree::Tagged(tags, inner)
+            }
+        };
+        *self.slot(name)? = Value::Node(kept(tree)?);
+        Ok(())
+    }
+
     fn float_of(&mut self, expr: &Expr) -> Ran<f64> {
         match self.expr(expr)? {
             Value::Float(bits) => Ok(f64::from_bits(bits)),
@@ -432,6 +589,28 @@ impl Machine {
                     items.push(value);
                 }
             }
+            Stmt::NodesAppend(name, node) => {
+                let node = self.tree_of(node)?;
+                let trees = self.trees_in(name)?;
+                trees.push(node);
+                if trees.len() > MOST_TREE_NODES {
+                    return Err(Stop::Unsure);
+                }
+            }
+            Stmt::NodesPop(name) => {
+                self.trees_in(name)?.pop();
+            }
+            Stmt::NodesSet(name, at, node) => {
+                if !self.trees_in(name)?.is_empty() {
+                    let at = int(&self.expr(at)?)?;
+                    let len = i64::try_from(self.trees_in(name)?.len()).map_err(|_| Stop::Unsure)?;
+                    let at = usize::try_from(floor_rem(at, len)?).map_err(|_| Stop::Unsure)?;
+                    let node = self.tree_of(node)?;
+                    let trees = self.trees_in(name)?;
+                    *trees.get_mut(at).ok_or(Stop::Unsure)? = node;
+                }
+            }
+            Stmt::Reshape(name, text, child) => self.reshape(name, text, child)?,
             Stmt::Pop(name) => {
                 if let Value::Ints(items) = self.slot(name)? {
                     items.pop();
@@ -883,7 +1062,7 @@ impl Machine {
             Expr::Int(n) => Value::Int(*n),
             Expr::Bool(value) => Value::Bool(*value),
             Expr::Str(text) => Value::Str(text.clone()),
-            Expr::Name(name) | Expr::Copy(name) => self.get(name)?.clone(),
+            Expr::Name(name) => self.get(name)?.clone(),
             Expr::Arith(operator, left, right) => {
                 let (left, right) = (int(&self.expr(left)?)?, int(&self.expr(right)?)?);
                 Value::Int(match operator {
@@ -1110,6 +1289,72 @@ impl Machine {
                 Value::Int(checked(px.checked_add(py))?)
             }
             Expr::Shape(case, number) => Value::Shape(*case, int(&self.expr(number)?)?),
+            Expr::Leaf(name) => Value::Node(Tree::Leaf(self.text_of(name)?)),
+            Expr::Number(value) => Value::Node(Tree::Number(int(&self.expr(value)?)?)),
+            Expr::Branch(label, children) => {
+                let label = self.text_of(label)?;
+                Value::Node(kept(Tree::Branch(label, self.trees_of(children)?))?)
+            }
+            Expr::Tagged(tags, inner) => {
+                let Value::Texts(tags) = self.expr(tags)? else { return Err(Stop::Unsure) };
+                Value::Node(kept(Tree::Tagged(tags, self.trees_of(inner)?))?)
+            }
+            Expr::Texts(texts) => {
+                let mut values = Vec::with_capacity(texts.len());
+                for text in texts {
+                    values.push(self.text_of(text)?);
+                }
+                Value::Texts(values)
+            }
+            Expr::NodeList(nodes) => {
+                let mut trees = Vec::with_capacity(nodes.len());
+                for node in nodes {
+                    trees.push(self.tree_of(node)?);
+                }
+                Value::Nodes(trees)
+            }
+            Expr::NodeAt(nodes, at) => {
+                let (trees, at) = (self.trees_of(nodes)?, int(&self.expr(at)?)?);
+                let len = i64::try_from(trees.len()).map_err(|_| Stop::Unsure)?;
+                if len == 0 {
+                    Value::Node(Tree::Leaf("none".to_owned()))
+                } else {
+                    let at = usize::try_from(floor_rem(at, len)?).map_err(|_| Stop::Unsure)?;
+                    Value::Node(trees.get(at).cloned().ok_or(Stop::Unsure)?)
+                }
+            }
+            Expr::Digest(node) => {
+                let mut text = String::new();
+                self.tree_of(node)?.digest(&mut text);
+                Value::Str(text)
+            }
+            Expr::DigestAll(nodes) => {
+                let mut text = "[".to_owned();
+                for tree in self.trees_of(nodes)? {
+                    tree.digest(&mut text);
+                    text.push(';');
+                }
+                text.push(']');
+                Value::Str(text)
+            }
+            Expr::Deep(depth, label) => {
+                // The label is worked out, for anything it does, though only the depth is kept.
+                let _ = self.text_of(label)?;
+                Value::Deep((*depth).max(0))
+            }
+            Expr::DepthOf(node) => match self.expr(node)? {
+                Value::Deep(depth) => Value::Int(depth),
+                Value::Node(mut tree) => {
+                    let mut depth = 0;
+                    while let Tree::Branch(_, children) = tree {
+                        let Some(first) = children.into_iter().next() else { break };
+                        tree = first;
+                        depth += 1;
+                    }
+                    Value::Int(depth)
+                }
+                _ => return Err(Stop::Unsure),
+            },
             Expr::Area(shape) => {
                 let Value::Shape(case, number) = self.expr(shape)? else { return Err(Stop::Unsure) };
                 Value::Int(match case {

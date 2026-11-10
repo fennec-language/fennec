@@ -557,6 +557,25 @@ fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A property test whose body passes failures up, and fails an `assert` in an attempt, shrinks as
+/// any does. The attempt once went on to look at what the body gave back, which a failed call
+/// never wrote, and crashed: here after a failing read handled with `else` and a write.
+#[test]
+fn a_property_test_that_passes_failures_up_shrinks_when_an_assert_fails() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-shrinking-failures-up").unwrap();
+    let text = "test \"files\" (fs: Fs) for n: int:\n    there = fs.read_text(\"seen\") else \"no\"\n    \
+                assert there == \"no\"\n    fs.write_text(\"seen\", \"1\")?\n    assert n < 100\n";
+    std::fs::write(dir.join("game.fen"), text).unwrap();
+    let ran = run_tests(&dir, &["--all"]).unwrap();
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(!said.contains("crashed"), "{said}");
+    assert!(said.contains("it failed for n = 117; the left side is 117 and the right side is 100"), "{said}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_test_reaching_a_dict_of_lists_passes() {
     if !llvm_here() {

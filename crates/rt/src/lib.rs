@@ -18,6 +18,7 @@ pub mod packed;
 mod pairs;
 pub mod replay;
 mod scan;
+mod signals;
 mod stdlib;
 mod testing;
 mod unicode;

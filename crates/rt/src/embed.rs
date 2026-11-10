@@ -57,20 +57,39 @@ pub mod serve {
 
     /// Each round in turn: 1 is a crash, ending only itself; 2 a failure, passing up out of the
     /// loop; 3 a `break`.
+    /// A server told to `stop_on` signals takes no more once one comes: the connection being
+    /// served finishes, and the loop ends.
     pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         super::write_kept_output();
-        while let Ok(conn) = crate::stdlib::net::accepted(server) {
-            let how = body(env, conn, 0);
+        let draining = crate::stdlib::net::drain_on_stop(server);
+        let stopped = || draining.is_some() && crate::signals::stopping();
+        let mut how = 0;
+        while !stopped() {
+            let Ok(conn) = crate::stdlib::net::accepted(server) else { break };
+            // What woke the `accept` may be the stop's own connection.
+            if stopped() {
+                crate::stdlib::net::closed(conn);
+                break;
+            }
+            crate::stdlib::net::serving(Some(conn));
+            let round = body(env, conn, 0);
+            crate::stdlib::net::serving(None);
             super::write_kept_output();
             crate::stdlib::net::closed(conn);
-            match how {
+            match round {
                 0 => {}
-                2 => return 2,
+                2 => {
+                    how = 2;
+                    break;
+                }
                 3 => break,
                 _ => super::report_failure(),
             }
         }
-        0
+        if let Some(listening) = draining {
+            crate::signals::forget(listening);
+        }
+        how
     }
 
     /// Without tasks, nothing makes way.
@@ -474,7 +493,8 @@ pub fn failed_flag() -> usize {
 }
 
 /// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,
-/// 3 for `Args`, 4 for `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net` and 8 for `Env`.
+/// 3 for `Args`, 4 for `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net`, 8 for `Env` and 9
+/// for `Signals`.
 fn capability(kind: i64) -> Capability {
     match kind {
         0 => Capability::Stdout,
@@ -485,6 +505,7 @@ fn capability(kind: i64) -> Capability {
         6 => Capability::Entropy,
         7 => Capability::Net,
         8 => Capability::Env,
+        9 => Capability::Signals,
         _ => Capability::Clock,
     }
 }

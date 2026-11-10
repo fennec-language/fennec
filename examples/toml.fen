@@ -144,7 +144,7 @@ test "inline tables in inline tables count toward how deep TOML may nest"():
 
 test "a JSON read that fails leaves nothing behind for the next read"():
     assert (
-        failure_of(() => json.loads[Sample]("not json", names=.camel_case, extra=.ignore))
+        failure_of(() => json.loads[Sample]("not json", names=.CamelCase, extra=.Ignore))
         is not None
     )
     assert (

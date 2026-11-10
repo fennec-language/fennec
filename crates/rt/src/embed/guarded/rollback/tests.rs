@@ -369,7 +369,7 @@ fn a_string_s_header_is_held_only_when_it_holds_a_block() {
     let inline = 0x83_i64 << 56;
     save_text(cell, 2, block, 11, 0);
     save_text(cell, 5, 0x6f_6f66, 0, inline);
-    let saved = LOGS.with_borrow(|logs| logs[0].saved.clone());
+    let saved = read_logs(|logs| logs[0].saved.clone());
     let held: Vec<(usize, bool)> = saved.iter().map(|saved| (saved.word, saved.held)).collect();
     assert_eq!(held, [(2, true), (3, false), (4, false), (5, false), (6, false), (7, false)]);
     kept();

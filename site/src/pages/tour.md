@@ -907,8 +907,8 @@ def main(stdout: Stdout):
 
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table` whose `Id`s find the same items.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`.
-- Case style is an option on the call, `names=.camel_case`. A field may be named any word, keywords included, and `@serialize(name="uid")` renames one.
-- `where` rules check a value as it loads, and a key the type doesn't have is an error unless the call says `extra=.ignore`.
+- Case style is an option on the call, `names=.CamelCase`. A field may be named any word, keywords included, and `@serialize(name="uid")` renames one.
+- `where` rules check a value as it loads, and a key the type doesn't have is an error unless the call says `extra=.Ignore`.
 
 ```fennec
 from std import json
@@ -919,7 +919,7 @@ struct Account:
 
 def main(stdout: Stdout):
     # {"type": "admin", "displayName": "Ash"}
-    stdout.print(json.dumps(Account(type="admin", display_name="Ash"), names=.camel_case))
+    stdout.print(json.dumps(Account(type="admin", display_name="Ash"), names=.CamelCase))
 ```
 
 **Planned:** compile-time loops over a type, which serialization will be built on, instead of macros or `derive`. `fields(T)` gives a struct's fields and `cases(T)` an enum's cases. There's no I/O at compile time, so a kit can't run anything on your machine while it compiles.

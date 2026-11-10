@@ -1262,7 +1262,7 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
 /// otherwise waiting at most `timeout`. A task holds the connection only while it tries, never
 /// while it waits, so another task can write to it meanwhile.
 fn reading<T>(
-    stream: &Stream,
+    stream: &Arc<Stream>,
     timeout: Option<Duration>,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
@@ -1282,10 +1282,20 @@ fn reading<T>(
             Reading::Tls(secured) => secured.socket(),
         };
         wait_at_most(socket, timeout)?;
+        // A launched task blocks its thread here, so a stop shuts the socket from where it's made,
+        // and the read, ended, fails as stopped. Told before it began, the read never starts.
+        let blocked = BlockedRead::of(stream);
+        if stopped_while_reading() {
+            return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+        }
         let done = match &mut *reader {
             Reading::Plain(plain) => read(plain),
             Reading::Tls(secured) => read(&mut **secured),
         };
+        drop(blocked);
+        if stopped_while_reading() {
+            return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+        }
         return done.map_err(|error| Failure::of(&error, timeout));
     }
     let socket = &stream.socket;
@@ -1310,6 +1320,70 @@ fn reading<T>(
     let done = done?;
     blocking.map_err(|error| Failure::Other(error.to_string()))?;
     Ok(done)
+}
+
+/// Whether this is a launched task that's been stopped, which then fails as a stopped one does.
+fn stopped_while_reading() -> bool {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        crate::embed::serve::cut_short()
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        false
+    }
+}
+
+/// The connections launched tasks are blocked reading, each by its task's stop. On Windows a task's
+/// read blocks its thread, so nothing run there can end it: its stop shuts the socket instead.
+#[cfg(any(test, feature = "threads"))]
+static BLOCKED_READS: Mutex<Vec<(usize, Arc<Stream>)>> = Mutex::new(Vec::new());
+
+/// A launched task's read blocking its thread, noted while it lasts.
+struct BlockedRead {
+    #[cfg(any(test, feature = "threads"))]
+    stop: Option<usize>,
+}
+
+impl BlockedRead {
+    fn of(stream: &Arc<Stream>) -> BlockedRead {
+        #[cfg(any(test, feature = "threads"))]
+        {
+            let stop = crate::embed::threads::task_stop().map(|stop| Arc::as_ptr(&stop).addr());
+            if let Some(stop) = stop {
+                BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner).push((stop, Arc::clone(stream)));
+            }
+            BlockedRead { stop }
+        }
+        #[cfg(not(any(test, feature = "threads")))]
+        {
+            let _ = stream;
+            BlockedRead {}
+        }
+    }
+}
+
+impl Drop for BlockedRead {
+    fn drop(&mut self) {
+        #[cfg(any(test, feature = "threads"))]
+        if let Some(stop) = self.stop {
+            let mut blocked = BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = blocked.iter().position(|(task, _)| *task == stop) {
+                blocked.swap_remove(at);
+            }
+        }
+    }
+}
+
+/// Ends the read the launched task with this stop is blocked in, if it's in one, by shutting its
+/// socket: the read then finds the task stopped.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
+    let stop = Arc::as_ptr(stop).addr();
+    let blocked = BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner);
+    for (_, stream) in blocked.iter().filter(|(task, _)| *task == stop) {
+        let _ = stream.socket.shutdown(Shutdown::Both);
+    }
 }
 
 /// Parks this task until `socket` may be readable or `deadline` passes: true if it passed, or the

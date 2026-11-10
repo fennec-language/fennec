@@ -853,11 +853,11 @@ json.dumps(Upload(at=clock.time(), data="hi".encode(), id=9007199254740993))
 There's no per-format override, like a `def json` method on a type; one `def serialize` and `def deserialize` serve every format. This replaces the earlier rule that a type overrides one format with a method named for it.
 *Why:* What's on the wire is what's in the struct, with nothing hidden.
 
-**Case style is an option on each call,** not on the type: `json.dumps(x, names=.camel_case)` and `json.loads[T](text, names=.camel_case)`. The styles are `.snake_case`, the default, `.camel_case`, `.pascal_case` and `.kebab_case`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
+**Case style is an option on each call,** not on the type: `json.dumps(x, names=.CamelCase)` and `json.loads[T](text, names=.CamelCase)`. The styles are `.SnakeCase`, the default, `.CamelCase`, `.PascalCase` and `.KebabCase`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
 
 **`@serialize(name="uid")` on a field renames it,** for the rare real case like an API's `"uid"`. A key that isn't a word, like `"first name"`, loads into a dict instead. This replaces `@json(name=...)`.
 
-**Unknown keys are an error when loading,** and `extra=.ignore` skips them: `json.loads[T](text, extra=.ignore)`. Against mass assignment, load a request body into a type that holds only the fields a caller may set.
+**Unknown keys are an error when loading,** and `extra=.Ignore` skips them: `json.loads[T](text, extra=.Ignore)`. Against mass assignment, load a request body into a type that holds only the fields a caller may set.
 
 **Every field is serialized by default, private `_` fields included.** This replaces the rule that `_name` fields are skipped.
 - `@skip` on a field leaves it out, and the field must have a default, so loading still builds a valid value. `@skip` on a field without a default is a compile error.

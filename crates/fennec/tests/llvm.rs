@@ -1699,6 +1699,17 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
     )
 }
 
+/// A put after a lookup of the same key under a lock writes where the lookup found it, unless what
+/// came between grew the dict, popped the key or put another: each kept, and each put back by a
+/// failure.
+#[test]
+fn a_put_after_a_lookup_under_a_lock_is_right_whatever_came_between() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("lock_found_entry", include_str!("fixtures/lock_found_entry.fen"))
+}
+
 /// What's changed in place stays right when it's read while changing, and when something still holds
 /// the list as it was.
 #[test]

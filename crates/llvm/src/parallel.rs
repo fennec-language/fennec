@@ -430,6 +430,19 @@ impl Emit<'_, '_, '_> {
         );
     }
 
+    /// [`Self::alone_helper`] for a block a lock's log marked, whose count is `marked_one`.
+    pub(crate) fn marked_alone_helper(&mut self, marked_one: u64) {
+        self.declare(THREAD_GLOBAL);
+        let start = whose_block(self.module.cells);
+        self.module.add_helper(
+            "fen_marked_alone",
+            format!(
+                "define internal i1 @fen_marked_alone(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                 %count = load i64, ptr %block{HEADER_ACCESS}\n  %one = icmp eq i64 %count, {marked_one}\n  ret i1 %one\nother:\n  ret i1 false\n}}\n\n"
+            ),
+        );
+    }
+
     /// Defines what counts a closure in a program that runs `parallel`: atomically, as any thread
     /// may hold one.
     pub(crate) fn closure_helpers(&mut self) {

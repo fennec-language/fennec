@@ -604,6 +604,53 @@ mod tests {
         assert_eq!(failure.unwrap().message, "the dict has no key 3");
     }
 
+    /// A put given where a lookup found its key writes there in place only in a dict a lock's log
+    /// marked, with one owner, and only while that's a live entry of the dict holding that key. A
+    /// place in another dict, between entries, past the last, another key's or none goes the way
+    /// `set` does, and so does a dict that isn't marked.
+    #[test]
+    fn a_put_given_its_entry_writes_there_only_while_it_holds_the_key() {
+        use super::super::dicts::{self, DICT_HEADER_WORDS};
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(tables, crate::Inputs::default());
+        let words = dicts::Word::Int;
+        let shape = i64::try_from(dicts::shape(0, words, words).unwrap()).unwrap();
+        let made = |keys: &[i64]| {
+            keys.iter().fold(dicts::new(shape, 4), |dict, key| dicts::set(dict, *key, key * 10))
+        };
+        // Entry `n`'s address and its value, three words wide: hash, key, value.
+        let entry = |dict: i64, n: i64| {
+            let slots = i64::try_from(word(dict, 32).unwrap()).unwrap() + 1;
+            dict + 8 * (i64::try_from(DICT_HEADER_WORDS).unwrap() + slots + 3 * n)
+        };
+        let value = |dict: i64, n: i64| word(dict, i32::try_from(entry(dict, n) - dict).unwrap() + 16);
+        let marked = lists::MARKED | 1;
+        let mark = |dict: i64| {
+            with(|state| state.heap.block_mut(u64::try_from(dict).unwrap()).map(|block| block[0] = marked))
+        };
+        let dict = made(&[1, 2]);
+        let other = made(&[2]);
+        mark(dict);
+        assert_eq!(dicts::set_found(dict, entry(dict, 1), 2, 21), dict);
+        assert_eq!((value(dict, 0), value(dict, 1)), (Some(10), Some(21)), "written where it was found");
+        for (wrong, why) in [
+            (entry(other, 0), "another dict's entry"),
+            (entry(dict, 1) + 8, "between entries"),
+            (entry(dict, 2), "past the last"),
+            (entry(dict, 0), "another key's"),
+            (0, "none"),
+        ] {
+            assert_eq!(dicts::set_found(dict, wrong, 2, 22), dict, "{why}");
+            assert_eq!((value(dict, 0), value(dict, 1)), (Some(10), Some(22)), "{why}");
+            assert_eq!(dicts::set_found(dict, wrong, 2, 21), dict, "{why}");
+        }
+        assert_eq!(word(dict, 0), Some(marked), "still the lock's to change in place");
+        let plain = made(&[1, 2]);
+        assert_eq!(dicts::set_found(plain, entry(plain, 1), 2, 23), plain);
+        assert_eq!(value(plain, 1), Some(23), "a dict no lock marked is set as ever");
+        finish();
+    }
+
     #[test]
     fn a_struct_named_after_a_tuple_type_reads_and_writes_as_a_tuple() {
         let pair = Element::Struct {

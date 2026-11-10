@@ -145,12 +145,14 @@ fn send(server: &Server, kept: &mut Option<TcpStream>, kind: &str, n: usize) -> 
     Ok(())
 }
 
-/// The live count once the server's idle: read until it holds for a while.
+/// The live count once the server's idle: read until no task or connection is left and it holds
+/// for a while. A request still in flight under load, like a hangup's round waiting out its
+/// connection, would otherwise be counted as though it had leaked.
 fn settled(server: &Server) -> String {
     let started = Instant::now();
     let mut last = String::new();
     let mut held_since = Instant::now();
-    while started.elapsed() < Duration::from_secs(20) {
+    while started.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(150));
         // What's cached for reuse grows as the server warms up, within its bounds: only what's
         // live has to hold.
@@ -159,10 +161,12 @@ fn settled(server: &Server) -> String {
             .lines()
             .filter(|line| !line.starts_with("cached "))
             .fold(String::new(), |now, line| now + line + "\n");
-        if now != last {
+        let idle =
+            now.lines().any(|line| line == "tasks 0") && now.lines().any(|line| line == "connections 0");
+        if now != last || !idle {
             last = now;
             held_since = Instant::now();
-        } else if !last.is_empty() && held_since.elapsed() > Duration::from_millis(900) {
+        } else if held_since.elapsed() > Duration::from_millis(900) {
             return last;
         }
     }
@@ -178,10 +182,13 @@ fn counts_before_and_after(executable: &Path, kind: &str) -> std::io::Result<(St
     for n in 0..WARM {
         send(&server, &mut kept, kind, n)?;
     }
+    // Its kept-alive connection closes before each count, so each counts with nothing open.
+    kept = None;
     let before = settled(&server);
     for n in WARM..WARM + MORE {
         send(&server, &mut kept, kind, n)?;
     }
+    kept = None;
     let after = settled(&server);
     drop(kept);
     drop(server);

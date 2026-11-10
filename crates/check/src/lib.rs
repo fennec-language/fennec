@@ -28,6 +28,7 @@ mod fields;
 mod function;
 pub use fields::{each_field_type, fields_of};
 mod generic;
+mod generic_copies;
 mod gone;
 mod imports;
 mod index;
@@ -64,6 +65,7 @@ mod threading;
 pub use threading::add_capability_fixes;
 mod tuple_lowering;
 mod types;
+mod union_sources;
 mod waits;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -710,6 +712,9 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
+    if sources_copied(module, checked) {
+        return Round::Again;
+    }
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
@@ -728,6 +733,15 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// Copies what calls a `with` source that isn't known until the program runs, saying whether
+/// any was, for the copies to be checked again, where each one's own source is found. A generic
+/// function calling an interface's source is copied for each type it's called with, and a `with`
+/// on a union's source is written in once for each member, under an `is` for it.
+fn sources_copied(module: &mut Module, checked: &Checked) -> bool {
+    generic_copies::lower(module, &checked.generic_sources, &checked.generic_calls)
+        || union_sources::lower(module, &checked.union_sources)
 }
 
 /// Each source with its leading-dot cases named, as the program's own text was above: what
@@ -840,6 +854,12 @@ pub struct Checked {
     shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, which lowering writes in where it's used.
     sources: BTreeMap<(u32, u32), lend_lowering::Source>,
+    /// Each generic function that calls a `with` source an interface gives its type parameter.
+    generic_sources: BTreeSet<String>,
+    /// Each call to a generic function, with the types its type parameters are there.
+    generic_calls: BTreeMap<(u32, u32), generic_copies::Call>,
+    /// Each `with` source called on a union, which lowering writes in for each member.
+    union_sources: BTreeMap<(u32, u32), union_sources::Dispatch>,
     /// The `with`s that open several handles, which lowering nests one inside another.
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.

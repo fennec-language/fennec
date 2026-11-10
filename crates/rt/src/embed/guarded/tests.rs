@@ -223,6 +223,27 @@ fn a_handle_inside_a_value_is_the_same_handle_with_one_more_count() {
     finish();
 }
 
+/// A run that ends holding a `shared` value's write lock, as a rollback test does, forgets the value:
+/// its table, and the block in it, went with the run's heap, so the next block put at that address
+/// isn't taken for a handle to it. A value whose lock isn't held keeps its block, so stays. Asked of
+/// what's kept of each, as another test can make a value at the address once it's free.
+#[test]
+fn a_run_that_ends_holding_a_lock_forgets_its_value() {
+    let kept = |address: u64| super::tables(|tables| tables.get(&address).cloned());
+    let still = |address: u64, slot: &Arc<Slot>| kept(address).is_some_and(|now| Arc::ptr_eq(&now, slot));
+    begin();
+    let locked = log_of(&["locked"]);
+    shared_new(locked);
+    let free = log_of(&["free"]);
+    shared_new(free);
+    shared_enter(locked, 1);
+    let (locked, free) = (u64::try_from(locked).unwrap(), u64::try_from(free).unwrap());
+    let (locked_slot, free_slot) = (kept(locked).unwrap(), kept(free).unwrap());
+    finish();
+    assert!(!still(locked, &locked_slot), "the locked value's block went with the run");
+    assert!(still(free, &free_slot), "the other's is still in its table");
+}
+
 #[test]
 fn another_thread_reads_and_changes_what_this_one_put_there() {
     begin();

@@ -282,6 +282,12 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
+        if !chosen.is_empty() {
+            let types = chosen.iter().map(|chosen| chosen.ty.clone()).collect();
+            let call =
+                crate::generic_copies::Call { caller: self.key.clone(), callee: key.to_owned(), types };
+            self.checker.generic_calls.insert((span.start, span.end), call);
+        }
         if let Some(what) = crate::waits::intrinsic_waits(key) {
             self.note_wait(what, span);
         }
@@ -591,10 +597,14 @@ impl FnCx<'_> {
             );
         }
         let Some((first, rest)) = members.split_first() else { return Type::Unknown };
-        if self.union_source(call, &union, first) {
-            self.ignore_args(call.args);
-            return Type::Unknown;
-        }
+        let dispatch = match self.union_source(call, &union, first) {
+            UnionSource::Dispatched(dispatch) => Some(dispatch),
+            UnionSource::Refused => {
+                self.ignore_args(call.args);
+                return Type::Unknown;
+            }
+            UnionSource::NotOne => None,
+        };
         let returns = self.method_on(call, first, false);
         let report = std::mem::replace(&mut self.report, false);
         let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
@@ -609,32 +619,67 @@ impl FnCx<'_> {
             );
             return Type::Unknown;
         }
+        // Each member's source is written in under an `is` for it, so none is kept for the call.
+        if let Some(dispatch) = dispatch {
+            let at = (call.span.start, call.span.end);
+            self.checker.sources.remove(&at);
+            self.checker.union_sources.insert(at, dispatch);
+        }
         returns
     }
 
-    /// Refuses a `with` source called on a union, saying whether it is one: what's written in for
-    /// it is one type's source, chosen where the program's built, so it would run that one
-    /// whatever the value holds. Narrowed with `is`, it's the type's own.
-    fn union_source(&mut self, call: &MethodCall<'_>, union: &Type, first: &Type) -> bool {
-        let Some(owner) = first.type_name() else { return false };
-        let Some((_, entry)) = self.checker.program.method(owner, call.method) else { return false };
-        if entry.def.ret.as_ref().is_none_or(|ret| ret.name != crate::lend::WITH) {
-            return false;
-        }
-        let named = match &call.object.kind {
-            ExprKind::Name(name) => name.clone(),
-            _ => "it".to_owned(),
+    /// A `with` source every member of a union has. Called on a name whose members are named
+    /// types, the `with` is written in once for each member, under an `is` for it, where that
+    /// member's own source runs. Called on anything else, as a field, it's refused: `is` doesn't
+    /// narrow it.
+    fn union_source(&mut self, call: &MethodCall<'_>, union: &Type, first: &Type) -> UnionSource {
+        let Some(owner) = first.type_name() else { return UnionSource::NotOne };
+        let Some((_, entry)) = self.checker.program.method(owner, call.method) else {
+            return UnionSource::NotOne;
         };
-        let message = format!(
-            "`{}` is a `with` source each type in {} has, and which one runs can't be chosen as the program runs yet",
-            call.method,
-            a(union)
-        );
-        let help = format!(
-            "narrow it first, as `if {named} is {owner}:` or a `match` case for `{owner}`, where it runs that type's source"
-        );
+        if entry.def.ret.as_ref().is_none_or(|ret| ret.name != crate::lend::WITH) {
+            return UnionSource::NotOne;
+        }
+        let Type::Union(members) = union else { return UnionSource::NotOne };
+        let types: Option<Vec<String>> = members
+            .iter()
+            .map(|member| match member {
+                Type::Named(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if let (ExprKind::Name(path), Some(members)) = (&call.object.kind, types) {
+            return UnionSource::Dispatched(crate::union_sources::Dispatch { path: path.clone(), members });
+        }
+        // A member that's a generic type's, as `Box[int]`, isn't one `is` names.
+        let (message, help) = if let ExprKind::Name(held) = &call.object.kind {
+            (
+                format!(
+                    "`{}` is a `with` source each type in {} has, and which one runs can't be chosen as the program runs yet",
+                    call.method,
+                    a(union)
+                ),
+                format!(
+                    "narrow it first, as `if {held} is {owner}:` or a `match` case for `{owner}`, where it runs that type's source"
+                ),
+            )
+        } else {
+            let written = fennec_syntax::dotted(call.object);
+            let last = written.as_deref().and_then(|path| path.rsplit('.').next()).unwrap_or("held");
+            let whole = written.as_deref().unwrap_or("...");
+            (
+                format!(
+                    "`{}` is a `with` source each type in {} has, called on what `is` can't narrow",
+                    call.method,
+                    a(union)
+                ),
+                format!(
+                    "give it a name first, as `{last} = {whole}`, and call it on that: the source of the type it holds runs"
+                ),
+            )
+        };
         self.error(Diagnostic::new(message, call.object.span.to(call.span)).with_help(help));
-        true
+        UnionSource::Refused
     }
 
     /// Whether a type has a method by this name, its own or one std or the engines give it.
@@ -700,6 +745,13 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let signature = self.interface_method_with(&def, &owner, types, span);
+        let gives = match &signature.returns {
+            Type::Result(value, _) => value.as_ref(),
+            other => other,
+        };
+        if crate::lend::lent(gives).is_some() {
+            self.checker.generic_sources.insert(self.key.clone());
+        }
         if signature.params.first().is_some_and(|param| param.is_mut) {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
@@ -1366,4 +1418,14 @@ fn plain_default(default: &Expr) -> Expr {
 /// A parameter of something called by value, whose type doesn't name its parameters.
 fn argument_param(at: usize, ty: Type) -> ParamType {
     ParamType { name: format!("argument {}", at + 1), ty, is_mut: false, default: None }
+}
+
+/// What a method called on a union is, as a `with` source.
+enum UnionSource {
+    /// Not a `with` source.
+    NotOne,
+    /// One written in once for each member.
+    Dispatched(crate::union_sources::Dispatch),
+    /// One that can't be, which is said.
+    Refused,
 }

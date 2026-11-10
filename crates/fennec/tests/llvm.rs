@@ -14898,7 +14898,7 @@ def main(stdout: Stdout):
     stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
     stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
     tool = Tool(main_weapon="bow", uses=3)
-    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(json.dumps(tool, names=.CamelCase), json.dumps(tool, names=.KebabCase))
     stdout.print(toml.dumps(tool) else "no")
     stdout.print(shown(() => toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n")))
     stdout.print(shown(() => toml.loads[Tool]("not toml")))

@@ -118,6 +118,35 @@ fn a_database_url_written_with_its_password_is_refused() {
     assert_eq!(with_imports(imports, program), [refused, refused]);
 }
 
+/// Every case of every enum and error in the standard library is capitalized, as language.md says
+/// a case is, so an option reads like any other case: `extra=.Ignore`, `names=.CamelCase`.
+#[test]
+fn std_cases_are_capitalized() {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../syntax/src/stdlib");
+    let mut lower = Vec::new();
+    let mut read = 0;
+    for entry in std::fs::read_dir(&folder).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "fen") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let module = fennec_syntax::parse_prelude(&source).unwrap();
+        read += 1;
+        for item in &module.items {
+            if let fennec_syntax::Item::Enum(def) | fennec_syntax::Item::Error(def) = item {
+                for case in &def.cases {
+                    if !case.name.starts_with(|first: char| first.is_ascii_uppercase()) {
+                        lower.push(format!("{}.{}", def.name, case.name));
+                    }
+                }
+            }
+        }
+    }
+    assert!(read > 20, "the standard library's files weren't found in {}", folder.display());
+    assert_eq!(lower, Vec::<String>::new());
+}
+
 #[test]
 fn json_and_toml_are_called_the_right_way() {
     let program = "

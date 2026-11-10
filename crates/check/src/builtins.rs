@@ -303,6 +303,7 @@ fn test_only(ty: &Type, name: &str) -> Option<&'static str> {
             "only a test's own body can script or read the fake `Process` it received"
         }
         ("Env", "set") => "only a test's own body can set what the fake `Env` it received holds",
+        ("Signals", "stop") => "only a test's own body can stop the fake `Signals` it received",
         _ => return None,
     })
 }

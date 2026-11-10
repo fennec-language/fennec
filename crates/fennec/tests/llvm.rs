@@ -2,6 +2,7 @@
 //! where LLVM's tools aren't installed, as `fennec build --llvm` itself would say, unless
 //! `FENNEC_EXPECT_LLVM` says they have to be.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -8141,13 +8142,13 @@ def main(stdout: Stdout):
 /// held only for the line, enough short-lived values for each failure to let go of its own where
 /// it leaves. Round `at` fails at line `49 - at`.
 fn failing_partway() -> String {
-    let lines: String = (0..50)
-        .map(|line| {
-            format!(
-                "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()\n"
-            )
-        })
-        .collect();
+    let lines = (0..50).fold(String::new(), |mut lines, line| {
+        let _ = writeln!(
+            lines,
+            "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()"
+        );
+        lines
+    });
     format!(
         "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    total\n"
     )

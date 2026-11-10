@@ -51,7 +51,13 @@ impl Holding {
         match self.coming_in.get(at) {
             Some(Some(set)) => set.clone(),
             // Nothing reaches it, so nothing runs there, but nothing is assumed of it either.
-            _ => (0..self.tracked.len()).filter(|local| self.tracked[*local]).collect(),
+            _ => self
+                .tracked
+                .iter()
+                .enumerate()
+                .filter(|(_, tracked)| **tracked)
+                .map(|(local, _)| local)
+                .collect(),
         }
     }
 
@@ -91,10 +97,8 @@ pub(crate) fn holding(emit: &Emit<'_, '_, '_>, untracked: &BTreeSet<usize>, spli
         .collect();
     let mut holding =
         Holding { coming_in: vec![None; function.blocks.len()], tracked, short: vec![false; locals] };
-    if holding.coming_in.is_empty() {
-        return holding;
-    }
-    holding.coming_in[0] = Some(BTreeSet::new());
+    let Some(first) = holding.coming_in.first_mut() else { return holding };
+    *first = Some(BTreeSet::new());
     // Blocks to go over again, each once at a time, lowest first, which is mostly the order
     // they run in.
     let mut waiting: BTreeSet<usize> = BTreeSet::from([0]);
@@ -128,12 +132,15 @@ pub(crate) fn holding(emit: &Emit<'_, '_, '_>, untracked: &BTreeSet<usize>, spli
             let mut set = start.clone();
             for inst in &block.insts {
                 for local in set.iter().copied().chain(filled(&holding, &inst.kind)) {
-                    places[local] += 1;
+                    if let Some(count) = places.get_mut(local) {
+                        *count += 1;
+                    }
                 }
                 step(emit, &holding, &inst.kind, &mut set);
             }
         }
-        holding.short = (0..locals).map(|at| holding.tracked[at] && places[at] <= SHORT).collect();
+        holding.short =
+            holding.tracked.iter().zip(&places).map(|(tracked, count)| *tracked && *count <= SHORT).collect();
         if holding.short.iter().filter(|short| **short).count() < MANY_SHORT {
             holding.short = vec![false; locals];
         }

@@ -474,7 +474,8 @@ pub fn failed_flag() -> usize {
 }
 
 /// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,
-/// 3 for `Args`, 4 for `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net` and 8 for `Env`.
+/// 3 for `Args`, 4 for `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net`, 8 for `Env` and 9
+/// for `Signals`.
 fn capability(kind: i64) -> Capability {
     match kind {
         0 => Capability::Stdout,
@@ -485,6 +486,7 @@ fn capability(kind: i64) -> Capability {
         6 => Capability::Entropy,
         7 => Capability::Net,
         8 => Capability::Env,
+        9 => Capability::Signals,
         _ => Capability::Clock,
     }
 }

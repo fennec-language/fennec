@@ -8099,6 +8099,95 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     stdout.print(entropy.seed() != entropy.seed())
 ";
 
+/// A program given `Signals` catches SIGTERM, SIGINT and SIGHUP, so it can finish what it's doing:
+/// it sees `stopping()` turn true, says so and exits 0. A second signal, once a stop's been asked
+/// for, ends it at once, as it would have without Fennec, so a stuck program can still be stopped.
+#[cfg(unix)]
+#[test]
+fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::io::Result<()> {
+    use std::os::unix::process::ExitStatusExt;
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("signals_stop")?;
+    let build = |name: &str, source: &str| -> std::io::Result<PathBuf> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built =
+            fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        Ok(executable)
+    };
+    let cleanly = build(
+        "cleanly",
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):
+    stdout.print(\"ready\")
+    while not signals.stopping():
+        clock.sleep(10ms)
+    stdout.print(\"stopped cleanly\")
+",
+    )?;
+    let stuck = build(
+        "stuck",
+        "def main(signals: Signals, clock: Clock, stdout: Stdout):
+    stdout.print(\"ready\")
+    signals.wait()
+    stdout.print(\"asked\")
+    # It goes on as though nothing asked, as a stuck program would.
+    while True:
+        clock.sleep(10ms)
+",
+    )?;
+    // Starts `executable`, and gives it with a way to read each line it prints as it comes.
+    let start = |executable: &Path| -> std::io::Result<(Running, std::sync::mpsc::Receiver<String>)> {
+        use std::io::BufRead;
+        let mut running = Running(Command::new(executable).stdout(std::process::Stdio::piped()).spawn()?);
+        let stdout = running.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        let (says, said) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = says.send(line);
+            }
+        });
+        Ok((running, said))
+    };
+    let line =
+        |said: &std::sync::mpsc::Receiver<String>| said.recv_timeout(std::time::Duration::from_secs(30));
+    let send = |running: &Running, signal: &str| -> std::io::Result<()> {
+        let sent =
+            Command::new("kill").args([&format!("-{signal}"), &running.0.id().to_string()]).status()?;
+        assert!(sent.success(), "couldn't send SIG{signal}");
+        Ok(())
+    };
+    let wait = |running: &mut Running| -> std::io::Result<std::process::ExitStatus> {
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(status) = running.0.try_wait()? {
+                return Ok(status);
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(30), "it didn't end");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    for signal in ["TERM", "INT", "HUP"] {
+        let (mut running, said) = start(&cleanly)?;
+        assert_eq!(line(&said).as_deref(), Ok("ready"));
+        send(&running, signal)?;
+        assert_eq!(line(&said).as_deref(), Ok("stopped cleanly"), "SIG{signal}");
+        assert_eq!(wait(&mut running)?.code(), Some(0), "SIG{signal}");
+    }
+    let (mut running, said) = start(&stuck)?;
+    assert_eq!(line(&said).as_deref(), Ok("ready"));
+    send(&running, "TERM")?;
+    assert_eq!(line(&said).as_deref(), Ok("asked"));
+    send(&running, "TERM")?;
+    assert_eq!(wait(&mut running)?.signal(), Some(15));
+    drop(running);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     if !ready() {

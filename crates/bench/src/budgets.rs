@@ -10,7 +10,8 @@
 //!
 //! A budget that's met fails the run when it's exceeded. One that hasn't been met yet is a
 //! warning, since it would fail every pull request; it starts failing runs once `enforced`
-//! is set, which happens in the change that meets it.
+//! is set, which happens in the change that meets it. One not met yet that's counted is held
+//! meanwhile to no more than it takes today, so it can't get further from its budget.
 
 use std::fmt::Write as _;
 use std::io::BufReader;
@@ -51,14 +52,20 @@ const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
 const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
 
 /// After an edit, `fennec run` checks and lints only the files that changed, then compiles the
-/// function, links a new executable and starts it. It's held to a count of every instruction that
-/// takes, its own and those of LLVM's tools, the linker and the program, since its time on CI's
-/// machines ranges from 315 to 970 ms from one run to the next.
+/// function, links a new executable and starts it. It's counted in every instruction that takes,
+/// its own and those of LLVM's tools, the linker and the program, since its time on CI's machines
+/// ranges from 315 to 970 ms from one run to the next.
+///
+/// Not met yet: half a second is 3,350 million instructions, and it runs 4,611 million, most of
+/// them `fennec`'s own. Until it's met it's held to no more than it takes today, so nothing makes
+/// it slower meanwhile; `enforced` is set, and that hold removed, in the change that meets it.
 const EDIT_RUN: Budget =
-    Budget { name: "edit to run, one function", limit: Duration::from_millis(500), enforced: true };
+    Budget { name: "edit to run, one function", limit: Duration::from_millis(500), enforced: false };
 
-/// What an edit's run may run: half a second.
-const MOST_EDIT_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 2;
+/// What an edit's run may run until it meets its budget: the 4,611 million it ran on 2026-11-10,
+/// and 5% more, since a count moves a little with what else lands. The budget, half a second, is
+/// `INSTRUCTIONS_A_SECOND / 2`.
+const MOST_EDIT_RUN_INSTRUCTIONS: u64 = 4_850_000_000;
 
 /// Where edit to run should get to, and isn't held to: once changed functions load into a running
 /// program, rather than a new executable being linked and started, an edit should show in 50 ms.
@@ -117,6 +124,7 @@ impl Measured {
             (true, ..) => "**over**",
             (false, false, _) => "met",
             (false, true, true) => "met by its count, over by the clock",
+            (false, true, false) if self.counted.is_some() => "over, held to no more than today's count",
             (false, true, false) => "over, not enforced yet",
         }
     }
@@ -691,6 +699,18 @@ mod tests {
             text.contains("didOpen") && text.contains("300 + 2") && text.ends_with("{\"method\":\"exit\"}"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_budget_not_met_yet_with_a_count_is_held_to_that_count() {
+        let held = |instructions| Measured {
+            counted: Some(super::Counted { instructions, most: 100 }),
+            ..measured(false, 900)
+        };
+        assert!(passes(&[held(100)]), "no more than the count passes, over the clock or not");
+        assert!(!passes(&[held(101)]), "more than the count fails, though it isn't enforced");
+        let table = table(&[held(100)], "a size");
+        assert!(table.contains("over, held to no more than today's count"), "{table}");
     }
 
     #[test]

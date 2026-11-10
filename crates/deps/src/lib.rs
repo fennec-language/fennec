@@ -14,6 +14,7 @@
 mod git;
 mod lock;
 pub mod manifest;
+mod plain;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
@@ -22,6 +23,7 @@ use std::path::{Component, Path, PathBuf};
 use fennec_blake3::Hash;
 pub use lock::{Pin, pins, with_pins};
 pub use manifest::{Dependency, Manifest, Source, valid_name};
+pub use plain::{plain, plain_text};
 
 /// A kit's files, by their path from its folder, like `kit.toml` and `src/shapes.fen`.
 pub type Files = BTreeMap<String, Vec<u8>>;
@@ -300,7 +302,7 @@ fn walk(root: &Path, resolve: Resolve<'_>) -> Result<Vec<Found>, String> {
                     ));
                 }
                 let folder = named.folder.join(path);
-                let folder = folder.canonicalize().map_err(|err| {
+                let folder = folder.canonicalize().map(|found| plain(&found)).map_err(|err| {
                     format!("{} names `{name}` at {}, which isn't there: {err}", named.by, folder.display())
                 })?;
                 let place = folder.display().to_string();

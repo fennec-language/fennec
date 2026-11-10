@@ -65,7 +65,14 @@ impl FnCx<'_> {
             ExprKind::Lambda { params, body }
                 if let Type::Arrow(types, _) = self.checker.settled(expected).without_none() =>
             {
-                self.lambda(params, body, &types, expr.span)
+                let ty = self.lambda(params, body, &types, expr.span);
+                match self.widened_arrow(&ty, Some(&self.checker.settled(expected).without_none())) {
+                    Some(widened) => {
+                        self.record(expr.span, &widened);
+                        widened
+                    }
+                    None => ty,
+                }
             }
             ExprKind::List(items)
                 if let Type::Array(item, size) = self.checker.settled(expected).without_none() =>

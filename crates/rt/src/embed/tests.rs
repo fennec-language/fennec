@@ -15,6 +15,8 @@ pub fn next_test() -> Option<Diagnostic> {
             state.temps.clear();
             state.inputs.clear();
         }
+        // Its call chain, for whoever reports the failure to take.
+        super::keep_trace(std::mem::take(&mut state.trace));
         failure
     })
 }

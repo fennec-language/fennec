@@ -167,8 +167,8 @@ pub(crate) fn errors_shown(path: &str) -> String {
 static FINDING: std::sync::Mutex<Option<std::thread::JoinHandle<String>>> = std::sync::Mutex::new(None);
 
 /// Where a run hands the lint errors being found the program it loaded, so they're found from the
-/// one load rather than a second: one parse, and one program both see.
-static LENT: std::sync::Mutex<Option<std::sync::mpsc::Sender<fennec_kit::Program>>> =
+/// one load rather than a second: one parse, and one program both see, shared rather than copied.
+static LENT: std::sync::Mutex<Option<std::sync::mpsc::Sender<std::sync::Arc<fennec_kit::Program>>>> =
     std::sync::Mutex::new(None);
 
 /// Starts finding the lint errors of the program at `path` beside whatever comes next, for
@@ -190,13 +190,13 @@ pub(crate) fn find_errors_beside(path: &str) {
 /// Hands the lint errors being found the program the run loaded, when it's what they'd load
 /// themselves: one with every file of its kit, before anything changes it. With `None`, or one
 /// that isn't, they load it themselves. Either way only the first call does anything.
-pub(crate) fn lend_loaded(program: Option<&fennec_kit::Program>, path: &str) {
+pub(crate) fn lend_loaded(program: Option<&std::sync::Arc<fennec_kit::Program>>, path: &str) {
     let Some(lend) = LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return };
     let whole =
         program.filter(|program| fennec_kit::holds_every_file(program, std::path::Path::new(path), path));
     if let Some(program) = whole {
         // Nobody waiting only means the errors were found without it.
-        let _ = lend.send(program.clone());
+        let _ = lend.send(std::sync::Arc::clone(program));
     }
 }
 
@@ -216,7 +216,10 @@ pub(crate) fn errors_remembered(path: &str) -> String {
 }
 
 /// `errors_remembered`, linting the program `lent` gives, if it gives one, rather than loading it.
-fn errors_remembered_with(path: &str, lent: &std::sync::mpsc::Receiver<fennec_kit::Program>) -> String {
+fn errors_remembered_with(
+    path: &str,
+    lent: &std::sync::mpsc::Receiver<std::sync::Arc<fennec_kit::Program>>,
+) -> String {
     let Some(cache) = crate::run::cache() else { return errors_shown(path) };
     let files = crate::image::files_now(path, &cache);
     let Some(key) = files_key(path, files.as_deref()) else { return errors_shown(path) };
@@ -329,12 +332,12 @@ fn of_kit(
     path: &str,
     cache: &fennec_build::Cache,
     files: &[fennec_build::KitFile],
-    lent: &std::sync::mpsc::Receiver<fennec_kit::Program>,
+    lent: &std::sync::mpsc::Receiver<std::sync::Arc<fennec_kit::Program>>,
 ) -> String {
     let overlay = fennec_kit::Overlay::new();
     let loaded =
         || fennec_kit::load_with(std::path::Path::new(path), path, fennec_kit::Entry::Everything, &overlay);
-    let Some(program) = lent.recv().ok().or_else(|| loaded().ok()) else {
+    let Some(program) = lent.recv().ok().or_else(|| loaded().ok().map(std::sync::Arc::new)) else {
         return String::new();
     };
     let (module, sources) = (&program.module, &program.sources);

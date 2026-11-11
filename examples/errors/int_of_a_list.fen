@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    words = ["1", "2"]
+    stdout.print(int(words))

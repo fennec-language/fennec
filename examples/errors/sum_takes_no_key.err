@@ -1,0 +1,7 @@
+error: `sum` doesn't take `key`
+ --> examples/errors/sum_takes_no_key.fen:3:18
+  |
+3 |     stdout.print(sum(scores, key=score => score * 2))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: take `key=` off

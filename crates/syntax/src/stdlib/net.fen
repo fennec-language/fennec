@@ -251,9 +251,8 @@ export shared Server:
     ## connection's closed: a client sending a byte at a time can't hold it open for longer. So a
     ## server taking big uploads over slow links gives a longer `timeout`. A request that's too
     ## big, or isn't HTTP, is answered with the 4xx status that says so, without calling
-    ## `respond`. Given `until=signals`, it stops
-    ## when the program's asked to, as `stop_on` says: requests being answered are finished, within
-    ## `grace`, and then it returns.
+    ## `respond`. Given `until=signals`, it stops when the program's asked to, as `stop_on` says:
+    ## requests being answered are finished, within `grace`, and then it returns.
     def serve(
         self,
         respond: (Request) -> Response,

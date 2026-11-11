@@ -767,7 +767,7 @@ impl FnCx<'_> {
     }
 
     /// Whether a type has a method by this name, its own or one std or the engines give it.
-    fn has_method(&self, ty: &Type, method: &str) -> bool {
+    pub(crate) fn has_method(&self, ty: &Type, method: &str) -> bool {
         let own = ty.type_name().is_some_and(|name| self.checker.program.method(name, method).is_some());
         own || self.std_method(ty, method).is_some() || builtins::method(ty, method).is_some()
     }

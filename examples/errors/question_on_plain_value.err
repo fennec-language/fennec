@@ -1,0 +1,7 @@
+error: `?` needs a result, but this is an int
+ --> examples/errors/question_on_plain_value.fen:2:5
+  |
+2 |     count? * 2
+  |     ^^^^^
+  |
+  = help: take the `?` off: only something that can fail gives a result to pass up

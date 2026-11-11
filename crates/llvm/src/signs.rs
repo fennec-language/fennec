@@ -671,6 +671,31 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    const CURSOR: &str = "\
+import std.json as json
+
+struct Cursor:
+    at: int
+
+def pick(xs: list[int], cursor: Cursor) -> int:
+    xs[cursor.at]
+
+def main(stdout: Stdout):
+    xs = [10, 20, 30]
+    stdout.print(pick(xs, Cursor(at=1)))
+    READ
+";
+
+    /// A field the program only sets to what isn't negative is proven, until something reads the
+    /// struct from outside, like `json.loads`, which can put any int in it.
+    #[test]
+    fn a_field_a_reader_can_fill_isnt_proven() -> Result<(), String> {
+        assert_eq!(proven(&CURSOR.replace("READ", ""), "pick")?, 1);
+        let read = "stdout.print(pick(xs, json.loads[Cursor](\"{\\\"at\\\": -1}\") else Cursor(at=0)))";
+        assert_eq!(proven(&CURSOR.replace("READ", read), "pick")?, 0);
+        Ok(())
+    }
+
     /// A refinement's rules: where `x` compared with a constant is at least 0.
     #[test]
     fn comparisons_refine_what_they_rule_out() {

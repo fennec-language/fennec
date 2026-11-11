@@ -2056,10 +2056,18 @@ fn an_index_proven_not_negative_and_one_that_counts_from_the_end() -> std::io::R
     if !ready() {
         return Ok(());
     }
-    let source = r#"NONE = -1
+    let source = r#"import std.json as json
+
+NONE = -1
 
 struct Node:
     next: int
+
+struct Cursor:
+    at: int
+
+def pick(xs: list[int], cursor: Cursor) -> int:
+    xs[cursor.at]
 
 def walk(nodes: list[Node], start: int) -> int:
     mut at = start
@@ -2092,6 +2100,9 @@ def main(stdout: Stdout):
     nodes = [Node(next=2), Node(next=NONE), Node(next=1)]
     stdout.print(walk(nodes, start=0), last_of(nodes, at=NONE))
     stdout.print(down([1, 2, 3]), down_too_far([1, 2, 3]))
+    xs = [10, 20, 30]
+    read = json.loads[Cursor]("{\"at\": -1}") else Cursor(at=0)
+    stdout.print(pick(xs, Cursor(at=1)), pick(xs, read))
 "#;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let dir = folder("index_signs")?;
@@ -2110,10 +2121,11 @@ def main(stdout: Stdout):
         let ran = Command::new(&executable).output_within()?;
         std::fs::remove_dir_all(&dir)?;
         // `walk` goes 0, 2, 1; `last_of` reads the last node; `down_too_far` adds 3, 2, 1, then
-        // xs[-1] and xs[-2], 3 and 2.
+        // xs[-1] and xs[-2], 3 and 2. A cursor JSON gave -1 reads the last item: a field a reader
+        // can fill isn't proven, however the program itself sets it.
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
-            "3 1\n6 11\n",
+            "3 1\n6 11\n20 30\n",
             "{how:?}: {}",
             String::from_utf8_lossy(&ran.stderr)
         );

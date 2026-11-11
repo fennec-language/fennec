@@ -306,8 +306,24 @@ pub(crate) fn stored_executable(cache: &fennec_build::Cache, root: &str, output:
         return cache.link_out(PROGRAMS, root, output).ok()?.then_some(());
     }
     let bytes = cache.read(PROGRAMS, root)?;
-    std::fs::write(output, bytes).ok()?;
-    executable_mode(output).ok()
+    put_program(output, &bytes).ok()
+}
+
+/// Writes a program to `output` as a new file, put in place of what's there by a rename, never
+/// written into the file already there. macOS remembers the code signature of a file it has
+/// launched, and a program written over one it launched before is killed when it starts.
+fn put_program(output: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = output.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let writing = output.with_file_name(format!(".{name}.{}.writing", std::process::id()));
+    let put = || {
+        std::fs::write(&writing, bytes)
+            .map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
+        executable_mode(&writing)?;
+        std::fs::rename(&writing, output).map_err(|err| format!("couldn't write {}: {err}", output.display()))
+    };
+    put().inspect_err(|_| {
+        let _ = std::fs::remove_file(&writing);
+    })
 }
 
 /// Whether a program at `path` is kept as one file with the store's: on macOS, which holds a new
@@ -330,16 +346,14 @@ pub(crate) fn dev_build_settings() -> String {
 /// objects linked, which then go in the store under it, with the list of its functions' hashes
 /// beside them. Gives back how long linking took, which is nothing for a stored one.
 fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
-    let written = |bytes: &[u8]| -> Result<(), String> {
-        std::fs::write(output, bytes).map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
-        executable_mode(output)
-    };
     if let Some(Stored { cache, root, program: Some(bytes), .. }) = &compiled.stored {
         if stored_executable(cache, root, output).is_none() {
-            written(bytes)?;
+            put_program(output, bytes)?;
         }
         return Ok(std::time::Duration::ZERO);
     }
+    // The linker writes a new file where none is, rather than into one a run may have launched.
+    let _ = std::fs::remove_file(output);
     let linked = link_objects(
         &compiled.objects,
         output,

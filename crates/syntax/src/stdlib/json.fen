@@ -1289,7 +1289,7 @@ struct JsonReader:
         -1
 
     ## Fails on the first key in the object ahead that no field has, before any field's value is
-    ## read, as the interpreter's reader does. Only a read that's explaining a failure does this.
+    ## read. Only a read that's explaining a failure does this.
     def _unknown_first(ref self, fields: list[(str, str)]) fails ParseError:
         start = self._at
         while True:

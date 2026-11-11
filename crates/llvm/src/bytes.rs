@@ -1,6 +1,6 @@
 //! `bytes` in native code: a block the runtime owns that never changes once filled in. Its length
 //! sits where a list's does, so the same checks read it. Anything that makes a new block calls
-//! the runtime, and no interpreter value is involved.
+//! the runtime.
 
 use std::fmt::Write as _;
 

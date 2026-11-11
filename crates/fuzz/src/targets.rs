@@ -243,7 +243,7 @@ pub(crate) const TARGETS: [Target; 17] = [
 /// runs only when named, since it builds every input twice.
 pub(crate) const LLVM: Target = Target {
     name: "llvm",
-    corpus: &["crates/fuzz/seeds/jit"],
+    corpus: &["crates/fuzz/seeds/llvm"],
     tokens: &ANYTHING,
     run: crate::llvm::llvm,
     // It runs `opt`, `llc` and the linker for every input, which a busy machine slows down.

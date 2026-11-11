@@ -15,7 +15,7 @@ def failure[T](run: () -> T fails ProcessError) -> str:
 
 def io_failure[T](run: () -> T fails IoError) -> str:
     _ = run() else as why:
-        return why.reason
+        return why.message()
     "done"
 
 test "a narrowed Process runs only what it names"(process: Process):

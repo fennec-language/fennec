@@ -84,5 +84,5 @@ program so far.
   `check_all`. (#60)
 - **Calling a `mut self` method copied the receiver's lists.** Each call to a method that
   appends to a field copied the whole list, so lexing and parsing were quadratic in the size
-  of the file. The interpreter now moves arguments into the callee's frame. The JIT still
-  copies. (#61)
+  of the file. The interpreter was fixed to move arguments into the callee's frame, and the
+  JIT still copied when it was removed. (#61)

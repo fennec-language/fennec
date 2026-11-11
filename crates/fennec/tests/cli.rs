@@ -678,7 +678,8 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
     fs.remove("saves") else as why:
         match why:
-            case IoError(): stdout.print("a folder has to be empty to remove")
+            case .Other(): stdout.print("a folder has to be empty to remove")
+            case _: stdout.print(why.message())
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -1981,15 +1982,15 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
-    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    text = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(why): str(why != \"\")\n    stdout.print(text)\n    said = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(_): \"failed\"\n    stdout.print(said)\n").unwrap();
+    std::fs::write(&program, "def checked(text: str) -> str fails InvalidValue:\n    fail InvalidValue(message=text)\n\ndef main(stdout: Stdout):\n    text = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(why): str(why != \"\")\n    stdout.print(text)\n    said = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(_): \"failed\"\n    stdout.print(said)\n").unwrap();
     let path = program.to_string_lossy().into_owned();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let ran = fennec(&["run", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
-    assert!(written.contains("case IoError(reason=why):"), "{written}");
-    assert!(written.contains("case IoError():"), "{written}");
+    assert!(written.contains("case InvalidValue(message=why):"), "{written}");
+    assert!(written.contains("case InvalidValue():"), "{written}");
     assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
 }
 
@@ -2052,7 +2053,7 @@ def main(stdout: Stdout):
     stdout.print(unsaid() else \"failed\")
 ";
 
-/// What `CASES_AFTER` prints, as the interpreter printed it.
+/// What `CASES_AFTER` prints, as pinned.
 const CASES_PRINTED: &str = "green 1\nred red True red 1 False\nred True\nclosed\nfailed\n";
 
 /// What `fennec fix` makes of `CASES_BEFORE`: a dot wherever the type is known, and nothing where
@@ -2116,7 +2117,7 @@ def main(stdout: Stdout):
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
-/// `.Case` there, which runs as the interpreter ran it.
+/// `.Case` there, which runs and prints what it should.
 #[test]
 fn fix_writes_leading_dots_where_the_type_is_known() {
     let dir = fennec_temp::Temp::at(
@@ -2653,6 +2654,8 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
     let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
+    // Used before what's always kept, an entry stored or used in the last twenty minutes.
+    aged(&old, fennec_build::KEPT_RECENT.as_secs() + 3_600).unwrap();
     crate::executables::fennec_command()
         .args(["dev", "changes"])
         .current_dir(&kit)
@@ -2662,10 +2665,17 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
         .env_remove("FENNEC_NO_DAEMON")
         .output()
         .unwrap();
-    let cleaned = (0..250).any(|_| {
+    // The daemon cleans when nothing else is going on, which on a busy machine can take a while.
+    let started = std::time::Instant::now();
+    let cleaned = loop {
+        if !old.exists() {
+            break true;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            break false;
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
-        !old.exists()
-    });
+    };
     with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(cleaned, "the daemon should drop another version's entries once over its cap");
     assert!(stops(&kit, &home));
@@ -2733,18 +2743,27 @@ fn a_command_cleans_the_cache_hourly_with_no_daemon() {
             .unwrap()
     };
     assert!(fennec(&["dev", "changes"]).status.success());
-    let cleaned = (0..250).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        !old.parent().unwrap().exists()
-    });
+    // The cleanup is a process of its own, which a busy machine may take a while to start: it's
+    // waited for as long as two minutes, which ends the moment it's done.
+    let done = |gone: &dyn Fn() -> bool| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while std::time::Instant::now() < until {
+            if gone() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    };
+    let cleaned = done(&|| !old.parent().unwrap().exists());
     assert!(cleaned, "a build folder unused for two days should go once a cleanup is due");
 
     // The background cleanup may still be letting go of its lock, and one asked for meanwhile
     // would say so.
-    let _ = (0..250).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        !home.join("cache").join("cleanup.lock").exists()
-    });
+    assert!(
+        done(&|| !home.join("cache").join("cleanup.lock").exists()),
+        "the cleanup never let go of its lock"
+    );
     let asked = fennec(&["cache", "clean"]);
     assert!(asked.status.success());
     assert!(
@@ -3104,6 +3123,52 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
         let built = fennec(&build, "")?;
         assert!(!built.status.success(), "{build:?}");
         assert!(text(&built.stderr).contains("`xs` is copied here"), "{build:?}: {}", text(&built.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A program built again under the same name, and run each time, is a new file every time: macOS
+/// remembers the code signature of a file it has launched and kills a program written into one,
+/// with no word. So two programs take turns at one path, built through the store, which links one
+/// the first time and gives the stored one after, and through a run, whose programs are the
+/// store's own files.
+#[test]
+fn a_program_built_again_under_its_name_runs_each_time() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_built_again_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("turns.fen");
+    let executable = dir.join("turns");
+    let fennec_at = |args: &[&std::ffi::OsStr]| {
+        crate::executables::fennec_command().args(args).env("FENNEC_HOME", dir.join("home")).output_within()
+    };
+    for turn in 0..10 {
+        let said = if turn % 2 == 0 { "even" } else { "odd" };
+        std::fs::write(
+            &program,
+            format!("def main(stdout: Stdout):\n    stdout.print(\"{said}\")\n    return\n"),
+        )?;
+        let built =
+            fennec_at(&["build".as_ref(), program.as_os_str(), "-o".as_ref(), executable.as_os_str()])?;
+        assert!(built.status.success(), "turn {turn}: {}", text(&built.stderr));
+        let ran = std::process::Command::new(&executable).output_within()?;
+        assert_eq!(
+            (ran.status.code(), text(&ran.stdout)),
+            (Some(0), format!("{said}\n")),
+            "turn {turn}: {ran:?}"
+        );
+        let run = fennec_at(&["run".as_ref(), program.as_os_str()])?;
+        assert_eq!(
+            (run.status.code(), text(&run.stdout)),
+            (Some(0), format!("{said}\n")),
+            "turn {turn}: {run:?}"
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

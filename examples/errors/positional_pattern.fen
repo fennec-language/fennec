@@ -1,8 +1,10 @@
 # Another kit's type is matched by naming its fields, so a field it adds never breaks this.
-def main(stdout: Stdout, fs: Fs):
-    text = fs.read_text("notes.txt") else as failure:
+from std import json
+
+def main(stdout: Stdout):
+    count = json.loads[int]("many") else as failure:
         match failure:
-            case IoError(why):
+            case ParseError(why):
                 stdout.print(why)
         return
-    stdout.print(text)
+    stdout.print(count)

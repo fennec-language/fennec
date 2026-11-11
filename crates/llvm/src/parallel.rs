@@ -691,8 +691,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `dest = parallel.sum(list, range, start)`: each range's partial, added in the runtime's
-    /// fixed tree, then the start, as the interpreter adds them. A list with nothing in it sums
-    /// to the start.
+    /// fixed tree, then the start. A list with nothing in it sums to the start.
     fn parallel_sum(
         &mut self,
         dest: LocalId,
@@ -736,7 +735,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The runtime's `combine` for a sum: two partials added, the earlier first. An int sum that
-    /// overflows fails as the interpreter does, at the sum: where that is, worked out here as
+    /// overflows fails at the sum: where that is, worked out here as
     /// any failure's is, waits in a global of the sum's own for the combine to read.
     fn combine(&mut self, float: bool, span: Span) -> String {
         if float {

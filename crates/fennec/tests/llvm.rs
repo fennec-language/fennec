@@ -2052,6 +2052,87 @@ fn a_put_in_place_copies_nothing_unless_the_dict_is_held_twice() -> std::io::Res
     Ok(())
 }
 
+/// A dict only its own lookups and puts hold is put into without checking it's alone, and the
+/// dicts something else may hold still copy when they must: copied to another name, passed to a
+/// call, kept in a list, or given by a caller. Built checking proofs, so a dict wrongly taken as
+/// alone would stop the program.
+#[test]
+fn a_dict_held_only_by_itself_and_ones_held_twice_give_what_they_should() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def keep(d: dict[int, int]) -> int:
+    return d.len()
+
+def alone(n: int) -> int:
+    mut counts: dict[int, int] = {}
+    for i in range(n):
+        counts[i % 3] = (counts.get(i % 3) else 0) + 1
+    return counts[0] * 100 + counts[1] * 10 + counts[2]
+
+def copied(n: int) -> int:
+    mut counts: dict[int, int] = {}
+    counts[0] = 1
+    before = counts
+    for i in range(n):
+        counts[0] = counts[0] + 1
+    return before[0] * 100 + counts[0]
+
+def passed(n: int) -> int:
+    mut counts: dict[int, int] = {}
+    mut sizes = 0
+    for i in range(n):
+        counts[i] = i
+        sizes += keep(counts)
+    return sizes
+
+def kept(n: int) -> int:
+    mut counts: dict[int, int] = {}
+    counts[0] = 5
+    held = [counts]
+    for i in range(n):
+        counts[0] = counts[0] + 1
+    return held[0][0] * 100 + counts[0]
+
+def given(n: int, ref counts: dict[int, int]) -> int:
+    for i in range(n):
+        counts[0] = counts[0] + 1
+    return counts[0]
+
+def main(stdout: Stdout):
+    stdout.print(alone(10), copied(4), passed(5), kept(3))
+    mut outside = {0: 7}
+    stdout.print(given(2, ref outside), outside[0])
+    return
+";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("dict_alone")?;
+        let (program, executable) = (dir.join("alone.fen"), dir.join("alone"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        // `alone` counts 4, 3, 3; `copied` leaves `before` at 1; `passed` sums 1 to 5; `kept`
+        // leaves the list's dict at 5; `given` changes the caller's dict, as `ref` says.
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "433 105 15 508\n9 9\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// What's changed in place stays right when it's read while changing, and when something still holds
 /// the list as it was.
 #[test]

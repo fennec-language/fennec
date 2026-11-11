@@ -53,6 +53,96 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !12 = !{!11, !11, i64 0}\n\
 !13 = !{!\"llvm.loop.interleave.count\", i32 1}\n";
 
+/// The dict locals no other owner can ever hold: each is made fresh, by `{...}`, every time it's
+/// set, and is only ever read by looking things up in it, asking its length, or indexing into it
+/// or putting into it in place. Copying it to another local, passing it to a call, keeping it in
+/// another value, capturing it, walking it or giving it back are all ways another owner could
+/// come to hold it, so any of them leaves it out, as does being a parameter, whose caller may
+/// hold it too.
+fn held_by_itself(function: &Function) -> Vec<usize> {
+    let insts: Vec<&InstKind> =
+        function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
+    let ends_read = |local: usize| {
+        function.blocks.iter().any(|block| match &block.end {
+            Terminator::Return(Some(Operand::Local(read)))
+            | Terminator::Branch { cond: Operand::Local(read), .. }
+            | Terminator::NoMatch { value: Operand::Local(read), .. } => read.0 == local,
+            _ => false,
+        })
+    };
+    let is_dict = |at: usize| {
+        at >= function.params
+            && function.locals.get(at).is_some_and(|local| matches!(local.ty, fennec_check::Type::Dict(..)))
+    };
+    // How many times each local is read, and whether it's only ever made fresh.
+    let mut read_count = vec![0_usize; function.locals.len()];
+    let mut only_made = vec![true; function.locals.len()];
+    for inst in &insts {
+        visit(
+            inst,
+            |operand| {
+                if let Operand::Local(local) = operand
+                    && let Some(count) = read_count.get_mut(local.0)
+                {
+                    *count += 1;
+                }
+            },
+            |local| {
+                if !matches!(inst, InstKind::MakeDict { dest, .. } if *dest == local)
+                    && let Some(made) = only_made.get_mut(local.0)
+                {
+                    *made = false;
+                }
+            },
+        );
+    }
+    // A temporary made fresh and read once, by the copy that names it, is moved there, not shared.
+    let fresh_temporary = |from: LocalId| {
+        is_dict(from.0)
+            && !ends_read(from.0)
+            && only_made.get(from.0).copied().unwrap_or(false)
+            && read_count.get(from.0).copied() == Some(1)
+    };
+    (function.params..function.locals.len())
+        .filter(|at| is_dict(*at))
+        .filter(|at| {
+            let me = Operand::Local(LocalId(*at));
+            let mine = |operand: &Operand| *operand == me;
+            !ends_read(*at)
+                && insts.iter().all(|inst| {
+                    let (mut reads, mut writes) = (Vec::new(), Vec::new());
+                    visit(inst, |operand| reads.push(operand.clone()), |local| writes.push(local));
+                    let writes_me = writes.iter().any(|local| local.0 == *at);
+                    let reads_me = reads.iter().any(&mine);
+                    if !writes_me && !reads_me {
+                        return true;
+                    }
+                    match inst {
+                        InstKind::MakeDict { dest, pairs } => {
+                            dest.0 == *at && !pairs.iter().any(|(key, value)| mine(key) || mine(value))
+                        }
+                        InstKind::Copy { dest, value: Operand::Local(from) } => {
+                            dest.0 == *at && *from != LocalId(*at) && fresh_temporary(*from)
+                        }
+                        InstKind::Builtin { name, args, .. } => {
+                            matches!(name.as_str(), "dict.get" | "dict.contains" | "dict.len")
+                                && args.first().is_some_and(mine)
+                                && !args.iter().skip(1).any(&mine)
+                                && !writes_me
+                        }
+                        InstKind::GetIndex { object, index, dest } => {
+                            mine(object) && !mine(index) && dest.0 != *at
+                        }
+                        InstKind::SetIndex { object, path, index, value } => {
+                            object.0 == *at && path.is_empty() && !mine(index) && !mine(value)
+                        }
+                        _ => false,
+                    }
+                })
+        })
+        .collect()
+}
+
 /// The first number a loop's metadata takes, past the unit's own (`METADATA`).
 const FIRST_LOOP: usize = 100;
 
@@ -548,6 +638,7 @@ impl<'p> Module<'_, 'p> {
             found_entries: Vec::new(),
             searched: HashMap::new(),
             alone_slots: HashSet::new(),
+            alone_dicts: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
@@ -673,6 +764,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) searched: HashMap<String, String>,
     /// Slots of `mut` parameters made alone on the way in, that nothing here can share since.
     alone_slots: HashSet<String>,
+    /// Slots of dicts nothing else can hold, so a put into one needs no check that it's alone.
+    pub(crate) alone_dicts: HashSet<String>,
     /// Field paths from locals whose blocks are known alone here.
     pub(crate) alone_fields: Vec<FieldPath>,
     /// Items taken out of a list to change: the list's local and field path, and the step to
@@ -871,6 +964,11 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
+        }
+        // A dict nothing but its own lookups and puts ever holds (see `held_by_itself`).
+        for local in held_by_itself(function) {
+            let slot = self.slot(LocalId(local));
+            self.alone_dicts.insert(slot);
         }
         // What callers see to before calling.
         let whole = self.module.whole;
@@ -3658,6 +3756,36 @@ def main(stdout: Stdout):
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
         assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
         assert!(text.len() > plain.len());
+        Ok(())
+    }
+
+    /// A dict the function makes and only looks things up in and puts into needs no check that
+    /// it's alone before each put. One it copies, passes to a call, stores, or was given keeps it.
+    #[test]
+    fn a_put_into_a_dict_nothing_else_holds_checks_nothing() -> Result<(), String> {
+        let program = |body: &str| {
+            format!(
+                "def keep(d: dict[int, int]) -> int:\n    return d.len()\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
+            )
+        };
+        let checked = |body: &str| -> Result<(usize, usize), String> {
+            let text = text_of(&program(body), "counted")?;
+            Ok((text.matches("br i1 true, label %quick").count(), text.matches("label %quick").count()))
+        };
+        let alone = "    mut counts: dict[int, int] = {}\n    for i in range(n):\n        counts[i % 3] = (counts.get(i % 3) else 0) + 1\n    return counts.len() + counts[0]";
+        let (proven, puts) = checked(alone)?;
+        assert!(proven >= 1 && proven == puts, "{proven} of {puts}");
+        // Each of these lets something else hold the dict, so every put checks.
+        let shared = [
+            "    mut counts: dict[int, int] = {}\n    for i in range(n):\n        counts[i] = keep(counts)\n    return counts.len()",
+            "    mut counts: dict[int, int] = {}\n    mut kept = [counts]\n    for i in range(n):\n        counts[i] = 1\n    return counts.len() + kept[0].len()",
+            "    mut counts: dict[int, int] = {}\n    other = counts\n    for i in range(n):\n        counts[i] = 1\n    return counts.len() + other.len()",
+            "    mut counts = given\n    for i in range(n):\n        counts[i] = 1\n    return counts.len()",
+        ];
+        for body in shared {
+            let (proven, puts) = checked(body)?;
+            assert!(proven == 0 && puts >= 1, "{body}: {proven} of {puts}");
+        }
         Ok(())
     }
 

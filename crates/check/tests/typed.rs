@@ -239,7 +239,9 @@ fn a_with_through_a_modules_function_is_fully_typed() {
 
 /// Every expression and declared name in `source`, which checks, has a known type.
 fn assert_fully_typed(file: &str, source: &str) {
-    let (module, checked) = checked(source).unwrap();
+    let checked = checked(source);
+    assert!(checked.is_ok(), "{file} doesn't check: {checked:?}");
+    let Ok((module, checked)) = checked else { return };
     for (name, signature) in checked.signatures.iter() {
         let types = signature.params.iter().map(|param| &param.ty).chain([&signature.returns]);
         for ty in types {
@@ -262,7 +264,8 @@ fn assert_fully_typed(file: &str, source: &str) {
         };
         let body =
             renamed.and_then(|renamed| checked.types.body(&renamed)).or_else(|| checked.types.body(&key));
-        let body = body.unwrap_or_else(|| panic!("{file}: nothing typed in {key}"));
+        assert!(body.is_some(), "{file}: nothing typed in {key}");
+        let Some(body) = body else { continue };
         let mut found = Found { modules: module_names(&module), exprs: Vec::new() };
         values_in(&stmts, &mut found);
         for expr in &exprs {

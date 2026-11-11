@@ -309,6 +309,41 @@ pub(crate) enum Arrow {
     Either(Expr),
 }
 
+/// How round `at` of a `Left` loop leaves its `with` blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Leave {
+    /// `got = present(i, at) else return`.
+    ElseReturn,
+    /// `got = present(i, at) else fail Refused(code=i)`.
+    ElseFail,
+    /// `got = present(i, at) else continue`.
+    ElseContinue,
+    /// `got = present(i, at) else break`.
+    ElseBreak,
+    /// `got = capped(i, limit=at - 1)?`, a line of its own.
+    Question,
+    /// `total = total + capped(i, limit=at - 1)? * 2`, inside an expression.
+    QuestionInside,
+    /// `return` inside an `if`, inside a `match`.
+    NestedReturn,
+    /// `return` under `if i == at`.
+    Return,
+    /// `break` under `if i == at`.
+    Break,
+    /// `continue` under `if i == at`.
+    Continue,
+    /// Indexing `[1, 2]` out of range under `if i == at`, a crash.
+    Crash,
+}
+
+impl Leave {
+    /// Whether leaving this way is a failure, which runs the cleanups in `lend x else:`, rather
+    /// than the code after `lend`.
+    pub(crate) const fn fails(self) -> bool {
+        matches!(self, Self::ElseFail | Self::Question | Self::QuestionInside)
+    }
+}
+
 /// What holds a float in `FloatKeys`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum FloatHeld {
@@ -472,6 +507,31 @@ pub(crate) enum Stmt {
     /// failure up to what it's given to, as #1305 has it. `capped` fails with `n` when it's over
     /// `limit`.
     Arrowed(Arrow, Expr, i64),
+    /// `guarded_shown(code, refuse, crash, noted)`: a `with` on `guarded`, a source whose `lend
+    /// x else:` cleanup runs when the block fails or crashes. The cleanup fails for a `code`
+    /// that's a multiple of 3, and, in `guarded_noted`, through `capped(code, limit=20)?` for one
+    /// over 20: either becomes a note on the block's failure, and the rest of the cleanup is
+    /// skipped. `crash` indexes `[1, 2]` by `code`, which crashes unless it's -2 to 1.
+    Guarded {
+        code: i64,
+        refuse: bool,
+        crash: bool,
+        noted: bool,
+    },
+    /// `guard_all(items)`: a launched task runs a `with guarded(item)` for each item it's sent,
+    /// crashing on 5 and failing on 7, each running the cleanup. Either prints `stopped`.
+    GuardAll(Vec<i64>),
+    /// `left{id}(stdout)`: a loop of `rounds` rounds, each opening `depth` `ward`s, in nested
+    /// `with` blocks or `together` in one, whose cleanups print. Round `at` leaves them all at
+    /// once by `how`; an `at` of `rounds` never does. A failure is printed as `refused`.
+    Left {
+        id: usize,
+        depth: usize,
+        together: bool,
+        rounds: i64,
+        at: i64,
+        how: Leave,
+    },
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

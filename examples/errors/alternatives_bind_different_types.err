@@ -1,0 +1,7 @@
+error: `size` is a float in one alternative and an int in another
+ --> examples/errors/alternatives_bind_different_types.fen:7:9
+  |
+7 |         case .Circle(size) | .Grid(size):
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write the alternatives as cases of their own, each with its own body, as `case .Square(side):`

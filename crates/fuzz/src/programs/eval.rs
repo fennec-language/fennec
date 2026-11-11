@@ -13,7 +13,7 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
     RefPlace, Size, Stmt,
 };
 
@@ -1134,6 +1134,9 @@ impl Machine {
             }
             Stmt::Summed(limit, stop) => self.summed(limit, stop)?,
             Stmt::Arrowed(how, n, limit) => self.arrowed(how, n, *limit)?,
+            Stmt::Guarded { code, refuse, crash, noted } => self.guarded(*code, *refuse, *crash, *noted)?,
+            Stmt::GuardAll(items) => self.guard_all(items),
+            Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1313,9 +1316,93 @@ impl Machine {
         Ok(())
     }
 
-    /// `summed_until(limit, stop, stdout)`: the source opens, the generator gives `at + limit`
-    /// for each `at` below `limit`, the loop sums them until one is `stop`, and the source closes
-    /// as the generator's let go or ends, failing for an even `limit`.
+    /// `guarded`'s `lend x else:` cleanup, after a block that failed or crashed: the note it
+    /// leaves when it fails, with the rest of it skipped.
+    fn cleanup(&mut self, code: i64, noted: bool) -> Ran<Option<i64>> {
+        let _ = writeln!(self.out, "unguard {code}");
+        if floor_rem(code, 3)? == 0 {
+            return Ok(Some(checked(code.checked_add(1000))?));
+        }
+        if noted && code > 20 {
+            return Ok(Some(code));
+        }
+        let _ = writeln!(self.out, "unguarded {code}");
+        Ok(None)
+    }
+
+    /// `guarded_shown(code, refuse, crash, noted)`: the block refuses, crashes indexing `[1, 2]`, or
+    /// gives back `code`.
+    fn guarded(&mut self, code: i64, refuse: bool, crash: bool, noted: bool) -> Ran<()> {
+        let _ = writeln!(self.out, "guard {code}\ninside {code}");
+        if refuse {
+            let left = match self.cleanup(code, noted)? {
+                Some(note) => format!("[\"Refused(code={note})\"]"),
+                None => "[]".to_owned(),
+            };
+            let _ = writeln!(self.out, "refused {code} {left}");
+        } else if crash && !(-2..2).contains(&code) {
+            self.cleanup(code, noted)?;
+            return Err(Stop::Failed);
+        } else {
+            let _ = writeln!(self.out, "released {code}\n{code}");
+        }
+        Ok(())
+    }
+
+    /// `guard_all(items)`: the task's `with guarded(item)` for each item until one crashes, on 5,
+    /// or fails, on 7, either running the cleanup and printing `stopped`.
+    fn guard_all(&mut self, items: &[i64]) {
+        for item in items {
+            let _ = writeln!(self.out, "guard {item}\ntask {item}");
+            if *item == 5 || *item == 7 {
+                // The task's crash or failure is the block's, whatever the cleanup does.
+                let _ = self.cleanup(*item, false);
+                self.out.push_str("stopped\n");
+                return;
+            }
+            let _ = writeln!(self.out, "released {item}");
+        }
+    }
+
+    /// `left{id}(stdout)`: each round opens the wards outermost first and closes them innermost
+    /// first, the code after `lend` for a block that finished or was left by `return`, `break` or
+    /// `continue`, and `lend x else:` for one that failed or crashed.
+    fn left(&mut self, depth: usize, rounds: i64, at: i64, how: Leave) -> Ran<()> {
+        let names = super::source::WARDS.get(..depth).unwrap_or(&super::source::WARDS);
+        let mut total = 0_i64;
+        for i in 0..rounds {
+            for name in names {
+                let _ = writeln!(self.out, "open {name}");
+            }
+            let _ = writeln!(self.out, "in {} {i}", names.join(" "));
+            let ending = if how.fails() || how == Leave::Crash { "undo" } else { "close" };
+            if i == at {
+                for name in names.iter().rev() {
+                    let _ = writeln!(self.out, "{ending} {name}");
+                }
+                match how {
+                    Leave::Crash => return Err(Stop::Failed),
+                    _ if how.fails() => {
+                        let _ = writeln!(self.out, "refused {i}");
+                        return Ok(());
+                    }
+                    Leave::ElseReturn | Leave::NestedReturn | Leave::Return => return Ok(()),
+                    Leave::ElseBreak | Leave::Break => break,
+                    _ => continue,
+                }
+            }
+            let kept = if how == Leave::QuestionInside { checked(i.checked_mul(2))? } else { i };
+            total = checked(total.checked_add(kept))?;
+            let _ = writeln!(self.out, "kept {i}");
+            for name in names.iter().rev() {
+                let _ = writeln!(self.out, "close {name}");
+            }
+            let _ = writeln!(self.out, "round {i}");
+        }
+        let _ = writeln!(self.out, "total {total}");
+        Ok(())
+    }
+
     /// What `tried`, `tried_twice`, `tried_each`, `ran_fine` or `either` prints, given an arrow
     /// calling `capped(n, limit)?`, which fails with `n` when it's over `limit`.
     fn arrowed(&mut self, how: &Arrow, n: &Expr, limit: i64) -> Ran<()> {
@@ -1354,6 +1441,9 @@ impl Machine {
         Ok(())
     }
 
+    /// `summed_until(limit, stop, stdout)`: the source opens, the generator gives `at + limit`
+    /// for each `at` below `limit`, the loop sums them until one is `stop`, and the source closes
+    /// as the generator's let go or ends, failing for an even `limit`.
     fn summed(&mut self, limit: &Expr, stop: &Expr) -> Ran<()> {
         let limit = int(&self.expr(limit)?)?;
         let stop = int(&self.expr(stop)?)?;

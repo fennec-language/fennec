@@ -23,7 +23,9 @@ fn fails(fennec_fuzz: &Path, target: &str, input: &[u8], wanted: Failure, file: 
         .spawn();
     let Ok(mut child) = child else { return false };
     let stuck = crate::targets::find(target).map_or(STUCK, |target| target.stuck);
-    watch(&mut child, stuck, None, crate::supervise::MOST_KILOBYTES, || false) == Some(wanted)
+    let failure = watch(&mut child, stuck, None, crate::supervise::MOST_KILOBYTES, || false);
+    crate::llvm::forget(child.id());
+    failure == Some(wanted)
 }
 
 /// `input` with the chunks `size` long at each offset removed, wherever that still fails.

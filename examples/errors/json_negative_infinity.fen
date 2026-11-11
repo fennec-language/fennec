@@ -1,0 +1,6 @@
+# A float on its own that JSON can't write stops `json.dumps` too, saying it's the whole value.
+from std import json
+
+def main(stdout: Stdout):
+    endless = float("-inf") else 0.0
+    stdout.print(json.dumps(endless))

@@ -14,9 +14,19 @@
 )]
 
 use super::ast::{
-    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
     RefPlace, Size, Stmt, TYPES, Ty, Via,
 };
+
+/// Whether a crash runs a `lend x else:` cleanup holding a line like `kept = capped(code)?`.
+/// Today it doesn't, natively: the crash goes on with none of the cleanup run, though one with
+/// no `?` runs. Until it does, only a block that fails is given `guarded_noted`'s cleanup.
+const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = false;
+
+/// Whether `x = f() else return`, `else fail`, `else continue` and `else break` run the cleanups
+/// of the `with` blocks they leave. Today none run, natively: the runtime lane's fix is coming.
+/// Until it lands, `Left` leaves its blocks every other way.
+const ELSE_LEAVES_RUN_CLEANUPS: bool = false;
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;
@@ -561,7 +571,9 @@ impl Writer<'_> {
             34 | 35 => self.named(body),
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
+            26 if self.choice(3) == 0 => self.leaves(body),
             26 => self.change_counts(body),
+            27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -882,6 +894,54 @@ impl Writer<'_> {
 
     /// A list lent to a call through `ref` beside a value read from it, the whole list or a
     /// list's item, or a value assigned to itself, a local or a struct's fields.
+    /// A `with` whose source's `lend x else:` cleanup runs when the block fails or crashes, in
+    /// `main` or in a launched task.
+    fn guards(&mut self, body: &mut Vec<Stmt>) {
+        if !self.threadless && self.choice(3) == 0 {
+            let count = 1 + self.choice(5);
+            let items = (0..count).map(|_| i64::from(self.byte() % 10)).collect();
+            body.push(Stmt::GuardAll(items));
+            return;
+        }
+        let code = i64::from(self.byte() % 32) - 4;
+        let refuse = self.choice(2) == 0;
+        // A crash ends the program, so it's rare.
+        let crash = self.choice(8) == 0;
+        let noted = self.choice(2) == 0 && (CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK || !crash);
+        body.push(Stmt::Guarded { code, refuse, crash, noted });
+    }
+
+    /// `with` blocks over sources the program writes, nested or together, all left at once by
+    /// one of the ways out of a block.
+    fn leaves(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let depth = 1 + self.choice(3);
+        let together = depth > 1 && self.choice(3) == 0;
+        let rounds = 1 + i64::from(self.byte() % 4);
+        let at = i64::from(self.byte()) % (rounds + 1);
+        let ways = [
+            Leave::Question,
+            Leave::QuestionInside,
+            Leave::NestedReturn,
+            Leave::Return,
+            Leave::Break,
+            Leave::Continue,
+            Leave::ElseReturn,
+            Leave::ElseFail,
+            Leave::ElseContinue,
+            Leave::ElseBreak,
+        ];
+        let open = if ELSE_LEAVES_RUN_CLEANUPS { ways.len() } else { 6 };
+        // A crash ends the program, so it's rare.
+        let how = if self.choice(10) == 0 {
+            Leave::Crash
+        } else {
+            ways.get(self.choice(open)).copied().unwrap_or(Leave::Return)
+        };
+        body.push(Stmt::Left { id, depth, together, rounds, at, how });
+    }
+
     /// An arrow function that fails and passes it up with `?`, or keys holding floats.
     fn arrows_or_floats(&mut self, body: &mut Vec<Stmt>) {
         if self.choice(2) == 0 {

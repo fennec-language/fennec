@@ -33,8 +33,7 @@ def shown(stdout: Stdout, port: int):
     stdout.print(n)
 
 def main(stdout: Stdout) fails Dial | Broken:
-    closed = failure_of(() => connect("db", 0)?)
-    if closed is not None:
+    _ = connect("db", 0) else as closed:
         mut c = closed
         stdout.print(c.notes(), c)
         c.add_note("first")
@@ -42,8 +41,8 @@ def main(stdout: Stdout) fails Dial | Broken:
         c.add_note("second")
         stdout.print(c.notes(), copy.notes(), c == copy, c)
         stdout.print(f"{c}", str(c))
-    refused = failure_of(() => connect("db", -1)?)
-    if refused is not None:
+        0
+    _ = connect("db", -1) else as refused:
         mut r = refused
         r.add_note("refused once")
         stdout.print(r.notes(), r, r == refused)
@@ -54,6 +53,7 @@ def main(stdout: Stdout) fails Dial | Broken:
                 stdout.print("closed")
         kept = [r, refused, Dial.Closed]
         stdout.print(kept[0].notes(), kept[1].notes(), kept[2].notes(), kept)
+        0
     shown(stdout, -2)
     stdout.print(noted(2)?)
     stdout.print(noted(-3)?)

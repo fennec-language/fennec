@@ -282,6 +282,12 @@ def tried_twice(run: () -> int fails Refused) -> str fails Refused:
     second = run()?
     f\"{first} {second}\"
 
+## Whether `run` gives its value rather than failing.
+def ran_fine(run: () -> int fails Refused) -> bool:
+    _ = run() else:
+        return False
+    True
+
 def tried_each(items: list[int], run: (int) -> int fails Refused) -> str:
     mut kept = list[int]()
     for item in items:
@@ -979,9 +985,7 @@ impl Writer {
                             ),
                         );
                     }
-                    Arrow::FailureOf => {
-                        self.line(indent, &format!("stdout.print(failure_of(() => {capped}) is None)"));
-                    }
+                    Arrow::RanFine => self.line(indent, &format!("stdout.print(ran_fine(() => {capped}))")),
                     Arrow::Either(other) => {
                         let other = self.expr(other, false);
                         self.line(

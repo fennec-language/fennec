@@ -56,17 +56,13 @@ const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
 /// its own and those of LLVM's tools, the linker and the program, since its time on CI's machines
 /// ranges from 315 to 970 ms from one run to the next.
 ///
-/// Not met yet: half a second is 3,350 million instructions, and it runs 4,007 million, most of
-/// them `fennec`'s own. Until it's met it's held to no more than it takes today, so nothing makes
-/// it slower meanwhile; `enforced` is set, and that hold removed, in the change that meets it.
+/// Met on 2026-11-10: it ran 2,344 million instructions on CI, linked with LLD as an installed
+/// Fennec links, against the 3,350 million of half a second.
 const EDIT_RUN: Budget =
-    Budget { name: "edit to run, one function", limit: Duration::from_millis(500), enforced: false };
+    Budget { name: "edit to run, one function", limit: Duration::from_millis(500), enforced: true };
 
-/// What an edit's run may run until it meets its budget: the 4,007 million it ran on 2026-11-10,
-/// linked with LLD as an installed Fennec links, and 5% more, since a count moves a little with
-/// what else lands. The budget, half a second, is
-/// `INSTRUCTIONS_A_SECOND / 2`.
-const MOST_EDIT_RUN_INSTRUCTIONS: u64 = 4_210_000_000;
+/// What an edit's run may run: half a second.
+const MOST_EDIT_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 2;
 
 /// Where edit to run should get to, and isn't held to: once changed functions load into a running
 /// program, rather than a new executable being linked and started, an edit should show in 50 ms.

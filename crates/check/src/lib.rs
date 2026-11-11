@@ -434,6 +434,28 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
     checked_in(module, checker::Scope::Reached)
 }
 
+/// Checks a module to run, as `check_to_lower` does, and gives back the signatures
+/// `check_to_emit` would give the module as it's left, when they're known without checking it
+/// again: a build of the module can then skip that check.
+///
+/// # Errors
+///
+/// What the checker finds wrong with it.
+pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Diagnostic>> {
+    library_parses()?;
+    let names = own_types_apart(module);
+    let checked = checker::Checker::new(module)
+        .run(checker::Scope::ReachedWithFields)
+        .map_err(|problems| as_written(problems, &names))?;
+    // Resolving writes in what the check found, as a default left out of a call, which checking
+    // the module again types as what's written there: the first check's types are only those of
+    // a module it left as it was.
+    let checked_module = module.clone();
+    let (signatures, as_left) = resolved_saying(module, checked)?;
+    let reused = as_left && *module == checked_module;
+    Ok(reused.then_some(signatures))
+}
+
 /// Like `check_to_run`, with every standard library type's fields typed too, so the module can
 /// be lowered to find what it costs, as `fennec lint` does, without checking all of the library.
 pub fn check_to_lower(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
@@ -524,6 +546,13 @@ fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Diagnostic>> {
+    resolved_saying(module, checked).map(|(signatures, _)| signatures)
+}
+
+/// Like `resolved`, saying too whether the signatures are those the first check found of the
+/// module as it's left: they aren't once anything was written in, which is checked again with all
+/// of the library, or once stages kept in names were moved to where they're used.
+fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures, bool), Vec<Diagnostic>> {
     // The library's functions this program needs rewritten go through this round with its own.
     let std_in = std_rewritten_in(module, &checked);
     let round = resolved_round(module, &checked);
@@ -535,7 +564,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
             let mut second = checker::Checker::new(module);
             second.again = true;
             match second.run(checker::Scope::Everything) {
-                Ok(again) => resolved(module, again),
+                Ok(again) => resolved_saying(module, again).map(|(signatures, _)| (signatures, false)),
                 Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
             }
         }
@@ -544,13 +573,13 @@ fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Dia
             let mut second = checker::Checker::new(module);
             second.again = true;
             match second.run(checker::Scope::Everything) {
-                Ok(again) => resolved(module, again),
+                Ok(again) => resolved_saying(module, again).map(|(signatures, _)| (signatures, false)),
                 Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
             }
         }
         Round::Done => {
-            fennec_syntax::fuse::stored_stages(module);
-            Ok(checked.into_signatures())
+            let moved = fennec_syntax::fuse::stored_stages(module);
+            Ok((checked.into_signatures(), !moved))
         }
     }
 }
@@ -712,7 +741,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    if sources_copied(module, checked) {
+    if sources_copied(module, checked) || widened_values(module, &checked.widened_values) {
         return Round::Again;
     }
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
@@ -733,6 +762,41 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// Writes each function named where one failing more ways goes as an arrow calling it, as
+/// `either(load)` becomes `either(() => load()?)`, saying whether there were any. The arrow is
+/// checked again as failing each of the ways the function type it's given for says.
+fn widened_values(module: &mut Module, widened: &BTreeMap<(u32, u32), usize>) -> bool {
+    if widened.is_empty() {
+        return false;
+    }
+    let mut wrote = false;
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        let Some(count) = widened.get(&(expr.span.start, expr.span.end)) else { return };
+        let ExprKind::Name(_) = &expr.kind else { return };
+        let at = expr.span;
+        let params: Vec<String> = (0..*count).map(|number| format!("widened__{number}")).collect();
+        let args = params
+            .iter()
+            .map(|param| fennec_syntax::Arg {
+                name: None,
+                is_mut: false,
+                value: lend_lowering::name(param, at),
+            })
+            .collect();
+        let function = Expr { kind: expr.kind.clone(), span: lend_lowering::here(at) };
+        let call =
+            Expr { kind: ExprKind::Call { callee: Box::new(function), args }, span: lend_lowering::here(at) };
+        let passed = Expr {
+            kind: ExprKind::Try { value: Box::new(call), context: None },
+            span: lend_lowering::here(at),
+        };
+        expr.kind = ExprKind::Lambda { params, body: Box::new(passed) };
+        expr.span = lend_lowering::here(at);
+        wrote = true;
+    });
+    wrote
 }
 
 /// Copies what calls a `with` source that isn't known until the program runs, saying whether
@@ -854,6 +918,8 @@ pub struct Checked {
     shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, which lowering writes in where it's used.
     sources: BTreeMap<(u32, u32), lend_lowering::Source>,
+    /// Each function named where one failing more ways goes, written in as an arrow calling it.
+    widened_values: BTreeMap<(u32, u32), usize>,
     /// Each generic function that calls a `with` source an interface gives its type parameter.
     generic_sources: BTreeSet<String>,
     /// Each call to a generic function, with the types its type parameters are there.

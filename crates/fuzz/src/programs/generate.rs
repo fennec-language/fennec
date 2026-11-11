@@ -913,7 +913,7 @@ impl Writer<'_> {
                 0 => Arrow::Tried,
                 1 => Arrow::Twice,
                 2 => Arrow::Each(self.of(Ty::Ints, 1)),
-                3 => Arrow::FailureOf,
+                3 => Arrow::RanFine,
                 _ => Arrow::Either(self.int(1)),
             };
             let n = self.int(1);

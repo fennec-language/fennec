@@ -1,0 +1,7 @@
+error: `n` should be an int, but this is a str
+ --> examples/errors/text_where_int.fen:5:25
+  |
+5 |     stdout.print(double("4"))
+  |                         ^^^
+  |
+  = help: read the text as a number, as `int(text)?`, or write a number

@@ -10976,6 +10976,82 @@ fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::R
     Ok(())
 }
 
+/// What the next test runs: a `parallel` loop's body printing, and an ordered stream's read until a
+/// `break`, each with a line printed after it.
+const PRINTING_BODIES: &str = r#"def streamed(stdout: Stdout, n: int) -> int:
+    stdout.print("streamed", n)
+    return n * n
+
+def main(stdout: Stdout):
+    numbers = [n for n in range(200)]
+    for n in parallel(numbers):
+        stdout.print("loop", n)
+    stdout.print("after loop")
+    many = [n for n in range(20000)]
+    for square in (streamed(stdout, n) for n in parallel(many)):
+        if square > 900:
+            break
+    stdout.print("after break")
+"#;
+
+/// What `parallel` bodies print follows real call order, so it's compared sorted, but each print
+/// comes out whole, none is lost, and everything printed after a loop or a stream comes after all
+/// that its bodies printed, with workers writing as they go and any number of them. A stream's
+/// chunks the reader never took may still have run, and print, before its `break` ends them.
+#[test]
+fn what_parallel_bodies_print_comes_out_whole_and_before_what_follows() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("printing-bodies")?;
+    let program = dir.join("printing.fen");
+    std::fs::write(&program, PRINTING_BODIES)?;
+    let executable = dir.join("printing");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let looped: Vec<String> = (0..200).map(|n| format!("loop {n}")).collect();
+    for threads in ["1", "4", "16"] {
+        for _ in 0..20 {
+            let ran = Command::new(&executable)
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr);
+            let out = String::from_utf8_lossy(&ran.stdout);
+            let lines: Vec<&str> = out.lines().collect();
+            let after_loop = lines.iter().position(|line| *line == "after loop").expect(&out);
+            let after_break = lines.iter().position(|line| *line == "after break").expect(&out);
+            let mut in_loop: Vec<&str> = lines[..after_loop].to_vec();
+            in_loop.sort_by_key(|line| line.split(' ').nth(1).and_then(|n| n.parse::<u32>().ok()));
+            assert_eq!(in_loop, looped, "{threads} threads: {said}\n{out}");
+            let mut seen: Vec<u32> = lines[after_loop + 1..after_break]
+                .iter()
+                .map(|line| line.strip_prefix("streamed ").and_then(|n| n.parse().ok()).expect(line))
+                .collect();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), after_break - after_loop - 1, "each printed once: {out}");
+            assert!((0..=31).all(|n| seen.contains(&n)), "{threads} threads: every item read printed\n{out}");
+            assert_eq!(after_break + 1, lines.len(), "{threads} threads: nothing after: {said}\n{out}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
 const SQLITE_TESTS: &str = r#"from std import sqlite
 from std import sql

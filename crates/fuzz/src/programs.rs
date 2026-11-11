@@ -463,9 +463,16 @@ mod tests {
     /// is on, so it's ready the day `except` parses.
     #[test]
     fn it_handles_failures_with_except() {
-        let wanted =
-            ["except why:", "        case Refused():", "lend name except:", "    case Refused(code=code):"];
-        let mut found = [0_usize; 4];
+        let wanted = [
+            "except why:",
+            "        case Refused():",
+            "lend name except:",
+            "    case Refused(code=code):",
+            "except Refused(): -1",
+            "            case _:",
+            "except Refused(): \"refused\"",
+        ];
+        let mut found = [0_usize; 7];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))

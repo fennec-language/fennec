@@ -1376,7 +1376,24 @@ impl Machine {
             }
             let _ = writeln!(self.out, "in {} {i}", names.join(" "));
             let ending = if how.fails() || how == Leave::Crash { "undo" } else { "close" };
-            if i == at {
+            // An `except` that carries on handles every round from `at`, where the call fails.
+            let caught = match how {
+                Leave::ExceptReturn | Leave::ExceptArms => i == at,
+                Leave::ExceptContinue => i >= at,
+                _ => false,
+            };
+            if caught {
+                let _ = writeln!(self.out, "caught {i}");
+                for name in names.iter().rev() {
+                    let _ = writeln!(self.out, "close {name}");
+                }
+                match how {
+                    Leave::ExceptReturn => return Ok(()),
+                    Leave::ExceptArms => break,
+                    _ => continue,
+                }
+            }
+            if i == at && !matches!(how, Leave::ExceptValue | Leave::ExceptContinue) {
                 for name in names.iter().rev() {
                     let _ = writeln!(self.out, "{ending} {name}");
                 }
@@ -1395,7 +1412,13 @@ impl Machine {
                 how,
                 Leave::QuestionInside | Leave::QuestionNestedInner | Leave::QuestionNestedOuter
             );
-            let kept = if doubled { checked(i.checked_mul(2))? } else { i };
+            let kept = if how == Leave::ExceptValue && i >= at {
+                -1
+            } else if doubled {
+                checked(i.checked_mul(2))?
+            } else {
+                i
+            };
             total = checked(total.checked_add(kept))?;
             let _ = writeln!(self.out, "kept {i}");
             for name in names.iter().rev() {

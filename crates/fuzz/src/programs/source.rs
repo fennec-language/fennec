@@ -541,9 +541,9 @@ pub(crate) fn source(program: &Program) -> String {
 }
 
 /// Whether failures are handled with `except`, as the syntax locked on 2026-11-11 has it, rather
-/// than `else`. Off until the checker lane's `except` parser lands. Once the migration makes the
-/// old forms errors, `excepted` becomes how the program is written, and this goes.
-pub(crate) const EXCEPT_PARSES: bool = false;
+/// than `else`. It parses and runs since #1398. Once the migration makes the old forms errors,
+/// `excepted` becomes how the program is written, and this goes.
+pub(crate) const EXCEPT_PARSES: bool = true;
 
 /// What each function a program handles the failures of fails with, so its `except` block can
 /// have a `case` for each. Every one is an error without cases, so the cases cover it by name
@@ -673,6 +673,22 @@ fn left_written(id: usize, depth: usize, together: bool, rounds: i64, at: i64, h
             vec![format!("got = capped(i, limit={at_most})?"), "total = total + got".to_owned()]
         }
         Leave::QuestionInside => vec![format!("total = total + capped(i, limit={at_most})? * 2")],
+        Leave::ExceptReturn | Leave::ExceptContinue => vec![
+            format!("got = capped(i, limit={at_most}) except why:"),
+            "    stdout.print(\"caught\", why.code)".to_owned(),
+            (if how == Leave::ExceptReturn { "    return" } else { "    continue" }).to_owned(),
+            "total = total + got".to_owned(),
+        ],
+        Leave::ExceptValue => {
+            vec![format!("got = capped(i, limit={at_most}) except Refused(): -1"), "total = total + got".to_owned()]
+        }
+        Leave::ExceptArms => vec![
+            format!("got = capped(i, limit={at_most}) except why:"),
+            "    case _:".to_owned(),
+            "        stdout.print(\"caught\", why.code)".to_owned(),
+            "        break".to_owned(),
+            "total = total + got".to_owned(),
+        ],
         Leave::QuestionNestedInner => {
             vec![format!("total = total + capped(capped(i, limit={at_most})?, limit=1000)? * 2")]
         }

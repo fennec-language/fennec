@@ -121,6 +121,9 @@ pub struct Shared {
     /// The boxed types whose blocks generated code makes and frees itself, outside the runtime's
     /// table: see `native`.
     pub native: BTreeSet<u32>,
+    /// The functions that may fail, which take the failure flag, as the whole program's analysis
+    /// works them out: the entry calls `main`, tests and own texts' functions accordingly.
+    pub can_fail: BTreeSet<String>,
     /// The functions that may wait, as `waits` works them out, blocking reads counted: a
     /// `parallel` call whose body is one of them goes to the runtime's `_waiting` entry points.
     pub waiting: BTreeSet<String>,

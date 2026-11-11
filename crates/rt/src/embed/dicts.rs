@@ -364,7 +364,15 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
                 }
             };
         }
-        let words = block.get(HEADER_WORDS..).unwrap_or_default();
+        // Bytes go by their length and the words it takes up, as they're compared, not by any
+        // room after them.
+        let bytes;
+        let words = if shape_word(block) == Some(super::heap::BYTES_SHAPE) {
+            bytes = super::bytes::words_of(block);
+            &bytes[..]
+        } else {
+            block.get(HEADER_WORDS..).unwrap_or_default()
+        };
         return match how {
             Hashing::Fast => hash_words(words),
             Hashing::Strong => strong_hash(u64::try_from(words.len()).unwrap_or(0), words),
@@ -375,6 +383,13 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
         Word::Text => hash_header(state, key, how),
         _ => one_word(first),
     }
+}
+
+/// A key held in a block, hashed both ways, as a dict would, for tests.
+#[cfg(test)]
+pub(super) fn block_key_hashes(state: &State, address: u64) -> (u64, u64) {
+    let hashed = |how| hash_key(state, Word::Plain(0), &[address], how);
+    (hashed(Hashing::Fast), hashed(Hashing::Strong))
 }
 
 /// The hash of the string in a block.

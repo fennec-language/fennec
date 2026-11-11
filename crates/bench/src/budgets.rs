@@ -145,7 +145,8 @@ impl Measured {
 
 pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, String> {
     let fennec = std::fs::canonicalize(fennec).map_err(|err| format!("{}: {err}", fennec.display()))?;
-    let dir = std::env::temp_dir().join(format!("fennec-budgets-{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-budgets-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&dir);
     let kit =
         Kit::write(&dir, fennec.clone(), files).map_err(|err| format!("couldn't write the kit: {err}"))?;
@@ -780,7 +781,9 @@ mod tests {
 
     #[test]
     fn the_edited_line_is_in_a_function_main_calls_and_a_test_runs() {
-        let dir = std::env::temp_dir().join(format!("fennec-budgets-kit-{}", std::process::id()));
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-budgets-kit-{}", std::process::id())),
+        );
         let kit = super::Kit::write(&dir, "fennec".into(), super::EDITED_FILE + 1).unwrap();
         let read = |file: &str| std::fs::read_to_string(kit.dir.join(file)).unwrap();
         let edited = super::EDITED_FILE * super::FUNCTIONS_PER_FILE;

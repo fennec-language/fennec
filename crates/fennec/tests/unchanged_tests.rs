@@ -1,14 +1,16 @@
 //! `fennec test` runs only what a change affects, reporting the rest as unchanged.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Output;
 
 const SOURCE: &str = "def double(x: int) -> int:\n    x * 2\n\ndef triple(x: int) -> int:\n    x * 3\n\n\
     test \"doubling\":\n    assert double(2) == 4\n\ntest \"tripling\":\n    assert triple(2) == 6\n";
 
 /// A folder for a program and for Fennec's own files, with `SOURCE` written in it.
-fn scratch(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("fennec-unchanged-{name}-{}", std::process::id()));
+fn scratch(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-unchanged-{name}-{}", std::process::id())),
+    );
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
@@ -213,7 +215,7 @@ fn a_property_test_depends_on_all_it_can_reach() {
 
 /// A kit in a folder of its own, with a function called from a test in another file and a test
 /// that doesn't touch it.
-fn kit_with_tests(name: &str) -> std::io::Result<PathBuf> {
+fn kit_with_tests(name: &str) -> std::io::Result<fennec_temp::Temp> {
     let dir = scratch(name)?;
     std::fs::create_dir_all(dir.join("src"))?;
     let manifest =
@@ -631,7 +633,9 @@ fn every_example_tested_through_llvm_passes_and_keeps_what_it_ran() {
     if !llvm_here() {
         return;
     }
-    let home = std::env::temp_dir().join(format!("fennec-unchanged-llvm-examples-{}", std::process::id()));
+    let home = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-unchanged-llvm-examples-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&home).unwrap();
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut paths = Vec::new();

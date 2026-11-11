@@ -94,27 +94,46 @@ fn statements<'s>(body: &'s [Stmt], all: &mut Vec<&'s Stmt>) {
     }
 }
 
-/// `return` before a `def`'s last line, when that line is the value it gives back: a value, or
-/// a `match` whose cases each give one, or a `with` block whose last line does.
-fn def_return(def: &FnDef) -> Option<Diagnostic> {
-    let ret = def.ret.as_ref()?;
+/// `return` before a `def`'s last line, when that line is the value it gives back: a value,
+/// or each case's or branch's last line, of a `match` or an `if` that ends it, or a `with` block's.
+fn def_return(def: &FnDef) -> Vec<Diagnostic> {
+    let Some(ret) = def.ret.as_ref() else { return Vec::new() };
     if ret.name == "None"
         || ret.name == "with"
         || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Yield(_)))
     {
-        return None;
+        return Vec::new();
     }
-    let value = tail(&def.body)?;
-    let at = Span { start: value.span.start, end: value.span.start };
-    Some(Diagnostic::new("a `def` gives its value with `return`", value.span).with_fix(at, "return "))
+    let mut found = Vec::new();
+    tails(&def.body, &mut found);
+    found
+        .into_iter()
+        .map(|line| {
+            let at = Span { start: line.span.start, end: line.span.start };
+            Diagnostic::new("a `def` gives its value with `return`", line.span).with_fix(at, "return ")
+        })
+        .collect()
 }
 
-/// The value a block's last line gives, through a `with` block that ends it.
-fn tail(body: &[Stmt]) -> Option<&Expr> {
-    match &body.last()?.kind {
-        StmtKind::Expr(value) => Some(value),
-        StmtKind::With { body, .. } => tail(body),
-        _ => None,
+/// The lines that give a block's value: its last, when that's a value, or the last of each
+/// case or branch of a `match` or an `if` that ends it, or of a `with` block that does.
+fn tails<'s>(body: &'s [Stmt], found: &mut Vec<&'s Stmt>) {
+    let Some(last) = body.last() else { return };
+    match &last.kind {
+        StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+            for arm in arms {
+                tails(&arm.body, found);
+            }
+        }
+        StmtKind::Expr(_) => found.push(last),
+        StmtKind::With { body, .. } => tails(body, found),
+        StmtKind::If { branches, otherwise: Some(otherwise) } => {
+            for (_, branch) in branches {
+                tails(branch, found);
+            }
+            tails(otherwise, found);
+        }
+        _ => {}
     }
 }
 
@@ -224,18 +243,22 @@ fn failure_fix(
     }
     // A block starts at its `:`, and a way out on the line, as `else return`, at its word.
     let block = text.get(default.span)?.starts_with(':');
+    let all = failures(error, signatures).unwrap_or_default();
     let mut diagnostic = Diagnostic::new("a failure is handled with `except` now", between);
     match default.else_block() {
         // A `match why:` that's all of the block is its arms, which needn't read `why`.
-        Some((Some(name), body)) if arms_under(name, body, &text).is_some() => {
-            let (at, arms) = arms_under(name, body, &text)?;
+        Some((Some(name), body)) if arms_under(name, body, &text, &all).is_some() => {
+            let (at, arms) = arms_under(name, body, &text, &all)?;
             diagnostic = diagnostic.with_fix(between, format!(" except {name}")).with_fix(at, arms);
         }
         Some((Some(name), body)) if body.iter().any(|stmt| crate::except::stmt_uses(stmt, name)) => {
             diagnostic = diagnostic.with_fix(between, format!(" except {name}"));
         }
         _ => {
-            let cases = failures(error, signatures)?;
+            if all.is_empty() {
+                return None;
+            }
+            let cases = all.iter().map(|(_, pattern)| pattern.as_str()).collect::<Vec<_>>().join(" | ");
             let after = if block { "" } else { ": " };
             diagnostic = diagnostic.with_fix(between, format!(" except {cases}{after}"));
         }
@@ -244,29 +267,102 @@ fn failure_fix(
 }
 
 /// A `match name:` that's all of a block, as its arms written right under `except name:`: the
-/// `match` line goes, and its arms come out a step.
-fn arms_under(name: &str, body: &[Stmt], text: &Text<'_>) -> Option<(Span, String)> {
-    let [Stmt { kind: StmtKind::Expr(matched), .. }] = body else { return None };
+/// A block that starts with `match why:` as the arms of `except why:`, moved out a level.
+/// What follows the `match` in the block goes at the end of each case that doesn't leave, and a
+/// `case _:` that doesn't use `why` names the failures the cases before it leave instead.
+fn arms_under(
+    name: &str,
+    body: &[Stmt],
+    text: &Text<'_>,
+    all: &[(String, String)],
+) -> Option<(Span, String)> {
+    let [Stmt { kind: StmtKind::Expr(matched), .. }, rest @ ..] = body else { return None };
     let ExprKind::Match { subject, arms } = &matched.kind else { return None };
     if !matches!(&subject.kind, ExprKind::Name(found) if found == name) {
         return None;
     }
-    let first = arms.first()?.span.start;
-    // The `match`'s span runs on to where the next line starts, which stays as it is.
-    let written = text.get(Span { start: first, end: matched.span.end })?.trim_end();
-    let end = first + u32::try_from(written.len()).ok()?;
-    let mut lines = written.split('\n');
-    let mut out = lines.next()?.to_owned();
-    for line in lines {
-        out.push('\n');
-        out.push_str(line.strip_prefix("    ").unwrap_or(line));
+    if rest.iter().any(|stmt| crate::except::stmt_uses(stmt, name)) {
+        return None;
     }
-    Some((Span { start: matched.span.start, end }, out))
+    let line = text.get(Span { start: text.base, end: matched.span.start })?;
+    let indent = line.rsplit('\n').next().unwrap_or_default();
+    let after = rest.last().map_or(matched.span.end, |last| last.span.end);
+    // The `match`'s span runs on to where the next line's code starts, so that line's indent is
+    // the block's.
+    let rest_text = match rest.first() {
+        Some(first) => {
+            format!("{indent}{}", text.get(Span { start: first.span.start, end: after })?.trim_end())
+        }
+        None => String::new(),
+    };
+    let mut cased: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for (at, arm) in arms.iter().enumerate() {
+        let end = arms.get(at + 1).map_or(matched.span.end, |next| next.span.start);
+        let mut written = text.get(Span { start: arm.span.start, end })?.trim_end().to_owned();
+        if matches!(arm.pattern, fennec_syntax::Pattern::Wildcard)
+            && arm.guard.is_none()
+            && !arm.body.iter().any(|stmt| crate::except::stmt_uses(stmt, name))
+        {
+            let left: Vec<&str> = all
+                .iter()
+                .filter(|(key, _)| !cased.iter().any(|named| covers(named, key)))
+                .map(|(_, pattern)| pattern.as_str())
+                .collect();
+            if !left.is_empty() {
+                written = written.replacen("case _", &format!("case {}", left.join(" | ")), 1);
+            }
+        }
+        variant_names(&arm.pattern, &mut cased);
+        let mut lines = written.split('\n');
+        let mut arm_text = lines.next()?.to_owned();
+        for line in lines {
+            arm_text.push('\n');
+            arm_text.push_str(line.strip_prefix("    ").unwrap_or(line));
+        }
+        if !rest_text.is_empty() && !arm.body.last().is_some_and(leaves) {
+            for line in rest_text.split('\n') {
+                arm_text.push('\n');
+                if !line.trim().is_empty() {
+                    arm_text.push_str("    ");
+                }
+                arm_text.push_str(line);
+            }
+        }
+        out.push(arm_text);
+    }
+    let written = text.get(Span { start: matched.span.start, end: after })?.trim_end();
+    let end = matched.span.start + u32::try_from(written.len()).ok()?;
+    Some((Span { start: matched.span.start, end }, out.join(&format!("\n{indent}"))))
+}
+
+/// Whether a line leaves its block, so nothing after it runs.
+fn leaves(stmt: &Stmt) -> bool {
+    matches!(stmt.kind, StmtKind::Return(_) | StmtKind::Fail(_) | StmtKind::Break | StmtKind::Continue)
+}
+
+/// The cases and errors a pattern names, as written: `Case` for `.Case`, `T.Case`, or `T`.
+fn variant_names(pattern: &fennec_syntax::Pattern, names: &mut Vec<String>) {
+    match pattern {
+        fennec_syntax::Pattern::Variant { name, .. } => names.push(name.clone()),
+        fennec_syntax::Pattern::Or(alternatives) => {
+            for alternative in alternatives {
+                variant_names(alternative, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether a case named `named` in a pattern takes the failure `key` stands for.
+fn covers(named: &str, key: &str) -> bool {
+    named == key || key.ends_with(&format!(".{named}")) || named.ends_with(&format!(".{key}"))
 }
 
 /// Each way a call can fail with `error`, as the patterns of one case on the line: each error's
 /// cases, named on their own where no other error has one by that name, or the error itself.
-fn failures(error: &Type, signatures: &crate::Signatures) -> Option<String> {
+/// Each comes with the name a pattern takes it by: `Case`, `T.Case` or `T`.
+fn failures(error: &Type, signatures: &crate::Signatures) -> Option<Vec<(String, String)>> {
     let members: Vec<String> = match error {
         Type::Named(name) => vec![name.clone()],
         Type::Errors(names) => names.clone(),
@@ -285,19 +381,21 @@ fn failures(error: &Type, signatures: &crate::Signatures) -> Option<String> {
         match cases_of(member) {
             Some(found) => {
                 for (case, fields) in &found.cases {
-                    let named = if owners.get(case.as_str()).copied().unwrap_or(0) > 1 {
-                        format!("{shown}.{case}")
+                    let (key, named) = if owners.get(case.as_str()).copied().unwrap_or(0) > 1 {
+                        (format!("{shown}.{case}"), format!("{shown}.{case}"))
                     } else {
-                        format!(".{case}")
+                        (case.clone(), format!(".{case}"))
                     };
-                    patterns.push(if fields.is_empty() { named } else { format!("{named}()") });
+                    patterns.push((key, if fields.is_empty() { named } else { format!("{named}()") }));
                 }
             }
-            None if signatures.error_type(member).is_some() => patterns.push(format!("{shown}()")),
+            None if signatures.error_type(member).is_some() => {
+                patterns.push((shown.to_string(), format!("{shown}()")));
+            }
             None => return None,
         }
     }
-    Some(patterns.join(" | "))
+    Some(patterns)
 }
 
 /// The text of the file a span is in, read by spans.
@@ -344,6 +442,42 @@ mod tests {
             migrated(source),
             source.replace("load(1) else 0", "load(1) except Disk.Gone | .Full() | Net.Gone | Odd(): 0")
         );
+    }
+
+    /// `return` goes where the line starts, before a parenthesis, and into each case of a
+    /// `match` and each branch of an `if` that ends a def, where they don't leave already.
+    #[test]
+    fn return_goes_on_each_line_that_gives_the_value() {
+        let source = "enum Order:\n    Hold\n    Move\n\n\
+            def half(n: int) -> int:\n    (n + 1) // 2\n\n\
+            def steps(order: Order) -> int:\n    match order:\n        case .Hold:\n            return 0\n        case .Move:\n            2\n\n\
+            def sign(n: int) -> int:\n    if n < 0:\n        -1\n    else:\n        1\n\n\
+            def main(stdout: Stdout):\n    stdout.print(half(3), steps(.Move), sign(-2))\n";
+        assert_eq!(
+            migrated(source),
+            source
+                .replace("    (n + 1) // 2", "    return (n + 1) // 2")
+                .replace("            2\n", "            return 2\n")
+                .replace("        -1\n", "        return -1\n")
+                .replace("        1\n\n", "        return 1\n\n")
+        );
+    }
+
+    /// A block that's a `match why:` and then more lines has its cases moved up, each that
+    /// doesn't leave ending with those lines, and a `case _:` that doesn't use `why` names what
+    /// the cases before it leave.
+    #[test]
+    fn a_match_and_what_follows_it_become_the_cases() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n    Odd\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout) -> int:\n    got = load(n) else as why:\n        match why:\n            \
+            case .Long(size):\n                return size\n            case _:\n                stdout.print(\"short\")\n        \
+            0\n    return got\n\n\
+            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
+        let expected = "    got = load(n) except why:\n        case .Long(size):\n            return size\n        \
+            case .Empty | .Odd:\n            stdout.print(\"short\")\n            0\n    return got\n";
+        let migrated = migrated(source);
+        assert!(migrated.contains(expected), "{migrated}");
     }
 
     /// A def's last value gets `return`, and a def that gives nothing is left as it is.

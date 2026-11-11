@@ -29,9 +29,14 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
-/// Today it doesn't, natively, though the outer call's `?` failing runs them. Until it does,
-/// `Left` nests `?` only with the outer call failing.
-const INNER_QUESTION_RUNS_CLEANUPS: bool = false;
+/// It does since #1399; turned off, `Left` nests `?` only with the outer call failing.
+const INNER_QUESTION_RUNS_CLEANUPS: bool = true;
+
+/// Whether leaving a `with` block from a `case` arm under `except why:`, by `return`, `break` or
+/// `continue`, runs the code after its source's `lend`. Today it doesn't, natively, though the
+/// same leave from an `except why:` block of plain statements does. Until it does, `Left` leaves
+/// from an arm only that way.
+const EXCEPT_ARMS_LEAVE_RUN_CLEANUPS: bool = false;
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;
@@ -940,6 +945,12 @@ impl Writer<'_> {
         if ELSE_LEAVES_RUN_CLEANUPS {
             ways.extend([Leave::ElseReturn, Leave::ElseFail, Leave::ElseContinue, Leave::ElseBreak]);
         }
+        if super::source::EXCEPT_PARSES {
+            ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
+            if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
+                ways.push(Leave::ExceptArms);
+            }
+        }
         // A crash ends the program, so it's rare.
         let how = if self.choice(10) == 0 {
             Leave::Crash
@@ -953,11 +964,12 @@ impl Writer<'_> {
     fn arrows_or_floats(&mut self, body: &mut Vec<Stmt>) {
         if self.choice(2) == 0 {
             let limit = i64::from(self.byte() % 12) - 3;
-            let how = match self.choice(5) {
+            let how = match self.choice(6) {
                 0 => Arrow::Tried,
                 1 => Arrow::Twice,
                 2 => Arrow::Each(self.of(Ty::Ints, 1)),
                 3 => Arrow::RanFine,
+                4 => Arrow::Fallback,
                 _ => Arrow::Either(self.int(1)),
             };
             let n = self.int(1);

@@ -5,7 +5,7 @@
 def save(fs: Fs, path: str, scores: list[int]) fails IoError:
     with fs.create(path)? as file:
         for score in scores:
-            if score < 0: fail IoError(reason=f"{score} isn't a score")
+            if score < 0: fail .Other(reason=f"{score} isn't a score")
             file.write_line(str(score))?
 
 def load(fs: Fs, path: str) -> list[int] fails IoError:
@@ -24,7 +24,7 @@ test "a block that fails leaves the old file as it was"(fs: Fs):
     save(fs, "scores.txt", scores=[120])?
     problem = failure_of(() => save(fs, "scores.txt", scores=[7, -1, 9])?)
     assert problem is not None
-    assert problem.reason == "-1 isn't a score"
+    assert problem.message() == "-1 isn't a score"
     assert load(fs, "scores.txt")? == [120]
 
 test "a file can be read in chunks"(fs: Fs):
@@ -40,11 +40,11 @@ test "a file is for writing or for reading, not both"(fs: Fs):
     with fs.open("notes.txt")? as file:
         mut problem = failure_of(() => file.write_text("den")?)
         assert problem is not None
-        assert problem.reason == "this file was opened to read, not to write"
+        assert problem.message() == "this file was opened to read, not to write"
     with fs.create("other.txt", durable=False)? as file:
         problem = failure_of(() => file.read_text()?)
         assert problem is not None
-        assert problem.reason == "this file was made to write, not to read"
+        assert problem.message() == "this file was made to write, not to read"
 
 def main(stdout: Stdout, fs: Fs):
     # This file doesn't exist, so opening it fails, and nothing is made.

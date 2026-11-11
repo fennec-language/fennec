@@ -35,7 +35,7 @@ const HEADER: &str = "struct Point:
     y: int
 
     def total(self) -> int:
-        self.x + self.y
+        return self.x + self.y
 
     def moved(ref self, by: int):
         self.x += by
@@ -50,26 +50,26 @@ error TooBig:
 
 def area(shape: Shape) -> int:
     match shape:
-        case .Circle(radius): radius * radius * 3
-        case .Square(side): side * side
-        case .Empty: 0
+        case .Circle(radius): return radius * radius * 3
+        case .Square(side): return side * side
+        case .Empty: return 0
 
 def small(n: int) -> int fails TooBig:
     if n > 1000: fail TooBig(limit=1000)
-    n + 1
+    return n + 1
 
 def total_of(items: list[int]) -> int:
     mut total = 0
     for item in items:
         total += item
-    total
+    return total
 
 def twice[T](value: T) -> list[T]:
-    [value, value]
+    return [value, value]
 
 def at_or_zero(items: list[int], at: int) -> int:
     if items.len() == 0: return 0
-    items[at % items.len()]
+    return items[at % items.len()]
 
 ";
 

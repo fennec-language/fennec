@@ -922,6 +922,8 @@ impl Writer<'_> {
         let ways = [
             Leave::Question,
             Leave::QuestionInside,
+            Leave::QuestionNestedInner,
+            Leave::QuestionNestedOuter,
             Leave::NestedReturn,
             Leave::Return,
             Leave::Break,
@@ -931,7 +933,7 @@ impl Writer<'_> {
             Leave::ElseContinue,
             Leave::ElseBreak,
         ];
-        let open = if ELSE_LEAVES_RUN_CLEANUPS { ways.len() } else { 6 };
+        let open = if ELSE_LEAVES_RUN_CLEANUPS { ways.len() } else { 8 };
         // A crash ends the program, so it's rare.
         let how = if self.choice(10) == 0 {
             Leave::Crash

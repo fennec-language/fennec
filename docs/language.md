@@ -517,8 +517,8 @@ def load_settings(fs: Fs, log: Log, clock: Clock) -> Settings:
 ```
 
   Write the block's value as its last line, `Settings()`. `fennec fix` never adds a `return` inside such a block.
-- `len` is a builtin, like `sum` and `sorted`: `len(items)`, as in Python. `len(x)` calls a type's `def len(self) -> int`, as `str(x)` calls `def str` and `x in xs` calls `def in`. `x.len()` gets a `fennec fix` suggestion that writes `len(x)`. Not built yet.
-- `abs` is a builtin the same way: `abs(x)` for the numeric types, and for any type with `def abs(self) -> Self`, which `abs(x)` calls. `x.abs()` gets a `fennec fix` suggestion that writes `abs(x)`. Chris decided this on 2026-11-11. Not built yet.
+- `len` is a builtin, like `sum` and `sorted`: `len(items)`, as in Python. `len(x)` calls a type's `def len(self) -> int`, as `str(x)` calls `def str` and `x in xs` calls `def in`. `x.len()` gets a `fennec fix` suggestion that writes `len(x)`: `len(x)` is built, the suggestion isn't yet.
+- `abs` is a builtin the same way: `abs(x)` for the numeric types, and for any type with `def abs(self) -> Self`, which `abs(x)` calls. `x.abs()` gets a `fennec fix` suggestion that writes `abs(x)`. Chris decided this on 2026-11-11. `abs(x)` is built for `int`, `float` and types with `def abs`; the sized numbers and the suggestion aren't yet.
 - These names are reserved, and naming a local after one is a compile error that suggests another name: the builtins `len`, `abs`, `sum`, `sorted`, `min`, `max`, `range`, `enumerate` and `zip`, and the built-in types `int`, `float`, `bool`, `str`, `bytes`, `list`, `dict`, `set`, `array` and the ten sized numbers. That's the whole list: a builtin added later comes with a `fennec fix` rename. Fields and named arguments may still use them, as they may use keywords. Not built yet.
 - `case` is reserved too, since it starts an arm under `except why:`. Not built yet. std's serializer method that was `case` is `enum_case` already.
 - There's no cap on how many keywords Fennec has.

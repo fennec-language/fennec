@@ -1,6 +1,7 @@
 //! BLAKE3 against the official test vectors, in every mode, at every length the vectors
 //! cover, with extended output, and fed in pieces of many sizes.
 
+mod reference;
 mod vectors;
 
 use fennec_blake3::{Hash, Hasher, derive_key, hash, keyed_hash};
@@ -64,6 +65,35 @@ fn pieces_of_any_size_give_the_same_hash() {
             hasher.update(piece);
         }
         assert_eq!(hasher.finalize(), whole, "in pieces of {size}");
+    }
+}
+
+/// A way of hashing: its name, a hasher for it, and the key or context the old code takes.
+type Mode = (&'static str, fn() -> Hasher, Option<&'static [u8; 32]>, Option<&'static str>);
+
+#[test]
+fn the_code_hashes_as_the_one_chunk_at_a_time_code_it_replaced() {
+    let lengths = [
+        0, 1, 63, 64, 65, 1_023, 1_024, 1_025, 2_048, 3_071, 3_072, 4_095, 4_096, 4_097, 4_159, 5_120, 8_191,
+        8_192, 8_193, 9_216, 16_384, 16_385, 20_481, 31_744, 65_537, 102_407,
+    ];
+    let modes: [Mode; 3] = [
+        ("hash", Hasher::new, None, None),
+        ("keyed hash", || Hasher::new_keyed(KEY), Some(KEY), None),
+        ("derived key", || Hasher::new_derive_key(CONTEXT), None, Some(CONTEXT)),
+    ];
+    for len in lengths {
+        let input = input(len);
+        for (mode, new, key, context) in modes {
+            let old = hex(&reference::output(key, context, &input, 131));
+            for size in [len.max(1), 1, 64, 1_000, 1_024, 4_096, 4_097, 5_000, 12_288] {
+                let mut hasher = new();
+                for piece in input.chunks(size) {
+                    hasher.update(piece);
+                }
+                assert_eq!(xof(&hasher, 131), old, "{mode} of {len} bytes in pieces of {size}");
+            }
+        }
     }
 }
 

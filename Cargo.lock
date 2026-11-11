@@ -159,6 +159,7 @@ dependencies = [
  "fennec-kit",
  "fennec-lint",
  "fennec-llvm",
+ "fennec-loader",
  "fennec-lsp",
  "fennec-reference",
  "fennec-rt",
@@ -310,6 +311,13 @@ dependencies = [
  "fennec-layout",
  "fennec-rt",
  "fennec-syntax",
+]
+
+[[package]]
+name = "fennec-loader"
+version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
 ]
 
 [[package]]

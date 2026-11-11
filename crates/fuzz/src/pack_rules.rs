@@ -4,17 +4,38 @@
 //! same bytes with one more byte, or one fewer, fail to read. A stream of values read through
 //! `Unpacker` may end or fail anywhere, but never crash. The supervisor and `read_natively`
 //! catch crashes, getting stuck and holding far more memory than the bytes could need.
+//!
+//! `Node` is also read within `SMALL` limits, so bytes reach the limits' own failures: one that
+//! nests deeper than 4, or holds a text longer than 64 bytes, has to fail, never crash or overflow
+//! the stack. The seeds for it in `seeds/pack`: `node_70.bin`, a chain 70 deep, past both the
+//! default limit of 64 and `SMALL`'s 4; and `node_3.bin`, 3 deep, inside both, so it reads and
+//! saves back the same either way.
 
 use std::fmt::Write as _;
 
-/// The types bytes are read as.
-const TYPES: [&str; 8] =
-    ["int", "str", "float", "list[int]", "list[str?]", "dict[str, list[float]]", "list[(int, str)]", "Scene"];
+/// The types bytes are read as, each with the limits it's read within: the default's, or `SMALL`.
+const TYPES: [(&str, &str); 14] = [
+    ("int", ""),
+    ("str", ""),
+    ("float", ""),
+    ("list[int]", ""),
+    ("list[str?]", ""),
+    ("dict[str, list[float]]", ""),
+    ("list[(int, str)]", ""),
+    ("Scene", ""),
+    ("bytes", ""),
+    ("bool", ""),
+    ("Choice", ""),
+    ("Duration", ""),
+    ("Node", ""),
+    ("Node", ", limits=SMALL"),
+];
 
 /// The types `Scene` is made of, and how a stream of them is read.
 const DECLARED: &str = "\
 from std import pack
-from std.pack import Unpacker
+from std.pack import Limits, Unpacker
+from std.time import Duration
 
 struct Spot:
     x: int
@@ -29,6 +50,18 @@ struct Scene:
     spots: list[Spot]
     shape: Shape
     note: str? = None
+
+## A union, held in a field so its type can be written optional.
+struct Choice:
+    value: int | str
+
+## A chain as deep as its bytes say, to reach the depth limit.
+struct Node:
+    name: str
+    next: Node? = None
+
+## Limits small enough for bytes to pass them: 4 deep, and 64 bytes a text.
+SMALL = Limits(depth=4, length=64)
 
 def streamed(data: bytes) -> int:
     mut read = 0
@@ -47,16 +80,16 @@ def streamed(data: bytes) -> int:
 /// The `n`th type is read by its own function, `read_as_n`.
 pub(crate) fn reader() -> String {
     let mut source = DECLARED.to_owned();
-    for (n, ty) in TYPES.iter().enumerate() {
+    for (n, (ty, limits)) in TYPES.iter().enumerate() {
         let _ = write!(
             source,
             "def read_as_{n}(data: bytes, longer: bytes, shorter: bytes) -> str:\n    \
-             value = pack.loads[{ty}](data) else:\n        return \"err\"\n    \
-             back: {ty}? = pack.loads[{ty}](pack.dumps(value)) else None\n    \
+             value = pack.loads[{ty}](data{limits}) else:\n        return \"err\"\n    \
+             back: {ty}? = pack.loads[{ty}](pack.dumps(value){limits}) else None\n    \
              same = back is not None and back == value\n    \
-             grown_back: {ty}? = pack.loads[{ty}](longer) else None\n    \
+             grown_back: {ty}? = pack.loads[{ty}](longer{limits}) else None\n    \
              grown = \"ok\" if grown_back is not None else \"err\"\n    \
-             cut_back: {ty}? = pack.loads[{ty}](shorter) else None\n    \
+             cut_back: {ty}? = pack.loads[{ty}](shorter{limits}) else None\n    \
              cut = \"ok\" if cut_back is not None else \"err\"\n    \
              f\"ok {{same}} {{grown}} {{cut}}\"\n\n",
         );
@@ -81,7 +114,7 @@ pub(crate) fn pack(input: &[u8]) -> Result<(), String> {
     if lines.len() != TYPES.len() + 1 || !lines.last().is_some_and(|last| last.starts_with("stream ")) {
         return Err(format!("the reader printed something else than a line for each type:\n{printed}"));
     }
-    for (ty, line) in TYPES.iter().zip(&lines) {
+    for ((ty, limits), line) in TYPES.iter().zip(&lines) {
         let Some(read) = line.strip_prefix("ok ") else { continue };
         let said: Vec<&str> = read.split(' ').collect();
         let wrong = match said.as_slice() {
@@ -91,7 +124,8 @@ pub(crate) fn pack(input: &[u8]) -> Result<(), String> {
             [_, _, _] => continue,
             _ => "the reader printed something else",
         };
-        return Err(format!("{input:?} read as {ty}: {wrong} ({line})"));
+        let within = if limits.is_empty() { "" } else { " within SMALL" };
+        return Err(format!("{input:?} read as {ty}{within}: {wrong} ({line})"));
     }
     Ok(())
 }

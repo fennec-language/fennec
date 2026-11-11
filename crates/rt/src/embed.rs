@@ -524,6 +524,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
+    threads::run_starts();
     let keys_by_value = tables.shapes.iter().map(|shape| dicts::by_what_it_holds(shape)).collect();
     STATE.set(Some(State {
         output,
@@ -593,6 +594,7 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
             state.let_go();
             if !leave {
                 guarded::forget_ending(&state.heap);
+                threads::forget_ending(&state.heap);
             }
             aot::report_sites(&state.heap.sites);
             let leftovers =

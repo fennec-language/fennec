@@ -1,0 +1,7 @@
+error: can't negate a str
+ --> examples/errors/negate_text.fen:3:18
+  |
+3 |     stdout.print(-name)
+  |                  ^^^^^
+  |
+  = help: only a number is negated, as `-count`: convert it first, as `-int(text)`

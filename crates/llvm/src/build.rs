@@ -12,6 +12,152 @@ const KIND: &str = "llvm";
 const MOST_THREADS: usize = 4;
 const PIPELINE: &str = "default<O3>";
 
+/// Allocas times blocks past which a function is compiled as written, with `llc -O0`, rather than
+/// optimized. Promoting a function's allocas to registers costs about that product in `opt`, and
+/// `llc`'s register allocation grows faster than the function, so a generated `main` of thousands
+/// of lines took minutes. The biggest function of the bench kernels, the examples and the standard
+/// library, which `toml` uses, is at 1.3 million; the fuzzer's 650-line `main` is at 65 million.
+/// Its code keeps every check and only runs slower.
+const HUGE: usize = 32_000_000;
+
+/// Units by where they are among a program's.
+type Numbered<'u> = Vec<(usize, &'u Unit)>;
+
+/// How a module is compiled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Way {
+    /// Through `opt`, then `llc -O3`: a function.
+    Optimized,
+    /// Straight to `llc -O3`: the entry, which is data and a little code.
+    AsWritten,
+    /// Straight to `llc -O0`: a huge function.
+    Quickly,
+}
+
+/// The sanitizer's own passes, which a huge function still takes, unoptimized.
+fn sanitizer_passes() -> Option<&'static str> {
+    match sanitizer() {
+        Some("address") => Some("asan"),
+        Some(_) => Some("tsan-module,function(tsan)"),
+        None => None,
+    }
+}
+
+/// The name a line of LLVM's text declares or defines, unquoted.
+fn symbol(line: &str) -> Option<String> {
+    let at = line.find('@')?;
+    let rest = line.get(at + 1..)?;
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let name = quoted.get(..quoted.find('"')?)?;
+        // A quoted name writes a byte it can't hold as `\` and two hex digits.
+        let mut bytes = Vec::with_capacity(name.len());
+        let mut chars = name.bytes();
+        while let Some(byte) = chars.next() {
+            if byte == b'\\' {
+                let digits: Vec<u8> = chars.by_ref().take(2).collect();
+                let hex = std::str::from_utf8(&digits).ok()?;
+                bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            } else {
+                bytes.push(byte);
+            }
+        }
+        String::from_utf8(bytes).ok()
+    } else {
+        let end =
+            rest.find(|c: char| !(c.is_ascii_alphanumeric() || "_.$-".contains(c))).unwrap_or(rest.len());
+        Some(rest.get(..end)?.to_owned()).filter(|name| !name.is_empty())
+    }
+}
+
+/// What a release keeps of the whole program for the huge functions compiled apart: every name
+/// they reach outside themselves stays seen from outside, as they call it, and what's declared
+/// joins the whole as used, so `llvm-link` brings in what the runtime defines of it. Gives back
+/// the module that declares them, and the names.
+fn kept_for(huge: &[&Unit]) -> Result<(String, Vec<String>), String> {
+    let defined: std::collections::BTreeSet<String> = huge
+        .iter()
+        .flat_map(|unit| unit.text.lines())
+        .filter(|line| line.starts_with("define ") && !line.starts_with("define available_externally "))
+        .filter_map(symbol)
+        .collect();
+    let mut declared = std::collections::BTreeMap::new();
+    let mut names = std::collections::BTreeSet::new();
+    for line in huge.iter().flat_map(|unit| unit.text.lines()) {
+        let external = line.starts_with('@') && line.contains(" = external ");
+        let copy = line.starts_with("define available_externally ");
+        if !(external || copy || line.starts_with("declare ")) {
+            continue;
+        }
+        let Some(name) = symbol(line).filter(|name| !name.starts_with("llvm.") && !defined.contains(name))
+        else {
+            continue;
+        };
+        if !copy {
+            // Without the attribute sets it names, which this module doesn't have.
+            let words: Vec<&str> =
+                line.split(' ').filter(|word| !(word.starts_with('#') && word.len() > 1)).collect();
+            declared.entry(name.clone()).or_insert_with(|| words.join(" "));
+        }
+        names.insert(name);
+    }
+    let mut module = String::from(crate::header()?);
+    for line in declared.values() {
+        module.push_str(line);
+        module.push('\n');
+    }
+    let used: Vec<String> = declared
+        .keys()
+        .map(|name| format!("ptr @\"{}\"", name.replace('\\', "\\5C").replace('"', "\\22")))
+        .collect();
+    if !used.is_empty() {
+        module.push_str(&format!(
+            "@llvm.used = appending global [{} x ptr] [{}], section \"llvm.metadata\"\n",
+            used.len(),
+            used.join(", ")
+        ));
+    }
+    Ok((module, names.into_iter().collect()))
+}
+
+/// The functions of `units` too big to optimize, which are compiled as written and run slower,
+/// for a build to say so. Only a module of more than [`SMALLEST_HUGE`] bytes is looked through.
+#[must_use]
+pub fn huge_functions(units: &[Unit]) -> Vec<String> {
+    units
+        .iter()
+        .filter(|unit| unit.text.len() > SMALLEST_HUGE && huge(&unit.text))
+        .map(|unit| unit.function.clone())
+        .collect()
+}
+
+/// The fewest bytes a module of a huge function has: one has thousands of allocas and of blocks,
+/// a line each.
+const SMALLEST_HUGE: usize = 100_000;
+
+/// Whether a module defines a function too big to optimize: see [`HUGE`]. Only what it defines
+/// counts, not the copies of others it has for inlining.
+fn huge(text: &str) -> bool {
+    let (mut allocas, mut blocks, mut inside) = (0_usize, 0_usize, false);
+    for line in text.lines() {
+        if line.starts_with("define ") {
+            inside = !line.starts_with("define available_externally ");
+            (allocas, blocks) = (0, 1);
+        } else if line.starts_with('}') {
+            if inside && allocas.saturating_mul(blocks) >= HUGE {
+                return true;
+            }
+            inside = false;
+        } else if inside {
+            if line.contains(" = alloca ") {
+                allocas += 1;
+            } else if !line.starts_with(' ') && line.ends_with(':') {
+                blocks += 1;
+            }
+        }
+    }
+    false
+}
+
 /// The sanitizer `FENNEC_SANITIZE` asks for, to test built programs: `address`, that they touch
 /// only memory they own, or `thread`, that their threads don't race. Every function with
 /// attributes is instrumented, after the rest of the pipeline, as Clang does it, and the link
@@ -171,7 +317,7 @@ pub struct Built {
     pub compiled: usize,
 }
 
-fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Result<Vec<u8>, String> {
+fn one(tools: &Tools, text: &str, work: &Path, name: &str, way: Way) -> Result<Vec<u8>, String> {
     let input = work.join(format!("{name}.ll"));
     let middle = work.join(format!("{name}.bc"));
     let output = work.join(format!("{name}.o"));
@@ -185,22 +331,24 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
             Err(format!("{what} failed on `{name}`:\n{}", String::from_utf8_lossy(&done.stderr)))
         }
     };
-    let compiled_from = if optimize {
+    let passes = match way {
+        Way::Optimized => Some(pipeline()),
+        Way::Quickly => sanitizer_passes().map(str::to_owned),
+        Way::AsWritten => None,
+    };
+    let compiled_from = if let Some(passes) = passes {
         run(
-            Command::new(&tools.opt)
-                .arg(format!("-passes={}", pipeline()))
-                .arg(&input)
-                .arg("-o")
-                .arg(&middle),
+            Command::new(&tools.opt).arg(format!("-passes={passes}")).arg(&input).arg("-o").arg(&middle),
             "opt",
         )?;
         &middle
     } else {
         &input
     };
+    let level = if way == Way::Quickly { "-O0" } else { "-O3" };
     run(
         Command::new(&tools.llc)
-            .args(["-O3", "-filetype=obj", "-relocation-model=pic"])
+            .args([level, "-filetype=obj", "-relocation-model=pic"])
             .arg(compiled_from)
             .arg("-o")
             .arg(&output),
@@ -212,7 +360,8 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
 /// For a release: every function's module and `entry` linked into one, optimized as a whole,
 /// with nothing but `main` seen from outside, so LLVM inlines and specializes across the whole
 /// program. Given the runtime's own bitcode, what the program uses of it joins the unit too, so
-/// its calls inline as well. Nothing's cached, as any change changes the whole.
+/// its calls inline as well. Nothing's cached, as any change changes the whole. A huge function
+/// (see [`HUGE`]) is compiled apart, as written, and what it reaches stays as it calls it.
 pub fn compile_whole(
     tools: &Tools,
     units: &[Unit],
@@ -221,8 +370,21 @@ pub fn compile_whole(
     runtime: Option<&Path>,
 ) -> Result<Built, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
-    let mut inputs = Vec::with_capacity(units.len() + 1);
-    for (at, unit) in units.iter().enumerate() {
+    let mut inputs = Vec::with_capacity(units.len() + 2);
+    let (apart, together): (Numbered<'_>, Numbered<'_>) =
+        units.iter().enumerate().partition(|(_, unit)| huge(&unit.text));
+    let kept = work.join("kept.txt");
+    let mut keep = vec!["main".to_owned()];
+    if !apart.is_empty() {
+        let (module, names) = kept_for(&apart.iter().map(|(_, unit)| *unit).collect::<Vec<_>>())?;
+        let input = work.join("kept.ll");
+        std::fs::write(&input, module).map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
+        inputs.push(input);
+        keep.extend(names);
+    }
+    std::fs::write(&kept, keep.join("\n") + "\n")
+        .map_err(|err| format!("couldn't write {}: {err}", kept.display()))?;
+    for (at, unit) in together {
         let input = work.join(format!("f{at}.ll"));
         std::fs::write(&input, marked(&unit.text).as_bytes())
             .map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
@@ -232,6 +394,35 @@ pub fn compile_whole(
     std::fs::write(&entry_at, entry)
         .map_err(|err| format!("couldn't write {}: {err}", entry_at.display()))?;
     inputs.push(entry_at);
+    // A huge function compiles beside the rest.
+    std::thread::scope(|scope| {
+        let quick: Vec<_> = apart
+            .iter()
+            .map(|(at, unit)| {
+                scope.spawn(move || one(tools, &unit.text, work, &format!("f{at}"), Way::Quickly))
+            })
+            .collect();
+        let mut objects = vec![whole_object(tools, &inputs, &kept, work, runtime)?];
+        for compiling in quick {
+            objects.push(
+                compiling
+                    .join()
+                    .unwrap_or_else(|_| Err("compiling a huge function stopped unexpectedly".to_owned()))?,
+            );
+        }
+        Ok(Built { objects, compiled: units.len() })
+    })
+}
+
+/// The whole program's object: `inputs` linked, with the runtime's bitcode if it's given,
+/// optimized with nothing seen from outside but the names in `kept`, and compiled.
+fn whole_object(
+    tools: &Tools,
+    inputs: &[PathBuf],
+    kept: &Path,
+    work: &Path,
+    runtime: Option<&Path>,
+) -> Result<Vec<u8>, String> {
     let (whole, optimized, output) = (work.join("whole.bc"), work.join("optimized.bc"), work.join("whole.o"));
     let run = |command: &mut Command, what: &str| {
         let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
@@ -267,7 +458,7 @@ pub fn compile_whole(
     run(
         Command::new(&tools.opt)
             .arg(format!("-passes=internalize,{}", pipeline()))
-            .arg("-internalize-public-api-list=main")
+            .arg(format!("-internalize-public-api-file={}", kept.display()))
             .arg(&whole)
             .arg("-o")
             .arg(&optimized),
@@ -281,9 +472,7 @@ pub fn compile_whole(
             .arg(&output),
         "llc",
     )?;
-    let object =
-        std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))?;
-    Ok(Built { objects: vec![object], compiled: units.len() })
+    std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
 }
 
 /// Compiles every function's module, using the cache's copy of any it already has, and `entry`.
@@ -302,7 +491,7 @@ pub fn compile(
     // The entry is made fresh each build and needs nothing of the functions, so it's compiled
     // beside them rather than after.
     let entry = std::thread::scope(|scope| {
-        let entry = scope.spawn(|| one(tools, entry, work, "entry", false));
+        let entry = scope.spawn(|| one(tools, entry, work, "entry", Way::AsWritten));
         for _ in 0..threads.saturating_sub(1).max(1) {
             scope.spawn(|| {
                 loop {
@@ -319,7 +508,12 @@ pub fn compile(
                     let cached = cache.and_then(|cache| cache.read(KIND, &key));
                     let result = match cached {
                         Some(bytes) => Ok((bytes, false)),
-                        None => one(tools, &unit.text, work, &format!("f{at}"), true).map(|bytes| {
+                        None => {
+                            // Which way is the text's own doing, so the key needn't say.
+                            let way = if huge(&unit.text) { Way::Quickly } else { Way::Optimized };
+                            one(tools, &unit.text, work, &format!("f{at}"), way)
+                        }
+                        .map(|bytes| {
                             if let Some(cache) = cache {
                                 // A failed write only means compiling it again next time.
                                 let _ = cache.write(KIND, &key, &bytes);
@@ -346,4 +540,79 @@ pub fn compile(
     }
     built.objects.push(entry?);
     Ok(built)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A program whose `long` makes a list and a string on each of `lines` lines, which only it
+    /// formats.
+    pub(crate) fn long_program(lines: usize) -> String {
+        let mut body = String::new();
+        for line in 0..lines {
+            body.push_str(&format!(
+                "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + f\"{{total}}\".len()\n"
+            ));
+        }
+        format!(
+            "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+        )
+    }
+
+    fn units(source: &str) -> Result<Vec<Unit>, String> {
+        let module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        Ok(crate::emit(&fennec_ir::lower(&module, &checked))?.0)
+    }
+
+    /// A function past [`HUGE`] is huge; a shorter one, and the copies of others a unit has
+    /// for inlining, aren't.
+    #[test]
+    fn a_long_function_is_huge_and_a_short_one_isnt() -> Result<(), String> {
+        let huge_ones = |lines: usize| -> Result<Vec<String>, String> {
+            Ok(units(&long_program(lines))?
+                .into_iter()
+                .filter(|unit| huge(&unit.text))
+                .map(|unit| unit.function)
+                .collect())
+        };
+        assert_eq!(huge_ones(400)?, ["long"]);
+        assert_eq!(huge_ones(100)?, Vec::<String>::new());
+        assert_eq!(huge_functions(&units(&long_program(400))?), ["long"]);
+        assert_eq!(huge_functions(&units(&long_program(100))?), Vec::<String>::new());
+        Ok(())
+    }
+
+    /// A name is read from a line plain or quoted, with a quoted one's escapes undone.
+    #[test]
+    fn names_are_read_plain_and_quoted() {
+        assert_eq!(symbol("declare ptr @fennec_alloc(i64)").as_deref(), Some("fennec_alloc"));
+        assert_eq!(
+            symbol("define available_externally swiftcc i64 @\"f_at_or_zero\"(ptr %p0) #2 {").as_deref(),
+            Some("f_at_or_zero")
+        );
+        assert_eq!(
+            symbol("@\"h_Result[int, Refused]\" = external global i64").as_deref(),
+            Some("h_Result[int, Refused]")
+        );
+        assert_eq!(symbol("declare void @\"a\\22b\"()").as_deref(), Some("a\"b"));
+    }
+
+    /// What a huge function reaches is kept as it calls it: what it declares is declared again
+    /// and marked used, and what it has a copy of is only named.
+    #[test]
+    fn what_a_huge_function_reaches_is_kept() -> Result<(), String> {
+        let units = units(&long_program(400))?;
+        let huge_ones: Vec<&Unit> = units.iter().filter(|unit| huge(&unit.text)).collect();
+        let (module, names) = kept_for(&huge_ones)?;
+        assert!(names.iter().any(|name| name == "f_at_or_zero"), "{names:?}");
+        assert!(names.iter().any(|name| name == "fennec_list_new"), "{names:?}");
+        assert!(!names.iter().any(|name| name == "f_long" || name.starts_with("llvm.")), "{names:?}");
+        assert!(module.contains("declare ptr @fennec_list_new("), "{module}");
+        assert!(module.contains("@llvm.used = appending global ["), "{module}");
+        assert!(!module.contains("f_at_or_zero"), "a copy is only named: {module}");
+        assert!(!module.lines().any(|line| line.starts_with("declare") && line.contains(" #")), "{module}");
+        Ok(())
+    }
 }

@@ -3,3 +3,5 @@ error: can't use `+` on an int and a str
   |
 2 |     sum(scores) + "points"
   |     ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: join text with an f-string, as `f"{name}{count}"`

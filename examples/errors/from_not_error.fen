@@ -1,0 +1,5 @@
+def parsed(text: str) -> int fails InvalidValue:
+    int(text)? from "not a number"
+
+def main(stdout: Stdout):
+    stdout.print(parsed("2") else 0)

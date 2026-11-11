@@ -1,0 +1,7 @@
+error: can't use `+` on a str and an int
+ --> examples/errors/add_int_and_str.fen:3:18
+  |
+3 |     stdout.print("total: " + count)
+  |                  ^^^^^^^^^^^^^^^^^
+  |
+  = help: join text with an f-string, as `f"{name}{count}"`

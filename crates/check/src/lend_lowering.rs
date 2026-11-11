@@ -2070,10 +2070,12 @@ mod tests {
         assert_eq!(retyped.kind, value.kind);
     }
 
-    /// A `match` inside another's case with the same span as the outer one, as a parse once gave
-    /// the cases under `except why:`, is still told apart from it: the outer's cases are each
-    /// passed once, and the inner's are left to the outer's case, rather than both being dropped
-    /// as one `match` taken for inner.
+    /// A `match` inside another's case with the same span as the outer one is still told apart
+    /// from it: the outer's cases are each passed once, and the inner's are left to the outer's
+    /// case, rather than both being dropped as one `match` taken for inner. The parser no longer
+    /// gives the cases under `except why:` the outer's span, which is how this was found, so the
+    /// test builds the shared span by hand to keep any parse that does it again from losing
+    /// cleanups.
     #[test]
     fn a_match_inside_another_s_case_with_its_span_is_still_told_apart() {
         let source = "def f(a: int, b: int):\n    match a:\n        case 1:\n            match b:\n                case 2:\n                    pass\n                case _:\n                    pass\n        case _:\n            pass\n";

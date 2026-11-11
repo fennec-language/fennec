@@ -5,7 +5,7 @@
 //! methods and extensions. Reaching too much only costs time. A name it misses makes the
 //! program fail to check, and the caller then goes back to the whole program.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use fennec_syntax::{Item, Module};
 
@@ -45,6 +45,55 @@ pub fn keep_what_functions_reach(module: &mut Module, is_start: &dyn Fn(&str) ->
     // What isn't reached is most of a big program, and letting it go takes as long as finding
     // what is: it's let go of beside the run rather than before it.
     std::thread::spawn(move || drop(unreached));
+}
+
+/// Which of `module`'s items `main` reaches, by where they are in it.
+#[must_use]
+pub fn reached_by_main(module: &Module) -> HashSet<usize> {
+    reached(module, &|name| name == "main")
+}
+
+/// The names and members some items define, as reaching goes by them: what a cut-down program
+/// left out, so that a program patched from it can tell whether it reaches any of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Defined {
+    pub names: BTreeSet<String>,
+    pub members: BTreeSet<String>,
+}
+
+impl Defined {
+    /// What `items` define. A test defines nothing, since nothing reaches one.
+    pub fn of<'i>(items: impl IntoIterator<Item = &'i Item>) -> Defined {
+        let mut defined = Defined::default();
+        for node in items.into_iter().filter_map(|item| node(item, &|_| false)) {
+            defined.names.extend(node.names);
+            defined.members.extend(node.members);
+        }
+        defined
+    }
+
+    /// Adds what `other` defines.
+    pub fn extend(&mut self, other: Defined) {
+        self.names.extend(other.names);
+        self.members.extend(other.members);
+    }
+}
+
+/// Whether anything `main` reaches in `module` uses a name or member that `absent` defines. When
+/// `absent` is what was left out of `module`, and it doesn't, `main` reaches the same in `module`
+/// as in all of the program: everything reached uses only what's there.
+#[must_use]
+pub fn reaches_into(module: &Module, absent: &Defined) -> bool {
+    reached_by_main(module).iter().filter_map(|at| module.items.get(*at)).any(|item| {
+        let uses = uses(item);
+        uses.names.iter().any(|name| absent.names.contains(name))
+            || uses.members.iter().any(|member| absent.members.contains(member))
+    })
+}
+
+/// Every name `items` use, as reaching goes by them.
+pub fn names_used<'i>(items: impl IntoIterator<Item = &'i Item>) -> BTreeSet<String> {
+    items.into_iter().flat_map(|item| uses(item).names).collect()
 }
 
 /// Which of `module`'s items the functions `is_start` names reach, by where they are in it.
@@ -144,7 +193,33 @@ fn uses(item: &Item) -> Uses {
 
 #[cfg(test)]
 mod tests {
-    use super::{keep_what_main_reaches, what_main_reaches};
+    use super::{Defined, keep_what_main_reaches, reached_by_main, reaches_into, what_main_reaches};
+
+    /// A program cut down to what `main` reaches reaches nothing of what was cut, until something
+    /// it keeps names what was cut, by name or as a member.
+    #[test]
+    fn a_cut_down_program_reaches_into_what_was_cut_only_when_it_names_it() {
+        let whole = fennec_syntax::parse(
+            "struct Box:\n    size: int\n    def grow(self) -> int:\n        self.size + 1\n\n\
+             def unused() -> int:\n    1\n\ndef main():\n    print(2)\n",
+        )
+        .unwrap();
+        let kept = reached_by_main(&whole);
+        let cut = whole.items.iter().enumerate().filter(|(at, _)| !kept.contains(at)).map(|(_, item)| item);
+        let absent = Defined::of(cut);
+        assert!(absent.names.contains("unused") && absent.names.contains("Box"), "{absent:?}");
+        assert!(absent.members.contains("grow"), "{absent:?}");
+        let module = what_main_reaches(&whole);
+        assert!(!reaches_into(&module, &absent));
+        let calls = |body: &str| {
+            fennec_syntax::parse(&format!("def main():\n    {body}\n"))
+                .map(|module| reaches_into(&module, &absent))
+        };
+        assert_eq!(calls("print(unused())"), Ok(true), "by name");
+        assert_eq!(calls("print(Box(size=1).size)"), Ok(true), "a type by name");
+        assert_eq!(calls("x = 3\n    print(x.grow())"), Ok(true), "as a member");
+        assert_eq!(calls("print(3)"), Ok(false));
+    }
 
     /// The names of the items left after keeping what `main` reaches in `source`, which copying
     /// out what it reaches gives too.

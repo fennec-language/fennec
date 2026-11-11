@@ -1,0 +1,72 @@
+## A `?` that fails inside an expression inside a `with` block runs the source's cleanup, wherever
+## it sits: an argument, nested in another `?`'s, a field read off it, an index, an f-string, a
+## list item, a slice's bounds, a match's subject and a conditional's test, in a `return`, an
+## assignment and a line of its own. Each failure prints `undo` before it's refused, and with
+## nothing failing each gives what it would have without the block.
+error Refused:
+    code: int
+
+struct Box:
+    value: int
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+    n
+
+def check(n: int, limit: int) fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+
+def boxed(n: int, limit: int) -> Box fails Refused:
+    Box(value=capped(n, limit=limit)?)
+
+def ward(name: str, stdout: Stdout) -> with str:
+    stdout.print("open", name)
+    lend name else:
+        stdout.print("undo", name)
+    stdout.print("close", name)
+
+def shape(which: int, cap: int, stdout: Stdout) -> int fails Refused:
+    values = [10, 20, 30]
+    with ward(f"shape {which}", stdout) as _:
+        match which:
+            case 0:
+                return capped(capped(0, limit=cap - 1)?, limit=1000)?
+            case 1:
+                got = capped(capped(0, limit=cap - 1)?, limit=1000)?
+                return got
+            case 2:
+                return boxed(1, limit=cap)?.value
+            case 3:
+                return values[capped(1, limit=cap)?]
+            case 4:
+                stdout.print(f"made {capped(1, limit=cap)?}")
+            case 5:
+                items = [capped(1, limit=cap)?, 2]
+                return items.len()
+            case 6:
+                return values[capped(1, limit=cap)?:].len()
+            case 7:
+                match capped(1, limit=cap)?:
+                    case 1:
+                        return 1
+                    case _:
+                        return 2
+            case 8:
+                return 1 if capped(1, limit=cap)? > 0 else 2
+            case 9:
+                check(capped(0, limit=cap - 1)?, limit=1000)?
+                stdout.print("kept going")
+            case _:
+                return capped(capped(0, limit=1000)?, limit=cap - 1)?
+        stdout.print("after", which)
+    0
+
+def main(stdout: Stdout):
+    for cap in [0, 100]:
+        for which in range(11):
+            got = shape(which, cap=cap, stdout=stdout) else as why:
+                stdout.print("refused", which, why.code)
+                continue
+            stdout.print("gave", which, got)

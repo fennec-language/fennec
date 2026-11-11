@@ -477,7 +477,7 @@ fn names_under_except_are_found_shown_and_offered() {
         def main(stdout: Stdout):\n    small = load(9) except why:\n        stdout.print(f\"{why}\")\n        0\n    \
         sized = load(9) except why:\n        case .Long(size):\n            size\n        case .Empty:\n            0\n    \
         port = risky(7) except Big(): 8080\n    \
-        act(2) except failed:\n        _ = failed\n    \
+        act(2) except failed:\n        stdout.print(failed)\n    \
         stdout.print(small + sized + port)\n    return\n";
     let published = editor.open("src/main.fen", text);
     assert_eq!(
@@ -494,9 +494,9 @@ fn names_under_except_are_found_shown_and_offered() {
     assert_eq!(found.as_array().unwrap()[0].at(&["range", "start"]), Some(&named));
     let shown =
         |hover: &Json| hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("").to_owned();
-    let hover = editor.at("textDocument/hover", "src/main.fen", text, "failed\n    stdout", 0);
+    let hover = editor.at("textDocument/hover", "src/main.fen", text, "failed)\n    stdout", 0);
     assert_eq!(shown(&hover), "```fennec\nfailed: Big\n```");
-    let typing = text.replace("        _ = failed\n", "        _ = fai\n");
+    let typing = text.replace("        stdout.print(failed)\n", "        _ = fai\n");
     editor.change("src/main.fen", &typing);
     let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "fai\n", 3));
     assert_eq!(offered.first().map(String::as_str), Some("failed"), "{offered:?}");

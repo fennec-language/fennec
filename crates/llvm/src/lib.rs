@@ -41,6 +41,7 @@ mod checks_left;
 mod closures;
 mod conversions;
 mod dicts;
+mod dying;
 mod emit;
 mod entry;
 mod generators;

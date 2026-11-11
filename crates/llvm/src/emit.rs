@@ -506,6 +506,7 @@ impl<'p> Module<'_, 'p> {
             leave_after_crash: None,
             holding: Holding::default(),
             holding_now: BTreeSet::new(),
+            dying: crate::dying::Dying::new(),
             filling: Vec::new(),
             split: false,
         };
@@ -525,6 +526,7 @@ impl<'p> Module<'_, 'p> {
         for place in &function.places {
             untracked.extend([place.root.0, place.value.0]);
         }
+        emit.dying = emit.last_reads(&untracked);
         emit.holding = holding(&emit, &untracked, emit.split);
         emit.body()?;
         emit.write_traced_exit();
@@ -640,6 +642,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     holding: Holding,
     /// The locals that may hold something as the instruction being written starts.
     holding_now: BTreeSet<usize>,
+    /// The owned locals each instruction reads for the last time, let go of after it.
+    dying: crate::dying::Dying,
     /// What the instruction being written, and the one after, which it may be written with,
     /// may fill.
     filling: Vec<usize>,
@@ -918,7 +922,7 @@ impl Emit<'_, '_, '_> {
                 }
                 self.let_go_after(&inst.kind);
                 let mut now = std::mem::take(&mut self.holding_now);
-                step(self, &self.holding, &inst.kind, &mut now);
+                step(self, &self.holding, (at, index), &inst.kind, &mut now);
                 self.holding_now = now;
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
@@ -2875,7 +2879,7 @@ impl Emit<'_, '_, '_> {
     /// A local read once lets go of its value right after that, rather than when the function
     /// returns, so it doesn't still count as an owner when the next line changes what it read.
     fn let_go_after(&mut self, inst: &InstKind) {
-        for local in self.let_go_of(inst) {
+        for local in self.let_go_of(self.at, inst) {
             let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
             let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
@@ -2885,7 +2889,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The locals [`Self::let_go_after`] lets go of after `inst`, leaving their slots empty.
-    pub(crate) fn let_go_of(&self, inst: &InstKind) -> Vec<LocalId> {
+    pub(crate) fn let_go_of(&self, at: (usize, usize), inst: &InstKind) -> Vec<LocalId> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
@@ -2923,7 +2927,61 @@ impl Emit<'_, '_, '_> {
                 let_go.push(local);
             }
         }
+        // And what's read here for the last time on every way on.
+        for local in self.dying.get(&at).into_iter().flatten() {
+            if !let_go.contains(local) && !writes.contains(local) {
+                let_go.push(*local);
+            }
+        }
         let_go
+    }
+
+    /// The owned locals this function reads for the last time at each instruction, which are let
+    /// go of there: see `dying`. `untracked` are left to the function's end, as are any something
+    /// else stands for, a crash reads, or a generator keeps across a pause.
+    fn last_reads(&self, untracked: &BTreeSet<usize>) -> crate::dying::Dying {
+        let function = self.function;
+        let name = function.name.as_str();
+        if self.module.whole.generators.contains_key(name) {
+            return crate::dying::Dying::new();
+        }
+        // What's read by an instruction whose result stands for it, borrows from it or takes from
+        // it, and what anything borrows from.
+        let mut leaned_on: BTreeSet<usize> = BTreeSet::new();
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            let (mut reads, mut writes) = (Vec::new(), Vec::new());
+            visit(&inst.kind, |operand| reads.push(operand.clone()), |local| writes.push(local));
+            let leans = writes.iter().any(|dest| {
+                self.known.is_borrowed(*dest)
+                    || self.known.is_taken(*dest)
+                    || self.known.alias(*dest).is_some()
+                    || self.known.unmade.contains(&dest.0)
+                    || self.known.enumerated.contains_key(&dest.0)
+                    || self.known.map_walks.contains_key(&dest.0)
+            });
+            if leans {
+                leaned_on.extend(reads.iter().filter_map(|read| match read {
+                    Operand::Local(local) => Some(local.0),
+                    _ => None,
+                }));
+            }
+        }
+        for at in 0..function.locals.len() {
+            let mut local = LocalId(at);
+            while let Some(lender) = self.known.lender(local) {
+                leaned_on.insert(lender.0);
+                local = lender;
+            }
+        }
+        let eligible = |at: usize| {
+            at >= function.params
+                && self.owns(LocalId(at))
+                && !untracked.contains(&at)
+                && !leaned_on.contains(&at)
+                && !self.on_crash.contains(&at)
+                && !self.saving.contains(&at)
+        };
+        crate::dying::dying(function, &eligible)
     }
 
     /// Everything local lets go of what it owns, except what's leaving, on a return: what's known

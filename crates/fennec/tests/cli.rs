@@ -2653,6 +2653,8 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
     let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
+    // Used before what's always kept, an entry stored or used in the last twenty minutes.
+    aged(&old, fennec_build::KEPT_RECENT.as_secs() + 3_600).unwrap();
     crate::executables::fennec_command()
         .args(["dev", "changes"])
         .current_dir(&kit)
@@ -2662,10 +2664,17 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
         .env_remove("FENNEC_NO_DAEMON")
         .output()
         .unwrap();
-    let cleaned = (0..250).any(|_| {
+    // The daemon cleans when nothing else is going on, which on a busy machine can take a while.
+    let started = std::time::Instant::now();
+    let cleaned = loop {
+        if !old.exists() {
+            break true;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            break false;
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
-        !old.exists()
-    });
+    };
     with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(cleaned, "the daemon should drop another version's entries once over its cap");
     assert!(stops(&kit, &home));

@@ -132,6 +132,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) lengths: Summaries<'p>,
     /// For each function, the `list[str]` locals kept as the string they're joined into.
     pub(crate) builders: HashMap<&'p str, HashSet<usize>>,
+    /// The list indexes proven not negative, so they need no way back from the end.
+    pub(crate) non_negative: crate::signs::NonNegative,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
     /// The functions that give a constant's value, which keep it after the first time.
@@ -3313,6 +3315,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         settles,
         lengths,
         builders,
+        non_negative: crate::signs::non_negative(program),
         needs,
         constants,
         on_workers,

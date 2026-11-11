@@ -1809,11 +1809,16 @@ impl Emit<'_, '_, '_> {
             [field] => self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field),
             _ => false,
         };
+        // A lookup on a local read from this place however deep, as a lock's `held.counts` is the
+        // shared value's `value.counts`: the put uses its entry only if it searched the dict
+        // that's there now (see `put_found_in_place`).
         let found = self
             .found_entries
             .iter()
             .rev()
-            .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
+            .find(|(dict, looked_up, _)| {
+                (same_dict(*dict) || self.reads_from(*dict, object, path)) && looked_up == index
+            })
             .map(|(_, _, entry)| entry.clone());
         let Some((place, alone)) = self.dict_alone_along(object, path)? else { return Ok(None) };
         self.put_found_in_place((&place, &alone), (key_word, value_word), (index, value, found), span)

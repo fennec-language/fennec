@@ -5458,7 +5458,7 @@ fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "task_crash_cleanup",
-        r#"from std.concurrent import Crashed, Sender, channel
+        r#"from std.concurrent import Crashed, Sender, Timeout, channel
 
 ## Says `text` on `done`, whether or not anything's there to hear it.
 def tell(done: Sender[str], text: str):
@@ -5492,8 +5492,7 @@ def main(stdout: Stdout):
     with channel[str](size=4) as said:
         stdout.print(ran(said.sender(), at=1), said.receive() else "none")
         ended = ran(said.sender(), at=9)
-        late = said.receive_within(1s) else as waited:
-            None
+        late = said.receive_within(1s) except Timeout(): None
         stdout.print(ended, late else "none")
 "#,
         "ended finished\ncrashed crashed\n",
@@ -12944,7 +12943,7 @@ def signs(stdout: Stdout) fails Closed | Timeout:
         small.send(tenth)?
         stdout.print(small.receive() else fail Closed())
     with channel[int](size=1) as waits:
-        got: int? = waits.receive_within(Duration(nanos=-5)) else as problem:
+        got: int? = waits.receive_within(Duration(nanos=-5)) except problem:
             stdout.print(\"at once:\", problem.waited)
             None
         if got is not None:
@@ -12971,13 +12970,13 @@ def lists(stdout: Stdout) fails Closed | Timeout:
 
 def waits(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=1) as ch:
-        got: int? = ch.receive_within(Duration(nanos=2_000_000)) else as problem:
+        got: int? = ch.receive_within(Duration(nanos=2_000_000)) except problem:
             stdout.print(\"empty:\", problem.waited)
             None
         if got is not None:
             stdout.print(\"got\", got)
         ch.send(1)?
-        ch.send_within(2, Duration(nanos=2_000_000)) else as full:
+        ch.send_within(2, Duration(nanos=2_000_000)) except full:
             stdout.print(\"full:\", full)
 
 def main(stdout: Stdout) fails Closed | Timeout:

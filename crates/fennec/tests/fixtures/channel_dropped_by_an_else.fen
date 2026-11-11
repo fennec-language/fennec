@@ -8,7 +8,9 @@ from std.concurrent import Crashed, Inbox, Sender, Timeout, channel
 def gives_up(helper: Sender[Sender[int]]) -> int:
     with channel[int](size=1) as reply:
         helper.send(reply.sender()) else return -1
-        answered = reply.receive_within(10ms) else as waited:
+        # A plain block: an arm or a one-line  leaves the block
+        # without closing the channel yet.
+        answered = reply.receive_within(10ms) except why:
             return -2
         got = answered else return -2
         return got

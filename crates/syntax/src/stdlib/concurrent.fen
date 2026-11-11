@@ -72,12 +72,12 @@ export struct Channel[T]:
     ## The next message, waiting as long as the channel is empty, or `None` once it's closed and
     ## nothing's left in it.
     def receive(self) -> T?:
-        next_message[T](self._channel)
+        return next_message[T](self._channel)
 
     ## The next message, waiting while the channel is empty for at most `wait`, or `None` once
     ## it's closed and nothing's left in it.
     def receive_within(self, wait: Duration) -> T? fails Timeout:
-        message_within[T](self._channel, wait)?
+        return message_within[T](self._channel, wait)?
 
     ## Each message until the channel is closed and empty, as `for message in channel`. On a
     ## channel to `.Every`, each loop is a listener of its own, from the next message sent.
@@ -110,12 +110,12 @@ export struct Inbox[T]:
     ## The next message, waiting as long as there's none, or `None` once the channel is closed
     ## and nothing's left in it.
     def receive(self) -> T?:
-        next_message[T](self._channel)
+        return next_message[T](self._channel)
 
     ## The next message, waiting while there's none for at most `wait`, or `None` once the
     ## channel is closed and nothing's left in it.
     def receive_within(self, wait: Duration) -> T? fails Timeout:
-        message_within[T](self._channel, wait)?
+        return message_within[T](self._channel, wait)?
 
     ## Each message until the channel is closed and empty, as `for message in inbox`.
     def iter(self) -> Iterator[T]:
@@ -155,7 +155,7 @@ def sent_while_open(answer: int) fails Closed:
 ## and empty.
 def next_message[T](channel: int) -> T?:
     mut why = 0
-    channel_receive[T](channel, -1, ref why)
+    return channel_receive[T](channel, -1, ref why)
 
 ## The next message on channel `channel`, waiting for at most `wait`, or `None` once it's closed
 ## and empty.
@@ -163,7 +163,7 @@ def message_within[T](channel: int, wait: Duration) -> T? fails Timeout:
     mut why = 0
     got = channel_receive[T](channel, nanos_of(wait), ref why)
     if why == 2: fail Timeout(waited=wait)
-    got
+    return got
 
 ## A value a pool keeps: one it can put back as it was after a block that failed with it, and
 ## close.
@@ -244,7 +244,7 @@ export struct Pool[T]:
         waiting = wait else self._wait
         with channel[Lent[T]](size=1) as reply:
             self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) else fail .Closed
-            answered = reply.receive_within(waiting) else as why:
+            answered = reply.receive_within(waiting) except why:
                 gave_up[T](self._notes, reply)
                 fail .Timeout(waited=why.waited)
             lent = answered else fail .Closed

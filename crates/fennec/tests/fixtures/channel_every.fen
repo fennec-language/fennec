@@ -43,8 +43,7 @@ def until_heard(hits: Channel[int], replies: Channel[int], listeners: int) fails
     mut answered = 0
     while answered < listeners:
         hits.send(-1)?
-        heard = replies.receive_within(Duration(nanos=250_000_000)) else as waited:
-            continue
+        heard = replies.receive_within(Duration(nanos=250_000_000)) except Timeout(): continue
         if heard is None: continue
         answered += 1
 

@@ -12,9 +12,9 @@ struct Squad:
     units: list[Unit]
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "a value that keeps its rules loads":
     squad = json.loads[Squad]("{\"units\": [{\"name\": \"ash\", \"health\": 3}]}")?
@@ -23,15 +23,15 @@ test "a value that keeps its rules loads":
 test "a broken rule names the field and where it is":
     text = "{\"units\": [{\"name\": \"ash\", \"health\": 3}, {\"name\": \"vex\", \"health\": -1}]}"
     assert (
-        failure(() => json.loads[Squad](text))
+        failure(() => json.loads[Squad](text)?)
         == "in `units[1]`, Unit.health breaks its `where` rule"
     )
     assert (
-        failure(() => json.loads[Unit]("{\"name\": \"kit\", \"health\": -5}"))
+        failure(() => json.loads[Unit]("{\"name\": \"kit\", \"health\": -5}")?)
         == "in the text, Unit.health breaks its `where` rule"
     )
 
 def main(stdout: Stdout):
     stdout.print(
-        failure(() => json.loads[Squad]("{\"units\": [{\"name\": \"vex\", \"health\": -1}]}")),
+        failure(() => json.loads[Squad]("{\"units\": [{\"name\": \"vex\", \"health\": -1}]}")?),
     )

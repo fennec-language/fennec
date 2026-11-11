@@ -1345,11 +1345,25 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
 }
 
 /// A source's body as `with src else fail E:` writes it in: each `fail` does what the `else` does
-/// instead, and so does each `?`, through `else`.
+/// instead, and so does each `?`, through `else`. A `?` in an arrow function passes the arrow's
+/// own failure up, not the source's, so it stays.
 fn fail_instead(body: &mut [Stmt], instead: &Expr) {
     instead_of_fails(body, instead);
     let leaving = Box::new(instead.clone());
+    let mut in_arrows = std::collections::BTreeSet::new();
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Lambda { body, .. } = &mut expr.kind {
+            fennec_syntax::visit::in_expr(body, &mut |inner| {
+                if matches!(inner.kind, ExprKind::Try { .. }) {
+                    in_arrows.insert((inner.span.start, inner.span.end));
+                }
+            });
+        }
+    });
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if in_arrows.contains(&(expr.span.start, expr.span.end)) {
+            return;
+        }
         match &mut expr.kind {
             ExprKind::Try { value, context: None } => {
                 let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };

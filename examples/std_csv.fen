@@ -10,7 +10,7 @@ test "rows come back as written" for rows: list[list[str]]:
     assert csv.loads(csv.dumps(written)?)? == written
     assert csv.loads(csv.dumps(written, delimiter="\t")?, delimiter="\t")? == written
     if written.len() < rows.len():
-        assert problem_of(() => csv.dumps(rows)) != ""
+        assert problem_of(() => csv.dumps(rows)?) != ""
 
 test "a field can hold anything in quotes":
     assert (
@@ -58,34 +58,34 @@ test "records use the first row's names":
     assert csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";")? == "b;a\n;1\n"
 
 def problem[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "no problem"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "no problem"
 
 test "text that isn't CSV says where":
-    assert problem(() => csv.loads("a,\"b\nc\nd")) == "this quote never ends at line 1, column 3"
+    assert problem(() => csv.loads("a,\"b\nc\nd")?) == "this quote never ends at line 1, column 3"
     assert (
-        problem(() => csv.loads("a\nb,\"c\"d\n"))
+        problem(() => csv.loads("a\nb,\"c\"d\n")?)
         == "a field can't go on after its closing quote at line 2, column 6"
     )
     assert (
-        problem(() => csv.loads("ab\"c\n"))
+        problem(() => csv.loads("ab\"c\n")?)
         == "a quote in a field needs the whole field in quotes at line 1, column 3"
     )
     assert (
-        problem(() => csv.loads("\"two\nlines\",\"x\"y"))
+        problem(() => csv.loads("\"two\nlines\",\"x\"y")?)
         == "a field can't go on after its closing quote at line 2, column 11"
     )
     assert (
-        problem(() => csv.loads("a\r\nb\""))
+        problem(() => csv.loads("a\r\nb\"")?)
         == "a quote in a field needs the whole field in quotes at line 2, column 2"
     )
     assert (
-        problem(() => csv.records("a,b\n\n1\n"))
+        problem(() => csv.records("a,b\n\n1\n")?)
         == "the first row sets 2 as the number of fields, but this row has 1 at line 3, column 1"
     )
     assert (
-        problem(() => csv.records("a,b,a\n"))
+        problem(() => csv.records("a,b,a\n")?)
         == "the first row has the same name twice at line 1, column 1"
     )
 
@@ -97,6 +97,6 @@ def main(stdout: Stdout):
     stdout.write(csv.dumps([["name", "note"], ["ash", "likes, commas"]]) else "")
 
 def problem_of[T](run: () -> T fails InvalidValue) -> str:
-    error = failure_of(run) else:
-        return ""
-    error.message
+    _ = run() else as why:
+        return why.message
+    ""

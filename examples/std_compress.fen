@@ -29,12 +29,12 @@ test "it reads what Python's zlib writes"():
     )
 
 test "data that isn't what it says fails"():
-    mut problem = failure_of(() => compress.gunzip("not gzip at all".encode()))
+    mut problem = failure_of(() => compress.gunzip("not gzip at all".encode())?)
     assert problem is not None
     assert problem.message == "this isn't gzip data: it doesn't start as gzip data does"
     mut numbers = [b for b in compress.gzip("fennec")]
     numbers[numbers.len() - 6] = numbers[numbers.len() - 6] ^ 1
-    problem = failure_of(() => compress.gunzip(bytes(numbers)))
+    problem = failure_of(() => compress.gunzip(bytes(numbers))?)
     assert problem is not None
     assert problem.message == "this isn't gzip data: its check doesn't match what it holds"
 

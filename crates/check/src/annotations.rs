@@ -18,7 +18,7 @@ impl Checker {
     /// Checks the annotations on every function and method: the program's own can have none,
     /// and std's intrinsics are written without a body or arguments.
     pub(crate) fn check_function_annotations(&mut self) {
-        let mut defs: Vec<(std::sync::Arc<FnDef>, bool)> =
+        let mut defs: Vec<(crate::program::Held<FnDef>, bool)> =
             self.program.functions.values().map(|entry| (entry.def.clone(), entry.prelude)).collect();
         defs.sort_by_key(|(def, _)| (def.span.start, def.span.end));
         for (def, prelude) in defs {

@@ -23,6 +23,10 @@ pub(crate) enum InlinePart {
     Items(u32, u32, u32, Vec<InlinePart>),
 }
 
+/// Where a shared enum case's block starts counting: 2^62, which is 2^14 times the mark for a
+/// block that's never freed (`IMMORTAL`, 2^48), so a count off by one now and then stays above it.
+const SHARED_CASE_COUNT: u64 = fennec_rt::embed::heap::IMMORTAL << 14;
+
 impl InlinePart {
     fn shifted(self, by: u32) -> InlinePart {
         match self {
@@ -775,8 +779,13 @@ impl Emit<'_, '_, '_> {
     /// stays where it starts, too high for anything to take it as having one owner and change
     /// it in place, and other threads don't count it at all, as with a string literal's block. Two threads making the
     /// first one at once each make a block, and either serves.
+    ///
+    /// It starts at [`SHARED_CASE_COUNT`], far above the mark for a block that's never freed: a
+    /// closure on the program's own thread counts as a worker does, so it skips the block, while
+    /// that thread's other code and its runtime count it. A value one makes and another lets go
+    /// of takes one off, and this way no run lets that many go.
     fn shared_case(&mut self, id: u32, number: i64) -> Result<String, String> {
-        use fennec_rt::embed::heap::{IMMORTAL, NEVER_FREED_OWNER, OWNER_SHIFT};
+        use fennec_rt::embed::heap::{NEVER_FREED_OWNER, OWNER_SHIFT};
         let global = format!("@\"fen_case_{id}_{number}\"");
         self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
         let (kept, none) = (self.temp(), self.temp());
@@ -789,7 +798,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {none}, label %{first}, label %{ready}, !prof !0"));
         self.start_block(&first);
         let made = self.new_block(id)?;
-        self.line(&format!("store i64 {IMMORTAL}, ptr {made}{HEADER_ACCESS}"));
+        self.line(&format!("store i64 {SHARED_CASE_COUNT}, ptr {made}{HEADER_ACCESS}"));
         // No thread's, as every block that's never freed is, so no thread but this one, which
         // hasn't shared it yet, reads its count.
         let (shape_at, was, shape, never) = (self.offset(&made, 8), self.temp(), self.temp(), self.temp());
@@ -1080,7 +1089,8 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => self.float_compare(BinOp::Eq, (&x, &y)),
+                        // An `f32` is held as the `double` that's exactly its value.
+                        Kind::Float | Kind::F32 => self.float_compare(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
@@ -1127,7 +1137,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{less} = icmp ult i1 {x}, {y}"));
                             self.line(&format!("{more} = icmp ugt i1 {x}, {y}"));
                         }
-                        Kind::Float => {
+                        Kind::Float | Kind::F32 => {
                             let (is_less, is_more) = (
                                 self.float_compare(BinOp::Lt, (&x, &y)),
                                 self.float_compare(BinOp::Gt, (&x, &y)),
@@ -1206,7 +1216,7 @@ impl Emit<'_, '_, '_> {
         let Some(layout) = self.module.layouts.get(id) else { return false };
         let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
         fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
-            Some(Kind::Float) => true,
+            Some(Kind::Float | Kind::F32) => true,
             Some(Kind::Struct(inner) | Kind::Enum(inner)) => self.holds_a_float(inner),
             _ => false,
         })

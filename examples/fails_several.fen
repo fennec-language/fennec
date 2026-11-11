@@ -34,4 +34,4 @@ def main(stdout: Stdout):
                     stdout.print(f"{value} is over {limit}")
                     continue
         stdout.print(f"level {value}")
-    stdout.print(apply(text => level(text), "3") else -1, apply(text => level(text), "") else -1)
+    stdout.print(apply(text => level(text)?, "3") else -1, apply(text => level(text)?, "") else -1)

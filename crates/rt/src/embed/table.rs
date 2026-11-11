@@ -252,9 +252,14 @@ impl Table {
     /// in one look.
     pub(super) fn release_one(&mut self, address: usize) -> Released {
         let Some(slot) = slot_mut(&mut self.regions, address) else { return self.release_short(address) };
-        let Some(count) = slot.as_mut().and_then(|block| block.first_mut()) else { return Released::Missing };
-        if *count > 1 {
-            *count -= 1;
+        let Some(block) = slot.as_deref_mut() else { return Released::Missing };
+        let Some(&count) = block.first() else { return Released::Missing };
+        if count > 1 {
+            if (count < super::heap::IMMORTAL || !super::heap::uncounted(block))
+                && let Some(first) = block.first_mut()
+            {
+                *first = count - 1;
+            }
             return Released::Held;
         }
         self.len -= 1;
@@ -265,11 +270,14 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn release_short(&mut self, address: usize) -> Released {
-        let Some(count) = self.short.get_mut(&address).and_then(|block| block.first_mut()) else {
-            return Released::Missing;
-        };
-        if *count > 1 {
-            *count -= 1;
+        let Some(block) = self.short.get_mut(&address) else { return Released::Missing };
+        let Some(&count) = block.first() else { return Released::Missing };
+        if count > 1 {
+            if !super::heap::uncounted(block)
+                && let Some(first) = block.first_mut()
+            {
+                *first = count - 1;
+            }
             return Released::Held;
         }
         self.len -= 1;

@@ -54,8 +54,10 @@ pub(crate) fn reader() -> String {
              value = pack.loads[{ty}](data) else:\n        return \"err\"\n    \
              back: {ty}? = pack.loads[{ty}](pack.dumps(value)) else None\n    \
              same = back is not None and back == value\n    \
-             grown = \"ok\" if failure_of(() => pack.loads[{ty}](longer)) is None else \"err\"\n    \
-             cut = \"ok\" if failure_of(() => pack.loads[{ty}](shorter)) is None else \"err\"\n    \
+             grown_back: {ty}? = pack.loads[{ty}](longer) else None\n    \
+             grown = \"ok\" if grown_back is not None else \"err\"\n    \
+             cut_back: {ty}? = pack.loads[{ty}](shorter) else None\n    \
+             cut = \"ok\" if cut_back is not None else \"err\"\n    \
              f\"ok {{same}} {{grown}} {{cut}}\"\n\n",
         );
     }

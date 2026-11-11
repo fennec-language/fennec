@@ -4,4 +4,4 @@ error: `ref unit.position` and `ref unit.position` overlap
 13 |     bump(ref unit.position, ref unit.position)
    |                                 ^^^^^^^^^^^^^
    |
-   = help: a `ref` argument needs its place to itself: pass a value you made first, like `item = xs[j]`, or make the changes one at a time
+   = help: a call has to be the only way to reach what it changes: pass a value you made first, like `item = xs[j]`, or make the changes one at a time

@@ -55,7 +55,7 @@ def broken(link: Link) fails Broke:
 
 test "a value goes back and is lent again"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=1)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=1)? as links:
         with links.take()? as first:
             assert first.number == 1
         with links.take()? as again:
@@ -64,7 +64,7 @@ test "a value goes back and is lent again"():
 
 test "only one opens up front, and the rest when they're needed"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=3)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=3)? as links:
         assert opens(count) == 1
         with links.take()? as first:
             with links.take()? as second:
@@ -73,25 +73,25 @@ test "only one opens up front, and the rest when they're needed"():
 
 test "a failed block's value is reset and lent again"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=1)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=1)? as links:
         assert borrowed_and_broken(links) fails Broke()
         with links.take()? as again:
             assert again.number == 1
 
 test "a value that can't be reset is replaced"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=True), size=1)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=True)?, size=1)? as links:
         assert borrowed_and_broken(links) fails Broke()
         with links.take()? as again:
             assert again.number == 2
 
 test "a borrower waits up to wait, then fails"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=1)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=1)? as links:
         # The first takes the only link, waiting as long as the pool's tasks take to start; the
         # second asks for one with a short wait, and none can come free while the first is held.
         with links.take()? as _:
-            problem = failure_of(() => taken_number(links, wait=20ms))
+            problem = failure_of(() => taken_number(links, wait=20ms)?)
             assert problem is not None
             assert problem.message() == "no value came free in 0.02s"
 
@@ -100,7 +100,7 @@ test "a pool that can't open one fails at its with"():
 
 test "many tasks share a few values"():
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=3)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=3)? as links:
         for _ in parallel(range(12)):
             served_once(links, count) else continue
     assert opens(count) <= 3
@@ -126,7 +126,7 @@ def taken_number(links: Pool[Link], wait: Duration) -> int fails PoolError:
 
 ## A pool whose links can't be opened.
 def pool_that_cant_open() fails PoolError | Crashed:
-    with pool[Link, Refused](open=() => refused())? as _:
+    with pool[Link, Refused](open=() => refused()?)? as _:
         pass
 
 def refused() -> Link fails Refused:
@@ -134,7 +134,7 @@ def refused() -> Link fails Refused:
 
 def main(stdout: Stdout) fails PoolError | Crashed:
     shared count = Tally()
-    with pool[Link, Refused](open=() => opened(count, fragile=False), size=2)? as links:
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=2)? as links:
         with links.take()? as first:
             with links.take()? as second:
                 stdout.print("two at once:", first.number, second.number)

@@ -34,7 +34,7 @@ pub(crate) enum Passes<'a> {
 struct Walk<'b> {
     typed: &'b Body,
     fails: Passes<'b>,
-    /// How many arrow functions this is inside, where `?` can't pass a failure up.
+    /// How many arrow functions this is inside, where `?` passes a failure up as the arrow's.
     lambdas: usize,
     problems: Vec<Diagnostic>,
 }
@@ -184,7 +184,8 @@ impl Walk<'_> {
             Some(Type::Result(_, error)) => error.as_ref(),
             _ => &Type::Unknown,
         };
-        if self.lambdas == 0 && self.passes(error) {
+        // From inside an arrow function, `?` passes the failure up as the arrow's.
+        if self.lambdas > 0 || self.passes(error) {
             let end = fennec_syntax::Span { start: expr.span.end, end: expr.span.end };
             return said
                 .with_help("pass the failure up with `?`: `fennec fix` makes this change")

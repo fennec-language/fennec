@@ -11,7 +11,12 @@ use crate::types::Type;
 impl Program {
     /// Adds an extension's methods to its type, once every type is known. The standard
     /// library's own code may extend its own types, built-in ones included.
-    pub(crate) fn add_extension(&mut self, extension: &Extension, prelude: bool) {
+    pub(crate) fn add_extension<'m>(
+        &mut self,
+        extension: &'m Extension,
+        prelude: bool,
+        hold: &impl crate::program::Holds<'m>,
+    ) {
         let name = &extension.name;
         let problem = match self.type_info(name) {
             Some(info) if info.prelude && !prelude => {
@@ -38,7 +43,7 @@ impl Program {
             self.problems.push(problem);
             if self.type_info(name).is_some() {
                 for method in &extension.methods {
-                    self.add_method(name, method, prelude, &[]);
+                    self.add_method(name, method, prelude, &[], hold);
                 }
             }
             return;
@@ -53,7 +58,7 @@ impl Program {
             }
         }
         for method in &extension.methods {
-            self.add_method(name, method, prelude, &extension.generics);
+            self.add_method(name, method, prelude, &extension.generics, hold);
         }
     }
 
@@ -87,12 +92,13 @@ impl Program {
 
     /// Adds one method to a type, unless the type already has a method of that name.
     /// `extension` is its extension's type parameters, if it comes from one of a generic type.
-    pub(crate) fn add_method(
+    pub(crate) fn add_method<'m>(
         &mut self,
         type_name: &str,
-        method: &FnDef,
+        method: &'m FnDef,
         prelude: bool,
         extension: &[Generic],
+        hold: &impl crate::program::Holds<'m>,
     ) {
         let plain = format!("{type_name}.{}", method.name);
         let first = self.functions.get(&plain).map(|existing| existing.def.clone());
@@ -116,7 +122,7 @@ impl Program {
         }
         let owner = Some(type_name.to_owned());
         let entry = FnEntry {
-            def: method.clone().into(),
+            def: hold.function(method),
             owner,
             prelude,
             inherited: Vec::new(),

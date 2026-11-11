@@ -48,7 +48,10 @@ def main(stdout: Stdout):
     for round in range(700):
         which = round % 7
         shared c = made()
-        if failure_of(() => fails_after(c, which)) is None:
+        mut failed = False
+        fails_after(c, which) else:
+            failed = True
+        if not failed:
             stdout.print("it didn't fail")
         mut now = ""
         lock c as held:

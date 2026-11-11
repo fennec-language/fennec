@@ -1,4 +1,4 @@
-source 996acac8375cb64b4114dc2cb9127961f45682bbc482120b350c0a136b6860c8
+source 0334d42672b90eaff773030d9a0cda8f3d51e98716d8c968d3026076cae76cef
 code 0
 stdout 1025
 {"name": "Ash \"the\" fox\n", "level": 3, "kind": {"Owl": {"wise": true}}, "pet": null, "at": {"x": 1, "y": 2.5}, "tags": ["a", "é"], "stats": {"hp": 10}}

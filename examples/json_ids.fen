@@ -34,9 +34,9 @@ struct Camp:
     units = Table[Unit]()
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "a world with Ids loads back the same":
     mut world = World()
@@ -72,25 +72,25 @@ test "an optional Id whose item has gone is saved as missing":
 test "an Id past the end of its Table isn't loaded":
     text = "{\"units\": [{\"name\": \"ash\", \"health\": 1}], \"selected\": [3]}"
     assert (
-        failure(() => json.loads[World](text))
+        failure(() => json.loads[World](text)?)
         == "`selected[0]` is item 3 of `units`, which has only 1"
     )
     inside = "{\"units\": [{\"name\": \"ash\", \"health\": 1, \"target\": 1}]}"
     assert (
-        failure(() => json.loads[World](inside))
+        failure(() => json.loads[World](inside)?)
         == "`units[0].target` is item 1 of `units`, which has only 1"
     )
     assert (
-        failure(() => json.loads[World]("{\"selected\": [-1]}")) == "`selected[0]` is out of range"
+        failure(() => json.loads[World]("{\"selected\": [-1]}")?) == "`selected[0]` is out of range"
     )
 
 test "an Id needs the one Table of its type":
     assert (
-        failure(() => json.loads[Id[Unit]]("0"))
+        failure(() => json.loads[Id[Unit]]("0")?)
         == "the text is an Id, but the text has no `Table[Unit]` for it to be in"
     )
     assert (
-        failure(() => json.loads[TwoTables]("{\"ours\": [], \"theirs\": []}"))
+        failure(() => json.loads[TwoTables]("{\"ours\": [], \"theirs\": []}")?)
         == "`ours` and `theirs` are both a `Table[Unit]`, so an Id can't say which it's in"
     )
 
@@ -110,11 +110,11 @@ test "an Id points into another Table in the same text":
 
 test "an Id whose Table the text leaves out isn't loaded as a bare position":
     assert (
-        failure(() => json.loads[Armory]("{\"units\": [{\"name\": \"ash\", \"weapon\": 0}]}"))
+        failure(() => json.loads[Armory]("{\"units\": [{\"name\": \"ash\", \"weapon\": 0}]}")?)
         == "`units[0].weapon` is an Id, but the text has no `Table[Item]` for it to be in"
     )
     assert (
-        failure(() => json.loads[World]("{\"selected\": [0]}"))
+        failure(() => json.loads[World]("{\"selected\": [0]}")?)
         == "`selected[0]` is an Id, but the text has no `Table[Unit]` for it to be in"
     )
 

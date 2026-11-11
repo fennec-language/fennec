@@ -22,9 +22,9 @@ struct Board:
     queue: Deque[str]
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    error = failure_of(run) else:
-        return "loaded"
-    error.message
+    _ = run() else as why:
+        return why.message
+    "loaded"
 
 test "each collection is written as what it holds":
     mut scores = SortedMap[str, int]()
@@ -89,37 +89,37 @@ test "other keys make arrays of pairs":
 
 test "a key that isn't what the map holds says where":
     assert (
-        failure(() => json.loads[dict[int, str]]("{\"7\": \"a\", \"x\": \"b\"}"))
+        failure(() => json.loads[dict[int, str]]("{\"7\": \"a\", \"x\": \"b\"}")?)
         == "the text has the key \"x\", which isn't an int"
     )
     assert (
-        failure(() => json.loads[SortedMap[int, str]]("{\"1\": \"a\", \"one\": \"b\"}"))
+        failure(() => json.loads[SortedMap[int, str]]("{\"1\": \"a\", \"one\": \"b\"}")?)
         == "the text has the key \"one\", which isn't an int"
     )
     assert (
-        failure(() => json.loads[dict[Side, int]]("[[\"East\", 1]]"))
+        failure(() => json.loads[dict[Side, int]]("[[\"East\", 1]]")?)
         == "`[0][0]` is \"East\", which isn't a case of `Side`"
     )
     assert (
-        failure(() => json.loads[dict[Side, int]]("[[\"North\"]]"))
+        failure(() => json.loads[dict[Side, int]]("[[\"North\"]]")?)
         == "`[0]` should be a [key, value] pair"
     )
 
 test "rows that don't line up say where":
     assert (
-        failure(() => json.loads[Grid[int]]("[[1, 2], [3]]"))
+        failure(() => json.loads[Grid[int]]("[[1, 2], [3]]")?)
         == "`[1]` has 1 cell, but the first row has 2"
     )
     assert (
         failure(
             () => json.loads[Board](
                 "{\"cells\": [[1], [2, 3]], \"scores\": {}, \"seen\": [], \"queue\": []}",
-            ),
+            )?,
         )
         == "`cells[1]` has 2 cells, but the first row has 1"
     )
     assert (
-        failure(() => json.loads[SortedSet[int]]("[1, \"two\"]"))
+        failure(() => json.loads[SortedSet[int]]("[1, \"two\"]")?)
         == "`[1]` should be an int, but it's a str"
     )
 

@@ -7,9 +7,9 @@ from std.net import Connection, NetError, Response
 from std.time import Duration
 
 def reason[T](run: () -> T fails NetError) -> str:
-    error = failure_of(run) else:
-        return "it worked"
-    error.message()
+    _ = run() else as why:
+        return why.message()
+    "it worked"
 
 ## The next line a connection is sent, or "" once the other side is done.
 def line_of(conn: Connection) -> str fails NetError:
@@ -81,14 +81,14 @@ test "a failure is a case of NetError"(net: Net):
 
 test "failures are NetError values"(net: Net):
     assert (
-        reason(() => connecting(net, host="localhost", port=9001))
+        reason(() => connecting(net, host="localhost", port=9001)?)
         == "`localhost` refused a connection on port 9001"
     )
-    assert reason(() => connecting(net, host="example.com", port=80)).startswith(
+    assert reason(() => connecting(net, host="example.com", port=80)?).startswith(
         "the test's fake `Net` reaches only",
     )
     with net.listen(9000)? as _:
-        assert reason(() => listening(net, port=9000)) == "port 9000 is already in use"
+        assert reason(() => listening(net, port=9000)?) == "port 9000 is already in use"
 
 test "a packet goes to a port, and an answer goes to who sent it"(net: Net):
     with net.udp(port=9001)? as first:
@@ -126,7 +126,7 @@ test "an answer's body is read as JSON into a struct"(net: Net):
     )
     found = net.get("https://api.example.com/weather", params={"city": "Oslo"})?.json[Weather]()?
     assert found.city == "Oslo" and found.degrees == -3.5
-    problem = failure_of(() => Response(status=200, body="{\"city\": 3}".encode()).json[Weather]())
+    problem = failure_of(() => Response(status=200, body="{\"city\": 3}".encode()).json[Weather]()?)
     assert problem is not None
     assert problem.message == "`city` should be a str, but it's an int"
 
@@ -139,7 +139,7 @@ test "a status that isn't a 200 is still an answer"(net: Net):
 test "a request nothing scripted fails and says so"(net: Net):
     assert (
         "no answer for `DELETE https://example.com/`"
-        in reason(() => net.request("delete", "https://example.com/"))
+        in reason(() => net.request("delete", "https://example.com/")?)
     )
 
 def main(stdout: Stdout, net: Net):

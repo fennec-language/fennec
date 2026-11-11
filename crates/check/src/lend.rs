@@ -84,7 +84,7 @@ impl FnCx<'_> {
                 .map(|generic| generic.name.clone())
                 .collect();
             let source = crate::lend_lowering::Source {
-                def: entry.def.clone(),
+                def: entry.def.shared(),
                 method,
                 gives: gives.clone(),
                 generics,

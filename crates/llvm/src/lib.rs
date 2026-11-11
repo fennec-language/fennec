@@ -45,6 +45,7 @@ mod emit;
 mod entry;
 mod generators;
 mod headers;
+mod holding;
 mod idmaps;
 mod json;
 mod kinds;

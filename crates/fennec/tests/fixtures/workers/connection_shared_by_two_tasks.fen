@@ -10,7 +10,7 @@ def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
     with net.listen(0)? as server:
         stdout.print(server.port)
         for conn in parallel(server):
-            with launch(() => beside(conn, clock, stdout))?:
+            with launch(() => beside(conn, clock, stdout)?)?:
                 line = conn.read_line()? else "ended"
                 stdout.print("round read", line)
                 conn.write("from the round\n")?

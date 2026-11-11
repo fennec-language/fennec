@@ -305,6 +305,8 @@ pub(crate) enum Arrow {
     Each(Expr),
     /// `ran_fine`, printing whether it gave its value rather than failing.
     RanFine,
+    /// `fallback`, whose failure block gives the value, `why.code * 100`, as its last line.
+    Fallback,
     /// `either`, the arrow failing two ways: `capped(n)?`, then `shut_below(other)?`.
     Either(Expr),
 }
@@ -339,6 +341,16 @@ pub(crate) enum Leave {
     Continue,
     /// Indexing `[1, 2]` out of range under `if i == at`, a crash.
     Crash,
+    /// `got = capped(i, limit=at - 1) except why:`, printing `why` and returning: handled, so
+    /// the cleanups after `lend` run.
+    ExceptReturn,
+    /// The same, with `continue`, which every round from `at` on takes.
+    ExceptContinue,
+    /// `got = capped(i, limit=at - 1) except Refused(): -1`, one case on the line, giving a value
+    /// and carrying on.
+    ExceptValue,
+    /// `except why:` with one arm, `case _:`, that prints `why` and breaks.
+    ExceptArms,
 }
 
 impl Leave {

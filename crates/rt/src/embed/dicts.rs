@@ -1004,6 +1004,32 @@ fn set_at_entry(state: &mut State, dict: i64, entry: i64, key: u64, value: u64) 
     Some(dict)
 }
 
+/// `fennec_proof_put_in_place(dict, entry)`, in a build that checks proofs: 1 when native code may
+/// write a lock's put at `entry` without the runtime, as it does when it judged the dict and the
+/// blocks on the way to it alone, and 0 when that was wrong: the dict must be a block this thread
+/// holds, with exactly one owner and no mark, and `entry` one of its live entries.
+pub extern "C" fn put_in_place_holds(dict: i64, entry: i64) -> i64 {
+    with(|state| i64::from(live_entry_of_alone(state, dict, entry).is_some()))
+}
+
+fn live_entry_of_alone(state: &State, dict: i64, entry: i64) -> Option<()> {
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
+    if block.first() != Some(&1) {
+        return None;
+    }
+    let layout = layout(state, block)?;
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let used = usize::try_from(*block.get(3)?).ok()?;
+    let start = DICT_HEADER_WORDS + mask + 1;
+    let bytes = usize::try_from(entry.cast_unsigned().checked_sub(at)?).ok()?;
+    let word = (bytes % 8 == 0).then_some(bytes / 8)?;
+    let number = word.checked_sub(start)?;
+    let live =
+        number % layout.width == 0 && number / layout.width < used && block.get(word) != Some(&REMOVED);
+    live.then_some(())
+}
+
 /// How many puts `set_found` made where the lookup found the key, in a run that counts what it does,
 /// for `FENNEC_COUNTS` to say.
 static FOUND_PUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

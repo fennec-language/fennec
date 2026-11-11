@@ -389,7 +389,7 @@ impl Emit<'_, '_, '_> {
 
     /// Saves `old`, the word at `word` in `block`, which holds no block, before it changes: in this
     /// thread's buffer of saves, without a call while it has room (see `fen_lock_save`).
-    fn save_plain(&mut self, block: &str, word: &str, old: &str) {
+    pub(crate) fn save_plain(&mut self, block: &str, word: &str, old: &str) {
         self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
         self.module.add_helper("fen_lock_save", SAVE_PLAIN.to_owned());
         let (slot, record) = (self.record_slot(), self.temp());
@@ -399,7 +399,7 @@ impl Emit<'_, '_, '_> {
 
     /// `block` as an address, and the index of the word at `place` in it, counting its count
     /// word as the first.
-    fn word_in(&mut self, block: &str, place: &str) -> (String, String) {
+    pub(crate) fn word_in(&mut self, block: &str, place: &str) -> (String, String) {
         let (at, from, bytes, word) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{at} = ptrtoint ptr {place} to i64"));
         self.line(&format!("{from} = ptrtoint ptr {block} to i64"));
@@ -588,6 +588,70 @@ impl Emit<'_, '_, '_> {
             }
         }
         self.save_words(&cell, &place, &kind)
+    }
+
+    /// For a put into the dict at `object.path` under a lock that saves what it changes, written in
+    /// place: where the dict's address is, and an `i1` that holds when every block on the way to it
+    /// from the lock's cell has one owner, the dict's own included. `None`, writing nothing, when
+    /// the way there isn't only fields of blocks, and of structs held in place in them.
+    pub(crate) fn dict_alone_along(
+        &mut self,
+        object: LocalId,
+        path: &[String],
+    ) -> Result<Option<(String, String)>, String> {
+        let (handle, whole) = if self.saving.contains(&object.0) {
+            (object, path.to_vec())
+        } else if let Some((handle, mut along)) = self.read_from_saving(object) {
+            along.extend_from_slice(path);
+            (handle, along)
+        } else {
+            return Ok(None);
+        };
+        let cell_kind = self.kind_of(handle)?.clone();
+        if !matches!(cell_kind, Kind::Boxed(_)) {
+            return Ok(None);
+        }
+        // What each step reaches, worked out before anything's written.
+        let mut steps = Vec::with_capacity(whole.len());
+        let mut kind = cell_kind;
+        for (step, name) in whole.iter().enumerate() {
+            let (offset, inner) = self.field(&kind, name)?;
+            let last = step + 1 == whole.len();
+            let fits = match &inner {
+                Kind::Dict(..) => last,
+                Kind::Boxed(_) | Kind::Struct(_) => !last,
+                _ => false,
+            };
+            if !fits {
+                return Ok(None);
+            }
+            steps.push((offset, matches!(inner, Kind::Boxed(_))));
+            kind = inner;
+        }
+        let (cell, _) = self.operand(&Operand::Local(handle))?;
+        let mut place = self.offset(&cell, FIELDS_OFFSET);
+        let mut all = "true".to_owned();
+        let mut and = |emit: &mut Self, alone: String| {
+            let both = emit.temp();
+            emit.line(&format!("{both} = and i1 {all}, {alone}"));
+            all = both;
+        };
+        let last = steps.len().saturating_sub(1);
+        for (step, (offset, boxed)) in steps.into_iter().enumerate() {
+            place = self.offset(&place, offset);
+            if step < last && boxed {
+                let block = self.temp();
+                self.line(&format!("{block} = load ptr, ptr {place}"));
+                let alone = self.alone(&block);
+                and(self, alone);
+                place = self.offset(&block, FIELDS_OFFSET);
+            }
+        }
+        let dict = self.temp();
+        self.line(&format!("{dict} = load ptr, ptr {place}"));
+        let alone = self.alone(&dict);
+        and(self, alone);
+        Ok(Some((place, all)))
     }
 
     /// Before a builtin changes in place a value read from a field of a `lock ... as ref` block's

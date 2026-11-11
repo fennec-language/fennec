@@ -1,0 +1,7 @@
+error: `[1].values[1]` is nan, which JSON can't write: it has no NaN or infinity
+  --> examples/errors/json_nan.fen:11:18
+   |
+11 |     stdout.print(json.dumps(readings))
+   |                  ^^^^^^^^^^^^^^^^^^^^
+  = in `main`
+  = called from the standard library

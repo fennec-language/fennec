@@ -1,0 +1,9 @@
+# JSON has no infinity, so writing one is a bug in the program, and `json.dumps` stops saying where.
+from std import json
+
+struct Limits:
+    by_name: dict[str, float]
+
+def main(stdout: Stdout):
+    endless = float("inf") else 0.0
+    stdout.print(json.dumps(Limits(by_name={"low": 0.5, "high": endless})))

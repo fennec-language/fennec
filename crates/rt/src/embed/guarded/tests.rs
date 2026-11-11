@@ -283,6 +283,31 @@ fn another_thread_reads_and_changes_what_this_one_put_there() {
     finish();
 }
 
+/// A `shared` value's handle put on another runtime's queue, as a block whose memory came back as
+/// the handle would be, isn't let go of when that runtime frees what waits for it: a queue holds
+/// only blocks its runtime made, and the value keeps its table.
+#[test]
+fn a_handle_waiting_for_another_runtime_is_left_alone() {
+    begin();
+    let log = log_of(&["kept"]);
+    shared_new(log);
+    std::thread::spawn(move || {
+        begin();
+        threads::wait_here(u64::try_from(log).unwrap());
+        let its_own = log_of(&["its own"]);
+        heap::free(its_own);
+        finish();
+    })
+    .join()
+    .unwrap();
+    assert!(is_handle(u64::try_from(log).unwrap()), "the value is still there");
+    assert_eq!(shared_enter(log, 1), i64::try_from(GUARDED_OWNER).unwrap());
+    let inside = i64::try_from(word(log, FIELDS)).unwrap();
+    assert_eq!(lines(inside), ["kept"]);
+    shared_leave(log, 1);
+    finish();
+}
+
 /// Native code finds the word saying a run is recorded or replayed at 16 bytes past its failure
 /// flag, after the lock it holds.
 #[test]

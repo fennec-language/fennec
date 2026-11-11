@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(any(test, feature = "threads"))]
 use std::sync::atomic::AtomicU8;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 #[cfg(any(test, feature = "threads"))]
@@ -38,6 +38,25 @@ static NEXT: AtomicU16 = AtomicU16::new(1);
 
 thread_local! {
     static INDEX: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+    /// The run this thread's runtime is, among all started in the process: threads with the same
+    /// number, as every test's own thread is, can each run a runtime, and a block waits for the one
+    /// that made it.
+    static RUN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The next run a runtime starting gets.
+static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
+
+/// A runtime starts on this thread: it's a run of its own, with a queue of its own.
+pub(super) fn run_starts() {
+    RUN.set(NEXT_RUN.fetch_add(1, Ordering::Relaxed));
+}
+
+/// The queue the runtime on this thread frees from: its thread's number, and its run.
+type Queue = (u16, u64);
+
+fn own_queue() -> Queue {
+    (index(), RUN.get())
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -130,13 +149,14 @@ pub fn take_index() -> u16 {
     index
 }
 
-/// A block another thread holds: how many counts the other threads hold, and whether its
-/// owner has let go of all of its own.
+/// A block another thread holds: how many counts the other threads hold, whether its owner has
+/// let go of all of its own, and, once it has, the queue it waits on: its owner's run's.
 #[derive(Default)]
 struct Shared {
     count: u64,
     owner_done: bool,
     owner: u16,
+    run: u64,
 }
 
 /// Whether any block has ever been counted across threads, so a program with none never
@@ -146,8 +166,8 @@ static ANY_SHARED: AtomicBool = AtomicBool::new(false);
 /// Blocks counted across threads, by address.
 static SHARED: Mutex<Option<HashMap<u64, Shared>>> = Mutex::new(None);
 
-/// Blocks waiting for the thread that made them to free them, by the thread's number.
-static REMOTE: Mutex<Option<HashMap<u16, Vec<u64>>>> = Mutex::new(None);
+/// Blocks waiting for the runtime that made them to free them, by its thread's number and run.
+static REMOTE: Mutex<Option<HashMap<Queue, Vec<u64>>>> = Mutex::new(None);
 
 /// Whether any thread has blocks waiting on its queue.
 static ANY_REMOTE: AtomicBool = AtomicBool::new(false);
@@ -157,7 +177,7 @@ fn shared<T>(f: impl FnOnce(&mut HashMap<u64, Shared>) -> T) -> T {
     f(table.get_or_insert_with(HashMap::new))
 }
 
-fn remote<T>(f: impl FnOnce(&mut HashMap<u16, Vec<u64>>) -> T) -> T {
+fn remote<T>(f: impl FnOnce(&mut HashMap<Queue, Vec<u64>>) -> T) -> T {
     let mut queues = REMOTE.lock().unwrap_or_else(PoisonError::into_inner);
     f(queues.get_or_insert_with(HashMap::new))
 }
@@ -387,10 +407,10 @@ pub extern "C" fn release_shared(address: i64, owner: i64) {
         if entry.count > 0 || !entry.owner_done {
             return None;
         }
-        table.remove(&address).map(|entry| entry.owner)
+        table.remove(&address).map(|entry| (entry.owner, entry.run))
     });
-    if let Some(owner) = freed {
-        remote(|queues| queues.entry(owner).or_default().push(address));
+    if let Some(queue) = freed {
+        remote(|queues| queues.entry(queue).or_default().push(address));
         ANY_REMOTE.store(true, Ordering::Release);
     }
 }
@@ -415,6 +435,7 @@ fn held_elsewhere_now(address: u64) -> bool {
     shared(|table| match table.get_mut(&address) {
         Some(entry) if entry.count > 0 => {
             entry.owner_done = true;
+            entry.run = RUN.get();
             true
         }
         Some(_) => {
@@ -431,11 +452,48 @@ pub(super) fn any_waiting() -> bool {
     ON && ANY_REMOTE.load(Ordering::Acquire)
 }
 
+/// Forgets what's kept for the blocks of a run ending with this heap: their counts by other
+/// threads, and its queue. The blocks go with the heap, and their memory can come back as another
+/// runtime's, which a count or a queue left behind would then reach.
+pub(super) fn forget_ending(heap: &super::heap::Heap) {
+    if !ON {
+        return;
+    }
+    if ANY_SHARED.load(Ordering::Relaxed) {
+        shared(|table| {
+            table.retain(|address, _| !usize::try_from(*address).is_ok_and(|at| heap.holds_block(at)));
+        });
+    }
+    if ANY_REMOTE.load(Ordering::Acquire) {
+        remote(|queues| queues.remove(&own_queue()));
+    }
+}
+
+/// Whether `address` waits on any queue, for tests.
+#[cfg(test)]
+pub(super) fn waits(address: u64) -> bool {
+    remote(|queues| queues.values().any(|queue| queue.contains(&address)))
+}
+
+/// Whether `address` is counted by a thread that didn't make it, for tests.
+#[cfg(test)]
+pub(super) fn counted(address: u64) -> bool {
+    shared(|table| table.contains_key(&address))
+}
+
+/// Puts `address` on the queue this thread's runtime frees from, as a block let go of elsewhere
+/// would be, for tests.
+#[cfg(test)]
+pub(super) fn wait_here(address: u64) {
+    remote(|queues| queues.entry(own_queue()).or_default().push(address));
+    ANY_REMOTE.store(true, Ordering::Release);
+}
+
 /// The blocks waiting on this thread's queue, for it to free.
 #[cold]
 #[inline(never)]
 pub(super) fn waiting() -> Vec<u64> {
-    remote(|queues| queues.remove(&index()).unwrap_or_default())
+    remote(|queues| queues.remove(&own_queue()).unwrap_or_default())
 }
 
 /// How many blocks this thread's runtime has made since it last handed them over: where a
@@ -553,5 +611,54 @@ mod tests {
         heap::free(other);
         assert_eq!(live(), before);
         finish();
+    }
+
+    /// Runtimes on threads with the same number, as every test's own thread is, each free only
+    /// what waits for them: a block another thread let go of last waits for the runtime that made
+    /// it, and one on another thread with the same number freeing something doesn't take it.
+    #[test]
+    fn a_block_waits_for_its_own_runtime_and_not_another_on_a_thread_with_its_number() {
+        std::thread::spawn(|| {
+            begin();
+            assert_eq!(super::index(), 0);
+            let before = live();
+            let kept = with(|state| heap::text_address(state, "kept by another thread for a while"));
+            let other = with(|state| heap::text_address(state, "something else to free"));
+            std::thread::spawn(move || super::retain_shared(kept, 0)).join().unwrap();
+            heap::free(kept);
+            std::thread::spawn(move || super::release_shared(kept, 0)).join().unwrap();
+            // Another runtime, on another thread numbered 0 too, frees something of its own.
+            std::thread::spawn(|| {
+                begin();
+                let its_own = with(|state| heap::text_address(state, "another runtime's"));
+                heap::free(its_own);
+                finish();
+            })
+            .join()
+            .unwrap();
+            heap::free(other);
+            assert_eq!(live(), before, "what waited for this runtime was freed by it");
+            finish();
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A run that ends while another thread still counts one of its blocks leaves nothing behind
+    /// for that block: its memory goes with the run, and can come back as another runtime's.
+    #[test]
+    fn a_run_that_ends_leaves_nothing_waiting_for_its_blocks() {
+        std::thread::spawn(|| {
+            begin();
+            let kept = with(|state| heap::text_address(state, "counted elsewhere when the run ends"));
+            std::thread::spawn(move || super::retain_shared(kept, 0)).join().unwrap();
+            heap::free(kept);
+            finish();
+            std::thread::spawn(move || super::release_shared(kept, 0)).join().unwrap();
+            assert!(!super::waits(kept.cast_unsigned()), "nothing waits for a run that's ended");
+            assert!(!super::counted(kept.cast_unsigned()));
+        })
+        .join()
+        .unwrap();
     }
 }

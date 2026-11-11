@@ -50,12 +50,16 @@ fn free_plain_list(state: &mut State, address: u64) -> bool {
     true
 }
 
-/// Frees what other threads let go of last, which waits for this one, which made it.
+/// Frees what other threads let go of last, which waits for this one, which made it. Only a
+/// block this heap holds is freed: anything else on the queue isn't this runtime's to let go of,
+/// a `shared` value's handle above all, whose count is never queued.
 #[cold]
 #[inline(never)]
 fn free_waiting(state: &mut State) {
     for waiting in crate::embed::threads::waiting() {
-        free_block(state, waiting);
+        if usize::try_from(waiting).is_ok_and(|at| state.heap.holds_block(at)) {
+            free_block(state, waiting);
+        }
     }
 }
 

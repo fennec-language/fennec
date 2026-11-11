@@ -17,7 +17,8 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 | `a == b`, `a != b` | `def ==` |
 | `a + b`, `a < b`, `sum(xs)`, `sorted(xs)` | operators: `def +`, `def <` and the rest |
 | `x in xs` | `def in` |
-| `xs.len()` | `def len` |
+| `len(xs)` | `def len` |
+| `abs(x)` | `def abs` |
 | `for x in xs`, `list(xs)` | `def iter(self) -> Iterator[T]`, with `yield` |
 | `xs[i]`, and writes through it | `def []`, and its `ref` form |
 | `for ref x in xs`, `parallel(xs)` | positions: `def len` plus the `ref` form of `def []` |
@@ -355,6 +356,57 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
+**Failures have a word of their own, `except`, and `else` means only "otherwise".** Chris locked this on 2026-11-11. There are three outcomes: a missing value, `T?`, handled with `else`; a failure, `fails E`, passed up with `?` or handled with `except`; and a bug, which stops the program.
+```fennec
+# pass it up
+score = load_score(fs, path)?
+
+# one case, on the line
+port = int.parse(text) except InvalidValue(): 8080
+
+# any failure, named: the block leaves or gives a value
+settings = json.loads[Settings](text) except why:
+    log.warn(f"settings.json is damaged, using defaults: {why}")
+    Settings()
+
+# several cases, as arms right under the name
+score = load_score(fs, path) except why:
+    case .Missing(missing_path):
+        stdout.print(f"no save at {missing_path}, starting from 0")
+        0
+    case _:
+        fail why
+```
+- `except` covers only the call it follows. It comes after a whole right side, a bare call or `return`, and never inside a larger expression.
+- `except Case(): value` handles one case on the line. It must cover everything the call fails with, and an or-pattern can, as `except Closed() | Timeout(): 0`.
+- `except why:` handles any failure. `why` must be used on every way out: read into something that goes somewhere, as an argument, an f-string, a field read or `fail why`. Being the subject of a `match` or an `is` doesn't count, and neither does `_ = why`. A `fail` of a new error in the block carries `why` along as a note, so it counts. Arms that name every case needn't read it. On `_ = f() except why:` the block needn't give a value.
+- A capitalized name after `except`, as `except Timeout:`, is a compile error that points to `except Timeout():`, or to a lowercase name for any failure. A second `except` line under the first points at `case` arms.
+- On an error with cases, the type-wide pattern, as `IoError()`, is refused under `except`, since it drops every case by naming the type. An error with no cases, as `InvalidValue()`, keeps it.
+- When a union's types share a case name, as `IoError | NetError` both have `NotFound` and `Other`, `.NotFound` is a compile error that names both types, and the fix writes `IoError.NotFound()`.
+- Several cases are `case` arms directly under `except why:`, with no nested `match`. An arm wider than a named case, as `case _:` is, must use `why` or `fail`. `case other:` is refused under `except`, since `why` names the failure already. An `except` block is all arms or all statements.
+- Nothing is dropped without a word: no bare `except:` after a call, no `except _:`, no `as _`, and `_ = f()` on a call that can fail is refused. `failure_of` is for tests only, which is built.
+- `else` keeps `if`/`else`, `a if c else b` and a missing value's default, with `else return`, `else fail E`, `else break` and `else continue` to leave. `else` on a call that can fail is a compile error that shows `except`, and so is `except` on a plain optional, which shows `else`.
+- On `T? fails E`, `?` or `except` takes the failure off, then `else` the `None`: `user = db.find_user(name)? else return None`. An `else` for the call's own result on the same line as its `except` is refused, with the two-line form shown. A conditional `else` inside the handler's value is fine.
+- `lend x except:` is the cleanup that runs when the caller's block fails or crashes, and it keeps the note rule: a cleanup that fails becomes a note on the block's failure. It's the one bare `except`, since cleanup doesn't handle the failure, which carries on up by itself.
+- A call that can fail is the whole right side, a bare call or `return`'s value, unless it has `?` or `.expect("reason")`, which nest anywhere. Anywhere else, the compile error shows the split onto two lines. A `with` or `for` line takes only `?`.
+- `case` is reserved, and `try` is reserved only so `try:` can be a compile error that shows `except` after the call.
+- `receive()` gives `T?`, `None` once the channel is closed, and `receive_within(d)` gives `T? fails Timeout`. `send(message)` fails with `Closed`, and `send_within(message, d)` with `Closed` or `Timeout`.
+- `IoError` gets the cases `NotFound`, `PermissionDenied`, `AlreadyExists` and `Other`. Text is read as a number with `int.parse` and `float.parse`, which fail with `InvalidValue`. A conversion `T(x)` never `fails`: `int(text)` and `float(text)` are compile errors whose fix writes `.parse`, and `std.math.NAN` replaces `float("nan")`. A conversion that doesn't fit, as `u8(300)`, still stops as a bug.
+- `lend x except:` is also the one `except` that runs for a bug, a crash.
+- `std`'s serializer method `case` is renamed `enum_case`, with its parameter `case_name`, so `case` can be reserved. Done in the same PR as these docs.
+- Fable 5.2's review of the locked syntax (2026-11-11) clarified the rules above without changing a decision: what "used" means, the type-wide pattern, shared case names, the capitalized name, the coverage of one case, `int(text)`, `send_within`, and the edges in the next two entries.
+- `fennec fix` rewrites `else` on a failure, `else as why:`, `match why:` inside it and `lend x else:` to these forms. A plain `else value` on a failing call drops every failure, so each is rewritten to name what it drops, and each needs a look.
+- Fable 5.2 proposed it, and three Fable 5.2 passes and Opus 5.5 at extra-high effort reviewed it. Its six fixes are in the list above: wider arms use `why`, `case` is reserved, `?` then `else` on `T? fails E`, `lend except` keeps its note rule, `except` never inside an expression, and the two `receive`s. Not built yet.
+
+This replaces the 2026-11-09 decision below, that a failing call is handled with `else`, `else value` or `else as why:`.
+*Why:* Missing and failed shared one word, and every rule that felt like a trick existed only to pull them apart again: `else as`, a nested `match why:`, `case _` as a failure's catch-all, and the special cases for `T? fails E`. Each outcome now has its own word, so none of those rules is needed. `except` is the word a Python reader already knows, at the place the failure happens.
+
+**Every `def` returns with `return`.** A bare value at the end of a `def` is a compile error, "a `def` gives its value with `return`", and `fennec fix` adds the `return`. `return match x:` gives a `match`'s value. A block after `x =`, as `x = match`, `x = lock` and `x = f() except why:` are, ends with its value, and `fennec fix` never adds a `return` inside one: a `return` there leaves the function, which type-checks whenever the block's type and the function's match, so `language.md` shows that pitfall with an example. Chris locked this on 2026-11-11, saying explicit `return` "reads more cleanly". Not built yet.
+*Why:* A reader finds every way out of a function by looking for `return` and `fail`, and the one place a bare value ends a block is right after the `=` it goes to.
+
+**`len` is a builtin, as `sum` and `sorted` are, and the builtins' names are reserved.** `len(items)`, as in Python. It's a protocol, as in the table under Principles: `len(x)` calls a type's `def len(self) -> int`, as `str(x)` calls `def str`. `x.len()` gets a `fennec fix` suggestion that writes `len(x)`. `abs` is a protocol the same way: `abs(x)` for the numeric types and for any type with `def abs(self) -> Self`, and `x.abs()` gets the same suggestion. Chris decided `abs` later on 2026-11-11. A closed list of names can't name a local, which is a compile error that suggests another name: `len`, `abs`, `sum`, `sorted`, `min`, `max`, `range`, `enumerate` and `zip`, and the built-in types `int`, `float`, `bool`, `str`, `bytes`, `list`, `dict`, `set`, `array` and the ten sized numbers. A builtin added later comes with a `fennec fix` rename, and fields and named arguments stay free. There's no cap on how many keywords Fennec has. Chris locked this on 2026-11-11. Not built yet.
+*Why:* `.len()` was the one place Fennec broke a Python habit for no gain. A local named `len` would hide the builtin for the rest of its block, as Python's `list = [...]` hides `list`.
+
 **Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Built. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. `Ok`, `Err` and `Result` are removed, as below.
 ```fennec
 sorted(scores)       # error: the result is ignored
@@ -417,12 +469,11 @@ def load(fs: Fs, path: str) -> float fails LoadError:
             total += row.amount
     return total
 
-total = load(fs, path) else as why:
-    match why:
-        case .NotFound(path):
-            return Response(status=404)
-        case _:
-            fail why
+total = load(fs, path) except why:
+    case .NotFound(path):
+        return Response(status=404)
+    case _:
+        fail why
 ```
 - One `error Name:` can list several cases, so a signature stays short however many ways it can fail. `fennec fix` writes it. Built: a function that can fail and doesn't say so is a compile error, apart from `main`.
 - `?` is required wherever a failure passes up, including in `with` and `for`. Built for `def`s: `return load(path)` and a last line `load(path)` are compile errors, and `fennec fix` adds the `?`.
@@ -433,7 +484,7 @@ total = load(fs, path) else as why:
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**A failing call is handled at the call, and there's no `Ok`, `Err` or `Result`.** There are three ways:
+**Replaced on 2026-11-11 by `except`, above: a failing call is handled at the call, and there's no `Ok`, `Err` or `Result`.** It had three ways:
 ```fennec
 # pass it up
 score = load_score(fs, path)?
@@ -461,10 +512,10 @@ score = load_score(fs, path) else as why:
 - Chris decided this on 2026-11-09, after three reviews. Built: `?`, `else value`, `else as why:` with a block that leaves, `match why:` inside it, `fail why`, refusing a bare `fail`, refusing `else as` on a plain optional, and `?` then `else` on `T? fails E`. Not built yet: removing `Ok`, `Err` and `Result`, which a `match` and a written `Result[int, Bad]` still take, and an `else` block giving a value, which is refused today with "an `else:` block must leave". This replaces matching on `Ok` and `Err`, `Result` types written in code, `return Err(...)`, and narrowing with `if x is Err(...)`.
 *Why:* One failure system instead of two: a failure is never a value that can be stored and forgotten, so nothing silently becomes a placeholder. It's close to Zig's `catch |err| switch`.
 
-**A block that stands where a value goes ends with that value, or leaves.** Three blocks can: `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`. Bare blocks and a multi-line `if` can't, since the one-line `x if c else y` covers that. Chris decided this on 2026-11-09. Built: all three, and refusing a multi-line `if` as a value.
+**A block that stands where a value goes ends with that value, or leaves.** Three blocks can: `x = match ...:`, `x = lock ... as ...:` and `x = f() except why:`, which was `x = f() else as why:` until 2026-11-11. Bare blocks and a multi-line `if` can't, since the one-line `x if c else y` covers that. Chris decided this on 2026-11-09. Built: all three, and refusing a multi-line `if` as a value.
 *Why:* One rule covers every block that gives a value, and a value that depends on a condition already has a one-line form.
 
-**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x except:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
 
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
@@ -538,17 +589,21 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **Intrinsics are bodiless functions in `std.intrinsics`, marked `@intrinsic`, and the compiler supplies each body.** Only the standard library can import `std.intrinsics`. A program that tries gets an error saying the module is the standard library's own.
 *Why:* The machine-level operations the built-in types stand on look like any other function to the code that calls them, so the checker and every tool treat them the same way. Keeping them inside `std` means a program's safety never rests on how one is used.
 
-**A function is global only when it works on any sequence using nothing but looping and operators; anything that asks a value about itself is a method.**
-- The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
-- Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.
+**A function is global when it works on any sequence through looping and operators, or when it's one of the protocols a type defines, as `str(x)` and `len(x)` are; anything else that asks a value about itself is a method.**
+- The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`, which use only iteration and a type's operators (`def +`, `def <`), and `len` and `abs`, which call a type's `def len` and `def abs`, as the table under Principles has it. A user type joins them by defining its operators and protocols. There are no other hooks and no dunders.
+- Everything else type-specific is a method. `len(xs)` and `abs(x)` went global on 2026-11-11, under "`len` is a builtin" above.
 - `int(...)`, `str(...)` and `float(...)` are the types' constructors, not global functions.
 - `copy(x, field=...)` changes fields as it copies. It works on any value and can't be defined by a type. There's no plain `copy(x)`, since every copy is already a snapshot.
 ```fennec
 interface Signed:
     def abs(self) -> Self
 
-total = sum(e.health for e in enemies)    # global: only looping and +
-distance = (a - b).abs()                  # method: a question about one value
+# global: only looping and +
+total = sum(e.health for e in enemies)
+# global: a protocol, which calls the type's own `def abs`
+distance = abs(a - b)
+# method: a question about one value
+alive = enemy.is_alive()
 ```
 *Why:* A looping function belongs to no one type: it works on lists, sets, dicts and generator expressions alike. A question about a value is answered differently by each type, so it lives on the type.
 
@@ -764,18 +819,18 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 **There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Built for the standard library: `net.connect`, `net.listen`, `net.udp` and `server.accept()` are `with` sources, and a `for` over a server closes each connection when the loop moves on. `def del` is out of the language: one is refused, with how to write a source instead. Built. A generator let go while a source's block is open runs that source's cleanup then, as a `break` out of the block would. For one made for a loop, a failure in that cleanup fails the loop at a `break` or a `return`, and a failure already leaving through the loop carries it as a note, as a `with` block's does. One held in a name, let go when its last owner goes, has nothing there to take that failure, so the task stops with it, saying so, as for a crash.
 *Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
 
-**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note, and with several handles every one runs its cleanup, innermost first. Several handles in one `with` are built. So is the note, for a `fail`, a whole line's `?` and `x = f()?` in the cleanup. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
+**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x except:` runs when it fails or crashes, with the block's own failure passing up. It was `lend x else:` until 2026-11-11. If the cleanup in `except:` fails too, its failure is attached to the block's as a note, and with several handles every one runs its cleanup, innermost first. Several handles in one `with` are built. So is the note, for a `fail`, a whole line's `?` and `x = f()?` in the cleanup. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running the cleanup on a crash isn't built yet.
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
     with self._pool.take()? as conn:
         conn.begin()?
-        lend Transaction(_conn=conn) else:
+        lend Transaction(_conn=conn) except:
             conn.rollback()
         conn.commit()?
 ```
 *Why:* One `lend` makes every source read the same way, open, lend, close, and a user's `with` source can do anything the standard library's can.
 
-**The end of a `with` block is where what it lent finishes, and finishing may fail.** A failure after `lend` becomes the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Files close themselves at the block's end, and a transaction commits there and rolls back in `lend x else:`. An early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built for sources a program writes, and for files: `fs.create` writes beside its path and renames into place at the block's end, synced unless `durable=False`, and `fs.open` reads in lines or chunks. Transactions move to it next. This replaces the rule that nothing after `lend` may fail, along with types the caller must finish, how that was inferred, and callers finishing written files with `close()?`.
+**The end of a `with` block is where what it lent finishes, and finishing may fail.** A failure after `lend` becomes the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Files close themselves at the block's end, and a transaction commits there and rolls back in `lend x except:`. An early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built for sources a program writes, and for files: `fs.create` writes beside its path and renames into place at the block's end, synced unless `durable=False`, and `fs.open` reads in lines or chunks. Transactions move to it next. This replaces the rule that nothing after `lend` may fail, along with types the caller must finish, how that was inferred, and callers finishing written files with `close()?`.
 *Why:* A cleanup failure still reaches the caller, through a `?` that's already there, and there's no `commit()` or `close()` to forget.
 
 **A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
@@ -1016,7 +1071,7 @@ error NetError:
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
 *Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
 
-**`int(text)` and `float(text)` fail with `InvalidValue`** when the text isn't a number or doesn't fit, handled with `?`, `else` or `match`. `int(3.7)` still truncates to `3`. `int()` of NaN, or of a float too big for an int, stops the program, like overflow.
+**`int(text)` and `float(text)` fail with `InvalidValue`** when the text isn't a number or doesn't fit, handled with `?` or `except`. To be replaced, as Chris locked on 2026-11-11: text is read with `int.parse(text)` and `float.parse(text)`, which fail with `InvalidValue`, and `T(x)` never fails, so `int(text)` becomes a compile error that shows `int.parse`. Not built yet. `int(3.7)` still truncates to `3`. `int()` of NaN, or of a float too big for an int, stops the program, like overflow.
 *Why:* Text often comes from input, so a bad number is expected and must be handled. A NaN reaching `int()` is a bug in the program.
 
 **A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `s.encode().len()` is the length in bytes.

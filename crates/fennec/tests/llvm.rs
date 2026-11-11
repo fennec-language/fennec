@@ -1717,6 +1717,40 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     )
 }
 
+/// Writes under a lock that nothing after them can undo go unsaved, and the rest are saved: kept,
+/// put back by a failure, or by a crash in a launched task, every value is right. Built checking
+/// proofs, which stop at a rollback after a write left unsaved.
+#[test]
+fn a_write_nothing_after_can_undo_goes_unsaved_and_the_rest_go_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_unsaved_writes")?;
+        let (program, executable) = (dir.join("unsaved.fen"), dir.join("unsaved"));
+        std::fs::write(&program, include_str!("fixtures/workers/lock_unsaved_writes.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            include_str!("fixtures/workers/lock_unsaved_writes.out"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Locks taken alone begin and end in native code, with no log; two taken together, a save the
 /// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
 /// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.
@@ -8882,6 +8916,49 @@ fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Resul
     Ok(())
 }
 
+/// A release builds a huge function apart and keeps what it calls seen from outside the rest, by
+/// name. A generic's instance, `f_twice[int]`, has brackets, which the list of names kept read as
+/// a pattern: it was made internal, and linking said "Undefined symbols".
+#[test]
+fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let lines = 400;
+    let mut body = String::new();
+    let mut total: i64 = 0;
+    for line in 0..lines {
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let written = i64::try_from(total.to_string().len()).unwrap_or(0);
+        total += line + written;
+    }
+    let source = format!(
+        "def twice[T](value: T) -> list[T]:\n    [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+    );
+    let dir = folder("huge_generic")?;
+    let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    assert!(built.status.success(), "{said}");
+    assert!(said.contains("hint: `long` is too big to optimize"), "{said}");
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):
@@ -11182,6 +11259,130 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
     ];
     assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
+/// How many writes a run asked of its connections, from what it said under `FENNEC_COUNTS`.
+fn connection_writes(said: &str) -> Option<u64> {
+    let line = said.lines().find(|line| line.starts_with("copies "))?;
+    let mut words = line.split(' ');
+    words.by_ref().find(|word| *word == "connection_writes")?;
+    words.next()?.parse().ok()
+}
+
+/// `source` built natively in `dir` as `name`.
+fn built_in(dir: &Path, name: &str, source: &str) -> std::io::Result<PathBuf> {
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let executable = dir.join(name);
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    Ok(executable)
+}
+
+/// A response's head and body go out in one write, so it goes in one packet: written apart, the
+/// body waits for the client to acknowledge the head, which it may hold back for 40 ms. Counted
+/// under `FENNEC_COUNTS`: three responses, two with a body, are three writes.
+#[cfg(unix)]
+#[test]
+fn a_response_goes_out_in_one_write() -> std::io::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("one_write_response")?;
+    let server = built_in(
+        &dir,
+        "serve",
+        r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    match request.path:
+        case "/missing":
+            Response(status=404)
+        case _:
+            Response(status=200, body=f"at {request.path}".encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+"#,
+    )?;
+    let mut serving = Running(
+        Command::new(&server)
+            .env("FENNEC_COUNTS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(serving.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    client.write_all(
+        b"GET /a HTTP/1.1\r\n\r\nGET /missing HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nconnection: close\r\n\r\n",
+    )?;
+    let mut answers = String::new();
+    client.read_to_string(&mut answers)?;
+    assert_eq!(answers.matches("HTTP/1.1 ").count(), 3, "{answers}");
+    terminate(&serving)?;
+    let mut said = String::new();
+    serving.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?.read_to_string(&mut said)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(connection_writes(&said), Some(3), "{said}");
+    Ok(())
+}
+
+/// A request's head and body go out in one write too: two posts with a body are two writes.
+#[test]
+fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    // A server here, which answers each post once it's all come, and closes.
+    let answering = std::thread::spawn(move || -> std::io::Result<()> {
+        for _ in 0..2 {
+            let (mut conn, _) = listener.accept()?;
+            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            let mut heard = Vec::new();
+            let mut buffer = [0; 4096];
+            while !String::from_utf8_lossy(&heard).ends_with("\r\n\r\ndata") {
+                let got = conn.read(&mut buffer)?;
+                if got == 0 {
+                    break;
+                }
+                heard.extend_from_slice(buffer.get(..got).unwrap_or_default());
+            }
+            conn.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")?;
+        }
+        Ok(())
+    });
+    let dir = folder("one_write_request")?;
+    let poster = built_in(
+        &dir,
+        "post",
+        r#"from std.net import NetError
+
+def main(net: Net, args: Args, stdout: Stdout) fails NetError:
+    port = int(args[0]) else 0
+    for path in ["/a", "/b"]:
+        answer = net.post(f"http://127.0.0.1:{port}{path}", body="data", timeout=10s)?
+        stdout.print(answer.status, answer.text())
+"#,
+    )?;
+    let ran = Command::new(&poster).arg(port.to_string()).env("FENNEC_COUNTS", "1").output_within()?;
+    answering.join().map_err(|_| std::io::Error::other("the answering thread panicked"))??;
+    std::fs::remove_dir_all(&dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "200 ok\n200 ok\n", "{said}");
+    assert_eq!(connection_writes(&said), Some(2), "{said}");
     Ok(())
 }
 
@@ -15642,6 +15843,21 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// Floats inside an enum's case and a struct's fields compare field by field as Fennec compares
+/// floats, with no value read whole: NaN equals NaN, `-0.0` equals `0.0`, another case is unequal,
+/// and a block field goes by what it holds. Keys found equal hash alike, so a dict keeps one.
+#[test]
+fn floats_in_cases_and_fields_compare_and_hash_as_floats_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_fields_equal",
+        include_str!("fixtures/float_fields_equal.fen"),
+        "True True False False True\nTrue True False False\nTrue False False\n3 nan again zero again\n1 2 False\n",
+    )
+}
+
 /// `in`, `index` and `remove` on a list of strings find an item by its text, held in its header or
 /// in a block, with nothing made to compare: empty, 8, 23 and 24 bytes, long, and past ASCII.
 #[test]
@@ -19564,11 +19780,11 @@ struct Words:
     def rule(self, message: str) -> ParseError:
         ParseError(message=f"in the text, {message}", line=0, column=self.at)
 
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         word = self.next()?
         mut at = 0
-        for case, _ in cases:
-            if case == word:
+        for case_name, _ in cases:
+            if case_name == word:
                 return at
             at += 1
         fail ParseError(message=f"no case `{word}` in {name}", line=0, column=self.at)

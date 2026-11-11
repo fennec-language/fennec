@@ -40,8 +40,8 @@ struct Checker:
                     self.program.types = library
                 generics = self.program.type_params(name)
                 self.check_fields(info.type_def.fields, generics)
-                for case in info.type_def.cases:
-                    self.check_fields(case.fields, generics)
+                for case_name in info.type_def.cases:
+                    self.check_fields(case_name.fields, generics)
                 self.program.types = own
 
     ## Reports types written in signatures and interfaces that don't mean anything, and

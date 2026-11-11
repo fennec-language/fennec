@@ -5008,8 +5008,9 @@ def main(stdout: Stdout):
 /// failure-style one (`fail`, `?` on a line, kept, or in an expression, an `else` that fails, a
 /// A `?` failing inside an expression inside a `with` block runs the source's cleanup wherever it
 /// sits: inside another `?`'s call, in a `return`, an assignment or a line of its own, a field read
-/// off it, an index, an f-string, a list item, a slice's bounds, a match's subject and a
-/// conditional's test. With nothing failing, each gives what it would without the block.
+/// off it, an index, an f-string, a list item, a slice's bounds, a match's subject, a conditional's
+/// test, and `f()? else fail ...` on a `T? fails E` call. With nothing failing, each gives what it
+/// would without the block.
 #[test]
 fn a_question_mark_inside_an_expression_in_a_with_block_runs_its_cleanup() -> std::io::Result<()> {
     if !ready() {

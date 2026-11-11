@@ -31,6 +31,12 @@ refused 9 0
 open shape 10
 undo shape 10
 refused 10 0
+open shape 11
+undo shape 11
+refused 11 1
+open shape 12
+undo shape 12
+refused 12 -2
 open shape 0
 close shape 0
 gave 0 0
@@ -68,3 +74,9 @@ gave 9 0
 open shape 10
 close shape 10
 gave 10 0
+open shape 11
+close shape 11
+gave 11 1
+open shape 12
+undo shape 12
+refused 12 -2

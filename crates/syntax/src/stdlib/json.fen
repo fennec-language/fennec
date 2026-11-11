@@ -1550,11 +1550,12 @@ struct JsonReader:
             at += 1
         ParseError(message=f"{message}, at line {line}, column {column}", line=line, column=column)
 
-    ## Goes past one value, saying what's wrong with it if anything is.
+    ## Goes past one value inside `depth` arrays and objects, saying what's wrong with it if
+    ## anything is. An array or object starting here is `depth + 1` deep.
     def _skip(ref self, depth: int) fails ParseError:
-        if depth > JSON_MOST_DEEP:
-            fail self._bad(f"arrays and objects nest more than {JSON_MOST_DEEP} deep here")
         b = self._space()
+        if (b == 123 or b == 91) and depth >= JSON_MOST_DEEP:
+            fail self._bad(f"arrays and objects nest more than {JSON_MOST_DEEP} deep here")
         if b == 123:
             self._skip_object(depth)?
         elif b == 91:

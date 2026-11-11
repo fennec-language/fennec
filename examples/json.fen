@@ -23,6 +23,41 @@ def describe(text: str) -> str:
                 return f"couldn't read it: {message}"
     f"read {json.dumps(numbers)}"
 
+struct Point:
+    x: int
+    y: int
+
+## Why `run` fails, or "" if it doesn't.
+def why_not[T](run: () -> T fails ParseError) -> str:
+    _ = run() else as why:
+        return why.message
+    ""
+
+test "arrays and objects may nest 500 deep, and no deeper"():
+    too_deep = "arrays and objects nest more than 500 deep here, at line 1, column 501"
+    # 500 deep is read, and only then found not to be a list of floats.
+    assert (
+        why_not(() => json.loads[list[float]]("[" * 500 + "]" * 500)?)
+        == ("`[0]` should be a float, but it's a list")
+    )
+    assert why_not(() => json.loads[list[float]]("[" * 501 + "]" * 501)?) == too_deep
+    objects = "{\"a\": " * 500 + "1" + "}" * 500
+    assert why_not(() => json.loads[list[float]](objects)?).startswith(
+        "the text should be a list[float]",
+    )
+    assert why_not(() => json.loads[list[float]]("{\"a\": " * 501 + "1" + "}" * 501)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
+
+test "a value passed over counts toward how deep JSON may nest"():
+    # The object around it is one deep, so 499 arrays inside it make 500.
+    fits = "{\"x\": 1, \"y\": 2, \"z\": " + "[" * 499 + "]" * 499 + "}"
+    assert json.loads[Point](fits, extra=.Ignore)? == Point(x=1, y=2)
+    deeper = "{\"x\": 1, \"y\": 2, \"z\": " + "[" * 500 + "]" * 500 + "}"
+    assert why_not(() => json.loads[Point](deeper, extra=.Ignore)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
+
 def main(stdout: Stdout):
     text = "\n".join([
         "{",

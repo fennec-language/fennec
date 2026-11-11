@@ -13173,7 +13173,9 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
     std::fs::remove_dir_all(&dir)?;
-    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    // How it ended goes in too: a program that stops with nothing said, as a crash of the process
+    // itself does on Windows, says only its code.
+    assert!(ran.status.success(), "{}: {}", ran.status, String::from_utf8_lossy(&ran.stderr));
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 

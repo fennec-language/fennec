@@ -8,7 +8,9 @@ use std::process::ExitCode;
 /// How many rounds of fixes to make before giving up on reaching a program with none left.
 const ROUNDS: usize = 8;
 
-pub(crate) fn fix(path: &str) -> ExitCode {
+/// With `migrate`, it also makes the rewrites to the failure forms of 2026-11-11, which the
+/// migration runs over every file at once.
+pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
     if let Err(code) = parse_fixes(path) {
         return code;
     }
@@ -31,6 +33,9 @@ pub(crate) fn fix(path: &str) -> ExitCode {
             lints.extend(fennec_lint::self_compares(&program.module, &program.sources));
             let mut diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
             diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
+            if migrate {
+                diagnostics.extend(fennec_check::migration_fixes(&program.module, &program.sources));
+            }
             let changed = program.sources.fixed(&diagnostics);
             if changed.is_empty() {
                 return ExitCode::SUCCESS;

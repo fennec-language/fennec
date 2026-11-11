@@ -78,6 +78,10 @@ const PARSE_CASES: &[(&str, &str)] = &[
         "def f(t: str) -> int:\n    a = g(t) except why:\n        return 0\n    b = g(t) except why:\n        case .Gone(at):\n            at\n        case _:\n            fail why\n    c = int(t) except InvalidValue(): 8080\n    d = g(t) except .Gone(): return 1\n    h(t) except why:\n        log(why)\n    return a + b + c + d\n",
     ),
     ("lend_except", "def f(a: int) -> with int:\n    lend a except:\n        pass\n"),
+    (
+        "except_case_block",
+        "def f(t: str) -> int:\n    c = int(t) except InvalidValue():\n        log(t)\n        return 0\n    return c\n",
+    ),
     ("bare_except", "def f():\n    g() except:\n        pass\n"),
     ("except_first", "def f():\n    except why:\n        pass\n"),
     ("try", "def f():\n    try:\n        pass\n"),

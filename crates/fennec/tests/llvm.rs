@@ -4787,21 +4787,42 @@ def main(stdout: Stdout):
     stdout.print(\"no failure\")
 ";
 
-/// A `with` block left from inside an `else` runs its source's cleanup as any other way out does:
-/// an `else return`, one deeper in a line, and `else continue` and `else break` in a loop run the
-/// code after `lend`, and an `else as` block that fails runs `lend x else:`. They once left the
-/// block with neither, so a file or a channel stayed open.
+/// Every way out of a `with` block runs its source's cleanup, innermost first when several are left
+/// at once: the code after `lend` for a success-style way out (`return`, `break`, `continue`, an
+/// `else` doing one of those, a `return` in a nested `if` or a `match`), and `lend x else:` for a
+/// failure-style one (`fail`, `?` on a line, kept, or in an expression, an `else` that fails, a
+/// crash). The ways out from inside an `else` once ran neither, so a file or a channel stayed open.
 #[test]
-fn a_with_block_left_from_an_else_runs_its_cleanup() -> std::io::Result<()> {
+fn every_way_out_of_a_with_block_runs_its_cleanup() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
-        "with_left_from_an_else",
-        include_str!("fixtures/with_left_from_an_else.fen"),
-        "  ended else return\n-1\n  ended deeper\n-2\n  failed else as\nfailed: again: n\n0\n\
-         \x20 ended round 0\n  ended round 1\n  ended round 2\n  ended break 0\n  ended break 1\n  ended break 2\n1\n",
-    )
+    let dir = folder("with_every_way_out")?;
+    let program = dir.join("ways.fen");
+    std::fs::write(&program, include_str!("fixtures/with_every_way_out.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("ways"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "  ended else return\n-1\n  ended else return in a line\n-2\n  failed else fail\n-10\n  failed else as\n-11\n  ended continue 0\n  ended continue 1\n  ended continue 2\n  ended break 0\n  ended break 1\n  ended break 2\n1\n  failed ? on a line\n-12\n  failed ? kept\n-13\n  failed ? in an expression\n-14\n  ended return in an if\n7\n  ended return in a match\n8\n  failed fail in an if\n-15\n  ended inner, else return\n  ended outer, else return\n-3\n  failed inner, else fail\n  failed outer, else fail\n-16\n  failed inner, ?\n  failed outer, ?\n-17\n  ended inner 0, else break\n  ended outer 0, else break\n  ended inner 1, else break\n  ended outer 1, else break\n  ended inner 2, else break\n  ended outer 2, else break\n2\n  failed inner, crash\n  failed outer, crash\n",
+            "{how:?}: {err}"
+        );
+        // The last way out is a crash, through both its blocks' `lend x else:`.
+        assert!(!ran.status.success(), "{how:?}");
+        assert!(err.contains("index 2 is out of range for length 1"), "{how:?}: {err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// A channel whose block ends by an `else return` or an `else fail` is closed and freed, so a

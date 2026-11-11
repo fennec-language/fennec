@@ -9,23 +9,37 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// How long a test program gets to run. One that's still going was waiting for something that
-/// never came, like a request a busy machine lost, so the test fails in a minute instead of
-/// hanging the run for hours.
+/// How much CPU time a test program gets. Time is CPU time, not time by the clock, so a busy
+/// machine, which only makes a program wait, never fails one: a program that spends a minute of
+/// CPU is in a loop it never leaves.
 pub(crate) const PROGRAM_DEADLINE: Duration = Duration::from_secs(60);
 
-/// How long `fennec` itself gets: a build and maybe a run.
+/// How much CPU time `fennec` itself gets, for a build and maybe a run. The programs it starts,
+/// like LLVM's tools and the program it built, each get as much.
 pub(crate) const FENNEC_DEADLINE: Duration = Duration::from_secs(180);
 
-/// Running a command with a deadline, as every program a test starts runs.
+/// How long by the clock any test program may run, whatever its CPU time: for one waiting for
+/// something that never comes, which spends none. A busy machine never takes this long, and a
+/// stuck program fails the test in ten minutes rather than holding the run for hours.
+pub(crate) const WALL_DEADLINE: Duration = Duration::from_secs(600);
+
+/// The signal a program gets for spending more CPU time than it may: SIGXCPU, on macOS and Linux.
+#[cfg(unix)]
+const CPU_SPENT: i32 = 24;
+
+/// Running a command with limits, as every program a test starts runs: so much CPU time, and
+/// `WALL_DEADLINE` by the clock.
 pub(crate) trait Within {
-    /// What `output()` gives, once the program ends within `PROGRAM_DEADLINE`. One still running
-    /// then is killed, and that's a `TimedOut` error.
+    /// What `output()` gives, once the program ends within `PROGRAM_DEADLINE` of CPU time. One that
+    /// spends more, or runs past `WALL_DEADLINE`, is killed, and that's a `TimedOut` error saying
+    /// which limit it reached.
     fn output_within(&mut self) -> std::io::Result<Output>;
-    /// The same with a deadline of its own.
-    fn output_before(&mut self, deadline: Duration) -> std::io::Result<Output>;
+    /// The same with a CPU time of its own.
+    fn output_before(&mut self, cpu: Duration) -> std::io::Result<Output>;
     /// The same with `input` as its standard input.
-    fn output_given(&mut self, input: &[u8], deadline: Duration) -> std::io::Result<Output>;
+    fn output_given(&mut self, input: &[u8], cpu: Duration) -> std::io::Result<Output>;
+    /// The same with a limit by the clock of its own too.
+    fn output_limited(&mut self, cpu: Duration, wall: Duration) -> std::io::Result<Output>;
 }
 
 impl Within for Command {
@@ -33,25 +47,73 @@ impl Within for Command {
         self.output_before(PROGRAM_DEADLINE)
     }
 
-    fn output_before(&mut self, deadline: Duration) -> std::io::Result<Output> {
-        let child = self.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-        finished_before(child, deadline)
+    fn output_before(&mut self, cpu: Duration) -> std::io::Result<Output> {
+        self.output_limited(cpu, WALL_DEADLINE.max(cpu))
     }
 
-    fn output_given(&mut self, input: &[u8], deadline: Duration) -> std::io::Result<Output> {
-        let mut child = self.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    fn output_limited(&mut self, cpu: Duration, wall: Duration) -> std::io::Result<Output> {
+        let child = cpu_limited(self, cpu).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        finished_before(child, Limits { cpu, wall })
+    }
+
+    fn output_given(&mut self, input: &[u8], cpu: Duration) -> std::io::Result<Output> {
+        let mut limited = cpu_limited(self, cpu);
+        let mut child = limited.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
         let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
         let input = input.to_vec();
         // Written from a thread of its own, so a program that never reads it can't hold this up.
         std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &input));
-        finished_before(child, deadline)
+        finished_before(child, Limits { cpu, wall: WALL_DEADLINE.max(cpu) })
     }
 }
 
-/// What `child` printed and how it ended, once it ends within `deadline`. Both pipes are read
-/// while it runs, so a program printing a lot isn't stopped by a full one. One that runs past
-/// `deadline` is killed, and the error says what it printed by then, which shows where it stopped.
-fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Output> {
+/// A program's two limits: CPU time, and time by the clock.
+#[derive(Clone, Copy)]
+struct Limits {
+    cpu: Duration,
+    wall: Duration,
+}
+
+/// `command`, run with at most `cpu` of CPU time, as each program it starts is too: through `sh`,
+/// which sets the limit and becomes the program, so it's the same process with the same
+/// arguments, environment and folder. Where there's no `sh` limit to set, as on Windows, it's
+/// `command` as it is, held to the clock alone.
+fn cpu_limited(command: &Command, cpu: Duration) -> Command {
+    if cfg!(windows) {
+        let mut same = Command::new(command.get_program());
+        same.args(command.get_args());
+        copy_setting(command, &mut same);
+        return same;
+    }
+    let mut limited = Command::new("sh");
+    limited
+        .arg("-c")
+        .arg("ulimit -t \"$0\" && exec \"$@\"")
+        .arg(cpu.as_secs().max(1).to_string())
+        .arg(command.get_program())
+        .args(command.get_args());
+    copy_setting(command, &mut limited);
+    limited
+}
+
+/// Gives `to` the environment and folder `from` was given.
+fn copy_setting(from: &Command, to: &mut Command) {
+    for (name, value) in from.get_envs() {
+        match value {
+            Some(value) => to.env(name, value),
+            None => to.env_remove(name),
+        };
+    }
+    if let Some(folder) = from.get_current_dir() {
+        to.current_dir(folder);
+    }
+}
+
+/// What `child` printed and how it ended, once it ends within its limits. Both pipes are read
+/// while it runs, so a program printing a lot isn't stopped by a full one. One past a limit is
+/// killed, and the error says which limit and what it printed by then, which shows where it
+/// stopped.
+fn finished_before(mut child: Child, limits: Limits) -> std::io::Result<Output> {
     /// What a pipe has given so far, kept as it comes, and whether it's ended.
     type Kept = std::sync::Arc<std::sync::Mutex<(Vec<u8>, bool)>>;
     fn read_all(pipe: Option<impl Read + Send + 'static>) -> Kept {
@@ -86,7 +148,14 @@ fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Outp
     }
     let stdout = read_all(child.stdout.take());
     let stderr = read_all(child.stderr.take());
-    match wait_before(&mut child, deadline) {
+    let ended = wait_before(&mut child, limits.wall).and_then(|status| {
+        if spent_its_cpu(status) {
+            let why = format!("a test's program used all {}s of CPU time it may", limits.cpu.as_secs().max(1));
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
+        }
+        Ok(status)
+    });
+    match ended {
         Ok(status) => {
             let wait = Duration::from_secs(10);
             Ok(Output { status, stdout: taken(&stdout, wait), stderr: taken(&stderr, wait) })
@@ -105,7 +174,22 @@ fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Outp
     }
 }
 
-/// How `child` ended, once it ends within `deadline`. One still running then is killed.
+/// Whether a program was stopped for spending all the CPU time it may.
+fn spent_its_cpu(status: std::process::ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        status.signal() == Some(CPU_SPENT)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        false
+    }
+}
+
+/// How `child` ended, once it ends within `deadline` by the clock. One still running then is
+/// killed.
 pub(crate) fn wait_before(
     child: &mut Child,
     deadline: Duration,
@@ -118,20 +202,37 @@ pub(crate) fn wait_before(
         if Instant::now() > until {
             child.kill()?;
             child.wait()?;
-            let why = format!("a test's program was still running after {}s", deadline.as_secs());
+            let why = format!("a test's program was still running after {}s by the clock", deadline.as_secs());
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-/// A program that never ends is killed at its deadline, and the test hears why.
+/// A program that waits forever, spending no CPU time, is killed at its limit by the clock, and
+/// the test hears which limit it was.
 #[test]
 fn a_program_past_its_deadline_is_killed() {
     let started = Instant::now();
-    let ran = Command::new("sleep").arg("600").output_before(Duration::from_secs(1));
-    assert_eq!(ran.map_err(|error| error.kind()).err(), Some(std::io::ErrorKind::TimedOut));
+    let ran = Command::new("sleep").arg("600").output_limited(Duration::from_secs(60), Duration::from_secs(1));
+    let why = ran.err().map(|error| (error.kind(), error.to_string()));
+    assert!(why.as_ref().is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("by the clock")), "{why:?}");
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// A program in a loop it never leaves is stopped once it has spent its CPU time, however long
+/// that takes by the clock on a busy machine, and the test hears that it was the CPU time.
+#[test]
+#[cfg(unix)]
+fn a_program_that_spends_its_cpu_time_is_stopped() {
+    let ran = Command::new("sh").args(["-c", "while :; do :; done"]).output_before(Duration::from_secs(1));
+    let why = ran.err().map(|error| (error.kind(), error.to_string()));
+    assert!(why.as_ref().is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("of CPU time")), "{why:?}");
+    // Its environment and folder are its own still.
+    let dir = std::env::temp_dir();
+    let ran = Command::new("sh").args(["-c", "echo \"$KEPT\" && pwd"]).env("KEPT", "kept").current_dir(&dir).output_within().unwrap();
+    let said = String::from_utf8_lossy(&ran.stdout).into_owned();
+    assert!(said.starts_with("kept\n"), "{said}");
 }
 
 /// A program killed at its deadline says what it printed by then, so a test's failure shows where
@@ -140,7 +241,7 @@ fn a_program_past_its_deadline_is_killed() {
 fn a_program_past_its_deadline_says_what_it_printed() {
     let ran = Command::new("sh")
         .args(["-c", "echo got this far; exec sleep 600"])
-        .output_before(Duration::from_secs(1));
+        .output_limited(Duration::from_secs(60), Duration::from_secs(1));
     let why = ran.err().map(|error| error.to_string()).unwrap_or_default();
     assert!(why.contains("having printed:\ngot this far\n"), "{why}");
 }
@@ -150,7 +251,8 @@ fn a_program_past_its_deadline_says_what_it_printed() {
 pub(crate) struct Running(pub(crate) Child);
 
 impl Running {
-    /// The first line it prints, like the port a server listens on, within `PROGRAM_DEADLINE`.
+    /// The first line it prints, like the port a server listens on, within `WALL_DEADLINE`: a server
+    /// on a busy machine can take a while to start.
     /// The rest of what it prints is read and dropped, so it never waits on a full pipe.
     pub(crate) fn first_line(&mut self) -> std::io::Result<String> {
         use std::io::BufRead;
@@ -161,7 +263,7 @@ impl Running {
             let _ = says.send(lines.next());
             lines.for_each(drop);
         });
-        match said.recv_timeout(PROGRAM_DEADLINE) {
+        match said.recv_timeout(WALL_DEADLINE) {
             Ok(Some(line)) => line,
             Ok(None) => Err(std::io::ErrorKind::UnexpectedEof.into()),
             Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "it printed nothing")),

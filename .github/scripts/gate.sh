@@ -80,8 +80,9 @@ rosetta() {
   local probe="$logs/rosetta"
   printf 'int main(void) { return 0; }\n' > "$probe.c" || return 1
   /usr/bin/cc -arch x86_64 -o "$probe" "$probe.c" || return 1
-  # Rosetta's first translation of a program took 15 seconds on a busy Mac, so this waits a minute.
-  if ! .github/scripts/within.sh 60 "$probe"; then
+  # Rosetta's first translation of a program took 15 seconds on a busy Mac, so this waits a minute
+  # by the clock: a wedged Rosetta spends no CPU time.
+  if ! WITHIN_WALL=60 .github/scripts/within.sh 60 "$probe"; then
     echo "Rosetta isn't running new x86-64 programs; restart the Mac or \`sudo launchctl kickstart -k system/com.apple.oahd\`" >&2
     return 1
   fi

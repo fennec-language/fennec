@@ -661,7 +661,7 @@ fn server_ended(built: &Path, threads: &str, lines: &[&str]) -> std::io::Result<
         if let Some(status) = server.try_wait()? {
             break status.code();
         }
-        if started.elapsed() > std::time::Duration::from_secs(15) {
+        if started.elapsed() > crate::executables::WALL_DEADLINE {
             server.kill()?;
             server.wait()?;
             return Err(std::io::Error::other(format!("the server didn't end on {threads} threads")));
@@ -742,7 +742,7 @@ fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<
         out.read_line(&mut port)?;
         let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut heard = String::new();
         reader.read_line(&mut heard)?;
@@ -939,7 +939,7 @@ fn a_launched_task_can_serve() -> std::io::Result<()> {
         let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
         for line in ["one", "two", "last"] {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
             stream.write_all(format!("{line}\n").as_bytes())?;
             let mut back = String::new();
             BufReader::new(stream).read_line(&mut back)?;
@@ -1097,7 +1097,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
 fn talk(port: u16, lines: &[&str]) -> std::io::Result<Vec<String>> {
     use std::io::{BufRead, BufReader, Write};
     let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(20)))?;
+    stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut read = || -> std::io::Result<String> {
         let mut line = String::new();
@@ -1152,7 +1152,7 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     let (says, said) = std::sync::mpsc::channel();
     let errors = BufReader::new(server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
     std::thread::spawn(move || errors.lines().map_while(Result::ok).try_for_each(|line| says.send(line)));
-    let wait = std::time::Duration::from_secs(20);
+    let wait = crate::executables::WALL_DEADLINE;
     let mut lines = vec![said.recv_timeout(wait), said.recv_timeout(wait)];
     drop(server);
     std::fs::remove_dir_all(&dir)?;
@@ -1227,7 +1227,7 @@ fn a_server_task_crashing_under_a_lock_rolls_back_and_the_server_goes_on() -> st
     let errors = BufReader::new(server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
     std::thread::spawn(move || errors.lines().map_while(Result::ok).try_for_each(|line| says.send(line)));
     let mut lines = Vec::new();
-    while let Ok(line) = said.recv_timeout(std::time::Duration::from_secs(20)) {
+    while let Ok(line) = said.recv_timeout(crate::executables::WALL_DEADLINE) {
         let crash = line.contains("division by zero");
         lines.push(line);
         if crash {

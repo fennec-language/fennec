@@ -9885,7 +9885,7 @@ fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::i
         Ok((running, said))
     };
     let line =
-        |said: &std::sync::mpsc::Receiver<String>| said.recv_timeout(std::time::Duration::from_secs(30));
+        |said: &std::sync::mpsc::Receiver<String>| said.recv_timeout(crate::executables::WALL_DEADLINE);
     let send = |running: &Running, signal: &str| -> std::io::Result<()> {
         let sent =
             Command::new("kill").args([&format!("-{signal}"), &running.0.id().to_string()]).status()?;
@@ -9898,7 +9898,7 @@ fn a_program_given_signals_stops_cleanly_and_a_second_signal_ends_it() -> std::i
             if let Some(status) = running.0.try_wait()? {
                 return Ok(status);
             }
-            assert!(started.elapsed() < std::time::Duration::from_secs(30), "it didn't end");
+            assert!(started.elapsed() < crate::executables::WALL_DEADLINE, "it didn't end");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     };
@@ -10018,7 +10018,7 @@ fn stopped_cleanly(
 #[cfg(unix)]
 fn connected(port: u16) -> std::io::Result<std::net::TcpStream> {
     let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
     Ok(stream)
 }
 
@@ -11229,7 +11229,7 @@ def main(net: Net, stdout: Stdout):
     let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     let connect = || -> std::io::Result<std::net::TcpStream> {
         let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         Ok(stream)
     };
     // Everything the server says, read as it comes until it closes, or what went wrong.
@@ -11322,7 +11322,7 @@ def main(net: Net, signals: Signals, stdout: Stdout):
     printed.read_line(&mut port)?;
     let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    client.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
     client.write_all(
         b"GET /a HTTP/1.1\r\n\r\nGET /missing HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nconnection: close\r\n\r\n",
     )?;
@@ -11350,7 +11350,7 @@ fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
     let answering = std::thread::spawn(move || -> std::io::Result<()> {
         for _ in 0..2 {
             let (mut conn, _) = listener.accept()?;
-            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            conn.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
             let mut heard = Vec::new();
             let mut buffer = [0; 4096];
             while !String::from_utf8_lossy(&heard).ends_with("\r\n\r\ndata") {
@@ -11422,7 +11422,7 @@ def main(net: Net, stdout: Stdout):
     // Everything the server says on one connection, once it closes it.
     let exchange = |asked: &[u8]| -> std::io::Result<String> {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         stream.write_all(asked)?;
         let mut heard = String::new();
         stream.read_to_string(&mut heard)?;
@@ -11485,7 +11485,7 @@ def main(net: Net, stdout: Stdout):
     let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     let connect = || -> std::io::Result<std::net::TcpStream> {
         let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         Ok(stream)
     };
     // Everything the server says, read as it comes until it closes, or what went wrong.
@@ -11554,7 +11554,7 @@ def main(net: Net, stdout: Stdout):
     let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
     let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
     let _ = stream.write_all(asked);
     let _ = stream.shutdown(std::net::Shutdown::Write);
     let mut heard = Vec::new();
@@ -11732,7 +11732,7 @@ def main(net: Net, stdout: Stdout):
     // What the server answers one request with, after the head, or nothing when it closes first.
     let ask = |path: &str| -> std::io::Result<String> {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         stream.write_all(format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n").as_bytes())?;
         let mut heard = String::new();
         let _ = stream.read_to_string(&mut heard);
@@ -11770,7 +11770,7 @@ fn next_connection(
         }
     };
     conn.set_nonblocking(false)?;
-    conn.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    conn.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
     Ok(conn)
 }
 
@@ -11802,7 +11802,7 @@ fn whole_request(conn: &mut std::net::TcpStream) -> std::io::Result<String> {
 }
 
 fn answer_three_requests(listener: &std::net::TcpListener) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
     for _ in 0..3 {
         let mut conn = next_connection(listener, deadline)?;
         let asked = whole_request(&mut conn)?;
@@ -11921,7 +11921,7 @@ def main(net: Net, stdout: Stdout):
 
 /// Answers three requests, each with its content type, a space and its body.
 fn echo_three_bodies(listener: &std::net::TcpListener) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
     for _ in 0..3 {
         let mut conn = next_connection(listener, deadline)?;
         let asked = whole_request(&mut conn)?;
@@ -12172,7 +12172,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
     // What the server answers a line with, or nothing when it closes first.
     let ask = |line: &str| -> std::io::Result<String> {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         stream.write_all(format!("{line}\n").as_bytes())?;
         let mut back = String::new();
         let _ = std::io::BufReader::new(stream).read_line(&mut back);
@@ -12182,7 +12182,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
         ["a", "skip", "b", "stop"].into_iter().map(ask).collect::<std::io::Result<_>>()?;
     assert_eq!(answers, ["a\n", "", "b\n", ""]);
     // After `break`, the loop ends, and the program goes on to its end and stops by itself.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
     let ended = loop {
         if let Some(status) = server.0.try_wait()? {
             break status;
@@ -12242,7 +12242,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
     for request in 1_u32..=30 {
         let line = if request.is_multiple_of(10) { "crash".to_owned() } else { format!("request {request}") };
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         stream.write_all(format!("{line}\n").as_bytes())?;
         let mut back = String::new();
         let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
@@ -12266,7 +12266,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
     });
     let mut errors = String::new();
     while errors.matches("error:").count() < 3 {
-        let Ok(line) = lines.recv_timeout(std::time::Duration::from_secs(10)) else { break };
+        let Ok(line) = lines.recv_timeout(crate::executables::WALL_DEADLINE) else { break };
         errors.push_str(&line);
         errors.push('\n');
     }
@@ -12343,7 +12343,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
     spinning.write_all(b"spin\n")?;
     std::thread::sleep(std::time::Duration::from_millis(300));
     let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    ping.set_read_timeout(Some(std::time::Duration::from_secs(15)))?;
+    ping.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
     ping.write_all(b"ping\n")?;
     let mut back = String::new();
     let read = std::io::BufReader::new(ping).read_line(&mut back);
@@ -12436,7 +12436,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
         let each = || -> std::io::Result<()> {
             for _ in 0..rounds / 4 {
                 let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-                stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+                stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
                 stream.write_all(b"a line long enough to need a block of its own\n")?;
                 let mut back = String::new();
                 let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
@@ -12815,7 +12815,7 @@ def main(net: Net, stdout: Stdout):
     let port: u16 = port.trim().parse().unwrap_or(0);
     let ask = |line: &str| -> std::io::Result<String> {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         stream.write_all(format!("{line}\n").as_bytes())?;
         let mut back = String::new();
         std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
@@ -12826,7 +12826,7 @@ def main(net: Net, stdout: Stdout):
     }
     assert_eq!(ask("refuse")?, "");
     // It ends by itself: nothing here kills it.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
     let status = loop {
         if let Some(status) = server.0.try_wait()? {
             break status;

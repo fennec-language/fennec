@@ -1,0 +1,7 @@
+error: a slice position must be an int, not a str
+ --> examples/errors/slice_by_text.fen:3:24
+  |
+3 |     stdout.print(names["1":])
+  |                        ^^^
+  |
+  = help: read the text as a number, as `items[int(text)?]`

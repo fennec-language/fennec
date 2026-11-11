@@ -131,7 +131,9 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
     };
     // The standard library as a run checks it: just what the tests reach.
     let facts = match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
-        Ok(signatures) => crate::verdict::KitFacts::of(&program, &signatures),
+        Ok(signatures) => {
+            crate::verdict::KitFacts::of(crate::verdict::KitNames::of(&program.module.items), &signatures)
+        }
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));
             return Err(ExitCode::FAILURE);

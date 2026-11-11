@@ -1,7 +1,9 @@
 # The edges of `std.net` in a test's fake network: a request cut off before it ends never reaches
-# `respond`, a connection closed on this side fails as `Closed`, a connection's `Writer` sends each
-# line at once, and UDP refuses an address it can't reach or a port already taken.
+# `respond`, a connection closed on this side says so when it's used again, a connection's `Writer`
+# sends each line at once, and UDP refuses an address it can't reach or a port already taken, and
+# gives up at once on a packet that can't come.
 from std.net import NetError, Request, Response
+from std.time import Duration
 
 ## What `run` fails with, in words, or "fine" if it doesn't.
 def why[T](run: () -> T fails NetError) -> str:
@@ -68,10 +70,17 @@ def write_after_close(net: Net) -> str fails NetError:
             return "written"
     ""
 
-test "a connection closed on this side fails to read or write, as Closed"(net: Net):
-    assert closes(() => read_after_close(net)?)
+## What using a socket closed on this side fails with.
+CLOSED_HERE = "the socket was closed here, so it can't be used any more"
+
+test "a connection closed on this side says so when it's used again, not that the other side did"(
+    net: Net,
+):
+    assert why(() => read_after_close(net)?) == CLOSED_HERE
+    # `Closed` is for the other side closing.
+    assert not closes(() => read_after_close(net)?)
     # Through its `Writer`, it's an `IoError` saying what the network said.
-    assert write_after_close(net)? == NetError.Closed.message()
+    assert write_after_close(net)? == CLOSED_HERE
 
 ## A line written and flushed through a connection's `Writer`, as the server reads it.
 def flushed(net: Net) -> str fails NetError:
@@ -119,6 +128,32 @@ test "UDP refuses an address without a port, a host outside the test, and a port
         "the test's fake `Net` reaches only the test's own sockets",
     )
     assert why(() => taken_twice(net, port=9005)?) == "port 9005 is already in use"
+
+## Waits for a packet on a socket nothing has sent to, for `timeout` or with none.
+def received(net: Net, timeout: Duration?) -> str fails NetError:
+    with net.udp(port=9010)? as socket:
+        if timeout is None:
+            _ = socket.receive()?
+        else:
+            _ = socket.receive(timeout=timeout)?
+    "received"
+
+## Each packet's data that a socket's loop gives, sent two at a time.
+def looped(net: Net) -> list[str] fails NetError:
+    with net.udp(port=9011)? as socket:
+        with net.udp()? as other:
+            other.send_to("a", "localhost:9011")?
+            other.send_to("b", "localhost:9011")?
+        return [packet.data.decode() else "?" for packet in socket]
+    []
+
+test "a test's socket with no packet waiting gives up at once, so its loop ends"(net: Net):
+    assert why(() => received(net, timeout=10ms)?) == NetError.TimedOut(after=10ms).message()
+    assert (
+        why(() => received(net, timeout=None)?)
+        == "no packet is waiting for the test's fake socket on port 9010, and none can come while a test waits"
+    )
+    assert looped(net)? == ["a", "b"]
 
 def main(stdout: Stdout):
     stdout.print(NetError.Closed.message())

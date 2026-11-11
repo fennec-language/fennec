@@ -108,6 +108,47 @@ impl Cache {
         std::fs::rename(&temporary, &path)
     }
 
+    /// Keeps the program at `from` as an entry, as that very file rather than a copy of it:
+    /// linked in, so the entry and `from` are one file. A program kept this way is the file that
+    /// was launched, which macOS has checked already: it holds each new file's first launch for
+    /// seconds while it does. Where a link can't be made, as across disks, it's copied.
+    ///
+    /// Nothing is ever written into a file once kept: it's made read-only, and a new program kept
+    /// under the same name is a new file put in its place, so a link to the old one goes on
+    /// holding the old program, never the new one. `from` has to be a file nothing else writes.
+    pub fn keep_file(&self, kind: &str, name: &str, from: &Path) -> std::io::Result<()> {
+        let path = self.path(kind, name);
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&temporary);
+        if std::fs::hard_link(from, &temporary).is_err() {
+            std::fs::copy(from, &temporary)?;
+        }
+        read_only_program(&temporary)?;
+        std::fs::rename(&temporary, &path)
+    }
+
+    /// Puts the entry at `to` as that very file rather than a copy, marked as just used: linked
+    /// out, where a link can be made. Gives back whether there was one.
+    pub fn link_out(&self, kind: &str, name: &str, to: &Path) -> std::io::Result<bool> {
+        let path = self.path(kind, name);
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let _ = std::fs::remove_file(to);
+        if std::fs::hard_link(&path, to).is_err() {
+            std::fs::copy(&path, to)?;
+            read_only_program(to)?;
+        }
+        if let Ok(file) = File::options().write(true).open(&path) {
+            // Only cleanup's order depends on this, so a failure here doesn't matter.
+            let _ = file.set_modified(SystemTime::now());
+        }
+        Ok(true)
+    }
+
     /// How many bytes the cache holds, across every version.
     pub fn size(&self) -> u64 {
         self.entries().iter().map(|entry| entry.size).sum()
@@ -266,10 +307,87 @@ impl Drop for Lock {
     }
 }
 
+/// Lets a program run and keeps anything from writing into it.
+fn read_only_program(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_stale;
     use std::time::Duration;
+
+    /// A file kept and then put out again is one file in all three places, where the system can
+    /// link files: what was launched, the entry, and what the next run launches.
+    #[test]
+    #[cfg(unix)]
+    fn a_file_kept_and_put_out_again_is_the_same_file() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-keep-file-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let launched = dir.join("launched");
+        std::fs::write(&launched, b"a program").unwrap();
+        cache.keep_file("programs", "root", &launched).unwrap();
+        let next = dir.join("next");
+        assert!(cache.link_out("programs", "root", &next).unwrap());
+        let inode = |path: &std::path::Path| std::fs::metadata(path).unwrap().ino();
+        assert_eq!(inode(&launched), inode(&cache.path("programs", "root")));
+        assert_eq!(inode(&launched), inode(&next));
+        assert_eq!(std::fs::read(&next).unwrap(), b"a program");
+        // Put out again over what's there, it's still the one file.
+        assert!(cache.link_out("programs", "root", &next).unwrap());
+        assert_eq!(inode(&launched), inode(&next));
+        assert!(!cache.link_out("programs", "gone", &dir.join("none")).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A program kept under a name another was kept under replaces it with a file of its own: a
+    /// link to the old one still holds the old program, the next one put out holds the new, and
+    /// neither can be written into.
+    #[test]
+    #[cfg(unix)]
+    fn a_program_kept_again_never_changes_one_put_out_before() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-kept-again-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let (first, second) = (dir.join("first"), dir.join("second"));
+        std::fs::write(&first, b"the old program").unwrap();
+        cache.keep_file("programs", "root", &first).unwrap();
+        let (old, new) = (dir.join("old"), dir.join("new"));
+        assert!(cache.link_out("programs", "root", &old).unwrap());
+        std::fs::write(&second, b"the new program").unwrap();
+        cache.keep_file("programs", "root", &second).unwrap();
+        assert!(cache.link_out("programs", "root", &new).unwrap());
+        assert_eq!(std::fs::read(&old).unwrap(), b"the old program");
+        assert_eq!(std::fs::read(&new).unwrap(), b"the new program");
+        let metadata = |path: &std::path::Path| std::fs::metadata(path).unwrap();
+        assert_ne!(metadata(&old).ino(), metadata(&new).ino());
+        for path in [&old, &new, &cache.path("programs", "root")] {
+            assert_eq!(metadata(path).permissions().mode() & 0o222, 0, "{} can be written", path.display());
+            assert!(std::fs::OpenOptions::new().write(true).open(path).is_err());
+        }
+        // Read-only files go as any other.
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_lock_is_stale_after_ten_minutes() {

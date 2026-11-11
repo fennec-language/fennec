@@ -1,0 +1,7 @@
+error: the two sides of this `else` give an int and a str
+ --> examples/errors/else_sides_differ.fen:2:13
+  |
+2 |     count = int("12") else "none"
+  |             ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: a value has one type: convert one side, as `str(count)` or `int(text)`, or make an enum with a case for each

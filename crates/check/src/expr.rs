@@ -190,7 +190,7 @@ impl FnCx<'_> {
         let help = if kinds.iter().all(|kind| kind == "an int" || kind == "a float") {
             "ints and floats don't mix: write whole floats with a decimal point, like `10.0`, or convert with float(...)"
         } else {
-            "a value has one type: convert these to one, or make an enum with a case for each"
+            "a value has one type: convert one side, as `str(count)` or `int(text)`, or make an enum with a case for each"
         };
         self.error(Diagnostic::new(format!("{what} {}", kinds.join(" and ")), span).with_help(help));
         Type::Unknown
@@ -384,7 +384,7 @@ impl FnCx<'_> {
         if divided(left) || divided(right) {
             "`/` always gives a float, even between ints; `//` divides ints and gives an int"
         } else {
-            "convert one side with float(...) or int(...)"
+            "convert one side with `float(...)` or `int(...)`"
         }
     }
 
@@ -534,7 +534,8 @@ impl FnCx<'_> {
                     article(&left.kind()),
                     article(&right.kind())
                 );
-                self.error(Diagnostic::new(message, span));
+                let help = operator_help(op, &left, &right);
+                self.error(Diagnostic::new(message, span).with_help(help));
                 Type::Unknown
             }
         }
@@ -602,10 +603,10 @@ impl FnCx<'_> {
         );
         self.error(match (left, right) {
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
-                diagnostic.with_help("convert one side with float(...) or int(...)")
+                diagnostic.with_help("convert one side with `float(...)` or `int(...)`")
             }
             _ if sizes_mixed(left, right) => diagnostic.with_help(convert_help(right)),
-            _ => diagnostic.with_help("compare values of the same type"),
+            _ => diagnostic.with_help("convert one side so both are one type, as `str(count) == text`"),
         });
     }
 
@@ -658,13 +659,16 @@ impl FnCx<'_> {
             Type::Unknown | Type::Var(_) => return,
             other => {
                 let message = format!("`in` looks inside a collection, but this is {}", a(other));
-                self.error(Diagnostic::new(message, span));
+                let help =
+                    "look in a list, set, dict or str, as `x in [1, 2]`, or compare one value with `==`";
+                self.error(Diagnostic::new(message, span).with_help(help));
                 return;
             }
         };
         if !self.checker.fits(&held, item) {
             let message = format!("can't look for {} in {}", a(item), a(collection));
-            self.error(Diagnostic::new(message, span));
+            let fix = format!("look for {} instead, converting it first, as `str(x)`", a(&held));
+            self.error(Diagnostic::new(message, span).with_help(fix));
         }
     }
 
@@ -759,7 +763,14 @@ impl FnCx<'_> {
                 Type::Unknown
             }
             (UnaryOp::Neg, _) => {
-                self.error(Diagnostic::new(format!("can't negate {}", article(&ty.kind())), span));
+                let help = if ty == Type::Bool {
+                    "a bool is turned around with `not`, as `not done`"
+                } else {
+                    "only a number is negated, as `-count`: convert it first, as `-int(text)`"
+                };
+                self.error(
+                    Diagnostic::new(format!("can't negate {}", article(&ty.kind())), span).with_help(help),
+                );
                 Type::Unknown
             }
             (UnaryOp::BitNot, _) => {
@@ -873,9 +884,31 @@ impl FnCx<'_> {
                             let field = self.checker.field_type(type_name, None, name);
                             return field.substitute(&self.checker.program.type_args(ty));
                         }
+                        let fields: Vec<String> = self
+                            .checker
+                            .program
+                            .type_info(type_name)
+                            .map(|info| info.def.fields.iter().map(|field| field.name.clone()).collect())
+                            .unwrap_or_default();
+                        let help =
+                            match crate::messages::spelled_most_like(name, fields.iter().map(String::as_str))
+                            {
+                                Some(similar) => format!("did you mean `.{similar}`?"),
+                                None if self.has_method(ty, name) => {
+                                    format!("`{name}` is a method: call it, as `.{name}()`")
+                                }
+                                None if fields.is_empty() => {
+                                    format!("`{type_name}` has no fields: take `.{name}` off")
+                                }
+                                None => {
+                                    let shown: Vec<String> =
+                                        fields.iter().map(|field| format!("`.{field}`")).collect();
+                                    format!("its fields are {}", shown.join(", "))
+                                }
+                            };
                         self.error(
                             Diagnostic::new(format!("`{type_name}` has no field `{name}`"), span)
-                                .with_help("call a method with parentheses, like `x.length()`"),
+                                .with_help(help),
                         );
                         Type::Unknown
                     }
@@ -887,7 +920,12 @@ impl FnCx<'_> {
     }
 
     fn no_field(&mut self, ty: &Type, name: &str, span: Span) -> Type {
-        self.error(Diagnostic::new(format!("{} has no field `{name}`", describe(ty)), span));
+        let help = if self.has_method(ty, name) {
+            format!("`{name}` is a method: call it, as `.{name}()`")
+        } else {
+            format!("take `.{name}` off: {} has no fields", describe(ty))
+        };
+        self.error(Diagnostic::new(format!("{} has no field `{name}`", describe(ty)), span).with_help(help));
         Type::Unknown
     }
 
@@ -951,7 +989,15 @@ impl FnCx<'_> {
             Type::Named(name) if name == "Args" => Type::Str,
             ty @ (Type::Named(_) | Type::Generic(..)) => self.iterated(&ty, span),
             other => {
-                self.error(Diagnostic::new(format!("can't loop over {}", article(&other.kind())), span));
+                let help = if matches!(other, Type::Int | Type::Sized(_)) {
+                    "loop over a range of numbers, as `for at in range(count):`"
+                } else {
+                    "loop over a list, set, dict, str or range, as `for item in items:`"
+                };
+                self.error(
+                    Diagnostic::new(format!("can't loop over {}", article(&other.kind())), span)
+                        .with_help(help),
+                );
                 Type::Unknown
             }
         }
@@ -1183,7 +1229,7 @@ impl FnCx<'_> {
                 let help = if other.maybe_none() {
                     "`?` passes failures up, not None: end the chain with `else` and a default, or check with `if x is None:`"
                 } else {
-                    "only something that can fail gives a result to pass up"
+                    "take the `?` off: only something that can fail gives a result to pass up"
                 };
                 let message = format!("`?` needs a result, but this is {}", a(other));
                 self.error(Diagnostic::new(message, value.span).with_help(help));
@@ -1194,11 +1240,26 @@ impl FnCx<'_> {
             let error = self.expr(context);
             if error != Type::Unknown && !self.checker.is_error_type(&error) {
                 let message = format!("`from` needs an error, but this is {}", a(&error));
-                self.error(Diagnostic::new(message, context.span));
+                let help = "give it an error, as `? from LoadError(why=\"no file\")`";
+                self.error(Diagnostic::new(message, context.span).with_help(help));
             }
             self.errors.push(error);
         }
         inner
+    }
+}
+
+/// How to fix an operator used on values it doesn't work on.
+fn operator_help(op: BinOp, left: &Type, right: &Type) -> &'static str {
+    match (left, right) {
+        (Type::Str, _) | (_, Type::Str) if op == BinOp::Add => {
+            "join text with an f-string, as `f\"{name}{count}\"`"
+        }
+        (Type::Str, Type::Str) => "change text with its methods, as `text.replace(old, new)`",
+        (Type::List(_), Type::List(_)) => {
+            "work on a list's items, as `[item * 2 for item in items]`, or join lists with `+`"
+        }
+        _ => "convert one side so both are numbers, as `int(text)` or `float(count)`",
     }
 }
 

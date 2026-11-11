@@ -1,0 +1,55 @@
+## A launched task that crashes inside a `with` runs the source's cleanup, which ends where a `?`
+## or a `fail` in it fails, its failure said with the crash, and the task's crash comes out as
+## `Crashed`, as it would without a cleanup.
+from std.concurrent import Crashed, Sender, channel
+
+error Refused:
+    code: int
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+    n
+
+## Says `text` on `done`, whether or not anything's there to hear it.
+def tell(done: Sender[str], text: str):
+    done.send(text) else:
+        pass
+
+def lent(done: Sender[str], code: int) -> with int fails Refused:
+    lend code else:
+        tell(done, text=f"cleanup {code}")
+        kept = capped(code, limit=5)?
+        for step in range(3):
+            if step == kept:
+                fail Refused(code=step)
+        tell(done, text=f"ended {kept}")
+    tell(done, text="finished")
+
+def crashes(done: Sender[str], code: int) fails Refused:
+    with lent(done, code)? as held:
+        values = [1]
+        tell(done, text=f"{values[held]}")
+
+def job(done: Sender[str], code: int):
+    crashes(done, code) else:
+        tell(done, text="failed")
+
+## Runs a job in a task of its own, and says how its task ended.
+def ran(done: Sender[str], code: int) -> str:
+    _ = launched(done, code=code) else:
+        return "crashed"
+    return "ended"
+
+def launched(done: Sender[str], code: int) fails Crashed:
+    with launch(() => job(done, code)) as task:
+        pass
+
+def main(stdout: Stdout):
+    with channel[str](size=4) as said:
+        for code, told in [(9, 1), (2, 1), (4, 2)]:
+            mut heard = ran(said.sender(), code=code)
+            for _ in range(told):
+                message = said.receive() else "none"
+                heard = f"{heard}, {message}"
+            stdout.print(heard)

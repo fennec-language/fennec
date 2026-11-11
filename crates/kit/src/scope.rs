@@ -517,7 +517,7 @@ impl Resolver<'_> {
             }
             ExprKind::Unary { expr, .. } => self.expr(expr),
             ExprKind::Binary { lhs: first, rhs: second, .. }
-            | ExprKind::Else { value: first, default: second }
+            | ExprKind::Else { value: first, default: second, .. }
             | ExprKind::Index { object: first, index: second } => {
                 self.exprs([first, second].into_iter().map(AsMut::as_mut));
             }

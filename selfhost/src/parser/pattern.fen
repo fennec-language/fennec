@@ -20,6 +20,12 @@ extend Parser:
         subject = self.or_expr()?
         _ = self.expect_punct(":")?
         self.expect_block_start()?
+        arms = self.arms()?
+        Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
+
+    ## The `case` arms of an indented block, up to its end: a `match`'s, or those right under
+    ## `except why:`.
+    def arms(ref self) -> list[MatchArm] fails Diagnostic:
         mut arms = []
         while not self.eat(.Dedent) and not self.at(.Eof):
             if not self.at_soft("case"):
@@ -31,7 +37,7 @@ extend Parser:
             body = self.block()?
             arms.append(MatchArm(pattern=pattern, guard=guard, body=body, span=arm_start.to(self.prev_span())))
         self.block_ended = True
-        Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
+        arms
 
     ## `if condition` after a `case`'s pattern, if there is one.
     def guard(ref self) -> Expr? fails Diagnostic:

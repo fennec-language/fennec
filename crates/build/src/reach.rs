@@ -378,7 +378,7 @@ impl Uses {
                 }
             }
             ExprKind::Unary { expr, .. } => self.expr(expr),
-            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Else { value: lhs, default: rhs } => {
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Else { value: lhs, default: rhs, .. } => {
                 self.expr(lhs);
                 self.expr(rhs);
             }

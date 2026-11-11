@@ -91,7 +91,7 @@ impl FnCx<'_> {
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
-            ExprKind::Else { value, default } => self.else_value(value, default, span),
+            ExprKind::Else { value, default, .. } => self.else_value(value, default, span),
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),

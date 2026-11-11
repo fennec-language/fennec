@@ -103,6 +103,20 @@ mod real {
     impl Drop for Fakes {
         fn drop(&mut self) {
             if let Some(folder) = self.folder.take() {
+                // A database the test left open holds its file, which Windows won't remove while
+                // it's open, so the test's own are closed first.
+                let ours = |entry: &Entry| {
+                    let (Entry::Database(opened) | Entry::Transaction(opened, _)) = entry;
+                    matches!(&opened.place, Place::Test(path) if std::path::Path::new(path).starts_with(&folder))
+                };
+                let closed: Vec<Entry> = {
+                    let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+                    let handles: Vec<i64> =
+                        open.iter().filter(|(_, entry)| ours(entry)).map(|(handle, _)| *handle).collect();
+                    handles.iter().filter_map(|handle| open.remove(handle)).collect()
+                };
+                // Closed outside the lock, which other tests' databases take.
+                drop(closed);
                 let _ = std::fs::remove_dir_all(folder);
             }
         }

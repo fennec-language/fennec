@@ -1,0 +1,7 @@
+error: `in` looks inside a collection, but this is an int
+ --> examples/errors/in_not_a_collection.fen:3:18
+  |
+3 |     stdout.print(1 in count)
+  |                  ^^^^^^^^^^
+  |
+  = help: look in a list, set, dict or str, as `x in [1, 2]`, or compare one value with `==`

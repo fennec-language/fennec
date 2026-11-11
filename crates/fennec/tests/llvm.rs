@@ -8649,6 +8649,171 @@ def main(stdout: Stdout):
     stdout.print(failed, failed_many)
 "#;
 
+/// A program that reads a value where letting go of it too soon is easiest to get wrong prints the
+/// same in a dev build and a release, built as written and checking proofs, and holds as many
+/// blocks at its end after 30 rounds as after 3. Too soon would read what's freed, which the
+/// sanitizer's job sees; too late adds up.
+fn read_until_its_last_use(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    prints_in_both_builds(name, source, wanted)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder(&format!("{name}_checked"))?;
+        let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    let live = |rounds: u32| -> std::io::Result<Option<u64>> {
+        let source = source.replace("rounds = 3", &format!("rounds = {rounds}"));
+        Ok(count(&counts_of(&format!("{name}_{rounds}"), &source)?, "live"))
+    };
+    let (few, many) = (live(3)?, live(30)?);
+    assert!(few.is_some(), "the run says how many blocks it still held");
+    assert_eq!(few, many, "blocks still held after 3 rounds and after 30");
+    Ok(())
+}
+
+/// A list read on each turn of a loop is kept for every turn, though its last read is inside it,
+/// and one replaced on each turn, `current = longer`, is kept until it's replaced.
+#[test]
+fn a_value_read_in_a_loop_is_kept_for_every_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use("read_in_a_loop", READ_IN_A_LOOP, "w0\n11 4 c0\nw1\n11 4 c1\nw2\n11 4 c2\n")
+}
+
+const READ_IN_A_LOOP: &str = r#"def main(stdout: Stdout):
+    rounds = 3
+    for round in range(rounds):
+        words = [f"w{round}", "bb", "ccc"]
+        mut total = 0
+        for at in range(5):
+            total += words[at % 3].len()
+            if at == 4:
+                stdout.print(words[0])
+        mut current = [f"c{round}"]
+        mut steps = 0
+        while steps < 3:
+            longer = current + [f"s{steps}"]
+            current = longer
+            steps += 1
+        stdout.print(total, current.len(), current[0])
+"#;
+
+/// A value read in an `else` block a failure runs is kept for it, though the call that fails reads
+/// it last on the way that doesn't, and one read only in the `else` is kept until the call.
+#[test]
+fn a_value_read_where_a_failure_goes_is_kept_for_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use(
+        "read_where_a_failure_goes",
+        READ_WHERE_A_FAILURE_GOES,
+        "6 0\n7 1\nnote 2 bad 8\nlabel 2\n-1 0\n",
+    )
+}
+
+const READ_WHERE_A_FAILURE_GOES: &str = r#"error Bad:
+    why: str
+
+def risky(n: int) -> int fails Bad:
+    if n % 3 == 2: fail Bad(why=f"bad {n}")
+    n
+
+def main(stdout: Stdout):
+    rounds = 3
+    for round in range(rounds):
+        note = f"note {round}"
+        got = risky(note.len() + round) else as why:
+            stdout.print(note, why.why)
+            -1
+        label = f"label {round}"
+        other = risky(round) else:
+            stdout.print(label)
+            0
+        stdout.print(got, other)
+"#;
+
+/// A value a `with` source reads before its `lend`, in its `else:` and after it, is kept across
+/// the caller's block, and the caller's own, read inside the block and after it, is kept too.
+#[test]
+fn a_value_read_around_a_lend_is_kept_across_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use(
+        "read_around_a_lend",
+        READ_AROUND_A_LEND,
+        "ANN0 ann0\n4\nANN1 ann1\n4\nANN2 ann2\n4\n6 open ann0\n",
+    )
+}
+
+const READ_AROUND_A_LEND: &str = r#"struct Ledger:
+    lines = list[str]()
+
+def entry(ref ledger: Ledger, name: str) -> with str:
+    ledger.lines.append(f"open {name}")
+    lend name.upper() else:
+        ledger.lines.append(f"undo {name}")
+    ledger.lines.append(f"close {name}")
+
+def main(stdout: Stdout):
+    rounds = 3
+    mut ledger = Ledger()
+    for round in range(rounds):
+        name = f"ann{round}"
+        with entry(ref ledger, name) as label:
+            stdout.print(label, name)
+        stdout.print(name.len())
+    stdout.print(ledger.lines.len(), ledger.lines[0])
+"#;
+
+/// A value an arrow function captures is kept for every call of it, though making the arrow is
+/// the last read written where the value is, and one read again after is kept for that too.
+#[test]
+fn a_value_an_arrow_captures_is_kept_for_its_calls() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use(
+        "captured_by_an_arrow",
+        CAPTURED_BY_AN_ARROW,
+        "hi 0 1 hi 0!2\n4 i0\nhi 1 1 hi 1!2\n4 i1\nhi 2 1 hi 2!2\n4 i2\n",
+    )
+}
+
+const CAPTURED_BY_AN_ARROW: &str = r#"def apply(run: (int) -> str, n: int) -> str:
+    run(n)
+
+def count_with(run: () -> int) -> int:
+    run() + run()
+
+def main(stdout: Stdout):
+    rounds = 3
+    for round in range(rounds):
+        greeting = f"hi {round}"
+        stdout.print(apply((x) => f"{greeting} {x}", 1), apply((x) => f"{greeting}!{x}", 2))
+        items = [f"i{round}", "j"]
+        stdout.print(count_with(() => items.len()), items[0])
+"#;
+
 /// [`FAILING_PARTWAY`] with `many`, a function of 50 lines that each make a list and a string
 /// held only for the line, enough short-lived values for each failure to let go of its own where
 /// it leaves. Round `at` fails at line `49 - at`.

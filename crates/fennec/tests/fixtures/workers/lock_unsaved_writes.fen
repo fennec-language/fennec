@@ -1,0 +1,98 @@
+## Writes under a lock that nothing after them can undo aren't saved: a lock's last write, and
+## writes followed only by moves and compares. Writes something after them can undo are: a failure
+## or a crash after them puts each back. Built checking proofs, which stop at a rollback after a
+## write that wasn't saved.
+from std.concurrent import Crashed
+
+error Boom:
+    step: int
+
+struct Tally:
+    count = 0
+    other = 0
+    counts = dict[int, int]()
+
+def kept(tally: shared Tally, step: int):
+    lock tally as ref held:
+        held.count += step
+    lock tally as ref held:
+        held.counts[step % 3] = (held.counts.get(step % 3) else 0) + step
+    lock tally as ref held:
+        held.other = held.count
+        same = held.other == held.count
+        held.other = 1 if same else 0
+
+## Writes, then a failure that puts them back.
+def failed(tally: shared Tally, step: int) fails Boom:
+    lock tally as ref held:
+        held.count += 1000
+        held.counts[step % 3] = 1000
+        held.other = step
+        if step % 2 == 0:
+            fail Boom(step=step)
+
+## Two locks taken together, written in either order. Only their end together ends either one's
+## walk, so the last write goes unsaved and a failure puts back the rest.
+def together(first: shared Tally, second: shared Tally, step: int, failing: bool) fails Boom:
+    lock first, second as ref one, ref two:
+        if step % 2 == 0:
+            two.count += 1
+            one.other = step
+        else:
+            one.count += 1
+            two.other = step
+        if failing:
+            fail Boom(step=step)
+
+## A write in a loop whose later turn fails, which puts back every turn's.
+def looped(tally: shared Tally, times: int) fails Boom:
+    lock tally as ref held:
+        for step in range(times):
+            held.other = step + 50
+            if step == 2:
+                fail Boom(step=step)
+
+## Writes, then a crash that puts them back.
+def crashing(tally: shared Tally, at: int):
+    lock tally as ref held:
+        held.count += 100000
+        held.other = 7
+        values = [1]
+        held.count += values[at]
+
+def launched(tally: shared Tally, at: int) fails Crashed:
+    with launch(() => crashing(tally, at)) as task:
+        pass
+
+## A write, then a sum that overflows: the sum's check is all that's after the write.
+def overflowing(tally: shared Tally, by: int):
+    lock tally as ref held:
+        held.other = 9
+        _ = held.count + by
+
+def overflowed(tally: shared Tally, by: int) fails Crashed:
+    with launch(() => overflowing(tally, by)) as task:
+        pass
+
+def main(stdout: Stdout):
+    shared tally = Tally()
+    mut failed_count = 0
+    for step in range(1, 7):
+        kept(tally, step=step)
+        _ = failed(tally, step=step) else:
+            failed_count += 1
+    for at in [1, 0]:
+        _ = launched(tally, at=at) else:
+            stdout.print("crashed", at)
+    _ = overflowed(tally, by=9_223_372_036_854_775_807) else:
+        stdout.print("overflowed")
+    _ = looped(tally, times=5) else:
+        failed_count += 1
+    shared spare = Tally()
+    for step in range(4):
+        _ = together(tally, second=spare, step=step, failing=step >= 2) else:
+            failed_count += 1
+    lock spare as held:
+        stdout.print(held.count, held.other)
+    lock tally as held:
+        stdout.print(failed_count, held.count, held.other, held.counts)

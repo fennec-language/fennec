@@ -2249,6 +2249,38 @@ fn fix_moves_idmap_to_table() {
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
 }
 
+/// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
+/// and a def's last value as what it returns): plain `fennec fix` leaves them, `fennec fix
+/// --migrate` writes `except` and `return` for them, a second run finds nothing more, and the
+/// program prints what it did before.
+#[test]
+fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let old = std::fs::read_to_string(fixtures.join("old_failure_forms.fen")).unwrap();
+    let migrated = std::fs::read_to_string(fixtures.join("migrated_failure_forms.fen")).unwrap();
+    let dir = scratch("failure-forms").unwrap();
+    let program = dir.join("forms.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, &old).unwrap();
+    let before = fennec(&["run", &path], "").unwrap();
+    let plain = fennec(&["fix", &path], "").unwrap();
+    let untouched = std::fs::read_to_string(&program).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let rewritten = std::fs::read_to_string(&program).unwrap();
+    let after = fennec(&["run", &path], "").unwrap();
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert_eq!(untouched, old);
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, migrated);
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    assert_eq!(rewritten, migrated);
+    assert!(after.status.success(), "{}", text(&after.stderr));
+    assert_eq!(text(&after.stdout), text(&before.stdout));
+    assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
+}
+
 /// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
 /// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
 /// for the `with`, and then it runs.

@@ -21,6 +21,7 @@ mod constants;
 mod effects;
 mod enumerate_lowering;
 mod except;
+mod except_fix;
 mod expect;
 mod expr;
 mod extend;
@@ -73,6 +74,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 
+pub use except_fix::migration_fixes;
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;

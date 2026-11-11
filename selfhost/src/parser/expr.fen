@@ -117,10 +117,10 @@ extend Parser:
                 help="write the case, a `:` and what it gives, as `except InvalidValue(): 8080`",
             )
         arm_start = self.advance().span
-        indented = self.at(.Newline)
         body = self.block()?
-        # On the line, the case's statement has ended the line, and the statement it's in with it.
-        self.block_ended = not indented or self.block_ended
+        # The case's statement on the line has ended the line, and an indented block has ended
+        # with its dedent: either way the statement it's in has no line ending of its own left.
+        self.block_ended = True
         span = arm_start.to(self.prev_span())
         # The failure has a name nobody can write, as the one case's `match` is over it.
         arm = MatchArm(pattern=pattern, guard=None, body=body, span=span)

@@ -91,7 +91,7 @@ impl FnCx<'_> {
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
-            ExprKind::Else { value, default, .. } => self.else_value(value, default, span),
+            ExprKind::Else { value, default, except } => self.else_value(value, default, *except, span),
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
@@ -1061,7 +1061,10 @@ impl FnCx<'_> {
 
     /// `value else default`: what's inside the value, or the default, or nothing more if the default
     /// leaves.
-    fn else_value(&mut self, value: &Expr, default: &Expr, span: Span) -> Type {
+    fn else_value(&mut self, value: &Expr, default: &Expr, except: bool, span: Span) -> Type {
+        if except {
+            self.except_rules(value, default);
+        }
         let mut steps = Vec::new();
         else_steps(value, &mut steps);
         self.else_chain.extend(steps.iter().copied());
@@ -1086,9 +1089,12 @@ impl FnCx<'_> {
                     .with_help("write a loop, or give a value after `else`"),
             );
         }
+        if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
+            self.nothing_to_except(&value, written);
+        }
         let default = match default.else_block() {
             Some((failure, block)) => {
-                let given = self.else_block(failure, block, &value, written);
+                let given = self.else_block((failure, except), block, &value, written);
                 leaves |= given.is_none();
                 let given = given.unwrap_or(Type::Unit);
                 // The block is an expression too, typed as what it gives, over the value nothing
@@ -1123,7 +1129,7 @@ impl FnCx<'_> {
     /// failed or was `None`, of that one's type.
     fn else_block(
         &mut self,
-        failure: Option<&str>,
+        (failure, except): (Option<&str>, bool),
         block: &[fennec_syntax::Stmt],
         value: &Type,
         written: Span,
@@ -1133,6 +1139,8 @@ impl FnCx<'_> {
             failure.map(|_| match &settled {
                 Type::Result(_, error) => (**error).clone(),
                 Type::Unknown => Type::Unknown,
+                // `except` says so itself, in `nothing_to_except`.
+                _ if except => Type::Unknown,
                 _ => {
                     let message = "this can't fail, so `else as` has no failure to name";
                     self.error(Diagnostic::new(message, written).with_help(

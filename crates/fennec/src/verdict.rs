@@ -439,11 +439,12 @@ pub(crate) fn remember_checked(
     let rows = rows_of_modules(program, files, &|module| new.contains(module));
     for file in files {
         if let Some(rows) = rows.get(&file.module) {
-            let _ = cache.store_file_rows(file.text, rows);
+            fennec_build::kept("keep a file's definitions", cache.store_file_rows(file.text, rows));
         }
     }
     // A cache that can't be written only means checking all of it again next time.
-    let _ = store_with_facts(cache, &checked_name(path), &with_embedded(files, program), facts);
+    let stored = store_with_facts(cache, &checked_name(path), &with_embedded(files, program), facts);
+    fennec_build::kept("keep the program's check", stored);
 }
 
 /// Remembers that all of a kit's tests pass with its files as they are, with its lock verdicts.

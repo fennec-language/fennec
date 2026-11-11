@@ -587,6 +587,34 @@ fn a_task_holding_a_lock_is_not_parked() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The port a server just started prints on its first line, with the rest of what it prints to
+/// read. One that ends before it prints one fails the test with how it ended and what it said:
+/// what it says is read as it goes, so a server saying a lot never waits on a full pipe.
+fn port_of(
+    server: &mut std::process::Child,
+    threads: &str,
+) -> std::io::Result<(std::io::BufReader<std::process::ChildStdout>, u16)> {
+    use std::io::{BufRead as _, Read as _};
+    let mut errors = server.stderr.take().ok_or_else(|| std::io::Error::other("no stderr"))?;
+    let said = std::thread::spawn(move || {
+        let mut said = String::new();
+        let _ = errors.read_to_string(&mut said);
+        said
+    });
+    let mut out =
+        std::io::BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    out.read_line(&mut port)?;
+    if let Ok(found) = port.trim().parse::<u16>() {
+        return Ok((out, found));
+    }
+    let ended = server.wait()?;
+    let said = said.join().unwrap_or_default();
+    Err(std::io::Error::other(format!(
+        "on {threads} threads it printed {port:?} for its port and ended with {ended}, saying {said:?}"
+    )))
+}
+
 /// When a server's loop ends, the blocks it lent to its rounds come back, so what runs next can
 /// read and lend them.
 #[test]
@@ -605,12 +633,9 @@ fn what_a_server_borrowed_comes_back_when_it_ends() -> std::io::Result<()> {
         let mut server = Command::new(&built)
             .env("FENNEC_THREADS", threads)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()?;
-        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
-        let mut port = String::new();
-        out.read_line(&mut port)?;
-        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        let (mut out, port) = port_of(&mut server, threads)?;
         let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
         let mut back = String::new();
         BufReader::new(stream).read_line(&mut back)?;
@@ -732,12 +757,9 @@ fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<
         let mut server = Command::new(&built)
             .env("FENNEC_THREADS", threads)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()?;
-        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
-        let mut port = String::new();
-        out.read_line(&mut port)?;
-        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        let (mut out, port) = port_of(&mut server, threads)?;
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
         stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         let mut reader = BufReader::new(stream.try_clone()?);

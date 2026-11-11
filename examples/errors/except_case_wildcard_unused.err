@@ -1,0 +1,7 @@
+error: `case _:` takes every other failure, so it uses `why`
+  --> examples/errors/except_case_wildcard_unused.fen:15:13
+   |
+15 |             return
+   |             ^^^^^^
+   |
+   = help: use it, as `log.warn(f"{why}")`, or pass it on with `fail why`

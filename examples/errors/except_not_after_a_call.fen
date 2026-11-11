@@ -1,0 +1,14 @@
+error LoadError:
+    Missing(path: str)
+    Damaged(line: int)
+
+def load(path: str) -> int fails LoadError:
+    if path == "": fail .Missing(path)
+    return 7
+
+def main(stdout: Stdout):
+    counts = [1, 2]
+    first = counts[0] except why:
+        stdout.print(f"{why}")
+        return
+    stdout.print(first)

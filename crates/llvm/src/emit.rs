@@ -476,6 +476,7 @@ impl<'p> Module<'_, 'p> {
             cold: String::new(),
             next: 0,
             current: "entry".to_owned(),
+            runs: Runs::AsItsFunction,
             failed,
             leaves: std::cell::Cell::new(false),
             needs_prop: false,
@@ -555,6 +556,15 @@ impl<'p> Module<'_, 'p> {
     }
 }
 
+/// Where the code being written runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Runs {
+    /// Where its function runs.
+    AsItsFunction,
+    /// On any thread.
+    Anywhere,
+}
+
 /// One function being written.
 pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) module: &'e mut Module<'w, 'p>,
@@ -574,6 +584,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     next: usize,
     /// The block being written.
     pub(crate) current: String,
+    /// Where what's being written runs: a closure's drop may run on any thread, so it counts
+    /// owners as code on the workers does.
+    runs: Runs,
     failed: String,
     /// Whether a way out for a failure was written.
     leaves: std::cell::Cell<bool>,
@@ -664,6 +677,17 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn start_block(&mut self, label: &str) {
         let _ = writeln!(self.out, "{label}:");
         label.clone_into(&mut self.current);
+    }
+
+    /// What `write` writes, as text for a function of its own that may run on any thread,
+    /// leaving the one being written as it was.
+    pub(crate) fn written_apart(&mut self, write: impl FnOnce(&mut Self)) -> String {
+        let (hot, current) = (std::mem::take(&mut self.out), self.current.clone());
+        let runs = std::mem::replace(&mut self.runs, Runs::Anywhere);
+        write(self);
+        self.runs = runs;
+        self.current = current;
+        std::mem::replace(&mut self.out, hot)
     }
 
     /// Adds a block away from the hot path.
@@ -1068,7 +1092,9 @@ impl Emit<'_, '_, '_> {
     /// Whether this function can run on one of `parallel`'s threads, so a block it's handed may
     /// be another thread's.
     pub(crate) fn on_workers(&self) -> bool {
-        self.module.threads && self.module.whole.on_workers.contains(self.function.name.as_str())
+        self.module.threads
+            && (self.runs == Runs::Anywhere
+                || self.module.whole.on_workers.contains(self.function.name.as_str()))
     }
 
     /// Writes `write` for a block that's made, leaving a null one be.

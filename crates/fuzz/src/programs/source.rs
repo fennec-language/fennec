@@ -277,6 +277,11 @@ def tried(run: () -> int fails Refused) -> str:
         return f\"refused {why.code}\"
     return str(value)
 
+def fallback(run: () -> int fails Refused) -> str:
+    value = run() else as why:
+        why.code * 100
+    return str(value)
+
 def tried_twice(run: () -> int fails Refused) -> str fails Refused:
     first = run()?
     second = run()?
@@ -531,7 +536,98 @@ pub(crate) fn source(program: &Program) -> String {
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
-    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    let written = format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out);
+    if EXCEPT_PARSES { excepted(&written) } else { written }
+}
+
+/// Whether failures are handled with `except`, as the syntax locked on 2026-11-11 has it, rather
+/// than `else`. It parses and runs since #1398. Once the migration makes the old forms errors,
+/// `excepted` becomes how the program is written, and this goes.
+pub(crate) const EXCEPT_PARSES: bool = true;
+
+/// What each function a program handles the failures of fails with, so its `except` block can
+/// have a `case` for each. Every one is an error without cases, so the cases cover it by name
+/// and needn't read `why`.
+const FAILS_WITH: [(&str, &[&str]); 8] = [
+    ("change", &["Refused"]),
+    ("bump_outer", &["Refused"]),
+    ("locked", &["Refused"]),
+    ("run", &["Refused"]),
+    ("summed_until", &["Shut"]),
+    ("tally", &["Crashed", "Closed", "Timeout"]),
+    ("sent", &["Crashed", "Closed", "Timeout"]),
+    ("guard_all", &["Crashed", "Closed", "Timeout", "Refused"]),
+];
+
+/// A program's failures handled with `except`, the old `else` forms rewritten line by line:
+/// - `lend x else:` is `lend x except:`;
+/// - `x = f() else as why:` is `x = f() except why:`, and a `match why:` straight under it gives
+///   its `case` arms to the `except`;
+/// - `f() else:` on a call that fails is `f() except why:`, with a `case` for each error it fails
+///   with, each holding what the `else:` held.
+///
+/// It reads the program as `source` writes it, four spaces an indent.
+pub(crate) fn excepted(program: &str) -> String {
+    let lines: Vec<&str> = program.lines().collect();
+    let indent_of = |line: &str| line.len() - line.trim_start().len();
+    let block_end = |from: usize, indent: usize| {
+        (from..lines.len())
+            .find(|&at| {
+                lines.get(at).is_some_and(|line| !line.trim().is_empty() && indent_of(line) <= indent)
+            })
+            .unwrap_or(lines.len())
+    };
+    let mut out = String::with_capacity(program.len() + program.len() / 8);
+    let mut at = 0;
+    while let Some(&line) = lines.get(at) {
+        let trimmed = line.trim_start();
+        let indent = indent_of(line);
+        let pad = " ".repeat(indent);
+        let opens = ["if ", "elif ", "while ", "for ", "else:", "with ", "lock ", "def ", "case "];
+        if trimmed.starts_with("lend ") && trimmed.ends_with(" else:") {
+            let _ = writeln!(out, "{pad}{} except:", trimmed.trim_end_matches(" else:"));
+        } else if let Some(handled) = trimmed.strip_suffix(" else as why:") {
+            let _ = writeln!(out, "{pad}{handled} except why:");
+            let next = lines.get(at + 1).copied().unwrap_or_default();
+            if next.trim() == "match why:" {
+                // The arms go straight under the `except`, an indent nearer.
+                let end = block_end(at + 2, indent_of(next));
+                for arm in lines.get(at + 2..end).unwrap_or_default() {
+                    out.push_str(arm.get(4..).unwrap_or(arm));
+                    out.push('\n');
+                }
+                at = end;
+                continue;
+            }
+        } else if trimmed.ends_with(") else:") && !opens.iter().any(|open| trimmed.starts_with(open)) {
+            let handled = trimmed.trim_end_matches(" else:");
+            let call = handled.split_once(" = ").map_or(handled, |(_, call)| call);
+            let callee =
+                call.split('(').next().unwrap_or_default().trim_end_matches(|c: char| c.is_ascii_digit());
+            // A call whose errors aren't known is left as it was, which the tests catch.
+            let Some((_, errors)) = FAILS_WITH.iter().find(|(name, _)| *name == callee) else {
+                out.push_str(line);
+                out.push('\n');
+                at += 1;
+                continue;
+            };
+            let _ = writeln!(out, "{pad}{handled} except why:");
+            let end = block_end(at + 1, indent);
+            for error in *errors {
+                let _ = writeln!(out, "{pad}    case {error}():");
+                for held in lines.get(at + 1..end).unwrap_or_default() {
+                    let _ = writeln!(out, "    {held}");
+                }
+            }
+            at = end;
+            continue;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+        at += 1;
+    }
+    out
 }
 
 /// The names `Left`'s `ward`s are lent as, outermost first.
@@ -577,6 +673,25 @@ fn left_written(id: usize, depth: usize, together: bool, rounds: i64, at: i64, h
             vec![format!("got = capped(i, limit={at_most})?"), "total = total + got".to_owned()]
         }
         Leave::QuestionInside => vec![format!("total = total + capped(i, limit={at_most})? * 2")],
+        Leave::ExceptReturn | Leave::ExceptContinue => vec![
+            format!("got = capped(i, limit={at_most}) except why:"),
+            "    stdout.print(\"caught\", why.code)".to_owned(),
+            (if how == Leave::ExceptReturn { "    return" } else { "    continue" }).to_owned(),
+            "total = total + got".to_owned(),
+        ],
+        Leave::ExceptValue => {
+            vec![
+                format!("got = capped(i, limit={at_most}) except Refused(): -1"),
+                "total = total + got".to_owned(),
+            ]
+        }
+        Leave::ExceptArms => vec![
+            format!("got = capped(i, limit={at_most}) except why:"),
+            "    case _:".to_owned(),
+            "        stdout.print(\"caught\", why.code)".to_owned(),
+            "        break".to_owned(),
+            "total = total + got".to_owned(),
+        ],
         Leave::QuestionNestedInner => {
             vec![format!("total = total + capped(capped(i, limit={at_most})?, limit=1000)? * 2")]
         }
@@ -1059,12 +1174,23 @@ impl Writer {
                 let capped = format!("capped({n}, limit={limit})?");
                 match how {
                     Arrow::Tried => self.line(indent, &format!("stdout.print(tried(() => {capped}))")),
+                    Arrow::Twice if EXCEPT_PARSES => {
+                        // A failing call can't sit inside another expression, so it has a line.
+                        self.made += 1;
+                        let name = format!("twice{}", self.made);
+                        self.line(
+                            indent,
+                            &format!("{name} = tried_twice(() => {capped}) except Refused(): \"refused\""),
+                        );
+                        self.line(indent, &format!("stdout.print({name})"));
+                    }
                     Arrow::Twice => {
                         self.line(
                             indent,
                             &format!("stdout.print(tried_twice(() => {capped}) else \"refused\")"),
                         );
                     }
+                    Arrow::Fallback => self.line(indent, &format!("stdout.print(fallback(() => {capped}))")),
                     Arrow::Each(list) => {
                         let list = self.expr(list, false);
                         self.line(

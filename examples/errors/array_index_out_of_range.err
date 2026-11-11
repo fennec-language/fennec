@@ -4,4 +4,4 @@ error: this array has 20 items, so there's no item 20
 3 |     slots[20] = 1
   |           ^^
   |
-  = help: its items are 0 to 19
+  = help: its items are 0 to 19: write one of those, or `-1` for the last

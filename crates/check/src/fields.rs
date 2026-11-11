@@ -36,6 +36,9 @@ pub fn fields_of(iter: &Expr) -> Option<&str> {
     }
 }
 
+/// What a field a loop over `fields(T)` gives has.
+const FIELD_HAS: &str = "write `field.name` for its name, or `field.get(value)` for its value in `value`";
+
 impl FnCx<'_> {
     /// `for f in fields(T):`, when `fields` is the language's own: `None` otherwise.
     pub(crate) fn fields_loop(
@@ -50,12 +53,14 @@ impl FnCx<'_> {
             return None;
         }
         let [name] = names else {
-            self.error(Diagnostic::new("a loop over `fields(...)` takes one name for each field", span));
+            let help = format!("name each field once, as `for field in fields({of}):`");
+            let message = "a loop over `fields(...)` takes one name for each field";
+            self.error(Diagnostic::new(message, span).with_help(help));
             return Some(());
         };
         let written = TypeExpr { name: of.to_owned(), args: Vec::new(), optional: false, span: iter.span };
         let Some(ty) = self.written_type(&written) else {
-            self.error(Diagnostic::new(format!("`{of}` isn't a type"), iter.span));
+            self.error(crate::program::unknown_type(of, iter.span));
             return Some(());
         };
         let field = Type::Generic(field_type_name(), vec![ty, Type::Param(each_field_type(iter.span.start))]);
@@ -78,7 +83,8 @@ impl FnCx<'_> {
         if name == "name" {
             return Some(Type::Str);
         }
-        self.error(Diagnostic::new(format!("a field has a `name` and a `get(...)`, not `{name}`"), span));
+        let message = format!("a field has a `name` and a `get(...)`, not `{name}`");
+        self.error(Diagnostic::new(message, span).with_help(FIELD_HAS));
         Some(Type::Unknown)
     }
 
@@ -91,21 +97,21 @@ impl FnCx<'_> {
         let [of, each] = parts.as_slice() else { return None };
         let (of, each) = (of.clone(), each.clone());
         if method != "get" {
-            self.error(Diagnostic::new(
-                format!("a field has a `name` and a `get(...)`, not `{method}`"),
-                span,
-            ));
+            let message = format!("a field has a `name` and a `get(...)`, not `{method}`");
+            self.error(Diagnostic::new(message, span).with_help(FIELD_HAS));
             return Some(Type::Unknown);
         }
         let [Arg { name: None, is_mut: false, value }] = args else {
-            self.error(Diagnostic::new("`get` takes the value to read the field of", span));
+            let help = "pass the value whose field it reads, as `field.get(value)`";
+            self.error(Diagnostic::new("`get` takes the value to read the field of", span).with_help(help));
             return Some(Type::Unknown);
         };
         let given = self.expr(value);
         if !self.checker.fits(&of, &given) {
             let message =
                 format!("`get` reads a field of {}, not {}", crate::types::a(&of), crate::types::a(&given));
-            self.error(Diagnostic::new(message, value.span));
+            let help = format!("pass {}, the type the loop is over", crate::types::a(&of));
+            self.error(Diagnostic::new(message, value.span).with_help(help));
         }
         Some(each)
     }

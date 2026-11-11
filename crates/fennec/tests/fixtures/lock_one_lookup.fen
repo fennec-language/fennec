@@ -1,0 +1,60 @@
+## A put after a lookup of the same key, under a lock, uses where the lookup found it rather than
+## looking again, but only for the same key in the dict that's there now. A different key, a
+## different dict, a key worked out again with a side effect, a field set to another dict, a dict
+## grown, and a key's local changed between the lookup and the put each look again. Every one is
+## right, kept, or put back by a failure.
+error Boom:
+    step: int
+
+struct Table:
+    counts = dict[int, int]()
+    others = dict[int, int]()
+
+## A key that's different each time it's worked out: 1, 2, 0, 1, ...
+def bump(ref seen: list[int]) -> int:
+    seen.append(seen.len())
+    seen.len() % 3
+
+def change(table: shared Table, step: int, failing: bool) fails Boom:
+    mut seen = list[int]()
+    lock table as ref held:
+        key = step % 4
+        # The same key: one lookup.
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+        # A different key.
+        held.counts[key + 1] = (held.counts.get(key) else 0) + 100
+        # A different dict.
+        held.others[key] = (held.counts.get(key) else 0) + 1000
+        # A key worked out again, with a side effect each time.
+        held.counts[bump(ref seen)] = (held.counts.get(bump(ref seen)) else 0) + 10000
+        # The field set to another dict between the lookup and the put.
+        old = held.others
+        held.others = {key: 5}
+        held.others[key] = (old.get(key) else 0) + 1
+        # The dict grown between the lookup, through another local, and the put.
+        through = held.counts
+        grown = through.get(key) else 0
+        held.counts[step + 50] = 1
+        held.counts[key] = grown + 2
+        # The key's local changed between the lookup and the put.
+        mut moving = key
+        moved = held.counts.get(moving) else 0
+        moving = moving + 1
+        held.counts[moving] = moved + 3
+        if failing:
+            fail Boom(step=step)
+
+def shown(table: shared Table) -> str:
+    lock table as held:
+        f"{held.counts} {held.others}"
+
+def main(stdout: Stdout):
+    shared table = Table()
+    mut failed = 0
+    for step in range(12):
+        before = shown(table)
+        _ = change(table, step=step, failing=step % 5 == 4) else:
+            failed += 1
+            if shown(table) != before:
+                stdout.print("not put back", step)
+    stdout.print(failed, shown(table))

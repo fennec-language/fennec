@@ -6,7 +6,7 @@
 //! leaves the whole program to load and check: an edit that reaches further, a program that
 //! isn't a kit, or a mistake, which the whole program reports best.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use fennec_build::{Cache, KitFile, KitState, Row, TestRecord};
@@ -191,6 +191,47 @@ pub(crate) fn plan(
     })
 }
 
+/// What each function waits on or locks, by its key, as the checker judges a `lock` that calls it.
+pub(crate) type LockVerdicts = BTreeMap<String, String>;
+
+/// The cache's kind for a kit's lock verdicts, each kept under the state it was found for.
+const LOCK_VERDICTS: &str = "lock-verdicts";
+
+/// What names a kit's state in the cache: a hash of each file's module and text.
+fn state_key(state: &KitState) -> String {
+    let mut files: Vec<(&String, &KitFile)> = state.files.iter().collect();
+    files.sort_by(|a, b| a.0.cmp(b.0));
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec kit lock verdicts 2026-11-11");
+    for (module, file) in files {
+        hasher.update(module.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(file.text.to_hex().as_bytes());
+        hasher.update(&[1]);
+    }
+    hasher.finalize().to_hex()
+}
+
+/// The lock verdicts kept for a kit's state, if they were.
+fn stored_verdicts(cache: &Cache, state: &KitState) -> Option<LockVerdicts> {
+    let bytes = cache.read(LOCK_VERDICTS, &state_key(state))?;
+    let text = String::from_utf8(bytes).ok()?;
+    text.lines()
+        .map(|line| line.split_once('\0').map(|(key, verdict)| (key.to_owned(), verdict.to_owned())))
+        .collect()
+}
+
+/// Keeps a kit's lock verdicts under its state.
+fn store_verdicts(cache: &Cache, state: &KitState, verdicts: &LockVerdicts) -> std::io::Result<()> {
+    let mut text = String::new();
+    for (key, verdict) in verdicts {
+        text.push_str(key);
+        text.push('\0');
+        text.push_str(verdict);
+        text.push('\n');
+    }
+    cache.write(LOCK_VERDICTS, &state_key(state), text.as_bytes())
+}
+
 /// What names the last time all of a kit `main` reaches passed the checker, for `fennec run`.
 fn checked_name(path: &str) -> String {
     format!("{}#checked", crate::run::absolute(path))
@@ -201,12 +242,17 @@ fn checked_name(path: &str) -> String {
 /// bodies of its functions. Then nothing outside those bodies can have broken, so the changed files
 /// and what they import are checked, and what that finds is the answer, with the program it was
 /// found in. `None` means the whole program has to be checked.
+///
+/// A body can still reach a `lock` in a file it doesn't import: one that calls it, which a `lock`
+/// refuses if it now waits or locks, however many calls down. So each changed function's lock
+/// verdict has to be what the last full check found, and those verdicts are what a pass gives.
 pub(crate) fn checked_quickly(
     path: &str,
     cache: &Cache,
     files: &[KitFile],
-) -> Option<Result<(), (Program, Vec<fennec_syntax::Diagnostic>)>> {
+) -> Option<Result<LockVerdicts, (Program, Vec<fennec_syntax::Diagnostic>)>> {
     let state = cache.kit_state(&checked_name(path), BUILD)?;
+    let verdicts = stored_verdicts(cache, &state)?;
     if state.files.len() != files.len() {
         return None;
     }
@@ -217,7 +263,7 @@ pub(crate) fn checked_quickly(
         }
     }
     if changed.is_empty() {
-        return Some(Ok(()));
+        return Some(Ok(verdicts));
     }
     if changed.iter().any(|module| module == "kit.toml" || module.starts_with(fennec_kit::EMBEDDED)) {
         return None;
@@ -225,20 +271,34 @@ pub(crate) fn checked_quickly(
     let overlay = fennec_kit::Overlay::new();
     let loaded = fennec_kit::load_modules_with(Path::new(path), path, &changed, &overlay).ok()?;
     let rows = rows_by_module(&loaded, files);
+    let mut bodies = Vec::new();
     for module in &changed {
         let old = cache.file_rows(state.files.get(module)?.text)?;
         let new = rows.get(module).map_or(&[][..], Vec::as_slice);
-        fennec_build::changed_bodies(&old, new)?;
+        bodies.extend(fennec_build::changed_bodies(&old, new)?);
     }
     match crate::copy_rule::check_rules(&mut loaded.module.clone(), &loaded.sources) {
-        Ok(_) => Some(Ok(())),
+        // Everything a changed function calls is loaded, so its verdict here is the whole
+        // program's: the same as before, and no `lock` that calls it can have changed.
+        Ok(signatures) => {
+            let now = signatures.lock_verdicts();
+            let functions = bodies.iter().filter_map(|key| key.strip_prefix("def "));
+            let mut functions = functions;
+            functions.all(|key| now.get(key) == verdicts.get(key)).then_some(Ok(verdicts))
+        }
         Err(diagnostics) => Some(Err((loaded, diagnostics))),
     }
 }
 
 /// Remembers that all of the kit at `path` that `main` reaches, `program`, passes the checker
-/// with its files as they are, with each file's definitions, for `checked_quickly`.
-pub(crate) fn remember_checked(path: &str, cache: &Cache, files: &[KitFile], program: &Program) {
+/// with its files as they are, with each file's definitions and its lock verdicts, for
+/// `checked_quickly`.
+pub(crate) fn remember_checked(
+    path: &str,
+    cache: &Cache,
+    (files, program): (&[KitFile], &Program),
+    verdicts: &LockVerdicts,
+) {
     // Only a file whose text is new needs its definitions worked out: after an edit, that's the
     // file edited.
     let new: HashSet<&str> = files
@@ -252,8 +312,16 @@ pub(crate) fn remember_checked(path: &str, cache: &Cache, files: &[KitFile], pro
             let _ = cache.store_file_rows(file.text, rows);
         }
     }
-    // A cache that can't be written only means checking all of it again next time.
-    let _ = cache.store_kit_state(&checked_name(path), BUILD, &with_embedded(files, program));
+    let files = with_embedded(files, program);
+    let state = KitState {
+        files: files.iter().map(|file| (file.module.clone(), file.clone())).collect(),
+        noted_at: 0,
+    };
+    // A cache that can't be written only means checking all of it again next time, and a state
+    // kept without its verdicts is never checked quickly.
+    if store_verdicts(cache, &state, verdicts).is_ok() {
+        let _ = cache.store_kit_state(&checked_name(path), BUILD, &files);
+    }
 }
 
 /// Remembers that all of a kit's tests pass with its files as they are.

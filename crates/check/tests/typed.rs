@@ -73,7 +73,7 @@ fn nested(key: &str, body: &[Stmt], found: &mut Vec<(String, Vec<Stmt>, Vec<Expr
 }
 
 /// Every expression that's a value, in statements, leaving out nested functions.
-fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
+fn values_in(stmts: &[Stmt], found: &mut Found) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expr(expr)
@@ -86,7 +86,7 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
             StmtKind::Return(value) => value.iter().for_each(|value| values(value, found)),
             StmtKind::Assign { target, value, .. } => {
                 match &target.kind {
-                    ExprKind::Tuple(names) => found.extend(names.iter().cloned()),
+                    ExprKind::Tuple(names) => found.exprs.extend(names.iter().cloned()),
                     _ => values(target, found),
                 }
                 values(value, found);
@@ -113,64 +113,57 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
     }
 }
 
+/// What `values` finds: every expression that's a value, and the names the program binds to
+/// modules, whose names before a dot aren't values.
+struct Found {
+    modules: Vec<String>,
+    exprs: Vec<Expr>,
+}
+
+/// The names a program binds to modules: `json` from `from std import json`, `physics` from
+/// `import physics` or `import world.physics as physics`, `world` from `import world.physics`,
+/// and `std`, which `std.json.dumps(...)` reaches without an import. A name imported from a
+/// module that isn't one, like `spawn` from `from enemies import spawn`, is never before a dot.
+fn module_names(module: &Module) -> Vec<String> {
+    let mut names = vec!["std".to_owned()];
+    for item in &module.items {
+        let Item::Import(import) = item else { continue };
+        if import.names.is_empty() {
+            names.extend(import.alias.clone().or_else(|| import.module.first().cloned()));
+        }
+        names.extend(import.bound().map(|(_, bound)| bound.to_owned()));
+    }
+    names
+}
+
 /// Whether an expression names a type, like `Vec3` in `Vec3.zero()`, or a module, like
-/// `json` in `json.dumps(...)` or `std.json` in `std.json.dumps(...)`. `geometry` and `data`
-/// are what `import_as.fen` imports modules as. `fs` isn't here, since it's also the name a
-/// program gives its `Fs`.
-fn is_type_name(expr: &Expr) -> bool {
-    const MODULES: [&str; 26] = [
-        "std",
-        "pack",
-        "io",
-        "html",
-        "string",
-        "compress",
-        "unicode",
-        "base64",
-        "url",
-        "uuid",
-        "cli",
-        "csv",
-        "log",
-        "json",
-        "toml",
-        "path",
-        "collections",
-        "random",
-        "time",
-        "re",
-        "math",
-        "crypto",
-        "game",
-        "layout",
-        "geometry",
-        "data",
-    ];
+/// `sqlite` in `sqlite.open(...)` or `std.json` in `std.json.dumps(...)`.
+fn is_type_name(expr: &Expr, modules: &[String]) -> bool {
     match &expr.kind {
         // `str` in `str.from_code(65)` and `bytes` in `bytes.fromhex(text)` are the type, not a value.
         ExprKind::Name(name) => {
             name.starts_with(char::is_uppercase)
                 || matches!(name.as_str(), "str" | "bytes")
-                || MODULES.contains(&name.as_str())
+                || modules.contains(name)
         }
-        ExprKind::Attr { object, .. } => is_type_name(object),
+        ExprKind::Attr { object, .. } => is_type_name(object, modules),
         _ => false,
     }
 }
 
-fn values(expr: &Expr, found: &mut Vec<Expr>) {
-    found.push(expr.clone());
+fn values(expr: &Expr, found: &mut Found) {
+    found.exprs.push(expr.clone());
     let mut inner: Vec<&Expr> = Vec::new();
     match &expr.kind {
         ExprKind::Call { callee, args } => {
             match &callee.kind {
-                ExprKind::Attr { object, .. } if !is_type_name(object) => inner.push(object),
+                ExprKind::Attr { object, .. } if !is_type_name(object, &found.modules) => inner.push(object),
                 ExprKind::Lambda { .. } => inner.push(callee),
                 _ => {}
             }
             inner.extend(args.iter().map(|arg| &arg.value));
         }
-        ExprKind::Attr { object, .. } if !is_type_name(object) => inner.push(object),
+        ExprKind::Attr { object, .. } if !is_type_name(object, &found.modules) => inner.push(object),
         ExprKind::Match { subject, arms } => {
             inner.push(subject);
             for arm in arms {
@@ -223,42 +216,67 @@ fn every_example_is_fully_typed() {
     let examples = examples();
     assert!(examples.len() > 10, "the examples weren't found");
     for (file, source) in examples {
-        let (module, checked) = checked(&source).unwrap();
-        for (name, signature) in checked.signatures.iter() {
-            let types = signature.params.iter().map(|param| &param.ty).chain([&signature.returns]);
-            for ty in types {
-                assert!(ty.is_known(), "{file}: `{name}` has {ty:?} in its signature");
-            }
+        assert_fully_typed(&file, &source);
+    }
+}
+
+/// A module's name before a call, as `sqlite` in `with sqlite.open(...)`, is the module, not a
+/// value, so it needs no type of its own; what's called through it does.
+#[test]
+fn a_with_through_a_modules_function_is_fully_typed() {
+    let source = dedent(
+        "
+        from std import sqlite
+
+        def main(fs: Fs, stdout: Stdout):
+            with sqlite.open(fs, \"index.db\")? as db:
+                _ = db.execute(t\"create table if not exists names (name text)\")?
+            stdout.print(\"made\")
+        ",
+    );
+    assert_fully_typed("with_sqlite.fen", &source);
+}
+
+/// Every expression and declared name in `source`, which checks, has a known type.
+fn assert_fully_typed(file: &str, source: &str) {
+    let checked = checked(source);
+    assert!(checked.is_ok(), "{file} doesn't check: {checked:?}");
+    let Ok((module, checked)) = checked else { return };
+    for (name, signature) in checked.signatures.iter() {
+        let types = signature.params.iter().map(|param| &param.ty).chain([&signature.returns]);
+        for ty in types {
+            assert!(ty.is_known(), "{file}: `{name}` has {ty:?} in its signature");
         }
-        for (key, body) in checked.types.iter() {
-            for (span, ty) in body.exprs() {
-                assert!(ty.is_known(), "{file}, {key}: `{}` is {ty:?}", text(&source, span));
-            }
-            for (_, name, ty) in body.names() {
-                assert!(ty.is_known(), "{file}, {key}: `{name}` is {ty:?}");
-            }
+    }
+    for (key, body) in checked.types.iter() {
+        for (span, ty) in body.exprs() {
+            assert!(ty.is_known(), "{file}, {key}: `{}` is {ty:?}", text(source, span));
         }
-        for (key, stmts, exprs) in bodies(&module) {
-            // A type with the same name as a library type is checked under a name of its own.
-            let renamed = match key.strip_prefix("fields of ") {
-                Some(owner) => Some(format!("fields of {owner}'")),
-                None => key.split_once('.').map(|(owner, rest)| format!("{owner}'.{rest}")),
-            };
-            let body =
-                renamed.and_then(|renamed| checked.types.body(&renamed)).or_else(|| checked.types.body(&key));
-            let body = body.unwrap_or_else(|| panic!("{file}: nothing typed in {key}"));
-            let mut found = Vec::new();
-            values_in(&stmts, &mut found);
-            for expr in &exprs {
-                values(expr, &mut found);
-            }
-            for expr in found {
-                assert!(
-                    body.expr(expr.span).is_some(),
-                    "{file}, {key}: `{}` has no type",
-                    text(&source, expr.span)
-                );
-            }
+        for (_, name, ty) in body.names() {
+            assert!(ty.is_known(), "{file}, {key}: `{name}` is {ty:?}");
+        }
+    }
+    for (key, stmts, exprs) in bodies(&module) {
+        // A type with the same name as a library type is checked under a name of its own.
+        let renamed = match key.strip_prefix("fields of ") {
+            Some(owner) => Some(format!("fields of {owner}'")),
+            None => key.split_once('.').map(|(owner, rest)| format!("{owner}'.{rest}")),
+        };
+        let body =
+            renamed.and_then(|renamed| checked.types.body(&renamed)).or_else(|| checked.types.body(&key));
+        assert!(body.is_some(), "{file}: nothing typed in {key}");
+        let Some(body) = body else { continue };
+        let mut found = Found { modules: module_names(&module), exprs: Vec::new() };
+        values_in(&stmts, &mut found);
+        for expr in &exprs {
+            values(expr, &mut found);
+        }
+        for expr in found.exprs {
+            assert!(
+                body.expr(expr.span).is_some(),
+                "{file}, {key}: `{}` has no type",
+                text(source, expr.span)
+            );
         }
     }
 }

@@ -270,3 +270,58 @@ fn a_parameter_named_like_a_constant_is_the_parameter() {
     assert_eq!(stdout(&ran), "2 10\n", "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A kit whose `src/pause.fen` has `settle`, and whose `src/main.fen` calls it inside a `lock`
+/// in a function only a test uses, which `main` doesn't reach.
+fn locking_kit(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest)?;
+    std::fs::write(
+        dir.join("src/pause.fen"),
+        "def settle(clock: Clock) -> int:\n    _ = clock.now()\n    1\n",
+    )?;
+    let main = "from pause import settle\n\n\
+                struct Count:\n    n = 0\n\n\
+                def bump(count: shared Count, clock: Clock):\n    lock count as ref current:\n        current.n += settle(clock)\n\n\
+                def main(stdout: Stdout):\n    stdout.print(1)\n\n\
+                test \"bumps\"(clock: Clock):\n    shared count = Count()\n    bump(count, clock)\n    lock count as current:\n        assert current.n == 1\n";
+    std::fs::write(dir.join("src/main.fen"), main)?;
+    Ok(dir)
+}
+
+/// Runs a program as `run` does, without its tests, so only its check stands between an edit and
+/// the run.
+fn run_untested(home: &Path, program: &Path) -> std::io::Result<Output> {
+    crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(program)
+        .env("FENNEC_HOME", home)
+        .env_remove("CI")
+        .env_remove("FENNEC_NO_CACHE")
+        .output()
+}
+
+/// An edit to one file's body that makes a function wait is checked against every `lock` that
+/// calls it, in files the edit didn't touch too, even after runs that only checked what changed.
+#[test]
+fn a_body_edit_that_waits_under_another_files_lock_is_refused() {
+    let dir = locking_kit("wait_under_lock").unwrap();
+    let home = dir.join("home");
+    for _ in 0..2 {
+        let ran = run_untested(&home, &dir).unwrap();
+        assert_eq!(stdout(&ran), "1\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    let waits = "def settle(clock: Clock) -> int:\n    clock.sleep(1ms)\n    1\n";
+    std::fs::write(dir.join("src/pause.fen"), waits).unwrap();
+    for _ in 0..2 {
+        let refused = run_untested(&home, &dir).unwrap();
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{said}");
+        assert!(said.contains("`settle` waits on"), "{said}");
+        assert!(said.contains("src/main.fen"), "{said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -1,0 +1,7 @@
+error: `sorted` doesn't change its arguments, so don't pass `ref`
+ --> examples/errors/sorted_given_ref.fen:3:18
+  |
+3 |     stdout.print(sorted(ref names))
+  |                  ^^^^^^^^^^^^^^^^^
+  |
+  = help: take `ref` off the argument

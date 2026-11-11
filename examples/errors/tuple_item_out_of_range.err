@@ -1,0 +1,7 @@
+error: this tuple has 2 items, so there's no item 2
+ --> examples/errors/tuple_item_out_of_range.fen:3:23
+  |
+3 |     stdout.print(pair[2])
+  |                       ^
+  |
+  = help: its items are 0 to 1: write one of those

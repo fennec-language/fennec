@@ -1,6 +1,6 @@
 source d7fc0eb51c5387b0a3b5f8a86e7b5388bb0cf989aa8223b5f17ff55b6feb8c2b
 code 0
-stdout 219
+stdout 279
 True
 True
 hello
@@ -10,10 +10,10 @@ gave up after 0.02s
 and more
 6
 None
-the other side closed the connection
-the other side closed the connection
+the socket was closed here, so it can't be used any more
+the socket was closed here, so it can't be used any more
 it worked
 looped
-the other side closed the connection
+the socket was closed here, so it can't be used any more
 True
 stderr 0

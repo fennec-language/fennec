@@ -1,0 +1,106 @@
+# The odds and ends of std that nothing else called: a time's parts, the math types' identities,
+# a graph's nodes, a log level's rank and label, how a UUID, URL, page and secret print, a path
+# rebuilt from parts, and a regex matching all of a text.
+from std import html, re, url, uuid
+from std.collections import Graph
+from std.crypto import Secret
+from std.log import LogLevel
+from std.math import Mat3, Mat4, Quat, Vec3, Vec4
+from std.path import Path
+from std.time import Time
+
+test "a time's hour, minute and second are of its UTC day, before 1970 too"():
+    noon = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56)?
+    assert (noon.hour(), noon.minute(), noon.second()) == (21, 55, 56)
+    midnight = Time.parse("2026-11-07T00:00:00Z")?
+    assert (midnight.hour(), midnight.minute(), midnight.second()) == (0, 0, 0)
+    # An offset is taken off: 23:55 at +02:00 is 21:55 in UTC.
+    offset = Time.parse("2026-11-06T23:55:56.25+02:00")?
+    assert (offset.hour(), offset.minute(), offset.second()) == (21, 55, 56)
+    # A second before 1970 is 23:59:59 of the day before, not a negative time of day.
+    before = Time.parse("1969-12-31T23:59:59Z")?
+    assert (before.hour(), before.minute(), before.second()) == (23, 59, 59)
+
+test "the identities leave what they're applied to as it was"():
+    point = Vec3(x=1.0, y=-2.0, z=3.5)
+    assert Mat3.identity().mul_vec3(point) == point
+    assert Mat3.identity().determinant() == 1.0
+    four = Vec4(x=1.0, y=-2.0, z=3.5, w=0.0)
+    assert Mat4.identity().mul_vec4(four) == four
+    assert Mat4.identity().transform_point(point) == point
+    assert Mat4.identity() * Mat4.identity() == Mat4.identity()
+    assert Quat.identity().rotate(point) == point
+    turn = Quat.from_rotation_z(0.5)
+    assert Quat.identity() * turn == turn
+
+test "xyz is a Vec4's first three parts, whatever its w"():
+    assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0).xyz() == Vec3(x=1.0, y=2.0, z=3.0)
+    assert Vec4(w=0.0).xyz() == Vec3()
+
+test "a graph's nodes are its IDs in the order they were added, none for an empty one"():
+    mut roads = Graph[str, int]()
+    assert roads.nodes() == []
+    oslo = roads.add_node("Oslo")
+    bergen = roads.add_node("Bergen")
+    roads.add_edge(oslo, to_id=bergen, edge=463)
+    assert roads.nodes() == [oslo, bergen]
+    assert [roads[id] for id in roads.nodes()] == ["Oslo", "Bergen"]
+
+test "log levels rank least first, each with its label"():
+    levels = [LogLevel.Debug, LogLevel.Info, LogLevel.Warn, LogLevel.Error]
+    assert [level.rank() for level in levels] == [0, 1, 2, 3]
+    assert [level.label() for level in levels] == ["DEBUG", "INFO", "WARN", "ERROR"]
+
+test "a UUID prints lowercase with its hyphens, however it was written"():
+    upper = uuid.Uuid.parse("123E4567-E89B-12D3-A456-426614174000")?
+    assert f"{upper}" == "123e4567-e89b-12d3-a456-426614174000"
+    zero = uuid.Uuid.parse("00000000-0000-0000-0000-000000000000")?
+    assert f"{zero}" == "00000000-0000-0000-0000-000000000000"
+
+test "a URL prints as it was written, and as it is once changed"():
+    written = "https://ash@example.com:8443/a%2Fb?q=1#top"
+    assert f"{url.parse(written)?}" == written
+    mail = url.parse("mailto:a@b.example")?
+    assert f"{mail}" == "mailto:a@b.example"
+    mut changed = url.parse("http://[::1]:80/old")?
+    changed.path = "/new place"
+    assert f"{changed}" == "http://[::1]:80/new%20place"
+
+test "a page prints as its text, already escaped"():
+    name = "<Ash & Kit>"
+    page = html.render(t"<p>{name}</p>")?
+    assert f"{page}" == "<p>&lt;Ash &amp; Kit&gt;</p>"
+    assert f"{page}" == page.text()
+
+## `value` as text, printed where only its type parameter is known.
+def shown[T](value: T) -> str:
+    f"{value}"
+
+test "a secret printed through a generic never shows what it holds"():
+    key = Secret.of("hunter2")
+    assert "hunter2" not in shown(key)
+    assert "hunter2" not in shown([key])
+    assert key.expose_secret() == "hunter2"
+
+test "a path rebuilt from parts keeps its root, and no parts is the current folder"():
+    assert Path("/a/b").rebuild(["x", "y"]) == Path("/x/y")
+    assert Path("a/b").rebuild(["x", "y"]) == Path("x/y")
+    assert Path("a/b").rebuild([]) == Path(".")
+    assert Path("/a").rebuild([]) == Path("/")
+
+## What `found` matched, or "no match".
+def matched(found: re.Match?) -> str:
+    if found is None: return "no match"
+    found.text
+
+test "fullmatch matches only all of the text, where match takes a start"():
+    digits = re.Regex(r"\d+")
+    assert matched(digits.fullmatch("2026")) == "2026"
+    assert matched(digits.fullmatch("2026a")) == "no match"
+    assert matched(digits.match("2026a")) == "2026"
+    assert matched(digits.fullmatch("")) == "no match"
+    # It tries every way the pattern can match, not only the first alternative.
+    assert matched(re.Regex(r"a|ab").fullmatch("ab")) == "ab"
+
+def main(stdout: Stdout):
+    stdout.print(LogLevel.Warn.label(), Vec4(x=1.0, y=2.0, z=3.0, w=4.0).xyz())

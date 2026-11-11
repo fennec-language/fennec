@@ -28,8 +28,10 @@ pub(crate) fn ready() -> bool {
 }
 
 /// A folder of its own, emptied when the test is done.
-fn folder(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("fennec-llvm-{}-{name}", std::process::id()));
+fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-llvm-{}-{name}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -9149,7 +9151,7 @@ fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<(
 fn stopping_server(
     threads: &str,
     name: &str,
-) -> std::io::Result<(PathBuf, Running, u16, std::io::BufReader<std::process::ChildStdout>)> {
+) -> std::io::Result<(fennec_temp::Temp, Running, u16, std::io::BufReader<std::process::ChildStdout>)> {
     if threads == "1" {
         assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
     }
@@ -13041,7 +13043,9 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
+    let place = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id())),
+    );
     let path = place.to_string_lossy().into_owned();
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
@@ -13157,7 +13161,8 @@ fn replacing_a_file_keeps_its_mode_and_goes_through_a_link() -> std::io::Result<
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-fs-safety-{}", std::process::id()));
+    let place =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-fs-safety-{}", std::process::id())));
     std::fs::create_dir_all(&place)?;
     let mode_of = |name: &str| -> std::io::Result<u32> {
         Ok(std::fs::metadata(place.join(name))?.permissions().mode() & 0o777)
@@ -13199,7 +13204,8 @@ fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> 
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-fs-only-{}", std::process::id()));
+    let place =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-fs-only-{}", std::process::id())));
     std::fs::create_dir_all(place.join("inside"))?;
     std::fs::create_dir_all(place.join("outside"))?;
     std::fs::write(place.join("outside/secret.txt"), "secret")?;
@@ -13498,7 +13504,8 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id()));
+    let place =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id())));
     std::fs::create_dir_all(place.join("folder"))?;
     std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
     std::fs::write(place.join("good.txt"), "one\ntwo\n")?;

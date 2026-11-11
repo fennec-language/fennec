@@ -6,6 +6,9 @@ set -u
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
 logs="$(mktemp -d)"
+# Its logs, and the x86-64 programs and Fennec folder it makes, go however it ends: what a failed
+# step printed is shown before then.
+trap 'rm -rf "$logs"' EXIT
 log="$logs/gate.log"
 : > "$log"
 # LLVM is the main backend, so its tests have to run, not skip.

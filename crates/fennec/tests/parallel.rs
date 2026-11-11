@@ -212,7 +212,8 @@ fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure
         (build_on_threads(&dir, ON_WORKERS, "workers")?, build_on_threads(&dir, TOO_DEEP, "deep")?);
     let on = |executable: &Path| Command::new(executable).env("FENNEC_THREADS", "4").output_within();
     let (ran, too_deep) = (on(&workers)?, on(&deep)?);
-    let (pinned_outcome, interpreted_deep) = (pinned_outcome(&dir, "workers")?, pinned_outcome(&dir, "deep")?);
+    let (pinned_outcome, interpreted_deep) =
+        (pinned_outcome(&dir, "workers")?, pinned_outcome(&dir, "deep")?);
     let too_deep = ran_in(&dir, &too_deep);
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));

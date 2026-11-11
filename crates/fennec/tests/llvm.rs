@@ -37,8 +37,8 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
 }
 
 fn same_as_pinned(name: &str, source: &str) -> std::io::Result<()> {
-    let (ours, jit) = both(name, source)?;
-    assert_eq!(ours, jit);
+    let (ours, wanted) = both(name, source)?;
+    assert_eq!(ours, wanted);
     Ok(())
 }
 
@@ -80,9 +80,9 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let jit = pinned(name, source, || Ok(ours.clone()))?;
+    let wanted = pinned(name, source, || Ok(ours.clone()))?;
     std::fs::remove_dir_all(&dir)?;
-    Ok((ours, jit))
+    Ok((ours, wanted))
 }
 
 /// The outcome pinned for program `name` in `tests/fixtures/pinned`, one file for each program,
@@ -2571,8 +2571,8 @@ def main(stdout: Stdout):
         ("lengths_beside_fields", &["--llvm"][..]),
         ("lengths_beside_fields_release", &["--llvm", "--release"][..]),
     ] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -4518,10 +4518,7 @@ fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    same_as_expected_in_both_builds(
-        "shared_map_walked",
-        include_str!("fixtures/shared_map_walked.fen"),
-    )
+    same_as_expected_in_both_builds("shared_map_walked", include_str!("fixtures/shared_map_walked.fen"))
 }
 
 /// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
@@ -9458,8 +9455,8 @@ def main(stdout: Stdout):
     stdout.print(bag.items[at])
 ";
     for (name, how) in [("range", &["--llvm"][..]), ("range_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9513,8 +9510,8 @@ def main(stdout: Stdout):
     stdout.print(gathered([["x", "."], [".", "o"]]))
 "#;
     for (name, how) in [("pieces", &["--llvm"][..]), ("pieces_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9551,8 +9548,8 @@ def main(stdout: Stdout):
 "#;
     for (name, how) in [("enumerates", &["--llvm"][..]), ("enumerates_release", &["--llvm", "--release"][..])]
     {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9617,8 +9614,8 @@ def main(stdout: Stdout):
     stdout.print(failed.at.x)
 "#;
     for (name, how) in [("json", &["--llvm"][..]), ("json_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9655,8 +9652,8 @@ def main(stdout: Stdout, env: Env):
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
     {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9714,8 +9711,8 @@ def main(stdout: Stdout, process: Process):
     stdout.print(kept)
 "#;
     for (name, how) in [("narrowed", &["--llvm"][..]), ("narrowed_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -13261,11 +13258,12 @@ def main(stdout: Stdout):
 /// pinned outcome keeps the last value; and with two fields of the wrong type, native code names
 /// the first in the text, where the pinned outcome names the first the type declares.
 #[test]
-fn json_fails_on_a_repeated_key_that_misfits_and_names_the_first_wrong_field_in_the_text() -> std::io::Result<()> {
+fn json_fails_on_a_repeated_key_that_misfits_and_names_the_first_wrong_field_in_the_text()
+-> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let ((ours, _, _), (jit, _, _)) = both(
+    let ((ours, _, _), (wanted, _, _)) = both(
         "native_json_differences",
         r#"from std import json
 
@@ -13284,7 +13282,7 @@ def main(stdout: Stdout):
 "#,
     )?;
     assert_eq!(ours, "`x` should be an int, but it's a str\n`y` should be a float, but it's a str\n");
-    assert_eq!(jit, "read\n`x` should be an int, but it's a str\n");
+    assert_eq!(wanted, "read\n`x` should be an int, but it's a str\n");
     Ok(())
 }
 
@@ -13585,7 +13583,7 @@ fn json_tags_a_field_holding_a_union_with_its_member() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let ((ours, _, _), (jit, _, _)) = both(
+    let ((ours, _, _), (wanted, _, _)) = both(
         "native_json_union_tags",
         r"from std import json
 
@@ -13600,7 +13598,7 @@ def main(stdout: Stdout):
 ",
     )?;
     assert_eq!(ours, "{\"main\": {\"Circle\": {\"radius\": 1.5}}}\n");
-    assert_eq!(jit, "{\"main\": {\"radius\": 1.5}}\n");
+    assert_eq!(wanted, "{\"main\": {\"radius\": 1.5}}\n");
     Ok(())
 }
 
@@ -15691,9 +15689,9 @@ fn a_release_build_optimized_as_a_whole_matches_what_was_pinned() -> std::io::Re
         return Ok(());
     }
     let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(seen.len(), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
-    let (ours, jit) = both_built("release", source, &["--llvm", "--release"])?;
-    assert_eq!((ours.0, ours.2), (jit.0, jit.2));
-    assert_eq!(ours.1.lines().next(), jit.1.lines().next());
+    let (ours, wanted) = both_built("release", source, &["--llvm", "--release"])?;
+    assert_eq!((ours.0, ours.2), (wanted.0, wanted.2));
+    assert_eq!(ours.1.lines().next(), wanted.1.lines().next());
     Ok(())
 }
 
@@ -17035,10 +17033,10 @@ def main(stdout: Stdout):
     stdout.print(shared.a2, xs[0].a2, xs[1].a2)
 ";
     for (name, how) in [("kept", &["--llvm"][..]), ("kept_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
-        let (ours, jit) = both_built(&format!("{name}_shifted"), shifted, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
+        let (ours, wanted) = both_built(&format!("{name}_shifted"), shifted, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -18830,10 +18828,7 @@ fn failing_several_ways_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_expected_in_both_builds(
-        "fails_several_ways",
-        include_str!("fixtures/fails_several_ways.fen"),
-    )
+    same_as_expected_in_both_builds("fails_several_ways", include_str!("fixtures/fails_several_ways.fen"))
 }
 
 /// A failed `assert` says all that was pinned, each side as it's shown.
@@ -19050,10 +19045,10 @@ def main(stdout: Stdout):
         nested = a
     stdout.print(nested)
 "#;
-    let (ours, jit) = both("a_loop_tests_what_its_body_gave_a_name", source)?;
+    let (ours, wanted) = both("a_loop_tests_what_its_body_gave_a_name", source)?;
     let held = pinned_outcome("a_loop_tests_what_its_body_gave_a_name", source)?;
     assert_eq!(ours, held);
-    assert_eq!(jit, held);
+    assert_eq!(wanted, held);
     Ok(())
 }
 
@@ -19112,10 +19107,10 @@ def main(stdout: Stdout):
         stdout.print(shown is None)
         shown = at
 "#;
-    let (ours, jit) = both("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    let (ours, wanted) = both("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
     let held = pinned_outcome("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
     assert_eq!(ours, held);
-    assert_eq!(jit, held);
+    assert_eq!(wanted, held);
     Ok(())
 }
 

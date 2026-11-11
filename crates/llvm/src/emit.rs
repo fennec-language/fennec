@@ -50,7 +50,65 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !9 = !{!\"field\", !11, i64 0}\n\
 !10 = !{!9, !9, i64 0}\n\
 !11 = !{!\"values\", !2, i64 0}\n\
-!12 = !{!11, !11, i64 0}\n";
+!12 = !{!11, !11, i64 0}\n\
+!13 = !{!\"llvm.loop.interleave.count\", i32 1}\n";
+
+/// The first number a loop's metadata takes, past the unit's own (`METADATA`).
+const FIRST_LOOP: usize = 100;
+
+/// The jumps that go back to the start of a loop they're in, from block to block: their target
+/// is still being walked, depth first from the entry, when they're reached.
+fn back_edges(function: &Function) -> HashSet<(usize, usize)> {
+    let blocks = function.blocks.len();
+    let (mut walking, mut done) = (vec![false; blocks], vec![false; blocks]);
+    let mut found = HashSet::new();
+    let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
+    if let Some(first) = walking.first_mut() {
+        *first = true;
+    }
+    while let Some((at, next)) = stack.last().copied() {
+        let targets = function.blocks.get(at).map(|block| block.end.targets()).unwrap_or_default();
+        if let Some(target) = targets.get(next) {
+            if let Some(top) = stack.last_mut() {
+                top.1 += 1;
+            }
+            if walking.get(target.0).copied().unwrap_or(false) {
+                found.insert((at, target.0));
+            } else if !done.get(target.0).copied().unwrap_or(true) {
+                if let Some(mark) = walking.get_mut(target.0) {
+                    *mark = true;
+                }
+                stack.push((target.0, 0));
+            }
+        } else {
+            stack.pop();
+            if let (Some(mark), Some(over)) = (walking.get_mut(at), done.get_mut(at)) {
+                *mark = false;
+                *over = true;
+            }
+        }
+    }
+    found
+}
+
+/// Whether block `at` starts a counted loop, a `for`: its branch compares one of the function's
+/// counts with its limit, which bounds how many turns it takes.
+///
+/// Any other loop's way back says not to interleave it. A `while` loop whose turns nothing bounds
+/// was interleaved four ways once its indexes needed no way back from the end, and `sieve`, whose
+/// inner loops are mostly a few turns, ran 13% more cycles for it.
+fn counted_header(function: &Function, at: usize) -> bool {
+    let Some(block) = function.blocks.get(at) else { return false };
+    function.counts.iter().any(|count| {
+        block.insts.iter().any(|inst| match &inst.kind {
+            InstKind::Binary { lhs, rhs, .. } => {
+                let (counting, stopping) = (Operand::Local(count.count), Operand::Local(count.stop));
+                (*lhs == counting && *rhs == stopping) || (*lhs == stopping && *rhs == counting)
+            }
+            _ => false,
+        })
+    })
+}
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_rt::embed::layout::TEXT.unsigned_abs();
@@ -255,6 +313,8 @@ pub(crate) struct Module<'w, 'p> {
     bodies: String,
     /// Functions a module only needs once, however many things use them.
     helpers: BTreeMap<String, String>,
+    /// How many loops the unit has numbered for their metadata, from [`FIRST_LOOP`].
+    loops: usize,
 }
 
 fn unit<'p>(
@@ -274,6 +334,7 @@ fn unit<'p>(
         defined: HashSet::new(),
         bodies: String::new(),
         helpers: BTreeMap::new(),
+        loops: 0,
     };
     module.defined.insert(&function.name);
     // Small functions come along, with the small functions they call, to be inlined and thrown
@@ -511,6 +572,7 @@ impl<'p> Module<'_, 'p> {
             holding: Holding::default(),
             holding_now: BTreeSet::new(),
             dying: crate::dying::Dying::new(),
+            back_edges: HashSet::new(),
             filling: Vec::new(),
             split: false,
         };
@@ -531,6 +593,7 @@ impl<'p> Module<'_, 'p> {
             untracked.extend([place.root.0, place.value.0]);
         }
         emit.dying = emit.last_reads(&untracked);
+        emit.back_edges = back_edges(function);
         emit.holding = holding(&emit, &untracked, emit.split);
         emit.body()?;
         emit.write_traced_exit();
@@ -659,6 +722,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     holding_now: BTreeSet<usize>,
     /// The owned locals each instruction reads for the last time, let go of after it.
     dying: crate::dying::Dying,
+    /// The jumps back to the start of a loop, from block to block (see [`back_edges`]).
+    back_edges: HashSet<(usize, usize)>,
     /// What the instruction being written, and the one after, which it may be written with,
     /// may fill.
     filling: Vec<usize>,
@@ -1843,6 +1908,9 @@ impl Emit<'_, '_, '_> {
                 let (same, cc) = (self.temp(), if op == BinOp::Eq { "eq" } else { "ne" });
                 self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
                 same
+            }
+            Kind::Boxed(id) if self.is_boxed_enum(id) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                self.same_boxed_enums(op, (&a, &b))
             }
             Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
@@ -3259,7 +3327,18 @@ impl Emit<'_, '_, '_> {
 
     fn terminator(&mut self, end: &Terminator) -> Result<(), String> {
         match end {
-            Terminator::Jump(target) => self.line(&format!("br label %bb{}", target.0)),
+            Terminator::Jump(target) => {
+                let back = self.back_edges.contains(&(self.at.0, target.0))
+                    && !counted_header(self.function, target.0);
+                if back {
+                    let id = FIRST_LOOP + self.module.loops;
+                    self.module.loops += 1;
+                    self.declare(&format!("!{id} = distinct !{{!{id}, !13}}"));
+                    self.line(&format!("br label %bb{}, !llvm.loop !{id}", target.0));
+                } else {
+                    self.line(&format!("br label %bb{}", target.0));
+                }
+            }
             Terminator::Branch { cond, then, otherwise } => {
                 let (cond, _) = self.operand(cond)?;
                 self.line(&format!("br i1 {cond}, label %bb{}, label %bb{}", then.0, otherwise.0));
@@ -3344,18 +3423,18 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     fn looking_in_constants_written_out_makes_no_collection() -> Result<(), String> {
         let source = "\
 def is_keyword(word: str) -> bool:
-    word in {\"def\", \"if\", \"a keyword longer than eight bytes\"}
+    return word in {\"def\", \"if\", \"a keyword longer than eight bytes\"}
 
 def small(n: int) -> bool:
-    n in [1, 2, 3]
+    return n in [1, 2, 3]
 
 def kept(word: str) -> bool:
     words = [\"def\", \"if\"]
-    word in words and words.len() == 2
+    return word in words and words.len() == 2
 
 def kept_set(word: str) -> bool:
     words = {\"def\", \"if\"}
-    word in words and words.len() == 2
+    return word in words and words.len() == 2
 
 def main(stdout: Stdout):
     stdout.print(is_keyword(\"if\"), small(2), kept(\"if\"), kept_set(\"if\"))
@@ -3373,6 +3452,30 @@ def main(stdout: Stdout):
         assert!(text.contains("@fennec_list_contains("), "a list kept is made and looked in: {text}");
         let text = text_of(source, "kept_set")?;
         assert!(text.contains("call ptr @fennec_dict_new("), "a set kept is made: {text}");
+        Ok(())
+    }
+
+    /// `==` on an enum held in a block compares the cases first, with no call: only the same case
+    /// asks the runtime, `fennec_box_equal`, to compare its fields.
+    #[test]
+    fn an_enum_in_a_block_compares_its_case_before_asking_the_runtime() -> Result<(), String> {
+        let source = "\
+enum Tok:
+    Name(text: str)
+    Wrapped(inner: Tok)
+    Eof
+
+def is_eof(token: Tok) -> bool:
+    token == .Eof
+
+def main(stdout: Stdout):
+    stdout.print(is_eof(.Name(\"x\")))
+";
+        let text = text_of(source, "is_eof")?;
+        let (before, after) = text.split_once("same_case").ok_or_else(|| text.clone())?;
+        assert!(before.contains("icmp ne i64"), "the cases are compared first: {text}");
+        assert!(!before.contains("call i8 @fennec_box_equal("), "{text}");
+        assert!(after.contains("call i8 @fennec_box_equal("), "{text}");
         Ok(())
     }
 
@@ -3555,6 +3658,19 @@ def main(stdout: Stdout):
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
         assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
         assert!(text.len() > plain.len());
+        Ok(())
+    }
+
+    /// A `while` loop's way back says not to interleave it, as nothing bounds its turns; a `for`
+    /// loop's doesn't, so LLVM still interleaves a counted loop where that pays.
+    #[test]
+    fn only_a_loop_nothing_counts_says_not_to_interleave() -> Result<(), String> {
+        let source = "def marks(limit: int) -> int:\n    mut composite = [0 for _ in range(limit + 1)]\n    mut count = 0\n    for n in range(2, limit + 1):\n        if composite[n] == 0:\n            count += 1\n            mut multiple = n * n\n            while multiple <= limit:\n                composite[multiple] = 1\n                multiple += n\n    count\n\ndef main(stdout: Stdout):\n    stdout.print(marks(100))\n";
+        let text = text_of(source, "marks")?;
+        let marked =
+            text.lines().filter(|line| line.contains("br label") && line.contains("!llvm.loop")).count();
+        assert_eq!(marked, 1, "only the while loop: {text}");
+        assert!(text.contains("!{!\"llvm.loop.interleave.count\", i32 1}"), "{text}");
         Ok(())
     }
 

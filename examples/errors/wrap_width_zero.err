@@ -1,0 +1,5 @@
+error: a width of 0 can't hold any text: wrap takes 1 or more
+ --> examples/errors/wrap_width_zero.fen:5:18
+  |
+5 |     stdout.print(string.wrap("one two three", width=0))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

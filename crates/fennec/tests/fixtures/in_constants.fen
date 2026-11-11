@@ -1,13 +1,13 @@
 ## `in` and `not in` on a list or set written out of constants, strings or ints, which only that
 ## test reads: each item compared, none made, and the answers are what a made one gives.
 def is_keyword(word: str) -> bool:
-    word in {"def", "if", "else", "return", "a keyword much longer than eight bytes", ""}
+    return word in {"def", "if", "else", "return", "a keyword much longer than eight bytes", ""}
 
 def is_two_char(text: str) -> bool:
-    text in ["->", "=>", "==", "!=", "<=", ">="]
+    return text in ["->", "=>", "==", "!=", "<=", ">="]
 
 def is_small_prime(n: int) -> bool:
-    n not in [2, 3, 5, 7, 11, 13]
+    return n not in [2, 3, 5, 7, 11, 13]
 
 def main(stdout: Stdout):
     long = "a keyword much longer than eight bytes"

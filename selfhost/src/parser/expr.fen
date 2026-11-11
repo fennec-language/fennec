@@ -71,7 +71,71 @@ extend Parser:
                     fail mixed_else(inner)
                 default = inner
             return (Expr(kind=.Else(value, default=default), span=value.span.to(default.span)), .Fallback)
+        if self.at_keyword("except"):
+            handler = self.except_handler()?
+            return (Expr(kind=.Else(value, default=handler, is_except=True), span=value.span.to(handler.span)), .Fallback)
         (value, .Plain)
+
+    ## What follows `except`, written in as the same one-case `match` an `else` block is: any
+    ## failure, `except why:` with a block of statements or of `case` arms, which becomes a
+    ## `match why:` in the block, or one case, as `except InvalidValue(): 8080`, whose pattern is
+    ## the case's.
+    def except_handler(ref self) -> Expr fails Diagnostic:
+        start = self.advance().span
+        if self.peek_at(1) == .Punct(":"):
+            match self.peek():
+                case .Name(name):
+                    if name[0] >= "A" and name[0] <= "Z":
+                        fail Diagnostic(
+                            message=f"`{name}` after `except` would name any failure",
+                            span=self.span(),
+                            help=f"write `except {name}():` to handle only `{name}`, or a lowercase name to handle any failure",
+                        )
+                    if name != "_":
+                        at = self.advance().span
+                        return self.named_handler(start, name, at)?
+                case _: pass
+        if self.at_punct(":"):
+            fail Diagnostic(
+                message="`except` names the failure it handles",
+                span=self.span(),
+                help="write `except why:` and use `why` in the block, or name one case, as `except InvalidValue(): 8080`",
+            )
+        pattern = self.pattern()?
+        if not self.at_punct(":"):
+            fail Diagnostic(
+                message="`except` and its case need a `:`",
+                span=self.span(),
+                help="write the case, a `:` and what it gives, as `except InvalidValue(): 8080`",
+            )
+        arm_start = self.advance().span
+        indented = self.at(.Newline)
+        body = self.block()?
+        # On the line, the case's statement has ended the line, and the statement it's in with it.
+        self.block_ended = not indented or self.block_ended
+        span = arm_start.to(self.prev_span())
+        # The failure has a name nobody can write, as the one case's `match` is over it.
+        arm = MatchArm(pattern=pattern, guard=None, body=body, span=span)
+        self.handler_over(start, "except'failure", start, [arm])
+
+    ## `except why:` and its block, of statements, or of `case` arms, which are a `match why:`
+    ## in the block.
+    def named_handler(ref self, start: Span, failure: str, at: Span) -> Expr fails Diagnostic:
+        arms_follow = self.peek_at(1) == .Newline and self.peek_at(2) == .Indent and self.peek_at(3) == .Name("case")
+        if not arms_follow:
+            handler = self.leaving_block(failure)?
+            return Expr(kind=handler.kind, span=start.to(handler.span))
+        _ = self.advance()
+        self.expect_block_start()?
+        arms = self.arms()?
+        self.handler_over(start, failure, at, arms)
+
+    ## A handler whose block is a `match` over the failure, named `failure`, with these arms.
+    def handler_over(self, start: Span, failure: str, at: Span, arms: list[MatchArm]) -> Expr:
+        span = start.to(self.prev_span())
+        subject = Expr(kind=.Name(failure), span=at)
+        matched = Expr(kind=.Match(subject, arms), span=span)
+        leaving_match(start, [Stmt(kind=.Expr(matched), span=span)], span, failure=failure)
 
     def at_leaving(self) -> bool:
         self.peek() in [.Keyword("continue"), .Keyword("break"), .Keyword("return"), .Keyword("fail")]

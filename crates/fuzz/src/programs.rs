@@ -13,15 +13,6 @@ mod eval;
 mod generate;
 mod source;
 
-/// Whether `Named` is made of native blocks in a program with no other threads, which it is once
-/// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
-/// `FENNEC_FUZZ_NAMED_NATIVE` turns the check on before then, to run against a branch that has them.
-const NAMED_GOES_NATIVE: bool = true;
-
-fn named_goes_native() -> bool {
-    NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
-}
-
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
 /// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
 fn makes_native_blocks() -> Result<bool, String> {
@@ -68,7 +59,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // leaves read `l(...)`, surely made one: code that never runs, like everything after a
     // failure the compiler can see, makes none and can be left out.
     let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
-    if named_goes_native() && program.threadless && printed_named && !makes_native_blocks()? {
+    if program.threadless && printed_named && !makes_native_blocks()? {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));
@@ -395,8 +386,9 @@ mod tests {
             "        continue\n",
             "_ = [1, 2][i + 2]",
             "with ward(\"a\", stdout) as a, ",
+            "capped(capped(i, limit=1000)?, limit=",
         ];
-        let mut found = [0_usize; 8];
+        let mut found = [0_usize; 9];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
@@ -410,6 +402,51 @@ mod tests {
             }
         }
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
+    /// Every `def` that gives a value gives it with `return`, as the language will require: its
+    /// last line returns or fails. A `with` source or a generator gives its values otherwise.
+    #[test]
+    fn it_returns_from_every_def_explicitly() {
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            for source in [source::source(&generate::program(&bytes)), crate::generate::program(&bytes)] {
+                let lines: Vec<&str> = source.lines().collect();
+                for (at, line) in lines.iter().enumerate() {
+                    let trimmed = line.trim_start();
+                    let Some((_, gives)) =
+                        trimmed.strip_prefix("def ").and_then(|def| def.rsplit_once(") -> "))
+                    else {
+                        continue;
+                    };
+                    if gives.starts_with("with ") || gives.starts_with("Iterator") {
+                        continue;
+                    }
+                    let indent = line.len() - trimmed.len();
+                    let last = lines
+                        .iter()
+                        .skip(at + 1)
+                        .take_while(|next| {
+                            next.trim().is_empty() || next.len() - next.trim_start().len() > indent
+                        })
+                        .filter(|next| !next.trim().is_empty())
+                        .last()
+                        .copied()
+                        .unwrap_or_default();
+                    let value = last
+                        .trim()
+                        .split_once(": ")
+                        .filter(|_| last.trim().starts_with("case "))
+                        .map_or(last.trim(), |(_, value)| value);
+                    assert!(
+                        value.starts_with("return ") || value.starts_with("fail "),
+                        "a def that gives a value ends without `return`: {line}\n{last}"
+                    );
+                }
+            }
+        }
     }
 
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.

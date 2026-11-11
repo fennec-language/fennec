@@ -383,9 +383,11 @@ pub enum ExprKind {
     },
     /// `value else default`: the value, or the default if it's None or an error. A default that
     /// leaves, like `else continue`, is a `match` with one case: see [`Expr::leaves`].
+    /// `value except why:` is the same, handling only a failure: `except` says which was written.
     Else {
         value: Box<Expr>,
         default: Box<Expr>,
+        except: bool,
     },
     /// `value?`, passing an error or None up; `value? from Context(...)` wraps the error.
     Try {

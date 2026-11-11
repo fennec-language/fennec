@@ -1,8 +1,0 @@
-source d8a354993befe2b698c5a13db3a3a5782797c8e24ccf6a501c58be355226b86e
-code 0
-stdout 23
-fox fox
-den
-True
-False
-stderr 0

@@ -678,7 +678,8 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
     fs.remove("saves") else as why:
         match why:
-            case IoError(): stdout.print("a folder has to be empty to remove")
+            case .Other(): stdout.print("a folder has to be empty to remove")
+            case _: stdout.print(why.message())
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -1344,13 +1345,13 @@ fn check_and_lint_say_the_same_in_json() {
     };
     std::fs::write(
         &program,
-        "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+        "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
          held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n",
     )
     .unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
     assert_eq!(code, Some(1));
-    assert_eq!(rules(&report), ["needless-return", "copies"]);
+    assert_eq!(rules(&report), ["needless-pass", "copies"]);
     let first = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
     let at = |key: &str| first.and_then(|item| item.get(key)).and_then(fennec_lsp::Json::as_usize);
     assert_eq!((at("line"), at("column")), (Some(2), Some(5)));
@@ -1604,16 +1605,17 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
         text(&clean.stdout)
     );
 
-    let lints = "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(one())\n";
+    let lints =
+        "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(one())\n";
     std::fs::write(&program, lints).unwrap();
     let flagged = fennec(&["lint", &path], "").unwrap();
     assert_eq!(flagged.status.code(), Some(1));
-    assert!(text(&flagged.stderr).contains("needless-return:"), "{}", text(&flagged.stderr));
+    assert!(text(&flagged.stderr).contains("needless-pass:"), "{}", text(&flagged.stderr));
     assert!(text(&flagged.stderr).contains("1 lints, 1 of which"), "{}", text(&flagged.stderr));
 
     assert!(fennec(&["fix", &path], "").unwrap().status.success());
     let after = std::fs::read_to_string(&program).unwrap();
-    assert!(after.contains("-> int:\n    1\n"), "{after}");
+    assert!(!after.contains("pass") && after.contains("    return 1\n"), "{after}");
     assert!(fennec(&["lint", &path], "").unwrap().status.success());
 
     std::fs::write(&program, "x = 1 + \"a\"\n").unwrap();
@@ -1980,15 +1982,15 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
-    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    text = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(why): str(why != \"\")\n    stdout.print(text)\n    said = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(_): \"failed\"\n    stdout.print(said)\n").unwrap();
+    std::fs::write(&program, "def checked(text: str) -> str fails InvalidValue:\n    fail InvalidValue(message=text)\n\ndef main(stdout: Stdout):\n    text = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(why): str(why != \"\")\n    stdout.print(text)\n    said = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(_): \"failed\"\n    stdout.print(said)\n").unwrap();
     let path = program.to_string_lossy().into_owned();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let ran = fennec(&["run", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
-    assert!(written.contains("case IoError(reason=why):"), "{written}");
-    assert!(written.contains("case IoError():"), "{written}");
+    assert!(written.contains("case InvalidValue(message=why):"), "{written}");
+    assert!(written.contains("case InvalidValue():"), "{written}");
     assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
 }
 
@@ -2051,7 +2053,7 @@ def main(stdout: Stdout):
     stdout.print(unsaid() else \"failed\")
 ";
 
-/// What `CASES_AFTER` prints, as the interpreter printed it.
+/// What `CASES_AFTER` prints, as pinned.
 const CASES_PRINTED: &str = "green 1\nred red True red 1 False\nred True\nclosed\nfailed\n";
 
 /// What `fennec fix` makes of `CASES_BEFORE`: a dot wherever the type is known, and nothing where
@@ -2115,7 +2117,7 @@ def main(stdout: Stdout):
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
-/// `.Case` there, which runs as the interpreter ran it.
+/// `.Case` there, which runs and prints what it should.
 #[test]
 fn fix_writes_leading_dots_where_the_type_is_known() {
     let dir = fennec_temp::Temp::at(

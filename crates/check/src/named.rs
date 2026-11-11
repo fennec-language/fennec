@@ -1,4 +1,4 @@
-//! Patterns that name the fields they match, like `case IoError(reason=r)`. Outside the kit a
+//! Patterns that name the fields they match, like `case InvalidValue(message=m)`. Outside the kit a
 //! type comes from, a pattern names its fields rather than taking them by position, so a kit
 //! can add a field with a default to a type it exports without breaking anyone's `match`.
 //! Once checked, a named pattern is put in its fields' order here, with `_` for the fields it
@@ -78,8 +78,8 @@ fn in_order(pattern: &mut Pattern, span: Span, fields: &BTreeMap<(u32, u32, Stri
 }
 
 /// Gives each pattern that matches another kit's type by position the fix that names its
-/// fields: `IoError(r)` becomes `IoError(reason=r)`, and a part that's only `_` goes, so
-/// `IoError(_)` becomes `IoError()`.
+/// fields: `InvalidValue(m)` becomes `InvalidValue(message=m)`, and a part that's only `_` goes, so
+/// `InvalidValue(_)` becomes `InvalidValue()`.
 pub fn add_pattern_fixes(diagnostics: &mut [Diagnostic], sources: &Sources) {
     for diagnostic in diagnostics.iter_mut() {
         if !diagnostic.message.ends_with(POSITIONAL) || !diagnostic.fixes.is_empty() {

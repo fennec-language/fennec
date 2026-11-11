@@ -81,6 +81,53 @@ fn match_arms_go_on_their_own_lines() {
     );
 }
 
+/// `case` arms under `except why:` are a match's arms, formatted exactly as they are under
+/// `match`, and each form of `except` keeps its form, spaced as the rest are.
+#[test]
+fn except_arms_format_as_match_arms() {
+    let head = "def main(stdout: Stdout):\n";
+    check(
+        &format!(
+            "{head}    got = risky(True)  except  why :\n        case .NotFound():0\n        case   _:\n            stdout.print(why)\n            -1\n    return\n"
+        ),
+        &format!(
+            "{head}    got = risky(True) except why:\n        case .NotFound():\n            0\n        case _:\n            stdout.print(why)\n            -1\n    return\n"
+        ),
+    );
+    // The same arms under `match` come out the same.
+    check(
+        &format!(
+            "{head}    got = match why :\n        case .NotFound():0\n        case   _:\n            -1\n    return\n"
+        ),
+        &format!(
+            "{head}    got = match why:\n        case .NotFound():\n            0\n        case _:\n            -1\n    return\n"
+        ),
+    );
+    // Any failure named, with a block; one case on the line, giving a value or leaving; a bare
+    // call's; and a `with` source's cleanup.
+    for (written, formatted) in [
+        (
+            "    small = risky(9) except why:\n        stdout.print(why.why)\n        0\n",
+            "    small = risky(9) except why:\n        stdout.print(why.why)\n        0\n",
+        ),
+        ("    port = risky(7)except Big():8080\n", "    port = risky(7) except Big(): 8080\n"),
+        ("    x = load(1)  except  .Empty() :  return\n", "    x = load(1) except .Empty(): return\n"),
+        ("    x = load(1) except .Long(size): size\n", "    x = load(1) except .Long(size): size\n"),
+        ("    act(2) except why :\n        _ = why.why\n", "    act(2) except why:\n        _ = why.why\n"),
+        (
+            "    lend 1 except :\n        stdout.print(\"rolled back\")\n",
+            "    lend 1 except:\n        stdout.print(\"rolled back\")\n",
+        ),
+    ] {
+        check(&format!("{head}{written}    return\n"), &format!("{head}{formatted}    return\n"));
+    }
+    // A line with `except` isn't broken at its operators, which would change what `except` covers,
+    // as a line with `else` isn't.
+    let long = "    total = load(3) + load(4) + load(5) + load(6) + load(7) + load(8) + load(9) + load(10) + load(11) except Bad(): 0\n";
+    let split = "    total = load(3) + load(4) + load(5) + load(6) + load(7) + load(8) + load(9) + load(10) + load(\n        11,\n    ) except Bad(): 0\n";
+    check(&format!("{head}{long}    return\n"), &format!("{head}{split}    return\n"));
+}
+
 #[test]
 fn soft_keywords_get_their_spaces() {
     check(

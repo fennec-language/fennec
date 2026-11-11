@@ -101,7 +101,7 @@ fn a_short_run_of_every_target_finds_nothing() {
 /// where LLVM's tools are here.
 #[test]
 fn every_program_to_start_from_prints_what_is_pinned() {
-    let seeds = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/jit");
+    let seeds = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/llvm");
     for input in std::fs::read_dir(seeds).unwrap() {
         let input = input.unwrap().path();
         if pinned_output(&input) {

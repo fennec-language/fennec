@@ -378,11 +378,13 @@ fn executable_mode(path: &Path) -> Result<(), String> {
 const PROGRAMS: &str = "programs";
 
 /// A build's place in the store: its root hash, the program kept under it when there is one, and
-/// the list of its functions' hashes to keep beside a program it links.
+/// the list of its functions' hashes to keep beside a program it links, with each function's
+/// hash as it is, which also names its compiled object, so no function's text is hashed twice.
 struct Stored {
     cache: fennec_build::Cache,
     root: String,
     functions: String,
+    hashes: Vec<fennec_blake3::Hash>,
     program: Option<Vec<u8>>,
 }
 
@@ -396,9 +398,10 @@ fn root_hash(
     entry: &str,
     runtime: Runtime,
     (release, statically): (bool, bool),
-) -> (String, String) {
-    let functions: Vec<String> =
-        units.iter().map(|unit| fennec_blake3::hash(unit.text.as_bytes()).to_hex()).collect();
+) -> (String, String, Vec<fennec_blake3::Hash>) {
+    let texts: Vec<fennec_blake3::Hash> =
+        units.iter().map(|unit| fennec_blake3::hash(unit.text.as_bytes())).collect();
+    let functions: Vec<String> = texts.iter().map(fennec_blake3::Hash::to_hex).collect();
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build root 2026-11-07");
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
     let target = format!(
@@ -426,7 +429,7 @@ fn root_hash(
         hasher.update(function.as_bytes());
     }
     hasher.update(fennec_blake3::hash(entry.as_bytes()).to_hex().as_bytes());
-    (hasher.finalize().to_hex(), functions.join("\n"))
+    (hasher.finalize().to_hex(), functions.join("\n"), texts)
 }
 
 /// What compiling a program with LLVM gives.
@@ -607,9 +610,9 @@ fn compile_emitted(
         .map(fennec_build::Cache::new);
     // A build that's been made before is in the store whole, under its root hash.
     let stored = cache.clone().map(|cache| {
-        let (root, functions) = root_hash(units, &entry, runtime, (release, statically));
+        let (root, functions, hashes) = root_hash(units, &entry, runtime, (release, statically));
         let program = cache.read(PROGRAMS, &root);
-        Stored { cache, root, functions, program }
+        Stored { cache, root, functions, hashes, program }
     });
     if stored.as_ref().is_some_and(|stored| stored.program.is_some()) {
         return Ok(Compiled {
@@ -632,7 +635,8 @@ fn compile_emitted(
             runtime_bitcode(runtime, statically).as_deref(),
         )
     } else {
-        fennec_llvm::compile(&tools, units, &entry, cache.as_ref(), &work)
+        let cached = stored.as_ref().map(|stored| (&stored.cache, stored.hashes.as_slice()));
+        fennec_llvm::compile(&tools, units, &entry, cached, &work)
     };
     // `FENNEC_LLVM_KEEP` leaves the modules' text to look at.
     if std::env::var_os("FENNEC_LLVM_KEEP").is_none() {

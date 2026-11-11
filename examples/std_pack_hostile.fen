@@ -1,0 +1,229 @@
+# `std.pack` reads bytes from outside, so every way they can lie is a `ParseError`, never a crash
+# and never a load that makes room for what they only say is there: a count or a length far past
+# what's left, a case or a flag that doesn't exist, a type's fields that aren't the data's,
+# nesting past the limit, and bytes `std.pack` didn't write. And every kind of value it saves
+# reads back as it was.
+from std import math, pack
+from std.pack import Limits, Packer
+from std.time import Duration
+
+enum Shape:
+    Dot
+    Box(width: int, height: int)
+
+struct Point:
+    x: int
+    y: int
+
+struct Person:
+    name: str
+    age: int
+
+## A `Point` whose `x` holds text.
+struct Labelled:
+    x: str
+    y: int
+
+struct Node:
+    name: str
+    next: Node? = None
+
+## One of each kind of value `std.pack` saves.
+struct Everything:
+    small: int
+    big: int
+    low: int
+    ratio: float
+    flag: bool
+    word: str
+    empty_word: str
+    raw: bytes
+    empty_raw: bytes
+    numbers: list[int]
+    nothing: list[int]
+    grid: list[list[float]]
+    names: dict[str, int]
+    pair: (int, str)
+    maybe: int?
+    absent: str?
+    dot: Shape
+    box: Shape
+    either: int | str
+    wait: Duration
+    at: Point
+    later = 7
+
+## Why loading fails, or "loaded" if it doesn't.
+def why_not[T](run: () -> T fails ParseError) -> str:
+    _ = run() except why:
+        return why.message
+    return "loaded"
+
+## Where the value starts in what `dumps` wrote: after `FPK2`, the shape's number, and the
+## layout, whose length is the byte after the number for every layout here.
+def value_at(data: bytes) -> int:
+    return 13 + data[12]
+
+## `n` as `std.pack` writes a count or a length: 7 bits a byte, low first.
+def varint(n: int) -> list[int]:
+    mut out = list[int]()
+    mut rest = n
+    while rest >= 128:
+        out.append((rest & 127) | 128)
+        rest = rest >> 7
+    out.append(rest)
+    return out
+
+## `data` with the count or length at the start of its value said to be `said`, and only `kept`
+## bytes of what it really held after it.
+def claiming(data: bytes, said: int, kept: int) -> bytes:
+    start = value_at(data)
+    return data[0:start] + bytes(varint(said)) + data[start + 1:start + 1 + kept]
+
+## `data` with its byte at `at` changed to `to`.
+def with_byte(data: bytes, at: int, to: int) -> bytes:
+    return data[0:at] + bytes([to]) + data[at + 1:]
+
+## A chain of `depth` nodes, each in the one before it.
+def chain(depth: int) -> Node:
+    mut node = Node(name="end")
+    for at in range(depth - 1):
+        node = Node(name=f"n{at}", next=node)
+    return node
+
+test "a count or a length past what's left fails as soon as the data runs out"():
+    numbers = pack.dumps([7, 8])
+    # Under the limit, the items are read one at a time, and the third isn't there.
+    assert (
+        why_not(() => pack.loads[list[int]](claiming(numbers, said=3, kept=2))?)
+        == "the data ends too soon, at byte 19"
+    )
+    assert (
+        why_not(() => pack.loads[list[int]](claiming(numbers, said=15_000_000, kept=2))?)
+        == "the data ends too soon, at byte 22"
+    )
+    text = pack.dumps("hi")
+    assert (
+        why_not(() => pack.loads[str](claiming(text, said=15_000_000, kept=2))?)
+        == "the data ends too soon, at byte 18"
+    )
+    names = pack.dumps({"a": 1})
+    assert (
+        why_not(() => pack.loads[dict[str, int]](claiming(names, said=15_000_000, kept=3))?)
+        == "the data ends too soon, at byte 25"
+    )
+
+test "a count or a length over the limit fails before anything is made for it"():
+    over = "a length is over the limit of 16000000"
+    numbers = pack.dumps([7, 8])
+    for said in [16_000_001, 1 << 40, (1 << 62) - 1]:
+        assert (
+            why_not(() => pack.loads[list[int]](claiming(numbers, said=said, kept=2))?)
+            == f"{over}, at byte 16"
+        )
+    assert (
+        why_not(() => pack.loads[str](claiming(pack.dumps("hi"), said=1 << 40, kept=2))?)
+        == f"{over}, at byte 14"
+    )
+    assert (
+        why_not(() => pack.loads[bytes](claiming(pack.dumps(bytes([1, 2])), said=1 << 40, kept=2))?)
+        == f"{over}, at byte 14"
+    )
+    assert (
+        why_not(
+            () => pack.loads[dict[str, int]](claiming(pack.dumps({"a": 1}), said=1 << 40, kept=3))?,
+        )
+        == f"{over}, at byte 18"
+    )
+    # A smaller limit is held to as well.
+    small = Limits(length=1)
+    assert (
+        why_not(() => pack.loads[list[int]](numbers, limits=small)?)
+        == "a length is over the limit of 1, at byte 16"
+    )
+
+test "a case or a flag that doesn't exist fails, saying which"():
+    box = pack.dumps(Shape.Box(width=3, height=4))
+    # The case's number is the byte before the two ints.
+    case_at = box.len() - 3
+    assert pack.loads[Shape](box)? == .Box(width=3, height=4)
+    assert (
+        why_not(() => pack.loads[Shape](with_byte(box, at=case_at, to=9))?)
+        == "`Shape` has no case 9, at byte 45"
+    )
+    flag = pack.dumps(True)
+    assert (
+        why_not(() => pack.loads[bool](with_byte(flag, at=flag.len() - 1, to=2))?)
+        == "a bool should be 0 or 1, at byte 14"
+    )
+
+test "bytes saved for one type don't load as another whose fields aren't theirs"():
+    point = pack.dumps(Point(x=1, y=2))
+    assert (
+        why_not(() => pack.loads[Person](point)?)
+        == "`name` isn't in the data, and has no default, at byte 26"
+    )
+    assert (
+        why_not(() => pack.loads[Labelled](point)?)
+        == "`x` was saved as an int, not text, at byte 24"
+    )
+    # A shape's number that doesn't match is read by the names in its layout, which here are
+    # the same, so it gives back what was saved.
+    assert pack.loads[Point](with_byte(point, at=4, to=point[4] ^ 1))? == Point(x=1, y=2)
+
+test "nesting 64 deep is read, and one deeper is refused unless the limits allow it"():
+    assert pack.loads[Node](pack.dumps(chain(64)))? == chain(64)
+    assert (
+        why_not(() => pack.loads[Node](pack.dumps(chain(65)))?)
+        == "it nests deeper than the limit of 64, at byte 344"
+    )
+    assert pack.loads[Node](pack.dumps(chain(100)), limits=Limits(depth=300))? == chain(100)
+
+test "bytes std.pack didn't write fail on their first byte"():
+    mut out = Packer()
+    out.add(Point(x=1, y=2))
+    # A `Packer`'s stream is read with an `Unpacker`, not `loads`.
+    assert (
+        why_not(() => pack.loads[Point](out.bytes())?)
+        == "these aren't bytes `std.pack` wrote, at byte 0"
+    )
+    assert (
+        why_not(() => pack.loads[Point](bytes([]))?)
+        == "these aren't bytes `std.pack` wrote, at byte 0"
+    )
+    assert (
+        why_not(() => pack.loads[Point]("{\"x\": 1}".encode())?)
+        == "these aren't bytes `std.pack` wrote, at byte 0"
+    )
+
+test "every kind of value reads back as it was"():
+    everything = Everything(
+        small=0,
+        big=9223372036854775807,
+        low=-9223372036854775807 - 1,
+        ratio=-0.0,
+        flag=True,
+        word="héllo, 日本",
+        empty_word="",
+        raw=bytes([0, 255, 128]),
+        empty_raw=bytes([]),
+        numbers=[1, -1, 300],
+        nothing=[],
+        grid=[[1.5], [], [2.5, 3.5]],
+        names={"a": 1, "": 2},
+        pair=(4, "four"),
+        maybe=5,
+        absent=None,
+        dot=.Dot,
+        box=.Box(width=3, height=-4),
+        either="text",
+        wait=1500ms,
+        at=Point(x=-1, y=2),
+    )
+    assert pack.loads[Everything](pack.dumps(everything))? == everything
+    # Every NaN is the same float, so one reads back equal to it.
+    for ratio in [1e308, 5e-324, -1.5, math.NAN, math.INFINITY, -math.INFINITY]:
+        assert pack.loads[float](pack.dumps(ratio))? == ratio
+
+def main(stdout: Stdout):
+    stdout.print(pack.dumps(Point(x=1, y=2)).len())

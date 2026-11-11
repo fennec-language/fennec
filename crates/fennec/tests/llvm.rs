@@ -1803,6 +1803,41 @@ fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Resul
     Ok(())
 }
 
+/// A put after a lookup of the same key under a lock writes where the lookup found it, with no
+/// second search, only when the dict there now is the one it searched: a different key, a
+/// different dict, a key worked out again with a side effect, and a field set to another dict
+/// between each search. Kept, or put back by a failure, every one is right. Built checking proofs.
+#[test]
+fn a_put_after_a_lookup_reuses_it_only_for_the_same_key_and_dict() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_one_lookup")?;
+        let (program, executable) = (dir.join("one.fen"), dir.join("one"));
+        std::fs::write(&program, include_str!("fixtures/lock_one_lookup.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "2 {0: 2, 1: 30205, 2: 20205, 3: 20306, 4: 20406} {3: 21307}\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// A put after the dict grew since its key was looked up writes into the dict as it is now: a
 /// lookup's entry in the old block is never used. Built checking proofs, which stop at a put in
 /// place whose entry isn't one of the dict's own.

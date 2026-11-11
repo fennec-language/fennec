@@ -491,16 +491,11 @@ pub(super) fn forget_ending(heap: &super::heap::Heap) {
     }
 }
 
-/// Whether `address` waits on any queue, for tests.
+/// Whether anything waits on the queue of the run this thread's runtime is or last was, for tests.
+/// Only that run's blocks ever go there, so no other test's can, whatever addresses come back.
 #[cfg(test)]
-pub(super) fn waits(address: u64) -> bool {
-    remote(|queues| queues.values().any(|queue| queue.contains(&address)))
-}
-
-/// Whether `address` is counted by a thread that didn't make it, for tests.
-#[cfg(test)]
-pub(super) fn counted(address: u64) -> bool {
-    shared(|table| table.contains_key(&address))
+pub(super) fn waits_here() -> bool {
+    remote(|queues| queues.get(&own_queue()).is_some_and(|queue| !queue.is_empty()))
 }
 
 /// Puts `address` on the queue this thread's runtime frees from, as a block let go of elsewhere
@@ -685,7 +680,8 @@ mod tests {
     }
 
     /// A run that ends while another thread still counts one of its blocks leaves nothing behind
-    /// for that block: its memory goes with the run, and can come back as another runtime's.
+    /// for that block: its memory goes with the run, and can come back as another runtime's. Asked
+    /// of the run's own queue, as the block's address can be another test's by then.
     #[test]
     fn a_run_that_ends_leaves_nothing_waiting_for_its_blocks() {
         std::thread::spawn(|| {
@@ -695,8 +691,7 @@ mod tests {
             heap::free(kept);
             finish();
             std::thread::spawn(move || super::release_shared(kept, 0)).join().unwrap();
-            assert!(!super::waits(kept.cast_unsigned()), "nothing waits for a run that's ended");
-            assert!(!super::counted(kept.cast_unsigned()));
+            assert!(!super::waits_here(), "nothing waits for a run that's ended");
         })
         .join()
         .unwrap();

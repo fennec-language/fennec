@@ -21,6 +21,9 @@ step() {
     echo "FAILED after $((SECONDS - started))s: $name"
     tail -n 60 "$logs/step.log"
     grep gate-watch "$log"
+    # Kept under the code it tested: if that passes later, this was a flake, and goes in the
+    # ledger. See `flakes.sh`.
+    .github/scripts/flakes.sh failed "$name" "$logs/step.log"
     return 1
   fi
   echo "$((SECONDS - started))s  $name"
@@ -148,6 +151,9 @@ step "every example as x86-64 under Rosetta" watched x86 || exit 1
 if [ -s "$log" ]; then
   echo "the gate stopped test programs:"
   cat "$log"
+  .github/scripts/flakes.sh failed "test programs the gate stopped" "$log"
   exit 1
 fi
+# Whatever failed before on this same code passed now, so each is a flake, written in the ledger.
+.github/scripts/flakes.sh passed
 echo "$((SECONDS - started))s  altogether"

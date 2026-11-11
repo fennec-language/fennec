@@ -17,24 +17,38 @@ fail() {
 "$here/within.sh" 10 bash -c 'exit 3' 2> /dev/null
 [ $? -eq 3 ] || fail "a command that finished didn't give its own status"
 
-# One that runs too long is stopped, with everything it started, and gives 124.
+# One that waits too long, spending no CPU time, is stopped by the clock, with everything it
+# started, and gives 124.
 started=$SECONDS
 # The command's own shell expands what's quoted.
 # shellcheck disable=SC2016
-"$here/within.sh" 1 bash -c 'sleep 30 & echo $! > "$0/child"; wait' "$work" 2> "$work/said"
+WITHIN_WALL=1 "$here/within.sh" 1 bash -c 'sleep 30 & echo $! > "$0/child"; wait' "$work" 2> "$work/said"
 status=$?
 [ $status -eq 124 ] || fail "a command that ran too long gave $status, not 124"
 [ $((SECONDS - started)) -lt 10 ] || fail "a command that ran too long took $((SECONDS - started))s to stop"
-grep -q "didn't finish within 1 seconds" "$work/said" || fail "it didn't say what ran too long: $(cat "$work/said")"
+grep -q "didn't finish within 1 seconds by the clock" "$work/said" || fail "it didn't say what ran too long: $(cat "$work/said")"
 sleep 0.5
 ! kill -0 "$(cat "$work/child")" 2> /dev/null || fail "what the command started was left running"
+
+# One in a loop it never leaves is stopped once it's spent its CPU time, and says so. Windows has
+# no CPU limit, so there it's the clock, with the same seconds.
+started=$SECONDS
+"$here/within.sh" 1 bash -c 'while :; do :; done' 2> "$work/said"
+status=$?
+[ $status -eq 124 ] || fail "a command in a loop gave $status, not 124"
+[ $((SECONDS - started)) -lt 30 ] || fail "a command in a loop took $((SECONDS - started))s to stop"
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) said="didn't finish within 1 seconds by the clock" ;;
+  *) said="used all 1 seconds of CPU time it may" ;;
+esac
+grep -q "$said" "$work/said" || fail "it didn't say a loop spent its CPU time: $(cat "$work/said")"
 
 # One that won't stop. Nothing ignores the KILL within.sh sends, so it's told to send TERM, which
 # this command ignores, as a process the system can't kill ignores everything.
 started=$SECONDS
 # The command's own shell expands what's quoted.
 # shellcheck disable=SC2016
-WITHIN_SIGNAL=TERM "$here/within.sh" 1 bash -c 'trap "" TERM; echo $$ > "$0/stubborn"; while :; do sleep 0.2; done' "$work" 2> "$work/said"
+WITHIN_WALL=1 WITHIN_SIGNAL=TERM "$here/within.sh" 1 bash -c 'trap "" TERM; echo $$ > "$0/stubborn"; while :; do sleep 0.2; done' "$work" 2> "$work/said"
 status=$?
 stubborn="$(cat "$work/stubborn" 2> /dev/null)"
 [ $status -eq 124 ] || fail "a command that wouldn't stop gave $status, not 124"

@@ -1551,7 +1551,7 @@ bench "collide 10k bullets":
 
 ## For AI
 
-**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandbox, under Sandboxing.
+**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets with only the capabilities they're given. A snippet runs because its caller chose to run it: there's no sandbox, as Untrusted code says.
 *Why:* AI's most common failure is calling functions that don't exist. Ground truth from the compiler and the Den replaces guessing.
 
 **Diagnostics are structured.** `fennec check --json` gives every error and lint with its location and any fix as an edit a tool can apply.
@@ -1633,7 +1633,7 @@ These are default lints, and the Den requires them.
 
 ## Supply chain
 
-**Anything that could run code you didn't read is either impossible or sandboxed.** Every rule below follows from that.
+**Nothing runs code you didn't read unless you choose to run it.** There's no sandbox to catch it, so every rule below follows from that.
 
 **Installing a kit never runs anything.** There are no install or build scripts.
 
@@ -1813,7 +1813,7 @@ def main(stdout: Stdout, gpu: Gpu):
 
 *Why:* A kernel that's just a function is tested on the CPU with `fennec test`, debugged like any code, and run by the interpreter too. A separate shader language means separate tools.
 
-**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Release builds compile kernels ahead of time and embed them; the JIT compiles each one when it first runs and caches it by content. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through the runtime's binding to C, the one way any C is reached.
+**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Kernels are compiled at build time and kept in the build cache by content, like every other build output, and no compiler runs inside the program. Chris decided this on 2026-11-11, in place of compiling each kernel when it first runs. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through the runtime's binding to C, the one way any C is reached.
 
 **GPU floats are the same on the same device, not across vendors.** `sqrt`, `exp` and division can differ in the last bit between GPU makers. `gpu.run(..., exact=True)` turns off contraction and uses Fennec's own math functions for results identical across vendors, at some cost in speed. Lockstep game simulation stays on the CPU.
 
@@ -1843,22 +1843,12 @@ def main(stdout: Stdout, gpu: Gpu):
 
 This replaces the earlier plan for C in Fennec code: `extern "C":` blocks, `unsafe("reason")`, pointer types, `def del` releasing owned pointers, `fennec audit --unsafe`, a `[native]` table in `kit.toml`, and apps or path dependencies calling C themselves.
 
-## Sandboxing
+## Untrusted code
 
-**No program runs scripts inside itself.** A program can't load and run sandboxed code at run time. Sandboxes exist only for tools, like Den tests and MCP snippets. This removes the earlier idea of a host running sandboxed scripts.
+**Fennec has no sandbox for untrusted code.** Don't run code you don't trust, and don't add dependencies you don't understand. Capabilities limit what any dependency can do: only what its caller passes it, no `unsafe`, and no C outside std and first-party kits. The Den scans kits. Neither is a licence to run code nobody has read. Chris decided this on 2026-11-11. This replaces the plans for sandboxed code: Den tests and agents' snippets run by the interpreter with limits, then compiled to WebAssembly and run in Wasmtime, in a process of their own on servers.
+
+**No program runs scripts inside itself.** A program can't load and run code at run time.
 *Why:* A script loaded at run time is code the compiler never saw, which is the open set Fennec has already ruled out.
-
-**Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't call C. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
-*Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
-
-**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, Den tests and agents' snippets are compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs AI-written snippets, where starting instantly and being easy to sandbox matter more than speed.
-
-**Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
-*Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
-
-**The native engines are for trusted code.** Native builds run your own programs, not untrusted ones.
-
-**On servers, sandboxed code also runs in its own process,** under seccomp on Linux or the App Sandbox on macOS, as an outer wall.
 
 ## Writing Fennec in Fennec
 

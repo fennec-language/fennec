@@ -1110,42 +1110,47 @@ fn stmt_exprs(each: &mut Stmt) -> Vec<&mut Expr> {
 /// one inside another's case, which `each` reaches through that case, nor one in a lambda, which
 /// leaves only the lambda.
 ///
-/// The `match`es are told apart by their spans, worked out before `each` changes anything, so one
-/// `each` adds isn't walked. A `match` with the same span as one inside its own case would be taken
-/// as inner and left out: that needs a pass to copy one into its own case without new spans, which
-/// none does.
+/// The `match`es are told apart by where they are, worked out before `each` changes anything, so
+/// one `each` adds isn't walked. Spans won't do: a pass that writes code in can give two `match`es
+/// one span, as the cases under `except why:` once had. Only cases are changed in between, and no
+/// outer `match` is inside one, so each stays where it was until it's reached, and nothing moved
+/// can be where it is.
 fn outer_cases(value: &mut Expr, each: &mut dyn FnMut(&mut Vec<Stmt>)) {
+    let place = |expr: &Expr| std::ptr::from_ref(expr).addr();
     let mut inner = Vec::new();
     let mut outer = Vec::new();
     // Only read here, though the walk takes it to change.
-    fennec_syntax::visit::in_expr(value, &mut |expr| match &mut expr.kind {
-        ExprKind::Match { arms, .. } => {
-            outer.push((expr.span.start, expr.span.end));
-            for arm in arms {
-                fennec_syntax::visit::in_stmts(&mut arm.body, &mut |deeper| {
+    fennec_syntax::visit::in_expr(value, &mut |expr| {
+        let at = place(expr);
+        match &mut expr.kind {
+            ExprKind::Match { arms, .. } => {
+                outer.push(at);
+                for arm in arms {
+                    fennec_syntax::visit::in_stmts(&mut arm.body, &mut |deeper| {
+                        if matches!(deeper.kind, ExprKind::Match { .. }) {
+                            inner.push(place(deeper));
+                        }
+                    });
+                }
+            }
+            ExprKind::Lambda { body, .. } => {
+                fennec_syntax::visit::in_expr(body, &mut |deeper| {
                     if matches!(deeper.kind, ExprKind::Match { .. }) {
-                        inner.push((deeper.span.start, deeper.span.end));
+                        inner.push(place(deeper));
                     }
                 });
             }
+            _ => {}
         }
-        ExprKind::Lambda { body, .. } => {
-            fennec_syntax::visit::in_expr(body, &mut |deeper| {
-                if matches!(deeper.kind, ExprKind::Match { .. }) {
-                    inner.push((deeper.span.start, deeper.span.end));
-                }
-            });
-        }
-        _ => {}
     });
-    outer.retain(|span| !inner.contains(span));
+    outer.retain(|at| !inner.contains(at));
     if outer.is_empty() {
         return;
     }
     fennec_syntax::visit::in_expr(value, &mut |expr| {
-        let at = (expr.span.start, expr.span.end);
+        let at = place(expr);
         if let ExprKind::Match { arms, .. } = &mut expr.kind
-            && let Some(found) = outer.iter().position(|span| *span == at)
+            && let Some(found) = outer.iter().position(|outside| *outside == at)
         {
             outer.swap_remove(found);
             for arm in arms {
@@ -2106,5 +2111,36 @@ mod tests {
             panic!("no expression in {block:?}");
         };
         assert_eq!(retyped.kind, value.kind);
+    }
+
+    /// A `match` inside another's case with the same span as the outer one is still told apart
+    /// from it: the outer's cases are each passed once, and the inner's are left to the outer's
+    /// case, rather than both being dropped as one `match` taken for inner. The parser no longer
+    /// gives the cases under `except why:` the outer's span, which is how this was found, so the
+    /// test builds the shared span by hand to keep any parse that does it again from losing
+    /// cleanups.
+    #[test]
+    fn a_match_inside_another_s_case_with_its_span_is_still_told_apart() {
+        let source = "def f(a: int, b: int):\n    match a:\n        case 1:\n            match b:\n                case 2:\n                    pass\n                case _:\n                    pass\n        case _:\n            pass\n";
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let Some(fennec_syntax::Item::Function(def)) = module.items.first_mut() else {
+            panic!("no function in {source}");
+        };
+        let Some(fennec_syntax::StmtKind::Expr(outer)) = def.body.first_mut().map(|stmt| &mut stmt.kind)
+        else {
+            panic!("no match in {source}");
+        };
+        let span = outer.span;
+        // The inner `match` gets the outer one's span.
+        let fennec_syntax::ExprKind::Match { arms, .. } = &mut outer.kind else { panic!("not a match") };
+        let Some(fennec_syntax::StmtKind::Expr(inner)) =
+            arms.first_mut().and_then(|arm| arm.body.first_mut()).map(|stmt| &mut stmt.kind)
+        else {
+            panic!("no inner match");
+        };
+        inner.span = span;
+        let mut passed = Vec::new();
+        super::outer_cases(outer, &mut |cases| passed.push(cases.len()));
+        assert_eq!(passed, [1, 1], "each of the outer match's two cases once, and none of the inner's");
     }
 }

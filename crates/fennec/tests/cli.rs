@@ -295,7 +295,7 @@ fn a_signal_sent_to_run_reaches_the_program() -> std::io::Result<()> {
             let _ = says.send(line);
         }
     });
-    let line = || said.recv_timeout(std::time::Duration::from_secs(120));
+    let line = || said.recv_timeout(crate::executables::WALL_DEADLINE);
     assert_eq!(line().as_deref(), Ok("ready"));
     let sent = std::process::Command::new("kill").args(["-TERM", &run.id().to_string()]).status()?;
     assert!(sent.success(), "couldn't send SIGTERM");

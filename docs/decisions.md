@@ -598,8 +598,12 @@ This replaces the earlier rules that return types are inferred, and that recursi
 interface Signed:
     def abs(self) -> Self
 
-total = sum(e.health for e in enemies)    # global: only looping and +
-distance = (a - b).abs()                  # method: a question about one value
+# global: only looping and +
+total = sum(e.health for e in enemies)
+# global: a protocol, which calls the type's own `def abs`
+distance = abs(a - b)
+# method: a question about one value
+alive = enemy.is_alive()
 ```
 *Why:* A looping function belongs to no one type: it works on lists, sets, dicts and generator expressions alike. A question about a value is answered differently by each type, so it lives on the type.
 

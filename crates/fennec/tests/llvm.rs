@@ -6724,6 +6724,66 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     Ok(())
 }
 
+/// A value whose field writes its own text prints the same alone as inside a union or a list:
+/// the channel's `Timeout`, whose `Duration` has its own `def str`, didn't build printed alone.
+#[test]
+fn a_value_whose_field_writes_its_own_text_prints_the_same_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Tag:
+    name: str
+
+    def str(self, ref out: StrWriter):
+        out.write("<" + self.name + ">")
+
+error Late:
+    tag: Tag
+    after: int
+
+error Gone:
+    why: str
+
+struct Holder:
+    tag: Tag
+
+def main(stdout: Stdout):
+    late = Late(tag=Tag(name="t"), after=3)
+    stdout.print(late)
+    either: Late | Gone = late
+    stdout.print(either)
+    stdout.print([late])
+    held = Holder(tag=Tag(name="h"))
+    stdout.print(held)
+    stdout.print([held])
+    stdout.print(f"{held} and {late}")
+"#;
+    let dir = folder("own-text-alone")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"].into_iter().chain(how.iter().copied()).collect();
+        let built = fennec(&[&args[..], &[&path(&program), "-o", &path(&executable)]].concat(), &dir)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+        let lines: Vec<&str> = printed.lines().collect();
+        let [alone, in_union, in_list, holder, holders, formatted] = lines[..] else {
+            panic!("{how:?}: {printed}{}", String::from_utf8_lossy(&ran.stderr));
+        };
+        assert!(alone.contains("<t>"), "{how:?}: {printed}");
+        assert_eq!(alone, in_union, "{how:?}");
+        assert_eq!(format!("[{alone}]"), in_list, "{how:?}");
+        assert!(holder.contains("<h>"), "{how:?}: {printed}");
+        assert_eq!(format!("[{holder}]"), holders, "{how:?}");
+        assert_eq!(formatted, format!("{holder} and {alone}"), "{how:?}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Every shape of value printing reads from its block, nested, with text that needs quoting.
 const SHOWN_VALUES: &str = "\
 from std.collections import Table

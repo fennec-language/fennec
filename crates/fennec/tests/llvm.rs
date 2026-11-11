@@ -614,6 +614,118 @@ def main(stdout: Stdout):
     _ = sized
 "#;
 
+/// Leaving a `with` block from a `case` arm under `except why:`, or from the one case of
+/// `except Case():`, runs its source's cleanup as leaving from anywhere else in the block does:
+/// `return`, `break` and `continue` from a named case, from `case _:` and from the one case, from
+/// nested blocks, and a `fail`, which runs the `lend`'s `except:` first.
+#[test]
+fn leaving_from_an_except_arm_runs_the_with_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_arms_leave",
+        EXCEPT_ARMS_LEAVE,
+        "open named 0 0\nkept 0\nclose named 0 0\nopen named 0 1\ncaught 1\nclose named 0 1\nopen other 0 0\nkept 0\nclose other 0 0\nopen other 0 1\nother Refused.Big(code=1)\nclose other 0 1\nopen one 0 0\nkept 0\nclose one 0 0\nopen one 0 1\nclose one 0 1\ngave 1 9 7\nopen named 1 0\nkept 0\nclose named 1 0\nopen named 1 1\ncaught 1\nclose named 1 1\nopen other 1 0\nkept 0\nclose other 1 0\nopen other 1 1\nother Refused.Big(code=1)\nclose other 1 1\nopen one 1 0\nkept 0\nclose one 1 0\nopen one 1 1\nclose one 1 1\ngave -1 -1 -1\nopen named 2 0\nkept 0\nclose named 2 0\nopen named 2 1\ncaught 1\nclose named 2 1\nopen other 2 0\nkept 0\nclose other 2 0\nopen other 2 1\nother Refused.Big(code=1)\nclose other 2 1\nopen one 2 0\nkept 0\nclose one 2 0\nopen one 2 1\nclose one 2 1\ngave -1 -1 -1\nopen outer\nopen inner\nclose inner\nclose outer\ngave 1\nopen failed\nundo failed\nfailed with 11\n",
+    )
+}
+
+const EXCEPT_ARMS_LEAVE: &str = r#"error Refused:
+    Big(code: int)
+    Odd(code: int)
+
+error Small:
+    code: int
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit: fail .Big(code=n)
+    return n
+
+def tiny(n: int) -> int fails Small:
+    if n > 0: fail Small(code=n)
+    return n
+
+def ward(name: str, stdout: Stdout) -> with str:
+    stdout.print("open", name)
+    lend name except:
+        stdout.print("undo", name)
+    stdout.print("close", name)
+
+def named(stdout: Stdout, leave: int) -> int:
+    for i in range(2):
+        with ward(f"named {leave} {i}", stdout) as _:
+            got = capped(i, limit=0) except why:
+                case.Big(code):
+                    stdout.print("caught", code)
+                    if leave == 0: return code
+                    if leave == 1: break
+                    continue
+                case.Odd(code):
+                    code
+            stdout.print("kept", got)
+    return -1
+
+def other(stdout: Stdout, leave: int) -> int:
+    for i in range(2):
+        with ward(f"other {leave} {i}", stdout) as _:
+            got = capped(i, limit=0) except why:
+                case.Odd(code):
+                    code
+                case _:
+                    stdout.print("other", f"{why}")
+                    if leave == 0: return 9
+                    if leave == 1: break
+                    continue
+            stdout.print("kept", got)
+    return -1
+
+def one(stdout: Stdout, leave: int) -> int:
+    for i in range(2):
+        with ward(f"one {leave} {i}", stdout) as _:
+            if leave == 0:
+                got = tiny(i) except Small(): return 7
+                stdout.print("kept", got)
+            elif leave == 1:
+                got = tiny(i) except Small(): break
+                stdout.print("kept", got)
+            else:
+                got = tiny(i) except Small(): continue
+                stdout.print("kept", got)
+    return -1
+
+def nested(stdout: Stdout) -> int:
+    with ward("outer", stdout) as _:
+        with ward("inner", stdout) as _:
+            got = capped(1, limit=0) except why:
+                case.Big(code):
+                    return code
+                case.Odd(code):
+                    code
+            stdout.print("kept", got)
+    return -1
+
+def failed(stdout: Stdout) -> int fails Refused:
+    with ward("failed", stdout) as _:
+        got = capped(1, limit=0) except why:
+            case.Big(code):
+                fail .Odd(code=code + 10)
+            case.Odd(code):
+                code
+        stdout.print("kept", got)
+    return -1
+
+def main(stdout: Stdout):
+    for leave in range(3):
+        stdout.print("gave", named(stdout, leave), other(stdout, leave), one(stdout, leave))
+    stdout.print("gave", nested(stdout))
+    code = failed(stdout) except why:
+        case.Odd(code):
+            code
+        case.Big(code):
+            code
+    stdout.print("failed with", code)
+"#;
+
 /// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
 /// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
 #[test]
@@ -5242,6 +5354,23 @@ fn a_send_to_a_channel_whose_block_left_from_an_else_is_closed() -> std::io::Res
         include_str!("fixtures/channel_dropped_by_an_else.fen"),
         "gave up -2\nfailed out\nclosed\nclosed\n",
     )
+}
+
+/// The same when the block ends by a `return` from the one case of `except Timeout() | Closed():`,
+/// or from a `case` arm under `except why:`: the channel is closed, as the block's way out runs
+/// its cleanup from there too.
+#[test]
+fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for name in ["channel_dropped_by_an_except_case", "channel_dropped_by_an_except_arm"] {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.fen")),
+        )?;
+        prints_in_both_builds(name, &source, "gave up -2\nfailed out\nclosed\nclosed\n")?;
+    }
+    Ok(())
 }
 
 /// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost

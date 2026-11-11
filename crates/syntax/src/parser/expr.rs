@@ -166,11 +166,17 @@ impl Parser {
     }
 
     /// A handler whose block is a `match` over the failure, named `failure`, with these arms.
+    /// The `match` over the failure covers only its arms, a span of its own: analyses tell
+    /// expressions apart by span, and one that shared the handler's would hide both, as a way out
+    /// of an arm did from a `with` source's cleanup.
     fn handler_over(&self, start: Span, (failure, at): (String, Span), arms: Vec<MatchArm>) -> Expr {
         let span = start.to(self.prev_span());
+        let first = arms.first().map_or(span, |arm| arm.span);
+        let over = first.to(arms.last().map_or(span, |arm| arm.span));
         let subject = Box::new(Expr { kind: ExprKind::Name(failure.clone()), span: at });
-        let matched = Expr { kind: ExprKind::Match { subject, arms }, span };
-        let mut handler = leaving_match(start, vec![Stmt { kind: StmtKind::Expr(matched), span }], span);
+        let matched = Expr { kind: ExprKind::Match { subject, arms }, span: over };
+        let mut handler =
+            leaving_match(start, vec![Stmt { kind: StmtKind::Expr(matched), span: over }], span);
         if let ExprKind::Match { arms, .. } = &mut handler.kind
             && let Some(arm) = arms.first_mut()
         {

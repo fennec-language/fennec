@@ -5,6 +5,10 @@
 //! knows what changed, and doesn't parse a file whose bytes are the same. Reformatting a
 //! file, editing its comments or moving code around changes no definition's hash.
 
+// A hash map's order changes with every process, so iterating one would make what the compiler
+// emits, or the order it checks in, differ from run to run. Iterate a sorted copy or a BTreeMap.
+#![deny(clippy::iter_over_hash_type)]
+
 mod cache;
 mod changes;
 mod locals;

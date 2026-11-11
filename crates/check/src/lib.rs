@@ -13,6 +13,10 @@
 //! besides the signatures, a check gives the type of every expression and every name: the
 //! typed tree a compiler builds on. See [`Types`].
 
+// A hash map's order changes with every process, so iterating one would make what the compiler
+// emits, or the order it checks in, differ from run to run. Iterate a sorted copy or a BTreeMap.
+#![deny(clippy::iter_over_hash_type)]
+
 mod annotations;
 mod builtins;
 mod call;

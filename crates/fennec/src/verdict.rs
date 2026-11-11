@@ -183,7 +183,10 @@ pub(crate) fn plan(
         let new = rows.get(module).map_or(&[][..], Vec::as_slice);
         bodies.extend(fennec_build::changed_bodies(&old, new)?);
     }
-    let changed_functions: Vec<String> = bodies.iter().cloned().collect();
+    // Everything below goes in one order every run, never a hash map's: the test program built
+    // from it has to be the same for the same edit, byte for byte.
+    let mut changed_functions: Vec<String> = bodies.iter().cloned().collect();
+    changed_functions.sort();
     let changed_modules = changed.clone();
     let affected = |record: &TestRecord| {
         bodies.contains(&format!("test \"{}\"", record.test))
@@ -191,14 +194,7 @@ pub(crate) fn plan(
                 .iter()
                 .any(|key| key.strip_prefix("def ").is_some_and(|function| record.depends_on(function)))
     };
-    let (wanted, unchanged): (Vec<&TestRecord>, Vec<&TestRecord>) =
-        passed.values().partition(|record| affected(record));
-    let mut needed = changed;
-    for record in &wanted {
-        if !needed.contains(&record.module) {
-            needed.push(record.module.clone());
-        }
-    }
+    let (wanted, unchanged, needed) = in_order(passed, changed, affected);
     let mut program = fennec_kit::load_modules_to_test(dir, path, &needed).ok()?;
     // What runs a module needs it checked and resolved.
     let edited = changed_items(&program, files, &changed_modules);
@@ -215,6 +211,29 @@ pub(crate) fn plan(
         unchanged: unchanged.into_iter().cloned().collect(),
         facts,
     })
+}
+
+/// The tests an edit affects and those it doesn't, and the modules a quick run loads: the changed
+/// ones and the affected tests' own. All in one order every run, never `passed`'s, a hash map's,
+/// which changes from process to process: the test program built from them has to be the same for
+/// the same edit, byte for byte.
+fn in_order(
+    passed: &HashMap<String, TestRecord>,
+    changed: Vec<String>,
+    affected: impl Fn(&TestRecord) -> bool,
+) -> (Vec<&TestRecord>, Vec<&TestRecord>, Vec<String>) {
+    let mut records: Vec<&TestRecord> = passed.values().collect();
+    records.sort_by(|first, second| (&first.module, &first.test).cmp(&(&second.module, &second.test)));
+    let (wanted, unchanged): (Vec<&TestRecord>, Vec<&TestRecord>) =
+        records.into_iter().partition(|record| affected(record));
+    let mut needed = changed;
+    for record in &wanted {
+        if !needed.contains(&record.module) {
+            needed.push(record.module.clone());
+        }
+    }
+    needed.sort();
+    (wanted, unchanged, needed)
 }
 
 /// What each function waits on or locks, by its key, as the checker judges a `lock` that calls it.
@@ -607,4 +626,48 @@ pub(crate) fn remember(
 /// Forgets what's remembered, since a test failed.
 pub(crate) fn forget((cache, name): (&Cache, &str)) {
     cache.clear_kit_state(name, BUILD);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use fennec_build::TestRecord;
+
+    /// The same records in two hash maps, which iterate in two orders, plan the same: the same
+    /// tests wanted and left, in the same order, and the same modules loaded.
+    #[test]
+    fn a_quick_runs_plan_is_the_same_whatever_order_a_hash_map_gives() {
+        let record = |module: &str, test: &str| TestRecord {
+            test: test.to_owned(),
+            module: module.to_owned(),
+            key: fennec_blake3::hash(test.as_bytes()),
+            ran: None,
+            reach: Vec::new(),
+        };
+        let records: Vec<TestRecord> =
+            (0..40).map(|at| record(&format!("module{}", at % 7), &format!("test {at}"))).collect();
+        let map = || -> HashMap<String, TestRecord> {
+            records.iter().map(|record| (record.test.clone(), record.clone())).collect()
+        };
+        let affected = |record: &TestRecord| record.test.ends_with('3') || record.module == "module2";
+        let planned = |passed: &HashMap<String, TestRecord>| {
+            let (wanted, unchanged, needed) = super::in_order(passed, vec!["module6".to_owned()], affected);
+            let names = |records: Vec<&TestRecord>| {
+                records.iter().map(|record| record.test.clone()).collect::<Vec<_>>()
+            };
+            (names(wanted), names(unchanged), needed)
+        };
+        let (first, second) = (map(), map());
+        // Each map has a hasher of its own, so the two go in two orders, or the test shows nothing.
+        let order = |passed: &HashMap<String, TestRecord>| passed.keys().cloned().collect::<Vec<_>>();
+        let maps: Vec<HashMap<String, TestRecord>> = (0..8).map(|_| map()).collect();
+        assert!(maps.iter().any(|other| order(other) != order(&first)), "every map iterated in one order");
+        let want = planned(&first);
+        assert_eq!(planned(&second), want);
+        for other in &maps {
+            assert_eq!(planned(other), want);
+        }
+        assert_eq!(want.2, ["module0", "module1", "module2", "module3", "module4", "module5", "module6"]);
+    }
 }

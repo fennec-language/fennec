@@ -13,7 +13,7 @@
 //! Cleanup is the one thing that takes a lock, so two cleanups never run at once. The daemon runs
 //! one every five minutes while it's idle, and any command starts one when none has run for an hour.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -205,7 +205,7 @@ impl Cache {
             let used = last_used.entry(&entry.build).or_insert(entry.used);
             *used = (*used).max(entry.used);
         }
-        let unused: HashSet<PathBuf> = last_used
+        let unused: BTreeSet<PathBuf> = last_used
             .into_iter()
             .filter(|(_, used)| used.elapsed().is_ok_and(|age| age > UNUSED_BUILD))
             .map(|(build, _)| build.to_path_buf())

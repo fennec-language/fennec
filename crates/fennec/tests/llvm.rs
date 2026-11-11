@@ -15843,6 +15843,21 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// Floats inside an enum's case and a struct's fields compare field by field as Fennec compares
+/// floats, with no value read whole: NaN equals NaN, `-0.0` equals `0.0`, another case is unequal,
+/// and a block field goes by what it holds. Keys found equal hash alike, so a dict keeps one.
+#[test]
+fn floats_in_cases_and_fields_compare_and_hash_as_floats_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_fields_equal",
+        include_str!("fixtures/float_fields_equal.fen"),
+        "True True False False True\nTrue True False False\nTrue False False\n3 nan again zero again\n1 2 False\n",
+    )
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
 /// it. The JIT's `==` and keys never followed it.

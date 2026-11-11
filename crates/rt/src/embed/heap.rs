@@ -1834,10 +1834,13 @@ fn same_tables(state: &State, fields: &[(Rc<str>, Element)], left: &[u64], right
 /// Whether two values of a kind, laid out as words, are equal: the same plain words, and
 /// equal blocks where they hold blocks.
 pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
-    // A float's bits don't say what's equal, so one with floats in it compares by its values,
-    // as does an error, whose notes don't count.
-    if holds_floats(element) || holds_notes(element) {
+    // An error compares by its values, whose notes don't count.
+    if holds_notes(element) {
         return read(state, element, &mut left.iter()) == read(state, element, &mut right.iter());
+    }
+    // A float's bits don't say what's equal, so one with floats in it goes field by field.
+    if holds_floats(element) {
+        return same_fields(state, element, (left, right), &mut 0);
     }
     let mut boxed = Vec::new();
     boxed_words(element, left, &mut 0, &mut boxed);
@@ -1848,6 +1851,61 @@ pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: 
             let (Some(x), Some(y)) = (left.get(*at), right.get(*at)) else { return false };
             same(state, *x, *y)
         })
+}
+
+/// Whether two values of `element`, from `at` in `left` and `right`, are equal, a field at a time:
+/// a float as Fennec compares floats, `-0.0` the same as `0.0` and every NaN the same, as they hash;
+/// a block by what it holds; and an enum by its case, then only that case's fields. Nothing is
+/// read into a `Value`, so a value whose type holds a float anywhere costs what one without does.
+fn same_fields(state: &State, element: &Element, (left, right): (&[u64], &[u64]), at: &mut usize) -> bool {
+    let word = |words: &[u64], at: usize| words.get(at).copied().unwrap_or(0);
+    let (x, y) = (word(left, *at), word(right, *at));
+    match element {
+        element if element.is_optional_text() => same_fields(state, &Element::Text, (left, right), at),
+        Element::Float | Element::F32 => {
+            *at += 1;
+            crate::value::floats_same(f64::from_bits(x), f64::from_bits(y))
+        }
+        Element::Int | Element::Bool | Element::U64 => {
+            *at += 1;
+            x == y
+        }
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
+            *at += 1;
+            // No block is `None`, which is equal only to another.
+            x == y || (x != 0 && y != 0 && same(state, x, y))
+        }
+        Element::Text => {
+            let (mine, theirs) = (header_at(left, *at), header_at(right, *at));
+            *at += 3;
+            if mine == theirs {
+                return true;
+            }
+            // Equal strings have the same form, so only two blocks need their bytes compared.
+            let block = |header: Option<[u64; 3]>| header.and_then(|header| super::text::block_of(&header));
+            matches!((block(mine), block(theirs)), (Some(a), Some(b)) if same(state, a, b))
+        }
+        Element::Struct { fields, .. } => {
+            fields.iter().all(|(_, field)| same_fields(state, field, (left, right), at))
+        }
+        Element::Enum { cases, words: size, .. } => {
+            let start = *at;
+            *at = start + size;
+            if x != y {
+                return false;
+            }
+            let case = usize::try_from(x).ok().and_then(|case| cases.get(case));
+            let mut inside = start + 1;
+            case.map_or(&[][..], |(_, fields)| fields)
+                .iter()
+                .all(|(_, field)| same_fields(state, field, (left, right), &mut inside))
+        }
+    }
 }
 
 /// A string's block owned once, or a one-character ASCII string's block that lives for the

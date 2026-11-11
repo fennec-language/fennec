@@ -11,7 +11,9 @@
 #
 #   .github/scripts/nightly-proofs.sh target/release/fennec report.md
 #
-# Each line of the report says what ran and what broke. It exits 1 if anything did.
+# Each line of the report says what ran and what broke. It exits 1 if anything did. To try it on
+# a few programs, `NIGHTLY_ONLY` names a pattern each one's path must match, as `case` does, and
+# the floor on how many builds ran doesn't apply.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 report=$2
@@ -55,6 +57,8 @@ run() {
 # with facts stripped, prints and exits as it did with them.
 check() {
   local program=$1 folder=$2 expected=$3 how
+  # shellcheck disable=SC2254
+  case "$program" in ${NIGHTLY_ONLY:-*}) ;; *) return ;; esac
   for how in dev release; do
     if ! build "$program" "$how" "$work/normal" ""; then
       grep -qE "linking failed|failed on|couldn't run|panicked|didn't finish" "$work/built.txt" &&
@@ -97,5 +101,5 @@ for kernel in bench/kernels/*.fen; do
   check "$kernel" bench/kernels ""
 done
 said "- $builds builds ran with every proof checked, $stripped with facts stripped$([ "$strip" = yes ] || echo " (\`FENNEC_STRIP_FACTS\` isn't built yet)")."
-[ "$builds" -ge 100 ] || broke "only $builds builds ran"
+[ -n "${NIGHTLY_ONLY:-}" ] || [ "$builds" -ge 100 ] || broke "only $builds builds ran"
 exit "$broken"

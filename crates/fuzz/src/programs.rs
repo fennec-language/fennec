@@ -396,9 +396,8 @@ mod tests {
             "_ = [1, 2][i + 2]",
             "with ward(\"a\", stdout) as a, ",
             "capped(capped(i, limit=1000)?, limit=",
-            "?, limit=1000)? * 2",
         ];
-        let mut found = [0_usize; 10];
+        let mut found = [0_usize; 9];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))

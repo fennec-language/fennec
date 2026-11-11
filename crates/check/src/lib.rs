@@ -1038,6 +1038,7 @@ pub struct Signatures {
     errors: BTreeMap<String, Struct>,
     locals: BTreeMap<String, Type>,
     types: Types,
+    lock_verdicts: BTreeMap<String, String>,
 }
 
 /// A struct's fields, with their types, in the order they're written.
@@ -1060,6 +1061,14 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// What each function waits on or locks, itself or however many calls down, by its key, as
+    /// a `lock` that calls it is judged: a function that does neither isn't there. An edit that
+    /// changes one of these can break a `lock` anywhere that calls the function.
+    #[must_use]
+    pub fn lock_verdicts(&self) -> &BTreeMap<String, String> {
+        &self.lock_verdicts
+    }
+
     /// The signatures with each `LiteralStr` written as the `str` it is to the engines: it's a
     /// rule about where a value came from, checked already, not a type of its own when it runs.
     fn without_literal(mut self) -> Signatures {

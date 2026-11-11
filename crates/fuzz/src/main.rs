@@ -66,6 +66,7 @@ fn main() -> ExitCode {
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]"
             .to_owned()),
     };
+    llvm::forget(std::process::id());
     match code {
         Ok(code) => code,
         Err(message) => {

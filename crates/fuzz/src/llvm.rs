@@ -27,7 +27,58 @@ fn fennec() -> PathBuf {
 
 /// This process's own folder to build in.
 fn work() -> PathBuf {
-    std::env::temp_dir().join(format!("fennec-fuzz-llvm-{}", std::process::id()))
+    work_of(std::process::id())
+}
+
+/// The folder process `pid` builds in.
+fn work_of(pid: u32) -> PathBuf {
+    std::env::temp_dir().join(format!("{WORK}{pid}"))
+}
+
+/// What every process's folder to build in is named from, before its process id.
+const WORK: &str = "fennec-fuzz-llvm-";
+
+/// Removes the folder process `pid` built in, once it's ended. A failing program is kept as its
+/// input, which builds it again, so nothing in the folder is needed after.
+pub(crate) fn forget(pid: u32) {
+    let _ = std::fs::remove_dir_all(work_of(pid));
+}
+
+/// Removes the folders fuzzing processes made that ended without removing them: a run, a worker
+/// or a try at cutting a failure down that was stopped, or a test's. One whose process id is
+/// running again, as another process, is removed once it's a day old. When which processes are
+/// running can't be asked, it removes nothing.
+fn forget_ended() {
+    let Ok(listed) = Command::new("ps").args(["-A", "-o", "pid="]).output() else { return };
+    if !listed.status.success() {
+        return;
+    }
+    let running: std::collections::HashSet<u32> = String::from_utf8_lossy(&listed.stdout)
+        .split_whitespace()
+        .filter_map(|pid| pid.parse().ok())
+        .collect();
+    if running.is_empty() {
+        return;
+    }
+    let day = std::time::Duration::from_hours(24);
+    for entry in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(fuzzing_process) else { continue };
+        let changed = entry.metadata().and_then(|meta| meta.modified()).ok();
+        let old = changed.and_then(|changed| changed.elapsed().ok()).is_some_and(|age| age > day);
+        if !running.contains(&pid) || old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// The process a folder in the temporary folder belongs to, when fuzzing made it: a run's
+/// `fennec-fuzz-`, a builder's `fennec-fuzz-llvm-` or a cutter's `fennec-fuzz-small-`, then
+/// its process id.
+fn fuzzing_process(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("fennec-fuzz-")?;
+    let pid = rest.strip_prefix("llvm-").or_else(|| rest.strip_prefix("small-")).unwrap_or(rest);
+    pid.parse().ok()
 }
 
 /// Whether a program can be built and run here, or why not.
@@ -35,6 +86,7 @@ pub(crate) fn ready() -> Result<(), String> {
     static READY: OnceLock<Result<(), String>> = OnceLock::new();
     READY
         .get_or_init(|| {
+            forget_ended();
             let source = "def main(stdout: Stdout):\n    stdout.print(\"ready\")\n";
             match build(source, &work(), false)? {
                 Some(executable) if ran(&executable, &[], &work())?.0 == b"ready\n" => Ok(()),
@@ -373,7 +425,10 @@ fn reader(name: &str) -> Result<PathBuf, String> {
     static BUILT: OnceLock<Built> = OnceLock::new();
     let built = BUILT.get_or_init(Built::default);
     let mut built = built.lock().map_err(|_| "a reader's build failed before".to_owned())?;
+    // Another process may have removed one this process built, once it went unused for a while.
+    built.retain(|(_, executable)| executable.exists());
     if let Some((_, executable)) = built.iter().find(|(made, _)| made == name) {
+        used(executable);
         return Ok(executable.clone());
     }
     let source = READERS.iter().find(|(named, _)| *named == name).map(|(_, source)| (*source).to_owned());
@@ -403,16 +458,25 @@ fn reader(name: &str) -> Result<PathBuf, String> {
         std::fs::rename(&copying, &kept).map_err(|err| format!("{}: {err}", kept.display()))?;
         kept
     };
+    used(&executable);
     built.push((name.to_owned(), executable.clone()));
     Ok(executable)
 }
 
-/// Removes readers built more than a day ago, which a rebuilt `fennec` no longer uses.
+/// Marks the folder a reader's in as used now, so it isn't forgotten while it's being used.
+fn used(executable: &Path) {
+    if let Some(folder) = executable.parent() {
+        let _ = File::open(folder).and_then(|folder| folder.set_modified(std::time::SystemTime::now()));
+    }
+}
+
+/// Removes readers unused for an hour. Each `fennec` build makes its own, so a day of building
+/// left 1,500 of them, 6.6 GB.
 fn forget_old(readers: &Path) {
-    let day = std::time::Duration::from_hours(24);
+    let hour = std::time::Duration::from_hours(1);
     for entry in std::fs::read_dir(readers).into_iter().flatten().flatten() {
         let changed = entry.metadata().and_then(|meta| meta.modified()).ok();
-        if changed.and_then(|changed| changed.elapsed().ok()).is_some_and(|age| age > day) {
+        if changed.and_then(|changed| changed.elapsed().ok()).is_some_and(|age| age > hour) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
@@ -471,4 +535,25 @@ pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>,
     std::fs::write(&file, input).map_err(|err| format!("{}: {err}", file.display()))?;
     ran_holding(&executable, &[file.as_os_str()], &work, READER_KILOBYTES)
         .map(|(printed, _, _)| Some(printed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuzzing_process;
+
+    /// The sweep knows each kind of folder fuzzing makes by its process id, and leaves the
+    /// readers, the tests' own folders and anything else alone.
+    #[test]
+    fn it_knows_the_folders_fuzzing_made() {
+        let names = ["fennec-fuzz-12", "fennec-fuzz-llvm-34", "fennec-fuzz-small-56"];
+        assert_eq!(names.map(fuzzing_process), [Some(12), Some(34), Some(56)]);
+        let others = [
+            "fennec-fuzz-readers",
+            "fennec-fuzz-group-7",
+            "fennec-fuzz-short-8",
+            "fennec-cli-9",
+            "fennec-fuzz-",
+        ];
+        assert_eq!(others.map(fuzzing_process), [None; 5]);
+    }
 }

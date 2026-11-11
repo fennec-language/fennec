@@ -27,6 +27,12 @@ const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = true;
 /// every other way.
 const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 
+/// Whether a failure passed up by a `?` nested inside another call's argument, as in
+/// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
+/// Today it doesn't, natively, though the outer call's `?` failing runs them. Until it does,
+/// `Left` nests `?` only with the outer call failing.
+const INNER_QUESTION_RUNS_CLEANUPS: bool = false;
+
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;
 
@@ -919,24 +925,26 @@ impl Writer<'_> {
         let together = depth > 1 && self.choice(3) == 0;
         let rounds = 1 + i64::from(self.byte() % 4);
         let at = i64::from(self.byte()) % (rounds + 1);
-        let ways = [
+        let mut ways = vec![
             Leave::Question,
             Leave::QuestionInside,
+            Leave::QuestionNestedOuter,
             Leave::NestedReturn,
             Leave::Return,
             Leave::Break,
             Leave::Continue,
-            Leave::ElseReturn,
-            Leave::ElseFail,
-            Leave::ElseContinue,
-            Leave::ElseBreak,
         ];
-        let open = if ELSE_LEAVES_RUN_CLEANUPS { ways.len() } else { 6 };
+        if INNER_QUESTION_RUNS_CLEANUPS {
+            ways.push(Leave::QuestionNestedInner);
+        }
+        if ELSE_LEAVES_RUN_CLEANUPS {
+            ways.extend([Leave::ElseReturn, Leave::ElseFail, Leave::ElseContinue, Leave::ElseBreak]);
+        }
         // A crash ends the program, so it's rare.
         let how = if self.choice(10) == 0 {
             Leave::Crash
         } else {
-            ways.get(self.choice(open)).copied().unwrap_or(Leave::Return)
+            ways.get(self.choice(ways.len())).copied().unwrap_or(Leave::Return)
         };
         body.push(Stmt::Left { id, depth, together, rounds, at, how });
     }

@@ -1523,10 +1523,9 @@ fn instead_of_fails(body: &mut [Stmt], instead: &Expr) {
 /// What starts the name of the function a crash in a `with` block runs.
 pub(crate) const ON_CRASH: &str = "crash__cleanup";
 
-/// What a crash in a `with` block runs: the source's `else:` as a function taking nothing, the
-/// call that marks it to run, and the call that unmarks it. On a crash there's no failure to pass
-/// up, so a whole line's `?` in it only runs, and a `fail` ends it. `None` with no `else:`, or
-/// with an `else:` that passes a failure up some other way.
+/// What a crash in a `with` block runs: the source's `else:` as a function taking nothing and
+/// giving back how it failed, as text, or nothing, the call that marks it to run, and the call
+/// that unmarks it. `None` with no `else:`.
 fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
     if otherwise.is_empty() {
         return None;
@@ -1537,7 +1536,7 @@ fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
         name: held.clone(),
         generics: Vec::new(),
         params: Vec::new(),
-        ret: None,
+        ret: Some(TypeExpr { name: "str".to_owned(), args: Vec::new(), optional: false, span: here(at) }),
         arrow: None,
         fails: None,
         body,
@@ -1552,61 +1551,176 @@ fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
     Some((stmt(StmtKind::Def(def), at), call("crash_cleanup"), call("crash_cleanup_done")))
 }
 
-/// A cleanup as a crash runs it, with nothing to pass up: a whole line that's a `?` runs and its
-/// failure is dropped, and a `fail` ends it. `None` when a failure passes up any other way.
+/// A cleanup as a crash runs it, giving back how it failed, as text, for the runtime to note on
+/// the crash, or `""`. There's no failure to pass up, so a `?` anywhere in it that fails ends it,
+/// as `else as why: return f"{why}"`, and so does a `fail`: the rest of it is skipped, as when it
+/// runs for a failure, and the crash goes on. A `?` or `fail` in a function or lambda written in
+/// it passes up from that, as it would anywhere. `None` for a `?` in a comprehension, which can't
+/// leave from where it is.
 fn quietly(cleanup: &[Stmt]) -> Option<Vec<Stmt>> {
-    let mut quiet = Vec::new();
-    for each in cleanup {
-        let kind = match &each.kind {
-            StmtKind::Fail(_) => StmtKind::Return(None),
-            StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) => {
-                let pattern = Pattern::Wildcard;
-                let pass = stmt(StmtKind::Pass, each.span);
-                let arm = MatchArm { pattern, guard: None, body: vec![pass], span: each.span };
-                let kind = ExprKind::Match { subject: value.clone(), arms: vec![arm] };
-                StmtKind::Expr(Expr { kind, span: here(each.span) })
-            }
-            StmtKind::If { branches, otherwise } => {
-                let branches = branches
-                    .iter()
-                    .map(|(cond, body)| Some((cond.clone(), quietly(body)?)))
-                    .collect::<Option<Vec<_>>>()?;
-                let otherwise = match otherwise {
-                    Some(body) => Some(quietly(body)?),
-                    None => None,
-                };
-                StmtKind::If { branches, otherwise }
-            }
-            _ if passes_up(each) => return None,
-            other => other.clone(),
-        };
-        quiet.push(Stmt { kind, span: each.span });
+    let mut quiet = cleanup.to_vec();
+    let mut theirs = Shielded::default();
+    shield(&mut quiet, &mut theirs);
+    let mut stuck = false;
+    fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
+        if matches!(expr.kind, ExprKind::Comprehension { .. }) {
+            fennec_syntax::visit::in_expr(expr, &mut |inner| {
+                stuck |= matches!(inner.kind, ExprKind::Try { .. });
+            });
+        }
+    });
+    if stuck {
+        return None;
     }
+    fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
+        if let ExprKind::Try { value, context } = &expr.kind {
+            let (value, context) = (value.clone(), context.as_deref().cloned());
+            expr.kind = ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)) };
+        }
+    });
+    ends_saying(&mut quiet);
+    let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(Span::default()) };
+    quiet.push(stmt(StmtKind::Return(Some(nothing)), Span::default()));
+    unshield(&mut quiet, theirs);
     Some(quiet)
 }
 
-/// Whether a statement has a `?` or a `fail` anywhere in it.
-fn passes_up(each: &Stmt) -> bool {
-    let mut found = false;
-    let mut held = vec![each.clone()];
-    fennec_syntax::visit::in_stmts(&mut held, &mut |expr| {
-        if matches!(expr.kind, ExprKind::Try { .. }) {
-            found = true;
-        }
-    });
-    found
-        || blocks_of(each).iter().any(|block| block.iter().any(passes_up))
-        || matches!(each.kind, StmtKind::Fail(_))
+/// The text a crash's cleanup gives back for `failure`: how it's printed.
+fn said(failure: Expr, at: Span) -> Expr {
+    let part = fennec_syntax::FStrPart::Expr { expr: failure, spec: None };
+    Expr { kind: ExprKind::FStr(vec![part]), span: here(at) }
 }
 
-/// The blocks directly inside a statement.
-fn blocks_of(each: &Stmt) -> Vec<&[Stmt]> {
-    match &each.kind {
+/// `else as why: return f"{why}"`, as the parser writes it: one case, over a value nothing wrote,
+/// that leaves. For a `? from Context(...)`, what's given back is the context, which is what
+/// would pass up.
+fn ends_cleanup(at: Span, context: Option<Expr>) -> Expr {
+    let subject = Box::new(Expr { kind: ExprKind::Bool(false), span: here(at) });
+    let why = format!("crash__why{}", here(at).start);
+    let failure = context.unwrap_or_else(|| name(&why, at));
+    let leave = stmt(StmtKind::Return(Some(said(failure, at))), at);
+    let arm = MatchArm { pattern: Pattern::Bind(why), guard: None, body: vec![leave], span: here(at) };
+    Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span: here(at) }
+}
+
+/// The bodies of the functions and lambdas written in a cleanup, taken out while it's rewritten,
+/// each by where it is, so their `?`, `fail` and `return` stay theirs.
+#[derive(Default)]
+struct Shielded {
+    defs: Vec<(Span, Vec<Stmt>)>,
+    lambdas: Vec<(Span, Expr)>,
+}
+
+/// Takes out the bodies of the functions and lambdas written in `body`, at any depth.
+fn shield(body: &mut [Stmt], kept: &mut Shielded) {
+    defs_out(body, kept);
+    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
+        ExprKind::Lambda { body: inner, .. } => {
+            let empty = Expr { kind: ExprKind::None, span: inner.span };
+            kept.lambdas.push((expr.span, std::mem::replace(&mut **inner, empty)));
+        }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                defs_out(&mut arm.body, kept);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// Puts back what [`shield`] took out.
+fn unshield(body: &mut [Stmt], mut kept: Shielded) {
+    defs_back(body, &mut kept);
+    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
+        ExprKind::Lambda { body: inner, .. } => {
+            if let Some(at) = kept.lambdas.iter().position(|(span, _)| *span == expr.span) {
+                let (_, original) = kept.lambdas.swap_remove(at);
+                **inner = original;
+            }
+        }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                defs_back(&mut arm.body, &mut kept);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// The statement blocks directly inside a statement, to change.
+fn blocks_in(each: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
+    match &mut each.kind {
         StmtKind::If { branches, otherwise } => {
-            branches.iter().map(|(_, body)| body.as_slice()).chain(otherwise.as_deref()).collect()
+            branches.iter_mut().map(|(_, body)| body).chain(otherwise.as_mut()).collect()
         }
         StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => vec![body],
+        StmtKind::Lend { otherwise, .. } => vec![otherwise],
+        StmtKind::OnFailure { cleanup, body, .. } => vec![cleanup, body],
         _ => Vec::new(),
+    }
+}
+
+fn defs_out(body: &mut [Stmt], kept: &mut Shielded) {
+    for each in body {
+        if let StmtKind::Def(def) = &mut each.kind {
+            kept.defs.push((def.span, std::mem::take(&mut def.body)));
+            continue;
+        }
+        for block in blocks_in(each) {
+            defs_out(block, kept);
+        }
+    }
+}
+
+fn defs_back(body: &mut [Stmt], kept: &mut Shielded) {
+    for each in body {
+        if let StmtKind::Def(def) = &mut each.kind {
+            if let Some(at) = kept.defs.iter().position(|(span, _)| *span == def.span) {
+                let (_, original) = kept.defs.swap_remove(at);
+                def.body = original;
+            }
+            continue;
+        }
+        for block in blocks_in(each) {
+            defs_back(block, kept);
+        }
+    }
+}
+
+/// Each `fail` in a cleanup made a `return` of how it's printed, and each `return` one of `""`,
+/// in every block and every case of a `match`, `else as` blocks included: either ends the cleanup
+/// a crash runs, which has no failure to pass up. The functions and lambdas in it are taken out
+/// first (see [`shield`]).
+fn ends_saying(body: &mut [Stmt]) {
+    say_at_ends(body);
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &mut expr.kind {
+            for arm in arms {
+                say_at_ends(&mut arm.body);
+            }
+        }
+    });
+}
+
+fn say_at_ends(body: &mut [Stmt]) {
+    for each in body {
+        let at = each.span;
+        match &mut each.kind {
+            StmtKind::Fail(failure) => {
+                let text = said(failure.clone(), at);
+                each.kind = StmtKind::Return(Some(text));
+            }
+            StmtKind::Return(None) => {
+                let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(at) };
+                each.kind = StmtKind::Return(Some(nothing));
+            }
+            StmtKind::Def(_) => {}
+            _ => {
+                for block in blocks_in(each) {
+                    say_at_ends(block);
+                }
+            }
+        }
     }
 }
 

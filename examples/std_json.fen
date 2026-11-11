@@ -1,0 +1,141 @@
+# `json.loads` reads only JSON, and says where text that isn't goes wrong: the line and column
+# for text that isn't JSON, and the field for JSON that doesn't fit the type. `json.dumps` writes
+# what `loads` reads back.
+from std import json
+from std.json import JsonExtra, JsonNames
+
+struct Point:
+    x: int
+    y: int
+
+struct Person:
+    first_name: str
+    age_in_years: int?
+
+## Where a read goes wrong, as `line:column`, or `read` when it doesn't.
+def where[T](run: () -> T fails ParseError) -> str:
+    _ = run() else as why:
+        return f"{why.line}:{why.column}"
+    "read"
+
+## What's wrong with what a read was given, or `read` when nothing is.
+def what[T](run: () -> T fails ParseError) -> str:
+    _ = run() else as why:
+        return why.message
+    "read"
+
+test "an int reads whole, to its limits, and nothing else is one":
+    assert json.loads[int](" 42 ")? == 42
+    assert json.loads[int]("-0")? == 0
+    assert json.loads[int]("9223372036854775807")? == 9223372036854775807
+    assert json.loads[int]("-9223372036854775808")? == -9223372036854775807 - 1
+    assert where(() => json.loads[int]("9223372036854775808")?) == "1:1"
+    assert where(() => json.loads[int]("01")?) == "1:1"
+    assert where(() => json.loads[int]("+1")?) == "1:1"
+    assert where(() => json.loads[int]("-")?) == "1:2"
+    assert where(() => json.loads[int]("")?) == "1:1"
+    assert where(() => json.loads[int]("5 6")?) == "1:3"
+    assert json.loads[int]("1.0") fails ParseError()
+    assert json.loads[int]("true") fails ParseError()
+    assert json.loads[int]("null") fails ParseError()
+
+test "a float reads JSON's numbers only, and one too big fails":
+    assert json.loads[float]("0.1")? == 0.1
+    assert json.loads[float]("-2.5e3")? == -2500.0
+    assert json.loads[float]("1e400") fails ParseError()
+    assert json.loads[float]("-1e400") fails ParseError()
+    assert where(() => json.loads[float]("NaN")?) == "1:1"
+    assert where(() => json.loads[float]("Infinity")?) == "1:1"
+    assert where(() => json.loads[float](".5")?) == "1:1"
+    assert where(() => json.loads[float]("1.")?) == "1:3"
+    assert where(() => json.loads[float]("1e")?) == "1:3"
+
+test "a string's escapes read as what they stand for, and others fail":
+    assert json.loads[str]("\"a\\nb\"")? == "a\nb"
+    assert json.loads[str]("\"\\u00e9\"")? == "é"
+    assert json.loads[str]("\"\\ud83d\\ude00\"")? == "😀"
+    assert json.loads[str]("\"\\/\"")? == "/"
+    # Half a surrogate pair, an escape JSON doesn't have, a raw tab, and no closing quote.
+    assert where(() => json.loads[str]("\"\\ud800\"")?) == "1:4"
+    assert where(() => json.loads[str]("\"\\x41\"")?) == "1:3"
+    assert where(() => json.loads[str]("\"tab\there\"")?) == "1:5"
+    assert where(() => json.loads[str]("\"open")?) == "1:1"
+    assert where(() => json.loads[str]("'single'")?) == "1:1"
+
+test "a struct needs each field once, of its type, and no others":
+    assert json.loads[Point]("{\"x\": 1, \"y\": 2}")? == Point(x=1, y=2)
+    assert what(() => json.loads[Point]("{\"x\": 1}")?) == "`y` is missing"
+    assert what(() => json.loads[Point]("{\"x\": null, \"y\": 2}")?) == "`x` is missing"
+    assert (
+        what(() => json.loads[Point]("{\"x\": \"1\", \"y\": 2}")?)
+        == "`x` should be an int, but it's a str"
+    )
+    assert (
+        what(() => json.loads[Point]("{\"x\": 1, \"x\": 5, \"y\": 2}")?) == "the text has `x` twice"
+    )
+    assert (
+        what(() => json.loads[Point]("{\"x\": 1, \"y\": 2, \"z\": 3}")?)
+        == "`Point` has no field \"z\", but the text has one"
+    )
+    assert what(() => json.loads[Point]("[1, 2]")?) == "the text should be a Point, but it's a list"
+    # A trailing comma isn't JSON.
+    assert where(() => json.loads[Point]("{\"x\": 1, \"y\": 2,}")?) == "1:17"
+
+test "extra=.Ignore skips a key no field has, however deep it goes":
+    text = "{\"x\": 1, \"z\": {\"deep\": [1, {\"deeper\": null}]}, \"y\": 2}"
+    assert json.loads[Point](text, extra=JsonExtra.Ignore)? == Point(x=1, y=2)
+    assert json.loads[Point](text) fails ParseError()
+
+test "names= spells fields each way, and reads them back the same way":
+    ada = Person(first_name="Ada", age_in_years=36)
+    assert (
+        json.dumps(ada, names=JsonNames.CamelCase) == "{\"firstName\": \"Ada\", \"ageInYears\": 36}"
+    )
+    assert (
+        json.dumps(ada, names=JsonNames.PascalCase)
+        == "{\"FirstName\": \"Ada\", \"AgeInYears\": 36}"
+    )
+    assert (
+        json.dumps(ada, names=JsonNames.KebabCase)
+        == "{\"first-name\": \"Ada\", \"age-in-years\": 36}"
+    )
+    for names in [
+        JsonNames.SnakeCase,
+        JsonNames.CamelCase,
+        JsonNames.PascalCase,
+        JsonNames.KebabCase,
+    ]:
+        assert json.loads[Person](json.dumps(ada, names=names), names=names)? == ada
+    # Read with another spelling, the fields aren't found.
+    camel = json.dumps(ada, names=JsonNames.CamelCase)
+    assert json.loads[Person](camel) fails ParseError()
+
+test "dumps escapes what a string can't hold, and indent= lays it out":
+    odd = Person(first_name="q\"\\\n\t\u0001é", age_in_years=None)
+    written = json.dumps(odd)
+    assert written == "{\"first_name\": \"q\\\"\\\\\\n\\t\\u0001é\", \"age_in_years\": null}"
+    assert json.loads[Person](written)? == odd
+    laid_out = json.dumps(Point(x=1, y=2), indent=2)
+    assert laid_out == "{\n  \"x\": 1,\n  \"y\": 2\n}"
+    assert json.loads[Point](laid_out)? == Point(x=1, y=2)
+
+test "floats are written so they read back as the same float":
+    floats = [1.5, 0.1, 1e20, 1e-7, -0.0, 100.0]
+    assert json.dumps(floats) == "[1.5, 0.1, 1e20, 1e-7, -0.0, 100.0]"
+    assert json.loads[list[float]](json.dumps(floats))? == floats
+
+test "nesting deeper than 500 fails rather than running out of stack":
+    assert what(() => json.loads[list[int]]("[" * 600 + "]" * 600)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
+    # 500 deep is read, and fails only for not being a list of ints.
+    assert (
+        what(() => json.loads[list[int]]("[" * 500 + "]" * 500)?)
+        == "`[0]` should be an int, but it's a list"
+    )
+
+def main(stdout: Stdout):
+    # Text that isn't JSON says where it goes wrong.
+    _ = json.loads[Point]("{\"x\": 1,}") else as why:
+        stdout.print(why.message)
+        Point(x=0, y=0)

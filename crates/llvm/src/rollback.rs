@@ -276,29 +276,58 @@ impl Emit<'_, '_, '_> {
 
     /// Runs `cleanup`, a closure that takes nothing, on the way out after a crash, when the block
     /// it's for hasn't ended. The crash is held aside meanwhile, so the cleanup's own calls run as
-    /// normal, and goes on after; a failure or crash of the cleanup's own doesn't replace it.
+    /// normal, and goes on after; a failure or crash of the cleanup's own doesn't replace it. The
+    /// cleanup gives back how it failed, as text, or nothing, which the runtime notes on the crash.
     fn run_crash_cleanup(&mut self, cleanup: &Operand) -> Result<(), String> {
         let Some(flag) = self.held_flag(cleanup) else { return Ok(()) };
         let (closure, kind) = self.operand(cleanup)?;
         let Kind::Closure(params, returns) = kind else {
             return Err("a crash's cleanup that isn't a closure".to_owned());
         };
-        if !params.is_empty() || !matches!(*returns, Kind::Unit) {
-            return Err("a crash's cleanup that takes or gives something".to_owned());
+        if !params.is_empty() || !matches!(*returns, Kind::Str) {
+            return Err("a crash's cleanup that takes something, or gives back other than text".to_owned());
         }
         self.declare("declare i64 @fennec_crash_hold() nounwind");
         self.declare("declare void @fennec_crash_resume(i64) nounwind");
+        self.declare("declare void @fennec_crash_note(i64, i64) nounwind");
         let (held, run, next) = (self.temp(), self.label("crash_cleanup"), self.label("crash_cleaned"));
         self.line(&format!("{held} = load i1, ptr {flag}"));
         self.line(&format!("br i1 {held}, label %{run}, label %{next}"));
         self.start_block(&run);
         self.line(&format!("store i1 false, ptr {flag}"));
-        let (number, at, code) = (self.temp(), self.temp(), self.temp());
+        let number = self.temp();
         self.line(&format!("{number} = call i64 @fennec_crash_hold()"));
         self.line("store ptr null, ptr %err");
-        self.line(&format!("{at} = getelementptr inbounds i8, ptr {closure}, i64 {}", crate::closures::CODE));
-        self.line(&format!("{code} = load ptr, ptr {at}, !invariant.load !1"));
-        self.line(&format!("call swiftcc void {code}(ptr {closure}, ptr swifterror %err)"));
+        let (said, failed) = self.call_closure_unchecked(&closure, &returns, &[]);
+        // A cleanup that crashed too, or failed some way it can't, gave back nothing to read: the
+        // runtime says its crash on resuming.
+        let flag_at = self.failure_flag();
+        let (flag, crashed, broke) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{flag} = load i8, ptr {flag_at}"));
+        self.line(&format!("{crashed} = icmp ne i8 {flag}, 0"));
+        self.line(&format!("{broke} = or i1 {failed}, {crashed}"));
+        let (noted, resume) = (self.label("crash_noted"), self.label("crash_resume"));
+        self.line(&format!("br i1 {broke}, label %{resume}, label %{noted}"));
+        self.start_block(&noted);
+        let said = if returns.in_memory() {
+            let header = self.temp();
+            self.line(&format!("{header} = load {}, ptr {said}", self.text_of(&returns)));
+            header
+        } else {
+            said
+        };
+        let block = if self.headers() {
+            let block = self.owned_text_block(&said);
+            self.release_kind(&said, &returns);
+            block
+        } else {
+            said
+        };
+        let address = self.temp();
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("call void @fennec_crash_note(i64 {number}, i64 {address})"));
+        self.line(&format!("br label %{resume}"));
+        self.start_block(&resume);
         self.line(&format!("call void @fennec_crash_resume(i64 {number})"));
         self.line(&format!("br label %{next}"));
         self.start_block(&next);

@@ -1,0 +1,70 @@
+## Plain words a lock saves, more than its buffer first has room for: native code saves them itself
+## while there's room, and the runtime once it's full. A word written again and again is saved once.
+## A failure must put every one back as it was before the lock, and an end keeps them all.
+error Boom:
+    step: int
+
+struct Many:
+    field0 = 0
+    field1 = 0
+    field2 = 0
+    field3 = 0
+    field4 = 0
+    field5 = 0
+    field6 = 0
+    field7 = 0
+    field8 = 0
+    field9 = 0
+    field10 = 0
+    field11 = 0
+    field12 = 0
+    field13 = 0
+    field14 = 0
+    field15 = 0
+    field16 = 0
+    field17 = 0
+    field18 = 0
+    field19 = 0
+    seen = False
+
+def change(many: shared Many, trial: int, failing: bool) fails Boom:
+    lock many as ref held:
+        for step in range(50):
+            held.field0 += step
+        held.field1 = trial + 0
+        held.field2 = trial + 1
+        held.field3 = trial + 2
+        held.field4 = trial + 3
+        held.field5 = trial + 4
+        held.field6 = trial + 5
+        held.field7 = trial + 6
+        held.field8 = trial + 7
+        held.field9 = trial + 8
+        held.field10 = trial + 9
+        held.field11 = trial + 10
+        held.field12 = trial + 11
+        held.field13 = trial + 12
+        held.field14 = trial + 13
+        held.field15 = trial + 14
+        held.field16 = trial + 15
+        held.field17 = trial + 16
+        held.field18 = trial + 17
+        held.field19 = trial + 18
+        held.seen = not held.seen
+        if failing:
+            fail Boom(step=trial)
+
+def show(many: shared Many) -> str:
+    lock many as held:
+        f"{held.field0} {held.field1} {held.field2} {held.field3} {held.field4} {held.field5} {held.field6} {held.field7} {held.field8} {held.field9} {held.field10} {held.field11} {held.field12} {held.field13} {held.field14} {held.field15} {held.field16} {held.field17} {held.field18} {held.field19} {held.seen}"
+
+def main(stdout: Stdout):
+    shared many = Many()
+    mut failed = 0
+    for trial in range(30):
+        before = show(many)
+        _ = change(many, trial=trial, failing=trial % 3 == 0) else:
+            failed += 1
+            if show(many) != before:
+                stdout.print("not put back", trial)
+    stdout.print(failed, show(many))

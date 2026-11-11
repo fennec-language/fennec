@@ -1,0 +1,7 @@
+error: a Dot has no method `area`, so a Circle | Dot doesn't either
+  --> examples/errors/union_method_missing.fen:13:5
+   |
+13 |     shape.area()
+   |     ^^^^^^^^^^^^
+   |
+   = help: give a Dot a `def area(self)` too, or narrow it first, as `if shape is Circle:`

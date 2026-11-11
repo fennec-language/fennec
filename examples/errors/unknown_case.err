@@ -3,3 +3,5 @@ error: no enum has a case called `Purple`
   |
 6 |     stdout.print(.Purple)
   |                  ^^^^^^^
+  |
+  = help: add it to an enum, as `Purple` on a line of its own under `enum Name:`

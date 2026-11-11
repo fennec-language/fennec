@@ -1,0 +1,7 @@
+error: `Boxed` takes 1 type in brackets, but this gives 2
+ --> examples/errors/type_arguments_count.fen:8:24
+  |
+8 |     stdout.print(Boxed[int, str].empty())
+  |                        ^^^^^^^^
+  |
+  = help: write one type for each of its parameters, as `Boxed[T]`

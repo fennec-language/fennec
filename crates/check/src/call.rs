@@ -156,7 +156,8 @@ impl FnCx<'_> {
             }
             other => {
                 let message = format!("{} can't be called", a(&other));
-                self.unusable(Diagnostic::new(message, callee.span), args)
+                let help = "only a function can be called: take the `(...)` off to use the value as it is";
+                self.unusable(Diagnostic::new(message, callee.span).with_help(help), args)
             }
         }
     }
@@ -425,7 +426,10 @@ impl FnCx<'_> {
             };
             if let Some(slot) = given.get_mut(at) {
                 if *slot {
-                    self.error(Diagnostic::new(format!("`{}` is given twice", param.name), arg.value.span));
+                    self.error(
+                        Diagnostic::new(format!("`{}` is given twice", param.name), arg.value.span)
+                            .with_help(format!("keep one `{}=...` and take the other out", param.name)),
+                    );
                 }
                 *slot = true;
             }
@@ -441,7 +445,9 @@ impl FnCx<'_> {
                 left_out.push((param.name.clone(), plain_default(default)));
             } else if !given && !unmatched_args {
                 let message = format!("`{function}` is missing its `{}` argument", param.name);
-                self.error(Diagnostic::new(message, span));
+                let help =
+                    format!("pass it, as `{}=` and {}", param.name, a(&self.checker.settled(&param.ty)));
+                self.error(Diagnostic::new(message, span).with_help(help));
             }
         }
         if !left_out.is_empty() {
@@ -473,7 +479,7 @@ impl FnCx<'_> {
                         "did you mean to put `ref` on `{}`, which `{function}` does change?",
                         changed.name
                     )),
-                    None => diagnostic,
+                    None => diagnostic.with_help("take `ref` off the argument"),
                 });
             }
             // What it's given to can make it `None`, whatever a check for `None` said before.
@@ -593,7 +599,17 @@ impl FnCx<'_> {
                 let takes = if through == 1 { "1 type".to_owned() } else { format!("{through} types") };
                 let message =
                     format!("`{type_name}` takes {takes} in brackets, but this gives {}", types.len());
-                self.error(Diagnostic::new(message, index.span));
+                let params: Vec<String> = self
+                    .checker
+                    .program
+                    .type_info(type_name)
+                    .map(|info| info.def.generics.iter().map(|generic| generic.name.clone()).collect())
+                    .unwrap_or_default();
+                let help = format!(
+                    "write one type for each of its parameters, as `{type_name}[{}]`",
+                    params.join(", ")
+                );
+                self.error(Diagnostic::new(message, index.span).with_help(help));
                 self.ignore_args(args);
                 return Type::Unknown;
             }
@@ -674,7 +690,15 @@ impl FnCx<'_> {
         if let Some(missing) = members.iter().find(|member| !self.has_method(member, call.method)) {
             let message =
                 format!("{} has no method `{}`, so {} doesn't either", a(missing), call.method, a(&union));
-            let help = "a union has a method when every type in it does";
+            let named = fennec_syntax::dotted(call.object).unwrap_or_else(|| "it".to_owned());
+            let help = match members.iter().find(|member| *member != missing) {
+                Some(other) => format!(
+                    "give {} a `def {}(self)` too, or narrow it first, as `if {named} is {other}:`",
+                    a(missing),
+                    call.method
+                ),
+                None => format!("give {} a `def {}(self)`", a(missing), call.method),
+            };
             return self.unusable(
                 Diagnostic::new(message, call.object.span.to(call.span)).with_help(help),
                 call.args,
@@ -796,7 +820,8 @@ impl FnCx<'_> {
         };
         if def.takes_self() {
             let message = format!("`{method}` needs a `{param}` to call it on");
-            return self.unusable(Diagnostic::new(message, span), args);
+            let help = format!("call it on a value of type `{param}`, as `value.{method}(...)`");
+            return self.unusable(Diagnostic::new(message, span).with_help(help), args);
         }
         if !self.takes_types(method, written_generics(&def.generics), types, span) {
             self.ignore_args(args);
@@ -878,6 +903,54 @@ impl FnCx<'_> {
         false
     }
 
+    /// What a type has to call by its name, for a name it doesn't have: its cases and its
+    /// functions with no `self`, or how to give it one.
+    fn type_has(&self, type_name: &str, method: &str) -> String {
+        let mut has: Vec<String> = Vec::new();
+        if let Some(info) = self.checker.program.type_info(type_name) {
+            has.extend(info.def.cases.iter().map(|case| format!("`{type_name}.{}`", case.name)));
+            has.extend(
+                info.def
+                    .methods
+                    .iter()
+                    .filter(|def| !def.takes_self())
+                    .map(|def| format!("`{type_name}.{}(...)`", def.name)),
+            );
+        }
+        let names = has.iter().map(|name| name.trim_matches('`'));
+        match crate::messages::spelled_most_like(&format!("{type_name}.{method}"), names) {
+            Some(similar) => format!("did you mean `{similar}`?"),
+            None if has.is_empty() => format!("give `{type_name}` a `def {method}(...)` with no `self`"),
+            None => format!("write one of {}", has.join(", ")),
+        }
+    }
+
+    /// The case of an enum spelled most like `case`, or how to add one.
+    fn nearest_case(&self, case: &str) -> String {
+        let cases: Vec<String> = self
+            .checker
+            .program
+            .types
+            .values()
+            .filter(|info| info.kind == TypeKind::Enum)
+            .flat_map(|info| {
+                info.def.cases.iter().map(move |known| format!("{}.{}", info.def.name, known.name))
+            })
+            .collect();
+        let short = cases.iter().map(|full| full.rsplit_once('.').map_or(full.as_str(), |(_, name)| name));
+        match crate::messages::spelled_most_like(case, short) {
+            Some(similar) => {
+                let owner = cases
+                    .iter()
+                    .find(|full| full.ends_with(&format!(".{similar}")))
+                    .cloned()
+                    .unwrap_or_default();
+                format!("did you mean `.{similar}`, as `{owner}`?")
+            }
+            None => format!("add it to an enum, as `{case}` on a line of its own under `enum Name:`"),
+        }
+    }
+
     /// Reports why a value can't be used, still checking the arguments.
     pub(crate) fn unusable(&mut self, diagnostic: Diagnostic, args: &[Arg]) -> Type {
         self.error(diagnostic);
@@ -912,7 +985,9 @@ impl FnCx<'_> {
     fn note_method(&mut self, object: &Expr, method: &str, args: &[Arg], span: Span) -> Type {
         if method == "notes" {
             if !args.is_empty() {
-                self.error(Diagnostic::new("`notes()` takes nothing", span));
+                self.error(
+                    Diagnostic::new("`notes()` takes nothing", span).with_help("call it as `notes()`"),
+                );
                 self.ignore_args(args);
             }
             return Type::list(Type::Str);
@@ -927,7 +1002,10 @@ impl FnCx<'_> {
                 );
             }
         } else {
-            self.error(Diagnostic::new("`add_note` takes the note's text", span));
+            self.error(
+                Diagnostic::new("`add_note` takes the note's text", span)
+                    .with_help("give it one str, like `add_note(f\"while {what}\")`"),
+            );
             self.ignore_args(args);
         }
         self.mut_place(object, "`add_note` changes its error, so call it on something held in a mut name");
@@ -1082,11 +1160,13 @@ impl FnCx<'_> {
             Some((key, entry)) if !entry.def.takes_self() => self.call_function(&key, method, args, span),
             Some(_) => {
                 let message = format!("`{method}` needs a `{type_name}` to call it on");
-                self.unusable(Diagnostic::new(message, span), args)
+                let help = format!("call it on {}, as `value.{method}(...)`", a(&Type::named(type_name)));
+                self.unusable(Diagnostic::new(message, span).with_help(help), args)
             }
             None => {
                 let message = format!("`{type_name}` has nothing called `{method}`");
-                self.unusable(Diagnostic::new(message, span), args)
+                let help = self.type_has(type_name, method);
+                self.unusable(Diagnostic::new(message, span).with_help(help), args)
             }
         }
     }
@@ -1122,7 +1202,7 @@ impl FnCx<'_> {
         };
         if !info.def.cases.is_empty() {
             let cases: Vec<String> =
-                info.def.cases.iter().map(|case| format!("{type_name}.{}", case.name)).collect();
+                info.def.cases.iter().map(|case| format!("`{type_name}.{}`", case.name)).collect();
             let what = if info.kind == TypeKind::Enum { "is an enum" } else { "has cases" };
             let diagnostic = Diagnostic::new(format!("`{type_name}` {what}, so pick one of its cases"), span)
                 .with_help(format!("write one of {}", cases.join(", ")));
@@ -1340,8 +1420,11 @@ impl FnCx<'_> {
         let owner = match owners.as_slice() {
             [owner] => owner.clone(),
             [] => {
-                return self
-                    .unusable(Diagnostic::new(format!("no enum has a case called `{case}`"), span), args);
+                let help = self.nearest_case(case);
+                return self.unusable(
+                    Diagnostic::new(format!("no enum has a case called `{case}`"), span).with_help(help),
+                    args,
+                );
             }
             several => {
                 let choices: Vec<String> = several.iter().map(|owner| format!("`{owner}.{case}`")).collect();
@@ -1421,7 +1504,7 @@ impl FnCx<'_> {
             let ty = self.arg_as(arg, &[], expected.as_ref());
             if arg.is_mut {
                 let message = "building a value doesn't change its arguments, so don't pass `ref`";
-                self.error(Diagnostic::new(message, arg.value.span));
+                self.error(Diagnostic::new(message, arg.value.span).with_help("take `ref` off the argument"));
             }
             let Some((field, slot)) = at.and_then(|at| fields.get(at).zip(given.get_mut(at))) else {
                 let names: Vec<&str> = settable
@@ -1434,7 +1517,10 @@ impl FnCx<'_> {
                 continue;
             };
             if *slot {
-                self.error(Diagnostic::new("this field is given twice", arg.value.span));
+                self.error(
+                    Diagnostic::new("this field is given twice", arg.value.span)
+                        .with_help(format!("keep one `{}=...` and take the other out", field.name)),
+                );
             }
             *slot = true;
             let expected = expected.unwrap_or(Type::Unknown);

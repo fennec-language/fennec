@@ -173,7 +173,7 @@ export! {
     fennec_channel_free(a0: i64) => channels::channel_free(a0);
     fennec_launch_end(a0: i64, a1: i64, a2: i64, a3: &mut i64) -> i64 => serve::launch_end(a0, a1, a2, a3);
     fennec_task_failed(a0: i64) => serve::task_failed(a0);
-    fennec_lock_begin(a0: i64) => rollback::begin(a0);
+    fennec_lock_begin(a0: i64) -> i64 => rollback::begin(a0);
     fennec_lock_save(a0: i64, a1: i64, a2: i64, a3: i64) => rollback::save(a0, a1, a2, a3);
     fennec_lock_save_text(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) => rollback::save_text(a0, a1, a2, a3, a4);
     fennec_lock_save_ref(a0: i64, a1: i64, a2: i64) => rollback::save_ref(a0, a1, a2);

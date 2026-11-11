@@ -883,7 +883,7 @@ impl<'a> Lowering<'a> {
             return self.try_value(value, context.as_deref(), expr.span).map(|_| ());
         }
         // `conn.write(line) else: continue`: what fails gives nothing back when it doesn't.
-        if let ExprKind::Else { value, default } = &expr.kind
+        if let ExprKind::Else { value, default, .. } = &expr.kind
             && self.type_at(expr.span) == Some(Type::Unit)
         {
             return self.else_effect(value, default, expr.span);
@@ -944,7 +944,7 @@ impl<'a> Lowering<'a> {
             ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => {
                 self.is_none(*op, lhs, rhs, span)
             }
-            ExprKind::Else { value, default } => self.else_value(expr, value, default),
+            ExprKind::Else { value, default, .. } => self.else_value(expr, value, default),
             ExprKind::Try { value, context } => self
                 .try_value(value, context.as_deref(), span)?
                 .ok_or_else(|| "it uses the nothing `?` gives back".to_owned()),

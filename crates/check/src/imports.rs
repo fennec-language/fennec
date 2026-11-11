@@ -172,7 +172,7 @@ impl Uses<'_> {
             }
             ExprKind::Binary { lhs, rhs, .. }
             | ExprKind::Index { object: lhs, index: rhs }
-            | ExprKind::Else { value: lhs, default: rhs } => self.exprs([lhs.as_ref(), rhs.as_ref()]),
+            | ExprKind::Else { value: lhs, default: rhs, .. } => self.exprs([lhs.as_ref(), rhs.as_ref()]),
             ExprKind::Cond { then, cond, otherwise } => {
                 self.exprs([then.as_ref(), cond.as_ref(), otherwise.as_ref()]);
             }

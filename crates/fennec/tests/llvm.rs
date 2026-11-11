@@ -541,6 +541,79 @@ def main(stdout: Stdout):
         stdout.print(held)
 "#;
 
+/// `except` handles a failure natively in each of its forms: any failure named, `case` arms under
+/// the name, one case on the line giving a value or leaving, a bare call's, and a `with` source's
+/// cleanup, `lend x except:`.
+#[test]
+fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_forms",
+        EXCEPT_FORMS,
+        "failed: big\n0\nlong 9\n8080\n-1\nskipped 2\nrolled back\n",
+    )
+}
+
+const EXCEPT_FORMS: &str = r#"error Bad:
+    Empty
+    Long(size: int)
+
+error Big:
+    why: str
+
+def risky(n: int) -> int fails Big:
+    if n > 5:
+        fail Big("big")
+    return n
+
+def load(n: int) -> int fails Bad:
+    if n == 0:
+        fail .Empty
+    if n > 5:
+        fail .Long(size=n)
+    return n
+
+def act(n: int) fails Big:
+    if n == 2:
+        fail Big("two")
+
+def guarded(stdout: Stdout) -> with int fails Big:
+    lend 1 except:
+        stdout.print("rolled back")
+
+def first(n: int) -> int:
+    x = risky(n) except Big(): return -1
+    return x
+
+def used(stdout: Stdout) fails Big:
+    with guarded(stdout)? as one:
+        fail Big(f"inside {one}")
+
+def main(stdout: Stdout):
+    small = risky(9) except why:
+        stdout.print(f"failed: {why.why}")
+        0
+    stdout.print(small)
+    sized = load(9) except why:
+        case .Long(size):
+            stdout.print(f"long {size}")
+            size
+        case .Empty:
+            0
+    port = risky(7) except Big(): 8080
+    stdout.print(port)
+    stdout.print(first(9))
+    for turn in range(4):
+        act(turn) except why:
+            stdout.print(f"skipped {turn}")
+            _ = why.why
+    used(stdout) except why:
+        _ = why.why
+    _ = sized
+"#;
+
 /// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
 /// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
 #[test]

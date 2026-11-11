@@ -20,6 +20,8 @@ pub(crate) struct Plan {
     pub(crate) program: Program,
     pub(crate) wanted: Vec<String>,
     pub(crate) unchanged: Vec<TestRecord>,
+    /// What each function waits on or locks, as the whole program's check would find it.
+    pub(crate) verdicts: LockVerdicts,
 }
 
 /// A kit when its tests last passed, if they did.
@@ -138,13 +140,15 @@ fn rows_of_modules(
     found
 }
 
-/// What a run needs, or None to look at the whole program.
+/// What a run needs, or None to look at the whole program. Like `checked_quickly`, it checks a
+/// changed function's lock verdict against the last whole check's.
 pub(crate) fn plan(
     path: &str,
-    cache: &Cache,
+    (cache, name): (&Cache, &str),
     (state, files): (&KitState, &[KitFile]),
     passed: &HashMap<String, TestRecord>,
 ) -> Option<Plan> {
+    let verdicts = stored_verdicts(cache, name, state)?;
     if state.files.len() != files.len() {
         return None;
     }
@@ -167,6 +171,7 @@ pub(crate) fn plan(
         let new = rows.get(module).map_or(&[][..], Vec::as_slice);
         bodies.extend(fennec_build::changed_bodies(&old, new)?);
     }
+    let changed_functions: Vec<String> = bodies.iter().cloned().collect();
     let affected = |record: &TestRecord| {
         bodies.contains(&format!("test \"{}\"", record.test))
             || bodies
@@ -183,11 +188,15 @@ pub(crate) fn plan(
     }
     let mut program = fennec_kit::load_modules_to_test(dir, path, &needed).ok()?;
     // What runs a module needs it checked and resolved.
-    fennec_check::check_to_run(&mut program.module).ok()?;
+    let signatures = fennec_check::check_to_run(&mut program.module).ok()?;
+    if !same_lock_verdicts(&changed_functions, &verdicts, signatures.lock_verdicts()) {
+        return None;
+    }
     Some(Plan {
         program,
         wanted: wanted.iter().map(|record| record.test.clone()).collect(),
         unchanged: unchanged.into_iter().cloned().collect(),
+        verdicts,
     })
 }
 
@@ -197,11 +206,14 @@ pub(crate) type LockVerdicts = BTreeMap<String, String>;
 /// The cache's kind for a kit's lock verdicts, each kept under the state it was found for.
 const LOCK_VERDICTS: &str = "lock-verdicts";
 
-/// What names a kit's state in the cache: a hash of each file's module and text.
-fn state_key(state: &KitState) -> String {
+/// What names a kit's lock verdicts in the cache: a hash of the name its state is kept under,
+/// since a run and a test keep theirs apart, and each file's module and text.
+fn state_key(name: &str, state: &KitState) -> String {
     let mut files: Vec<(&String, &KitFile)> = state.files.iter().collect();
     files.sort_by(|a, b| a.0.cmp(b.0));
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec kit lock verdicts 2026-11-11");
+    hasher.update(name.as_bytes());
+    hasher.update(&[2]);
     for (module, file) in files {
         hasher.update(module.as_bytes());
         hasher.update(&[0]);
@@ -212,16 +224,26 @@ fn state_key(state: &KitState) -> String {
 }
 
 /// The lock verdicts kept for a kit's state, if they were.
-fn stored_verdicts(cache: &Cache, state: &KitState) -> Option<LockVerdicts> {
-    let bytes = cache.read(LOCK_VERDICTS, &state_key(state))?;
+fn stored_verdicts(cache: &Cache, name: &str, state: &KitState) -> Option<LockVerdicts> {
+    let bytes = cache.read(LOCK_VERDICTS, &state_key(name, state))?;
     let text = String::from_utf8(bytes).ok()?;
     text.lines()
         .map(|line| line.split_once('\0').map(|(key, verdict)| (key.to_owned(), verdict.to_owned())))
         .collect()
 }
 
-/// Keeps a kit's lock verdicts under its state.
-fn store_verdicts(cache: &Cache, state: &KitState, verdicts: &LockVerdicts) -> std::io::Result<()> {
+/// Keeps a kit's lock verdicts under its state, then the state itself, so a state is never kept
+/// without them.
+fn store_with_verdicts(
+    cache: &Cache,
+    name: &str,
+    files: &[KitFile],
+    verdicts: &LockVerdicts,
+) -> std::io::Result<()> {
+    let state = KitState {
+        files: files.iter().map(|file| (file.module.clone(), file.clone())).collect(),
+        noted_at: 0,
+    };
     let mut text = String::new();
     for (key, verdict) in verdicts {
         text.push_str(key);
@@ -229,7 +251,16 @@ fn store_verdicts(cache: &Cache, state: &KitState, verdicts: &LockVerdicts) -> s
         text.push_str(verdict);
         text.push('\n');
     }
-    cache.write(LOCK_VERDICTS, &state_key(state), text.as_bytes())
+    cache.write(LOCK_VERDICTS, &state_key(name, &state), text.as_bytes())?;
+    cache.store_kit_state(name, BUILD, files)
+}
+
+/// Whether each function whose body changed has the lock verdict it had: everything a changed
+/// function calls is loaded, so its verdict in a partial check is the whole program's, and when
+/// it's the same, no `lock` that calls it, anywhere, can have changed.
+fn same_lock_verdicts(bodies: &[String], stored: &LockVerdicts, now: &LockVerdicts) -> bool {
+    let mut functions = bodies.iter().filter_map(|key| key.strip_prefix("def "));
+    functions.all(|key| now.get(key) == stored.get(key))
 }
 
 /// What names the last time all of a kit `main` reaches passed the checker, for `fennec run`.
@@ -252,7 +283,7 @@ pub(crate) fn checked_quickly(
     files: &[KitFile],
 ) -> Option<Result<LockVerdicts, (Program, Vec<fennec_syntax::Diagnostic>)>> {
     let state = cache.kit_state(&checked_name(path), BUILD)?;
-    let verdicts = stored_verdicts(cache, &state)?;
+    let verdicts = stored_verdicts(cache, &checked_name(path), &state)?;
     if state.files.len() != files.len() {
         return None;
     }
@@ -281,10 +312,7 @@ pub(crate) fn checked_quickly(
         // Everything a changed function calls is loaded, so its verdict here is the whole
         // program's: the same as before, and no `lock` that calls it can have changed.
         Ok(signatures) => {
-            let now = signatures.lock_verdicts();
-            let functions = bodies.iter().filter_map(|key| key.strip_prefix("def "));
-            let mut functions = functions;
-            functions.all(|key| now.get(key) == verdicts.get(key)).then_some(Ok(verdicts))
+            same_lock_verdicts(&bodies, &verdicts, signatures.lock_verdicts()).then_some(Ok(verdicts))
         }
         Err(diagnostics) => Some(Err((loaded, diagnostics))),
     }
@@ -312,23 +340,15 @@ pub(crate) fn remember_checked(
             let _ = cache.store_file_rows(file.text, rows);
         }
     }
-    let files = with_embedded(files, program);
-    let state = KitState {
-        files: files.iter().map(|file| (file.module.clone(), file.clone())).collect(),
-        noted_at: 0,
-    };
-    // A cache that can't be written only means checking all of it again next time, and a state
-    // kept without its verdicts is never checked quickly.
-    if store_verdicts(cache, &state, verdicts).is_ok() {
-        let _ = cache.store_kit_state(&checked_name(path), BUILD, &files);
-    }
+    // A cache that can't be written only means checking all of it again next time.
+    let _ = store_with_verdicts(cache, &checked_name(path), &with_embedded(files, program), verdicts);
 }
 
-/// Remembers that all of a kit's tests pass with its files as they are.
+/// Remembers that all of a kit's tests pass with its files as they are, with its lock verdicts.
 pub(crate) fn remember(
     (cache, name): (&Cache, &str),
-    files: &[KitFile],
-    program: &Program,
+    (files, program): (&[KitFile], &Program),
+    verdicts: &LockVerdicts,
 ) -> std::io::Result<()> {
     // A file that wasn't loaded already has its definitions kept. One that was may not, and one
     // that has no definitions at all leaves the next edit to it looking at the whole program.
@@ -340,7 +360,7 @@ pub(crate) fn remember(
             cache.store_file_rows(file.text, rows)?;
         }
     }
-    cache.store_kit_state(name, BUILD, &with_embedded(files, program))
+    store_with_verdicts(cache, name, &with_embedded(files, program), verdicts)
 }
 
 /// Forgets what's remembered, since a test failed.

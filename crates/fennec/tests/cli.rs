@@ -3084,6 +3084,52 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A program built again under the same name, and run each time, is a new file every time: macOS
+/// remembers the code signature of a file it has launched and kills a program written into one,
+/// with no word. So two programs take turns at one path, built through the store, which links one
+/// the first time and gives the stored one after, and through a run, whose programs are the
+/// store's own files.
+#[test]
+fn a_program_built_again_under_its_name_runs_each_time() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    use crate::executables::Within as _;
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_built_again_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("turns.fen");
+    let executable = dir.join("turns");
+    let fennec_at = |args: &[&std::ffi::OsStr]| {
+        crate::executables::fennec_command().args(args).env("FENNEC_HOME", dir.join("home")).output_within()
+    };
+    for turn in 0..10 {
+        let said = if turn % 2 == 0 { "even" } else { "odd" };
+        std::fs::write(
+            &program,
+            format!("def main(stdout: Stdout):\n    stdout.print(\"{said}\")\n    return\n"),
+        )?;
+        let built =
+            fennec_at(&["build".as_ref(), program.as_os_str(), "-o".as_ref(), executable.as_os_str()])?;
+        assert!(built.status.success(), "turn {turn}: {}", text(&built.stderr));
+        let ran = std::process::Command::new(&executable).output_within()?;
+        assert_eq!(
+            (ran.status.code(), text(&ran.stdout)),
+            (Some(0), format!("{said}\n")),
+            "turn {turn}: {ran:?}"
+        );
+        let run = fennec_at(&["run".as_ref(), program.as_os_str()])?;
+        assert_eq!(
+            (run.status.code(), text(&run.stdout)),
+            (Some(0), format!("{said}\n")),
+            "turn {turn}: {run:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A plain run builds a program with an `f32` or a `u64` natively, as it does any other.
 #[test]
 fn a_run_builds_u64_and_f32_natively() -> std::io::Result<()> {

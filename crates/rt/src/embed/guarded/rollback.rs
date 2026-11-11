@@ -16,6 +16,11 @@
 //! every lock it holds, in words native code can add to as it adds to any block (`Buffer`). Saves
 //! that hold or mark a block stay in their lock's log.
 //!
+//! A lock taken with no other held, the most common, begins and ends in native code, with no call:
+//! native code notes its cell in the record as pending, and the runtime makes its log the first
+//! time it's asked anything of the logs (`Logs::settle`), or the tables behind change. A lock still
+//! pending at its normal end saved only plain words, so native code just empties the buffer.
+//!
 //! A save names a block by its address, and a word by its index among the block's words, from its
 //! count. Saving never fails, so generated code has no flag to check after each one.
 //!
@@ -30,7 +35,7 @@
 //! - Any other change copies, as for one held. So does a dict that has to grow or change how it
 //!   hashes: what's in its old block is what a crash puts back.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
@@ -166,7 +171,8 @@ struct Logs {
 /// innermost's are the last. A save of an outer lock's own cell is that lock's, wherever it is.
 struct Buffer {
     /// What native code reads and writes, at an address that doesn't change once it's made: the
-    /// words at [`LEN`], [`ROOM`], [`SAVES`] and [`START`]. Empty until a lock is first taken.
+    /// words at [`LEN`], [`ROOM`], [`SAVES`], [`START`], [`LOCKS`] and [`PENDING`]. Empty until a
+    /// lock is first taken.
     record: Vec<u64>,
     /// Three words a save: the block, the word's index among its words, and what was there.
     saves: Vec<u64>,
@@ -186,7 +192,13 @@ const SAVES: usize = 2;
 /// it was, at or past where the log around it starts, which only has native code look at the last
 /// save less often.
 const START: usize = 3;
-const RECORD_WORDS: usize = 4;
+/// Where it says how many locks that may crash this thread holds, a pending one too. Native code
+/// begins a lock itself only when it's 0.
+const LOCKS: usize = 4;
+/// Where it says the cell of a lock native code began itself, which has no log yet, or 0. Only the
+/// one lock held can be pending: any lock taken inside it asks the runtime, which makes its log.
+const PENDING: usize = 5;
+const RECORD_WORDS: usize = 6;
 /// The words of one save in a buffer.
 const SAVE_WORDS: usize = 3;
 /// The room a buffer starts with, in saves.
@@ -343,6 +355,20 @@ thread_local! {
     };
     /// For a crash, what goes back in the lock's own cell, by word, for native code to write.
     static CELL: RefCell<HashMap<usize, Saved>> = RefCell::new(HashMap::new());
+    /// How many tables are behind this thread's current one, as the heap says, for a pending log
+    /// made where the heap can't be asked.
+    static TABLES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The heap's tables behind are about to change: a pending lock's log is made first, with the
+/// depth it was taken at.
+pub(in crate::embed) fn tables_changing() {
+    LOGS.with_borrow_mut(Logs::settle);
+}
+
+/// The heap has `behind` tables behind the current one now.
+pub(in crate::embed) fn tables_are(behind: usize) {
+    TABLES.set(behind);
 }
 
 /// The log a save of a word of `block` is for, among `held`: the log whose cell it is, or the
@@ -352,6 +378,36 @@ fn target(held: &[Log], block: u64) -> Option<usize> {
 }
 
 impl Logs {
+    /// Makes the log of a lock native code began itself, if there is one, for the runtime to look
+    /// at the logs as they are.
+    #[inline]
+    fn settle(&mut self) {
+        if self.buffer.read(PENDING) != 0 {
+            self.make_pending();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn make_pending(&mut self) {
+        let cell = u64::try_from(self.buffer.read(PENDING)).unwrap_or(0);
+        self.buffer.put(PENDING, 0);
+        // Nothing changed the tables since it began: that would have made its log then.
+        let (depth, start) = (TABLES.get(), self.buffer.read(START));
+        self.begin_log(cell, depth, start);
+    }
+
+    /// A log begins, for a lock on `cell` taken with `depth` tables behind, its plain saves from
+    /// `start` in the buffer.
+    fn begin_log(&mut self, cell: u64, depth: usize, start: usize) {
+        let log = match self.spare.pop() {
+            Some(spare) => Log { cell, depth, start, ..spare },
+            None => Log { cell, depth, start, saved: Vec::new(), places: Places::default(), changes: Vec::new() },
+        };
+        self.held.push(log);
+        self.buffer.put(LOCKS, self.held.len());
+    }
+
     /// Takes in the saves native code added to the buffer since the runtime last looked: each one of
     /// a place its log saved already is dropped, as a save the runtime adds would be.
     #[cold]
@@ -412,6 +468,7 @@ impl Logs {
 /// The logs of the locks this thread holds, to change, with any saves native code added taken in.
 fn with_logs<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
     LOGS.with_borrow_mut(|logs| {
+        logs.settle();
         if logs.buffer.known != logs.buffer.len() {
             logs.take_in();
         }
@@ -423,7 +480,10 @@ fn with_logs<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
 /// plain saves of the words native code saves itself: a struct's fields and a dict's values, so
 /// they needn't be taken in first.
 fn logs_as_they_are<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
-    LOGS.with_borrow_mut(f)
+    LOGS.with_borrow_mut(|logs| {
+        logs.settle();
+        f(logs)
+    })
 }
 
 /// The logs of the locks this thread holds, to change, as they are, for the innermost to end. Any
@@ -432,9 +492,11 @@ fn logs_as_they_are<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
 /// that ends normally just drops its own. Once it has, they're all known.
 fn ending_logs<T>(f: impl FnOnce(&mut Logs) -> Option<T>) -> Option<T> {
     LOGS.with_borrow_mut(|logs| {
+        logs.settle();
         let ended = f(logs);
         if ended.is_some() {
             logs.buffer.known = logs.buffer.len();
+            logs.buffer.put(LOCKS, logs.held.len());
         }
         ended
     })
@@ -443,7 +505,10 @@ fn ending_logs<T>(f: impl FnOnce(&mut Logs) -> Option<T>) -> Option<T> {
 /// The logs of the locks this thread holds, innermost last.
 #[cfg(test)]
 fn read_logs<T>(f: impl FnOnce(&[Log]) -> T) -> T {
-    LOGS.with_borrow(|logs| f(&logs.held))
+    LOGS.with_borrow_mut(|logs| {
+        logs.settle();
+        f(&logs.held)
+    })
 }
 
 fn address(value: i64) -> u64 {
@@ -456,23 +521,18 @@ fn address(value: i64) -> u64 {
 /// `ROOM`, the innermost log's from `START`. A save is three words, the block's address, the
 /// word's index and what was there; native code then adds one to `LEN`. With no room, it calls
 /// `fennec_lock_save`, which makes some. The record stays where it is for the thread's life.
+///
+/// With `LOCKS` 0, native code begins a lock itself, without this: it sets `PENDING` to the cell,
+/// `LOCKS` to 1 and `START` to `LEN`, and the runtime makes its log when it's next asked. At its
+/// normal end, if it's still pending, native code sets `PENDING` and `LOCKS` to 0 and `LEN` to
+/// `START`, and otherwise calls `fennec_lock_kept`.
 pub extern "C" fn begin(cell: i64) -> i64 {
     let depth = with(|state| state.heap.tables_behind());
+    debug_assert_eq!(depth, TABLES.get(), "the tables behind, as the heap says and as the logs know");
     with_logs(|logs| {
         let start = logs.buffer.len();
-        let log = match logs.spare.pop() {
-            Some(spare) => Log { cell: address(cell), depth, start, ..spare },
-            None => Log {
-                cell: address(cell),
-                depth,
-                start,
-                saved: Vec::new(),
-                places: Places::default(),
-                changes: Vec::new(),
-            },
-        };
-        logs.held.push(log);
         let record = logs.buffer.record();
+        logs.begin_log(address(cell), depth, start);
         logs.buffer.set_start(start);
         i64::try_from(record).unwrap_or(0)
     })
@@ -545,7 +605,7 @@ pub extern "C" fn save_ref(block: i64, word: i64, old: i64) {
 fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
     let saved = Saved { block, word, old, held: old != 0, marked: false };
     // A word that holds a block, which native code never saves itself, so the logs know of it.
-    let known = LOGS.with_borrow(|logs| logs.held.iter().any(|log| log.places.contains(place(&saved))));
+    let known = logs_as_they_are(|logs| logs.held.iter().any(|log| log.places.contains(place(&saved))));
     if known {
         return;
     }
@@ -991,7 +1051,8 @@ fn held() -> usize {
 /// How many saves the logs hold, with any native code added and the runtime hasn't taken in.
 #[cfg(test)]
 fn saved_entries() -> usize {
-    LOGS.with_borrow(|logs| logs.held.iter().map(|log| log.saved.len()).sum::<usize>() + logs.buffer.len())
+    read_logs(|held| held.iter().map(|log| log.saved.len()).sum::<usize>())
+        + LOGS.with_borrow(|logs| logs.buffer.len())
 }
 
 #[cfg(test)]

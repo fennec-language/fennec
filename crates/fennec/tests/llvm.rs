@@ -1717,6 +1717,21 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     )
 }
 
+/// Locks taken alone begin and end in native code, with no log; two taken together, a save the
+/// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
+/// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.
+#[test]
+fn locks_begun_without_the_runtime_put_back_exactly_whatever_comes_inside() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_begun_inline",
+        include_str!("fixtures/workers/lock_begun_inline.fen"),
+        include_str!("fixtures/workers/lock_begun_inline.out"),
+    )
+}
+
 /// A put after a lookup of the same key under a lock writes where the lookup found it, unless what
 /// came between grew the dict, popped the key or put another: each kept, and each put back by a
 /// failure.

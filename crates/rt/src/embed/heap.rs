@@ -787,8 +787,10 @@ impl Heap {
     /// say. Its box goes on holding the table that was current.
     pub(super) fn enter_table(&mut self, mut table: Box<super::table::Table>, owner_bits: u64) {
         self.forget_cursor();
+        super::guarded::rollback::tables_changing();
         std::mem::swap(&mut self.blocks, &mut table);
         self.behind.push((table, self.owner_bits));
+        super::guarded::rollback::tables_are(self.behind.len());
         self.owner_bits = owner_bits;
     }
 
@@ -811,7 +813,9 @@ impl Heap {
     )]
     pub(super) fn leave_table(&mut self) -> Box<super::table::Table> {
         self.forget_cursor();
+        super::guarded::rollback::tables_changing();
         let Some((mut table, owner_bits)) = self.behind.pop() else { return Box::default() };
+        super::guarded::rollback::tables_are(self.behind.len());
         self.owner_bits = owner_bits;
         std::mem::swap(&mut self.blocks, &mut table);
         table

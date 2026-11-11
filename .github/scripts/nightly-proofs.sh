@@ -4,7 +4,7 @@
 # must finish. With `FENNEC_CHECK_PROOFS=1` set, as `proofs.yml` sets it, each check left out for a
 # proof is an assertion, so a program stopping with "proof broken" has found a false one.
 #
-# Once `fennec` takes `FENNEC_STRIP_FACTS`, which `docs/environment.md` then lists, each one is
+# Once `fennec` takes `FENNEC_STRIP_FACTS`, which its sources then read, each one is
 # built again with every fact handed to LLVM stripped (`!range`, `noalias`, TBAA, `assume`), and
 # must print what its normal build printed. A difference means a fact was wrong, which is the only
 # check that catches a wrong TBAA tag.
@@ -21,7 +21,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 within=.github/scripts/within.sh
 strip=no
-grep -q 'FENNEC_STRIP_FACTS' docs/environment.md && strip=yes
+grep -rqs 'FENNEC_STRIP_FACTS' crates/llvm/src crates/fennec/src && strip=yes
 broken=0
 builds=0
 stripped=0

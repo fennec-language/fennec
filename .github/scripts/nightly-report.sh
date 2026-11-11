@@ -4,11 +4,13 @@
 #
 #   .github/scripts/nightly-report.sh "$HOME/Library/Application Support/Claude/side-session-notes/<lanes>"
 #
+# A second argument names the repository, `fennec-language/fennec` unless given.
+#
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
 # is written. It exits 1 when the night failed, so whatever runs it can say so loudly.
 set -eu
 folder=$1
-repository=${FENNEC_REPOSITORY:-fennec-language/fennec}
+repository=${2:-fennec-language/fennec}
 read -r run conclusion created <<< "$(gh run list --repo "$repository" --workflow proofs.yml --limit 1 \
   --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"')"
 if [ -z "${run:-}" ]; then

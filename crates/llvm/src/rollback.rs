@@ -858,7 +858,9 @@ def main(stdout: Stdout):
         for helper in ["define internal i64 @fen_lock_begin(", "define internal void @fen_lock_kept("] {
             assert!(text.contains(helper), "{helper}: {text}");
         }
-        assert!(text.contains("call i64 @fennec_lock_begin(") && text.contains("call void @fennec_lock_kept()"));
+        assert!(
+            text.contains("call i64 @fennec_lock_begin(") && text.contains("call void @fennec_lock_kept()")
+        );
         assert!(text.contains("@fennec_lock_record = linkonce_odr global i64 0"), "{text}");
         // The balance, a number, is saved without a call while there's room.
         assert!(pay.contains("call void @fen_lock_save("), "{pay}");

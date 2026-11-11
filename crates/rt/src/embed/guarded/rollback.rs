@@ -402,7 +402,9 @@ impl Logs {
     fn begin_log(&mut self, cell: u64, depth: usize, start: usize) {
         let log = match self.spare.pop() {
             Some(spare) => Log { cell, depth, start, ..spare },
-            None => Log { cell, depth, start, saved: Vec::new(), places: Places::default(), changes: Vec::new() },
+            None => {
+                Log { cell, depth, start, saved: Vec::new(), places: Places::default(), changes: Vec::new() }
+            }
         };
         self.held.push(log);
         self.buffer.put(LOCKS, self.held.len());

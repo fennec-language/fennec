@@ -85,7 +85,8 @@ fn measure_all(path: &str, names: &[String]) -> Result<(), String> {
     let now = measured?;
     if let Some(cache) = &cache {
         // A cache that can't be written only means nothing to compare with next time.
-        let _ = cache.write(TIMES, &crate::run::passed_name(path), encode(&now).as_bytes());
+        let times = cache.write(TIMES, &crate::run::passed_name(path), encode(&now).as_bytes());
+        fennec_build::kept("keep the benchmarks' times", times);
     }
     Ok(())
 }

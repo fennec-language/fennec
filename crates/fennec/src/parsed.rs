@@ -47,7 +47,8 @@ impl fennec_kit::Parses for Kept {
         let mut writer = Writer::with_spans_from(base);
         module.encode(&mut writer);
         // A cache that can't be written only means parsing the file again next time.
-        let _ = self.cache.write(PARSES, &self.name(text, shown, doc_examples), &writer.into_bytes());
+        let parse = self.cache.write(PARSES, &self.name(text, shown, doc_examples), &writer.into_bytes());
+        fennec_build::kept("keep a file's parse", parse);
     }
 }
 
@@ -74,7 +75,8 @@ impl fennec_syntax::KeptPrelude for Kept {
         let mut writer = Writer::default();
         modules.encode(&mut writer);
         // A cache that can't be written only means parsing the standard library again next time.
-        let _ = self.cache.write(PRELUDE, &self.prelude_name(), &writer.into_bytes());
+        let prelude = self.cache.write(PRELUDE, &self.prelude_name(), &writer.into_bytes());
+        fennec_build::kept("keep the prelude's parse", prelude);
     }
 }
 

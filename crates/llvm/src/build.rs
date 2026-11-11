@@ -564,7 +564,10 @@ pub fn compile(
                         .map(|bytes| {
                             if let Some((cache, key)) = &keyed {
                                 // A failed write only means compiling it again next time.
-                                let _ = cache.write(KIND, key, &bytes);
+                                fennec_build::kept(
+                                    "keep a compiled function",
+                                    cache.write(KIND, key, &bytes),
+                                );
                             }
                             (bytes, true)
                         }),

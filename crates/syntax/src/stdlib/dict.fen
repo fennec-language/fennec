@@ -23,6 +23,8 @@ extend dict[K: Hashable & Serializable, V: Serializable]:
         out.map(self.items())
 
 extend dict[K: Hashable & Deserializable, V: Deserializable]:
+    ## A key that comes twice fails, naming it, rather than the last one winning: two readers that
+    ## disagree on which wins would let a value past a check that read the other.
     def deserialize(ref src: Deserializer) -> dict[K, V] fails ParseError:
         mut found = dict[K, V]()
         count = src.map_count()?
@@ -30,9 +32,13 @@ extend dict[K: Hashable & Deserializable, V: Deserializable]:
             # Read straight into the dict, with no list of pairs on the way.
             for _ in range(count):
                 key = src.value[K]()?
+                before = found.len()
                 found[key] = src.value[V]()?
+                if found.len() == before: fail src.here(f"has `{key}` twice")
             src.end_map()
             return found
         for key, value in src.map[K, V]()?:
+            before = found.len()
             found[key] = value
-        found
+            if found.len() == before: fail src.here(f"has `{key}` twice")
+        return found

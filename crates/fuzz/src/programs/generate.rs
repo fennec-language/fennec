@@ -33,10 +33,9 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 const INNER_QUESTION_RUNS_CLEANUPS: bool = true;
 
 /// Whether leaving a `with` block from a `case` arm under `except why:`, by `return`, `break` or
-/// `continue`, runs the code after its source's `lend`. Today it doesn't, natively, though the
-/// same leave from an `except why:` block of plain statements does. Until it does, `Left` leaves
-/// from an arm only that way.
-const EXCEPT_ARMS_LEAVE_RUN_CLEANUPS: bool = false;
+/// `continue`, runs the code after its source's `lend`. It does since #1418; turned off, `Left`
+/// leaves only from an `except why:` block of plain statements.
+const EXCEPT_ARMS_LEAVE_RUN_CLEANUPS: bool = true;
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;

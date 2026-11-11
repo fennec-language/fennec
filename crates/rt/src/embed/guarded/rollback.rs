@@ -420,7 +420,8 @@ fn with_logs<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
 }
 
 /// The logs of the locks this thread holds, to change, as they are, for what doesn't look at their
-/// plain saves: native code adds only those, so they needn't be taken in first.
+/// plain saves of the words native code saves itself: a struct's fields and a dict's values, so
+/// they needn't be taken in first.
 fn logs_as_they_are<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
     LOGS.with_borrow_mut(f)
 }
@@ -942,7 +943,9 @@ pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>) -> bool {
 /// anyway. A word saved already holds what was made under the lock, which needs no saving.
 pub(in crate::embed) fn changing(state: &mut State, block: u64, word: usize, old: u64, holds: bool) {
     let saved = Saved { block, word, old, held: holds && old != 0, marked: false };
-    let pushed = logs_as_they_are(|logs| {
+    // Native code saves a dict's value word itself when it puts in place, so a word saved that way
+    // earlier in the lock is taken in first, and stays the one put back.
+    let pushed = with_logs(|logs| {
         let Some(log) = marking(&mut logs.held, block) else { return Pushed::NoLog };
         if !log.places.insert(place(&saved)) {
             return Pushed::Repeated;

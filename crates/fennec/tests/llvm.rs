@@ -1757,10 +1757,119 @@ fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std
     let field = |counts: &str, name: &str| {
         counts.split_whitespace().skip_while(|word| *word != name).nth(1).unwrap_or_default().to_owned()
     };
-    // Both puts of every round, rolled back or kept, but for the six whose key wasn't there yet:
-    // rounds 0, 1 and 2, as round 0's were put back.
-    assert_eq!(field(&fewer.1, "found_puts"), "114", "{}", fewer.1);
+    // The name's put of every round, rolled back or kept, but for the three whose key wasn't there
+    // yet: rounds 0, 1 and 2, as round 0's was put back. The count's put, a number into a dict
+    // with one owner, is written in place without the runtime once its key is there.
+    assert_eq!(field(&fewer.1, "found_puts"), "57", "{}", fewer.1);
     assert_eq!(field(&fewer.1, "live"), field(&more.1, "live"), "{} / {}", fewer.1, more.1);
+    Ok(())
+}
+
+/// A dict put under a lock where the lookup found the key, with the dict and the struct holding it
+/// alone, is written in place, its old value saved: a failure, and a crash in a task of its own,
+/// put the value back exactly, as does a failure after the same lock grows the dict by the old path.
+/// A dict held a second time, or a key not there yet, takes the old path. Built checking proofs, so
+/// a wrong "alone" would stop at the put.
+#[test]
+fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_put_in_place")?;
+        let (program, executable) = (dir.join("put.fen"), dir.join("put"));
+        std::fs::write(&program, include_str!("fixtures/lock_put_in_place.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "put back 1 {1: 11, 2: 20}\nput back 3 {1: 11, 2: 20, 3: 1}\nput back 1 True\nput back 1 True\n\
+             held twice 3 {1: 11, 2: 21, 3: 1}\n\
+             crashed {1: 11, 2: 21, 3: 1}\n{1: 11, 2: 21, 3: 1}\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A put after the dict grew since its key was looked up writes into the dict as it is now: a
+/// lookup's entry in the old block is never used. Built checking proofs, which stop at a put in
+/// place whose entry isn't one of the dict's own.
+#[test]
+fn a_put_after_the_dict_grew_writes_where_the_dict_is_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_put_after_growth")?;
+        let (program, executable) = (dir.join("grown.fen"), dir.join("grown"));
+        std::fs::write(&program, include_str!("fixtures/lock_put_after_growth.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "plain 6 41\nlocked 6 41\nlocked dict 6 41\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Puts in place copy nothing and leave nothing more held, however many rounds, failing or not;
+/// with the dict held twice, each takes the old path and copies it, as it must.
+#[test]
+fn a_put_in_place_copies_nothing_unless_the_dict_is_held_twice() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("lock_put_in_place_counts")?;
+    let program = dir.join("counts.fen");
+    std::fs::write(&program, include_str!("fixtures/lock_put_in_place_counts.fen"))?;
+    let executable = dir.join("counts");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let run = |rounds: &str, twice: &str| -> std::io::Result<(String, String)> {
+        let ran =
+            Command::new(&executable).args([rounds, twice]).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
+    };
+    let (fewer, more, twice) = (run("60", "0")?, run("120", "0")?, run("60", "10")?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        (fewer.0.as_str(), more.0.as_str(), twice.0.as_str()),
+        ("20 20 20\n", "40 40 40\n", "20 25 25\n")
+    );
+    let field = |counts: &str, name: &str| {
+        counts.split_whitespace().skip_while(|word| *word != name).nth(1).unwrap_or_default().to_owned()
+    };
+    assert_eq!(field(&fewer.1, "copies"), "0", "{}", fewer.1);
+    assert_eq!(field(&more.1, "copies"), "0", "{}", more.1);
+    assert_eq!(field(&fewer.1, "live"), field(&more.1, "live"), "{} / {}", fewer.1, more.1);
+    assert_eq!(field(&twice.1, "copies"), "10", "{}", twice.1);
     Ok(())
 }
 

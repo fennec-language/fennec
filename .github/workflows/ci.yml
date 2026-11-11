@@ -453,8 +453,7 @@ jobs:
       # Valgrind counts by simulating instead.
       - name: Install tools that count instructions
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq valgrind linux-tools-common "linux-tools-$(uname -r)" || echo "some aren't available"
+          .github/scripts/apt.sh valgrind linux-tools-common "linux-tools-$(uname -r)" || echo "some aren't available"
           sudo sysctl -w kernel.perf_event_paranoid=1 || true
       - name: Measure each kernel against its target and the previous commit
         run: |
@@ -486,7 +485,7 @@ jobs:
         run: |
           rustup component add llvm-tools-preview
           echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
-          sudo apt-get install -y -qq musl-tools
+          .github/scripts/apt.sh musl-tools
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # The `musl` folder a release has beside `fennec`, so builds here link as an installed
       # Fennec's do: on their own, with LLD, rather than through the system's `cc` and its linker.
@@ -496,8 +495,7 @@ jobs:
       # on which machine this lands on. Their times are shown too, and warn.
       - name: Install what counts instructions
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq valgrind
+          .github/scripts/apt.sh valgrind
       - run: ./target/release/fennec-bench budgets
 
   # Programs built through LLVM, with their code and the runtime library instrumented by
@@ -709,7 +707,7 @@ jobs:
           persist-credentials: false
       - name: Install musl's C compiler and LLVM's tools
         run: |
-          sudo apt-get install -y -q musl-tools
+          .github/scripts/apt.sh musl-tools
           rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtime library, and the runtime libraries for musl

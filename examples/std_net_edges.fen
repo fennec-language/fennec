@@ -1,0 +1,124 @@
+# The edges of `std.net` in a test's fake network: a request cut off before it ends never reaches
+# `respond`, a connection closed on this side fails as `Closed`, a connection's `Writer` sends each
+# line at once, and UDP refuses an address it can't reach or a port already taken.
+from std.net import NetError, Request, Response
+
+## What `run` fails with, in words, or "fine" if it doesn't.
+def why[T](run: () -> T fails NetError) -> str:
+    _ = run() else as error:
+        return error.message()
+    "fine"
+
+## Whether `run` fails with `Closed`.
+def closes[T](run: () -> T fails NetError) -> bool:
+    _ = run() else as error:
+        match error:
+            case .Closed:
+                return True
+            case _:
+                return False
+    False
+
+## How many requests reached a respond.
+struct Calls:
+    seen = 0
+
+## Counts each request that reaches it, and answers with its path.
+def counted(calls: shared Calls, request: Request) -> Response:
+    lock calls as ref now:
+        now.seen += 1
+    Response(status=200, body=request.path.encode())
+
+## How many requests reach `respond` when `raw` is sent and the client hangs up before the server
+## reads it. Cut off, it's never a whole request, so none should.
+def reached(net: Net, raw: str) -> int fails NetError:
+    shared calls = Calls()
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(raw)?
+            client.close()
+            server.serve((request) => counted(calls, request), timeout=1s)
+    lock calls as now:
+        return now.seen
+    0
+
+test "a request cut off in its headers or its body never reaches respond"(net: Net):
+    assert reached(net, "GET / HTTP/1.1\r\nX: y\r\n")? == 0
+    assert reached(net, "POST / HTTP/1.1\r\nContent-Length: 9\r\n\r\nabc")? == 0
+    # Cut off before its request line ends, it's no request at all.
+    assert reached(net, "GET / HT")? == 0
+    # Whole, the same request does reach it, so 0 above means cut off.
+    assert reached(net, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n")? == 1
+
+## Reads a line from a connection this side closed.
+def read_after_close(net: Net) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.close()
+            return client.read_line()? else "the end"
+    ""
+
+## Writes a line through the `Writer` of a connection this side closed.
+def write_after_close(net: Net) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.close()
+            client.writer().write_line("late") else as error:
+                return error.reason
+            return "written"
+    ""
+
+test "a connection closed on this side fails to read or write, as Closed"(net: Net):
+    assert closes(() => read_after_close(net)?)
+    # Through its `Writer`, it's an `IoError` saying what the network said.
+    assert write_after_close(net)? == NetError.Closed.message()
+
+## A line written and flushed through a connection's `Writer`, as the server reads it.
+def flushed(net: Net) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            out = client.writer()
+            out.write_line("one") else as error:
+                return error.reason
+            out.flush() else as error:
+                return error.reason
+            with server.accept()? as other:
+                return other.read_line()? else "nothing"
+    ""
+
+test "a line written through a connection's writer and flushed reaches the other side"(net: Net):
+    assert flushed(net)? == "one"
+
+## Accepts a connection that never comes.
+def accept_none(net: Net) -> str fails NetError:
+    with net.listen(0)? as server:
+        with server.accept(timeout=10ms)? as _:
+            return "accepted"
+    ""
+
+test "a test's server with no connection waiting fails to accept one"(net: Net):
+    assert why(() => accept_none(net)?).startswith("no connection is waiting")
+
+## Sends a packet to `address` from a new socket.
+def send(net: Net, address: str) -> str fails NetError:
+    with net.udp()? as socket:
+        socket.send_to("x", address)?
+    "sent"
+
+## Opens a second socket on a port the first has.
+def taken_twice(net: Net, port: int) -> str fails NetError:
+    with net.udp(port=port)? as _:
+        with net.udp(port=port)? as _:
+            return "opened twice"
+    ""
+
+test "UDP refuses an address without a port, a host outside the test, and a port taken"(net: Net):
+    assert send(net, "localhost:9")? == "sent"
+    assert why(() => send(net, "nowhere")?) == "`nowhere` isn't an address like `host:port`"
+    assert why(() => send(net, "example.com:53")?).startswith(
+        "the test's fake `Net` reaches only the test's own sockets",
+    )
+    assert why(() => taken_twice(net, port=9005)?) == "port 9005 is already in use"
+
+def main(stdout: Stdout):
+    stdout.print(NetError.Closed.message())

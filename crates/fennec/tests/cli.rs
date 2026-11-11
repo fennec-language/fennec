@@ -3091,10 +3091,10 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
 /// store's own files.
 #[test]
 fn a_program_built_again_under_its_name_runs_each_time() -> std::io::Result<()> {
+    use crate::executables::Within as _;
     if !crate::llvm::ready() {
         return Ok(());
     }
-    use crate::executables::Within as _;
     let dir = fennec_temp::Temp::at(
         std::env::temp_dir().join(format!("fennec_built_again_{}", std::process::id())),
     );

@@ -31,6 +31,14 @@ def failed(tally: shared Tally, step: int) fails Boom:
         if step % 2 == 0:
             fail Boom(step=step)
 
+## A write in a loop whose later turn fails, which puts back every turn's.
+def looped(tally: shared Tally, times: int) fails Boom:
+    lock tally as ref held:
+        for step in range(times):
+            held.other = step + 50
+            if step == 2:
+                fail Boom(step=step)
+
 ## Writes, then a crash that puts them back.
 def crashing(tally: shared Tally, at: int):
     lock tally as ref held:
@@ -47,7 +55,7 @@ def launched(tally: shared Tally, at: int) fails Crashed:
 def overflowing(tally: shared Tally, by: int):
     lock tally as ref held:
         held.other = 9
-        held.count += by
+        _ = held.count + by
 
 def overflowed(tally: shared Tally, by: int) fails Crashed:
     with launch(() => overflowing(tally, by)) as task:
@@ -65,5 +73,7 @@ def main(stdout: Stdout):
             stdout.print("crashed", at)
     _ = overflowed(tally, by=9_223_372_036_854_775_807) else:
         stdout.print("overflowed")
+    _ = looped(tally, times=5) else:
+        failed_count += 1
     lock tally as held:
         stdout.print(failed_count, held.count, held.other, held.counts)

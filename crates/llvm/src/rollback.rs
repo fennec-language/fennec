@@ -203,60 +203,15 @@ call:
 
 ";
 
-/// Whether an instruction can't crash or fail: it moves, reads or tests a value, compares two, or
-/// lets go of one, with no check that could stop the program and no call. Arithmetic, which overflow can stop,
-/// indexing, calls and anything else may.
-fn cannot_fail(kind: &InstKind) -> bool {
-    match kind {
-        InstKind::Copy { .. }
-        | InstKind::GetField { .. }
-        | InstKind::SetField { .. }
-        | InstKind::IsNone { .. }
-        | InstKind::GetSome { .. }
-        | InstKind::MakeSome { .. }
-        | InstKind::IsCase { .. }
-        | InstKind::GetCaseField { .. }
-        | InstKind::MakeMember { .. }
-        | InstKind::IsMember { .. }
-        | InstKind::GetMember { .. }
-        | InstKind::MakeOk { .. }
-        | InstKind::MakeErr { .. }
-        | InstKind::IsErr { .. }
-        | InstKind::GetOk { .. }
-        | InstKind::GetErr { .. }
-        | InstKind::IsError { .. }
-        | InstKind::AsError { .. }
-        | InstKind::GetTupleItem { .. } => true,
-        // Letting go of a local's value, which frees what nothing else holds and can't fail.
-        InstKind::Builtin { name, .. } => matches!(name.as_str(), "shared.drop" | "value.let_go"),
-        InstKind::Unary { op, .. } => matches!(op, UnaryOp::Not | UnaryOp::BitNot),
-        InstKind::Binary { op, .. } => matches!(
-            op,
-            BinOp::Eq
-                | BinOp::NotEq
-                | BinOp::Lt
-                | BinOp::LtEq
-                | BinOp::Gt
-                | BinOp::GtEq
-                | BinOp::Is
-                | BinOp::IsNot
-                | BinOp::BitAnd
-                | BinOp::BitOr
-                | BinOp::BitXor
-        ),
-        _ => false,
-    }
-}
-
 /// Whether `insts`, then the blocks `end` goes to, reach a lock's end with nothing that can crash
-/// or fail on the way, given which blocks do (`clean`). Leaving any other way, as by `return`, or
-/// the program stopping, doesn't count.
-fn clean_to_end(insts: &[Inst], end: &Terminator, clean: &[bool]) -> bool {
+/// or fail on the way, given which blocks do (`clean`) and which instructions can't (`safe`).
+/// Leaving any other way, as by `return`, or the program stopping, doesn't count.
+fn clean_to_end(insts: &[Inst], end: &Terminator, clean: &[bool], safe: &dyn Fn(&InstKind) -> bool) -> bool {
     for inst in insts {
         if matches!(inst.kind, InstKind::Unlock { .. } | InstKind::UnlockAll { .. }) {
             return true;
         }
-        if !cannot_fail(&inst.kind) {
+        if !safe(&inst.kind) {
             return false;
         }
     }
@@ -269,14 +224,14 @@ fn clean_to_end(insts: &[Inst], end: &Terminator, clean: &[bool]) -> bool {
 }
 
 /// Which of a function's blocks reach a lock's end with nothing that can crash or fail on the
-/// way, from their start. A block is only counted once every way on from it is, so a loop that
-/// never reaches the end isn't.
-fn clean_blocks(function: &Function) -> Vec<bool> {
+/// way, from their start. A block is only counted once every way on from it is, so no block of a
+/// loop is: a write anywhere a loop's way back reaches is always saved.
+fn clean_blocks(function: &Function, safe: &dyn Fn(&InstKind) -> bool) -> Vec<bool> {
     let mut clean = vec![false; function.blocks.len()];
     loop {
         let mut changed = false;
         for (at, Block { insts, end }) in function.blocks.iter().enumerate() {
-            if !clean.get(at).copied().unwrap_or(true) && clean_to_end(insts, end, &clean) {
+            if !clean.get(at).copied().unwrap_or(true) && clean_to_end(insts, end, &clean, safe) {
                 if let Some(this) = clean.get_mut(at) {
                     *this = true;
                 }
@@ -629,11 +584,87 @@ impl Emit<'_, '_, '_> {
     /// is one that can't crash or fail (`cannot_fail`): then no rollback can come before the end.
     fn nothing_after_can_fail(&mut self) -> bool {
         let function = self.function;
-        let clean = self.clean_blocks.get_or_insert_with(|| clean_blocks(function));
+        if self.clean_blocks.is_none() {
+            let clean = clean_blocks(function, &|kind| self.cannot_fail(kind));
+            self.clean_blocks = Some(clean);
+        }
+        let clean = self.clean_blocks.as_deref().unwrap_or_default();
         let (at, index) = self.at;
         let Some(block) = function.blocks.get(at) else { return false };
         let rest = block.insts.get(index + 1..).unwrap_or_default();
-        clean_to_end(rest, &block.end, clean)
+        clean_to_end(rest, &block.end, clean, &|kind| self.cannot_fail(kind))
+    }
+
+    /// Whether an instruction can't crash or fail. It reads, moves or tests a value; compares two
+    /// numbers or bools, or ands, ors or xors them; or lets go of a value it can't be the last
+    /// owner of. Anything that may allocate, check (arithmetic, an index, a conversion), call, or
+    /// let go of a last owner, which frees and may do more, may.
+    fn cannot_fail(&self, kind: &InstKind) -> bool {
+        let scalar = |operand: &Operand| match operand {
+            Operand::Int(_) | Operand::Float(_) | Operand::Bool(_) => true,
+            Operand::Local(local) => matches!(
+                self.kind_of(*local).ok(),
+                Some(Kind::Int | Kind::Bool | Kind::Float | Kind::U64 | Kind::F32)
+            ),
+            _ => false,
+        };
+        match kind {
+            InstKind::Copy { .. }
+            | InstKind::GetField { .. }
+            | InstKind::IsNone { .. }
+            | InstKind::GetSome { .. }
+            | InstKind::IsCase { .. }
+            | InstKind::GetCaseField { .. }
+            | InstKind::IsMember { .. }
+            | InstKind::GetMember { .. }
+            | InstKind::IsErr { .. }
+            | InstKind::GetOk { .. }
+            | InstKind::GetErr { .. }
+            | InstKind::IsError { .. }
+            | InstKind::AsError { .. }
+            | InstKind::GetTupleItem { .. } => true,
+            InstKind::Unary { op, value, .. } => {
+                matches!(op, UnaryOp::Not | UnaryOp::BitNot) && scalar(value)
+            }
+            InstKind::Binary { op, lhs, rhs, .. } => {
+                matches!(
+                    op,
+                    BinOp::Eq
+                        | BinOp::NotEq
+                        | BinOp::Lt
+                        | BinOp::LtEq
+                        | BinOp::Gt
+                        | BinOp::GtEq
+                        | BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                ) && scalar(lhs)
+                    && scalar(rhs)
+            }
+            InstKind::Builtin { name, args, .. }
+                if matches!(name.as_str(), "shared.drop" | "value.let_go") =>
+            {
+                matches!(args.as_slice(), [Operand::Local(local)] if self.never_last_owner(*local))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether letting go of `local` can't free anything: it holds nothing counted, or it's the
+    /// `value` read from a lock's handle, which the lock's cell holds an owner of throughout, as
+    /// nothing in the function sets the cell's `value` whole.
+    fn never_last_owner(&self, local: LocalId) -> bool {
+        let Ok(kind) = self.kind_of(local) else { return false };
+        if !kind.counted() && !self.holds_inline(kind) {
+            return true;
+        }
+        let Some((handle, field)) = self.known.field_of(local) else { return false };
+        field == "value"
+            && self.saving.contains(&handle.0)
+            && !self.function.blocks.iter().flat_map(|block| &block.insts).any(|inst| {
+                matches!(&inst.kind, InstKind::SetField { object, path, .. }
+                    if object == handle && path.first().is_some_and(|first| first == "value") && path.len() == 1)
+            })
     }
 
     /// `block` as an address, and the index of the word at `place` in it, counting its count
@@ -1121,48 +1152,66 @@ def main(stdout: Stdout):
     }
 
     /// A plain write under a lock is saved only if something after it, before the lock ends, can
-    /// crash or fail: the last write of a lock isn't, nor one followed only by compares and moves.
-    /// One followed by arithmetic, a call, or the rest of a loop is.
+    /// crash or fail. The kernel's two lines aren't: each ends its lock with the write, its sum's
+    /// check before it. Writes followed only by reads and compares of numbers aren't either. One
+    /// followed by a sum, a write that may copy, a call that allocates, or the rest of a loop is.
     #[test]
     fn only_a_write_something_after_can_undo_is_saved() -> Result<(), String> {
         let source = "\
 struct Tally:
     a = 0
     b = 0
+    counts = dict[int, int]()
 
-def last(tally: shared Tally):
+def made(n: int) -> list[int]:
+    [n, n]
+
+def counter(tally: shared Tally):
     lock tally as ref held:
         held.a += 1
 
-def moved_after(tally: shared Tally):
+def counted(tally: shared Tally, key: int):
+    lock tally as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+
+def compared(tally: shared Tally):
     lock tally as ref held:
         held.a += 1
-        held.b = held.a
         same = held.a == held.b
-        held.b = 0 if same else 1
+        bigger = held.a > 3
+        both = same and bigger
 
 def two(tally: shared Tally):
     lock tally as ref held:
         held.a += 1
         held.b += 1
 
+def written_twice(tally: shared Tally):
+    lock tally as ref held:
+        held.a = 1
+        held.b = 2
+
 def looped(tally: shared Tally, times: int):
     lock tally as ref held:
         for step in range(times):
             held.a = step
 
-def called(tally: shared Tally, stdout: Stdout):
+def allocating(tally: shared Tally):
     lock tally as ref held:
         held.a = 5
-        stdout.print(held.a)
+        held.b = made(held.a).len()
 
 def main(stdout: Stdout):
     shared tally = Tally()
-    last(tally)
-    moved_after(tally)
+    counter(tally)
+    counted(tally, key=1)
+    compared(tally)
     two(tally)
+    written_twice(tally)
     looped(tally, times=3)
-    called(tally, stdout)
+    allocating(tally)
+    lock tally as held:
+        stdout.print(held.a, held.b)
 ";
         let text = texts(source)?;
         let saves = |name: &str| {
@@ -1172,11 +1221,13 @@ def main(stdout: Stdout):
                 .unwrap_or_default();
             body.matches("call void @fen_lock_save(").count()
         };
-        assert_eq!(saves("last"), 0, "the last write");
-        assert_eq!(saves("moved_after"), 0, "writes followed only by moves and compares");
+        assert_eq!(saves("counter"), 0, "the kernel's int line");
+        assert_eq!(saves("counted"), 0, "the kernel's dict line");
+        assert_eq!(saves("compared"), 0, "a write followed by compares of numbers");
         assert_eq!(saves("two"), 1, "the first of two sums, which the second's overflow can undo");
-        assert_eq!(saves("looped"), 1, "a write in a loop, which the next turn's steps can undo");
-        assert_eq!(saves("called"), 1, "a write before a call");
+        assert_eq!(saves("written_twice"), 1, "the first of two writes, as the second may copy");
+        assert_eq!(saves("looped"), 1, "a write in a loop, which the next turn can undo");
+        assert_eq!(saves("allocating"), 1, "a write before a call that allocates");
         Ok(())
     }
 }

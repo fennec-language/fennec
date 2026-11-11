@@ -49,8 +49,11 @@ pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], program: &Prog
     let mut writer = Writer::default();
     program.module.encode(&mut writer);
     // A cache that can't be written only means reading the kit again next time.
-    if cache.write("run-image", &image_name(path), &writer.into_bytes()).is_ok() {
-        let _ = cache.store_kit_state(&name_of(path), BUILD, &crate::verdict::with_embedded(files, program));
+    let image = cache.write("run-image", &image_name(path), &writer.into_bytes());
+    if fennec_build::kept("keep the checked program for the next run", image).is_some() {
+        let state =
+            cache.store_kit_state(&name_of(path), BUILD, &crate::verdict::with_embedded(files, program));
+        fennec_build::kept("keep the kit's state", state);
     }
 }
 

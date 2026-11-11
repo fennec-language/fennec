@@ -102,7 +102,10 @@ fn built_and_run(
         let built = build_for_run((program, checked), path, &executable)?;
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
             // A store that can't be written only means building it again next time.
-            let _ = cache.write(RUN_ROOTS, name, root.as_bytes());
+            fennec_build::kept(
+                "keep which program a run built",
+                cache.write(RUN_ROOTS, name, root.as_bytes()),
+            );
         }
     }
     crate::lint::show_errors_found();
@@ -265,7 +268,7 @@ fn reached(
             crate::verdict::remember_checked(path, &cache, (files, &program), &facts);
         }
         // A cache that can't be written only means checking all of it again next time.
-        let _ = cache.write("checked", &name, text.as_bytes());
+        fennec_build::kept("keep the program's check", cache.write("checked", &name, text.as_bytes()));
     }
     // What `main` reaches is copied out, rather than the rest cut away, since the lint errors may
     // still be being found from all of it. The whole program is let go of beside the run.
@@ -367,5 +370,44 @@ pub(crate) fn with_extension(
     match found {
         Some(help) => diagnostic.clone().with_help(help),
         None => diagnostic.clone(),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    /// A run whose program is the store's, kept hours ago, has it put out with this run's time,
+    /// so another run's sweep, which goes by that time, leaves it while it waits to start it. What
+    /// an earlier run started long ago still goes.
+    #[test]
+    fn a_program_about_to_start_outlasts_another_runs_sweep() {
+        let dir =
+            fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-swept-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir);
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let cache = fennec_build::Cache::new(&dir.join("home"));
+        let hours_ago = SystemTime::now() - Duration::from_hours(4);
+        // A first run built it and kept it, hours ago; its own file was swept up since.
+        let first = work.join("fennec-run-1-a-0");
+        std::fs::write(&first, b"a program").unwrap();
+        cache.keep_file("programs", "root", &first).unwrap();
+        std::fs::remove_file(&first).unwrap();
+        let kept = cache.path("programs", "root");
+        std::fs::File::open(&kept).unwrap().set_modified(hours_ago).unwrap();
+        // A second run puts it out, and is about to start it, when a third, about to start its
+        // own, sweeps.
+        let second = work.join("fennec-run-2-b-0");
+        assert!(cache.link_out("programs", "root", &second).unwrap());
+        super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
+        assert!(second.exists(), "the sweep took a program about to start");
+        // One an earlier run started long ago goes.
+        let old = work.join("fennec-run-4-d-0");
+        std::fs::write(&old, b"another program").unwrap();
+        std::fs::File::open(&old).unwrap().set_modified(hours_ago).unwrap();
+        super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
+        assert!(!old.exists() && second.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

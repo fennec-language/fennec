@@ -1,0 +1,7 @@
+error: `why` isn't used on this way out, so it drops the failure
+  --> examples/errors/except_why_thrown_away.fen:12:9
+   |
+12 |         return
+   |         ^^^^^^
+   |
+   = help: use it, as `log.warn(f"{why}")`, or pass it on with `fail why`

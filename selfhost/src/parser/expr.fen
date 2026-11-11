@@ -32,6 +32,8 @@ extend Parser:
     ## An expression, and whether this call made a one-line `if` or a fallback `else` of its own,
     ## rather than reading one inside parentheses.
     def expr_made(ref self) -> (Expr, Formed) fails Diagnostic:
+        at_top = self.value_at_top
+        self.value_at_top = False
         if self.at_match():
             return (self.match_expr()?, .Plain)
         lambda = self.lambda()?
@@ -72,6 +74,12 @@ extend Parser:
                 default = inner
             return (Expr(kind=.Else(value, default=default), span=value.span.to(default.span)), .Fallback)
         if self.at_keyword("except"):
+            if not at_top:
+                fail Diagnostic(
+                    message="`except` goes after a whole right side, a bare call or `return`",
+                    span=self.span(),
+                    help="give the call a line of its own, as `got = f() except why:`, and use `got` here",
+                )
             handler = self.except_handler()?
             return (Expr(kind=.Else(value, default=handler, is_except=True), span=value.span.to(handler.span)), .Fallback)
         (value, .Plain)

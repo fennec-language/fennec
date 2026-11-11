@@ -234,7 +234,10 @@ fn errors_remembered_with(
         None => errors_shown(path),
     };
     // A cache that can't be written only means linting it again next time.
-    let _ = cache.write("linted", &name, format!("{key}\n{shown}").as_bytes());
+    fennec_build::kept(
+        "keep what the lint found",
+        cache.write("linted", &name, format!("{key}\n{shown}").as_bytes()),
+    );
     shown
 }
 
@@ -319,7 +322,10 @@ impl Linted {
             }
         }
         // A cache that can't be written only means linting every file again next time.
-        let _ = cache.write("linted-files", name, &writer.into_bytes());
+        fennec_build::kept(
+            "keep what the lint found",
+            cache.write("linted-files", name, &writer.into_bytes()),
+        );
     }
 }
 

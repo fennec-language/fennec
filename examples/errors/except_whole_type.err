@@ -1,0 +1,7 @@
+error: `LoadError()` takes every case of `LoadError`, which drops them all
+  --> examples/errors/except_whole_type.fen:10:48
+   |
+10 |     score = load("save.txt") except LoadError(): 0
+   |                                                ^^^
+   |
+   = help: name the cases it handles, as `case .Missing():`, or write `except why:` and use `why`

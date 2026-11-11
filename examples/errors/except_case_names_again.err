@@ -1,0 +1,7 @@
+error: `case other:` names the failure again, which `why` already names
+  --> examples/errors/except_case_names_again.fen:13:9
+   |
+13 |         case other:
+   |         ^^^^^^^^^^^
+   |
+   = help: write `case _:` and use `why` in it

@@ -59,6 +59,10 @@ pub(crate) struct Parser {
     /// name, and nothing on a method, which comes with its type. Like `old_mut`, they give one
     /// error that fixes them all.
     old_pub: Vec<(Span, Span, &'static str)>,
+    /// Set just before the value a statement is written with: the whole right side of an
+    /// assignment, a bare call or what `return` gives. Only there may `except` follow it, so the
+    /// next expression takes it and what it holds sees it unset.
+    value_at_top: bool,
 }
 
 impl Parser {
@@ -71,6 +75,7 @@ impl Parser {
             block_ended: false,
             old_mut: Vec::new(),
             old_pub: Vec::new(),
+            value_at_top: false,
         }
     }
 

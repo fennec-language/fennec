@@ -1,0 +1,7 @@
+error: this can't fail, so `except` has nothing to handle
+ --> examples/errors/except_nothing_to_handle.fen:7:10
+  |
+7 |     at = find(["a"], "b") except why:
+  |          ^^^^^^^^^^^^^^^^
+  |
+  = help: a value that may be `None` takes `else`, as `x = f() else default`

@@ -369,6 +369,20 @@ fn llc_levels(way: Way) -> &'static [&'static str] {
     }
 }
 
+/// A name as `-internalize-public-api-file` reads it, which is as a pattern: `[`, `*`, `?`, `{`
+/// and the rest are escaped, so a generic's instance like `f_twice[int]` names itself rather than
+/// any one of `f_twicei`, `f_twicen` and `f_twicet`, which left it internal and unlinked.
+fn as_pattern(name: &str) -> String {
+    let mut pattern = String::with_capacity(name.len());
+    for character in name.chars() {
+        if matches!(character, '\\' | '[' | ']' | '*' | '?' | '{' | '}') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern
+}
+
 /// For a release: every function's module and `entry` linked into one, optimized as a whole,
 /// with nothing but `main` seen from outside, so LLVM inlines and specializes across the whole
 /// program. Given the runtime's own bitcode, what the program uses of it joins the unit too, so
@@ -394,7 +408,8 @@ pub fn compile_whole(
         inputs.push(input);
         keep.extend(names);
     }
-    std::fs::write(&kept, keep.join("\n") + "\n")
+    let patterns: Vec<String> = keep.iter().map(|name| as_pattern(name)).collect();
+    std::fs::write(&kept, patterns.join("\n") + "\n")
         .map_err(|err| format!("couldn't write {}: {err}", kept.display()))?;
     for (at, unit) in together {
         let input = work.join(format!("f{at}.ll"));
@@ -609,6 +624,15 @@ mod tests {
             Some("h_Result[int, Refused]")
         );
         assert_eq!(symbol("declare void @\"a\\22b\"()").as_deref(), Some("a\"b"));
+    }
+
+    /// A kept name is written as a pattern that matches only itself.
+    #[test]
+    fn kept_names_match_only_themselves() {
+        assert_eq!(as_pattern("f_twice[int]"), "f_twice\\[int\\]");
+        assert_eq!(as_pattern("h_Result[int, Refused]"), "h_Result\\[int, Refused\\]");
+        assert_eq!(as_pattern("a*b?{c}\\d"), "a\\*b\\?\\{c\\}\\\\d");
+        assert_eq!(as_pattern("main"), "main");
     }
 
     /// What a huge function reaches is kept as it calls it: what it declares is declared again

@@ -8717,6 +8717,49 @@ fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Resul
     Ok(())
 }
 
+/// A release builds a huge function apart and keeps what it calls seen from outside the rest, by
+/// name. A generic's instance, `f_twice[int]`, has brackets, which the list of names kept read as
+/// a pattern: it was made internal, and linking said "Undefined symbols".
+#[test]
+fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let lines = 400;
+    let mut body = String::new();
+    let mut total: i64 = 0;
+    for line in 0..lines {
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let written = i64::try_from(total.to_string().len()).unwrap_or(0);
+        total += line + written;
+    }
+    let source = format!(
+        "def twice[T](value: T) -> list[T]:\n    [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+    );
+    let dir = folder("huge_generic")?;
+    let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    assert!(built.status.success(), "{said}");
+    assert!(said.contains("hint: `long` is too big to optimize"), "{said}");
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):

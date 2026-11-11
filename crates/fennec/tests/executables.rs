@@ -52,13 +52,18 @@ impl Within for Command {
     }
 
     fn output_limited(&mut self, cpu: Duration, wall: Duration) -> std::io::Result<Output> {
-        let child = cpu_limited(self, cpu).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let child = cpu_limited(self, cpu)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
         finished_before(child, Limits { cpu, wall })
     }
 
     fn output_given(&mut self, input: &[u8], cpu: Duration) -> std::io::Result<Output> {
         let mut limited = cpu_limited(self, cpu);
-        let mut child = limited.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let mut child =
+            limited.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
         let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
         let input = input.to_vec();
         // Written from a thread of its own, so a program that never reads it can't hold this up.
@@ -150,7 +155,8 @@ fn finished_before(mut child: Child, limits: Limits) -> std::io::Result<Output> 
     let stderr = read_all(child.stderr.take());
     let ended = wait_before(&mut child, limits.wall).and_then(|status| {
         if spent_its_cpu(status) {
-            let why = format!("a test's program used all {}s of CPU time it may", limits.cpu.as_secs().max(1));
+            let why =
+                format!("a test's program used all {}s of CPU time it may", limits.cpu.as_secs().max(1));
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
         }
         Ok(status)
@@ -202,7 +208,8 @@ pub(crate) fn wait_before(
         if Instant::now() > until {
             child.kill()?;
             child.wait()?;
-            let why = format!("a test's program was still running after {}s by the clock", deadline.as_secs());
+            let why =
+                format!("a test's program was still running after {}s by the clock", deadline.as_secs());
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -214,9 +221,14 @@ pub(crate) fn wait_before(
 #[test]
 fn a_program_past_its_deadline_is_killed() {
     let started = Instant::now();
-    let ran = Command::new("sleep").arg("600").output_limited(Duration::from_secs(60), Duration::from_secs(1));
+    let ran =
+        Command::new("sleep").arg("600").output_limited(Duration::from_secs(60), Duration::from_secs(1));
     let why = ran.err().map(|error| (error.kind(), error.to_string()));
-    assert!(why.as_ref().is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("by the clock")), "{why:?}");
+    assert!(
+        why.as_ref()
+            .is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("by the clock")),
+        "{why:?}"
+    );
     assert!(started.elapsed() < Duration::from_secs(30));
 }
 
@@ -227,10 +239,19 @@ fn a_program_past_its_deadline_is_killed() {
 fn a_program_that_spends_its_cpu_time_is_stopped() {
     let ran = Command::new("sh").args(["-c", "while :; do :; done"]).output_before(Duration::from_secs(1));
     let why = ran.err().map(|error| (error.kind(), error.to_string()));
-    assert!(why.as_ref().is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("of CPU time")), "{why:?}");
+    assert!(
+        why.as_ref()
+            .is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("of CPU time")),
+        "{why:?}"
+    );
     // Its environment and folder are its own still.
     let dir = std::env::temp_dir();
-    let ran = Command::new("sh").args(["-c", "echo \"$KEPT\" && pwd"]).env("KEPT", "kept").current_dir(&dir).output_within().unwrap();
+    let ran = Command::new("sh")
+        .args(["-c", "echo \"$KEPT\" && pwd"])
+        .env("KEPT", "kept")
+        .current_dir(&dir)
+        .output_within()
+        .unwrap();
     let said = String::from_utf8_lossy(&ran.stdout).into_owned();
     assert!(said.starts_with("kept\n"), "{said}");
 }

@@ -253,16 +253,16 @@ fn reached(
         // An edit that only changed functions' bodies is checked on its own, which is all a
         // change there can break, rather than checking all of a big kit again.
         let quickly = files.as_deref().and_then(|files| crate::verdict::checked_quickly(path, &cache, files));
-        let verdicts = match quickly {
+        let facts = match quickly {
             Some(Err((partial, diagnostics))) => return Err(reject(&partial, &diagnostics)),
-            Some(Ok(verdicts)) => verdicts,
+            Some(Ok(facts)) => facts,
             None => match crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources) {
-                Ok(signatures) => signatures.lock_verdicts().clone(),
+                Ok(signatures) => crate::verdict::KitFacts::of(&program, &signatures),
                 Err(diagnostics) => return Err(reject(&program, &diagnostics)),
             },
         };
         if let Some(files) = &files {
-            crate::verdict::remember_checked(path, &cache, (files, &program), &verdicts);
+            crate::verdict::remember_checked(path, &cache, (files, &program), &facts);
         }
         // A cache that can't be written only means checking all of it again next time.
         let _ = cache.write("checked", &name, text.as_bytes());

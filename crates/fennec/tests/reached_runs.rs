@@ -325,3 +325,71 @@ fn a_body_edit_that_waits_under_another_files_lock_is_refused() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A kit with these files under `src/`, and its manifest.
+fn kit_of(name: &str, files: &[(&str, &str)]) -> std::io::Result<fennec_temp::Temp> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest)?;
+    for (file, text) in files {
+        std::fs::write(dir.join("src").join(file), text)?;
+    }
+    Ok(dir)
+}
+
+/// Runs `fennec run` twice after writing `edit` to `src/main.fen`, and gives back what each said,
+/// once the kit's first run has passed. Its tests run first, from all of the kit, as `fennec test`
+/// checks it: after an edit only to bodies, from just the edited files and what they import.
+fn after_an_edit(dir: &Path, edit: &str) -> std::io::Result<Vec<Output>> {
+    let home = dir.join("home");
+    let first = run(&home, dir)?;
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    std::fs::write(dir.join("src/main.fen"), edit)?;
+    (0..2).map(|_| run(&home, dir)).collect()
+}
+
+/// A leading-dot case with nothing to say which enum it's from is refused when more than one enum
+/// in the kit has it, even after runs that checked only the edited file and what it imports, which
+/// see one of them.
+#[test]
+fn a_body_edit_to_a_case_another_files_enum_shares_is_refused() {
+    let dir = kit_of(
+        "shared_case",
+        &[
+            ("colors.fen", "enum Color:\n    Red\n    Green\n"),
+            ("moods.fen", "enum Mood:\n    Red\n    Calm\n\ntest \"moods\":\n    assert Mood.Calm != .Red\n"),
+            ("lib.fen", "from colors import Color\n\ndef first() -> Color:\n    return .Green\n"),
+            ("main.fen", "from lib import first\n\ndef main(stdout: Stdout):\n    stdout.print(first())\n"),
+        ],
+    )
+    .unwrap();
+    let edit = "from lib import first\n\ndef main(stdout: Stdout):\n    stdout.print(first(), .Red)\n";
+    for refused in after_an_edit(&dir, edit).unwrap() {
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{said}");
+        assert!(said.contains("more than one enum has a case called `Red`"), "{said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A name another file of the kit defines, used by a file that doesn't import it, is refused
+/// with the import to add, even where a builtin has the same name and a check of only the edited
+/// file would take the builtin.
+#[test]
+fn a_body_edit_using_a_kit_name_from_a_file_not_imported_is_refused() {
+    let sorted = "def sorted(items: list[int]) -> list[int]:\n    return items\n\ntest \"sorted\":\n    assert sorted([2, 1]) == [2, 1]\n";
+    let dir = kit_of(
+        "not_imported",
+        &[("util.fen", sorted), ("main.fen", "def main(stdout: Stdout):\n    stdout.print(1)\n")],
+    )
+    .unwrap();
+    let edit = "def main(stdout: Stdout):\n    stdout.print(sorted([2, 1]))\n";
+    for refused in after_an_edit(&dir, edit).unwrap() {
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{said}");
+        assert!(said.contains("which this file doesn't import"), "{said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

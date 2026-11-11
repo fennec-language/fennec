@@ -3,3 +3,5 @@ error: `exists` takes a path, as a str or a `Path`, but this is an int
   |
 2 |     stdout.print(fs.exists(42))
   |                            ^^
+  |
+  = help: pass the path as text, as `"data/scores.txt"`, or a `Path`

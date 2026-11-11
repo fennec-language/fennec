@@ -1,0 +1,7 @@
+error: `int` converts a number or text, not a list[str]
+ --> examples/errors/int_of_a_list.fen:3:22
+  |
+3 |     stdout.print(int(words))
+  |                      ^^^^^
+  |
+  = help: convert each item, as `[int(item) for item in items]`

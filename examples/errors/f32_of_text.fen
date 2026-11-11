@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    speed = f32("1.5")
+    stdout.print(speed)

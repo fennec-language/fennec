@@ -424,7 +424,7 @@ fn pair_for(checker: &mut Checker, unions: &mut Unions, def: &TypeDef) -> Option
         let list = cases.collect::<Vec<_>>().join(", ");
         let _ = writeln!(text, "{} = [{list}]\n", constant(name, ""));
         let mut saving = String::from("        match self:\n");
-        let mut loading = format!("        match src__.case(\"{name}\", {})?:\n", constant(name, ""));
+        let mut loading = format!("        match src__.enum_case(\"{name}\", {})?:\n", constant(name, ""));
         for (at, case) in def.cases.iter().enumerate() {
             let fields = reads(checker, unions, name, Some(&case.name), &case.fields)?;
             save_case(&mut saving, name, (at, &case.name), &fields.0);
@@ -495,7 +495,7 @@ fn save_case(out: &mut String, name: &str, (at, case): (usize, &str), fields: &[
     if fields.is_empty() {
         let _ = writeln!(
             out,
-            "            case .{case}:\n                out__.case(\"{name}\", \"{case}\", {at})"
+            "            case .{case}:\n                out__.enum_case(\"{name}\", \"{case}\", {at})"
         );
         return;
     }

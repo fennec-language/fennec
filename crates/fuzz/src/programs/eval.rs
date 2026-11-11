@@ -13,7 +13,7 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
     RefPlace, Size, Stmt,
 };
 
@@ -1136,6 +1136,7 @@ impl Machine {
             Stmt::Arrowed(how, n, limit) => self.arrowed(how, n, *limit)?,
             Stmt::Guarded { code, refuse, crash, noted } => self.guarded(*code, *refuse, *crash, *noted)?,
             Stmt::GuardAll(items) => self.guard_all(items),
+            Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1361,6 +1362,45 @@ impl Machine {
             }
             let _ = writeln!(self.out, "released {item}");
         }
+    }
+
+    /// `left{id}(stdout)`: each round opens the wards outermost first and closes them innermost
+    /// first, the code after `lend` for a block that finished or was left by `return`, `break` or
+    /// `continue`, and `lend x else:` for one that failed or crashed.
+    fn left(&mut self, depth: usize, rounds: i64, at: i64, how: Leave) -> Ran<()> {
+        let names = super::source::WARDS.get(..depth).unwrap_or(&super::source::WARDS);
+        let mut total = 0_i64;
+        for i in 0..rounds {
+            for name in names {
+                let _ = writeln!(self.out, "open {name}");
+            }
+            let _ = writeln!(self.out, "in {} {i}", names.join(" "));
+            let ending = if how.fails() || how == Leave::Crash { "undo" } else { "close" };
+            if i == at {
+                for name in names.iter().rev() {
+                    let _ = writeln!(self.out, "{ending} {name}");
+                }
+                match how {
+                    Leave::Crash => return Err(Stop::Failed),
+                    _ if how.fails() => {
+                        let _ = writeln!(self.out, "refused {i}");
+                        return Ok(());
+                    }
+                    Leave::ElseReturn | Leave::NestedReturn | Leave::Return => return Ok(()),
+                    Leave::ElseBreak | Leave::Break => break,
+                    _ => continue,
+                }
+            }
+            let kept = if how == Leave::QuestionInside { checked(i.checked_mul(2))? } else { i };
+            total = checked(total.checked_add(kept))?;
+            let _ = writeln!(self.out, "kept {i}");
+            for name in names.iter().rev() {
+                let _ = writeln!(self.out, "close {name}");
+            }
+            let _ = writeln!(self.out, "round {i}");
+        }
+        let _ = writeln!(self.out, "total {total}");
+        Ok(())
     }
 
     /// What `tried`, `tried_twice`, `tried_each`, `ran_fine` or `either` prints, given an arrow

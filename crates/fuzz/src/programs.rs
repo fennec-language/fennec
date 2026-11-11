@@ -382,6 +382,36 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
+    /// `with` blocks over the program's own sources are left every way there is, nested and
+    /// together, so that each cleanup is seen to run, innermost first.
+    #[test]
+    fn it_leaves_with_blocks_every_way() {
+        let ways = [
+            "got = capped(i, limit=",
+            "total = total + capped(i, limit=",
+            "match i % 2:",
+            "        return\n",
+            "        break\n",
+            "        continue\n",
+            "_ = [1, 2][i + 2]",
+            "with ward(\"a\", stdout) as a, ",
+        ];
+        let mut found = [0_usize; 8];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            for left in source.split("\ndef left").skip(1) {
+                let left = left.split("\n\n").next().unwrap_or_default();
+                for (count, way) in found.iter_mut().zip(ways) {
+                    *count += usize::from(left.contains(way));
+                }
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.
     #[test]
     fn it_plans_on_threads_then_applies() {

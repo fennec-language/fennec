@@ -317,10 +317,6 @@ impl Lowering<'_> {
         let Some(held) = self.type_at(expr.span) else { return self.expr(expr) };
         let writer = Type::Named("StrWriter".to_owned());
         let Some(function) = self.own_str(&held) else {
-            // Native code prints a struct's fields itself, which would miss their own text.
-            if self.holds_own_str(&held, &mut Vec::new()) {
-                return Err(format!("it prints a {held}, which holds a value with its own `def str`"));
-            }
             self.own_texts_within(&held, &mut Vec::new(), expr.span)?;
             return self.expr(expr);
         };
@@ -438,23 +434,6 @@ impl Lowering<'_> {
         let key = format!("{}.str", owner_name(held)?);
         let writer = Type::Named("StrWriter".to_owned());
         self.resolve(&key, &[Some(held.clone()), Some(writer)], None).map(|(function, _)| function)
-    }
-
-    /// Whether a struct holds, in a field or a field's field, a value whose type has its own
-    /// `def str`. `seen` are the structs looked at already.
-    fn holds_own_str(&self, held: &Type, seen: &mut Vec<String>) -> bool {
-        let name = match held {
-            Type::Optional(inner) => return self.holds_own_str(inner, seen),
-            Type::Tuple(items) => return items.iter().any(|item| self.holds_own_str(item, seen)),
-            Type::Named(name) | Type::Generic(name, _) => name,
-            _ => return false,
-        };
-        if seen.contains(name) {
-            return false;
-        }
-        seen.push(name.clone());
-        let Ok(fields) = self.struct_fields(&held.to_string()) else { return false };
-        fields.iter().any(|(_, ty)| self.own_str(ty).is_some() || self.holds_own_str(ty, seen))
     }
 
     pub(super) fn format(&mut self, parts: &[FStrPart], span: Span) -> Lowered<Operand> {

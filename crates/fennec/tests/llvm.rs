@@ -5167,6 +5167,24 @@ def main(stdout: Stdout):
 /// sits: inside another `?`'s call, in a `return`, an assignment or a line of its own, a field read
 /// off it, an index, an f-string, a list item, a slice's bounds, a match's subject, a conditional's
 /// test, and `f()? else fail ...` on a `T? fails E` call. With nothing failing, each gives what it
+/// Arguments and operands run left to right whatever `?`s are among them: what's written to a
+/// `?`'s left runs before it and what's to its right after it, with the `?` failing and passing,
+/// nested and outermost, in a call, an operator, an f-string and a list, inside a `with` block and
+/// outside one. A failure in the block runs its cleanup after what ran to its left, and nothing to
+/// its right runs. A name read to a `?`'s left is read before the `?`'s call changes it through
+/// `ref`.
+#[test]
+fn arguments_run_left_to_right_around_a_question_mark() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "question_order",
+        include_str!("fixtures/question_order.fen"),
+        include_str!("fixtures/question_order.out"),
+    )
+}
+
 /// would without the block.
 #[test]
 fn a_question_mark_inside_an_expression_in_a_with_block_runs_its_cleanup() -> std::io::Result<()> {
@@ -5457,7 +5475,7 @@ fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "task_crash_cleanup",
-        r#"from std.concurrent import Crashed, Sender, channel
+        r#"from std.concurrent import Crashed, Sender, Timeout, channel
 
 ## Says `text` on `done`, whether or not anything's there to hear it.
 def tell(done: Sender[str], text: str):
@@ -5490,7 +5508,9 @@ def launched(done: Sender[str], at: int) fails Crashed:
 def main(stdout: Stdout):
     with channel[str](size=4) as said:
         stdout.print(ran(said.sender(), at=1), said.receive() else "none")
-        stdout.print(ran(said.sender(), at=9), said.receive(timeout=1s) else "none")
+        ended = ran(said.sender(), at=9)
+        late = said.receive_within(1s) except Timeout(): None
+        stdout.print(ended, late else "none")
 "#,
         "ended finished\ncrashed crashed\n",
     )
@@ -6720,6 +6740,66 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     let interpreted = interpreted_by(&program, "own_text_inside")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    Ok(())
+}
+
+/// A value whose field writes its own text prints the same alone as inside a union or a list:
+/// the channel's `Timeout`, whose `Duration` has its own `def str`, didn't build printed alone.
+#[test]
+fn a_value_whose_field_writes_its_own_text_prints_the_same_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Tag:
+    name: str
+
+    def str(self, ref out: StrWriter):
+        out.write("<" + self.name + ">")
+
+error Late:
+    tag: Tag
+    after: int
+
+error Gone:
+    why: str
+
+struct Holder:
+    tag: Tag
+
+def main(stdout: Stdout):
+    late = Late(tag=Tag(name="t"), after=3)
+    stdout.print(late)
+    either: Late | Gone = late
+    stdout.print(either)
+    stdout.print([late])
+    held = Holder(tag=Tag(name="h"))
+    stdout.print(held)
+    stdout.print([held])
+    stdout.print(f"{held} and {late}")
+"#;
+    let dir = folder("own-text-alone")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"].into_iter().chain(how.iter().copied()).collect();
+        let built = fennec(&[&args[..], &[&path(&program), "-o", &path(&executable)]].concat(), &dir)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+        let lines: Vec<&str> = printed.lines().collect();
+        let [alone, in_union, in_list, holder, holders, formatted] = lines[..] else {
+            panic!("{how:?}: {printed}{}", String::from_utf8_lossy(&ran.stderr));
+        };
+        assert!(alone.contains("<t>"), "{how:?}: {printed}");
+        assert_eq!(alone, in_union, "{how:?}");
+        assert_eq!(format!("[{alone}]"), in_list, "{how:?}");
+        assert!(holder.contains("<h>"), "{how:?}: {printed}");
+        assert_eq!(format!("[{holder}]"), holders, "{how:?}");
+        assert_eq!(formatted, format!("{holder} and {alone}"), "{how:?}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -7985,7 +8065,7 @@ fn a_generators_failure_passes_up_from_a_name_or_a_with() -> std::io::Result<()>
     }
     let source = "def checked(limit: int) -> Iterator[int] fails IoError:
     for at in range(limit):
-        if at == 2: fail IoError(reason=\"stop\")
+        if at == 2: fail .Other(reason=\"stop\")
         yield at
 
 def source() -> with int:
@@ -8029,7 +8109,7 @@ def main(stdout: Stdout):
     stdout.print(said(() => nested(5)?), said(() => nested(2)?))
     stdout.print(said(() => listed(5)?), said(() => listed(2)?))
 ";
-    let stop = "IoError(reason=\"stop\")";
+    let stop = "IoError.Other(reason=\"stop\")";
     let wanted = format!("{stop} 1\n{stop} 3\n{stop} 5\n{stop} [0, 2]\n");
     let dir = folder("generator_failure")?;
     let program = dir.join("failing.fen");
@@ -9949,10 +10029,10 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     # Outside its folder it can't look at all, which fails rather than saying no.
     stdout.print(only.exists(\"/\") else True)
     _ = only.read_text(\"/etc/hosts\") else as hosts:
-        stdout.print(hosts.reason.endswith(\"native-capabilities\"))
+        stdout.print(hosts.message().endswith(\"native-capabilities\"))
         \"\"
     _ = fs.read_text(\"no such file\") else as missing:
-        stdout.print(missing.reason != \"\")
+        stdout.print(missing.message() != \"\")
         \"\"
     fs.remove(file).expect(\"it works\")
     fs.remove(folder).expect(\"it works\")
@@ -10350,7 +10430,7 @@ def main(stdout: Stdout, fs: Fs):
     write(only, path=folder + \"/b.txt\", text=\"den\").expect(\"it works\")
     stdout.print(read(Saves(fs=only, folder=folder), \"b.txt\").expect(\"it works\"))
     write(only, path=\"outside.txt\", text=\"no\") else as outside:
-        stdout.print(\"outside what this Fs can reach\" in outside.reason)
+        stdout.print(\"outside what this Fs can reach\" in outside.message())
     stdout.print(fs.exists(\"outside.txt\").expect(\"it works\"))
     fs.remove(folder + \"/a.txt\").expect(\"it works\")
     fs.remove(folder + \"/b.txt\").expect(\"it works\")
@@ -10407,7 +10487,7 @@ def blocked(fs: Fs) fails IoError:
 
 def main(fs: Fs, stdout: Stdout):
     blocked(fs) else as problem:
-        stdout.print(\"the block failed:\", problem.reason != \"\")
+        stdout.print(\"the block failed:\", problem.message() != \"\")
     stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
     # The file written beside the path, to take its place, is gone.
     names = fs.list_dir(\".\") else []
@@ -11200,7 +11280,7 @@ def main(stdout: Stdout, fs: Fs):
         stdout.print(\"refused\")
         []
     _ = fs.walk(\"no such folder\") else as missing:
-        stdout.print(missing.reason != \"\")
+        stdout.print(missing.message() != \"\")
         []
 ";
 
@@ -12842,8 +12922,8 @@ def main(stdout: Stdout):
 }
 
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
-/// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
-/// timeout fails as `Timeout`.
+/// enough for a block, a struct held in place, and a list. A `receive_within` or `send_within`
+/// that waits past its time fails as `Timeout`.
 #[test]
 fn channels_carry_each_kind_of_message_natively() -> std::io::Result<()> {
     if !ready() {
@@ -12862,26 +12942,26 @@ def numbers(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=4) as ch:
         ch.send(7)?
         ch.send(8)?
-        stdout.print(ch.receive()?, ch.receive()?)
+        stdout.print(ch.receive() else fail Closed(), ch.receive() else fail Closed())
 
 def signs(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=2) as ints:
         ints.send(-7)?
-        stdout.print(ints.receive()?)
+        stdout.print(ints.receive() else fail Closed())
     with channel[float](size=2) as floats:
         floats.send(-1.5)?
-        stdout.print(floats.receive()?)
+        stdout.print(floats.receive() else fail Closed())
     with channel[u64](size=2) as big:
         half: u64 = 9223372036854775807
         big.send(half + half + 1)?
-        stdout.print(big.receive()?)
+        stdout.print(big.receive() else fail Closed())
     with channel[f32](size=2) as small:
         tenth: f32 = -0.1
         small.send(tenth)?
-        stdout.print(small.receive()?)
+        stdout.print(small.receive() else fail Closed())
     with channel[int](size=1) as waits:
-        got: int? = waits.receive(timeout=Duration(nanos=-5)) else as problem:
-            stdout.print(\"at once:\", problem)
+        got: int? = waits.receive_within(Duration(nanos=-5)) except problem:
+            stdout.print(\"at once:\", problem.waited)
             None
         if got is not None:
             stdout.print(\"got\", got)
@@ -12890,28 +12970,30 @@ def words(stdout: Stdout) fails Closed | Timeout:
     with channel[str](size=4) as ch:
         ch.send(\"hi\")?
         ch.send(\"a string long enough to live in a block of its own\")?
-        stdout.print(ch.receive()?, ch.receive()?.len())
+        short = ch.receive() else fail Closed()
+        long = ch.receive() else fail Closed()
+        stdout.print(short, long.len())
 
 def jobs(stdout: Stdout) fails Closed | Timeout:
     with channel[Job](size=2) as ch:
         ch.send(Job(name=\"first\", weight=3))?
-        got = ch.receive()?
+        got = ch.receive() else fail Closed()
         stdout.print(got.name, got.weight)
 
 def lists(stdout: Stdout) fails Closed | Timeout:
     with channel[list[float]](size=1) as ch:
         ch.send([1.5, 2.5])?
-        stdout.print(ch.receive()?)
+        stdout.print(ch.receive() else fail Closed())
 
 def waits(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=1) as ch:
-        got: int? = ch.receive(timeout=Duration(nanos=2_000_000)) else as problem:
-            stdout.print(\"empty:\", problem)
+        got: int? = ch.receive_within(Duration(nanos=2_000_000)) except problem:
+            stdout.print(\"empty:\", problem.waited)
             None
         if got is not None:
             stdout.print(\"got\", got)
         ch.send(1)?
-        ch.send(2, timeout=Duration(nanos=2_000_000)) else as full:
+        ch.send_within(2, Duration(nanos=2_000_000)) except full:
             stdout.print(\"full:\", full)
 
 def main(stdout: Stdout) fails Closed | Timeout:
@@ -12925,7 +13007,7 @@ def main(stdout: Stdout) fails Closed | Timeout:
     )?;
     assert_eq!(
         printed,
-        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: Timeout(waited=Duration(nanos=-5))\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: -5ns\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: 2ms\nfull: Timeout(waited=Duration(nanos=2000000))\n"
     );
     Ok(())
 }
@@ -16044,6 +16126,24 @@ fn a_list_of_strings_finds_its_items_by_text_however_held() -> std::io::Result<(
         include_str!("fixtures/string_list_in.fen"),
         "True True 0 False\nTrue True 1 False\nTrue True 2 False\nTrue True 3 False\nTrue True 4 False\n\
          True True 5 False\nTrue True 6 False\nFalse False False False\n5 False False True\n",
+    )
+}
+
+/// Enums held in blocks, as one holding itself is, compare by case first, with no call for another
+/// case, and the same case compares its fields: a string, a list, a float, itself and none. `!=`
+/// is the opposite, a value is equal to itself, and a module constant compares as one made here.
+#[test]
+fn enums_in_blocks_compare_by_case_then_fields() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "boxed_enum_equal",
+        include_str!("fixtures/boxed_enum_equal.fen"),
+        "False True False True False False False True\nTrue False False True False False False True\n\
+         False False True True False False False True\nFalse False False False False False False True\n\
+         False False False True True False False True\nFalse False False True False True False True\n\
+         False False False True False False True True\nTrue True True\n",
     )
 }
 

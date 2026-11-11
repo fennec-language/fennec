@@ -1537,7 +1537,7 @@ done:
     }
 
     /// `text.code()` on a header: one ASCII byte inline is its own code, and anything else
-    /// goes to the runtime, which fails as the interpreter does.
+    /// goes to the runtime, which fails if it isn't one character.
     pub(crate) fn header_code(
         &mut self,
         dest: fennec_ir::LocalId,

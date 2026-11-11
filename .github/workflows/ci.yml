@@ -621,8 +621,8 @@ jobs:
           done
       - run: cargo test --locked -p fennec --test fennec 'llvm::'
 
-  # Every example and kernel builds with no interpreter in it, and prints what it should, on one
-  # thread and on several.
+  # Every example and kernel builds natively, links against the runtime, and prints what it
+  # should, on one thread and on several.
   lean-runtime:
     name: Programs with no interpreter
     needs: changes

@@ -41,7 +41,7 @@ A kernel's speed is its target's instructions divided by the instructions its wo
 
 Instructions aren't time, though. They can disagree by a lot, in either direction: on an Apple M3 under load, `sieve` was 57% by instructions and 93% by time. So the table shows both. The percentage by time compares with how long the twin took when it was pinned, so it's only as good as how alike the two machines are. The floor and the ratchet go by instructions, because they're stable.
 
-The table also counts the functions in each kernel that LLVM doesn't take yet, from `fennec dev fallbacks --llvm`, and the run warns about them. A kernel with any doesn't build, so the run fails on it too. `fallbacks.txt` holds those counts, which are all zero, and a test keeps them so. CI's "Programs with no interpreter" job also builds every kernel against the runtime with no interpreter in it, so a kernel can't quietly call into the interpreter either.
+The table also counts the functions in each kernel that LLVM doesn't take yet, from `fennec dev fallbacks --llvm`, and the run warns about them. A kernel with any doesn't build, so the run fails on it too. `fallbacks.txt` holds those counts, which are all zero, and a test keeps them so. CI's "Programs with no interpreter" job also builds every kernel natively and checks that it links and prints what it should.
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
 

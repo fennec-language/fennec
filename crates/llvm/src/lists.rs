@@ -2322,7 +2322,7 @@ pub(crate) fn list_item(list: &Kind) -> Result<ListItem, String> {
 
 impl Emit<'_, '_, '_> {
     /// `insert` on a list or a buffer: the runtime opens a zeroed slot at the place, failing
-    /// outside it as the interpreter says, and the item goes in it.
+    /// outside it, and the item goes in it.
     pub(crate) fn insert(&mut self, args: &[Operand], call: &str, span: Span) -> Result<(), String> {
         let [Operand::Local(list), at, value] = args else {
             return Err("`insert` with the wrong arguments".to_owned());
@@ -2370,7 +2370,7 @@ impl Emit<'_, '_, '_> {
             }
             ("Buffer.push", _) => self.append(args),
             ("Buffer.pop", [Operand::Local(buffer)]) => {
-                // Empty, it fails as the interpreter says, rather than as a list's pop does.
+                // Empty, it fails with a buffer's own message, rather than as a list's pop does.
                 let slot = self.slot(*buffer);
                 let list = self.temp();
                 self.line(&format!("{list} = load ptr, ptr {slot}"));

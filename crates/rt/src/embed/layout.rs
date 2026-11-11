@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn strings_strip_as_the_interpreter_does_from_any_byte() {
+    fn strings_strip_as_pinned_from_any_byte() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn floats_sort_as_the_interpreter_sorts_them() {
+    fn floats_sort_as_pinned() {
         let tables = Tables { elements: vec![Rc::new(Element::Float)], ..Tables::default() };
         start(tables, crate::Inputs::default());
         let nans = [f64::NAN, -f64::NAN, f64::from_bits(f64::NAN.to_bits() | 1)];

@@ -165,7 +165,7 @@ pub fn layouts_of(program: &Program) -> Layouts {
 }
 
 /// A `main` that gives back a result is run by one that doesn't, which fails the program if the
-/// result is an error, as the interpreter does at `main`'s own place in the source.
+/// result is an error, at `main`'s own place in the source.
 pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
     let Some(main) = program.functions.iter_mut().find(|function| function.name == "main") else { return };
     if main.returns == fennec_check::Type::Unit {

@@ -393,3 +393,52 @@ fn a_body_edit_using_a_kit_name_from_a_file_not_imported_is_refused() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `--no-test` only leaves out the tests: a run checks as much without them, so what it accepts
+/// is what a whole check accepts, cached or not. A run loads only `main` and what it imports, so
+/// a name another file defines, or a case two enums share, has the whole kit checked.
+#[test]
+fn a_run_without_its_tests_refuses_what_a_whole_check_does() {
+    let colors = [
+        ("colors.fen", "enum Color:\n    Red\n    Green\n"),
+        ("moods.fen", "enum Mood:\n    Red\n    Calm\n\ntest \"moods\":\n    assert Mood.Calm != .Red\n"),
+        ("lib.fen", "from colors import Color\n\ndef first() -> Color:\n    return .Green\n"),
+        ("main.fen", "from lib import first\n\ndef main(stdout: Stdout):\n    stdout.print(first())\n"),
+    ];
+    let sorted = [
+        ("util.fen", "def sorted(items: list[int]) -> list[int]:\n    return items\n"),
+        ("main.fen", "def main(stdout: Stdout):\n    stdout.print(1)\n"),
+    ];
+    let cases: [(&str, &[(&str, &str)], &str, &str); 2] = [
+        (
+            "untested_case",
+            &colors,
+            "from lib import first\n\ndef main(stdout: Stdout):\n    stdout.print(first(), .Red)\n",
+            "more than one enum has a case called `Red`",
+        ),
+        (
+            "untested_name",
+            &sorted,
+            "def main(stdout: Stdout):\n    stdout.print(sorted([2, 1]))\n",
+            "which this file doesn't import",
+        ),
+    ];
+    for (name, files, edit, said) in cases {
+        let dir = kit_of(name, files).unwrap();
+        let home = dir.join("home");
+        assert!(run_untested(&home, &dir).unwrap().status.success());
+        std::fs::write(dir.join("src/main.fen"), edit).unwrap();
+        let uncached = crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .arg(&dir)
+            .env("FENNEC_NO_CACHE", "1")
+            .output()
+            .unwrap();
+        for refused in [run_untested(&home, &dir).unwrap(), run_untested(&home, &dir).unwrap(), uncached] {
+            let shown = String::from_utf8_lossy(&refused.stderr);
+            assert!(!refused.status.success(), "{name}: {shown}");
+            assert!(shown.contains(said), "{name}: {shown}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

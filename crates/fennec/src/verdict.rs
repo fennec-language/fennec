@@ -220,37 +220,135 @@ pub(crate) fn plan(
 /// What each function waits on or locks, by its key, as the checker judges a `lock` that calls it.
 pub(crate) type LockVerdicts = BTreeMap<String, String>;
 
-/// What a quick check holds the changed files against, kept from the last whole check, since an
-/// edit to bodies changes none of it: each function's lock verdict, every top-level name the kit
-/// defines, enum cases included, and every case name more than one enum has.
+/// What a kit's files define, as a whole load reads them: every top-level name, enum cases
+/// included, and every case name more than one enum has. A load of part of the kit can read a
+/// body differently only through these.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct KitFacts {
-    lock_verdicts: LockVerdicts,
+pub(crate) struct KitNames {
     names: BTreeSet<String>,
     shared_cases: BTreeSet<String>,
 }
 
-impl KitFacts {
-    /// What a check of the whole `program` found, and what it defines.
-    pub(crate) fn of(program: &Program, signatures: &fennec_check::Signatures) -> KitFacts {
-        let names = fennec_build::Defined::of(&program.module.items).names;
-        let mut enums_with: HashMap<&str, usize> = HashMap::new();
-        for item in &program.module.items {
+/// What one file defines: its top-level names, enum cases included, and each enum's cases.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FileNames {
+    names: BTreeSet<String>,
+    enum_cases: Vec<(String, String)>,
+}
+
+impl FileNames {
+    fn of<'i>(items: impl IntoIterator<Item = &'i Item> + Clone) -> FileNames {
+        let names = fennec_build::Defined::of(items.clone()).names;
+        let mut enum_cases = Vec::new();
+        for item in items {
             if let Item::Enum(def) = item {
-                def.cases.iter().for_each(|case| *enums_with.entry(case.name.as_str()).or_default() += 1);
+                enum_cases.extend(def.cases.iter().map(|case| (def.name.clone(), case.name.clone())));
+            }
+        }
+        FileNames { names, enum_cases }
+    }
+
+    /// `n` and a name, or `e` and an enum and one of its cases, apart by a nul, a line each.
+    fn text(&self) -> String {
+        let mut text = String::new();
+        for name in &self.names {
+            text.push_str("n\0");
+            text.push_str(name);
+            text.push('\n');
+        }
+        for (owner, case) in &self.enum_cases {
+            text.push_str("e\0");
+            text.push_str(owner);
+            text.push('\0');
+            text.push_str(case);
+            text.push('\n');
+        }
+        text
+    }
+
+    fn from_text(text: &str) -> Option<FileNames> {
+        let mut names = FileNames::default();
+        for line in text.lines() {
+            match line.split('\0').collect::<Vec<&str>>().as_slice() {
+                ["n", name] => {
+                    names.names.insert((*name).to_owned());
+                }
+                ["e", owner, case] => names.enum_cases.push(((*owner).to_owned(), (*case).to_owned())),
+                _ => return None,
+            }
+        }
+        Some(names)
+    }
+}
+
+/// The cache's kind for what one file defines, by its text.
+const FILE_NAMES: &str = "file-names";
+
+impl KitNames {
+    /// What `items`, all of a kit, define.
+    pub(crate) fn of(items: &[Item]) -> KitNames {
+        KitNames::joined(std::iter::once(FileNames::of(items)))
+    }
+
+    fn joined(files: impl Iterator<Item = FileNames>) -> KitNames {
+        let mut names = BTreeSet::new();
+        let mut owners: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for file in files {
+            names.extend(file.names);
+            for (owner, case) in file.enum_cases {
+                owners.entry(case).or_default().insert(owner);
             }
         }
         let shared_cases =
-            enums_with.into_iter().filter(|(_, count)| *count > 1).map(|(case, _)| case.to_owned()).collect();
-        KitFacts { lock_verdicts: signatures.lock_verdicts().clone(), names, shared_cases }
+            owners.into_iter().filter(|(_, owners)| owners.len() > 1).map(|(case, _)| case).collect();
+        KitNames { names, shared_cases }
     }
 
-    /// Whether the changed files' `items`, as `partial` loaded them, may not be what a whole load
-    /// makes of them. They may use a name the kit defines in a file `partial` didn't load, which a
-    /// whole load refuses, as the file doesn't import it, and which `partial` may read as a
-    /// builtin's. Or they may keep a leading-dot case another enum in the kit has too, which a
-    /// whole load writes with its enum where it can tell which, and refuses where it can't.
-    fn may_differ(&self, items: &[Item], partial: &Program) -> bool {
+    /// What the whole kit at `path`, with `files` as they are, defines, from `program` for the
+    /// files it loaded and from each other file's text, kept in `cache` by its text after the
+    /// first time. None when a file `program` didn't load doesn't parse, which a whole load
+    /// refuses.
+    pub(crate) fn of_kit(
+        path: &str,
+        cache: Option<&Cache>,
+        files: &[KitFile],
+        program: &Program,
+    ) -> Option<KitNames> {
+        let loaded = items_of_modules(program, files, &|_| true);
+        let paths: HashMap<String, std::path::PathBuf> =
+            fennec_kit::kit_paths(Path::new(path))?.into_iter().collect();
+        let mut each = Vec::new();
+        for file in files.iter().filter(|file| !file.module.starts_with(fennec_kit::EMBEDDED)) {
+            if let Some(items) = loaded.get(&file.module) {
+                each.push(FileNames::of(items.iter().copied()));
+                continue;
+            }
+            let key = format!("{}.names", file.text.to_hex());
+            let kept = cache
+                .and_then(|cache| cache.read(FILE_NAMES, &key))
+                .and_then(|bytes| FileNames::from_text(&String::from_utf8(bytes).ok()?));
+            if let Some(names) = kept {
+                each.push(names);
+                continue;
+            }
+            let text = std::fs::read_to_string(paths.get(&file.module)?).ok()?;
+            let module = fennec_syntax::parse(&text).ok()?;
+            let names = FileNames::of(&module.items);
+            if let Some(cache) = cache {
+                // A cache that can't be written only means reading the file again next time.
+                let _ = cache.write(FILE_NAMES, &key, names.text().as_bytes());
+            }
+            each.push(names);
+        }
+        Some(KitNames::joined(each.into_iter()))
+    }
+
+    /// Whether `items`, as `partial` loaded them, may not be what a whole load makes of them.
+    /// They may use a name the kit defines in a file `partial` didn't load, which a whole load
+    /// refuses, as the file doesn't import it, and which `partial` may read as a builtin's. Or
+    /// they may keep a leading-dot case another enum in the kit has too, which a whole load
+    /// writes with its enum where it can tell which, and refuses where it can't.
+    pub(crate) fn may_differ(&self, items: &[Item], partial: &Program) -> bool {
         let loaded = fennec_build::Defined::of(&partial.module.items).names;
         let elsewhere = |name: &String| self.names.contains(name) && !loaded.contains(name);
         if fennec_build::names_used(items).iter().any(elsewhere) {
@@ -264,6 +362,25 @@ impl KitFacts {
             }
         });
         shared
+    }
+}
+
+/// What a quick check holds the changed files against, kept from the last whole check, since an
+/// edit to bodies changes none of it: each function's lock verdict, and what the kit defines.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KitFacts {
+    lock_verdicts: LockVerdicts,
+    kit: KitNames,
+}
+
+impl KitFacts {
+    /// What a whole check found, with what the kit defines.
+    pub(crate) fn of(kit: KitNames, signatures: &fennec_check::Signatures) -> KitFacts {
+        KitFacts { lock_verdicts: signatures.lock_verdicts().clone(), kit }
+    }
+
+    fn may_differ(&self, items: &[Item], partial: &Program) -> bool {
+        self.kit.may_differ(items, partial)
     }
 
     /// Whether each function whose body changed has the lock verdict it had: everything a changed
@@ -285,7 +402,7 @@ impl KitFacts {
             }
             text.push('\n');
         }
-        for (kind, words) in [("n", &self.names), ("c", &self.shared_cases)] {
+        for (kind, words) in [("n", &self.kit.names), ("c", &self.kit.shared_cases)] {
             for word in words {
                 text.push_str(kind);
                 text.push('\0');
@@ -306,16 +423,30 @@ impl KitFacts {
                     facts.lock_verdicts.insert((*key).to_owned(), (*verdict).to_owned());
                 }
                 ["n", name, ""] => {
-                    facts.names.insert((*name).to_owned());
+                    facts.kit.names.insert((*name).to_owned());
                 }
                 ["c", case, ""] => {
-                    facts.shared_cases.insert((*case).to_owned());
+                    facts.kit.shared_cases.insert((*case).to_owned());
                 }
                 _ => return None,
             }
         }
         Some(facts)
     }
+}
+
+/// Every item of `program` that a kit's own file holds, not a dependency's or std's.
+pub(crate) fn kit_items(program: &Program, files: &[KitFile]) -> Vec<Item> {
+    items_of_modules(program, files, &|_| true).into_values().flatten().cloned().collect()
+}
+
+/// Whether `program` holds every one of the kit's own files.
+pub(crate) fn has_every_file(program: &Program, files: &[KitFile]) -> bool {
+    let loaded = items_of_modules(program, files, &|_| true);
+    files
+        .iter()
+        .filter(|file| !file.module.starts_with(fennec_kit::EMBEDDED))
+        .all(|file| loaded.contains_key(&file.module))
 }
 
 /// The changed modules' items, as `program` loaded them.

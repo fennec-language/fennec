@@ -904,9 +904,12 @@ fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
     if *element == Element::Text {
-        // A string to find comes as its block, and items are compared by their text.
-        let wanted = super::text::text_of(state, &[word, 0, 0]);
-        let at = super::text::texts(state, items(block, 3)).iter().position(|text| *text == wanted)?;
+        // A string to find comes as its block, and items are compared with it where they are.
+        let at = items(block, 3)
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .position(|header| super::text::header_is(state, header, word))?;
         return Some(LIST_HEADER_WORDS + at * 3);
     }
     if element.is_optional_text() {

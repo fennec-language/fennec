@@ -5,8 +5,8 @@
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-/// A path that's removed, with all it holds, when this is dropped.
-#[derive(Debug)]
+/// A path that's removed, with all it holds, when this is dropped. It shows as its path does, so
+/// a test can write it into a program with `{:?}`.
 pub struct Temp {
     path: PathBuf,
 }
@@ -54,6 +54,12 @@ impl AsRef<std::ffi::OsStr> for Temp {
     }
 }
 
+impl std::fmt::Debug for Temp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.path.fmt(f)
+    }
+}
+
 impl Drop for Temp {
     fn drop(&mut self) {
         // What's already gone, or can't be removed, is left as it is: a test's own result matters
@@ -80,6 +86,12 @@ mod tests {
         let kept = file.to_path_buf();
         drop(file);
         assert!(!kept.exists());
+    }
+
+    #[test]
+    fn it_shows_as_its_path() {
+        let path = std::env::temp_dir().join("fennec-temp-shown");
+        assert_eq!(format!("{:?}", Temp::at(path.clone())), format!("{path:?}"));
     }
 
     #[test]

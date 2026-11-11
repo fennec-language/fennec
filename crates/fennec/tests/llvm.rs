@@ -12812,7 +12812,7 @@ fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Res
     if !ready() {
         return Ok(());
     }
-    let shower = shows_its_arguments("process_template_shower")?;
+    let (_shower_folder, shower) = shows_its_arguments("process_template_shower")?;
     let printed = printed_by(
         "process_template",
         &r#"from std.process import ProcessError
@@ -12854,7 +12854,8 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
 /// Builds a program that prints each argument it's given in brackets, the same on every system,
 /// and gives back its path as a template's text can name it: with `/` between folders, which
 /// Windows takes too, and no spaces.
-fn shows_its_arguments(name: &str) -> std::io::Result<String> {
+/// A program that prints its arguments, with the folder it's in, which goes when that's dropped.
+fn shows_its_arguments(name: &str) -> std::io::Result<(fennec_temp::Temp, String)> {
     let dir = folder(name)?;
     let program = dir.join("shower.fen");
     std::fs::write(
@@ -12867,7 +12868,7 @@ fn shows_its_arguments(name: &str) -> std::io::Result<String> {
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let path = executable.to_string_lossy().replace('\\', "/");
     assert!(!path.contains([' ', '{', '}']), "a template can't name {path}");
-    Ok(path)
+    Ok((dir, path))
 }
 
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text

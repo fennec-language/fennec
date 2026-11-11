@@ -2560,18 +2560,21 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+/// A small kit and a folder for Fennec's own files, in a folder that holds both and goes when the
+/// first is dropped.
+fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {
     let dir = scratch(name)?;
     std::fs::create_dir_all(dir.join("kit/src"))?;
     std::fs::write(dir.join("kit/kit.toml"), "name = \"demo\"\n")?;
     std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n")?;
-    Ok((dir.join("kit"), dir.join("home")))
+    let (kit, home) = (dir.join("kit"), dir.join("home"));
+    Ok((dir, kit, home))
 }
 
 #[cfg(unix)]
 #[test]
 fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
-    let (kit, home) = small_kit("daemon").unwrap();
+    let (_folder, kit, home) = small_kit("daemon").unwrap();
     let status = || text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
     assert_eq!(status(), "not running\n");
 
@@ -2598,7 +2601,7 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
 #[cfg(unix)]
 #[test]
 fn an_idle_daemon_exits_by_itself() {
-    let (kit, home) = small_kit("idle-daemon").unwrap();
+    let (_folder, kit, home) = small_kit("idle-daemon").unwrap();
     with_daemon(&kit, &home, "1", &["dev", "changes"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't exit after a second with nothing to do");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
@@ -2607,7 +2610,7 @@ fn an_idle_daemon_exits_by_itself() {
 #[cfg(unix)]
 #[test]
 fn the_daemon_keeps_the_cache_under_its_cap() {
-    let (kit, home) = small_kit("cache-daemon").unwrap();
+    let (_folder, kit, home) = small_kit("cache-daemon").unwrap();
     let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
@@ -2640,7 +2643,7 @@ fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
 /// build's folder that's gone unused for a day; `fennec cache clean` runs one when asked.
 #[test]
 fn a_command_cleans_the_cache_hourly_with_no_daemon() {
-    let (kit, home) = small_kit("cache-hourly").unwrap();
+    let (_folder, kit, home) = small_kit("cache-hourly").unwrap();
     let old = home.join("cache").join("0.0.1").join("llvm").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 1_000]).unwrap();

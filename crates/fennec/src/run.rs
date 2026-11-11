@@ -388,7 +388,7 @@ mod tests {
         let work = dir.join("work");
         std::fs::create_dir_all(&work).unwrap();
         let cache = fennec_build::Cache::new(&dir.join("home"));
-        let hours_ago = SystemTime::now() - Duration::from_secs(4 * 3600);
+        let hours_ago = SystemTime::now() - Duration::from_hours(4);
         // A first run built it and kept it, hours ago; its own file was swept up since.
         let first = work.join("fennec-run-1-a-0");
         std::fs::write(&first, b"a program").unwrap();

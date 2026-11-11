@@ -3,6 +3,7 @@
 //! build, or a run that can't find what it was given, and hides its cause. It says so once a
 //! command, since one failure usually means the next write fails the same way.
 
+use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether this command has said the cache couldn't keep something.
@@ -33,7 +34,9 @@ pub fn touched(what: &str, result: std::io::Result<()>) {
 
 fn said(what: &str, error: &std::io::Error) {
     if !SAID.swap(true, Ordering::Relaxed) {
-        eprintln!(
+        // Where even the warning can't be written, there's no one left to tell.
+        let _ = writeln!(
+            std::io::stderr(),
             "warning: Fennec's cache couldn't {what}: {error}\n  \
              this command goes on without it, and the next one does that work again"
         );

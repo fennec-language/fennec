@@ -340,6 +340,8 @@ impl Run<'_> {
                 last = now;
                 moved
             });
+            // A stopped worker can't remove its own.
+            crate::llvm::forget(child.id());
             let reached = noted(&progress).unwrap_or(next);
             outcome.inputs = reached + 1;
             let Some(failure) = failure else { break };

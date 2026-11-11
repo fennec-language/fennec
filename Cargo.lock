@@ -163,6 +163,7 @@ dependencies = [
  "fennec-reference",
  "fennec-rt",
  "fennec-syntax",
+ "fennec-temp",
  "mimalloc",
 ]
 
@@ -173,6 +174,7 @@ dependencies = [
  "fennec-blake3",
  "fennec-count",
  "fennec-lsp",
+ "fennec-temp",
 ]
 
 [[package]]
@@ -185,6 +187,7 @@ version = "0.0.1"
 dependencies = [
  "fennec-blake3",
  "fennec-syntax",
+ "fennec-temp",
 ]
 
 [[package]]
@@ -198,6 +201,9 @@ dependencies = [
 [[package]]
 name = "fennec-count"
 version = "0.0.1"
+dependencies = [
+ "fennec-temp",
+]
 
 [[package]]
 name = "fennec-deps"
@@ -206,6 +212,7 @@ dependencies = [
  "fennec-blake3",
  "fennec-build",
  "fennec-syntax",
+ "fennec-temp",
 ]
 
 [[package]]
@@ -213,6 +220,7 @@ name = "fennec-dist"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
+ "fennec-temp",
  "ring",
 ]
 
@@ -264,6 +272,7 @@ version = "0.0.1"
 dependencies = [
  "fennec-blake3",
  "fennec-dist",
+ "fennec-temp",
  "miniz_oxide",
  "ring",
  "rustls",
@@ -313,6 +322,7 @@ dependencies = [
  "fennec-kit",
  "fennec-lint",
  "fennec-syntax",
+ "fennec-temp",
 ]
 
 [[package]]
@@ -329,6 +339,9 @@ version = "0.0.1"
 [[package]]
 name = "fennec-reference"
 version = "0.0.1"
+dependencies = [
+ "fennec-temp",
+]
 
 [[package]]
 name = "fennec-rt"
@@ -340,6 +353,7 @@ dependencies = [
  "fennec-parked",
  "fennec-re",
  "fennec-syntax",
+ "fennec-temp",
  "getrandom 0.4.3",
  "libm",
  "mio",
@@ -365,6 +379,10 @@ version = "0.0.1"
 dependencies = [
  "fennec-blake3",
 ]
+
+[[package]]
+name = "fennec-temp"
+version = "0.0.1"
 
 [[package]]
 name = "find-msvc-tools"

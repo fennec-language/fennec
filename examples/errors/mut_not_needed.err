@@ -3,3 +3,5 @@ error: `total` doesn't change `scores`, so it shouldn't be passed with `ref`
   |
 6 |     stdout.print(total(ref scores))
   |                            ^^^^^^
+  |
+  = help: take `ref` off the argument

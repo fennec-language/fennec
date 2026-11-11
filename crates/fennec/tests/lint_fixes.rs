@@ -56,7 +56,8 @@ fn every_example_with_every_fix_does_the_same() {
 /// How many programs had fixes to try, each of which still did the same, or the first that didn't.
 fn every_example() -> Result<usize, String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unlinted");
-    let work = std::env::temp_dir().join(format!("fennec-lint-fixes-{}", std::process::id()));
+    let work =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-lint-fixes-{}", std::process::id())));
     std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
     let mut compared = 0;
     for entry in std::fs::read_dir(&dir).map_err(|err| err.to_string())? {

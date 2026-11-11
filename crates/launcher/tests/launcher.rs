@@ -32,12 +32,12 @@ mod launcher {
         let dir = std::env::temp_dir().join(format!("fennec-launcher-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        Scratch { dir: std::fs::canonicalize(dir).unwrap(), _turn: turn }
+        Scratch { dir: fennec_temp::Temp::at(std::fs::canonicalize(dir).unwrap()), _turn: turn }
     }
 
     /// A test's folder, held with its turn.
     struct Scratch {
-        dir: PathBuf,
+        dir: fennec_temp::Temp,
         _turn: Option<std::sync::MutexGuard<'static, ()>>,
     }
 

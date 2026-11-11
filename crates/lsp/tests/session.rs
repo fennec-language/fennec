@@ -1,7 +1,5 @@
 //! An editor's session with the server, message by message, on a small kit.
 
-use std::path::PathBuf;
-
 use fennec_lsp::{Json, Session, uri_of};
 
 const MAIN: &str = "from combat import Fighter, hit
@@ -36,7 +34,7 @@ def hit(
 /// An editor talking to a session, with a kit on disk.
 struct Editor {
     session: Session,
-    dir: PathBuf,
+    dir: fennec_temp::Temp,
     requests: usize,
 }
 
@@ -50,7 +48,7 @@ impl Editor {
         std::fs::write(dir.join("kit.toml"), manifest)?;
         std::fs::write(dir.join("src/main.fen"), MAIN)?;
         std::fs::write(dir.join("src/combat.fen"), COMBAT)?;
-        let dir = std::fs::canonicalize(dir)?;
+        let dir = fennec_temp::Temp::at(std::fs::canonicalize(dir)?);
         let mut editor = Editor { session: Session::new(), dir, requests: 0 };
         editor.request("initialize", Json::object([]));
         Ok(editor)

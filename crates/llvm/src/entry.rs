@@ -1,6 +1,7 @@
 //! The module made fresh each build: what every function reads by symbol, the program's bytes,
 //! and `main`, which hands them to the runtime and has it call the program's `main`.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use fennec_ir::Program;
@@ -68,21 +69,50 @@ impl Image {
     }
 }
 
+/// The functions that may fail, as emitting `program` worked them out, so the entry doesn't go
+/// over the whole program again. A dev build of `fennec` checks they're what it would find.
+fn can_fail<'a>(program: &Program, shared: &'a Shared) -> &'a BTreeSet<String> {
+    debug_assert!(
+        shared
+            .can_fail
+            .iter()
+            .map(String::as_str)
+            .eq(crate::analysis::whole(program).can_fail.into_iter().collect::<BTreeSet<_>>()),
+        "the entry was given what may fail of another program"
+    );
+    &shared.can_fail
+}
+
 /// Writes `bytes` into a string constant in LLVM's text, then zeros to make it `length` long:
 /// a printable byte as itself, and the rest as `\` and two hex digits.
+///
+/// Most of an image is its sources' text, so printable bytes go in a run at a time: a program's
+/// megabytes of it took a byte at a time several times as long.
 fn image_text(out: &mut String, bytes: &[u8], length: usize) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    out.reserve(length * 2);
-    let padding = std::iter::repeat_n(&0_u8, length.saturating_sub(bytes.len()));
-    for byte in bytes.iter().chain(padding) {
-        if (0x20..0x7f).contains(byte) && *byte != b'"' && *byte != b'\\' {
-            out.push(char::from(*byte));
-        } else {
-            let digit = |half: u8| HEX.get(usize::from(half)).copied().map_or('0', char::from);
-            out.push('\\');
-            out.push(digit(byte >> 4));
-            out.push(digit(byte & 15));
+    let printable = |byte: u8| (0x20..0x7f).contains(&byte) && byte != b'"' && byte != b'\\';
+    let escaped = |out: &mut String, byte: u8| {
+        let digit = |half: u8| HEX.get(usize::from(half)).copied().map_or('0', char::from);
+        out.push('\\');
+        out.push(digit(byte >> 4));
+        out.push(digit(byte & 15));
+    };
+    out.reserve(length + length / 4);
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let run = rest.iter().position(|byte| !printable(*byte)).unwrap_or(rest.len());
+        let (plain, after) = rest.split_at(run);
+        // Printable bytes are ASCII, so always text.
+        match std::str::from_utf8(plain) {
+            Ok(text) => out.push_str(text),
+            Err(_) => plain.iter().for_each(|byte| escaped(out, *byte)),
         }
+        let Some((byte, after)) = after.split_first() else { break };
+        escaped(out, *byte);
+        rest = after;
+    }
+    for _ in bytes.len()..length {
+        out.push_str("\\00");
     }
 }
 
@@ -179,7 +209,7 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
 /// goes through a value: a function given where the value is, which hands over the text. Gives
 /// back those functions, for after `fennec_entry`.
 fn own_texts(out: &mut String, program: &Program, shared: &Shared) -> String {
-    let can_fail = crate::analysis::whole(program).can_fail;
+    let can_fail = can_fail(program, shared);
     let mut thunks = String::new();
     for (number, (literal, function, boxed)) in shared.own_texts.iter().enumerate() {
         let at = shared.literals.keys().position(|symbol| symbol == literal).unwrap_or(0);
@@ -282,7 +312,7 @@ pub fn tests_entry(
     // The runtime says which tests to run, and hears how each went.
     out += "  call void @fennec_aot_tests_start()\n  br label %next\nnext:\n  %number = call i64 @fennec_aot_next_test()\n  %more = icmp sge i64 %number, 0\n  br i1 %more, label %run, label %end\nrun:\n  call void @fennec_run_test(i64 %number)\n  call void @fennec_report_ran()\n  call void @fennec_aot_test_done(i64 %number)\n  br label %next\nend:\n  ret void\n}\n\n";
     out += &thunks;
-    let can_fail = crate::analysis::whole(program).can_fail;
+    let can_fail = can_fail(program, shared);
     let mut cases = String::new();
     let mut blocks = String::new();
     for (number, test) in tests.iter().enumerate() {
@@ -341,7 +371,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     }
     let (mut out, count) = start_of(program, shared, image, bytes)?;
     out += "declare i32 @fennec_aot_run(ptr, i64)\n\n";
-    let flagged = crate::analysis::whole(program).can_fail.contains("main");
+    let flagged = can_fail(program, shared).contains("main");
     // Each capability `main` takes is the runtime's whole one of its kind.
     let mut args = Vec::with_capacity(main.params + 1);
     let mut capabilities = String::new();
@@ -396,5 +426,34 @@ mod tests {
         let mut out = String::new();
         super::image_text(&mut out, &[b'a', b'"', b'\\', 0, 0xff], 8);
         assert_eq!(out, "a\\22\\5C\\00\\FF\\00\\00\\00");
+    }
+
+    /// Written a run at a time, every byte comes out as it did written one at a time, between
+    /// printable runs, at either end, and alone.
+    #[test]
+    fn every_byte_is_written_as_one_at_a_time() {
+        use std::fmt::Write as _;
+
+        let one_at_a_time = |bytes: &[u8], length: usize| {
+            let mut text = String::new();
+            for byte in bytes.iter().chain(std::iter::repeat_n(&0, length.saturating_sub(bytes.len()))) {
+                if (0x20..0x7f).contains(byte) && *byte != b'"' && *byte != b'\\' {
+                    text.push(char::from(*byte));
+                } else {
+                    let _ = write!(text, "\\{byte:02X}");
+                }
+            }
+            text
+        };
+        let every: Vec<u8> = (0..=255).collect();
+        let mixed: Vec<u8> = every.iter().flat_map(|byte| [b'x', *byte, b'y', b'z']).collect();
+        let cases: [&[u8]; 6] = [&every, &mixed, b"plain", b"", &[0xff], b"\"\""];
+        for bytes in cases {
+            for length in [bytes.len(), bytes.len().next_multiple_of(8) + 8] {
+                let mut out = String::new();
+                super::image_text(&mut out, bytes, length);
+                assert_eq!(out, one_at_a_time(bytes, length), "{bytes:?}");
+            }
+        }
     }
 }

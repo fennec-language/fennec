@@ -232,11 +232,11 @@ struct SqlRowReader:
         pass
 
     ## A case with no data, by its name as text.
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         held = self.text()?
-        for at, case in enumerate(cases):
-            if case[0] == held:
-                if case[1]: fail self._bad(f"`{name}.{held}` has data, which a column can't hold")
+        for at, case_name in enumerate(cases):
+            if case_name[0] == held:
+                if case_name[1]: fail self._bad(f"`{name}.{held}` has data, which a column can't hold")
                 return at
         fail self._bad(f"`{held}` isn't a case of `{name}`")
 

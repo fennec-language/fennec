@@ -19384,11 +19384,11 @@ struct Words:
     def rule(self, message: str) -> ParseError:
         ParseError(message=f"in the text, {message}", line=0, column=self.at)
 
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         word = self.next()?
         mut at = 0
-        for case, _ in cases:
-            if case == word:
+        for case_name, _ in cases:
+            if case_name == word:
                 return at
             at += 1
         fail ParseError(message=f"no case `{word}` in {name}", line=0, column=self.at)

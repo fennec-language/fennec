@@ -147,10 +147,10 @@ struct JsonKey:
     def end(ref self):
         pass
 
-    def case(ref self, name: str, case: str, at: int):
+    def enum_case(ref self, name: str, case_name: str, at: int):
         pass
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
         pass
 
     def member(ref self, name: str, at: int):
@@ -378,16 +378,16 @@ struct JsonWriter:
     def end(ref self):
         self._close("}")
 
-    def case(ref self, name: str, case: str, at: int):
+    def enum_case(ref self, name: str, case_name: str, at: int):
         self._text += "\""
-        self._text += case
+        self._text += case_name
         self._text += "\""
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
         self._open("{")
         self._entry()
         self._text += "\""
-        self._text += case
+        self._text += case_name
         self._text += "\": "
         self._open("{")
 
@@ -479,8 +479,8 @@ POWERS = powers()
 ## Which of `cases` is named `key`, as a place in it, or -1 for none.
 def case_named(key: str, cases: list[(str, bool)]) -> int:
     mut at = 0
-    for case, _ in cases:
-        if case == key: return at
+    for case_name, _ in cases:
+        if case_name == key: return at
         at += 1
     -1
 
@@ -616,10 +616,10 @@ struct TableFinder:
     def end(ref self):
         pass
 
-    def case(ref self, name: str, case: str, at: int):
+    def enum_case(ref self, name: str, case_name: str, at: int):
         pass
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
         self._optional = False
 
     def member(ref self, name: str, at: int):
@@ -1414,7 +1414,7 @@ struct JsonReader:
         if not self._explain: return no_reason()
         ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
 
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         b = self._space()
         if b == 34: return self._plain_case(name, cases)?
         if b != 123: fail self._misfit(name)
@@ -1434,14 +1434,14 @@ struct JsonReader:
             self._at = start
             fail self._misfit(name)
         if at < 0: fail self._no_case(name, key)
-        case, has_data = cases[at]
+        case_name, has_data = cases[at]
         if not has_data:
             self._at += 1
-            if self._space() != 125: fail self._no_field(f"{name}.{case}")
+            if self._space() != 125: fail self._no_field(f"{name}.{case_name}")
             self._at += 1
             self.end_case()?
         elif self._explain:
-            self._case_owner = f"{name}.{case}"
+            self._case_owner = f"{name}.{case_name}"
         at
 
     ## The error for a case with no data that the text gives a field.
@@ -1461,11 +1461,11 @@ struct JsonReader:
             key = self.text()?
             at = case_named(key, cases)
         if at < 0: fail self._no_case(name, key)
-        case, has_data = cases[at]
+        case_name, has_data = cases[at]
         if has_data:
             if not self._explain: fail no_reason()
             fail ParseError(
-                message=f"{self._where()} is `{name}.{case}`, which needs its fields",
+                message=f"{self._where()} is `{name}.{case_name}`, which needs its fields",
                 line=0,
                 column=0,
             )
@@ -1476,11 +1476,11 @@ struct JsonReader:
     def _case_in_place(ref self, cases: list[(str, bool)]) -> int:
         start = self._at + 1
         mut at = 0
-        for case, _ in cases:
-            size = text_size(case)
+        for case_name, _ in cases:
+            size = text_size(case_name)
             if (
                 text_byte(self._source, start + size) == 34
-                and same_bytes(self._source, start, case, size)
+                and same_bytes(self._source, start, case_name, size)
             ):
                 self._at = start + size + 1
                 return at

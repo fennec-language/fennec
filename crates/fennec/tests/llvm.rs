@@ -36,33 +36,34 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
     Ok(dir)
 }
 
-fn same_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
-    let (ours, jit) = both(name, source)?;
-    assert_eq!(ours, jit);
+fn same_as_pinned(name: &str, source: &str) -> std::io::Result<()> {
+    let (ours, wanted) = both(name, source)?;
+    assert_eq!(ours, wanted);
     Ok(())
 }
 
 /// A known difference: the IR gives an index being written, and a value being formatted, the span
-/// of what they're in, where the JIT underlines the part that failed. Same message and outcome.
-fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
+/// of what they're in, where the pinned outcome underlines the part that failed. Same message and
+/// outcome.
+fn same_message_as_pinned(name: &str, source: &str) -> std::io::Result<()> {
     let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) = both(name, source)?;
     assert_eq!((ours_out, ours_code), (jit_out, jit_code));
     assert_eq!(ours_err.lines().next(), jit_err.lines().next());
     Ok(())
 }
 
-/// What the program printed, its errors and its exit code on the interpreter, as pinned in
-/// `tests/fixtures/interpreted` before the interpreter was removed.
-fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
-    pinned_in("interpreted", name, source)
+/// What the program printed, its errors and its exit code, as pinned in `tests/fixtures/outcomes`
+/// before the engines were removed.
+fn pinned_outcome(name: &str, source: &str) -> std::io::Result<Outcome> {
+    pinned_in("outcomes", name, source)
 }
 
-/// What the interpreter gave for the program at `program`, pinned as `name` (see `interpreted`).
-pub(crate) fn interpreted_by(program: &Path, name: &str) -> std::io::Result<Outcome> {
-    pinned_in("interpreted", name, &std::fs::read_to_string(program)?)
+/// The outcome pinned as `name` for the program at `program` (see `pinned_outcome`).
+pub(crate) fn pinned_outcome_of(program: &Path, name: &str) -> std::io::Result<Outcome> {
+    pinned_in("outcomes", name, &std::fs::read_to_string(program)?)
 }
 
-/// What the program printed, its errors and its exit code, built with LLVM, and what the JIT gave.
+/// What the program printed, its errors and its exit code, built with LLVM, and what was pinned.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     both_built(name, source, &["--llvm"])
 }
@@ -79,13 +80,13 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let jit = pinned(name, source, || Ok(ours.clone()))?;
+    let wanted = pinned(name, source, || Ok(ours.clone()))?;
     std::fs::remove_dir_all(&dir)?;
-    Ok((ours, jit))
+    Ok((ours, wanted))
 }
 
 /// The outcome pinned for program `name` in `tests/fixtures/pinned`, one file for each program,
-/// named as the test names it. They were written from the JIT before it was removed.
+/// named as the test names it. They were pinned before the engines were removed.
 fn pinned(
     name: &str,
     source: &str,
@@ -164,11 +165,11 @@ pub(crate) fn outcome(output: &Output) -> Outcome {
 
 /// `stdout.write` shows what `print` shows, with no newline, in compiled code.
 #[test]
-fn writing_to_stdout_matches_the_jit() -> std::io::Result<()> {
+fn writing_to_stdout_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "stdout_write",
         r#"struct Point:
     x: int
@@ -193,11 +194,11 @@ def main(stdout: Stdout):
 
 /// `bytes`, wherever it's held and whatever's done with it.
 #[test]
-fn bytes_match_the_jit() -> std::io::Result<()> {
+fn bytes_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "bytes_all",
         r#"struct Packet:
     id: int
@@ -274,9 +275,9 @@ def main(stdout: Stdout):
     )
 }
 
-/// What fails with `bytes` says what the JIT says.
+/// What fails with `bytes` says what was pinned.
 #[test]
-fn bytes_fail_like_the_jit() -> std::io::Result<()> {
+fn bytes_fail_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -286,7 +287,7 @@ fn bytes_fail_like_the_jit() -> std::io::Result<()> {
         ("bytes_too_big", "bytes([1, 256])"),
         ("bytes_negative", "bytes([-1])"),
     ] {
-        same_message_as_the_jit(
+        same_message_as_pinned(
             name,
             &format!(
                 "def main(stdout: Stdout):
@@ -303,11 +304,11 @@ fn bytes_fail_like_the_jit() -> std::io::Result<()> {
 /// nothing, so it's here they're run. This backend doesn't take `int`, or `float` of a float,
 /// yet, so `cli.rs` runs those on the other engines.
 #[test]
-fn str_of_text_matches_the_jit() -> std::io::Result<()> {
+fn str_of_text_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "str_of_text",
         "def main(stdout: Stdout):\n    name = \"fox\"\n    stdout.print(str(name), str(\"\"))\n",
     )
@@ -316,11 +317,11 @@ fn str_of_text_matches_the_jit() -> std::io::Result<()> {
 /// A text growing in a field: short then long, from each kind of text, and with a copy held
 /// elsewhere that has to keep what it had.
 #[test]
-fn a_text_growing_in_a_field_matches_the_jit() -> std::io::Result<()> {
+fn a_text_growing_in_a_field_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "text_in_a_field",
         r#"struct Log:
     text = ""
@@ -394,9 +395,8 @@ def main(stdout: Stdout):
     mut others = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
     stdout.print(by_try(ref others) else -2, others)
 "#;
-    same_as_the_jit("failing_out_of_for_mut", shared)?;
-    // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
-    // what the interpreter prints.
+    same_as_pinned("failing_out_of_for_mut", shared)?;
+    // Out of two loops at once, held to its pinned outcome.
     let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int fails Bad:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
     let dir = folder("failing_out_of_two_loops")?;
     let program = dir.join("two_loops.fen");
@@ -405,9 +405,9 @@ def main(stdout: Stdout):
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let interpreted = interpreted("two_loops", nested)?;
+    let pinned_outcome = pinned_outcome("two_loops", nested)?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(ours, interpreted);
+    assert_eq!(ours, pinned_outcome);
     assert_eq!(ours.0, "-3 [[2, 3], [5, 7], [9]]\n");
     Ok(())
 }
@@ -416,11 +416,11 @@ def main(stdout: Stdout):
 /// the block runs only when it fails, leaving by `continue`, `break` or `return`. It once wasn't
 /// lowered, as "a value of type nothing".
 #[test]
-fn else_after_a_call_that_gives_nothing_matches_the_interpreter() -> std::io::Result<()> {
+fn else_after_a_call_that_gives_nothing_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "else_on_nothing",
         "error Odd:
     n: int
@@ -456,15 +456,15 @@ def main(stdout: Stdout):
 /// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
 /// and what's shared with it, at any level, doesn't change.
 /// What a program printed, how it ended and its first error line, built with LLVM and in dev
-/// and `--release` both, is what the interpreter does. What the backend remembers about a local
+/// and `--release` both, is as pinned. What the backend remembers about a local
 /// has to end when something changes it, and only optimizing shows some of that.
-fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::Result<()> {
+fn same_as_expected_in_both_builds(name: &str, source: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
     let output = executable.to_string_lossy().into_owned();
-    let (wanted_out, wanted_err, wanted_code) = interpreted(name, source)?;
+    let (wanted_out, wanted_err, wanted_code) = pinned_outcome(name, source)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let args: Vec<&str> = ["build"]
             .into_iter()
@@ -1270,7 +1270,7 @@ fn what_a_mut_argument_changes_is_read_again() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("given_mut", GIVEN_MUT)
+    same_as_expected_in_both_builds("given_mut", GIVEN_MUT)
 }
 
 #[test]
@@ -1346,7 +1346,7 @@ def main(stdout: Stdout):
 ",
         ),
     ] {
-        same_as_the_interpreter_in_both_builds(name, source)?;
+        same_as_expected_in_both_builds(name, source)?;
     }
     Ok(())
 }
@@ -1418,7 +1418,7 @@ fn what_an_argument_read_keeps_its_value_when_a_later_one_changes_it() -> std::i
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("read_then_changed", READ_THEN_CHANGED)
+    same_as_expected_in_both_builds("read_then_changed", READ_THEN_CHANGED)
 }
 
 /// Each shape of place a call changes: one owner, shared at each level, given what came from
@@ -1645,7 +1645,7 @@ fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("changed_places", CHANGED_PLACES)
+    same_as_pinned("changed_places", CHANGED_PLACES)
 }
 
 /// A list in a `shared` value, changed in place under its lock: a queue would otherwise copy the whole
@@ -1979,7 +1979,7 @@ fn a_put_after_a_lookup_under_a_lock_is_right_whatever_came_between() -> std::io
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("lock_found_entry", include_str!("fixtures/lock_found_entry.fen"))
+    same_as_expected_in_both_builds("lock_found_entry", include_str!("fixtures/lock_found_entry.fen"))
 }
 
 /// A put after a lookup under a lock, of a number and of a string held in a block, takes and lets go
@@ -2167,11 +2167,11 @@ fn a_put_in_place_copies_nothing_unless_the_dict_is_held_twice() -> std::io::Res
 /// What's changed in place stays right when it's read while changing, and when something still holds
 /// the list as it was.
 #[test]
-fn a_list_changed_in_a_shared_value_is_what_the_interpreter_says() -> std::io::Result<()> {
+fn a_list_changed_in_a_shared_value_is_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("shared_places", include_str!("fixtures/shared_places.fen"))
+    same_as_expected_in_both_builds("shared_places", include_str!("fixtures/shared_places.fen"))
 }
 
 #[test]
@@ -2209,7 +2209,7 @@ fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "index_given_mut",
         r"struct Unit:
     tags: list[int]
@@ -2557,8 +2557,7 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
     if !ready() {
         return Ok(());
     }
-    // The JIT read the same lowering, so only the interpreter could say this was right.
-    same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
+    same_as_expected_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
 }
 
 /// A list a counted loop fills once a turn, with room made for every turn and nothing else in
@@ -2566,11 +2565,11 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
 /// check: the list shared or read in the loop, a count starting below 0 or from a variable,
 /// two appends a turn, and a loop inside another that makes the list each time round.
 #[test]
-fn lists_filled_within_their_room_match_the_jit() -> std::io::Result<()> {
+fn lists_filled_within_their_room_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("filled_within_room", FILLED_WITHIN_ROOM)
+    same_as_pinned("filled_within_room", FILLED_WITHIN_ROOM)
 }
 
 const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
@@ -2624,7 +2623,7 @@ fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> st
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "local_item_field_appends",
         r"struct Unit:
     tags: list[int]
@@ -2842,8 +2841,8 @@ def main(stdout: Stdout):
         ("lengths_beside_fields", &["--llvm"][..]),
         ("lengths_beside_fields_release", &["--llvm", "--release"][..]),
     ] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -2853,7 +2852,7 @@ fn reading_a_string_that_isnt_ascii_finds_the_right_character() -> std::io::Resu
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit("character_places", CHARACTER_PLACES)
+    same_message_as_pinned("character_places", CHARACTER_PLACES)
 }
 
 /// Reading and slicing a long string in order, one accented letter in it. How long this takes
@@ -2863,7 +2862,7 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "character_steps",
         "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(text.len()):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(text.len() - 3):\n        pieces += text[at:at + 3].len()\n    stdout.print(found, pieces)\n",
     )
@@ -2873,11 +2872,11 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
 /// the next, characters of each width, back and from the end, positions outside it, an empty
 /// string, and slices, after which reading carries on from where it was.
 #[test]
-fn reading_characters_by_position_matches_the_interpreter() -> std::io::Result<()> {
+fn reading_characters_by_position_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "characters_by_position",
         r#"def words(text: str) -> list[str]:
     mut found = []
@@ -2944,11 +2943,11 @@ fn reading_again_and_slicing_back_in_text_that_isnt_ascii() -> std::io::Result<(
 /// test, and any other its characters' bytes, whether it's inline or a block's, and the body
 /// breaking, going on, or looping over text of its own.
 #[test]
-fn looping_over_characters_matches_the_interpreter() -> std::io::Result<()> {
+fn looping_over_characters_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "character_loops",
         r##"def kinds(text: str) -> str:
     mut out = []
@@ -2996,11 +2995,11 @@ def main(stdout: Stdout):
 /// Indexing and slicing text that isn't ASCII, in and out of order, from either end, clamped
 /// and empty, as native code finds characters from a block's cursor.
 #[test]
-fn indexing_and_slicing_a_string_that_isnt_ascii_matches_the_interpreter() -> std::io::Result<()> {
+fn indexing_and_slicing_a_string_that_isnt_ascii_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "wide_slices",
         r#"def main(stdout: Stdout):
     text = "héllo wörld, ünïcode ✓ and 🦊 fox; then plain ascii after all that"
@@ -3175,7 +3174,7 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("for_mut_items", FOR_MUT_ITEMS)?;
+    same_as_pinned("for_mut_items", FOR_MUT_ITEMS)?;
     let counts = counts_of(
         "for_mut_counts",
         "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for ref unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
@@ -3348,15 +3347,15 @@ def main(stdout: Stdout):
     stdout.print(world.units[1].health)
 "#;
 
-/// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively as
-/// in the interpreter: a case that finishes, one that leaves by `return`, and one that fails, each
-/// putting the case back, and a `_` field kept as it was.
+/// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively,
+/// as the language says: a case that finishes, one that leaves by `return`, and one that fails,
+/// each putting the case back, and a `_` field kept as it was.
 #[test]
 fn ref_cases_change_fields_where_they_are_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("ref_cases", REF_CASES)
+    same_as_expected_in_both_builds("ref_cases", REF_CASES)
 }
 
 const REF_CASES: &str = r#"error TooMany:
@@ -3406,15 +3405,15 @@ def main(stdout: Stdout):
     stdout.print(kind)
 "#;
 
-/// `for at, ref item in enumerate(items)` changes each item where it is, natively as in the
-/// interpreter: numbers, structs and lists, a `continue` that still counts what it skips, and a
+/// `for at, ref item in enumerate(items)` changes each item where it is, natively, as the
+/// language says: numbers, structs and lists, a `continue` that still counts what it skips, and a
 /// nested one over the items' own lists.
 #[test]
 fn enumerate_with_ref_changes_items_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("enumerate_ref", ENUMERATE_REF)
+    same_as_expected_in_both_builds("enumerate_ref", ENUMERATE_REF)
 }
 
 const ENUMERATE_REF: &str = r"struct Unit:
@@ -3438,11 +3437,11 @@ def main(stdout: Stdout):
 /// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
 /// outside ASCII, and a digit beside something that isn't.
 #[test]
-fn isdigit_matches_the_jit() -> std::io::Result<()> {
+fn isdigit_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "isdigit",
         r#"def main(stdout: Stdout):
     long = "1234567890" * 5
@@ -3461,11 +3460,11 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
 /// for a sign it can't have: the remainders of either sign, by any positive or negative number,
 /// still match, and so do ones fed back in, compared or cut again.
 #[test]
-fn a_remainder_kept_in_range_matches_the_interpreter() -> std::io::Result<()> {
+fn a_remainder_kept_in_range_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("remainder_in_range", REMAINDER_IN_RANGE)
+    same_as_expected_in_both_builds("remainder_in_range", REMAINDER_IN_RANGE)
 }
 
 const REMAINDER_IN_RANGE: &str = r#"def stirred(n: int) -> int:
@@ -3494,11 +3493,11 @@ def main(stdout: Stdout):
 /// `//` and `%` by a power of two are a shift and a mask, which round toward negative infinity
 /// as Fennec's do: for every sign, from the lowest int to the highest, and the divisors from 1 up.
 #[test]
-fn dividing_by_a_power_of_two_matches_the_interpreter() -> std::io::Result<()> {
+fn dividing_by_a_power_of_two_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("power_of_two_division", POWER_OF_TWO_DIVISION)
+    same_as_expected_in_both_builds("power_of_two_division", POWER_OF_TWO_DIVISION)
 }
 
 const POWER_OF_TWO_DIVISION: &str = r#"def main(stdout: Stdout):
@@ -3520,9 +3519,9 @@ const POWER_OF_TWO_DIVISION: &str = r#"def main(stdout: Stdout):
 
 /// Steps proved not to overflow, from a comparison on the way to them or from every value a local
 /// is given, run right up to the highest and lowest ints; and a step past what's proved, which
-/// still fails as on the interpreter.
+/// still fails.
 #[test]
-fn steps_proved_safe_match_the_interpreter_at_the_ends_of_the_ints() -> std::io::Result<()> {
+fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -3531,14 +3530,14 @@ fn steps_proved_safe_match_the_interpreter_at_the_ends_of_the_ints() -> std::io:
             "def closing(low: int, high: int) -> (int, int):\n    mut a = low\n    mut b = high\n    while a < b:\n        a += 1\n        b -= 1\n    (a, b)\n\ndef counted(limit: int, start: int) -> int:\n    mut count = start\n    while count < limit and count % 1000 != 999:\n        count += 1\n    count\n\ndef stirred(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed % 10\n    total\n\ndef main(stdout: Stdout):\n    highest = 9223372036854775807\n    lowest = -9223372036854775807 - 1\n    stdout.print(closing(highest - 9, high=highest), closing(lowest, high=lowest + 7), closing(5, high=1))\n    stdout.print(counted(highest, start=highest - 5), counted(10, start=3), stirred(1000))\n    mut x = highest - 1\n    if x < highest:\n        x += 1\n    stdout.print(x)\n    {last}\n"
         )
     };
-    same_as_the_interpreter_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
-    same_as_the_interpreter_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
+    same_as_expected_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
+    same_as_expected_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
 }
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
 #[test]
-fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Result<()> {
+fn a_product_that_overflows_still_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -3552,14 +3551,14 @@ fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Resu
         ("product_too_big", "3037000500", "3037000500"),
         ("product_too_small", "-3037000500", "3037000500"),
     ] {
-        same_as_the_interpreter_in_both_builds(name, &program(a, b))?;
+        same_as_expected_in_both_builds(name, &program(a, b))?;
     }
     Ok(())
 }
 
 /// Sized integers natively: arithmetic, floor division and remainder as `int`'s, `~` within an
 /// unsigned size's width, shifts by an `int`, conversions written out, lists of them, and `/`
-/// giving a float. The interpreter doesn't take sized numbers, so the outcomes are written here.
+/// giving a float. Nothing was pinned for sized numbers, so the outcomes are written here.
 #[test]
 fn sized_integers_work_out_as_their_sizes_say() -> std::io::Result<()> {
     if !ready() {
@@ -4065,11 +4064,11 @@ fn sized_integers_wrap_or_saturate_when_asked() -> std::io::Result<()> {
 }
 
 #[test]
-fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
+fn numbers_calls_and_printing_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "numbers",
         "from std.math import sqrt\n\ndef fib(n: int) -> int:\n    if n < 2: return n\n    fib(n - 1) + fib(n - 2)\n\ndef main(stdout: Stdout):\n    stdout.print(\"fib\", fib(20), sqrt(2.0), 1.5 > 1.0)\n    stdout.print(7 // -2, 7 % -2, -7 // 2, -7 % 2, -(3))\n    mut total = 0\n    for i in range(5):\n        total += i * i\n    stdout.print(total)\n",
     )
@@ -4078,11 +4077,11 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
 /// An int's text is written natively, digit pairs from the last: every length of digits, both
 /// ends of `int`, signs, and appended to a growing string, in `str` and in an f-string.
 #[test]
-fn an_ints_text_of_every_length_matches_the_jit() -> std::io::Result<()> {
+fn an_ints_text_of_every_length_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "int_text",
         r#"def main(stdout: Stdout):
     mut power = 1
@@ -4101,11 +4100,11 @@ fn an_ints_text_of_every_length_matches_the_jit() -> std::io::Result<()> {
 /// A builtin's value nothing keeps is still made and let go of natively, each on a line of its own,
 /// with what's printed after the same.
 #[test]
-fn a_value_nothing_keeps_matches_the_jit() -> std::io::Result<()> {
+fn a_value_nothing_keeps_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "discarded",
         r#"def doubled(xs: list[int]) -> list[int]:
     [x * 2 for x in xs]
@@ -4124,11 +4123,11 @@ def main(stdout: Stdout):
 /// A std module's exported constant, read through its module and imported by name, which
 /// natively are the same text.
 #[test]
-fn a_std_constant_reads_both_ways_like_the_jit() -> std::io::Result<()> {
+fn a_std_constant_reads_both_ways_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "std_constants",
         "from std import string\nfrom std.string import DIGITS, PUNCTUATION\n\ndef main(stdout: Stdout):\n    stdout.print(string.DIGITS, DIGITS, string.DIGITS == DIGITS)\n    stdout.print(string.ASCII_LETTERS.len(), PUNCTUATION.len(), string.WHITESPACE.len())\n    stdout.print([c for c in \"a1b2\" if string.DIGITS.find(c) is not None])\n",
     )
@@ -4137,11 +4136,11 @@ fn a_std_constant_reads_both_ways_like_the_jit() -> std::io::Result<()> {
 /// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
 /// of dicts and sets.
 #[test]
-fn more_small_calls_match_the_jit() -> std::io::Result<()> {
+fn more_small_calls_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "more_small_calls",
         r#"struct Key:
     x: int
@@ -4191,9 +4190,9 @@ def main(args: Args, stdout: Stdout):
     )
 }
 
-/// `set.remove` of a key that isn't there fails as the JIT does.
+/// `set.remove` of a key that isn't there fails as pinned.
 #[test]
-fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
+fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -4202,7 +4201,7 @@ fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
         ("remove_str", "{\"a\"}", "\"b\""),
         ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
     ] {
-        same_message_as_the_jit(
+        same_message_as_pinned(
             name,
             &format!(
                 "def main(stdout: Stdout):
@@ -4218,11 +4217,11 @@ fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
 
 /// Sorting by a key that's a tuple, in place or into a new list, keeping equal keys in order.
 #[test]
-fn sorting_by_tuple_keys_matches_the_jit() -> std::io::Result<()> {
+fn sorting_by_tuple_keys_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "tuple_keys",
         r#"struct Unit:
     name: str
@@ -4247,14 +4246,14 @@ def main(stdout: Stdout):
     )
 }
 
-/// `sorted` of a type with its own `<` sorts by it as the JIT does: stable, so items `<` says are
+/// `sorted` of a type with its own `<` sorts by it: stable, so items `<` says are
 /// neither before nor after keep their order, and the standard library's `Uuid` too.
 #[test]
-fn sorting_by_a_types_own_order_matches_the_jit() -> std::io::Result<()> {
+fn sorting_by_a_types_own_order_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "sorting_by_own_order",
         r#"from std.uuid import Uuid
 
@@ -4279,11 +4278,11 @@ def main(stdout: Stdout):
 
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
 #[test]
-fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
+fn bits_sorts_and_choices_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "bits_sorts_and_choices",
         r#"from std.random import Random
 
@@ -4323,11 +4322,11 @@ def main(stdout: Stdout):
 }
 
 #[test]
-fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
+fn lists_keep_value_semantics_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "sharing",
         r"def changed(items: list[int]) -> list[int]:
     mut copy = items
@@ -4449,11 +4448,11 @@ def main(stdout: Stdout):
 "#;
 
 #[test]
-fn arrays_keep_value_semantics_like_the_interpreter() -> std::io::Result<()> {
+fn arrays_keep_value_semantics_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("arrays", ARRAYS)
+    same_as_expected_in_both_builds("arrays", ARRAYS)
 }
 
 /// An array too big to keep in place is held as a list, which nothing in the program can tell:
@@ -4463,7 +4462,7 @@ fn a_big_array_behaves_as_a_small_one() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "big_arrays",
         "struct Big:
     values = array[int, 10000]()
@@ -4497,7 +4496,7 @@ def main(stdout: Stdout):
 
 /// An index outside an array fails as one outside a list does, counting from the end too.
 #[test]
-fn an_index_outside_an_array_fails_like_the_interpreter() -> std::io::Result<()> {
+fn an_index_outside_an_array_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -4505,19 +4504,19 @@ fn an_index_outside_an_array_fails_like_the_interpreter() -> std::io::Result<()>
         let source = format!(
             "def main(stdout: Stdout):\n    values = array[int, 3]()\n    mut at = {at}\n    stdout.print(values[at + 0])\n"
         );
-        same_as_the_interpreter_in_both_builds(name, &source)?;
+        same_as_expected_in_both_builds(name, &source)?;
     }
     Ok(())
 }
 
 /// A failure inside the standard library's own code is said to be where the program called it,
-/// not somewhere in the standard library, as the interpreter says it: here `swap`'s index.
+/// not somewhere in the standard library, as pinned: here `swap`'s index.
 #[test]
-fn a_failure_inside_std_points_at_the_call_like_the_interpreter() -> std::io::Result<()> {
+fn a_failure_inside_std_points_at_the_call_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "std_failure_at_the_call",
         "def shuffled(xs: list[int]) -> list[int]:\n    mut out = xs\n    out.swap(0, 7)\n    out\n\ndef main(stdout: Stdout):\n    stdout.print(shuffled([1, 2, 3]))\n",
     )
@@ -4743,7 +4742,7 @@ fn a_comprehension_replacing_a_list_in_a_cell_makes_no_second_list() -> std::io:
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "cell_list_replaced",
         "struct Box:\n    items = [1, 2, 3]\n\n    def doubled(ref self):\n        self.items = [n * 2 for n in self.items]\n\n\
          def main(stdout: Stdout):\n    shared one = Box()\n    lock one as ref x:\n        x.doubled()\n    \
@@ -4756,7 +4755,7 @@ fn two_values_in_a_lock_each_change_through_their_own_name() -> std::io::Result<
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("two_cells", TWO_CELLS)
+    same_as_expected_in_both_builds("two_cells", TWO_CELLS)
 }
 
 /// One value taken twice ends the program, after what it printed, however it came about.
@@ -4774,8 +4773,8 @@ fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = outcome(&Command::new(&executable).output_within()?);
-        let interpreted = interpreted_by(&program, &format!("taken_twice_{name}"))?;
-        assert_eq!(apart_from(&dir, ran.clone()), interpreted, "{name}");
+        let pinned_outcome = pinned_outcome_of(&program, &format!("taken_twice_{name}"))?;
+        assert_eq!(apart_from(&dir, ran.clone()), pinned_outcome, "{name}");
         assert_eq!(ran.2, Some(1), "{name}");
         assert_eq!(ran.0, "before 21\n", "{name}");
         assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
@@ -4789,10 +4788,7 @@ fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
-        "shared_map_walked",
-        include_str!("fixtures/shared_map_walked.fen"),
-    )
+    same_as_expected_in_both_builds("shared_map_walked", include_str!("fixtures/shared_map_walked.fen"))
 }
 
 /// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
@@ -4828,10 +4824,10 @@ fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
+    let (printed, ..) = pinned_outcome("shared_same_said", SHARED_SAME)?;
     let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
     assert_eq!(printed, wanted);
-    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
+    same_as_expected_in_both_builds("shared_same", SHARED_SAME)?;
     // A type's own `def ==` still decides, wherever it's written.
     let own = "\
 struct Account:
@@ -4845,7 +4841,7 @@ def main(stdout: Stdout):
     shared c = Account(total=200)
     stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
 ";
-    same_as_the_interpreter_in_both_builds("shared_own_same", own)
+    same_as_expected_in_both_builds("shared_own_same", own)
 }
 
 #[test]
@@ -4861,9 +4857,9 @@ fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = interpreted_by(&program, "shared_names")?;
+    let pinned_outcome = pinned_outcome_of(&program, "shared_names")?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
@@ -4874,18 +4870,18 @@ fn shared_values_reached_in_locks_build_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("shared_locks", SHARED_LOCKS)
+    same_as_expected_in_both_builds("shared_locks", SHARED_LOCKS)
 }
 
 /// A `lock ... as ref` block's changes are saved for a crash to put back, and kept when it ends
 /// normally: an int, a string and a list changed, two values locked together, a `return` from
-/// inside, and appends in a loop. What's printed after is the interpreter's.
+/// inside, and appends in a loop. What's printed after is as pinned.
 #[test]
-fn changes_in_a_lock_to_write_are_kept_as_the_interpreter_keeps_them() -> std::io::Result<()> {
+fn changes_in_a_lock_to_write_are_kept_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "lock_saves",
         r#"struct Account:
     owner: str
@@ -6400,7 +6396,7 @@ fn with_sources_lend_to_their_callers_blocks_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("with_sources", WITH_SOURCES)
+    same_as_expected_in_both_builds("with_sources", WITH_SOURCES)
 }
 
 const WITH_SOURCES: &str = "error DbError:
@@ -6527,15 +6523,15 @@ def main(stdout: Stdout) fails Boom:
     Ok(())
 }
 
-/// Several handles in one `with` open in order and finish innermost first, natively as in the
-/// interpreter. One that fails to open runs the `else:` of each opened before it, a block that
-/// fails runs every one's, and a source that lends a tuple splits it into a name each.
+/// Several handles in one `with` open in order and finish innermost first, natively. One that
+/// fails to open runs the `else:` of each opened before it, a block that fails runs every one's,
+/// and a source that lends a tuple splits it into a name each.
 #[test]
 fn several_handles_in_one_with_finish_innermost_first_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("with_handles", WITH_HANDLES)
+    same_as_expected_in_both_builds("with_handles", WITH_HANDLES)
 }
 
 const WITH_HANDLES: &str = r#"error Refused:
@@ -6588,8 +6584,8 @@ fn lent_values_take_ref_self_calls_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("lent_structs", LENT_STRUCTS)?;
-    same_as_the_interpreter_in_both_builds("lent_handles", LENT_HANDLES)
+    same_as_expected_in_both_builds("lent_structs", LENT_STRUCTS)?;
+    same_as_expected_in_both_builds("lent_handles", LENT_HANDLES)
 }
 
 const LENT_STRUCTS: &str = "struct Sink:
@@ -6654,7 +6650,7 @@ fn changing_an_item_doesnt_show_through_a_copy() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "items",
         r"struct Packet:
     id: int
@@ -6717,11 +6713,11 @@ def main(stdout: Stdout):
 /// ASCII or not, ints at their ends, floats short and long, formats, values written out, and
 /// results that fit in a header and that don't, on both sides of 23 bytes.
 #[test]
-fn f_strings_made_in_one_go_match_the_jit() -> std::io::Result<()> {
+fn f_strings_made_in_one_go_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("f_strings_in_one_go", F_STRINGS_IN_ONE_GO)
+    same_as_pinned("f_strings_in_one_go", F_STRINGS_IN_ONE_GO)
 }
 
 const F_STRINGS_IN_ONE_GO: &str = r#"struct Point:
@@ -6760,11 +6756,11 @@ def main(stdout: Stdout):
 "#;
 
 #[test]
-fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
+fn structs_tuples_and_formats_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "values",
         r#"struct Point:
     x: float
@@ -6867,9 +6863,9 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = interpreted_by(&program, "own_text_inside")?;
+    let pinned_outcome = pinned_outcome_of(&program, "own_text_inside")?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
@@ -6992,7 +6988,7 @@ def main(stdout: Stdout):
 ";
 
 #[test]
-fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io::Result<()> {
+fn values_read_from_their_blocks_show_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -7004,14 +7000,14 @@ fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = interpreted_by(&program, "shown_values")?;
+    let pinned_outcome = pinned_outcome_of(&program, "shown_values")?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
-/// What a program prints through LLVM is what the interpreter prints.
-fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
+/// What a program prints through LLVM is what was pinned for it before the engines were removed.
+fn same_as_expected(name: &str, source: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
@@ -7019,21 +7015,20 @@ fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let interpreted = interpreted(name, source)?;
+    let pinned_outcome = pinned_outcome(name, source)?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(ours, interpreted);
+    assert_eq!(ours, pinned_outcome);
     Ok(())
 }
 
 /// Evaluation runs left to right: an operand keeps the value it had when it was read, even if one
-/// after it changes what it names. The JIT doesn't on a plain call, so this is held to what the
-/// interpreter prints.
+/// after it changes what it names.
 #[test]
 fn an_earlier_operand_keeps_its_value_when_a_later_one_changes_it() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter(
+    same_as_expected(
         "left_to_right",
         r#"struct Box:
     items: list[int]
@@ -7245,11 +7240,11 @@ fn every_program_builds_natively() -> std::io::Result<()> {
 
 /// Dicts whose values are blocks, with what's done to them.
 #[test]
-fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
+fn dicts_of_blocks_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "dict_values",
         r#"struct Book:
     title: str
@@ -7723,11 +7718,11 @@ fn sets_and_dicts_of_u64s_and_f32s() -> std::io::Result<()> {
 
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
-fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
+fn dicts_of_plain_values_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "dict_plain_values",
         r#"from std.collections import Table
 
@@ -7793,13 +7788,13 @@ def main(stdout: Stdout):
     )
 }
 
-/// A key a dict of blocks doesn't have fails as the JIT's does.
+/// A key a dict of blocks doesn't have fails as pinned.
 #[test]
-fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> {
+fn a_missing_key_in_a_dict_of_lists_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "missing_list",
         "def main(stdout: Stdout):
     held = {\"a\": [1]}
@@ -7809,11 +7804,11 @@ fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> 
 }
 
 #[test]
-fn dicts_sets_closures_and_tuples_match_the_jit() -> std::io::Result<()> {
+fn dicts_sets_closures_and_tuples_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "collections",
         r#"struct Key:
     x: int
@@ -7875,7 +7870,7 @@ def main(stdout: Stdout):
         stdout.print(other + 1)
 "#,
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "missing",
         "def main(stdout: Stdout):\n    d = {1: 2}\n    stdout.print(d[1])\n    stdout.print(d[3])\n",
     )
@@ -7890,7 +7885,7 @@ fn a_generator_yielding_a_name_it_was_given_keeps_it() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "yields_a_name",
         r#"def joined(parts: Iterator[str]) -> str:
     mut whole = ""
@@ -7914,13 +7909,13 @@ def main(stdout: Stdout):
 
 /// A generator copied into the loop over it holds each argument as its parameter's type: a `str`
 /// given for a `str?` is an optional in the copy. The copy once held it as the argument's type,
-/// so the build left `main` to the JIT, as it read `str` as `str?`.
+/// so `main` didn't build natively, as it read `str` as `str?`.
 #[test]
 fn a_copied_generator_holds_its_arguments_as_its_parameters_types() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "copied_parameter_types",
         r#"def or_else(word: str?) -> Iterator[str]:
     yield word else "nothing"
@@ -7943,16 +7938,16 @@ def main(stdout: Stdout):
     )
 }
 
-/// What closures and generators capture, of each kind, comes out as the interpreter gives it:
+/// What closures and generators capture, of each kind, comes out as pinned:
 /// a closure giving back what it captured as it is, generator expressions yielding a captured
 /// string, struct, list, bool, int or float, nested generators and generators with `while`,
 /// comprehensions inside generators and the other way round, and a closure inside a generator.
 #[test]
-fn captures_of_every_kind_match_the_interpreter() -> std::io::Result<()> {
+fn captures_of_every_kind_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "captures",
         r#"struct Pair:
     name: str
@@ -8010,11 +8005,11 @@ def main(stdout: Stdout):
 /// A generator made in one place and read in another keeps what it captured: one returned from a
 /// function, one held before it's read, and one made each time round a loop.
 #[test]
-fn generators_kept_for_later_match_the_interpreter() -> std::io::Result<()> {
+fn generators_kept_for_later_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "kept_generators",
         r#"def joined(parts: Iterator[str]) -> str:
     mut whole = ""
@@ -8100,15 +8095,15 @@ def main(stdout: Stdout):
 "#;
 
 /// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
-/// out as the interpreter gives them: appended, read in a loop and by index, shared by a copy of
-/// the list, popped, replaced, and captured by a generator that calls one. Natively a list of
-/// closures and a generator keeping one were left to the JIT, as the runtime couldn't hold them.
+/// out as pinned: appended, read in a loop and by index, shared by a copy of the list, popped,
+/// replaced, and captured by a generator that calls one. A list of closures and a generator keeping
+/// one once didn't build natively, as the runtime couldn't hold them.
 #[test]
-fn closures_kept_in_lists_and_generators_match_the_interpreter() -> std::io::Result<()> {
+fn closures_kept_in_lists_and_generators_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "closures_kept",
         r#"def add(x: int) -> int:
     x + 1
@@ -8164,11 +8159,11 @@ def main(stdout: Stdout):
 /// name and unpacked later, and called. It once wasn't lowered, as "it gives (int) -> int where
 /// function goes".
 #[test]
-fn functions_named_in_tuples_match_the_interpreter() -> std::io::Result<()> {
+fn functions_named_in_tuples_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "functions_in_tuples",
         "def add(x: int) -> int:
     x + 1
@@ -8267,11 +8262,11 @@ def main(stdout: Stdout):
 }
 
 #[test]
-fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
+fn generators_that_fail_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "failing_generators",
         r#"error TooBig:
     at: int
@@ -8343,11 +8338,11 @@ def main(stdout: Stdout):
 /// then, while one with a name lasts as long as the name, and returning out of the loop lets go
 /// of it before the caller goes on.
 #[test]
-fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<()> {
+fn a_generator_left_partway_closes_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter(
+    same_as_expected(
         "generator_left",
         r#"struct Door:
     out: Stdout
@@ -8851,11 +8846,11 @@ def main(stdout: Stdout, fs: Fs) fails IoError:
 /// gives, as a `for` loop does: the program's own type, and the standard library's, which write
 /// themselves with `list(self)`.
 #[test]
-fn what_takes_every_item_takes_a_types_own_iter_as_the_jit_does() -> std::io::Result<()> {
+fn what_takes_every_item_takes_a_types_own_iter_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "own_iter_items",
         r"from std.collections import Deque, SortedSet
 
@@ -8877,11 +8872,11 @@ def main(stdout: Stdout):
 }
 
 #[test]
-fn generators_and_results_match_the_jit() -> std::io::Result<()> {
+fn generators_and_results_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "generators",
         r#"error Fault:
     reason: str
@@ -8939,22 +8934,22 @@ def main(stdout: Stdout):
 "#,
     )?;
     // The whole message, as it points at the generator and says what to do.
-    same_as_the_jit(
+    same_as_pinned(
         "twice",
         "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut sum = 0\n    for n in numbers:\n        sum += n\n    sum\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "expect",
         "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
 }
 
 #[test]
-fn regexes_match_the_jit() -> std::io::Result<()> {
+fn regexes_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "regexes",
         r#"from std.re import Regex, is_regex
 
@@ -9392,14 +9387,14 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
 
 /// A field changed in place, by a builtin, a method on `ref self` or a `ref` argument, with an
 /// argument worked out with a branch, a loop or a call: the field is read once the arguments
-/// are, so it has one owner while it changes. Each way gives what the interpreter does, copies
-/// and failures included.
+/// are, so it has one owner while it changes. Each way gives what was pinned, copies and failures
+/// included.
 #[test]
-fn a_field_changed_with_any_argument_matches_the_interpreter() -> std::io::Result<()> {
+fn a_field_changed_with_any_argument_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("changed_with_any_argument", CHANGED_WITH_ANY_ARGUMENT)
+    same_as_expected_in_both_builds("changed_with_any_argument", CHANGED_WITH_ANY_ARGUMENT)
 }
 
 const CHANGED_WITH_ANY_ARGUMENT: &str = r#"struct Bag:
@@ -9487,11 +9482,11 @@ fn a_loop_over_a_variables_field_leaves_it_alone_for_the_next_change() -> std::i
 /// What a borrowed field can't outlast: the variable written while the loop runs, given away
 /// before it's done, or the list grown from inside the loop. Each still says what it did.
 #[test]
-fn a_loop_over_a_variables_field_matches_the_interpreter_when_the_variable_changes() -> std::io::Result<()> {
+fn a_loop_over_a_variables_field_sees_the_variable_change() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "loop_over_changing_field",
         r#"struct Bag:
     items = list[int]()
@@ -9779,20 +9774,20 @@ fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
         "def main(stdout: Stdout):\n    mut marks = [0 for _ in range(1000)]\n    for i in range(1000):\n        marks[i] = i\n    stdout.print(marks[999])\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
-    same_as_the_jit(
+    same_as_pinned(
         "copies_kept",
         "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = a\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = row\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
     )
 }
 
 /// `==` with a literal of up to eight bytes reads the length and one word: empty, eight
-/// bytes, nine, a zero byte and two-byte characters all compare as in the interpreter.
+/// bytes, nine, a zero byte and two-byte characters all compare as pinned.
 #[test]
-fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
+fn strings_compare_with_short_literals_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "short_literals",
         r#"def main(stdout: Stdout):
     words = ["", "a", " ", "fox", "fennec ", "eightchr", "eightchrs", "é", "ab\x00", "ab"]
@@ -9809,7 +9804,7 @@ fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
 
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
-/// negative indexes are each checked again, and the last read fails as in the interpreter.
+/// negative indexes are each checked again, and the last read fails.
 #[test]
 fn an_index_is_checked_again_once_its_list_changes() -> std::io::Result<()> {
     if !ready() {
@@ -9844,8 +9839,8 @@ def main(stdout: Stdout):
     stdout.print(bag.items[at])
 ";
     for (name, how) in [("range", &["--llvm"][..]), ("range_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9854,7 +9849,7 @@ def main(stdout: Stdout):
 /// and `str` going straight on its end: added to in a function given it, joined before more is
 /// added, and alongside lists looked at some other way, or joined with something between.
 #[test]
-fn pieces_joined_once_match_the_jit() -> std::io::Result<()> {
+fn pieces_joined_once_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -9899,8 +9894,8 @@ def main(stdout: Stdout):
     stdout.print(gathered([["x", "."], [".", "o"]]))
 "#;
     for (name, how) in [("pieces", &["--llvm"][..]), ("pieces_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -9908,7 +9903,7 @@ def main(stdout: Stdout):
 /// `for at, item in enumerate(list)` makes no pairs when the list stays as it is, and still does
 /// when the pairs are kept, looked at whole, or the list grows while it's gone through.
 #[test]
-fn enumerates_match_the_jit() -> std::io::Result<()> {
+fn enumerates_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -9937,19 +9932,19 @@ def main(stdout: Stdout):
 "#;
     for (name, how) in [("enumerates", &["--llvm"][..]), ("enumerates_release", &["--llvm", "--release"][..])]
     {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
 
 /// A list that's packed in native code, as it crosses to the JSON writer.
 #[test]
-fn json_of_packed_lists_matches_the_jit() -> std::io::Result<()> {
+fn json_of_packed_lists_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "json_packed",
         r#"from std import json
 
@@ -9967,9 +9962,9 @@ def main(stdout: Stdout):
 }
 
 /// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
-/// list of plain structs, and failing on bad text, as the interpreter does.
+/// list of plain structs, and failing on bad text, as pinned.
 #[test]
-fn json_matches_the_jit() -> std::io::Result<()> {
+fn json_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -10003,17 +9998,17 @@ def main(stdout: Stdout):
     stdout.print(failed.at.x)
 "#;
     for (name, how) in [("json", &["--llvm"][..]), ("json_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
 
 /// JSON read into dicts, by string, int, plain struct and tuple keys, and a dict a capability
-/// gives back, as the JIT has them. The variable is looked for by name in any case: Windows calls
+/// gives back, as pinned. The variable is looked for by name in any case: Windows calls
 /// it `Path`.
 #[test]
-fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
+fn json_into_dicts_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -10041,8 +10036,8 @@ def main(stdout: Stdout, env: Env):
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
     {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -10079,7 +10074,7 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
 /// A narrowed capability is a block owned like any other: made in a function, handed back,
 /// copied and replaced each time round a loop, it still says what it allows when it's used.
 #[test]
-fn narrowed_capabilities_match_the_jit() -> std::io::Result<()> {
+fn narrowed_capabilities_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -10100,14 +10095,14 @@ def main(stdout: Stdout, process: Process):
     stdout.print(kept)
 "#;
     for (name, how) in [("narrowed", &["--llvm"][..]), ("narrowed_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
 
 #[test]
-fn arguments_and_the_clock_match_the_interpreter() -> std::io::Result<()> {
+fn arguments_and_the_clock_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -10134,10 +10129,10 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).args(["one", "two"]).output_within()?;
-    let interpreted = interpreted_by(&program, "arguments_and_clock")?;
+    let pinned_outcome = pinned_outcome_of(&program, "arguments_and_clock")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
@@ -10505,7 +10500,7 @@ fn a_server_on_the_plain_runtime_serving_until_signals_stops_when_asked() -> std
 }
 
 #[test]
-fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
+fn capabilities_called_natively_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -10520,9 +10515,9 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
         command.current_dir(&dir).output_given(b"first\r\nsecond\n", FENNEC_DEADLINE)
     };
     let ran = with_lines(&mut Command::new(&executable))?;
-    let interpreted = interpreted_by(&program, "stdin_lines")?;
+    let pinned_outcome = pinned_outcome_of(&program, "stdin_lines")?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
@@ -10568,7 +10563,7 @@ def main(stdout: Stdout, fs: Fs):
 ";
 
 #[test]
-fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::io::Result<()> {
+fn fs_declared_in_std_is_found_by_name_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -10583,7 +10578,7 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = interpreted_by(&program, "fs_by_name")?;
+    let pinned_outcome = pinned_outcome_of(&program, "fs_by_name")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -10591,7 +10586,7 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
@@ -11375,7 +11370,7 @@ def main(stdout: Stdout, process: Process, fs: Fs):
 ";
 
 #[test]
-fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
+fn process_options_called_natively_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -11387,13 +11382,13 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = interpreted_by(&program, "process_options")?;
+    let pinned_outcome = pinned_outcome_of(&program, "process_options")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
         "one\ntwo\n\nTrue\nred\n\nTrue True\nthere's no folder `no-such-folder` to run it in\nnarrowed\n\nthis Process can run only `cat`, so it can't run `pwd`\n"
     );
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
@@ -11416,7 +11411,7 @@ def main(stdout: Stdout, fs: Fs):
 
 #[test]
 #[cfg(unix)]
-fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> {
+fn walking_a_folder_natively_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -11434,18 +11429,18 @@ fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> 
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = interpreted_by(&program, "walked")?;
+    let pinned_outcome = pinned_outcome_of(&program, "walked")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
         "tree/a.txt False\ntree/b True\ntree/b/c True\ntree/b/c/deep.txt False\ntree/b/up True\ntree/b/z.txt False\n\
          [\"tree/b/c\", \"tree/b/c/deep.txt\", \"tree/b/up\", \"tree/b/z.txt\"]\nrefused\nTrue\n"
     );
-    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome);
     Ok(())
 }
 
-/// The real network, with no interpreter behind it: a server and a client on this machine, each
+/// The real network, natively: a server and a client on this machine, each
 /// way a call can come out, and looping over each.
 const REAL_NETWORK: &str = "from std.net import NetError, Connection, Server
 from std.time import Duration
@@ -11521,10 +11516,10 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
+    same_as_expected_in_both_builds("real_network", REAL_NETWORK)
 }
 
-/// `bytes` over TCP and UDP natively, against the interpreter: what isn't text, reads of none and
+/// `bytes` over TCP and UDP natively, against what was pinned: what isn't text, reads of none and
 /// at the end, a packet's sender, timing out, a bad address and port, and looping over a socket.
 const NETWORK_BYTES: &str = "\
 from std.net import NetError
@@ -11580,7 +11575,7 @@ fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
+    same_as_expected_in_both_builds("network_bytes", NETWORK_BYTES)
 }
 
 /// The server's answers reach a client that's still sending when it's refused. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
@@ -12346,7 +12341,7 @@ fn a_program_that_makes_no_requests_links_no_tls() -> std::io::Result<()> {
 
 /// A built program prints what it should and has none of the interpreter in it.
 #[test]
-fn a_built_program_has_no_interpreter_in_it() -> std::io::Result<()> {
+fn a_built_program_prints_what_it_should() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -13312,10 +13307,9 @@ fn a_stale_threads_runtime_fails_the_build_rather_than_running_on_one_thread() -
 }
 
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
-/// std's collections among them, so a program reading and writing them links with no interpreter
-/// in it.
+/// std's collections among them, so a program reading and writing them builds natively.
 #[test]
-fn json_and_toml_of_plain_types_need_no_interpreter() -> std::io::Result<()> {
+fn json_and_toml_of_plain_types_go_through_std_in_fennec() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -13363,7 +13357,7 @@ def main(stdout: Stdout):
 }
 
 /// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
-/// std's readers and writers in Fennec, with no interpreter linked: in a list, in a field, inside
+/// std's readers and writers in Fennec: in a list, in a field, inside
 /// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's
 /// always `None`, and through TOML and `std.pack` too. An array of the wrong length doesn't load.
 #[test]
@@ -13590,15 +13584,15 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// Native JSON and TOML write and read what the JIT does, and fail with the same messages: a
+/// Native JSON and TOML write and read what was pinned, and fail with the same messages: a
 /// field left out, a value of the wrong type, a key no field has, inside and outside, and text
 /// that isn't JSON.
 #[test]
-fn native_json_and_toml_match_the_jit() -> std::io::Result<()> {
+fn native_json_and_toml_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "native_formats",
         r#"from std import json, toml
 
@@ -13645,16 +13639,17 @@ def main(stdout: Stdout):
     )
 }
 
-/// Two known differences between native JSON and the JIT's, both only in what a failed read says:
-/// a key given twice whose first value doesn't fit fails natively, where the JIT keeps the last
-/// value; and with two fields of the wrong type, native code names the first in the text, where
-/// the JIT names the first the type declares.
+/// Two known differences between native JSON and what was pinned for it, both only in what a
+/// failed read says: a key given twice whose first value doesn't fit fails natively, where the
+/// pinned outcome keeps the last value; and with two fields of the wrong type, native code names
+/// the first in the text, where the pinned outcome names the first the type declares.
 #[test]
-fn native_json_differs_from_the_jit_in_two_known_ways() -> std::io::Result<()> {
+fn json_fails_on_a_repeated_key_that_misfits_and_names_the_first_wrong_field_in_the_text()
+-> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let ((ours, _, _), (jit, _, _)) = both(
+    let ((ours, _, _), (wanted, _, _)) = both(
         "native_json_differences",
         r#"from std import json
 
@@ -13673,18 +13668,18 @@ def main(stdout: Stdout):
 "#,
     )?;
     assert_eq!(ours, "`x` should be an int, but it's a str\n`y` should be a float, but it's a str\n");
-    assert_eq!(jit, "read\n`x` should be an int, but it's a str\n");
+    assert_eq!(wanted, "read\n`x` should be an int, but it's a str\n");
     Ok(())
 }
 
 /// A list of a union's values, whose members are generic or tuples, prints each value as itself,
-/// as the interpreter does, from a literal or from fields, in `print` and in an f-string.
+/// from a literal or from fields, in `print` and in an f-string.
 #[test]
 fn lists_of_unions_with_generic_members_print_their_values() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "union_lists",
         r#"struct Box[T]:
     value: T
@@ -13968,13 +13963,13 @@ def main(stdout: Stdout):
 }
 
 /// A known difference: native code writes a field holding a union tagged with its member, as
-/// the language says, where the JIT's JSON writer left the tag out.
+/// the language says, where the pinned outcome left the tag out.
 #[test]
-fn native_json_tags_a_union_where_the_jit_does_not() -> std::io::Result<()> {
+fn json_tags_a_field_holding_a_union_with_its_member() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let ((ours, _, _), (jit, _, _)) = both(
+    let ((ours, _, _), (wanted, _, _)) = both(
         "native_json_union_tags",
         r"from std import json
 
@@ -13989,7 +13984,7 @@ def main(stdout: Stdout):
 ",
     )?;
     assert_eq!(ours, "{\"main\": {\"Circle\": {\"radius\": 1.5}}}\n");
-    assert_eq!(jit, "{\"main\": {\"radius\": 1.5}}\n");
+    assert_eq!(wanted, "{\"main\": {\"radius\": 1.5}}\n");
     Ok(())
 }
 
@@ -15760,18 +15755,18 @@ fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A `Buffer` popped empty, or inserted into past its end, fails as the interpreter says, not
-/// as a list does.
+/// A `Buffer` popped empty, or inserted into past its end, fails with a buffer's own message,
+/// not as a list does.
 #[test]
-fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
+fn an_empty_buffer_fails_to_pop_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "empty_buffer",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.push(\"fox\")\n    stdout.print(kept.pop())\n    stdout.print(kept.pop())\n",
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "buffer_insert",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n    stdout.print(kept[0])\n",
     )
@@ -15798,7 +15793,7 @@ def main(stdout: Stdout, net: Net):
         return
     stdout.print(\"listening\", up)
 ";
-    same_as_the_jit("net_kind", source)
+    same_as_pinned("net_kind", source)
 }
 
 /// A field read into a variable and then lent to a call that changes the place it was read from,
@@ -15938,7 +15933,7 @@ def main(stdout: Stdout):
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
 /// change, or copied out still takes an owner. `FENNEC_COUNTS` shows no copies.
 #[test]
-fn borrowed_reads_match_the_jit() -> std::io::Result<()> {
+fn borrowed_reads_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -15991,24 +15986,24 @@ def main(stdout: Stdout):
     tree = Tree.Node(left=.Node(left=.Leaf, right=.Leaf), right=.Leaf)
     stdout.print(size(tree))
 "#;
-    same_as_the_jit("borrowed", source)?;
+    same_as_pinned("borrowed", source)?;
     let counts = counts_of("borrowed", source)?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
 }
 
 /// `list.insert` at the front, the middle and the end, of numbers and of strings, then past the
-/// end, which fails as the interpreter says.
+/// end, which fails.
 #[test]
-fn a_list_insert_matches_the_jit() -> std::io::Result<()> {
+fn a_list_insert_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "list_insert",
         "def main(stdout: Stdout):\n    mut ns = [2, 4]\n    ns.insert(0, 1)\n    ns.insert(2, 3)\n    ns.insert(4, 5)\n    mut words = [\"b\"]\n    words.insert(0, \"a\")\n    words.insert(2, \"c\")\n    stdout.print(ns, words)\n",
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "list_insert_past",
         "def main(stdout: Stdout):\n    mut ns = [1]\n    ns.insert(3, 2)\n    stdout.print(ns)\n",
     )
@@ -16020,7 +16015,7 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
         return Ok(());
     }
     let source = "def find(names: list[str], wanted: str) -> str?:\n    for name in names:\n        if name == wanted: return name\n    None\n\nstruct Seen:\n    last: str?\n\ndef main(stdout: Stdout):\n    names = [\"fox\", \"kit\", \"den\"]\n    mut seen = Seen(last=None)\n    mut hits = 0\n    for at in range(1000):\n        found = find(names, names[at % 3])\n        if found is not None:\n            hits += 1\n        seen.last = found\n    stdout.print(hits, seen.last, find(names, \"owl\"))\n";
-    same_as_the_jit("optional", source)?;
+    same_as_pinned("optional", source)?;
     let counts = counts_of("optional", source)?;
     let allocations = counts
         .split_whitespace()
@@ -16075,20 +16070,20 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
 }
 
 #[test]
-fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()> {
+fn a_release_build_optimized_as_a_whole_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(seen.len(), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
-    let (ours, jit) = both_built("release", source, &["--llvm", "--release"])?;
-    assert_eq!((ours.0, ours.2), (jit.0, jit.2));
-    assert_eq!(ours.1.lines().next(), jit.1.lines().next());
+    let (ours, wanted) = both_built("release", source, &["--llvm", "--release"])?;
+    assert_eq!((ours.0, ours.2), (wanted.0, wanted.2));
+    assert_eq!(ours.1.lines().next(), wanted.1.lines().next());
     Ok(())
 }
 
 /// Floats have one equality, order and hash everywhere: `0.0` is `-0.0`, and NaN comes after
 /// everything and is the same as any other NaN, whatever its sign. So this is held to what that
-/// decision says, as the interpreter pinned it. The JIT's `==` and keys never followed it.
+/// decision says, as pinned.
 #[test]
 fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
     if !ready() {
@@ -16144,9 +16139,9 @@ def main(stdout: Stdout):
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output()?));
-    let interpreted = interpreted("floats_ordered_as_decided", source)?;
+    let pinned_outcome = pinned_outcome("floats_ordered_as_decided", source)?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(ours, interpreted);
+    assert_eq!(ours, pinned_outcome);
     assert_eq!(
         ours.0,
         "True True True False True
@@ -16277,9 +16272,24 @@ fn enums_in_blocks_compare_by_case_then_fields() -> std::io::Result<()> {
     )
 }
 
+/// `in` and `not in` on a list or set written out of constants, strings or ints, which only that
+/// test reads, compare with each constant and make nothing, giving what a made one would.
+#[test]
+fn looking_in_constants_written_out_gives_what_a_made_collection_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_constants",
+        include_str!("fixtures/in_constants.fen"),
+        "def True False\nde False False\ndeff False False\n True False\n\
+         a keyword much longer than eight bytes True False\na keyword much longer than eight bytes! False False\n\
+         else True False\nreturn True False\n-> True\n= False\n<= True\n>=> False\n[0, 1, 4, 6, 8, 9, 10, 12, 14]\n",
+    )
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
-/// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
-/// it. The JIT's `==` and keys never followed it.
+/// NaN, whatever its sign. So this is held to what that decision says, as pinned.
 #[test]
 fn floats_are_equal_as_decided() -> std::io::Result<()> {
     if !ready() {
@@ -16327,9 +16337,9 @@ def main(stdout: Stdout):
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let interpreted = interpreted("floats_as_decided", source)?;
+    let pinned_outcome = pinned_outcome("floats_as_decided", source)?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(ours, interpreted);
+    assert_eq!(ours, pinned_outcome);
     assert_eq!(
         ours.0,
         "True True True False True
@@ -16350,11 +16360,11 @@ False False
 /// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
 /// kept as it was first written.
 #[test]
-fn float_keys_match_the_jit() -> std::io::Result<()> {
+fn float_keys_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "float_keys",
         r#"from std.math import sqrt
 
@@ -16395,11 +16405,11 @@ def main(stdout: Stdout):
 
 /// Keys that hold strings or floats go by what they hold, not by their words.
 #[test]
-fn keys_holding_strings_and_floats_match_the_interpreter() -> std::io::Result<()> {
+fn keys_holding_strings_and_floats_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter(
+    same_as_expected(
         "keys_by_value",
         r#"struct Named:
     id: int
@@ -16542,11 +16552,11 @@ def main(stdout: Stdout):
 
 /// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
 #[test]
-fn operators_on_collections_match_the_jit() -> std::io::Result<()> {
+fn operators_on_collections_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "operators_on_collections",
         r#"struct Spot:
     x: int
@@ -16576,11 +16586,11 @@ def main(stdout: Stdout):
 }
 
 #[test]
-fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
+fn tuples_and_structs_compare_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "compare",
         r#"struct Point:
     x: int
@@ -16607,13 +16617,13 @@ def main(stdout: Stdout):
 }
 
 /// A `Table` uses its first free slot first, whatever order slots came free in, and where it
-/// looks from never changes which that is: the `Id`s it gives are the interpreter's.
+/// looks from never changes which that is: the `Id`s it gives are as pinned.
 #[test]
 fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "id_map_free_slots",
         r#"from std.collections import Id, Table
 
@@ -16654,11 +16664,11 @@ def main(stdout: Stdout):
 /// `reversed` of text and tuples, and `remove_where` and `clear` on a `Table`. An item added
 /// after either goes in the first slot it left free.
 #[test]
-fn reversing_and_removing_from_tables_match_the_jit() -> std::io::Result<()> {
+fn reversing_and_removing_from_tables_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "reversed_removed",
         r#"from std.collections import Table
 from std.math import sqrt
@@ -16712,11 +16722,11 @@ def main(stdout: Stdout):
 /// `Table.modify` changes an item where it is through a closure with a `ref` parameter, and a
 /// `Table`'s items change their fields as a list's do.
 #[test]
-fn changing_what_a_table_holds_matches_the_jit() -> std::io::Result<()> {
+fn changing_what_a_table_holds_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "table_changes",
         r#"from std.collections import Id, Table
 
@@ -16867,7 +16877,7 @@ fn walking_a_map_says_what_a_list_of_its_items_would() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("walking_a_map", WALKING_A_MAP)
+    same_as_pinned("walking_a_map", WALKING_A_MAP)
 }
 
 #[test]
@@ -16929,11 +16939,11 @@ def main(stdout: Stdout):
 "#;
 
 #[test]
-fn walking_a_tables_slots_matches_the_jit() -> std::io::Result<()> {
+fn walking_a_tables_slots_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("walking_slots", WALKING_SLOTS)
+    same_as_pinned("walking_slots", WALKING_SLOTS)
 }
 
 /// A `@hot` loop changing each item of a `Table` in place makes nothing and copies nothing:
@@ -17017,11 +17027,11 @@ def main(stdout: Stdout):
 }
 
 #[test]
-fn id_maps_match_the_jit() -> std::io::Result<()> {
+fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "idmap",
         r#"from std.collections import Id, Table
 
@@ -17048,7 +17058,7 @@ def main(stdout: Stdout):
         stdout.print(gone.name)
 "#,
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "stale",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    _ = names.remove(fox)\n    stdout.print(names[fox])\n",
     )
@@ -17057,11 +17067,11 @@ def main(stdout: Stdout):
 /// An `Id` finds nothing in a `Table` other than the one that gave it out, though a copy of that
 /// one, holding the same items, is the same `Table`.
 #[test]
-fn ids_from_another_table_match_the_jit() -> std::io::Result<()> {
+fn ids_from_another_table_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "other_table",
         r#"from std.collections import Id, Table
 
@@ -17080,16 +17090,16 @@ def main(stdout: Stdout):
         stdout.print(name, id in theirs, id in ours, held[0] in ours)
 "#,
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "other_table_stop",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "other_table_store",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
     )?;
     // Saved, an `Id` has to be from the `Table` saved with it.
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "other_table_saved",
         r#"from std import json
 from std.collections import Id, Table
@@ -17110,11 +17120,11 @@ def main(stdout: Stdout):
 
 /// Slices of tuples, with what they hold kept by both, and `enumerate` of a string.
 #[test]
-fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
+fn tuple_slices_and_enumerated_text_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "tuple_slices",
         r#"def main(stdout: Stdout):
     numbers = (1, 2, 3)
@@ -17130,11 +17140,11 @@ fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
 }
 
 #[test]
-fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
+fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "slices",
         r#"def main(stdout: Stdout):
     text = "abcabcabd"
@@ -17164,13 +17174,13 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
     )
 }
 
-/// All of `std.crypto`, of text and of bytes, which needs no interpreter.
+/// All of `std.crypto`, of text and of bytes.
 #[test]
-fn crypto_matches_the_jit() -> std::io::Result<()> {
+fn crypto_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "crypto_all",
         r#"from std import crypto
 
@@ -17184,13 +17194,13 @@ def main(stdout: Stdout):
     )
 }
 
-/// A BLAKE3 key that isn't one says so, as it does on the JIT.
+/// A BLAKE3 key that isn't one says so, as pinned.
 #[test]
-fn a_bad_crypto_key_fails_like_the_jit() -> std::io::Result<()> {
+fn a_bad_crypto_key_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "crypto_bad_key",
         r#"from std import crypto
 
@@ -17203,11 +17213,11 @@ def main(stdout: Stdout):
 
 /// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
 #[test]
-fn std_calls_match_the_jit() -> std::io::Result<()> {
+fn std_calls_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "std_calls",
         r#"import std.crypto as crypto
 import std.json as json
@@ -17251,12 +17261,12 @@ def main(stdout: Stdout):
 }
 
 #[test]
-fn std_pieces_the_proof_program_uses_match_the_jit() -> std::io::Result<()> {
+fn std_pieces_the_proof_program_uses_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     // Lists of lists and `dict.pop`.
-    same_as_the_jit(
+    same_as_pinned(
         "nested",
         r#"def main(stdout: Stdout):
     mut grid: list[list[int]] = [[], [1, 2]]
@@ -17276,7 +17286,7 @@ fn std_pieces_the_proof_program_uses_match_the_jit() -> std::io::Result<()> {
 "#,
     )?;
     // std's `PriorityQueue`, which compares tuples and pops from a dict.
-    same_as_the_jit(
+    same_as_pinned(
         "queue",
         r#"from std.collections import PriorityQueue
 
@@ -17290,7 +17300,7 @@ def main(stdout: Stdout):
 "#,
     )?;
     // f-strings of bools, tuples, plain structs and enums, and `list.pop(at)`.
-    same_as_the_jit(
+    same_as_pinned(
         "formats",
         r#"enum Team:
     Red
@@ -17316,8 +17326,8 @@ def main(stdout: Stdout):
     stdout.print(f"{first}", spots.len())
 "#,
     )?;
-    // std's `Random`, drawn as the interpreter draws it, ending in its failure.
-    same_message_as_the_jit(
+    // std's `Random`, drawn as pinned, ending in its failure.
+    same_message_as_pinned(
         "random",
         r#"from std.random import Random
 
@@ -17340,7 +17350,7 @@ fn a_method_checks_self_once_and_still_copies_a_shared_one() -> std::io::Result<
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "self_once",
         r"struct Counter:
     n: int
@@ -17443,10 +17453,10 @@ def main(stdout: Stdout):
     stdout.print(shared.a2, xs[0].a2, xs[1].a2)
 ";
     for (name, how) in [("kept", &["--llvm"][..]), ("kept_release", &["--llvm", "--release"][..])] {
-        let (ours, jit) = both_built(name, source, how)?;
-        assert_eq!(ours, jit);
-        let (ours, jit) = both_built(&format!("{name}_shifted"), shifted, how)?;
-        assert_eq!(ours, jit);
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
+        let (ours, wanted) = both_built(&format!("{name}_shifted"), shifted, how)?;
+        assert_eq!(ours, wanted);
     }
     Ok(())
 }
@@ -17508,24 +17518,24 @@ fn both_built_unpinned(name: &str, source: &str, how: &[&str]) -> std::io::Resul
 }
 
 #[test]
-fn failures_match_the_jit() -> std::io::Result<()> {
+fn failures_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     let print_after = "\n\ndef main(stdout: Stdout):\n    stdout.print(\"before\")\n";
-    same_as_the_jit(
+    same_as_pinned(
         "overflow",
         &format!("def f(n: int) -> int:\n    n * 9223372036854775807{print_after}    stdout.print(f(3))\n"),
     )?;
-    same_as_the_jit(
+    same_as_pinned(
         "zero",
         &format!("def f(n: int) -> int:\n    10 // n{print_after}    stdout.print(f(0))\n"),
     )?;
-    same_as_the_jit(
+    same_as_pinned(
         "outside",
         &format!("def f(n: int) -> int:\n    [1, 2][n]{print_after}    stdout.print(f(2))\n"),
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "before",
         &format!(
             "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    a[0]{print_after}    stdout.print(f(-3))\n"
@@ -17543,7 +17553,7 @@ fn failures_match_the_jit() -> std::io::Result<()> {
     assert!(!built.status.success());
     assert!(String::from_utf8_lossy(&built.stderr).contains("Fennec has no format `z`"));
     std::fs::remove_dir_all(&dir)?;
-    same_as_the_jit(
+    same_as_pinned(
         "deep",
         &format!("def f(n: int) -> int:\n    f(n + 1) + 1{print_after}    stdout.print(f(0))\n"),
     )
@@ -17578,11 +17588,11 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
 /// ASCII is stripped here, sharing a string with nothing to take off; other text goes to the
 /// runtime.
 #[test]
-fn strips_match_the_jit() -> std::io::Result<()> {
+fn strips_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "strips",
         r#"def main(stdout: Stdout):
     for s in ["", "   ", "x", " x", "x ", "\t a b \n", "\x0b\x0cq\r", "héllo  ", "  ünï  ", "abc", "  long text with spaces inside   "]:
@@ -17598,11 +17608,11 @@ fn strips_match_the_jit() -> std::io::Result<()> {
 
 /// `upper`, `lower`, `replace`, `find` and `split`, which run the runtime's own code.
 #[test]
-fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
+fn string_methods_the_runtime_runs_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "string_methods",
         r#"def main(stdout: Stdout):
     words = ["Hello", "wörld", "", "MiXeD 123"]
@@ -17615,11 +17625,11 @@ fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
 
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.
 #[test]
-fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
+fn strings_let_go_of_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "strings_let_go_of",
         r#"def main(stdout: Stdout):
     mut parts = ["a", "a much longer string than a header holds", "b", "c"]
@@ -17639,11 +17649,11 @@ fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
 /// 23 bytes, made from literals, slices, `+` and the runtime, so inline and block keys of the
 /// same text always meet as the same key.
 #[test]
-fn string_keys_in_place_match_the_jit() -> std::io::Result<()> {
+fn string_keys_in_place_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "string_keys",
         r#"def main(stdout: Stdout):
     letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
@@ -17676,13 +17686,13 @@ fn string_keys_in_place_match_the_jit() -> std::io::Result<()> {
 
 /// New string keys a dict nothing else holds gets, from slices and whole strings: added in
 /// native code while short and the dict has room, and by the runtime when long, the dict is
-/// full or shared, or the text isn't ASCII. Every way gives what the interpreter does.
+/// full or shared, or the text isn't ASCII. Every way gives what was pinned.
 #[test]
-fn new_string_keys_go_in_as_on_the_interpreter() -> std::io::Result<()> {
+fn new_string_keys_go_in_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "new_string_keys",
         r#"def main(stdout: Stdout):
     dna = "acgtacgtttgacca" * 300
@@ -17726,11 +17736,11 @@ fn new_string_keys_go_in_as_on_the_interpreter() -> std::io::Result<()> {
 /// block's text and from whole strings: a short one is compared by its header's words, its last
 /// part word read as the bytes ending where it ends, and both ways find the same entries.
 #[test]
-fn string_keys_of_every_length_match_the_interpreter() -> std::io::Result<()> {
+fn string_keys_of_every_length_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "string_key_lengths",
         r#"def main(stdout: Stdout):
     text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ"
@@ -17759,11 +17769,11 @@ fn string_keys_of_every_length_match_the_interpreter() -> std::io::Result<()> {
 
 /// Reading a string key a dict doesn't have fails with the key in the message.
 #[test]
-fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {
+fn a_missing_string_key_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "missing_string_key",
         r#"def main(stdout: Stdout):
     counts: dict[str, int] = {"fox": 1}
@@ -17774,11 +17784,11 @@ fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {
 
 /// A float sum over a generator, whose start the checker writes in by name, as an int's isn't.
 #[test]
-fn float_sums_over_generators_match_the_jit() -> std::io::Result<()> {
+fn float_sums_over_generators_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "float_sums",
         r"struct U:
     h: float
@@ -17795,11 +17805,11 @@ def main(stdout: Stdout):
 /// `while at + 8 <= n` guard keeps in range without checks: the same totals, at every length
 /// round a multiple of 8, and a read past the end still stops the program.
 #[test]
-fn a_list_taken_eight_items_a_turn_matches_the_interpreter() -> std::io::Result<()> {
+fn a_list_taken_eight_items_a_turn_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "eight_a_turn",
         r"def eights(items: list[float]) -> float:
     n = items.len()
@@ -17847,11 +17857,11 @@ def main(stdout: Stdout):
 /// Short strings made by every path that copies bytes into a header, at every length that fits
 /// and just past it, in ASCII and not.
 #[test]
-fn short_copies_match_the_jit() -> std::io::Result<()> {
+fn short_copies_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "short_copies",
         r#"def main(stdout: Stdout):
     for letters in ["abcdefghijklmnopqrstuvwxyz0123456789", "héllo wörld ünï çà ñé ßø åæ"]:
@@ -18185,11 +18195,11 @@ def main(stdout: Stdout):
 "#;
 
 #[test]
-fn types_holding_themselves_through_a_list_match_the_jit() -> std::io::Result<()> {
+fn types_holding_themselves_through_a_list_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("through_lists", THROUGH_LISTS)
+    same_as_pinned("through_lists", THROUGH_LISTS)
 }
 
 /// What's in place goes with the block holding it, so freeing a deep one needs no stack of its
@@ -18328,11 +18338,11 @@ def main(stdout: Stdout):
 /// The shared block behaves as a block of its own would: compared, matched, printed, held in
 /// lists and dicts, and made and let go of on other threads.
 #[test]
-fn cases_with_no_fields_match_the_jit() -> std::io::Result<()> {
+fn cases_with_no_fields_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("shared_leaves", &format!("{SHARED_LEAVES_TREE}{SHARED_LEAVES_MAIN}"))
+    same_as_pinned("shared_leaves", &format!("{SHARED_LEAVES_TREE}{SHARED_LEAVES_MAIN}"))
 }
 
 const SHARED_LEAVES_TREE: &str = "enum Tree:
@@ -18370,36 +18380,36 @@ const SHARED_LEAVES_MAIN: &str = r#"def main(stdout: Stdout):
 "#;
 
 #[test]
-fn enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
+fn enums_holding_blocks_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit("enums_holding_blocks", ENUMS_HOLDING_BLOCKS)?;
-    same_as_the_jit("enums_in_json_and_results", ENUMS_IN_JSON_AND_FAILURES)
+    same_as_pinned("enums_holding_blocks", ENUMS_HOLDING_BLOCKS)?;
+    same_as_pinned("enums_in_json_and_results", ENUMS_IN_JSON_AND_FAILURES)
 }
 
 /// Unions held in place, each with its member's case first: in lists and fields, optional,
 /// narrowed by `is`, read through methods every member has, compared, and copied when changed,
 /// with members that hold strings and lists.
 #[test]
-fn unions_holding_blocks_match_the_interpreter() -> std::io::Result<()> {
+fn unions_holding_blocks_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("unions_holding_blocks", UNIONS_HOLDING_BLOCKS)
+    same_as_expected_in_both_builds("unions_holding_blocks", UNIONS_HOLDING_BLOCKS)
 }
 
 /// A member given where a builtin takes its union: a dict's key to `get`, `pop` and `in`, a
 /// set's item to `add` and `in`, and a list's item to `append`.
 #[test]
-fn members_given_to_builtins_taking_a_union_match_the_interpreter() -> std::io::Result<()> {
+fn members_given_to_builtins_taking_a_union_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("members_given_to_builtins", MEMBERS_GIVEN_TO_BUILTINS)
+    same_as_expected_in_both_builds("members_given_to_builtins", MEMBERS_GIVEN_TO_BUILTINS)
 }
 
-/// A template string builds natively as the interpreter runs it: its text, its values of a
+/// A template string builds natively and runs as pinned: its text, its values of a
 /// union, each value's expression and format spec, a `LiteralStr` picked by a conditional and
 /// joined with `+`, and a template with no values.
 #[test]
@@ -18407,7 +18417,7 @@ fn template_strings_build_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("templates", TEMPLATES)
+    same_as_expected_in_both_builds("templates", TEMPLATES)
 }
 
 const TEMPLATES: &str = r#"type SqlValue = int | str
@@ -18442,21 +18452,21 @@ def main(stdout: Stdout):
 /// A generic type built where one of it is expected takes its types from there: a `Box[int |
 /// str]` built from an int or a str, in a parameter, a name's type and a list of them.
 #[test]
-fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io::Result<()> {
+fn generic_types_built_where_one_is_expected_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
+    same_as_expected_in_both_builds("generics_expected", GENERICS_EXPECTED)
 }
 
 /// A generic function whose type parameter is only in an `Iterator[T]` it's given works out
-/// what `T` is from the iterator. It once couldn't, so the build left the caller to the JIT.
+/// what `T` is from the iterator. It once couldn't, so the caller didn't build natively.
 #[test]
 fn a_generic_over_an_iterator_takes_its_type_from_it() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "generic_iterator",
         r#"def count[T](items: Iterator[T]) -> int:
     mut n = 0
@@ -18646,14 +18656,14 @@ fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
 /// runs as one whose body only computes does: here a loop, a comprehension and a sum whose
 /// ranges sleep, beside ones that don't.
 /// A `parallel` comprehension whose item can fail, like `[save(fs.read(path)?)? for path in
-/// parallel(paths)]`, builds natively, and fails as the interpreter does: what it fails with has
+/// parallel(paths)]`, builds natively, and fails as pinned: what it fails with has
 /// no way out of the runtime's ranges yet, so its items are made in order.
 #[test]
-fn a_parallel_comprehension_whose_item_can_fail_matches_the_interpreter() -> std::io::Result<()> {
+fn a_parallel_comprehension_whose_item_can_fail_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "parallel_tries",
         r#"def doubled(text: str) -> int fails InvalidValue:
     int(text)? * 2
@@ -18667,11 +18677,11 @@ def main(stdout: Stdout) fails InvalidValue:
 }
 
 #[test]
-fn parallel_bodies_that_wait_match_the_jit() -> std::io::Result<()> {
+fn parallel_bodies_that_wait_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "parallel_waiting",
         r"from std.time import Clock
 
@@ -18693,11 +18703,11 @@ def main(stdout: Stdout, clock: Clock):
 
 /// `parallel` puts items back by their case, letting go of what each item held.
 #[test]
-fn parallel_loops_over_enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
+fn parallel_loops_over_enums_holding_blocks_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "parallel_enums",
         r#"enum Token:
     Blank
@@ -18731,11 +18741,11 @@ def main(stdout: Stdout):
 
 /// A value passed `mut`, with a copy or another name for it passed without: that one keeps what it held.
 #[test]
-fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
+fn a_value_passed_both_ways_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "passed_both_ways",
         r#"struct Bag:
     label: str
@@ -18773,7 +18783,7 @@ fn copy_with_fields_runs_their_rules() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "copy_with_fields",
         r#"struct Player:
     name: str
@@ -18822,7 +18832,7 @@ fn popping_an_empty_list_gives_none() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "pop_or_none",
         r#"struct Unit:
     name: str
@@ -18865,7 +18875,7 @@ fn in_place_values_keep_their_owners_through_mut_params_and_pops() -> std::io::R
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "in_place_owners",
         r#"struct Person:
     name: str
@@ -19076,17 +19086,17 @@ def main(stdout: Stdout):
             pass
     stdout.print(NAMED, TEXT, TEXT.len())
 "#;
-    same_as_the_jit("constant_reads", source)
+    same_as_pinned("constant_reads", source)
 }
 
 /// Conversions and small builtins: floats to ints, `PI`, `range` and `reversed` as lists, and a
 /// dict's or set's keys as a list.
 #[test]
-fn conversions_match_the_jit() -> std::io::Result<()> {
+fn conversions_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "conversions",
         r#"from std.math import PI, ceil, floor
 
@@ -19156,10 +19166,10 @@ def check(n: int) fails Short:
 
 "#;
 
-/// A failing `main` says what the interpreter does, at the same place, after what it printed, and
+/// A failing `main` says what was pinned, at the same place, after what it printed, and
 /// the program ends with the same code.
 #[test]
-fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
+fn a_failing_main_ends_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -19172,8 +19182,8 @@ fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = interpreted_by(&program, &format!("failing_main_{name}"))?;
-        assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
+        let pinned_outcome = pinned_outcome_of(&program, &format!("failing_main_{name}"))?;
+        assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome, "{name}");
         assert_eq!(ran.status.code(), Some(1), "{name}");
     }
     std::fs::remove_dir_all(&dir)?;
@@ -19181,11 +19191,11 @@ fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
 }
 
 #[test]
-fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Result<()> {
+fn errors_of_several_types_go_up_and_show_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "errors_of_several_types",
         include_str!("fixtures/errors_of_several_types.fen"),
     )
@@ -19193,10 +19203,10 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
 
 /// An error's notes natively: none to start with, each `add_note` changing only that error, not
 /// a copy taken before, `==` and printing passing them over, a union of errors noting the error
-/// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
-/// interpreter, for an error with cases as for one without.
+/// it holds, and a failure reaching `main` or `expect` showing them under it. All as pinned, for
+/// an error with cases as for one without.
 #[test]
-fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
+fn notes_go_with_errors_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -19222,8 +19232,8 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = interpreted_by(&program, &format!("error_notes_{name}"))?;
-        assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
+        let pinned_outcome = pinned_outcome_of(&program, &format!("error_notes_{name}"))?;
+        assert_eq!(apart_from(&dir, outcome(&ran)), pinned_outcome, "{name}");
         let said = String::from_utf8_lossy(&ran.stderr);
         assert!(said.contains(note), "{name}: {said}");
     }
@@ -19233,19 +19243,16 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
 
 /// A function that says `fails A | B`, with errors that have cases among them.
 #[test]
-fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {
+fn failing_several_ways_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
-        "fails_several_ways",
-        include_str!("fixtures/fails_several_ways.fen"),
-    )
+    same_as_expected_in_both_builds("fails_several_ways", include_str!("fixtures/fails_several_ways.fen"))
 }
 
-/// A failed `assert` says all the JIT did, each side as the interpreter showed it.
+/// A failed `assert` says all that was pinned, each side as it's shown.
 #[test]
-fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
+fn a_failed_assert_shows_each_side() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -19384,13 +19391,13 @@ fn a_failed_assert_that_something_fails_says_what_happened() -> std::io::Result<
     Ok(())
 }
 
-/// A shift by a count that isn't one fails as the JIT says.
+/// A shift by a count that isn't one fails as pinned.
 #[test]
-fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
+fn a_bad_shift_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "bad_shift",
         "def main(stdout: Stdout):
     for count in [1, 64]:
@@ -19401,11 +19408,11 @@ fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
 
 /// A float outside an int's range doesn't become one.
 #[test]
-fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
+fn a_float_too_big_for_an_int_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "float_too_big",
         "def main(stdout: Stdout):
     huge = 1e300
@@ -19457,10 +19464,10 @@ def main(stdout: Stdout):
         nested = a
     stdout.print(nested)
 "#;
-    let (ours, jit) = both("a_loop_tests_what_its_body_gave_a_name", source)?;
-    let held = interpreted("a_loop_tests_what_its_body_gave_a_name", source)?;
+    let (ours, wanted) = both("a_loop_tests_what_its_body_gave_a_name", source)?;
+    let held = pinned_outcome("a_loop_tests_what_its_body_gave_a_name", source)?;
     assert_eq!(ours, held);
-    assert_eq!(jit, held);
+    assert_eq!(wanted, held);
     Ok(())
 }
 
@@ -19519,15 +19526,16 @@ def main(stdout: Stdout):
         stdout.print(shown is None)
         shown = at
 "#;
-    let (ours, jit) = both("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
-    let held = interpreted("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    let (ours, wanted) = both("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    let held = pinned_outcome("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
     assert_eq!(ours, held);
-    assert_eq!(jit, held);
+    assert_eq!(wanted, held);
     Ok(())
 }
 
-/// The other way round, a name that starts with a value and is given None. Not against the JIT,
-/// which stops when it's given None: #572.
+/// The other way round, a name that starts with a value and is given None. Held only to its
+/// outcome in `tests/fixtures/outcomes`, as the one in `tests/fixtures/pinned` stops when it's
+/// given None: #572.
 #[test]
 fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
     if !ready() {
@@ -19604,7 +19612,7 @@ def main(stdout: Stdout):
         method.clear()
 "#;
     let (ours, _) = both("a_loop_tests_a_name_its_body_gave_none", source)?;
-    assert_eq!(ours, interpreted("a_loop_tests_a_name_its_body_gave_none", source)?);
+    assert_eq!(ours, pinned_outcome("a_loop_tests_a_name_its_body_gave_none", source)?);
     Ok(())
 }
 
@@ -19614,7 +19622,7 @@ fn numbers_and_strings_go_in_lists_of_optionals() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "optional_items",
         r#"struct Holder:
     values: list[int?]
@@ -19657,11 +19665,11 @@ def main(stdout: Stdout):
 
 /// `None` itself inside a tuple.
 #[test]
-fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
+fn none_in_a_tuple_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "none_in_tuple",
         r#"def main(stdout: Stdout):
     pair = (1, None)
@@ -19742,14 +19750,14 @@ def main(stdout: Stdout) fails Nope:
 }
 
 /// A value of a union like `int | str`, read from a field or a list's item, prints and formats as
-/// itself, a string member unquoted, as in the interpreter: by `print`, `str` and an f-string.
+/// itself, a string member unquoted: by `print`, `str` and an f-string.
 /// Inside a list it's shown quoted, as any string in a list is.
 #[test]
 fn a_unions_value_from_a_field_or_an_item_prints_as_itself() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "union_text",
         r#"struct Box[T]:
     value: T
@@ -19770,14 +19778,14 @@ def main(stdout: Stdout):
     )
 }
 
-/// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
-/// interpreter. LLVM refused it once, and the JIT got it wrong (#572).
+/// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`. LLVM
+/// refused it once (#572).
 #[test]
-fn a_name_narrowed_to_none_prints_as_the_interpreter_does() -> std::io::Result<()> {
+fn a_name_narrowed_to_none_prints_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "narrowed_none",
         r#"def main(stdout: Stdout):
     mut x: int? = 5
@@ -19793,11 +19801,11 @@ fn a_name_narrowed_to_none_prints_as_the_interpreter_does() -> std::io::Result<(
 }
 
 #[test]
-fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
+fn optional_strings_in_lists_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "optional_strings_in_lists",
         r#"def first(words: list[str]) -> str?:
     if words.len() > 0:
@@ -19819,11 +19827,11 @@ def main(stdout: Stdout):
 /// `==` and `!=` on an optional string, against a string, another optional string or `None`:
 /// short and long strings, and `None`, whose header is all zero, on either side.
 #[test]
-fn optional_strings_compare_as_the_jit_does() -> std::io::Result<()> {
+fn optional_strings_compare_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "optional_strings_compare",
         r#"def first(words: list[str]) -> str?:
     if words.len() > 0:
@@ -19846,11 +19854,11 @@ def main(stdout: Stdout):
 /// A generic's `T?` with `T` an optional is that optional, as the checker has it: `first` of a
 /// `list[str?]` gives back a `str?`, and a `SortedMap[int, str?]`'s `get` and `remove` do too.
 #[test]
-fn an_optional_of_an_optional_is_the_optional_as_on_the_jit() -> std::io::Result<()> {
+fn an_optional_of_an_optional_is_the_optional_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "optional_of_optional",
         r#"from std.collections import SortedMap
 
@@ -19878,11 +19886,11 @@ def main(stdout: Stdout):
 
 /// `?` in `main`, which then can fail: going on when nothing failed.
 #[test]
-fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
+fn a_main_giving_back_a_result_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "main_gives_back",
         r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
@@ -19896,11 +19904,11 @@ def main(stdout: Stdout):
 
 /// A function that can fail in more than one way, however its error is then read.
 #[test]
-fn sets_of_errors_match_the_jit() -> std::io::Result<()> {
+fn sets_of_errors_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "error_sets",
         r#"error NotFound:
     name: str
@@ -19982,13 +19990,13 @@ def main(stdout: Stdout):
     )
 }
 
-/// An error from a set that nothing handles ends the program as the JIT's does.
+/// An error from a set that nothing handles ends the program as pinned.
 #[test]
-fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
+fn an_unhandled_error_of_a_set_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "error_set_unhandled",
         "error NotFound:
     name: str
@@ -20011,11 +20019,11 @@ def main(stdout: Stdout) -> int:
 
 /// `?` in `main` on an error fails the program, saying so at `main`.
 #[test]
-fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
+fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
@@ -20030,7 +20038,7 @@ def main(stdout: Stdout):
 
 /// A failure in a function with nothing else in it that can fail still says what went wrong.
 #[test]
-fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> {
+fn failing_calls_alone_in_a_function_fail_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -20044,7 +20052,7 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_min", "min(empty)"),
         ("alone_shift", "1 << 64"),
     ] {
-        same_message_as_the_jit(
+        same_message_as_pinned(
             name,
             &format!(
                 "from std.math import ceil, floor
@@ -20316,8 +20324,7 @@ fn a_type_parameter_used_only_in_a_body_is_given_by_the_call() -> std::io::Resul
     Ok(())
 }
 
-/// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
-/// the interpreter has no types at run time to find it through.
+/// `T.make()` calls the function of the type each copy of a generic stands for.
 #[test]
 fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
     if !ready() {
@@ -20345,11 +20352,11 @@ fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
 /// `max` and `min` of lists and of values, with keys and a type's own `<`, as the first of equals
 /// wins; `in` and `remove` on lists of each kind of item; `sin`, `cos` and `str` of what isn't text.
 #[test]
-fn small_calls_match_the_jit() -> std::io::Result<()> {
+fn small_calls_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "small_calls",
         r#"from std.math import cos, sin
 
@@ -20398,7 +20405,7 @@ fn a_function_failing_only_in_max_min_or_remove_builds() -> std::io::Result<()> 
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds(
+    same_as_expected_in_both_builds(
         "fails_only_in_max",
         r#"def top(values: list[int]) -> int:
     max(values)
@@ -20427,13 +20434,13 @@ def main(stdout: Stdout):
     )
 }
 
-/// `max` of nothing, and removing what isn't there, fail as the JIT says.
+/// `max` of nothing, and removing what isn't there, fail as pinned.
 #[test]
-fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
+fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "max_of_nothing",
         "def main(stdout: Stdout):
     mut none = [1]
@@ -20441,7 +20448,7 @@ fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
     stdout.print(max(none))
 ",
     )?;
-    same_message_as_the_jit(
+    same_message_as_pinned(
         "remove_missing",
         "def main(stdout: Stdout):
     mut some = [1]
@@ -20454,11 +20461,11 @@ fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
 /// Numbers read from text, with what fails being a value the program holds; and lists and sets of
 /// a string's characters and a list's items.
 #[test]
-fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
+fn numbers_and_sets_from_text_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_pinned(
         "numbers_from_text",
         r#"from std.re import Regex
 
@@ -20536,8 +20543,8 @@ test \"a failure comes back as its case\"(net: Net):
     Ok(())
 }
 
-/// What a compiled program does without the interpreter, a compiled test does with its fakes: a
-/// sleep passes no time, and nothing runs.
+/// What a compiled program does natively, a compiled test does with its fakes: a sleep passes no
+/// time, and nothing runs.
 #[test]
 fn a_tests_clock_and_process_stay_fakes_through_llvm() -> std::io::Result<()> {
     if !ready() {
@@ -20571,7 +20578,7 @@ test \"nothing runs\"(process: Process):
 }
 
 /// A property test runs through LLVM with each input, and one that fails there shrinks what it
-/// failed for there too, as the interpreter does.
+/// failed for there too.
 #[test]
 fn property_tests_run_through_llvm() -> std::io::Result<()> {
     if !ready() {
@@ -20609,7 +20616,7 @@ test \"this one goes too far\" for value: int:
 }
 
 /// A failing property test shrinks a float, a struct and an input whose body passes a failure up
-/// through LLVM, as the interpreter does, rather than running again another way.
+/// through LLVM, rather than running again another way.
 #[test]
 fn every_failing_property_test_shrinks_through_llvm() -> std::io::Result<()> {
     if !ready() {

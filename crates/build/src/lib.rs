@@ -16,7 +16,7 @@ mod traced;
 mod tree;
 mod verdict;
 
-pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, UNUSED_BUILD, VERSION};
+pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, KEPT_RECENT, UNUSED_BUILD, VERSION};
 pub use changes::{Change, Kind, changes};
 pub use reach::test_keys;
 pub use reached::{

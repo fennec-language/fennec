@@ -981,6 +981,10 @@ impl Emit<'_, '_, '_> {
                 } else if let Some((joined, parts)) = self.appended_parts(&inst.kind, next) {
                     self.append_parts(joined, &parts, inst.span)?;
                     appended = true;
+                } else if let Some((tested, op, wanted, items)) = self.literals_tested(&inst.kind, next) {
+                    // A list or set written out of constants only to be looked in is never made.
+                    self.in_literals(tested, op, &wanted, &items)?;
+                    appended = true;
                 } else {
                     self.inst(&inst.kind, inst.span, at)?;
                 }
@@ -1429,7 +1433,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// As [`Self::leave_if`], after a call from the program into the standard library: a failure
-    /// inside it is said to be here, where the program called it, as the interpreter says it.
+    /// inside it is said to be here, where the program called it.
     fn leave_pointing_here(&mut self, failed: &str, span: Span) {
         let (here, ok) = (self.label("from_std"), self.label("ok"));
         self.needs_prop = true;
@@ -2608,7 +2612,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = select i1 {negative}, i64 {flipped}, i64 {value}"));
                 self.assign(dest.ok_or("no result")?, &temp)
             }
-            // A capability's method, run by the runtime as the interpreter runs it.
+            // A capability's method, run by the runtime.
             other
                 if other.contains('.')
                     && matches!(first, Some(Operand::Local(local)) if self.kind_of(*local).ok() == Some(&Kind::Cap)) =>
@@ -2926,6 +2930,77 @@ impl Emit<'_, '_, '_> {
             && self.known.used_once(made)
             && matches!(self.kinds.get(joined.0), Some(Kind::Str | Kind::TextBlock)))
         .then_some((*joined, parts))
+    }
+
+    /// A list or set written out of constant strings or ints, which only the `in` right after reads
+    /// (`not in` is that, then `not`): the `in`'s local, which way it asks, what it looks for, and
+    /// the constants.
+    fn literals_tested(
+        &self,
+        inst: &InstKind,
+        next: Option<&InstKind>,
+    ) -> Option<(LocalId, BinOp, Operand, Vec<Operand>)> {
+        let (InstKind::MakeList { dest: made, items } | InstKind::MakeSet { dest: made, items }) = inst
+        else {
+            return None;
+        };
+        let Some(InstKind::Builtin { dest: Some(dest), name, args, .. }) = next else { return None };
+        let [Operand::Local(looked_in), lhs @ Operand::Local(wanted)] = args.as_slice() else { return None };
+        if !matches!(name.as_str(), "list.contains" | "set.contains")
+            || looked_in != made
+            || !self.known.used_once(*made)
+        {
+            return None;
+        }
+        let strings = items.iter().all(|item| matches!(item, Operand::Str(_)));
+        let ints = items.iter().all(|item| matches!(item, Operand::Int(_)));
+        let fits = match self.kinds.get(wanted.0) {
+            Some(Kind::Str) => strings,
+            Some(Kind::Int) => ints,
+            _ => false,
+        };
+        (fits && (1..=64).contains(&items.len())).then(|| (*dest, BinOp::In, lhs.clone(), items.clone()))
+    }
+
+    /// `wanted in [constants]`, or `not in`, as a compare with each: no list or set is made.
+    fn in_literals(
+        &mut self,
+        dest: LocalId,
+        op: BinOp,
+        wanted: &Operand,
+        items: &[Operand],
+    ) -> Result<(), String> {
+        let (a, _) = self.operand(wanted)?;
+        let mut found = "false".to_owned();
+        for item in items {
+            let same = match item {
+                // As `==` on two strings is, by the way strings are held.
+                Operand::Str(_) if self.headers() => {
+                    let (b, _) = self.operand(item)?;
+                    self.header_binary(BinOp::Eq, (&a, &b))?
+                }
+                Operand::Str(literal) if literal.len() <= 8 => self.same_as_short(BinOp::Eq, &a, literal),
+                Operand::Str(_) => {
+                    let (b, _) = self.operand(item)?;
+                    self.string_binary(BinOp::Eq, (&a, &b))?
+                }
+                Operand::Int(number) => {
+                    let same = self.temp();
+                    self.line(&format!("{same} = icmp eq i64 {a}, {number}"));
+                    same
+                }
+                _ => return Err("`in` on constants that aren't strings or ints".to_owned()),
+            };
+            let either = self.temp();
+            self.line(&format!("{either} = or i1 {found}, {same}"));
+            found = either;
+        }
+        if op == BinOp::NotIn {
+            let missing = self.temp();
+            self.line(&format!("{missing} = xor i1 {found}, true"));
+            found = missing;
+        }
+        self.assign(dest, &found)
     }
 
     /// Lookups only stay good across instructions that leave dicts alone and don't change the
@@ -3324,7 +3399,7 @@ mod tests {
     }
 
     #[test]
-    fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
+    fn arguments_and_the_clock_are_native_calls() -> Result<(), String> {
         let source = "\
 from std.time import Clock, Duration
 
@@ -3339,6 +3414,44 @@ def main(stdout: Stdout, args: Args, clock: Clock):
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");
         assert!(!text.contains("fennec_capability_call"), "{text}");
+        Ok(())
+    }
+
+    /// `in` on a set or list written out of constants, which nothing else reads, makes neither: it
+    /// compares with each constant. One the function keeps, or of values worked out, is made.
+    #[test]
+    fn looking_in_constants_written_out_makes_no_collection() -> Result<(), String> {
+        let source = "\
+def is_keyword(word: str) -> bool:
+    return word in {\"def\", \"if\", \"a keyword longer than eight bytes\"}
+
+def small(n: int) -> bool:
+    return n in [1, 2, 3]
+
+def kept(word: str) -> bool:
+    words = [\"def\", \"if\"]
+    return word in words and words.len() == 2
+
+def kept_set(word: str) -> bool:
+    words = {\"def\", \"if\"}
+    return word in words and words.len() == 2
+
+def main(stdout: Stdout):
+    stdout.print(is_keyword(\"if\"), small(2), kept(\"if\"), kept_set(\"if\"))
+";
+        for name in ["is_keyword", "small"] {
+            let text = text_of(source, name)?;
+            for made in ["@fennec_list_new(", "@fennec_dict_new(", "@fennec_list_contains("] {
+                assert!(
+                    !text.contains(&format!("call ptr {made}")) && !text.contains(&format!("call i8 {made}")),
+                    "{name} calls {made}: {text}"
+                );
+            }
+        }
+        let text = text_of(source, "kept")?;
+        assert!(text.contains("@fennec_list_contains("), "a list kept is made and looked in: {text}");
+        let text = text_of(source, "kept_set")?;
+        assert!(text.contains("call ptr @fennec_dict_new("), "a set kept is made: {text}");
         Ok(())
     }
 

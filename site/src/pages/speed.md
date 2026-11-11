@@ -10,7 +10,7 @@ description: How Fennec runs near native speed and builds almost instantly, with
 
 ## Today
 
-`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says why, as `fennec build` does. `fennec build` always makes a native program through LLVM, with no interpreter in it, and `--release` optimizes the whole program as one.
+`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says why, as `fennec build` does. `fennec build` always makes a native program through LLVM, and `--release` optimizes the whole program as one.
 
 In CI, release builds of the benchmark suite run at about the speed of hand-written twins in a fast, C-class systems language. That's the whole run of each program, startup included. A development build of one kernel takes well under a second. The [benchmarks](/benchmarks/) have every number and how it's measured.
 

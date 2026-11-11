@@ -64,7 +64,7 @@ fn parts(returns: &Type) -> Lowered<(Type, Option<Type>)> {
 }
 
 /// The name of the function that resumes a generator.
-/// The help under the error for a generator used twice, as the interpreter gives it.
+/// The help under the error for a generator used twice.
 const USED_ONCE: &str = "a generator can be used once: `list(...)` keeps its items to use again";
 
 pub(super) fn resume_name(generator: &str) -> String {

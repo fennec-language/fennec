@@ -3,8 +3,7 @@
 //! Worker processes run it, each with its share of the tests. A test a crash left unfinished runs
 //! again alone, so a crash is reported as that test's. Tests LLVM can't build yet come back for
 //! the caller to fail, with why. A test that fails says why, both sides of an `assert` and what a
-//! failure passed up was, and a property test's input is shrunk to the simplest that fails, as the
-//! interpreter shrank it.
+//! failure passed up was, and a property test's input is shrunk to the simplest that fails.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -272,12 +271,12 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     Some(caller)
 }
 
-/// The functions of property test `number` that shrinks a failing input itself, as the
-/// interpreter's `shrink` did: the test, which tries each input in turn; an attempt, which runs the
-/// body on an input and says whether it passed; and the shrinking, which tries each input's simpler
-/// values, in order, keeping the first that still fails, until none does or 200 have been tried.
-/// Then it runs the body on the simplest, which fails as the test's failure, saying what it was
-/// given. `simpler` has each input's function giving its simpler values.
+/// The functions of property test `number` that shrinks a failing input itself: the test, which
+/// tries each input in turn; an attempt, which runs the body on an input and says whether it
+/// passed; and the shrinking, which tries each input's simpler values, in order, keeping the first
+/// that still fails, until none does or 200 have been tried. Then it runs the body on the simplest,
+/// which fails as the test's failure, saying what it was given. `simpler` has each input's
+/// function giving its simpler values.
 fn shrinking_functions(
     number: usize,
     test: &TestDef,

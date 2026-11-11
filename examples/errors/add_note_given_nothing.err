@@ -1,0 +1,7 @@
+error: `add_note` takes the note's text
+ --> examples/errors/add_note_given_nothing.fen:6:5
+  |
+6 |     failure.add_note()
+  |     ^^^^^^^^^^^^^^^^^^
+  |
+  = help: give it one str, like `add_note(f"while {what}")`

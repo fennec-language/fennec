@@ -146,6 +146,7 @@ pub(crate) fn emit_with(
         crate::NativeBlocks::Watched
     };
     let everything = whole(program);
+    shared.can_fail = everything.can_fail.iter().map(|name| (*name).to_owned()).collect();
     let layouts = crate::layouts_of(program);
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.

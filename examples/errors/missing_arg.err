@@ -3,3 +3,5 @@ error: `area` is missing its `height` argument
   |
 5 |     stdout.print(area(width=2.0))
   |                  ^^^^^^^^^^^^^^^
+  |
+  = help: pass it, as `height=` and a float

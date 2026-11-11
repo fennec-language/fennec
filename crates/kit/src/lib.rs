@@ -46,6 +46,19 @@ pub struct Embedded {
 }
 
 impl Program {
+    /// This program with `module` in place of its own, which isn't copied.
+    #[must_use]
+    pub fn with_module(&self, module: Module) -> Program {
+        Program {
+            module,
+            sources: self.sources.clone(),
+            manifest: self.manifest.clone(),
+            embedded: self.embedded.clone(),
+            kit_src: self.kit_src.clone(),
+            dependency_files: self.dependency_files.clone(),
+        }
+    }
+
     /// Whether something at `span` is in this kit's own files, rather than a dependency's, whose
     /// lints aren't for this kit to act on.
     #[must_use]

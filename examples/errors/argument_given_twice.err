@@ -1,0 +1,7 @@
+error: `width` is given twice
+ --> examples/errors/argument_given_twice.fen:5:38
+  |
+5 |     stdout.print(area(width=2, width=3, height=4))
+  |                                      ^
+  |
+  = help: keep one `width=...` and take the other out

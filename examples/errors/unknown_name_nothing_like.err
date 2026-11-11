@@ -1,0 +1,7 @@
+error: `score` doesn't exist
+ --> examples/errors/unknown_name_nothing_like.fen:2:18
+  |
+2 |     stdout.print(score)
+  |                  ^^^^^
+  |
+  = help: give it a value first, as `score = ...`, or check the spelling

@@ -1,0 +1,7 @@
+error: a loop over `fields(...)` takes one name for each field
+ --> examples/errors/fields_loop_two_names.fen:7:5
+  |
+7 |     for name, field in fields(T):
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: name each field once, as `for field in fields(T):`

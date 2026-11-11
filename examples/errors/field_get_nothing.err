@@ -1,0 +1,7 @@
+error: `get` takes the value to read the field of
+  --> examples/errors/field_get_nothing.fen:11:17
+   |
+11 |         show(f"{field.get()}")
+   |                 ^^^^^^^^^^^
+   |
+   = help: pass the value whose field it reads, as `field.get(value)`

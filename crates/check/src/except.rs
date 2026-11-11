@@ -33,7 +33,7 @@ impl FnCx<'_> {
             ),
         }
         let Some((name, body)) = handler.failure_named() else { return };
-        if let Some((subject, arms)) = arms_under(name, body, handler) {
+        if let Some((subject, arms)) = arms_under(name, body) {
             let at = (subject.span.start, subject.span.end);
             self.except_subjects.insert(at);
             for arm in arms {
@@ -131,12 +131,13 @@ impl FnCx<'_> {
 }
 
 /// The `match` an `except`'s arms are written in as: one statement that's a `match` over the
-/// failure's name, starting where the handler does, which a `match` written in the block can't.
-fn arms_under<'h>(name: &str, body: &'h [Stmt], handler: &Expr) -> Option<(&'h Expr, &'h [MatchArm])> {
+/// failure's name, which is written before the arms, after `except`. A `match` written in the
+/// block has its subject after its own `match`.
+fn arms_under<'h>(name: &str, body: &'h [Stmt]) -> Option<(&'h Expr, &'h [MatchArm])> {
     let [Stmt { kind: StmtKind::Expr(matched), .. }] = body else { return None };
     let ExprKind::Match { subject, arms } = &matched.kind else { return None };
     let named = matches!(&subject.kind, ExprKind::Name(found) if found == name);
-    (named && matched.span.start == handler.span.start).then_some((subject.as_ref(), arms.as_slice()))
+    (named && subject.span.start < matched.span.start).then_some((subject.as_ref(), arms.as_slice()))
 }
 
 /// A `match` over the failure written in an `except` block, as its own statement.

@@ -98,7 +98,7 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
     }
     if let Some(cache) = &cache {
         // A cache that can't be written only means looking at the tests again next time.
-        let _ = cache.write("tested", &name, passed.as_bytes());
+        fennec_build::kept("keep which tests passed", cache.write("tested", &name, passed.as_bytes()));
     }
     None
 }
@@ -244,7 +244,8 @@ fn run_plan(
         if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
             if failed == 0 {
                 // A cache that can't be written only means looking at all of it next time.
-                let _ = crate::verdict::remember((cache, name), (files, &program), &facts);
+                let remembered = crate::verdict::remember((cache, name), (files, &program), &facts);
+                fennec_build::kept("keep what the tests depend on", remembered);
             } else {
                 crate::verdict::forget((cache, name));
             }
@@ -321,9 +322,9 @@ impl Results {
     fn store(&self, passing: &[TestRecord]) {
         if let Some((cache, program)) = &self.cache {
             // A cache that can't be written only means running these tests again next time.
-            let _ = cache.store_test_records(program, passing);
+            fennec_build::kept("keep what the tests ran", cache.store_test_records(program, passing));
             if let Some(named) = kit_named(program) {
-                let _ = cache.store_test_records(&named, passing);
+                fennec_build::kept("keep what the tests ran", cache.store_test_records(&named, passing));
             }
         }
     }

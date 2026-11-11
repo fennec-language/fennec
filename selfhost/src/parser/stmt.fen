@@ -73,6 +73,7 @@ extend Parser:
             case "return":
                 if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
                     return .Return(None)
+                self.value_at_top = True
                 .Return(self.expr()?)
             case "fail": .Fail(self.expr()?)
             case "yield": .Yield(self.expr()?)
@@ -108,6 +109,7 @@ extend Parser:
         name = self.name("a name after `shared`")?
         target = Expr(kind=.Name(name), span=at)
         _ = self.expect_punct("=")?
+        self.value_at_top = True
         value = self.expr()?
         ty = TypeExpr(name="shared", args=[], optional=False, span=word)
         .Assign(target, None, value, declare_mut=False, ty=ty)
@@ -149,6 +151,7 @@ extend Parser:
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     def expr_or_assign(ref self) -> StmtKind fails Diagnostic:
+        self.value_at_top = True
         mut target = self.expr()?
         if is_name_expr(target) and self.eat_punct(":"):
             ty = self.type_expr()?
@@ -186,6 +189,7 @@ extend Parser:
                 span=self.span(),
                 help="write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
             )
+        self.value_at_top = True
         self.expr()?
 
     def if_stmt(ref self) -> Stmt fails Diagnostic:

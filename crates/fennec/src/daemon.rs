@@ -313,7 +313,7 @@ mod unix {
                     // The daemon owns the cache, so it keeps it under its cap, in time when
                     // nothing else is going on.
                     if cleanup_due(last_cleanup.map(|last| last.elapsed())) {
-                        let _ = cache.cleanup(Cache::cap());
+                        fennec_build::kept("clean up", cache.cleanup(Cache::cap()));
                         fennec_build::sweep_work(home, fennec_build::WORK_KEPT);
                         last_cleanup = Some(Instant::now());
                     }

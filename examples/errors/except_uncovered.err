@@ -1,0 +1,7 @@
+error: this `except` doesn't handle `LoadError.Damaged`
+  --> examples/errors/except_uncovered.fen:10:30
+   |
+10 |     score = load("save.txt") except .Missing(path): 0
+   |                              ^^^^^^
+   |
+   = help: handle every case it can fail with: write `except why:` with a `case` arm for each, or a `case _:` that uses `why`

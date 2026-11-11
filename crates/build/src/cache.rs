@@ -179,9 +179,12 @@ impl Cache {
             Err(_) => false,
         };
         if due || since.is_err() {
-            // A mark that can't be written means asking again next time, which is harmless.
-            let _ = std::fs::create_dir_all(&self.root);
-            let _ = File::create(&mark).and_then(|file| file.set_modified(SystemTime::now()));
+            // A mark that can't be written means asking again next time, which is harmless, but
+            // it's said.
+            let marked = std::fs::create_dir_all(&self.root)
+                .and_then(|()| File::create(&mark))
+                .and_then(|file| file.set_modified(SystemTime::now()));
+            crate::kept("mark when it was last cleaned up", marked);
         }
         due
     }
@@ -257,12 +260,11 @@ impl Entry {
 }
 
 /// Marks an entry as just used, for cleanup's order. A program kept read-only can't be opened to
-/// write, but its owner may still set its time. Only cleanup's order and the sweep of old runs
-/// depend on this, so a failure here doesn't matter.
+/// write, but its owner may still set its time. Cleanup's order and the sweep of old runs depend
+/// on this, so a failure is said; an entry another command's cleanup took meanwhile is none.
 fn mark_used(path: &Path) {
-    if let Ok(file) = File::open(path) {
-        let _ = file.set_modified(SystemTime::now());
-    }
+    let marked = File::open(path).and_then(|file| file.set_modified(SystemTime::now()));
+    crate::touched("mark what it used as used", marked);
 }
 
 /// Every file under `dir`, in the build folder `build`.
@@ -314,7 +316,10 @@ impl Lock {
                     if !age.and_then(|time| time.elapsed().ok()).is_some_and(is_stale) {
                         return Ok(None);
                     }
-                    let _ = std::fs::remove_file(path);
+                    crate::touched(
+                        "take over a cleanup lock left by one that died",
+                        std::fs::remove_file(path),
+                    );
                 }
                 Err(err) => return Err(err),
             }
@@ -330,7 +335,7 @@ fn is_stale(age: Duration) -> bool {
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        crate::touched("let go of its cleanup lock", std::fs::remove_file(&self.path));
     }
 }
 

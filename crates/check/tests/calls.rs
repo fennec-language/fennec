@@ -139,7 +139,7 @@ fn enum_cases_are_built_by_name() {
     assert_eq!(
         help,
         [
-            "write one of Shape.Circle, Shape.Rect, Shape.Point",
+            "write one of `Shape.Circle`, `Shape.Rect`, `Shape.Point`",
             "say which one: `Shape.Point` or `Team.Point`"
         ]
     );

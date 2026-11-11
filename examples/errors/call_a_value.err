@@ -1,0 +1,7 @@
+error: an int can't be called
+ --> examples/errors/call_a_value.fen:3:18
+  |
+3 |     stdout.print(count())
+  |                  ^^^^^
+  |
+  = help: only a function can be called: take the `(...)` off to use the value as it is

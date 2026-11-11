@@ -177,6 +177,9 @@ struct Checker:
                                 self.check_written(written, generic_names(generics))
                         self.check_expr(object, generics)
                         self.check_expr(index, generics)
+                    case .Attr(object, _, _):
+                        self.check_static_types(object)
+                        self.check_expr(callee, generics)
                     case _: self.check_expr(callee, generics)
                 for arg in args:
                     self.check_expr(arg.value, generics)
@@ -239,6 +242,30 @@ struct Checker:
 
     ## Whether a call on `object[...]` takes the types in its brackets, as the Rust checker
     ## reads them: a type, `list`, `dict` or `set`, a function, or a method or module function.
+    ## `Deque[int].of(items)`: a static method, with its type's parameters written in brackets,
+    ## one for each.
+    def check_static_types(ref self, object: Expr):
+        match object.kind:
+            case .Index(written, index):
+                match written.kind:
+                    case .Name(name) if name in self.program.types:
+                        given = bracket_types(index).len()
+                        params = self.program.type_params(name)
+                        if given != params.len():
+                            mut takes = f"{params.len()} types"
+                            if params.len() == 1:
+                                takes = "1 type"
+                            listed = ", ".join(params)
+                            self.diagnostics.append(
+                                Diagnostic(
+                                    message=f"`{name}` takes {takes} in brackets, but this gives {given}",
+                                    span=index.span,
+                                    help=f"write one type for each of its parameters, as `{name}[{listed}]`",
+                                ),
+                            )
+                    case _: pass
+            case _: pass
+
     def takes_types(self, object: Expr) -> bool:
         match object.kind:
             case .Name(name):

@@ -1,0 +1,16 @@
+struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        self.radius * self.radius * 3.0
+
+struct Dot:
+    at: int
+
+type Shape = Circle | Dot
+
+def size(shape: Shape) -> float:
+    shape.area()
+
+def main(stdout: Stdout):
+    stdout.print(size(Dot(at=1)))

@@ -1699,6 +1699,21 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
     )
 }
 
+/// Plain words a lock saves, past the room its buffer starts with, written once or in a loop, go
+/// back on a failure and stay at an end: saved by native code itself while there's room, and by the
+/// runtime once it's full.
+#[test]
+fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_plain_saves",
+        include_str!("fixtures/lock_plain_saves.fen"),
+        "10 24500 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 False\n",
+    )
+}
+
 /// A put after a lookup of the same key under a lock writes where the lookup found it, unless what
 /// came between grew the dict, popped the key or put another: each kept, and each put back by a
 /// failure.

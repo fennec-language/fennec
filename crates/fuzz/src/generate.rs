@@ -341,13 +341,18 @@ pub(crate) fn printing_plainly(bytes: &[u8]) -> String {
     written(bytes, true)
 }
 
+/// How long `main`'s text grows, apart from the header: the room it had when the whole program
+/// stopped at 16 KiB and the header was 779 bytes. Counting it apart keeps each kept input's
+/// program the same however the header changes, so its pinned output still holds.
+const MOST_MAIN: usize = (1 << 14) - 779;
+
 fn written(bytes: &[u8], plainly: bool) -> String {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
     let source = HEADER.to_owned();
     let mut writer = Writer { bytes: bytes.iter(), source, names: Vec::new(), made: 0, risky, plainly };
     writer.line(0, "def main(stdout: Stdout):");
-    while writer.bytes.len() > 0 && writer.source.len() < 1 << 14 {
+    while writer.bytes.len() > 0 && writer.source.len() < HEADER.len() + MOST_MAIN {
         writer.statement(1);
     }
     writer.print_changeable(1, 0);

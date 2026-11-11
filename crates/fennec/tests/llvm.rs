@@ -8151,6 +8151,58 @@ fn failing_partway() -> String {
     )
 }
 
+/// A function too big to optimize in reasonable time, `long` of 400 lines that each make a list
+/// and a string, is compiled as written: in a dev build on its own, and in a release apart from
+/// the whole, which keeps what it calls, the runtime's formatting that only it uses included. Both
+/// print what it adds up.
+#[test]
+fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let lines = 400;
+    let mut body = String::new();
+    let mut total: i64 = 0;
+    for line in 0..lines {
+        let _ = writeln!(
+            body,
+            "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + f\"{{total}}\".len()"
+        );
+        let picked = if line % 2 == 0 { line } else { line + 1 };
+        let written = i64::try_from(total.to_string().len()).unwrap_or(0);
+        total += picked + written;
+    }
+    let source = format!(
+        "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+    );
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("huge_function")?;
+        let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
+        std::fs::write(&program, &source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(built.status.success(), "{how:?}: {said}");
+        // It runs slower, so the build says so.
+        assert!(said.contains("hint: `long` is too big to optimize"), "{how:?}: {said}");
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            format!("{total}\n"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):

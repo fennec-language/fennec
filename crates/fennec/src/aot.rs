@@ -558,6 +558,13 @@ fn compile_emitted(
     let Emitted { lowered, units, shared, layouts } = emitted;
     let tls = fennec_llvm::uses_tls(lowered);
     let tools = fennec_llvm::Tools::find()?;
+    // A function too big to optimize in reasonable time is compiled as written, which keeps its
+    // checks but runs slower, so the build says which.
+    for name in fennec_llvm::huge_functions(units) {
+        eprintln!(
+            "hint: `{name}` is too big to optimize, so it's compiled as written and runs slower; split it into smaller functions to have it optimized"
+        );
+    }
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;

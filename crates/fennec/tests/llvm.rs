@@ -7777,7 +7777,7 @@ fn a_generators_failure_passes_up_from_a_name_or_a_with() -> std::io::Result<()>
     }
     let source = "def checked(limit: int) -> Iterator[int] fails IoError:
     for at in range(limit):
-        if at == 2: fail IoError(reason=\"stop\")
+        if at == 2: fail .Other(reason=\"stop\")
         yield at
 
 def source() -> with int:
@@ -7821,7 +7821,7 @@ def main(stdout: Stdout):
     stdout.print(said(() => nested(5)?), said(() => nested(2)?))
     stdout.print(said(() => listed(5)?), said(() => listed(2)?))
 ";
-    let stop = "IoError(reason=\"stop\")";
+    let stop = "IoError.Other(reason=\"stop\")";
     let wanted = format!("{stop} 1\n{stop} 3\n{stop} 5\n{stop} [0, 2]\n");
     let dir = folder("generator_failure")?;
     let program = dir.join("failing.fen");
@@ -9698,10 +9698,10 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     # Outside its folder it can't look at all, which fails rather than saying no.
     stdout.print(only.exists(\"/\") else True)
     _ = only.read_text(\"/etc/hosts\") else as hosts:
-        stdout.print(hosts.reason.endswith(\"native-capabilities\"))
+        stdout.print(hosts.message().endswith(\"native-capabilities\"))
         \"\"
     _ = fs.read_text(\"no such file\") else as missing:
-        stdout.print(missing.reason != \"\")
+        stdout.print(missing.message() != \"\")
         \"\"
     fs.remove(file).expect(\"it works\")
     fs.remove(folder).expect(\"it works\")
@@ -10099,7 +10099,7 @@ def main(stdout: Stdout, fs: Fs):
     write(only, path=folder + \"/b.txt\", text=\"den\").expect(\"it works\")
     stdout.print(read(Saves(fs=only, folder=folder), \"b.txt\").expect(\"it works\"))
     write(only, path=\"outside.txt\", text=\"no\") else as outside:
-        stdout.print(\"outside what this Fs can reach\" in outside.reason)
+        stdout.print(\"outside what this Fs can reach\" in outside.message())
     stdout.print(fs.exists(\"outside.txt\").expect(\"it works\"))
     fs.remove(folder + \"/a.txt\").expect(\"it works\")
     fs.remove(folder + \"/b.txt\").expect(\"it works\")
@@ -10156,7 +10156,7 @@ def blocked(fs: Fs) fails IoError:
 
 def main(fs: Fs, stdout: Stdout):
     blocked(fs) else as problem:
-        stdout.print(\"the block failed:\", problem.reason != \"\")
+        stdout.print(\"the block failed:\", problem.message() != \"\")
     stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
     # The file written beside the path, to take its place, is gone.
     names = fs.list_dir(\".\") else []
@@ -10949,7 +10949,7 @@ def main(stdout: Stdout, fs: Fs):
         stdout.print(\"refused\")
         []
     _ = fs.walk(\"no such folder\") else as missing:
-        stdout.print(missing.reason != \"\")
+        stdout.print(missing.message() != \"\")
         []
 ";
 

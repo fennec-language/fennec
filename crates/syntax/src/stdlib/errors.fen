@@ -1,5 +1,22 @@
+## A failure of the file system or a stream, with a case for each way a caller might handle
+## differently, each saying what went wrong in `reason`. `message()` gives it.
 export error IoError:
-    reason: str
+    ## Nothing is at the path.
+    NotFound(reason: str)
+    ## The system, or an `Fs` narrowed with `only`, won't let the program do that there.
+    PermissionDenied(reason: str)
+    ## Something is at the path already.
+    AlreadyExists(reason: str)
+    ## Any other failure, said in words.
+    Other(reason: str)
+
+    ## What went wrong, in words.
+    def message(self) -> str:
+        match self:
+            case NotFound(reason) | PermissionDenied(reason):
+                reason
+            case AlreadyExists(reason) | Other(reason):
+                reason
 
 export error InvalidValue:
     message: str

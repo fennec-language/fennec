@@ -678,7 +678,8 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
     fs.remove("saves") else as why:
         match why:
-            case IoError(): stdout.print("a folder has to be empty to remove")
+            case .Other(): stdout.print("a folder has to be empty to remove")
+            case _: stdout.print(why.message())
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -1980,15 +1981,15 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
-    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    text = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(why): str(why != \"\")\n    stdout.print(text)\n    said = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(_): \"failed\"\n    stdout.print(said)\n").unwrap();
+    std::fs::write(&program, "def checked(text: str) -> str fails InvalidValue:\n    fail InvalidValue(message=text)\n\ndef main(stdout: Stdout):\n    text = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(why): str(why != \"\")\n    stdout.print(text)\n    said = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(_): \"failed\"\n    stdout.print(said)\n").unwrap();
     let path = program.to_string_lossy().into_owned();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let ran = fennec(&["run", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
-    assert!(written.contains("case IoError(reason=why):"), "{written}");
-    assert!(written.contains("case IoError():"), "{written}");
+    assert!(written.contains("case InvalidValue(message=why):"), "{written}");
+    assert!(written.contains("case InvalidValue():"), "{written}");
     assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
 }
 

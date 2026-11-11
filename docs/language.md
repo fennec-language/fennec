@@ -270,6 +270,8 @@ with fs.create("save.dat")? as file:
     file.write_text(data)?
 ```
 
+A file or stream fails with an `IoError`, by case: `NotFound` when nothing is at the path, `PermissionDenied` when the system or an `Fs` narrowed with `only` won't allow it, `AlreadyExists` when something is at the path already, and `Other` for the rest. Each carries the `reason` in words, and `message()` gives it. Built, on the real file system and a test's fake one.
+
 `fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Built. Closing a writer flushes it, and a failed flush fails the `with` block. Built. `std.io` has a `Writer` (`write`, `write_text`, `write_line`, `flush`) and a buffered `Reader` (`read_chunk`, `read_line`, `lines`), each failing with `IoError`. Files are both, a connection is both through `conn.writer()` and `conn.reader()`, which keep the network's words in a note, and `MemoryStream` is both in memory. `json`, `csv` and `pack` have `dump(value, ref out)` and `load(ref src)` beside `dumps` and `loads`. Built. `stderr` is a `Writer` as it is, and standard output is one through `stdout.writer()`. Standard input is a `Reader` through `stdin.reader()`. Built.
 
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
@@ -462,7 +464,7 @@ export def best(scores: list[Score]) -> int:
 - `export` marks what other kits can use, and goes on top-level types and functions only. Without it, a name is private to its kit, and inside a kit every file sees everything. `fennec fix` rewrites the old `pub`. Built.
 - A `_name` field or method of a `struct` or `shared` is hidden from everything but its type's own methods. Tests get no special access. Built.
 - A top-level name never starts with `_`, since it's already private to its kit. That's a compile error, and `fennec fix` renames it everywhere. The standard library follows the same rule. Built.
-- Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
+- Other kits match an exported type's fields by name: `case InvalidValue(message=m)`, `case Point(x=a, y=_)`, or `case InvalidValue()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
 - Fields with defaults come after the ones without, in a `struct`, an `error` and an enum case, as parameters with defaults do. A field without one after a field with one is a compile error. Built.
 - From outside a type, its automatic constructor sets the public fields, and values given by position go to those. `_` fields take their defaults. A `_` field with no default needs a named constructor, a method without `self` that builds one, and a type nobody can build is a compile error. Built.
 - So a kit can add a field with a default to a type it exports, and no other kit's code that builds or matches it breaks.

@@ -162,7 +162,7 @@ fn narrowed_fs(
         return call(Capability::Fs, method, args);
     }
     let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
-    Ok(crate::stdlib::fs::io_error(&reason))
+    Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)))
 }
 
 #[cfg(test)]

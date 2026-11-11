@@ -151,7 +151,7 @@ export struct ConnectionReader:
 
 ## A failure of the network as the `IoError` a stream fails with, keeping what the network said.
 def io_failure(why: NetError) -> IoError:
-    mut failure = IoError(reason=why.message())
+    mut failure = IoError.Other(reason=why.message())
     failure.add_note(f"the network failed: {why.message()}")
     failure
 

@@ -333,10 +333,13 @@ def label(point: Point) -> str:
         case Point(y=name): name
         case Point(x, y): y
 
-def read(fs: Fs) -> str:
-    text = fs.read_text(\"a\") else as why:
+def checked(text: str) -> str fails InvalidValue:
+    fail InvalidValue(message=text)
+
+def read() -> str:
+    text = checked(\"a\") else as why:
         match why:
-            case IoError(reason=why):
+            case InvalidValue(message=why):
                 return why
     text
 ";
@@ -351,28 +354,34 @@ def f(point: Point) -> int:
 ";
     assert_eq!(fields(unknown), ["`Point` has no field `z`: it has `x`"]);
     let positional = "
-def read(fs: Fs) -> str:
-    text = fs.read_text(\"a\") else as why:
+def checked(text: str) -> str fails InvalidValue:
+    fail InvalidValue(message=text)
+
+def read() -> str:
+    text = checked(\"a\") else as why:
         match why:
-            case IoError(why):
+            case InvalidValue(why):
                 return why
     text
 ";
     assert_eq!(
         fields(positional),
-        ["`IoError` comes from another kit, so this pattern names the fields it reads"]
+        ["`InvalidValue` comes from another kit, so this pattern names the fields it reads"]
     );
     assert_eq!(
         helps(positional),
         [
-            "write `IoError(reason=...)`, or `IoError()` to read none, and a field added to it never breaks this; `fennec fix` adds the names"
+            "write `InvalidValue(message=...)`, or `InvalidValue()` to read none, and a field added to it never breaks this; `fennec fix` adds the names"
         ]
     );
     let none_read = "
-def read(fs: Fs) -> str:
-    text = fs.read_text(\"a\") else as why:
+def checked(text: str) -> str fails InvalidValue:
+    fail InvalidValue(message=text)
+
+def read() -> str:
+    text = checked(\"a\") else as why:
         match why:
-            case IoError():
+            case InvalidValue():
                 return \"failed\"
     text
 ";

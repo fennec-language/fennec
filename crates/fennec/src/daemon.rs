@@ -137,6 +137,14 @@ mod unix {
     /// Linux does.
     const LONGEST_SOCKET: usize = 100;
 
+    /// How long a request has to arrive whole, once its connection is made. The commands that
+    /// send them write the whole of it at once.
+    const REQUEST_WAIT: Duration = Duration::from_secs(10);
+
+    /// The most bytes a request's first two lines may take, and the most the rest may.
+    const LONGEST_LINE: u64 = 4_096;
+    const LARGEST_REQUEST: u64 = 1 << 20;
+
     /// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket, in
     /// which case the user's runtime folder, or a short folder of its own under `/tmp` named by a
     /// hash of Fennec's folder. None when none of those will do, and then commands do their work
@@ -148,14 +156,17 @@ mod unix {
     /// `socket_path`, with the user's runtime folder as given.
     fn socket_in(home: &Path, runtime: Option<PathBuf>, makes: bool) -> Option<PathBuf> {
         let name = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
+        // Wherever it is, its folder is its user's alone: connecting needs a way into the folder,
+        // so nobody else can reach the daemon, which reads any file it's pointed at.
         let preferred = home.join("daemon").join(&name);
         if preferred.as_os_str().len() < LONGEST_SOCKET {
+            owned_privately(&home.join("daemon"), home, makes)?;
             return Some(preferred);
         }
         let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
         let hash = hash.get(..16).unwrap_or(&hash);
-        // The user's own runtime folder, which only they can reach.
-        if let Some(runtime) = runtime {
+        // The user's own runtime folder, which only they can reach, as long as it is theirs alone.
+        if let Some(runtime) = runtime.filter(|runtime| owned_privately(runtime, home, false).is_some()) {
             let socket = runtime.join(format!("fennec-{hash}-{name}"));
             if socket.as_os_str().len() < LONGEST_SOCKET {
                 return Some(socket);
@@ -187,7 +198,16 @@ mod unix {
             Err(_) => return None,
         };
         let owner = std::fs::metadata(home).ok()?.uid();
-        (found.is_dir() && found.uid() == owner && found.mode() & OTHERS == 0).then_some(())
+        if !found.is_dir() || found.uid() != owner {
+            return None;
+        }
+        // One of its owner's own made before folders were private, the daemon makes private.
+        if found.mode() & OTHERS != 0 && makes {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700)).ok()?;
+            return Some(());
+        }
+        (found.mode() & OTHERS == 0).then_some(())
     }
 
     /// The first line of every request: the version and build of the `fennec` asking.
@@ -282,8 +302,22 @@ mod unix {
                 Err(err) if err.kind() != ErrorKind::NotFound => Err(err),
                 _ => UnixListener::bind(&socket),
             })
-            .and_then(|listener| listener.set_nonblocking(true).map(|()| listener));
+            .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
+            // Its owner's alone too, where the system looks at a socket's own permissions.
+            .and_then(|listener| {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).map(|()| listener)
+            });
         let Ok(listener) = listener else { return ExitCode::FAILURE };
+        // Which socket is this daemon's: another daemon started at the same moment binds the
+        // same path after it, and then this one can't be reached, so it goes.
+        let bound =
+            std::fs::symlink_metadata(&socket).map(|found| std::os::unix::fs::MetadataExt::ino(&found)).ok();
+        let replaced = || {
+            std::fs::symlink_metadata(&socket).map(|found| std::os::unix::fs::MetadataExt::ino(&found)).ok()
+                != bound
+        };
+        let mut ticks: u32 = 0;
         let state = Arc::new(Mutex::new(State {
             home: home.to_path_buf(),
             snapshots: HashMap::new(),
@@ -310,6 +344,12 @@ mod unix {
                     if done {
                         break;
                     }
+                    // Once a second: whether another daemon took the path, leaving this one
+                    // unreachable. It leaves the other's socket where it is.
+                    ticks = ticks.wrapping_add(1);
+                    if ticks % 50 == 0 && replaced() {
+                        return ExitCode::SUCCESS;
+                    }
                     // The daemon owns the cache, so it keeps it under its cap, in time when
                     // nothing else is going on.
                     if cleanup_due(last_cleanup.map(|last| last.elapsed())) {
@@ -332,17 +372,28 @@ mod unix {
 
     fn answer(stream: UnixStream, state: &Mutex<State>) {
         let Ok(mut writer) = stream.set_nonblocking(false).and_then(|()| stream.try_clone()) else { return };
+        // A client that connects and says nothing, or says without end, can't hold a thread: a
+        // request has a while to arrive, and a size it can't pass.
+        if stream.set_read_timeout(Some(REQUEST_WAIT)).is_err() {
+            return;
+        }
         let mut reader = BufReader::new(stream);
         let (mut header, mut kind) = (String::new(), String::new());
-        if reader.read_line(&mut header).is_err() || reader.read_line(&mut kind).is_err() {
+        let mut lines = (&mut reader).take(LONGEST_LINE);
+        if lines.read_line(&mut header).is_err() || lines.read_line(&mut kind).is_err() {
             return;
         }
         if header.trim_end() == self::header() && kind.trim_end() == "lsp" {
+            // An editor's session is quiet for as long as nobody types.
+            if reader.get_ref().set_read_timeout(None).is_err() {
+                return;
+            }
             language_server(&mut reader, &mut writer, state);
             return;
         }
         let mut rest = String::new();
-        if reader.read_to_string(&mut rest).is_err() {
+        let read = (&mut reader).take(LARGEST_REQUEST + 1).read_to_string(&mut rest);
+        if read.is_err() || rest.len() as u64 > LARGEST_REQUEST {
             return;
         }
         let request = format!("{header}{kind}{rest}");
@@ -460,12 +511,37 @@ mod unix {
             let made = std::fs::symlink_metadata(&short).unwrap();
             assert_eq!(made.permissions().mode() & 0o777, 0o700);
             std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(socket_in(&home, None, true), None, "others can reach it");
-            assert_eq!(socket_in(&home, None, false), None, "nor connected to");
+            assert_eq!(
+                socket_in(&home, None, false),
+                None,
+                "a command connected through one others can reach"
+            );
+            // The daemon makes its own folder private again.
+            assert_eq!(socket_in(&home, None, true), Some(socket.clone()));
+            assert_eq!(std::fs::symlink_metadata(&short).unwrap().permissions().mode() & 0o777, 0o700);
             // The runtime folder, when there is one, comes before `/tmp`, and nothing's made in it.
             let runtime = Path::new("/run/user/1000");
             let in_runtime = socket_in(&home, Some(runtime.to_path_buf()), true).unwrap();
             assert_eq!(in_runtime.parent(), Some(runtime));
+        }
+
+        /// The socket's usual folder, in Fennec's own, is its user's alone too, whatever the umask
+        /// made it: connecting needs a way into it, so nobody else reaches the daemon, which reads
+        /// any file it's pointed at. A command doesn't connect through one others can reach, and
+        /// the daemon makes it private again.
+        #[test]
+        fn the_sockets_folder_is_its_users_alone() {
+            use std::os::unix::fs::PermissionsExt;
+            let home = fennec_temp::Temp::folder("private-daemon").unwrap();
+            let socket = socket_in(&home, None, true).unwrap();
+            assert_eq!(socket.parent(), Some(home.join("daemon").as_path()));
+            let mode =
+                || std::fs::symlink_metadata(home.join("daemon")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(), 0o700);
+            std::fs::set_permissions(home.join("daemon"), std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert_eq!(socket_in(&home, None, false), None);
+            assert_eq!(socket_in(&home, None, true), Some(socket));
+            assert_eq!(mode(), 0o700);
         }
     }
 }

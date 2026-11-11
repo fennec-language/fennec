@@ -369,8 +369,8 @@ fn a_string_s_header_is_held_only_when_it_holds_a_block() {
     let inline = 0x83_i64 << 56;
     save_text(cell, 2, block, 11, 0);
     save_text(cell, 5, 0x6f_6f66, 0, inline);
-    let saved = read_logs(|logs| logs[0].saved.clone());
-    let held: Vec<(usize, bool)> = saved.iter().map(|saved| (saved.word, saved.held)).collect();
+    let mut held: Vec<(usize, bool)> = saves().iter().map(|saved| (saved.word, saved.held)).collect();
+    held.sort_unstable();
     assert_eq!(held, [(2, true), (3, false), (4, false), (5, false), (6, false), (7, false)]);
     kept();
     assert!(!exists(block), "the header's block was the log's to let go of");
@@ -406,6 +406,124 @@ fn a_word_with_its_top_bit_set_goes_back_as_it_was() {
     save_text(cell, at, 0x612f, 0, tag);
     undo();
     assert_eq!([undo_word(at, 0, 0), undo_word(at + 1, 0, 0), undo_word(at + 2, 0, 0)], [0x612f, 0, tag]);
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// Every save the logs hold, plain ones in the buffer after the rest.
+fn saves() -> Vec<Saved> {
+    with_logs(|logs| {
+        let mut saves: Vec<Saved> = logs.held.iter().flat_map(|log| log.saved.iter().copied()).collect();
+        saves.extend((0..logs.buffer.len()).filter_map(|at| logs.buffer.get(at)));
+        saves
+    })
+}
+
+/// What native code does at a plain save: with room in the buffer, it writes the save there itself,
+/// with no call; with none, it calls `save`, which makes room.
+fn save_as_native_code(block: i64, word: usize, old: i64) {
+    let room = LOGS.with_borrow(|logs| logs.buffer.len() < logs.buffer.room());
+    if !room {
+        save(block, i64::try_from(word).unwrap(), old, 0);
+        return;
+    }
+    LOGS.with_borrow_mut(|logs| {
+        let saved =
+            Saved { block: address(block), word, old: old.cast_unsigned(), held: false, marked: false };
+        logs.buffer.add_as_native_code(saved);
+    });
+}
+
+/// How many saves the buffer has room for.
+fn room() -> usize {
+    LOGS.with_borrow(|logs| logs.buffer.room())
+}
+
+/// A million writes of one word, each saved as native code saves it, without asking the runtime,
+/// hold a few entries at most: each time the buffer's full, the runtime drops the saves of places
+/// saved already before it makes room. A crash puts back the first, and a normal end keeps the last.
+#[test]
+fn a_million_writes_of_one_word_saved_without_the_runtime_hold_a_few_entries() {
+    begin_run();
+    let cell = locked(&["one"]);
+    for turn in 0..1_000_000 {
+        save_as_native_code(cell, COUNT_AT, turn + 10);
+        set_word(cell, COUNT_AT, turn);
+    }
+    assert!(room() <= 16, "room for {} saves", room());
+    assert!(saved_entries() <= 16);
+    crash(cell);
+    assert_eq!(word(cell, COUNT_AT), 10, "the first save's");
+    shared_leave(cell, 1);
+    shared_enter(cell, 1);
+    begin(cell);
+    for turn in 0..1_000_000 {
+        save_as_native_code(cell, COUNT_AT, word(cell, COUNT_AT));
+        set_word(cell, COUNT_AT, turn);
+    }
+    kept();
+    assert_eq!(saved_entries(), 0);
+    assert_eq!(word(cell, COUNT_AT), 999_999);
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// Saves native code added are taken in before the runtime adds one: a place it saved is saved
+/// once, whichever saved it first, and a crash puts back the first.
+#[test]
+fn saves_native_code_added_count_as_the_runtime_s_own() {
+    begin_run();
+    let cell = locked(&["one"]);
+    save_as_native_code(cell, COUNT_AT, 3);
+    save_as_native_code(cell, COUNT_AT, 4);
+    save(cell, i64::try_from(COUNT_AT).unwrap(), 5, 0);
+    assert_eq!(saved_entries(), 1);
+    save_as_native_code(cell, COUNT_AT, 6);
+    assert_eq!(saved_entries(), 2, "not yet taken in");
+    set_word(cell, COUNT_AT, 8);
+    crash(cell);
+    assert_eq!(word(cell, COUNT_AT), 3);
+    assert_eq!(saved_entries(), 0);
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// With locks taken together, plain saves of the outer's cell made inside the inner are the outer's:
+/// the inner's crash leaves them, and the outer's puts them back. The inner's own go with it.
+#[test]
+fn an_inner_crash_leaves_the_outer_cell_s_plain_saves_for_the_outer() {
+    begin_run();
+    let outer = locked(&["outer"]);
+    let inner = locked(&["inner"]);
+    save_as_native_code(outer, COUNT_AT, 3);
+    set_word(outer, COUNT_AT, 5);
+    save_as_native_code(inner, COUNT_AT, 3);
+    set_word(inner, COUNT_AT, 6);
+    save_as_native_code(inner, COUNT_AT, 6);
+    crash(inner);
+    assert_eq!(word(inner, COUNT_AT), 3);
+    shared_leave(inner, 1);
+    assert_eq!(word(outer, COUNT_AT), 5, "the inner's crash leaves the outer's cell");
+    assert_eq!(saved_entries(), 1);
+    crash(outer);
+    assert_eq!(word(outer, COUNT_AT), 3);
+    shared_leave(outer, 1);
+    assert_eq!(saved_entries(), 0);
+    finish();
+}
+
+/// A buffer grown past what's kept is let go of once no lock is held, so one big lock doesn't keep
+/// its memory from the rest of the program.
+#[test]
+fn a_buffer_grown_big_goes_when_the_last_lock_ends() {
+    begin_run();
+    let cell = locked(&[]);
+    for at in 0..(KEPT_ROOM + 10) {
+        save(cell, i64::try_from(at).unwrap(), 0, 0);
+    }
+    assert!(room() > KEPT_ROOM);
+    kept();
+    assert_eq!(room(), 0);
     shared_leave(cell, 1);
     finish();
 }

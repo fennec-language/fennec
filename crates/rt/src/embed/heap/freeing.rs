@@ -621,8 +621,9 @@ mod tests {
         start(Tables::default(), crate::Inputs::default());
         let made = Box::new([1_u64, 0, 0]);
         let address = i64::try_from(std::ptr::from_ref(&made[0]).addr()).unwrap();
-        // Not one of generated code's: nothing happens.
-        with(|state| super::release(state, address.cast_unsigned() + 64));
+        // Not one of generated code's, and inside a block of this test's own, so no other test's
+        // block or `shared` value can be there: nothing happens.
+        with(|state| super::release(state, address.cast_unsigned() + 8));
         super::super::native_made(address);
         with(|state| super::release(state, address.cast_unsigned()));
     }

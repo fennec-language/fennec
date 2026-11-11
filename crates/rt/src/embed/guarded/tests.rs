@@ -308,6 +308,50 @@ fn a_handle_waiting_for_another_runtime_is_left_alone() {
     finish();
 }
 
+/// A `shared` value let go of by something that never held it, while this thread holds its write
+/// lock, is a bug: letting go of the lock says so, and the table stays with this thread, so what it
+/// holds isn't freed with nowhere to be put back.
+#[test]
+fn a_value_gone_while_its_lock_is_held_is_a_bug_and_its_table_stays() {
+    begin();
+    let log = log_of(&["kept"]);
+    shared_new(log);
+    shared_enter(log, 1);
+    let inside = i64::try_from(word(log, FIELDS)).unwrap();
+    let address = u64::try_from(log).unwrap();
+    std::thread::spawn(move || {
+        start(Tables::default(), crate::Inputs::default());
+        with(|state| heap::release(state, address));
+        finish();
+    })
+    .join()
+    .unwrap();
+    shared_leave(log, 1);
+    assert_eq!(lines(inside), ["kept"], "the table is still this thread's");
+    let (_, failure, _) = finish();
+    let failure = failure.expect("letting go of the lock fails");
+    assert!(failure.message.contains("went while its lock was held"), "{failure:?}");
+}
+
+/// A thread asking to write a value it's still reading is refused, and the value stays read: once
+/// it lets go of reading, it can write.
+#[test]
+fn a_write_refused_while_reading_leaves_the_value_to_be_written_after() {
+    begin();
+    let log = log_of(&["one"]);
+    shared_new(log);
+    shared_enter(log, 0);
+    assert_eq!(shared_enter(log, 1), 0, "refused while this thread reads it");
+    shared_leave(log, 0);
+    with(|state| state.failure = None);
+    crate::embed::set_failed(0);
+    assert_eq!(shared_enter(log, 1), i64::try_from(GUARDED_OWNER).unwrap());
+    let inside = i64::try_from(word(log, FIELDS)).unwrap();
+    assert_eq!(lines(inside), ["one"]);
+    shared_leave(log, 1);
+    finish();
+}
+
 /// Native code finds the word saying a run is recorded or replayed at 16 bytes past its failure
 /// flag, after the lock it holds.
 #[test]

@@ -8,7 +8,7 @@ def load(path: str) -> int fails LoadError:
 
 def main(stdout: Stdout):
     score = load("save.txt") except why:
-        case.Missing(path):
+        case .Missing(path):
             0
         case other:
             stdout.print(f"{other}")

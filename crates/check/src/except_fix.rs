@@ -20,9 +20,37 @@ use crate::types::Type;
 /// The fixes that move a program to the forms of 2026-11-11, for `fennec fix --migrate`.
 #[must_use]
 pub fn migration_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
+    rewrites(&[module], sources, Some(module), false)
+}
+
+/// The same for the standard library's own code, checked with `module`. Its spans are past
+/// `Span::PRELUDE`, each file in its own range, which `fennec_syntax::prelude_file_at` names.
+#[must_use]
+pub fn std_migration_fixes(module: &Module) -> Vec<Diagnostic> {
+    let library: Vec<&Module> = fennec_syntax::prelude_modules().unwrap_or_default().iter().collect();
+    rewrites(&library, &Sources::new(), Some(module), true)
+}
+
+/// The rewrites that need no types, for code that doesn't check on its own, like an example
+/// of a mistake or a piece of a program in a test: `return`, `lend x except:`, `except why:`
+/// for `else as why:`, and `len(x)` and `abs(x)`. A plain `else` on a failure needs its types,
+/// so it's left.
+#[must_use]
+pub fn syntax_migration_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
+    rewrites(&[module], sources, None, false)
+}
+
+/// The rewrites in `modules`, those of the standard library's code when `library`, typed by
+/// checking `typed` when there is one.
+fn rewrites(
+    modules: &[&Module],
+    sources: &Sources,
+    typed: Option<&Module>,
+    library: bool,
+) -> Vec<Diagnostic> {
     let mut found = Vec::new();
     let mut defs = Vec::new();
-    for item in &module.items {
+    for item in modules.iter().flat_map(|module| &module.items) {
         match item {
             Item::Function(def) => defs.push(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => defs.extend(&def.methods),
@@ -34,13 +62,13 @@ pub fn migration_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
     for def in defs {
         nested(def, &mut all);
     }
-    for def in all.iter().filter(|def| !def.span.in_prelude()) {
+    for def in all.iter().filter(|def| def.span.in_prelude() == library) {
         found.extend(def_return(def));
         let mut stmts = Vec::new();
         statements(&def.body, &mut stmts);
         found.extend(stmts.iter().filter_map(|stmt| lend_except(stmt, sources)));
     }
-    found.extend(failure_fixes(module, sources));
+    found.extend(failure_fixes(modules, sources, typed, library));
     found
 }
 
@@ -154,42 +182,78 @@ fn lend_except(stmt: &Stmt, sources: &Sources) -> Option<Diagnostic> {
     Some(Diagnostic::new("a `with` source's cleanup is `lend x except:`", word).with_fix(word, "except"))
 }
 
-/// Each `else` on a call that can fail, written as `except`.
-fn failure_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
-    let Ok(checked) = crate::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs().map(|(span, ty)| ((span.start, span.end), ty)))
-        .collect();
-    let whole = whole_values(module);
-    let mut found = Vec::new();
-    fennec_syntax::read::exprs(module, &mut |expr| {
-        if let Some(fix) = builtin_call(expr, &types, sources) {
-            found.push(fix);
-        }
-        let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
-        if expr.span.in_prelude() || !whole.contains(&(expr.span.start, expr.span.end)) {
-            return;
-        }
-        let Some(Type::Result(_, error)) = types.get(&(value.span.start, value.span.end)) else { return };
-        if let Some(fix) = failure_fix((value, default), error, &checked.signatures, sources) {
-            found.push(fix);
-        }
+/// Each `else` on a call that can fail, written as `except`, and `x.len()` as `len(x)`. With
+/// no types, only `else as why:`, which only a failure takes.
+fn failure_fixes(
+    modules: &[&Module],
+    sources: &Sources,
+    typed: Option<&Module>,
+    library: bool,
+) -> Vec<Diagnostic> {
+    let checked = match typed.map(crate::check_typed) {
+        Some(Ok(checked)) => Some(checked),
+        Some(Err(_)) => return Vec::new(),
+        None => None,
+    };
+    let types: Option<HashMap<(u32, u32), &Type>> = checked.as_ref().map(|checked| {
+        checked
+            .types
+            .iter()
+            .flat_map(|(_, body)| body.exprs().map(|(span, ty)| ((span.start, span.end), ty)))
+            .collect()
     });
+    let whole: HashSet<(u32, u32)> = modules.iter().flat_map(|module| whole_values(module)).collect();
+    let mut found = Vec::new();
+    for module in modules {
+        fennec_syntax::read::exprs(module, &mut |expr| {
+            if expr.span.in_prelude() != library {
+                return;
+            }
+            if let Some(fix) = builtin_call(expr, types.as_ref(), sources) {
+                found.push(fix);
+            }
+            let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
+            if !whole.contains(&(expr.span.start, expr.span.end)) {
+                return;
+            }
+            let failing = match (&types, &checked) {
+                (Some(types), Some(checked)) => match types.get(&(value.span.start, value.span.end)) {
+                    Some(Type::Result(_, error)) => Some((error.as_ref(), &checked.signatures)),
+                    _ => return,
+                },
+                // Only a failure is named with `else as`.
+                _ if matches!(default.else_block(), Some((Some(_), _))) => None,
+                _ => return,
+            };
+            if let Some(fix) = failure_fix((value, default), failing, sources) {
+                found.push(fix);
+            }
+        });
+    }
     found
 }
 
 /// `x.len()` or `x.abs()` on a value, written as the builtin, `len(x)` or `abs(x)`. One holding
 /// another, like `x.len().abs()`, is left for the next round, so the two never write over each
 /// other.
-fn builtin_call(expr: &Expr, types: &HashMap<(u32, u32), &Type>, sources: &Sources) -> Option<Diagnostic> {
+fn builtin_call(
+    expr: &Expr,
+    types: Option<&HashMap<(u32, u32), &Type>>,
+    sources: &Sources,
+) -> Option<Diagnostic> {
     let ExprKind::Call { callee, args } = &expr.kind else { return None };
     let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
-    if !args.is_empty() || !matches!(name.as_str(), "len" | "abs") || expr.span.in_prelude() {
+    if !args.is_empty() || !matches!(name.as_str(), "len" | "abs") {
         return None;
     }
-    if matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown)) {
+    // On a value: with no types, anything but a type's or module's name, like `Grid.len()`.
+    let value = match types {
+        Some(types) => {
+            !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
+        }
+        None => !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase)),
+    };
+    if !value {
         return None;
     }
     let mut holds_one = false;
@@ -290,8 +354,7 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
 /// `value else ...` on a call that can fail with `error`, written with `except`.
 fn failure_fix(
     (value, default): (&Expr, &Expr),
-    error: &Type,
-    signatures: &crate::Signatures,
+    failing: Option<(&Type, &crate::Signatures)>,
     sources: &Sources,
 ) -> Option<Diagnostic> {
     let text = Text::of(sources, value.span)?;
@@ -302,7 +365,7 @@ fn failure_fix(
     }
     // A block starts at its `:`, and a way out on the line, as `else return`, at its word.
     let block = text.get(default.span)?.starts_with(':');
-    let all = failures(error, signatures).unwrap_or_default();
+    let all = failing.and_then(|(error, signatures)| failures(error, signatures)).unwrap_or_default();
     let mut diagnostic = Diagnostic::new("a failure is handled with `except` now", between);
     match default.else_block() {
         // A `match why:` that's all of the block is its arms, which needn't read `why`.
@@ -478,7 +541,7 @@ struct Text<'a> {
 
 impl<'a> Text<'a> {
     fn of(sources: &'a Sources, span: Span) -> Option<Self> {
-        let (_, text, base) = sources.file_at(span)?;
+        let (_, text, base) = sources.file_at(span).or_else(|| fennec_syntax::prelude_file_at(span))?;
         Some(Text { text, base })
     }
 

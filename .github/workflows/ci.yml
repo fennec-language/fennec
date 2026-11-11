@@ -174,20 +174,33 @@ jobs:
           .github/scripts/windows.sh folder target/debug/llvm
           echo "FENNEC_LLVM_BIN=$(cygpath -w "$PWD/target/debug/llvm/bin")" >> "$GITHUB_ENV"
       # Every test binary runs even after one fails, so a red run shows every failure, not the
-      # first binary's alone; the step still fails if any test did.
+      # first binary's alone; the step still fails if any test did. Each step fails too if the
+      # tests' connections, waiting out their close, ever hold more than 3,000 local ports: of the
+      # 16,384 macOS gives out, the rest are what other runs on a shared machine need. A test whose
+      # clients close first holds one each; see `time-wait.sh`.
       - name: Run cargo test --locked
         if: matrix.os == 'ubuntu-24.04-arm'
-        run: cargo test --locked --no-fail-fast
+        shell: bash
+        run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast
       # Between them, each other platform's two jobs run every test once: no test outside
       # `fennec`'s main test binary has `llvm::` in its name.
       - name: Run every test but the LLVM ones
         if: matrix.os != 'ubuntu-24.04-arm' && matrix.part == 'main'
-        run: cargo test --locked --no-fail-fast -- --skip 'llvm::'
+        shell: bash
+        run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast -- --skip 'llvm::'
       - name: Run the LLVM tests
         if: matrix.part == 'llvm'
-        run: cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'
+        shell: bash
+        run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'
       # Every test removes what it makes in the temporary folder, passing or failing, so a run
       # leaves no `fennec-*` folder there.
+      # A failure that passes when the job runs again is a flake, and the rerun writes it in the
+      # flake ledger, with this load: see `ci-flakes.sh`.
+      - name: Say the runner's load
+        if: failure()
+        shell: bash
+        run: |
+          echo "load when it failed: $(uptime | sed -E 's/.*load averages?: *//')"
       - name: Check the tests left nothing in the temporary folder
         if: ${{ !cancelled() }}
         shell: bash
@@ -1019,3 +1032,26 @@ jobs:
             failed=1
           done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
           exit "$failed"
+      # A run that passed only when jobs ran again: each earlier failure on this commit is a flake,
+      # written in the flake ledger and kept with the run, so none is ever just rerun.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: success() && github.run_attempt != '1'
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Write down the flakes
+        if: success() && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SHA: ${{ github.sha }}
+        run: .github/scripts/ci-flakes.sh
+      - name: Keep the flakes
+        if: success() && github.run_attempt != '1'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flakes
+          path: flakes.log
+          if-no-files-found: ignore

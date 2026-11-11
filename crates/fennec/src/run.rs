@@ -220,6 +220,8 @@ fn sweep_old_runs(executable: &std::path::Path) {
 /// Loads and checks all of a program.
 fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
+    let files = crate::verdict::kit_files(path, None);
+    refused_as_a_whole(path, None, files.as_deref(), &program)?;
     match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
         Ok(signatures) => Ok((program, signatures)),
         Err(diagnostics) => Err(reject(&program, &diagnostics)),
@@ -251,7 +253,10 @@ fn reached(
     let name = passed_name(path);
     let embedded = program.embedded_texts();
     let embedded = embedded.iter().map(|(path, text)| (path.as_str(), fennec_blake3::hash(text.as_bytes())));
-    let text = fingerprint(program.sources.hashed_files().chain(embedded));
+    // Every file of a kit counts, loaded or not, since one `main` doesn't import can still make a
+    // name or a case mean something else to a whole load.
+    let kit_files = files.iter().flatten().map(|file| (file.module.as_str(), file.text));
+    let text = fingerprint(program.sources.hashed_files().chain(embedded).chain(kit_files));
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
         // An edit that only changed functions' bodies is checked on its own, which is all a
         // change there can break, rather than checking all of a big kit again.
@@ -259,10 +264,13 @@ fn reached(
         let facts = match quickly {
             Some(Err((partial, diagnostics))) => return Err(reject(&partial, &diagnostics)),
             Some(Ok(facts)) => facts,
-            None => match crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources) {
-                Ok(signatures) => crate::verdict::KitFacts::of(&program, &signatures),
-                Err(diagnostics) => return Err(reject(&program, &diagnostics)),
-            },
+            None => {
+                let kit = refused_as_a_whole(path, Some(&cache), files.as_deref(), &program)?;
+                match crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources) {
+                    Ok(signatures) => crate::verdict::KitFacts::of(kit, &signatures),
+                    Err(diagnostics) => return Err(reject(&program, &diagnostics)),
+                }
+            }
         };
         if let Some(files) = &files {
             crate::verdict::remember_checked(path, &cache, (files, &program), &facts);
@@ -287,6 +295,32 @@ fn reached(
         // Cutting it down missed something the whole program has.
         Err(_) => whole(path).map(|(program, _)| (program, None, None)),
     }
+}
+
+/// What the kit at `path` defines, once a run that loaded only `main` and what it imports is
+/// held to what a whole load refuses. It may read a body differently from a whole load, through
+/// a name another file defines or a case two enums share, and then the whole kit is checked, so
+/// a run accepts only what `fennec check` does.
+fn refused_as_a_whole(
+    path: &str,
+    cache: Option<&fennec_build::Cache>,
+    files: Option<&[fennec_build::KitFile]>,
+    program: &fennec_kit::Program,
+) -> Result<crate::verdict::KitNames, ExitCode> {
+    let Some(files) = files.filter(|files| !crate::verdict::has_every_file(path, program, files)) else {
+        return Ok(crate::verdict::KitNames::of(&program.module.items));
+    };
+    let kit = crate::verdict::KitNames::of_kit(path, cache, files, program);
+    let items = crate::verdict::kit_items(program, files);
+    if kit.as_ref().is_none_or(|kit| kit.may_differ(&items, program)) {
+        let everything = crate::load(path, fennec_kit::Entry::Everything).ok_or(ExitCode::FAILURE)?;
+        if let Err(diagnostics) =
+            crate::copy_rule::check_rules(&mut everything.module.clone(), &everything.sources)
+        {
+            return Err(reject(&everything, &diagnostics));
+        }
+    }
+    Ok(kit.unwrap_or_else(|| crate::verdict::KitNames::of(&program.module.items)))
 }
 
 /// The cache, unless `FENNEC_NO_CACHE` is set.

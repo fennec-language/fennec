@@ -2368,6 +2368,14 @@ struct Cursor:
 def pick(xs: list[int], cursor: Cursor) -> int:
     xs[cursor.at]
 
+def stepped_down(xs: list[int]) -> int:
+    mut at = 0
+    mut total = 0
+    for _ in range(3):
+        total += xs[at]
+        at -= 1
+    return total
+
 def walk(nodes: list[Node], start: int) -> int:
     mut at = start
     mut seen = 0
@@ -2402,6 +2410,7 @@ def main(stdout: Stdout):
     xs = [10, 20, 30]
     read = json.loads[Cursor]("{\"at\": -1}") else Cursor(at=0)
     stdout.print(pick(xs, Cursor(at=1)), pick(xs, read))
+    stdout.print(stepped_down(xs))
 "#;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let dir = folder("index_signs")?;
@@ -2421,10 +2430,11 @@ def main(stdout: Stdout):
         std::fs::remove_dir_all(&dir)?;
         // `walk` goes 0, 2, 1; `last_of` reads the last node; `down_too_far` adds 3, 2, 1, then
         // xs[-1] and xs[-2], 3 and 2. A cursor JSON gave -1 reads the last item: a field a reader
-        // can fill isn't proven, however the program itself sets it.
+        // can fill isn't proven, however the program itself sets it. `stepped_down` reads xs[0],
+        // xs[-1] and xs[-2]: an index a later turn makes negative isn't proven from the first.
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
-            "3 1\n6 11\n20 30\n",
+            "3 1\n6 11\n20 30\n60\n",
             "{how:?}: {}",
             String::from_utf8_lossy(&ran.stderr)
         );

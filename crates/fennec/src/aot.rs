@@ -697,13 +697,30 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
-    let linked = if statically {
+    let mut command = if statically {
         static_linker(&paths, &runtime, output)
     } else {
         linker(&paths, &runtime, output, tls)
+    };
+    // `FENNEC_LINK_KEEP` keeps the objects linked, in the folder it names, for a test to link them
+    // another way and compare.
+    let kept = std::env::var_os("FENNEC_LINK_KEEP").map(PathBuf::from);
+    if kept.is_some() && cfg!(target_os = "macos") {
+        // And told to keep every piece of every object, where it is, so each section is whole.
+        let args: Vec<std::ffi::OsString> = command
+            .get_args()
+            .filter(|arg| *arg != "-Wl,-dead_strip")
+            .map(std::ffi::OsStr::to_os_string)
+            .collect();
+        command = Command::new(command.get_program());
+        // The runtime's code no program calls is kept then too, and it needs these.
+        command.args(args).args(["-framework", "Security", "-framework", "CoreFoundation"]);
     }
-    .output();
+    let linked = command.output();
     let took = started.elapsed();
+    if let Some(kept) = kept {
+        keep_objects(&paths, &kept)?;
+    }
     let _ = std::fs::remove_dir_all(&work);
     let linked = linked.map_err(|err| {
         if cfg!(target_os = "macos") && err.kind() == std::io::ErrorKind::NotFound {
@@ -729,6 +746,18 @@ fn link_failure(linked: &std::process::Output) -> String {
         String::from_utf8_lossy(&linked.stderr),
         String::from_utf8_lossy(&linked.stdout)
     )
+}
+
+/// Copies the objects a link used into `folder`, by their place in the link, as `0.o` and on.
+fn keep_objects(paths: &[PathBuf], folder: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(folder).map_err(|err| format!("couldn't make {}: {err}", folder.display()))?;
+    for path in paths {
+        if let Some(name) = path.file_name() {
+            std::fs::copy(path, folder.join(name))
+                .map_err(|err| format!("couldn't keep {}: {err}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The system's linker, set to link objects with a runtime library into an executable. On a Mac

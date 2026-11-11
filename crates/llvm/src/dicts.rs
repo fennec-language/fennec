@@ -645,7 +645,18 @@ impl Emit<'_, '_, '_> {
         let (quick, change, slow, done) =
             (self.label("quick"), self.label("change"), self.label("slow"), self.label("done"));
         self.line(&format!("{dict} = load ptr, ptr {place}"));
-        let alone = self.alone(&dict);
+        // A dict nothing else can hold is alone: a build that checks proofs checks that it is.
+        let alone = if self.alone_dicts.contains(place) {
+            if self.checks_proofs() {
+                let (counted, shared) = (self.alone(&dict), self.temp());
+                self.line(&format!("{shared} = xor i1 {counted}, true"));
+                let span = self.here_span();
+                self.proof_held(&shared, "a dict nothing else holds is alone", span);
+            }
+            "true".to_owned()
+        } else {
+            self.alone(&dict)
+        };
         self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
         self.start_block(&quick);
         // With the dict alone, it's the same block the lookup searched, unchanged since.

@@ -203,16 +203,24 @@ call:
 
 ";
 
-/// Whether `insts`, then the blocks `end` goes to, reach a lock's end with nothing that can crash
-/// or fail on the way, given which blocks do (`clean`) and which instructions can't (`safe`).
+/// How a write's walk to its lock's end takes an instruction: as that end, as something that may
+/// crash or fail, or as safe to pass.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    End,
+    MayFail,
+    Passes,
+}
+
+/// Whether `insts`, then the blocks `end` goes to, reach the lock's end with nothing that can crash
+/// or fail on the way, given which blocks do (`clean`) and how each instruction is taken (`step`).
 /// Leaving any other way, as by `return`, or the program stopping, doesn't count.
-fn clean_to_end(insts: &[Inst], end: &Terminator, clean: &[bool], safe: &dyn Fn(&InstKind) -> bool) -> bool {
+fn clean_to_end(insts: &[Inst], end: &Terminator, clean: &[bool], step: &dyn Fn(&InstKind) -> Step) -> bool {
     for inst in insts {
-        if matches!(inst.kind, InstKind::Unlock { .. } | InstKind::UnlockAll { .. }) {
-            return true;
-        }
-        if !safe(&inst.kind) {
-            return false;
+        match step(&inst.kind) {
+            Step::End => return true,
+            Step::MayFail => return false,
+            Step::Passes => {}
         }
     }
     let reaches = |block: &fennec_ir::BlockId| clean.get(block.0).copied().unwrap_or(false);
@@ -223,15 +231,15 @@ fn clean_to_end(insts: &[Inst], end: &Terminator, clean: &[bool], safe: &dyn Fn(
     }
 }
 
-/// Which of a function's blocks reach a lock's end with nothing that can crash or fail on the
+/// Which of a function's blocks reach the lock's end with nothing that can crash or fail on the
 /// way, from their start. A block is only counted once every way on from it is, so no block of a
 /// loop is: a write anywhere a loop's way back reaches is always saved.
-fn clean_blocks(function: &Function, safe: &dyn Fn(&InstKind) -> bool) -> Vec<bool> {
+fn clean_blocks(function: &Function, step: &dyn Fn(&InstKind) -> Step) -> Vec<bool> {
     let mut clean = vec![false; function.blocks.len()];
     loop {
         let mut changed = false;
         for (at, Block { insts, end }) in function.blocks.iter().enumerate() {
-            if !clean.get(at).copied().unwrap_or(true) && clean_to_end(insts, end, &clean, safe) {
+            if !clean.get(at).copied().unwrap_or(true) && clean_to_end(insts, end, &clean, step) {
                 if let Some(this) = clean.get_mut(at) {
                     *this = true;
                 }
@@ -240,6 +248,59 @@ fn clean_blocks(function: &Function, safe: &dyn Fn(&InstKind) -> bool) -> Vec<bo
         }
         if !changed {
             return clean;
+        }
+    }
+}
+
+/// The locks among `saving` held after `insts`, from those held before, sorted.
+fn held_after(mut held: Vec<usize>, insts: &[Inst], saving: &[usize]) -> Vec<usize> {
+    let local = |handle: &Operand| match handle {
+        Operand::Local(local) if saving.contains(&local.0) => Some(local.0),
+        _ => None,
+    };
+    for inst in insts {
+        match &inst.kind {
+            InstKind::Lock { handle, .. } => held.extend(local(handle)),
+            InstKind::LockAll { handles } => {
+                held.extend(handles.iter().filter_map(|(handle, _)| local(handle)));
+            }
+            InstKind::Unlock { handle } => held.retain(|at| Some(*at) != local(handle)),
+            InstKind::UnlockAll { handles } => {
+                held.retain(|at| !handles.iter().any(|handle| local(handle) == Some(*at)));
+            }
+            _ => continue,
+        }
+        held.sort_unstable();
+        held.dedup();
+    }
+    held
+}
+
+/// The locks among `saving` that may be held at each block's start: any held on some way in.
+fn locks_held(function: &Function, saving: &[usize]) -> Vec<Vec<usize>> {
+    let mut held: Vec<Vec<usize>> = vec![Vec::new(); function.blocks.len()];
+    loop {
+        let mut changed = false;
+        for (at, Block { insts, end }) in function.blocks.iter().enumerate() {
+            let out = held_after(held.get(at).cloned().unwrap_or_default(), insts, saving);
+            let next: Vec<usize> = match end {
+                Terminator::Jump(next) => vec![next.0],
+                Terminator::Branch { then, otherwise, .. } => vec![then.0, otherwise.0],
+                _ => Vec::new(),
+            };
+            for to in next {
+                let Some(theirs) = held.get_mut(to) else { continue };
+                for lock in &out {
+                    if !theirs.contains(lock) {
+                        theirs.push(*lock);
+                        theirs.sort_unstable();
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return held;
         }
     }
 }
@@ -582,17 +643,40 @@ impl Emit<'_, '_, '_> {
 
     /// Whether every instruction after the one being written, on every path to the lock's end,
     /// is one that can't crash or fail (`cannot_fail`): then no rollback can come before the end.
+    ///
+    /// The end is the one that gives back every lock held at the write, which a write's place is
+    /// one of; giving back any other lock first counts as able to fail, so a lock taken inside
+    /// another never ends an outer write's walk.
     fn nothing_after_can_fail(&mut self) -> bool {
         let function = self.function;
-        if self.clean_blocks.is_none() {
-            let clean = clean_blocks(function, &|kind| self.cannot_fail(kind));
-            self.clean_blocks = Some(clean);
-        }
-        let clean = self.clean_blocks.as_deref().unwrap_or_default();
         let (at, index) = self.at;
         let Some(block) = function.blocks.get(at) else { return false };
+        let held_in = self.locks_held.get_or_insert_with(|| locks_held(function, &self.saving));
+        let before = held_in.get(at).cloned().unwrap_or_default();
+        let held = held_after(before, block.insts.get(..index).unwrap_or_default(), &self.saving);
+        if held.is_empty() {
+            return false;
+        }
+        let ends = |handle: &Operand| matches!(handle, Operand::Local(local) if held == [local.0]);
+        let step = |kind: &InstKind| match kind {
+            InstKind::Unlock { handle } if ends(handle) => Step::End,
+            InstKind::UnlockAll { handles }
+                if held.iter().all(|lock| handles.contains(&Operand::Local(LocalId(*lock)))) =>
+            {
+                Step::End
+            }
+            InstKind::Unlock { .. } | InstKind::UnlockAll { .. } => Step::MayFail,
+            _ if self.cannot_fail(kind) => Step::Passes,
+            _ => Step::MayFail,
+        };
+        let worked_out = (!self.clean_blocks.contains_key(&held)).then(|| clean_blocks(function, &step));
+        let clean = worked_out.as_deref().or_else(|| self.clean_blocks.get(&held).map(Vec::as_slice));
         let rest = block.insts.get(index + 1..).unwrap_or_default();
-        clean_to_end(rest, &block.end, clean, &|kind| self.cannot_fail(kind))
+        let nothing = clean_to_end(rest, &block.end, clean.unwrap_or_default(), &step);
+        if let Some(clean) = worked_out {
+            self.clean_blocks.insert(held, clean);
+        }
+        nothing
     }
 
     /// Whether an instruction can't crash or fail. It reads, moves or tests a value; compares two
@@ -1201,8 +1285,15 @@ def allocating(tally: shared Tally):
         held.a = 5
         held.b = made(held.a).len()
 
+def together(tally: shared Tally, other: shared Tally):
+    lock tally, other as ref one, ref two:
+        one.a += 1
+        two.a += 1
+
 def main(stdout: Stdout):
     shared tally = Tally()
+    shared other = Tally()
+    together(tally, other=other)
     counter(tally)
     counted(tally, key=1)
     compared(tally)
@@ -1228,6 +1319,7 @@ def main(stdout: Stdout):
         assert_eq!(saves("written_twice"), 1, "the first of two writes, as the second may copy");
         assert_eq!(saves("looped"), 1, "a write in a loop, which the next turn can undo");
         assert_eq!(saves("allocating"), 1, "a write before a call that allocates");
+        assert_eq!(saves("together"), 1, "two locks taken together: the first sum is saved, the last isn't");
         Ok(())
     }
 }

@@ -115,8 +115,12 @@ fn return_bool(body: &[Stmt], sources: &Sources) -> Option<Lint> {
     if when_true == when_false {
         return None;
     }
-    let fixed =
-        if when_true { written(sources, cond.span)? } else { format!("not {}", operand(sources, cond)?) };
+    // A `def` gives its value with `return`, so the condition is returned.
+    let fixed = if when_true {
+        format!("return {}", written(sources, cond.span)?)
+    } else {
+        format!("return not {}", operand(sources, cond)?)
+    };
     // A block's span can run on to the end of its last line, which has to stay.
     let whole = Span { start, end: end_of(std::slice::from_ref(last)) };
     let text = written(sources, whole)?;

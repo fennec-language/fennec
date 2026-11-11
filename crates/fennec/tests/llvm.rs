@@ -4787,6 +4787,38 @@ def main(stdout: Stdout):
     stdout.print(\"no failure\")
 ";
 
+/// A `with` block left from inside an `else` runs its source's cleanup as any other way out does:
+/// an `else return`, one deeper in a line, and `else continue` and `else break` in a loop run the
+/// code after `lend`, and an `else as` block that fails runs `lend x else:`. They once left the
+/// block with neither, so a file or a channel stayed open.
+#[test]
+fn a_with_block_left_from_an_else_runs_its_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_left_from_an_else",
+        include_str!("fixtures/with_left_from_an_else.fen"),
+        "  ended else return\n-1\n  ended deeper\n-2\n  failed else as\nfailed: again: n\n0\n\
+         \x20 ended round 0\n  ended round 1\n  ended round 2\n  ended break 0\n  ended break 1\n  ended break 2\n1\n",
+    )
+}
+
+/// A channel whose block ends by an `else return` or an `else fail` is closed and freed, so a
+/// launched task still holding a Sender for it is told `Closed` when it sends, rather than its
+/// message going nowhere.
+#[test]
+fn a_send_to_a_channel_whose_block_left_from_an_else_is_closed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "channel_dropped_by_an_else",
+        include_str!("fixtures/channel_dropped_by_an_else.fen"),
+        "gave up -2\nfailed out\nclosed\nclosed\n",
+    )
+}
+
 /// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost
 /// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
 /// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends

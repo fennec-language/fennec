@@ -1,0 +1,54 @@
+## A `with` block left from inside an `else` runs its source's cleanup as any way out does: an
+## `else return`, one deeper in a line, an `else as` block that fails, and `else continue` and
+## `else break` in a loop. A `return`, `continue` or `break` is a success, and runs the code after
+## `lend`; a failure runs `lend x else:`. These once left without either.
+error Missing:
+    what: str
+
+def lent(stdout: Stdout, name: str) -> with int:
+    lend 1 else:
+        stdout.print("  failed", name)
+    stdout.print("  ended", name)
+
+def maybe(n: int) -> int fails Missing:
+    if n > 1:
+        fail Missing(what="n")
+    n
+
+def returns_from_else(stdout: Stdout) -> int:
+    with lent(stdout, "else return") as one:
+        got = maybe(one + 1) else return -1
+        return got
+    0
+
+def returns_from_deeper(stdout: Stdout) -> int:
+    with lent(stdout, "deeper") as one:
+        stdout.print(maybe(one + 1) else return -2)
+    0
+
+def fails_from_else_as(stdout: Stdout) -> int fails Missing:
+    with lent(stdout, "else as") as one:
+        got = maybe(one + 1) else as why:
+            fail Missing(what=f"again: {why.what}")
+        return got
+    0
+
+def leaves_rounds(stdout: Stdout) -> int:
+    mut total = 0
+    for n in range(3):
+        with lent(stdout, f"round {n}") as one:
+            got = maybe(n) else continue
+            total += got * one
+    for n in range(3):
+        with lent(stdout, f"break {n}") as one:
+            _ = maybe(n) else break
+    total
+
+def main(stdout: Stdout):
+    stdout.print(returns_from_else(stdout))
+    stdout.print(returns_from_deeper(stdout))
+    failed = fails_from_else_as(stdout) else as why:
+        stdout.print("failed:", why.what)
+        0
+    stdout.print(failed)
+    stdout.print(leaves_rounds(stdout))

@@ -753,7 +753,7 @@ struct JsonReader:
     ## What the next value is, for a message.
     def _found(ref self) -> str:
         b = self._space()
-        if b == 123: return "a table"
+        if b == 123: return "an object"
         if b == 110: return "null"
         if b == 34: return "a str"
         if b == 91: return "a list"

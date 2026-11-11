@@ -81,6 +81,15 @@ test "a struct needs each field once, of its type, and no others":
         == "`Point` has no field \"z\", but the text has one"
     )
     assert what(() => json.loads[Point]("[1, 2]")?) == "the text should be a Point, but it's a list"
+    # A JSON object is called one, as JSON names it.
+    assert (
+        what(() => json.loads[list[int]]("{\"x\": 1}")?)
+        == "the text should be a list[int], but it's an object"
+    )
+    assert (
+        what(() => json.loads[Point]("{\"x\": {}, \"y\": 2}")?)
+        == "`x` should be an int, but it's an object"
+    )
     # A trailing comma isn't JSON.
     assert where(() => json.loads[Point]("{\"x\": 1, \"y\": 2,}")?) == "1:17"
 

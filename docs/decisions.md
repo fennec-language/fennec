@@ -270,7 +270,7 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Floats give the same results on every platform and every build.** There are no fused operations, except a fused multiply-add written as `.fma`, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. There's no `@fast_math` and no other way to opt out. Speed comes from checks the compiler proves it can remove. This replaces `@fast_math` on a function, and before it `with fast_math():`.
 *Why:* Replays and lockstep multiplayer depend on the same bits everywhere, and an opt-out would break that for every function it reaches.
 
-**Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So the interpreter and native code give identical bits for a float sum.
+**Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So a float sum gives identical bits on every machine and thread count.
 *Why:* Float results don't drift between runs or machines.
 
 **Float reductions add in one fixed pattern on every platform.** `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions keep 8 running totals, item `i` going to total `i % 8`, and then combine the totals pairwise. The pattern is the same on every machine and in every build, so the bits are too. It replaces anything fast-math offered for reductions. Chris decided this on 2026-11-07. Built for `sum`: a list of floats is summed by std's own `math.fixed_sum`, which isn't exported, written in plain Fennec with its eight totals as eight names, which only `sum` calls, and a sum one item at a time, over a generator, keeps the same eight totals in every engine, so the two give the same bits. The start is added last. `examples/float_sums.fen` holds the bits, which arm64, x86-64 and WebAssembly all give, in every engine and in `--release`. A sum over `parallel(...)` keeps its own fixed tree, below. Ints add as before, since their sum is exact. `math.dot(a, b)` over two lists adds the same way, so it's `sum(a[at] * b[at] for at in range(a.len()))` to the bit. One exception, decided on 2026-11-07: `std.math`'s fixed sums of four, in `Vec4.dot`, `Quat.dot`, `Quat *`, `Mat4.mul_vec4`, `transform_point` and the determinant, keep glam's left-to-right order. That order is as fixed, a sum of four gains no speed from eight totals, and `std.math` matches glam bit for bit. Its sums of two and three already add in the pattern's order.
@@ -295,8 +295,6 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 
 **Speed targets are measured against each benchmark's twin, fully optimized.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language.
 - Release builds: 110% of the twin's speed.
-- The JIT, until it's removed: 80% to start, then 85%.
-- The interpreter, until it's removed: 10–30%.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
 
@@ -740,8 +738,8 @@ def report(shapes: list[Shape], stdout: Stdout):
 - Members are concrete types, not type parameters; generic code uses an enum, like `enum Either[L, R]`. A union refers to itself only through a collection, as in `type Json = str | int | float | bool | list[Json] | dict[str, Json]`, and direct recursion is an error.
 - A union mixes types that already exist, and an enum defines new cases. A union may have an enum type as a member.
 - A literal assigned to a union takes its default type: `3` is an `int`.
-- Built in the checker, the interpreter and native code: writing unions, `is` and `match` with their narrowing and exhaustiveness, methods every member has, equality and hashing, and the mistakes above. A union is a dict key or set item when each type in it can be one, and it fits an interface every type in it fits. Native code holds a union in place, as an enum with a case for each member.
-- JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name. Built for fields: one holding a union, as it is, in a list, a dict's values or an optional, saves tagged in JSON and TOML, and by where the member is among the union's in pack, and the JIT still writes it untagged. A member has to be a type's name alone, like `Circle` or `int`, so a union with `list[int]` in it isn't saved yet, nor is one in a set or a dict's keys, and a recursive union like `Json` isn't either.
+- Built in the checker and native code: writing unions, `is` and `match` with their narrowing and exhaustiveness, methods every member has, equality and hashing, and the mistakes above. A union is a dict key or set item when each type in it can be one, and it fits an interface every type in it fits. Native code holds a union in place, as an enum with a case for each member.
+- JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name. Built for fields: one holding a union, as it is, in a list, a dict's values or an optional, saves tagged in JSON and TOML, and by where the member is among the union's in pack. A member has to be a type's name alone, like `Circle` or `int`, so a union with `list[int]` in it isn't saved yet, nor is one in a set or a dict's keys, and a recursive union like `Json` isn't either.
 
 *Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
 
@@ -1264,7 +1262,6 @@ with net.listen(8080)? as server:
 - Each iteration can change only its own element. It can read anything around it, but can't change outer `mut` names.
 - A body may use capabilities and `shared` values. Results are deterministic when it uses neither. This replaces the earlier rule that a body can't use capabilities.
 - Work over data runs on a work-stealing thread pool, and reading outer values changes no reference counts.
-- The interpreter runs the loop in order, which is a correct implementation of a deterministic body.
 
 *Why:* One word covers data across cores and connections from a server, and everything in it ends when its loop ends.
 
@@ -1310,7 +1307,7 @@ For input order, use the streamed form:
 for line in (render(x) for x in parallel(xs)):
     stdout.print(line)
 ```
-Tests comparing against the interpreter sort output from parallel bodies, and heavy printing from many threads shares one output. Those are the accepted costs.
+Tests comparing against pinned outputs sort output from parallel bodies, and heavy printing from many threads shares one output. Those are the accepted costs.
 *Why:* Position order would let one long-lived connection hold back every later connection's logs, for hours and in memory with no limit. Having one rule for lists and another for connections would be worse, since the same loop would print differently by what it runs over.
 
 **A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared` values can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
@@ -1554,7 +1551,7 @@ bench "collide 10k bullets":
 
 ## For AI
 
-**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandbox, under Sandboxing.
+**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets with only the capabilities they're given. A snippet runs because its caller chose to run it: there's no sandbox, as Untrusted code says.
 *Why:* AI's most common failure is calling functions that don't exist. Ground truth from the compiler and the Den replaces guessing.
 
 **Diagnostics are structured.** `fennec check --json` gives every error and lint with its location and any fix as an edit a tool can apply.
@@ -1636,7 +1633,7 @@ These are default lints, and the Den requires them.
 
 ## Supply chain
 
-**Anything that could run code you didn't read is either impossible or sandboxed.** Every rule below follows from that.
+**Nothing runs code you didn't read unless you choose to run it.** There's no sandbox to catch it, so every rule below follows from that.
 
 **Installing a kit never runs anything.** There are no install or build scripts.
 
@@ -1777,7 +1774,7 @@ total = sum(d)                             # a Simd is a sequence
 - Methods cover the rest: `.select`, `.shuffle[...]` with indices fixed at compile time, `.min`, `.max`, `.abs`, `.sqrt` and `.fma`. A fused multiply-add happens only when written as `.fma`.
 - `sum`, `min`, `max`, `any` and `all` reduce lanes in a fixed tree order, so results match on every machine.
 - `simd_width[T]` is a compile-time constant for the target's best width, so portable code writes `Simd[f32, simd_width[f32]]`.
-- LLVM maps `Simd` onto its vector types. Cranelift runs vectors wider than 128 bits as several 128-bit operations. The interpreter runs lanes one at a time, with the same results.
+- LLVM maps `Simd` onto its vector types.
 
 *Why:* One generic type covers every width and element type without dozens of names, and it reads like math. Zig, Mojo, C# and Swift settled on the same shape. Hand-written intrinsics tie code to one CPU and are unreadable.
 
@@ -1816,7 +1813,7 @@ def main(stdout: Stdout, gpu: Gpu):
 
 *Why:* A kernel that's just a function is tested on the CPU with `fennec test`, debugged like any code, and run by the interpreter too. A separate shader language means separate tools.
 
-**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Release builds compile kernels ahead of time and embed them; the JIT compiles each one when it first runs and caches it by content. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through the runtime's binding to C, the one way any C is reached.
+**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Kernels are compiled at build time and kept in the build cache by content, like every other build output, and no compiler runs inside the program. Chris decided this on 2026-11-11, in place of compiling each kernel when it first runs. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through the runtime's binding to C, the one way any C is reached.
 
 **GPU floats are the same on the same device, not across vendors.** `sqrt`, `exp` and division can differ in the last bit between GPU makers. `gpu.run(..., exact=True)` turns off contraction and uses Fennec's own math functions for results identical across vendors, at some cost in speed. Lockstep game simulation stays on the CPU.
 
@@ -1846,22 +1843,12 @@ def main(stdout: Stdout, gpu: Gpu):
 
 This replaces the earlier plan for C in Fennec code: `extern "C":` blocks, `unsafe("reason")`, pointer types, `def del` releasing owned pointers, `fennec audit --unsafe`, a `[native]` table in `kit.toml`, and apps or path dependencies calling C themselves.
 
-## Sandboxing
+## Untrusted code
 
-**No program runs scripts inside itself.** A program can't load and run sandboxed code at run time. Sandboxes exist only for tools, like Den tests and MCP snippets. This removes the earlier idea of a host running sandboxed scripts.
+**Fennec has no sandbox for untrusted code.** Don't run code you don't trust, and don't add dependencies you don't understand. Capabilities limit what any dependency can do: only what its caller passes it, no `unsafe`, and no C outside std and first-party kits. The Den scans kits. Neither is a licence to run code nobody has read. Chris decided this on 2026-11-11. This replaces the plans for sandboxed code: Den tests and agents' snippets run by the interpreter with limits, then compiled to WebAssembly and run in Wasmtime, in a process of their own on servers.
+
+**No program runs scripts inside itself.** A program can't load and run code at run time.
 *Why:* A script loaded at run time is code the compiler never saw, which is the open set Fennec has already ruled out.
-
-**Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't call C. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
-*Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
-
-**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, Den tests and agents' snippets are compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs AI-written snippets, where starting instantly and being easy to sandbox matter more than speed.
-
-**Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
-*Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
-
-**The native engines are for trusted code.** Native builds run your own programs, not untrusted ones.
-
-**On servers, sandboxed code also runs in its own process,** under seccomp on Linux or the App Sandbox on macOS, as an outer wall.
 
 ## Writing Fennec in Fennec
 

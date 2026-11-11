@@ -14,9 +14,10 @@ mod snapshot;
 mod store;
 mod traced;
 mod tree;
+mod unsaved;
 mod verdict;
 
-pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, UNUSED_BUILD, VERSION};
+pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, KEPT_RECENT, UNUSED_BUILD, VERSION};
 pub use changes::{Change, Kind, changes};
 pub use reach::test_keys;
 pub use reached::{
@@ -27,4 +28,5 @@ pub use snapshot::{FileRecord, Run, Snapshot};
 pub use store::{WORK_KEPT, fennec_home, load, save, sweep_work, work_folder};
 pub use traced::{TestGraph, TestRecord};
 pub use tree::{definitions, tree_hash};
+pub use unsaved::{kept, touched};
 pub use verdict::{KitFile, KitState, Row, changed_bodies, item_span, rows};

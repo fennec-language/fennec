@@ -1,0 +1,56 @@
+cap 9
+shape 0
+ran left
+ran mid
+ran right
+gave 123
+shape 1
+ran left
+ran mid
+ran right
+gave 123
+shape 2
+ran left
+ran mid
+ran right
+gave 7
+shape 3
+ran left
+ran mid
+ran right
+1 2 3
+ran first
+ran second
+ran third
+gave 3
+shape 4
+ran left
+ran mid
+ran right
+gave 123
+cap 0
+shape 0
+ran left
+ran mid
+undo
+gave None
+shape 1
+ran left
+ran mid
+undo
+gave None
+shape 2
+ran left
+ran mid
+undo
+gave None
+shape 3
+ran left
+ran mid
+undo
+gave None
+shape 4
+ran left
+ran mid
+gave None
+read before 12 221 221

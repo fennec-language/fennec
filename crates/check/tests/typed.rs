@@ -140,10 +140,11 @@ fn module_names(module: &Module) -> Vec<String> {
 /// `sqlite` in `sqlite.open(...)` or `std.json` in `std.json.dumps(...)`.
 fn is_type_name(expr: &Expr, modules: &[String]) -> bool {
     match &expr.kind {
-        // `str` in `str.from_code(65)` and `bytes` in `bytes.fromhex(text)` are the type, not a value.
+        // `str` in `str.from_code(65)`, `bytes` in `bytes.fromhex(text)` and `int` in
+        // `int.parse(text)` are the type, not a value.
         ExprKind::Name(name) => {
             name.starts_with(char::is_uppercase)
-                || matches!(name.as_str(), "str" | "bytes")
+                || matches!(name.as_str(), "str" | "bytes" | "int" | "float")
                 || modules.contains(name)
         }
         ExprKind::Attr { object, .. } => is_type_name(object, modules),
@@ -195,7 +196,7 @@ fn values(expr: &Expr, found: &mut Found) {
             inner.push(lhs);
         }
         ExprKind::Binary { lhs: a, rhs: b, .. }
-        | ExprKind::Else { value: a, default: b }
+        | ExprKind::Else { value: a, default: b, .. }
         | ExprKind::Index { object: a, index: b } => inner.extend([a.as_ref(), b.as_ref()]),
         ExprKind::Cond { then, cond, otherwise } => inner.extend([then.as_ref(), cond, otherwise]),
         ExprKind::Try { value, context } => {

@@ -108,7 +108,7 @@ fn ask(stream: &mut TcpStream, method: &str, path: &str, body: &str) -> std::io:
 fn send(server: &Server, kept: &mut Option<TcpStream>, kind: &str, n: usize) -> std::io::Result<()> {
     let connect = || {
         let stream = TcpStream::connect(("127.0.0.1", server.port))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         // As a real client would, so no write waits for the last to be acknowledged.
         stream.set_nodelay(true)?;
         Ok::<_, std::io::Error>(stream)
@@ -161,7 +161,7 @@ fn settled(server: &Server) -> String {
     let started = Instant::now();
     let mut last = String::new();
     let mut held_since = Instant::now();
-    while started.elapsed() < Duration::from_secs(60) {
+    while started.elapsed() < crate::executables::WALL_DEADLINE {
         std::thread::sleep(Duration::from_millis(150));
         // What's cached for reuse grows as the server warms up, within its bounds: only what's
         // live has to hold.

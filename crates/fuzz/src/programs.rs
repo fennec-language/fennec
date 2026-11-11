@@ -13,15 +13,6 @@ mod eval;
 mod generate;
 mod source;
 
-/// Whether `Named` is made of native blocks in a program with no other threads, which it is once
-/// native blocks take enums with `str` and `list[str]` fields (the LLVM lane's steps 1 and 2).
-/// `FENNEC_FUZZ_NAMED_NATIVE` turns the check on before then, to run against a branch that has them.
-const NAMED_GOES_NATIVE: bool = true;
-
-fn named_goes_native() -> bool {
-    NAMED_GOES_NATIVE || std::env::var_os("FENNEC_FUZZ_NAMED_NATIVE").is_some()
-}
-
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
 /// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
 fn makes_native_blocks() -> Result<bool, String> {
@@ -68,7 +59,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // leaves read `l(...)`, surely made one: code that never runs, like everything after a
     // failure the compiler can see, makes none and can be left out.
     let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
-    if named_goes_native() && program.threadless && printed_named && !makes_native_blocks()? {
+    if program.threadless && printed_named && !makes_native_blocks()? {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));
@@ -331,7 +322,8 @@ mod tests {
     fn it_fails_in_arrows_and_keys_by_floats() {
         let shapes = [
             "print(tried(() => capped(",
-            "print(tried_twice(() => capped(",
+            "tried_twice(() => capped(",
+            "print(fallback(() => capped(",
             "print(tried_each(",
             "print(ran_fine(() => capped(",
             "print(either(() => paired(capped(",
@@ -343,7 +335,7 @@ mod tests {
             "nan()",
             "-0.0",
         ];
-        let mut found = [0_usize; 12];
+        let mut found = [0_usize; 13];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
@@ -395,8 +387,11 @@ mod tests {
             "        continue\n",
             "_ = [1, 2][i + 2]",
             "with ward(\"a\", stdout) as a, ",
+            "capped(capped(i, limit=1000)?, limit=",
+            "?, limit=1000)? * 2",
+            "except Refused(): -1",
         ];
-        let mut found = [0_usize; 8];
+        let mut found = [0_usize; 11];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
@@ -407,6 +402,104 @@ mod tests {
                 for (count, way) in found.iter_mut().zip(ways) {
                     *count += usize::from(left.contains(way));
                 }
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
+    /// Every `def` that gives a value gives it with `return`, as the language will require: its
+    /// last line returns or fails. A `with` source or a generator gives its values otherwise.
+    #[test]
+    fn it_returns_from_every_def_explicitly() {
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            for source in [source::source(&generate::program(&bytes)), crate::generate::program(&bytes)] {
+                let lines: Vec<&str> = source.lines().collect();
+                for (at, line) in lines.iter().enumerate() {
+                    let trimmed = line.trim_start();
+                    let Some((_, gives)) =
+                        trimmed.strip_prefix("def ").and_then(|def| def.rsplit_once(") -> "))
+                    else {
+                        continue;
+                    };
+                    if gives.starts_with("with ") || gives.starts_with("Iterator") {
+                        continue;
+                    }
+                    let indent = line.len() - trimmed.len();
+                    let last = lines
+                        .iter()
+                        .skip(at + 1)
+                        .take_while(|next| {
+                            next.trim().is_empty() || next.len() - next.trim_start().len() > indent
+                        })
+                        .filter(|next| !next.trim().is_empty())
+                        .last()
+                        .copied()
+                        .unwrap_or_default();
+                    let value = last
+                        .trim()
+                        .split_once(": ")
+                        .filter(|_| last.trim().starts_with("case "))
+                        .map_or(last.trim(), |(_, value)| value);
+                    assert!(
+                        value.starts_with("return ") || value.starts_with("fail "),
+                        "a def that gives a value ends without `return`: {line}\n{last}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// With `except`, no failure is handled with `else`, and every catch-all `except why:` either
+    /// has a `case` for each error or reads `why`. Checked on the rewrite whether or not the switch
+    /// is on, so it's ready the day `except` parses.
+    #[test]
+    fn it_handles_failures_with_except() {
+        let wanted = [
+            "except why:",
+            "        case Refused():",
+            "lend name except:",
+            "    case Refused(code=code):",
+            "except Refused(): -1",
+            "except Refused(): \"refused\"",
+        ];
+        let mut found = [0_usize; 6];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let program = source::excepted(&source::source(&generate::program(&bytes)));
+            let lines: Vec<&str> = program.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                assert!(!trimmed.ends_with(" else as why:") && trimmed != "match why:", "{line}");
+                assert!(!(trimmed.starts_with("lend ") && trimmed.ends_with(" else:")), "{line}");
+                let opens = ["if ", "elif ", "while ", "for ", "else:", "with ", "lock ", "def ", "case "];
+                assert!(
+                    !trimmed.ends_with(") else:") || opens.iter().any(|open| trimmed.starts_with(open)),
+                    "{line}"
+                );
+                if trimmed.ends_with(" except why:") {
+                    let indent = line.len() - trimmed.len();
+                    let block: Vec<&str> = lines
+                        .iter()
+                        .skip(at + 1)
+                        .take_while(|next| {
+                            next.trim().is_empty() || next.len() - next.trim_start().len() > indent
+                        })
+                        .copied()
+                        .collect();
+                    let arms = block.first().is_some_and(|first| first.trim_start().starts_with("case "));
+                    assert!(arms || block.iter().any(|held| held.contains("why")), "`why` unused: {line}");
+                }
+            }
+            for (count, want) in found.iter_mut().zip(wanted) {
+                *count += usize::from(program.contains(want));
+            }
+            if source::EXCEPT_PARSES {
+                assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
             }
         }
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");

@@ -9,7 +9,7 @@ use fennec_syntax::{BinOp, Span};
 use crate::emit::{Emit, ITEM_ACCESS, float_text, symbol};
 use crate::kinds::Kind;
 
-/// The most items `range` makes a list of, as the interpreter allows.
+/// The most items `range` makes a list of.
 const MOST_IN_A_RANGE: i64 = 10_000_000;
 
 /// Where `int()` stops: a float at or past 2^63 either way isn't an int.
@@ -588,7 +588,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `math.sin`, `math.cos`, `math.tan`, `math.acos`, `math.exp` and `math.log`, by the runtime,
-    /// which computes them as the interpreter does, so they're the same bits on every platform.
+    /// which computes them itself, so they're the same bits on every platform.
     fn turned(&mut self, dest: LocalId, function: &str, value: &Operand) -> Result<(), String> {
         let (value, kind) = self.operand(value)?;
         let angle = if kind == Kind::Int {
@@ -676,7 +676,7 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &best)
     }
 
-    /// Whether `score` beats `best` for `max` or `min`, as the interpreter orders them. Values
+    /// Whether `score` beats `best` for `max` or `min`, as the language orders them. Values
     /// in memory come as addresses.
     pub(crate) fn better(
         &mut self,
@@ -847,7 +847,7 @@ impl Emit<'_, '_, '_> {
         Ok(result)
     }
 
-    /// `item in list`, by the runtime, which compares as the interpreter does.
+    /// `item in list`, by the runtime, which compares as `==` does.
     fn list_contains(&mut self, dest: LocalId, list: &Operand, item: &Operand) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
         let (word, passed) = self.item_word(item, &held)?;
@@ -934,7 +934,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A float as an int, rounded by `rounding` first, or toward zero: one outside an int's
-    /// range, or not a number, fails as the interpreter's does.
+    /// range, or not a number, fails.
     fn float_to_int(
         &mut self,
         dest: LocalId,

@@ -88,10 +88,11 @@ extend str:
             start += at + 1
             if start > self.len(): return found
 
-    ## The text with its first character upper case and the rest lower: `"fOX"` is `"Fox"`.
+    ## The text with its first character in title case and the rest lower: `"fOX"` is `"Fox"`,
+    ## and `"ßa"` is `"Ssa"`, as Python writes them.
     def capitalize(self) -> str:
         if self == "": return ""
-        self[:1].upper() + self[1:].lower()
+        title_case(self[:1]) + self[1:].lower()
 
     ## Each word upper case first and lower after, a word being letters after anything else:
     ## `"red fox's den"` is `"Red Fox'S Den"`, as Python writes it.
@@ -100,7 +101,7 @@ extend str:
         mut after_letter = False
         for c in self:
             letter = c.upper() != c.lower()
-            out.append((c.lower() if after_letter else c.upper()) if letter else c)
+            out.append((c.lower() if after_letter else title_case(c)) if letter else c)
             after_letter = letter
         "".join(out)
 
@@ -125,6 +126,18 @@ export struct StrWriter:
 def padding(fill: str, count: int) -> str:
     if count <= 0: return ""
     (fill * count)[:count]
+
+## The character `c` as it starts a word: upper case, but for a letter whose upper case is
+## two, like `ß`'s `SS`, only the first of them is, as `Ss`, and the four letters that are two
+## Latin ones, like `ǆ`, have a title case of their own, `ǅ`.
+def title_case(c: str) -> str:
+    if c == "ǆ" or c == "Ǆ" or c == "ǅ": return "ǅ"
+    if c == "ǉ" or c == "Ǉ" or c == "ǈ": return "ǈ"
+    if c == "ǌ" or c == "Ǌ" or c == "ǋ": return "ǋ"
+    if c == "ǳ" or c == "Ǳ" or c == "ǲ": return "ǲ"
+    upper = c.upper()
+    if upper.len() > 1: return upper[:1] + upper[1:].lower()
+    upper
 
 extend str:
     def serialize(self, ref out: Serializer):

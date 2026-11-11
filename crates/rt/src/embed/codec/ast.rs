@@ -294,10 +294,11 @@ fn encode_more(kind: &ExprKind, to: &mut Writer) {
             cond.encode(to);
             otherwise.encode(to);
         }
-        ExprKind::Else { value, default } => {
+        ExprKind::Else { value, default, except } => {
             to.tag(16);
             value.encode(to);
             default.encode(to);
+            except.encode(to);
         }
         ExprKind::Try { value, context } => {
             to.tag(17);
@@ -383,7 +384,11 @@ fn decode_more(tag: u8, r: &mut Reader<'_>) -> Option<ExprKind> {
             cond: Decode::decode(r)?,
             otherwise: Decode::decode(r)?,
         },
-        16 => ExprKind::Else { value: Decode::decode(r)?, default: Decode::decode(r)? },
+        16 => ExprKind::Else {
+            value: Decode::decode(r)?,
+            default: Decode::decode(r)?,
+            except: Decode::decode(r)?,
+        },
         17 => ExprKind::Try { value: Decode::decode(r)?, context: Decode::decode(r)? },
         18 => ExprKind::Call { callee: Decode::decode(r)?, args: Decode::decode(r)? },
         19 => ExprKind::Attr {

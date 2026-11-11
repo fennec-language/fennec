@@ -1,0 +1,10 @@
+def find(names: list[str], name: str) -> int?:
+    for at, held in enumerate(names):
+        if held == name: return at
+    return None
+
+def main(stdout: Stdout):
+    at = find(["a"], "b") except why:
+        stdout.print(f"{why}")
+        return
+    stdout.print(at)

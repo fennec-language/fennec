@@ -467,6 +467,17 @@ impl FnCx<'_> {
         method.returns
     }
 
+    /// `{name}(other=...)`, where `name` takes only `named` by name.
+    fn no_parameter(&mut self, name: &str, other: &str, named: &[&str], at: Span) {
+        let help = if named.is_empty() {
+            format!("take `{other}=` off: `{name}` takes nothing by name")
+        } else {
+            named_help(other, named, &format!("take `{other}=` off: `{name}` takes "))
+        };
+        let message = format!("`{name}` has no parameter called `{other}`");
+        self.error(Diagnostic::new(message, at).with_help(help));
+    }
+
     /// Checks a builtin's arguments: none is `mut`, and only those in `named` may be named.
     /// Returns the plain arguments' types and where they are.
     fn builtin_args(
@@ -483,9 +494,8 @@ impl FnCx<'_> {
             let ty = self.arg_value(arg, receives);
             match arg.name.as_deref() {
                 Some("key") if !named.contains(&"key") => {
-                    self.error(
-                        Diagnostic::new(format!("`{name}` doesn't take `key`"), span).with_help("take `key=` off"),
-                    );
+                    let message = format!("`{name}` doesn't take `key`");
+                    self.error(Diagnostic::new(message, span).with_help("take `key=` off"));
                 }
                 Some("key") => {}
                 Some("start") if named.contains(&"start") => start = Some((ty, arg.value.span)),
@@ -547,20 +557,7 @@ impl FnCx<'_> {
                 Some(option @ ("names" | "extra")) if named.contains(&option) => {
                     self.json_option(option, &ty, arg.value.span);
                 }
-                Some(other) => {
-                    let help = match crate::messages::spelled_most_like(other, named.iter().copied()) {
-                        Some(similar) => format!("did you mean `{similar}=`?"),
-                        None if named.is_empty() => format!("take `{other}=` off: `{name}` takes nothing by name"),
-                        None => {
-                            let shown: Vec<String> = named.iter().map(|option| format!("`{option}=`")).collect();
-                            format!("take `{other}=` off: `{name}` takes {}", shown.join(", "))
-                        }
-                    };
-                    self.error(
-                        Diagnostic::new(format!("`{name}` has no parameter called `{other}`"), arg.value.span)
-                            .with_help(help),
-                    );
-                }
+                Some(other) => self.no_parameter(name, other, named, arg.value.span),
                 None => plain.push((ty, arg.value.span)),
             }
         }
@@ -684,7 +681,10 @@ impl FnCx<'_> {
         if written < least || written > most {
             let ty = Type::Sized(num);
             let message = format!("{written} doesn't fit in {ty}");
-            let help = format!("{} holds {least} to {most}: write one in that range, or use a wider type, as `int`", a(&ty));
+            let help = format!(
+                "{} holds {least} to {most}: write one in that range, or use a wider type, as `int`",
+                a(&ty)
+            );
             self.error(Diagnostic::new(message, value.span).with_help(help));
         }
     }
@@ -758,7 +758,9 @@ impl FnCx<'_> {
                 ) {
                     let message = format!("`{name}` converts a number or text, not {}", a(&first));
                     let help = match self.checker.settled(&first) {
-                        Type::List(_) | Type::Set(_) => format!("convert each item, as `[{name}(item) for item in items]`"),
+                        Type::List(_) | Type::Set(_) => {
+                            format!("convert each item, as `[{name}(item) for item in items]`")
+                        }
                         _ => format!("pass a number or text, as `{name}(\"42\")`"),
                     };
                     self.error(Diagnostic::new(message, at).with_help(help));
@@ -956,13 +958,8 @@ impl FnCx<'_> {
                     .type_info(type_name)
                     .map(|info| info.def.fields.iter().map(|field| field.name.clone()).collect())
                     .unwrap_or_default();
-                let help = match crate::messages::spelled_most_like(name, fields.iter().map(String::as_str)) {
-                    Some(similar) => format!("did you mean `{similar}=`?"),
-                    None => {
-                        let shown: Vec<String> = fields.iter().map(|field| format!("`{field}=`")).collect();
-                        format!("change one of its fields: {}", shown.join(", "))
-                    }
-                };
+                let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+                let help = named_help(name, &fields, "change one of its fields: ");
                 self.error(
                     Diagnostic::new(format!("`{type_name}` has no field called `{name}`"), arg.value.span)
                         .with_help(help),
@@ -997,4 +994,14 @@ fn peek_item(ty: &Type) -> Type {
         Type::Bytes => Type::Int,
         _ => Type::Unknown,
     }
+}
+
+/// The help for `given=` where only `options` can be given by name: the one it's spelled most
+/// like, or `otherwise` and then each of them.
+fn named_help(given: &str, options: &[&str], otherwise: &str) -> String {
+    if let Some(similar) = crate::messages::spelled_most_like(given, options.iter().copied()) {
+        return format!("did you mean `{similar}=`?");
+    }
+    let shown: Vec<String> = options.iter().map(|option| format!("`{option}=`")).collect();
+    format!("{otherwise}{}", shown.join(", "))
 }

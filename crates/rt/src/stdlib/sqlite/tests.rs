@@ -75,7 +75,8 @@ fn a_broken_rule_and_a_query_in_two_statements_fail_as_what_they_are() -> Result
     let extra = run(db, "_execute", &query("insert into keys values (?)", &[], &[]))?;
     assert!(extra.contains("places for them"), "{extra}");
     // A test's databases are its own.
-    let other = handle_of(&open_fake(&mut Fakes::default(), "rules.db"))?;
+    let mut others = Fakes::default();
+    let other = handle_of(&open_fake(&mut others, "rules.db"))?;
     assert!(
         run(other, "_execute", &query("insert into keys values (?)", &[], &["b"]))?.contains("no such table")
     );
@@ -92,5 +93,22 @@ fn a_tests_databases_are_files_of_its_own_gone_when_it_ends() -> Result<(), Stri
     assert_eq!(run(db, "_close", &[])?, "");
     drop(fakes);
     assert!(!folder.exists(), "{} is left", folder.display());
+    Ok(())
+}
+
+/// A database the test never closed, and a transaction it never finished, are closed when the
+/// test ends, so its folder goes even where an open file can't be removed.
+#[test]
+fn a_tests_databases_left_open_are_closed_and_gone_when_it_ends() -> Result<(), String> {
+    let mut fakes = Fakes::default();
+    let db = handle_of(&open_fake(&mut fakes, "open.db"))?;
+    assert_eq!(run(db, "_execute", &query("create table notes (n integer)", &[], &[]))?, "Ok(0)");
+    let began = run(db, "_begin", &[])?;
+    assert!(began.starts_with("Ok("), "{began}");
+    let folder = fakes.folder.clone().ok_or("no folder was made")?;
+    drop(fakes);
+    assert!(!folder.exists(), "{} is left", folder.display());
+    let after = run(db, "_execute", &query("select 1", &[], &[]))?;
+    assert!(after.contains("was closed"), "{after}");
     Ok(())
 }

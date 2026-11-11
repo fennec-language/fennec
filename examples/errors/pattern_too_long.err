@@ -3,3 +3,5 @@ error: this pattern has 2 parts, but the value has 1 fields
   |
 7 |         case .Circle(radius, color):
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write one part for each field, by name, as `Circle(radius=_)`

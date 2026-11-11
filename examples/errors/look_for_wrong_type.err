@@ -1,0 +1,7 @@
+error: can't look for an int in a list[str]
+ --> examples/errors/look_for_wrong_type.fen:3:18
+  |
+3 |     stdout.print(3 in names)
+  |                  ^^^^^^^^^^
+  |
+  = help: look for a str instead, converting it first, as `str(x)`

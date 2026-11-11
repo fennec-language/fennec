@@ -260,12 +260,11 @@ impl Entry {
 }
 
 /// Marks an entry as just used, for cleanup's order. A program kept read-only can't be opened to
-/// write, but its owner may still set its time. Only cleanup's order and the sweep of old runs
-/// depend on this, so a failure here doesn't matter.
+/// write, but its owner may still set its time. Cleanup's order and the sweep of old runs depend
+/// on this, so a failure is said; an entry another command's cleanup took meanwhile is none.
 fn mark_used(path: &Path) {
-    if let Ok(file) = File::open(path) {
-        let _ = file.set_modified(SystemTime::now());
-    }
+    let marked = File::open(path).and_then(|file| file.set_modified(SystemTime::now()));
+    crate::touched("mark what it used as used", marked);
 }
 
 /// Every file under `dir`, in the build folder `build`.

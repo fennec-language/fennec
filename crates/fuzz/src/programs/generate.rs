@@ -953,11 +953,12 @@ impl Writer<'_> {
     fn arrows_or_floats(&mut self, body: &mut Vec<Stmt>) {
         if self.choice(2) == 0 {
             let limit = i64::from(self.byte() % 12) - 3;
-            let how = match self.choice(5) {
+            let how = match self.choice(6) {
                 0 => Arrow::Tried,
                 1 => Arrow::Twice,
                 2 => Arrow::Each(self.of(Ty::Ints, 1)),
                 3 => Arrow::RanFine,
+                4 => Arrow::Fallback,
                 _ => Arrow::Either(self.int(1)),
             };
             let n = self.int(1);

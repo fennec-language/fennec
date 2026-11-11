@@ -458,6 +458,53 @@ mod tests {
         }
     }
 
+    /// With `except`, no failure is handled with `else`, and every catch-all `except why:` either
+    /// has a `case` for each error or reads `why`. Checked on the rewrite whether or not the switch
+    /// is on, so it's ready the day `except` parses.
+    #[test]
+    fn it_handles_failures_with_except() {
+        let wanted =
+            ["except why:", "        case Refused():", "lend name except:", "    case Refused(code=code):"];
+        let mut found = [0_usize; 4];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let program = source::excepted(&source::source(&generate::program(&bytes)));
+            let lines: Vec<&str> = program.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                assert!(!trimmed.ends_with(" else as why:") && trimmed != "match why:", "{line}");
+                assert!(!(trimmed.starts_with("lend ") && trimmed.ends_with(" else:")), "{line}");
+                let opens = ["if ", "elif ", "while ", "for ", "else:", "with ", "lock ", "def ", "case "];
+                assert!(
+                    !trimmed.ends_with(") else:") || opens.iter().any(|open| trimmed.starts_with(open)),
+                    "{line}"
+                );
+                if trimmed.ends_with(" except why:") {
+                    let indent = line.len() - trimmed.len();
+                    let block: Vec<&str> = lines
+                        .iter()
+                        .skip(at + 1)
+                        .take_while(|next| {
+                            next.trim().is_empty() || next.len() - next.trim_start().len() > indent
+                        })
+                        .copied()
+                        .collect();
+                    let arms = block.first().is_some_and(|first| first.trim_start().starts_with("case "));
+                    assert!(arms || block.iter().any(|held| held.contains("why")), "`why` unused: {line}");
+                }
+            }
+            for (count, want) in found.iter_mut().zip(wanted) {
+                *count += usize::from(program.contains(want));
+            }
+            if source::EXCEPT_PARSES {
+                assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.
     #[test]
     fn it_plans_on_threads_then_applies() {

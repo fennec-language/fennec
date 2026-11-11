@@ -305,6 +305,8 @@ pub(crate) enum Arrow {
     Each(Expr),
     /// `ran_fine`, printing whether it gave its value rather than failing.
     RanFine,
+    /// `fallback`, whose failure block gives the value, `why.code * 100`, as its last line.
+    Fallback,
     /// `either`, the arrow failing two ways: `capped(n)?`, then `shut_below(other)?`.
     Either(Expr),
 }

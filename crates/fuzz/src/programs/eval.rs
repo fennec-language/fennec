@@ -1423,11 +1423,12 @@ impl Machine {
             let n = int(&self.expr(n)?)?;
             let fine = n <= limit;
             match how {
-                Arrow::Tried if fine => n.to_string(),
+                Arrow::Tried | Arrow::Fallback if fine => n.to_string(),
                 Arrow::Tried => format!("refused {n}"),
                 Arrow::Twice if fine => format!("{n} {n}"),
                 Arrow::Twice => "refused".to_owned(),
                 Arrow::RanFine => shown(&Value::Bool(fine)),
+                Arrow::Fallback => checked(n.checked_mul(100))?.to_string(),
                 Arrow::Either(_) if !fine => format!("refused {n}"),
                 Arrow::Either(other) => {
                     // The second call is reached only once the first gave its value.

@@ -5588,6 +5588,57 @@ def main(stdout: Stdout):
     )
 }
 
+/// A function whose last line is a `with` over a source that can fail after its `lend`, whose
+/// block's last line is the value it gives back: alone, in each branch of an `if`, and in a case
+/// of a `match`. The source's code after `lend` is written in after the block, so the value was
+/// lost and the build stopped with an internal error. A failure after `lend` still passes up.
+#[test]
+fn a_with_whose_last_line_is_the_functions_value_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_last_value",
+        r#"error Refused:
+    code: int
+
+struct Tally:
+    count: int
+
+def held(code: int) -> with Tally fails Refused:
+    lend Tally(count=code)
+    if code == 3:
+        fail Refused(code=code)
+
+def counted(code: int) -> int fails Refused:
+    with held(code)? as tally:
+        tally.count
+
+def branched(code: int, twice: bool) -> int fails Refused:
+    if twice:
+        with held(code)? as tally:
+            tally.count * 2
+    else:
+        with held(code)? as tally:
+            tally.count
+
+def matched(code: int) -> str fails Refused:
+    match code:
+        case 0:
+            "none"
+        case _:
+            with held(code)? as tally:
+                f"tally {tally.count}"
+
+def main(stdout: Stdout):
+    stdout.print(counted(4) else 0, counted(3) else 0)
+    stdout.print(branched(4, twice=True) else 0, branched(5, twice=False) else 0, branched(3, twice=True) else -1)
+    stdout.print(matched(0) else "failed", matched(6) else "failed", matched(3) else "failed")
+"#,
+        "4 0\n8 5 -1\nnone tally 6 failed\n",
+    )
+}
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

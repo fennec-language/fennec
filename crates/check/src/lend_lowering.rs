@@ -313,9 +313,50 @@ impl Lowering<'_> {
     fn function(&mut self, def: &mut FnDef) {
         self.returns.push(def.ret.clone());
         self.failing.push(def.fails.is_some());
+        if def.ret.is_some() {
+            self.tail_returned(&mut def.body);
+        }
         self.stmts(&mut def.body);
         self.failing.pop();
         self.returns.pop();
+    }
+
+    /// A function's last line that's a `with` over a source, whose block's last line is a value:
+    /// that value is what the function gives back. The source's code after its `lend` is written
+    /// in after the block, so the value is written as `return value`, which leaves after it.
+    fn tail_returned(&self, body: &mut [Stmt]) {
+        let Some(last) = body.last_mut() else { return };
+        match &mut last.kind {
+            StmtKind::With { value, body: block, lock: false, .. } if self.is_source(value) => {
+                let Some(inner) = block.last_mut() else { return };
+                match &mut inner.kind {
+                    StmtKind::Expr(value) => inner.kind = StmtKind::Return(Some(value.clone())),
+                    _ => self.tail_returned(block),
+                }
+            }
+            StmtKind::If { branches, otherwise: Some(otherwise) } => {
+                for (_, branch) in branches {
+                    self.tail_returned(branch);
+                }
+                self.tail_returned(otherwise);
+            }
+            StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+                for arm in arms {
+                    self.tail_returned(&mut arm.body);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether what a `with` takes is a call to a source, through a `?` or an `else` that leaves.
+    fn is_source(&self, value: &Expr) -> bool {
+        let call = match &value.kind {
+            ExprKind::Try { value: inner, context: None } => inner.as_ref(),
+            ExprKind::Else { value: inner, default } if default.leaves() => inner.as_ref(),
+            _ => value,
+        };
+        self.sources.contains_key(&(call.span.start, call.span.end))
     }
 
     /// `block`, with `cleanup` also run for what fails inside what it calls, which can only

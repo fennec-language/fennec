@@ -1803,6 +1803,40 @@ fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Resul
     Ok(())
 }
 
+/// A put after the dict grew since its key was looked up writes into the dict as it is now: a
+/// lookup's entry in the old block is never used. Built checking proofs, which stop at a put in
+/// place whose entry isn't one of the dict's own.
+#[test]
+fn a_put_after_the_dict_grew_writes_where_the_dict_is_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_put_after_growth")?;
+        let (program, executable) = (dir.join("grown.fen"), dir.join("grown"));
+        std::fs::write(&program, include_str!("fixtures/lock_put_after_growth.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "plain 6 41\nlocked 6 41\nlocked dict 6 41\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Puts in place copy nothing and leave nothing more held, however many rounds, failing or not;
 /// with the dict held twice, each takes the old path and copies it, as it must.
 #[test]

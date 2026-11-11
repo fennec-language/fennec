@@ -66,9 +66,17 @@ test "a struct needs each field once, of its type, and no others":
     assert json.loads[Point]("{\"x\": 1, \"y\": 2}")? == Point(x=1, y=2)
     assert what(() => json.loads[Point]("{\"x\": 1}")?) == "`y` is missing"
     assert what(() => json.loads[Point]("{\"x\": null, \"y\": 2}")?) == "`x` is missing"
-    assert what(() => json.loads[Point]("{\"x\": \"1\", \"y\": 2}")?) == "`x` should be an int, but it's a str"
-    assert what(() => json.loads[Point]("{\"x\": 1, \"x\": 5, \"y\": 2}")?) == "the text has `x` twice"
-    assert what(() => json.loads[Point]("{\"x\": 1, \"y\": 2, \"z\": 3}")?) == "`Point` has no field \"z\", but the text has one"
+    assert (
+        what(() => json.loads[Point]("{\"x\": \"1\", \"y\": 2}")?)
+        == "`x` should be an int, but it's a str"
+    )
+    assert (
+        what(() => json.loads[Point]("{\"x\": 1, \"x\": 5, \"y\": 2}")?) == "the text has `x` twice"
+    )
+    assert (
+        what(() => json.loads[Point]("{\"x\": 1, \"y\": 2, \"z\": 3}")?)
+        == "`Point` has no field \"z\", but the text has one"
+    )
     assert what(() => json.loads[Point]("[1, 2]")?) == "the text should be a Point, but it's a list"
     # A trailing comma isn't JSON.
     assert where(() => json.loads[Point]("{\"x\": 1, \"y\": 2,}")?) == "1:17"
@@ -80,10 +88,23 @@ test "extra=.Ignore skips a key no field has, however deep it goes":
 
 test "names= spells fields each way, and reads them back the same way":
     ada = Person(first_name="Ada", age_in_years=36)
-    assert json.dumps(ada, names=JsonNames.CamelCase) == "{\"firstName\": \"Ada\", \"ageInYears\": 36}"
-    assert json.dumps(ada, names=JsonNames.PascalCase) == "{\"FirstName\": \"Ada\", \"AgeInYears\": 36}"
-    assert json.dumps(ada, names=JsonNames.KebabCase) == "{\"first-name\": \"Ada\", \"age-in-years\": 36}"
-    for names in [JsonNames.SnakeCase, JsonNames.CamelCase, JsonNames.PascalCase, JsonNames.KebabCase]:
+    assert (
+        json.dumps(ada, names=JsonNames.CamelCase) == "{\"firstName\": \"Ada\", \"ageInYears\": 36}"
+    )
+    assert (
+        json.dumps(ada, names=JsonNames.PascalCase)
+        == "{\"FirstName\": \"Ada\", \"AgeInYears\": 36}"
+    )
+    assert (
+        json.dumps(ada, names=JsonNames.KebabCase)
+        == "{\"first-name\": \"Ada\", \"age-in-years\": 36}"
+    )
+    for names in [
+        JsonNames.SnakeCase,
+        JsonNames.CamelCase,
+        JsonNames.PascalCase,
+        JsonNames.KebabCase,
+    ]:
         assert json.loads[Person](json.dumps(ada, names=names), names=names)? == ada
     # Read with another spelling, the fields aren't found.
     camel = json.dumps(ada, names=JsonNames.CamelCase)
@@ -106,7 +127,10 @@ test "floats are written so they read back as the same float":
 test "nesting deeper than 500 fails rather than running out of stack":
     assert where(() => json.loads[list[int]]("[" * 600 + "]" * 600)?) == "1:502"
     # 500 deep is read, and fails only for not being a list of ints.
-    assert what(() => json.loads[list[int]]("[" * 500 + "]" * 500)?) == "`[0]` should be an int, but it's a list"
+    assert (
+        what(() => json.loads[list[int]]("[" * 500 + "]" * 500)?)
+        == "`[0]` should be an int, but it's a list"
+    )
 
 def main(stdout: Stdout):
     # Text that isn't JSON says where it goes wrong.

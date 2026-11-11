@@ -386,6 +386,10 @@ fn report_counts(counts: &heap::Counts, live: usize) {
         0 => said,
         puts => format!("{said} found_puts {puts}"),
     };
+    let said = match crate::stdlib::net::connection_writes() {
+        0 => said,
+        writes => format!("{said} connection_writes {writes}"),
+    };
     let _ = writeln!(std::io::stderr(), "{said} live {live}");
 }
 

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -506,6 +506,25 @@ pub(crate) enum Failure {
 /// `Failure::Closed`.
 fn closed_here() -> Failure {
     Failure::Other("the socket was closed here, so it can't be used any more".to_owned())
+}
+
+/// How many writes a run asked of its connections, as `FENNEC_COUNTS` says: a server's response
+/// or a client's request should go out in one, so it goes in one packet, not a head and then a body
+/// the other side waits for.
+static CONNECTION_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// A connection is written to, counted under `FENNEC_COUNTS`; a run that doesn't count pays only
+/// for looking once whether it does.
+pub(crate) fn wrote_to_a_connection() {
+    static COUNTING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *COUNTING.get_or_init(|| std::env::var_os("FENNEC_COUNTS").is_some()) {
+        CONNECTION_WRITES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// How many writes the run asked of its connections, while counting.
+pub(crate) fn connection_writes() -> u64 {
+    CONNECTION_WRITES.load(Ordering::Relaxed)
 }
 
 impl Failure {
@@ -1165,6 +1184,7 @@ fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
 
 /// `write`, giving up once `timeout` passes, as for a server that never reads.
 fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+    wrote_to_a_connection();
     let stream = stream(handle)?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     stream.read_since_write.store(false, Ordering::SeqCst);

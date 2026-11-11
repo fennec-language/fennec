@@ -1344,7 +1344,11 @@ impl Emit<'_, '_, '_> {
             self.proof_inside(list, &position, "index checked before still inside its list", span);
             return position;
         }
-        let position = self.position(list, index, span);
+        let position = if self.index_not_negative() {
+            self.position_not_negative(list, index, span)
+        } else {
+            self.position(list, index, span)
+        };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
                 slot.clone()
@@ -1357,6 +1361,38 @@ impl Emit<'_, '_, '_> {
             self.inside_items.push(fact);
         }
         position
+    }
+
+    /// Whether the index of the instruction being written is proven not negative (see `signs`).
+    fn index_not_negative(&self) -> bool {
+        self.module
+            .whole
+            .non_negative
+            .get(self.function.name.as_str())
+            .is_some_and(|found| found.contains(&self.at))
+    }
+
+    /// Where an index proven not negative points: one unsigned comparison with the length, with
+    /// no way back from the end. A build that checks proofs checks it isn't negative.
+    fn position_not_negative(&mut self, list: &str, index: &str, span: Span) -> String {
+        if self.checks_proofs() {
+            let negative = self.temp();
+            self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
+            self.proof_held(&negative, "index not negative", span);
+        }
+        let length = self.list_length(list);
+        let (inside, ok, fail) = (self.temp(), self.label("ok"), self.label("outside"));
+        self.line(&format!("{inside} = icmp ult i64 {index}, {length}"));
+        self.line(&format!("br i1 {inside}, label %{ok}, label %{fail}, !prof !8"));
+        self.start_block(&ok);
+        self.declare("declare void @fennec_out_of_range(i64, i64, i64, i64) #1");
+        let (place, args) = self.span_values(&fail, span);
+        self.next_check(span, Some(crate::CheckKind::Bounds));
+        let failed = self.failed_exit();
+        self.cold_block(&format!(
+            "{fail}:\n{place}  call void @fennec_out_of_range(i64 {index}, i64 {length}, {args})\n  {failed}\n"
+        ));
+        index.to_owned()
     }
 
     /// Where an index points: from the start, or the end if it's negative, failing outside.

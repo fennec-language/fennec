@@ -41,6 +41,7 @@ threads = ["dep:crossbeam-deque", "dep:fennec-parked", "dep:mio"]
 sanitize = []
 
 [dev-dependencies]
+fennec-temp.workspace = true
 crossbeam-deque.workspace = true
 fennec-parked.workspace = true
 mio.workspace = true

@@ -9,12 +9,12 @@ mod deps {
     use fennec_deps::{Kits, pins};
 
     /// A fresh folder for one test.
-    fn folder(name: &str) -> PathBuf {
+    fn folder(name: &str) -> fennec_temp::Temp {
         let dir = std::env::temp_dir().join(format!("fennec-deps-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // As `git` takes it: on Windows, not in the verbatim form `canonicalize` gives.
-        fennec_deps::plain(&dir.canonicalize().unwrap())
+        fennec_temp::Temp::at(fennec_deps::plain(&dir.canonicalize().unwrap()))
     }
 
     fn git(repository: &Path, args: &[&str]) -> String {

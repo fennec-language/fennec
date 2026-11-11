@@ -18,6 +18,11 @@ use super::ast::{
     RefPlace, Size, Stmt, TYPES, Ty, Via,
 };
 
+/// Whether a crash runs a `lend x else:` cleanup holding a line like `kept = capped(code)?`.
+/// Today it doesn't, natively: the crash goes on with none of the cleanup run, though one with
+/// no `?` runs. Until it does, only a block that fails is given `guarded_noted`'s cleanup.
+const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = false;
+
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;
 
@@ -562,6 +567,7 @@ impl Writer<'_> {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 => self.change_counts(body),
+            27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -882,6 +888,23 @@ impl Writer<'_> {
 
     /// A list lent to a call through `ref` beside a value read from it, the whole list or a
     /// list's item, or a value assigned to itself, a local or a struct's fields.
+    /// A `with` whose source's `lend x else:` cleanup runs when the block fails or crashes, in
+    /// `main` or in a launched task.
+    fn guards(&mut self, body: &mut Vec<Stmt>) {
+        if !self.threadless && self.choice(3) == 0 {
+            let count = 1 + self.choice(5);
+            let items = (0..count).map(|_| i64::from(self.byte() % 10)).collect();
+            body.push(Stmt::GuardAll(items));
+            return;
+        }
+        let code = i64::from(self.byte() % 32) - 4;
+        let refuse = self.choice(2) == 0;
+        // A crash ends the program, so it's rare.
+        let crash = self.choice(8) == 0;
+        let noted = self.choice(2) == 0 && (CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK || !crash);
+        body.push(Stmt::Guarded { code, refuse, crash, noted });
+    }
+
     /// An arrow function that fails and passes it up with `?`, or keys holding floats.
     fn arrows_or_floats(&mut self, body: &mut Vec<Stmt>) {
         if self.choice(2) == 0 {

@@ -472,6 +472,20 @@ pub(crate) enum Stmt {
     /// failure up to what it's given to, as #1305 has it. `capped` fails with `n` when it's over
     /// `limit`.
     Arrowed(Arrow, Expr, i64),
+    /// `guarded_shown(code, refuse, crash, noted)`: a `with` on `guarded`, a source whose `lend
+    /// x else:` cleanup runs when the block fails or crashes. The cleanup fails for a `code`
+    /// that's a multiple of 3, and, in `guarded_noted`, through `capped(code, limit=20)?` for one
+    /// over 20: either becomes a note on the block's failure, and the rest of the cleanup is
+    /// skipped. `crash` indexes `[1, 2]` by `code`, which crashes unless it's -2 to 1.
+    Guarded {
+        code: i64,
+        refuse: bool,
+        crash: bool,
+        noted: bool,
+    },
+    /// `guard_all(items)`: a launched task runs a `with guarded(item)` for each item it's sent,
+    /// crashing on 5 and failing on 7, each running the cleanup. Either prints `stopped`.
+    GuardAll(Vec<i64>),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

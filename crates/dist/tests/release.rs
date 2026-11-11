@@ -319,7 +319,8 @@ mod release {
 
     #[test]
     fn the_command_writes_manifests_and_checks_them() {
-        let dir = std::env::temp_dir().join(format!("fennec-dist-{}", std::process::id()));
+        let dir =
+            fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-dist-{}", std::process::id())));
         std::fs::create_dir_all(&dir).unwrap();
         let archive = dir.join("fennec-v0.4.2-aarch64-apple-darwin.tar.gz");
         std::fs::write(&archive, b"archive").unwrap();

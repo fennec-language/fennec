@@ -6,6 +6,13 @@
 ## formula is the one glam uses, so the two give the same numbers.
 from std import math
 
+## Infinity, bigger than every other float: `-INFINITY` is smaller than all of them.
+export INFINITY = 1e309
+
+## NaN, the float that isn't a number, as a sum with no answer gives. Every NaN is the same float,
+## so it equals itself, and `float.parse("nan")` gives it too.
+export NAN = INFINITY - INFINITY
+
 ## A 2D vector, or a point in 2D.
 export struct Vec2:
     x = 0.0

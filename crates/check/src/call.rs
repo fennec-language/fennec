@@ -579,10 +579,11 @@ impl FnCx<'_> {
             self.expr(object);
             return field;
         }
-        // `u8.from(x)`: a function on a sized number type, from the standard library.
+        // `u8.from(x)` and `int.parse(text)`: a function on a number type, from the standard
+        // library.
         if let ExprKind::Name(size) = &object.kind
             && self.lookup(size).is_none()
-            && crate::types::Num::named(size).is_some()
+            && (crate::types::Num::named(size).is_some() || matches!(size.as_str(), "int" | "float"))
         {
             let size = size.clone();
             return self.static_call(&size, method, args, span);

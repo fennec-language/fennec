@@ -499,6 +499,7 @@ impl<'p> Module<'_, 'p> {
             on_crash: crate::rollback::given_back_on_crash(function),
             saving_slots: HashMap::new(),
             rolled_back: HashSet::new(),
+            lock_record: None,
             wrote_prop: false,
             traced_calls: Vec::new(),
             leave_after_crash: None,
@@ -609,6 +610,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) saving_slots: HashMap<usize, String>,
     /// The locks to write whose changes a failure has just put back, for their unlock to know.
     pub(crate) rolled_back: HashSet<usize>,
+    /// The slot holding the address of this thread's record of plain saves, once a lock that saves
+    /// its changes is taken, for its saves to go in without a call (see `rollback::save_plain`).
+    pub(crate) lock_record: Option<String>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
     /// The calls a failure can leave by, as the block each is at the end of and where it is from

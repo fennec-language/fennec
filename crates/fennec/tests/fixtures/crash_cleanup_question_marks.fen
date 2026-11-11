@@ -1,0 +1,41 @@
+## A crash runs a `lend x else:` cleanup however it passes failures up: a `?` that fails anywhere in
+## a line, or a `fail`, ends it there, as for a failed block, and the crash goes on. A `?` in a
+## function written in the cleanup passes up from that function. Run with the code the block
+## crashes at, which decides where its cleanup ends.
+error Refused:
+    code: int
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+    n
+
+def check(n: int, limit: int) fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+
+def guarded(code: int, stdout: Stdout) -> with int fails Refused:
+    lend code else:
+        stdout.print("cleanup", code)
+        kept = capped(code, limit=20)?
+        stdout.print("kept", kept)
+        stdout.print("deeper", capped(kept, limit=10)?)
+        for step in range(2):
+            if step == code:
+                fail Refused(code=step)
+        def inner() -> int fails Refused:
+            capped(code, limit=5)?
+        stdout.print("inner", inner() else -1)
+        check(code, limit=3)?
+        stdout.print("ended", code)
+    stdout.print("released", code)
+
+def crashes(code: int, stdout: Stdout) fails Refused:
+    with guarded(code, stdout)? as held:
+        values = [1]
+        stdout.print(values[held])
+
+def main(stdout: Stdout, args: Args):
+    code = int(args[0]) else 0
+    crashes(code, stdout) else:
+        stdout.print("failed")

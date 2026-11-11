@@ -1,0 +1,43 @@
+## A crash's cleanup that fails in an `else as` block, in a function written inside a case of a
+## `match`, and through `? from`: the cleanup ends where its own failure passes, said under the
+## crash as a note, while the function's `?` stays its own. At 7 the cleanup crashes too, giving
+## back nothing to note. Run with the code the block crashes at.
+error Refused:
+    code: int
+
+error Wrapped:
+    why: str
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+    n
+
+def guarded(code: int, stdout: Stdout) -> with int fails Refused | Wrapped:
+    lend code else:
+        stdout.print("cleanup", code)
+        if code == 7:
+            stdout.print([0, 0][code])
+        kept = capped(code, limit=20) else as why:
+            fail Wrapped(why=f"{why}")
+        stdout.print("kept", kept)
+        match kept % 3:
+            case 0:
+                def inner() -> int fails Refused:
+                    capped(kept, limit=5)?
+                stdout.print("inner", inner() else -1)
+            case _:
+                stdout.print("other")
+        checked = capped(kept, limit=10)? from Wrapped(why="too big")
+        stdout.print("ended", checked)
+    stdout.print("released", code)
+
+def crashes(code: int, stdout: Stdout) fails Refused | Wrapped:
+    with guarded(code, stdout)? as held:
+        values = [1]
+        stdout.print(values[held])
+
+def main(stdout: Stdout, args: Args):
+    code = int(args[0]) else 0
+    crashes(code, stdout) else:
+        stdout.print("failed")

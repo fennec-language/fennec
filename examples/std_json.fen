@@ -125,7 +125,9 @@ test "floats are written so they read back as the same float":
     assert json.loads[list[float]](json.dumps(floats))? == floats
 
 test "nesting deeper than 500 fails rather than running out of stack":
-    assert where(() => json.loads[list[int]]("[" * 600 + "]" * 600)?) == "1:502"
+    assert what(() => json.loads[list[int]]("[" * 600 + "]" * 600)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
     # 500 deep is read, and fails only for not being a list of ints.
     assert (
         what(() => json.loads[list[int]]("[" * 500 + "]" * 500)?)

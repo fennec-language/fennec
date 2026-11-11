@@ -19,7 +19,7 @@ mod verdict;
 pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, UNUSED_BUILD, VERSION};
 pub use changes::{Change, Kind, changes};
 pub use reach::test_keys;
-pub use reached::{keep_what_functions_reach, keep_what_main_reaches};
+pub use reached::{keep_what_functions_reach, keep_what_main_reaches, what_main_reaches};
 pub use snapshot::{FileRecord, Run, Snapshot};
 pub use store::{WORK_KEPT, fennec_home, load, save, sweep_work, work_folder};
 pub use traced::{TestGraph, TestRecord};

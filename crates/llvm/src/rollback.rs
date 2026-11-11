@@ -7,6 +7,8 @@
 //! a lock to write on a local of such a type is one whose changes are saved. A read lock never
 //! saves, and neither does a plain `with` on a `shared` type of the program's own.
 
+use std::fmt::Write as _;
+
 use fennec_check::Type;
 use fennec_ir::{Function, InstKind, LocalId, Operand};
 
@@ -89,6 +91,59 @@ pub(crate) fn given_back_on_crash(function: &Function) -> Vec<usize> {
     found
 }
 
+/// A plain save, written into this thread's buffer as the runtime would (`rollback::Buffer` in
+/// `crates/rt`), inline. Its record is four words: how many saves the buffer holds, how many it
+/// has room for, where they are, and where the innermost lock's start. A save of the same word as
+/// the last of this lock's is the same place written again, which needs nothing. With no room, the
+/// runtime saves it, making room.
+const SAVE_PLAIN: &str =
+    "define internal void @fen_lock_save(i64 %record, i64 %block, i64 %word, i64 %old) #2 {
+entry:
+  %rec = inttoptr i64 %record to ptr
+  %len = load i64, ptr %rec
+  %room.at = getelementptr i64, ptr %rec, i64 1
+  %room = load i64, ptr %room.at
+  %saves.at = getelementptr i64, ptr %rec, i64 2
+  %saves.address = load i64, ptr %saves.at
+  %saves = inttoptr i64 %saves.address to ptr
+  %start.at = getelementptr i64, ptr %rec, i64 3
+  %start = load i64, ptr %start.at
+  %any = icmp ugt i64 %len, %start
+  br i1 %any, label %last, label %check
+last:
+  %last.index = sub i64 %len, 1
+  %last.first = mul i64 %last.index, 3
+  %last.at = getelementptr i64, ptr %saves, i64 %last.first
+  %last.block = load i64, ptr %last.at
+  %last.word.at = getelementptr i64, ptr %last.at, i64 1
+  %last.word = load i64, ptr %last.word.at
+  %same.block = icmp eq i64 %last.block, %block
+  %same.word = icmp eq i64 %last.word, %word
+  %same = and i1 %same.block, %same.word
+  br i1 %same, label %done, label %check
+check:
+  %has.room = icmp ult i64 %len, %room
+  br i1 %has.room, label %write, label %call, !prof !8
+write:
+  %first = mul i64 %len, 3
+  %at = getelementptr i64, ptr %saves, i64 %first
+  store i64 %block, ptr %at
+  %word.at = getelementptr i64, ptr %at, i64 1
+  store i64 %word, ptr %word.at
+  %old.at = getelementptr i64, ptr %at, i64 2
+  store i64 %old, ptr %old.at
+  %next = add i64 %len, 1
+  store i64 %next, ptr %rec
+  br label %done
+call:
+  call void @fennec_lock_save(i64 %block, i64 %word, i64 %old, i64 0)
+  br label %done
+done:
+  ret void
+}
+
+";
+
 impl Emit<'_, '_, '_> {
     /// Whether a crash gives back `handle`'s lock with nothing to put back: it's a read lock.
     pub(crate) fn read_lock_given_back(&self, handle: &Operand) -> bool {
@@ -121,10 +176,12 @@ impl Emit<'_, '_, '_> {
 
     /// The lock on `handle`'s cell has just been taken: its log begins.
     pub(crate) fn rollback_begin(&mut self, handle: &Operand, cell: &str) {
-        self.declare("declare void @fennec_lock_begin(i64) nounwind");
-        let address = self.temp();
+        self.declare("declare i64 @fennec_lock_begin(i64) nounwind");
+        let (address, record) = (self.temp(), self.temp());
         self.line(&format!("{address} = ptrtoint ptr {cell} to i64"));
-        self.line(&format!("call void @fennec_lock_begin(i64 {address})"));
+        self.line(&format!("{record} = call i64 @fennec_lock_begin(i64 {address})"));
+        let slot = self.record_slot();
+        self.line(&format!("store i64 {record}, ptr {slot}"));
         if let Some(flag) = self.held_flag(handle) {
             self.line(&format!("store i1 true, ptr {flag}"));
         }
@@ -219,29 +276,58 @@ impl Emit<'_, '_, '_> {
 
     /// Runs `cleanup`, a closure that takes nothing, on the way out after a crash, when the block
     /// it's for hasn't ended. The crash is held aside meanwhile, so the cleanup's own calls run as
-    /// normal, and goes on after; a failure or crash of the cleanup's own doesn't replace it.
+    /// normal, and goes on after; a failure or crash of the cleanup's own doesn't replace it. The
+    /// cleanup gives back how it failed, as text, or nothing, which the runtime notes on the crash.
     fn run_crash_cleanup(&mut self, cleanup: &Operand) -> Result<(), String> {
         let Some(flag) = self.held_flag(cleanup) else { return Ok(()) };
         let (closure, kind) = self.operand(cleanup)?;
         let Kind::Closure(params, returns) = kind else {
             return Err("a crash's cleanup that isn't a closure".to_owned());
         };
-        if !params.is_empty() || !matches!(*returns, Kind::Unit) {
-            return Err("a crash's cleanup that takes or gives something".to_owned());
+        if !params.is_empty() || !matches!(*returns, Kind::Str) {
+            return Err("a crash's cleanup that takes something, or gives back other than text".to_owned());
         }
         self.declare("declare i64 @fennec_crash_hold() nounwind");
         self.declare("declare void @fennec_crash_resume(i64) nounwind");
+        self.declare("declare void @fennec_crash_note(i64, i64) nounwind");
         let (held, run, next) = (self.temp(), self.label("crash_cleanup"), self.label("crash_cleaned"));
         self.line(&format!("{held} = load i1, ptr {flag}"));
         self.line(&format!("br i1 {held}, label %{run}, label %{next}"));
         self.start_block(&run);
         self.line(&format!("store i1 false, ptr {flag}"));
-        let (number, at, code) = (self.temp(), self.temp(), self.temp());
+        let number = self.temp();
         self.line(&format!("{number} = call i64 @fennec_crash_hold()"));
         self.line("store ptr null, ptr %err");
-        self.line(&format!("{at} = getelementptr inbounds i8, ptr {closure}, i64 {}", crate::closures::CODE));
-        self.line(&format!("{code} = load ptr, ptr {at}, !invariant.load !1"));
-        self.line(&format!("call swiftcc void {code}(ptr {closure}, ptr swifterror %err)"));
+        let (said, failed) = self.call_closure_unchecked(&closure, &returns, &[]);
+        // A cleanup that crashed too, or failed some way it can't, gave back nothing to read: the
+        // runtime says its crash on resuming.
+        let flag_at = self.failure_flag();
+        let (flag, crashed, broke) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{flag} = load i8, ptr {flag_at}"));
+        self.line(&format!("{crashed} = icmp ne i8 {flag}, 0"));
+        self.line(&format!("{broke} = or i1 {failed}, {crashed}"));
+        let (noted, resume) = (self.label("crash_noted"), self.label("crash_resume"));
+        self.line(&format!("br i1 {broke}, label %{resume}, label %{noted}"));
+        self.start_block(&noted);
+        let said = if returns.in_memory() {
+            let header = self.temp();
+            self.line(&format!("{header} = load {}, ptr {said}", self.text_of(&returns)));
+            header
+        } else {
+            said
+        };
+        let block = if self.headers() {
+            let block = self.owned_text_block(&said);
+            self.release_kind(&said, &returns);
+            block
+        } else {
+            said
+        };
+        let address = self.temp();
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("call void @fennec_crash_note(i64 {number}, i64 {address})"));
+        self.line(&format!("br label %{resume}"));
+        self.start_block(&resume);
         self.line(&format!("call void @fennec_crash_resume(i64 {number})"));
         self.line(&format!("br label %{next}"));
         self.start_block(&next);
@@ -318,6 +404,31 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// The slot holding the address of this thread's record of plain saves, which each lock that
+    /// saves its changes stores when it's taken. It starts at 0, so a save no lock's begin came
+    /// before would fault at once rather than read whatever the slot held. Every save comes after
+    /// one today, which LLVM sees, so it drops the store.
+    fn record_slot(&mut self) -> String {
+        if let Some(slot) = &self.lock_record {
+            return slot.clone();
+        }
+        let at = self.label("%place");
+        let _ = writeln!(self.allocas, "  {at} = alloca i64");
+        let _ = writeln!(self.allocas, "  store i64 0, ptr {at}");
+        self.lock_record = Some(at.clone());
+        at
+    }
+
+    /// Saves `old`, the word at `word` in `block`, which holds no block, before it changes: in this
+    /// thread's buffer of saves, without a call while it has room (see `fen_lock_save`).
+    fn save_plain(&mut self, block: &str, word: &str, old: &str) {
+        self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
+        self.module.add_helper("fen_lock_save", SAVE_PLAIN.to_owned());
+        let (slot, record) = (self.record_slot(), self.temp());
+        self.line(&format!("{record} = load i64, ptr {slot}"));
+        self.line(&format!("call void @fen_lock_save(i64 {record}, i64 {block}, i64 {word}, i64 {old})"));
+    }
+
     /// `block` as an address, and the index of the word at `place` in it, counting its count
     /// word as the first.
     fn word_in(&mut self, block: &str, place: &str) -> (String, String) {
@@ -357,14 +468,15 @@ impl Emit<'_, '_, '_> {
             let _ = self.save_words(block, place, kind);
             return false;
         };
-        self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
         let (block, word) = self.word_in(block, place);
         let old = self.temp();
         self.line(&format!("{old} = load i64, ptr {place}"));
-        self.line(&format!(
-            "call void @fennec_lock_save(i64 {block}, i64 {word}, i64 {old}, i64 {})",
-            i64::from(holds)
-        ));
+        if holds {
+            self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
+            self.line(&format!("call void @fennec_lock_save(i64 {block}, i64 {word}, i64 {old}, i64 1)"));
+        } else {
+            self.save_plain(&block, &word, &old);
+        }
         holds
     }
 
@@ -444,10 +556,9 @@ impl Emit<'_, '_, '_> {
         let (from, index) = self.word_in(block, at);
         match word {
             Word::Plain => {
-                self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
                 let old = self.temp();
                 self.line(&format!("{old} = load i64, ptr {at}"));
-                self.line(&format!("call void @fennec_lock_save(i64 {from}, i64 {index}, i64 {old}, i64 0)"));
+                self.save_plain(&from, &index, &old);
             }
             Word::Block => {
                 self.declare("declare void @fennec_lock_save_ref(i64, i64, i64) nounwind");
@@ -600,9 +711,21 @@ def main(stdout: Stdout):
 ";
         let text = texts(source)?;
         let pay = text.split("define").find(|function| function.contains("@\"f_pay\"(")).unwrap_or_default();
-        for call in ["begin", "save", "save_text", "save_ref", "kept"] {
+        assert!(pay.contains("call i64 @fennec_lock_begin("), "{pay}");
+        for call in ["save_text", "save_ref", "kept"] {
             assert!(pay.contains(&format!("call void @fennec_lock_{call}(")), "{call}: {pay}");
         }
+        // The balance, a number, is saved without a call while there's room.
+        assert!(pay.contains("call void @fen_lock_save("), "{pay}");
+        // The record's slot starts at 0, before any lock's begin stores the record in it.
+        let lines: Vec<&str> = pay.lines().map(str::trim).collect();
+        let zeroed = lines.windows(2).any(|pair| {
+            pair[0]
+                .strip_suffix(" = alloca i64")
+                .is_some_and(|slot| pair[1] == format!("store i64 0, ptr {slot}"))
+        });
+        assert!(zeroed, "{pay}");
+        assert!(text.contains("define internal void @fen_lock_save("), "{text}");
         let main =
             text.split("define").find(|function| function.contains("@\"f_main\"(")).unwrap_or_default();
         assert!(!main.contains("@fennec_lock_begin("), "{main}");

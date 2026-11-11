@@ -549,6 +549,33 @@ fn an_item_nothing_uses_goes_with_its_doc() {
 }
 
 #[test]
+fn a_use_is_a_whole_word_whatever_letters_are_around_it() {
+    let unused = |source: &str| -> Vec<String> {
+        found(source)
+            .unwrap()
+            .iter()
+            .filter(|lint| lint.rule == "unused-item")
+            .map(|lint| lint.message().to_owned())
+            .collect()
+    };
+    // A letter that isn't ASCII is part of the word, so `éhelper` isn't `helper`.
+    let inside =
+        "def helper() -> int:\n    1\n\ndef main(stdout: Stdout):\n    # éhelper\n    stdout.print(2)\n";
+    assert_eq!(unused(inside), ["nothing uses the function `helper`"]);
+    // Marks that aren't letters end it, so `«helper»` is.
+    let marked =
+        "def helper() -> int:\n    1\n\ndef main(stdout: Stdout):\n    # «helper»\n    stdout.print(2)\n";
+    assert!(unused(marked).is_empty(), "{:?}", unused(marked));
+    // Names longer than 63 bytes share a length, and are still told apart by what they say.
+    let long = "a".repeat(70);
+    let longer = "b".repeat(80);
+    let both = format!(
+        "def {long}() -> int:\n    1\n\ndef {longer}() -> int:\n    2\n\ndef main(stdout: Stdout):\n    stdout.print({long}())\n"
+    );
+    assert_eq!(unused(&both), [format!("nothing uses the function `{longer}`")]);
+}
+
+#[test]
 fn pass_is_only_for_an_empty_block() {
     assert_eq!(rules("def f():\n    pass\n"), NONE);
     let source = "def f():\n    pass\n    g()\n";

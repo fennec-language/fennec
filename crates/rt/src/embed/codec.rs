@@ -19,6 +19,8 @@ pub struct Writer {
     bytes: Vec<u8>,
     /// What's taken off every span written, so they're kept as from the start of their file.
     spans_from: u32,
+    /// Whether spans are left out, for a tree's hash, which a move or a reformat doesn't change.
+    no_spans: bool,
 }
 
 /// Bytes being read. Every read gives `None` once the bytes run out or don't make sense.
@@ -33,7 +35,13 @@ impl Writer {
     /// be read back at another, as `Reader::with_spans_at` reads it.
     #[must_use]
     pub fn with_spans_from(base: u32) -> Self {
-        Writer { bytes: Vec::new(), spans_from: base }
+        Writer { bytes: Vec::new(), spans_from: base, no_spans: false }
+    }
+
+    /// A writer that leaves spans out: what's written says what a tree holds, wherever it is.
+    /// It can't be read back.
+    pub fn without_spans() -> Self {
+        Writer { bytes: Vec::new(), spans_from: 0, no_spans: true }
     }
 
     pub fn into_bytes(self) -> Vec<u8> {
@@ -293,6 +301,30 @@ impl Decode for Rc<str> {
     }
 }
 
+impl<T: Encode + ?Sized> Encode for &T {
+    fn encode(&self, to: &mut Writer) {
+        (**self).encode(to);
+    }
+}
+
+impl<A: Encode, B: Encode, C: Encode> Encode for (A, B, C) {
+    fn encode(&self, to: &mut Writer) {
+        self.0.encode(to);
+        self.1.encode(to);
+        self.2.encode(to);
+    }
+}
+
+impl<A: Encode, B: Encode, C: Encode, D: Encode, E: Encode> Encode for (A, B, C, D, E) {
+    fn encode(&self, to: &mut Writer) {
+        self.0.encode(to);
+        self.1.encode(to);
+        self.2.encode(to);
+        self.3.encode(to);
+        self.4.encode(to);
+    }
+}
+
 impl<A: Encode, B: Encode> Encode for (A, B) {
     fn encode(&self, to: &mut Writer) {
         self.0.encode(to);
@@ -308,6 +340,9 @@ impl<A: Decode, B: Decode> Decode for (A, B) {
 
 impl Encode for Span {
     fn encode(&self, to: &mut Writer) {
+        if to.no_spans {
+            return;
+        }
         self.start.saturating_sub(to.spans_from).encode(to);
         self.end.saturating_sub(to.spans_from).encode(to);
     }

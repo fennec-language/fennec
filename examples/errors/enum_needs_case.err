@@ -4,4 +4,4 @@ error: `Light` is an enum, so pick one of its cases
 6 |     stdout.print(Light())
   |                  ^^^^^^^
   |
-  = help: write one of Light.Red, Light.Green
+  = help: write one of `Light.Red`, `Light.Green`

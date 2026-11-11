@@ -1,0 +1,7 @@
+error: an int has no field `real`
+ --> examples/errors/field_of_a_number.fen:3:18
+  |
+3 |     stdout.print(count.real)
+  |                  ^^^^^^^^^^
+  |
+  = help: take `.real` off: an int has no fields

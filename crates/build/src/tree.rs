@@ -1,44 +1,16 @@
 //! The second layer of hashing: each definition's syntax tree, with positions and comments
 //! left out, so reformatting, editing comments and moving code around change no hash.
 
-use std::fmt::Debug;
-
-use fennec_blake3::{Hash, Hasher};
+use fennec_blake3::Hash;
+use fennec_rt::embed::codec::{Encode, Writer};
 use fennec_syntax::{Item, Module};
 
-/// The syntax tree of a definition, hashed without its positions.
-pub fn tree_hash(tree: &impl Debug) -> Hash {
-    let mut hasher = Hasher::new();
-    hasher.update(without_positions(&format!("{tree:?}")).as_bytes());
-    hasher.finalize()
-}
-
-/// A tree's debug text with every `Span { start: .., end: .. }` written as just `Span`.
-/// Text inside string literals is left alone, so two different strings never look the same.
-fn without_positions(debug: &str) -> String {
-    const SPAN: &str = "Span { start: ";
-    let mut out = String::with_capacity(debug.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut skipping = false;
-    for (at, c) in debug.char_indices() {
-        if skipping {
-            skipping = c != '}';
-            continue;
-        }
-        if in_string {
-            in_string = escaped || c != '"';
-            escaped = !escaped && c == '\\';
-        } else if c == '"' {
-            in_string = true;
-        } else if debug.get(at..).is_some_and(|rest| rest.starts_with(SPAN)) {
-            out.push_str("Span");
-            skipping = true;
-            continue;
-        }
-        out.push(c);
-    }
-    out
+/// The syntax tree of a definition, hashed without its positions: its encoding with every span
+/// left out, so moving it or reformatting it changes no hash.
+pub fn tree_hash(tree: &impl Encode) -> Hash {
+    let mut writer = Writer::without_spans();
+    tree.encode(&mut writer);
+    fennec_blake3::hash(&writer.into_bytes())
 }
 
 /// Every definition in a module and the hash of its tree, keyed by what it is and its name:
@@ -101,18 +73,27 @@ pub(crate) fn item_definitions(item: &Item, found: &mut Vec<(String, Hash)>) {
 
 #[cfg(test)]
 mod tests {
-    use super::without_positions;
+    use super::tree_hash;
 
+    fn first_item(source: &str, base: u32) -> fennec_syntax::Item {
+        fennec_syntax::parse_at(source, base).unwrap().items.remove(0)
+    }
+
+    /// Where a definition is, and how it's spaced, change nothing; what it says changes the hash,
+    /// even inside a string that looks like a position.
     #[test]
-    fn positions_go_but_strings_stay() {
-        assert_eq!(
-            without_positions("Stmt { span: Span { start: 3, end: 9 }, s: \"Span { start: 1 }\" }"),
-            "Stmt { span: Span, s: \"Span { start: 1 }\" }"
-        );
-        assert_eq!(
-            without_positions("\"a\\\"Span { start: 1 }\" Span { start: 2, end: 3 }"),
-            "\"a\\\"Span { start: 1 }\" Span"
-        );
-        assert_eq!(without_positions("\"\\\\\" Span { start: 2, end: 3 }"), "\"\\\\\" Span");
+    fn a_tree_hashes_by_what_it_holds_not_where_it_is() {
+        let source = "def greet(name: str) -> str:\n    \"Span { start: 1 } {name}\"\n";
+        let hash = tree_hash(&first_item(source, 0));
+        assert_eq!(tree_hash(&first_item(source, 4096)), hash, "moved");
+        let spaced = "\n\ndef greet(name: str) -> str:\n\n    \"Span { start: 1 } {name}\"\n";
+        assert_eq!(tree_hash(&first_item(spaced, 0)), hash, "spaced out");
+        for changed in [
+            "def greet(name: str) -> str:\n    \"Span { start: 2 } {name}\"\n",
+            "def greet(who: str) -> str:\n    \"Span { start: 1 } {who}\"\n",
+            "def hail(name: str) -> str:\n    \"Span { start: 1 } {name}\"\n",
+        ] {
+            assert_ne!(tree_hash(&first_item(changed, 0)), hash, "{changed}");
+        }
     }
 }

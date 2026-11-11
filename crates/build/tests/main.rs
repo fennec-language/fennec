@@ -129,7 +129,8 @@ fn changes_are_reported_by_file_and_definition() {
 
 #[test]
 fn snapshots_are_stored_and_read_back() {
-    let home = std::env::temp_dir().join(format!("fennec-build-test-{}", std::process::id()));
+    let home =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-build-test-{}", std::process::id())));
     let program = home.join("game.fen");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(&program, GAME).unwrap();

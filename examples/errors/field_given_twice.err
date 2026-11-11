@@ -1,0 +1,7 @@
+error: this field is given twice
+ --> examples/errors/field_given_twice.fen:6:31
+  |
+6 |     stdout.print(Point(x=1, x=2, y=3))
+  |                               ^
+  |
+  = help: keep one `x=...` and take the other out

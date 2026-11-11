@@ -1,0 +1,7 @@
+error: a `match` with a `ref` case gives back nothing
+ --> examples/errors/ref_match_gives_a_value.fen:6:5
+  |
+6 |     match slot:
+  |     ^^^^^^^^^^^
+  |
+  = help: take the value off each case's last line, and give it back on a line after the `match`, as `total`

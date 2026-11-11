@@ -1,0 +1,7 @@
+error: `Light` has no case called `Gren`
+ --> examples/errors/enum_case_unknown.fen:7:9
+  |
+7 |         case .Gren:
+  |         ^^^^^^^^^^^
+  |
+  = help: did you mean `.Green`?

@@ -395,6 +395,7 @@ impl Checker {
     pub(crate) fn waits_under_locks(&mut self) {
         let waiting = self.up_the_calls(&self.waits);
         let locking = self.up_the_calls(&self.takes_locks);
+        self.lock_verdicts = lock_verdicts(&waiting, &locking);
         self.values_under_locks(&waiting, &locking);
         for call in std::mem::take(&mut self.lock_calls) {
             if let Some(what) = self.reached(&waiting, &call.callee) {
@@ -406,6 +407,24 @@ impl Checker {
             }
         }
     }
+}
+
+/// What each function waits on and locks, as one line each: a function that does neither isn't
+/// there.
+fn lock_verdicts(
+    waiting: &BTreeMap<String, String>,
+    locking: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut verdicts: BTreeMap<String, String> =
+        waiting.iter().map(|(key, what)| (key.clone(), format!("waits on {what}"))).collect();
+    for (key, what) in locking {
+        let takes = format!("takes {what}");
+        verdicts
+            .entry(key.clone())
+            .and_modify(|verdict| *verdict = format!("{verdict}; {takes}"))
+            .or_insert(takes);
+    }
+    verdicts
 }
 
 /// The function parameters called at all, and those called inside a lock, with the lock: a

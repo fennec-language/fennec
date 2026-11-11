@@ -1290,26 +1290,22 @@ impl Emit<'_, '_, '_> {
         short.retain(|local| self.holding.short(*local));
         short.sort_unstable();
         short.dedup();
-        // A build that checks proofs checks that the short-lived locals left here are empty.
-        let empty: Vec<usize> = if self.checks_proofs() {
-            (0..self.kinds.len()).filter(|at| self.holding.short(*at) && !short.contains(at)).collect()
-        } else {
-            Vec::new()
-        };
-        if short.is_empty() && empty.is_empty() {
+        if short.is_empty() {
             return (then.to_owned(), None);
         }
         let label = self.label("let_go");
         let (hot, block) = (std::mem::take(&mut self.out), self.current.clone());
         self.start_block(&label);
-        for local in empty {
-            self.check_empty(local, "a local a failure leaves is empty");
-        }
         for local in short {
             let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
             let (held, slot, text) = (self.temp(), self.slot(LocalId(local)), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
             self.release_kind(&held, &kind);
+            // A build that checks proofs empties it too, for `prop` to check that every short-lived
+            // local is empty once each way out has let go of what it held.
+            if self.checks_proofs() && text == "ptr" {
+                self.line(&format!("store ptr null, ptr {slot}"));
+            }
         }
         self.line(&format!("br label %{then}"));
         let written = std::mem::replace(&mut self.out, hot);
@@ -2957,7 +2953,11 @@ impl Emit<'_, '_, '_> {
     /// before getting there.
     fn release_locals_at_prop(&mut self) {
         for at in 0..self.kinds.len() {
+            // Each way out let go of the short-lived locals it held, so a build that checks proofs
+            // checks here that none holds anything: once for each local, rather than at each of
+            // the function's ways out, which grew with their product.
             if self.split && self.holding.short(at) {
+                self.check_empty(at, "a local a failure leaves is empty");
                 continue;
             }
             self.release_local(at, None);
@@ -3395,6 +3395,31 @@ def main(stdout: Stdout):
         for proof in ["gets one a turn, from 0", "is as long as its loop", "whose length was kept aside"] {
             assert!(said.iter().any(|text| text.contains(proof)), "{proof}: {said:?}");
         }
+        Ok(())
+    }
+
+    /// A build that checks proofs checks each short-lived local is empty once, where the failures
+    /// come together, not at each way out: the checks grew with the lines times the locals, and
+    /// a 200-line `main` came to 239,800 of them and 143 MB of IR.
+    #[test]
+    fn checking_proofs_checks_each_local_once_however_many_ways_out() -> Result<(), String> {
+        let checks = |lines: usize| -> Result<usize, String> {
+            let line = "    stdout.print(area(.Square(at_or_zero([3, 1, 2], at_or_zero([1, 2], 1)))))\n";
+            let source = format!(
+                "enum Shape:\n    Circle(radius: int)\n    Square(side: int)\n    Empty\n\ndef area(shape: Shape) -> int:\n    match shape:\n        case .Circle(radius): radius * radius * 3\n        case .Square(side): side * side\n        case .Empty: 0\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef main(stdout: Stdout):\n{}",
+                line.repeat(lines)
+            );
+            let program = lowered(&source)?;
+            let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+            let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+            let said: Vec<&String> = shared.literals.values().collect();
+            assert!(said.iter().any(|text| text.contains("a local a failure leaves is empty")), "{said:?}");
+            let main = units.iter().find(|unit| unit.function == "main").ok_or("no main")?;
+            Ok(main.text.matches("call void @fennec_proof_broken(").count())
+        };
+        let (fewer, more) = (checks(100)?, checks(200)?);
+        assert!(fewer > 0);
+        assert!(more <= fewer * 5 / 2, "{fewer} checks for 100 lines and {more} for 200");
         Ok(())
     }
 

@@ -2155,6 +2155,91 @@ def main(stdout: Stdout):
 
 /// Natively, a place's index can be known from the line before, so a call that changes the index
 /// has to forget it. A call that changes the index of a place it's also given doesn't compile.
+/// An index proven not negative is checked once, unsigned. One kept as -1 for none still counts
+/// from the end where nothing says it isn't -1, and one counted down past 0 does too. Built
+/// checking proofs, so a wrong proof would stop the program.
+#[test]
+fn an_index_proven_not_negative_and_one_that_counts_from_the_end() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"import std.json as json
+
+NONE = -1
+
+struct Node:
+    next: int
+
+struct Cursor:
+    at: int
+
+def pick(xs: list[int], cursor: Cursor) -> int:
+    xs[cursor.at]
+
+def walk(nodes: list[Node], start: int) -> int:
+    mut at = start
+    mut seen = 0
+    while at != NONE:
+        seen += 1
+        at = nodes[at].next
+    seen
+
+def last_of(nodes: list[Node], at: int) -> int:
+    nodes[at].next
+
+def down(xs: list[int]) -> int:
+    mut i = xs.len() - 1
+    mut total = 0
+    while i >= 0:
+        total += xs[i]
+        i -= 1
+    total
+
+def down_too_far(xs: list[int]) -> int:
+    mut i = xs.len() - 1
+    mut total = 0
+    while i > -3:
+        total += xs[i]
+        i -= 1
+    total
+
+def main(stdout: Stdout):
+    nodes = [Node(next=2), Node(next=NONE), Node(next=1)]
+    stdout.print(walk(nodes, start=0), last_of(nodes, at=NONE))
+    stdout.print(down([1, 2, 3]), down_too_far([1, 2, 3]))
+    xs = [10, 20, 30]
+    read = json.loads[Cursor]("{\"at\": -1}") else Cursor(at=0)
+    stdout.print(pick(xs, Cursor(at=1)), pick(xs, read))
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("index_signs")?;
+        let (program, executable) = (dir.join("signs.fen"), dir.join("signs"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        // `walk` goes 0, 2, 1; `last_of` reads the last node; `down_too_far` adds 3, 2, 1, then
+        // xs[-1] and xs[-2], 3 and 2. A cursor JSON gave -1 reads the last item: a field a reader
+        // can fill isn't proven, however the program itself sets it.
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "3 1\n6 11\n20 30\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {

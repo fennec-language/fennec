@@ -173,11 +173,12 @@ fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
         assert!(said.contains("not authorized"), "{text}: {said}");
         assert_eq!(run(db, "_close", &[])?, "");
     }
-    // Its own `ATTACH ''` is a database of no file, which holds what's put in it and makes none.
+    // Its own `ATTACH ''` is a database of no file, which makes none, and tables go only in the
+    // database it opened, not in that one.
     let db = handle_of(&super::open_file(&file("own.db")))?;
     assert_eq!(run(db, "_execute", &query("attach database '' as scratch", &[], &[]))?, "Ok(0)");
-    assert_eq!(run(db, "_execute", &query("create table scratch.notes (n integer)", &[], &[]))?, "Ok(0)");
-    assert_eq!(run(db, "_execute", &query("insert into scratch.notes values (?)", &[1], &[]))?, "Ok(1)");
+    let made = run(db, "_execute", &query("create table scratch.notes (n integer)", &[], &[]))?;
+    assert!(made.contains("not authorized"), "{made}");
     assert_eq!(run(db, "_close", &[])?, "");
     let made: Vec<String> = std::fs::read_dir(&folder)
         .map_err(|err| err.to_string())?
@@ -186,5 +187,47 @@ fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
         .collect();
     assert!(made.is_empty(), "files were made: {made:?}");
     std::fs::remove_dir_all(&folder).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+/// A connection takes only what ordinary queries need, so an action nobody looked at is refused,
+/// rare ones included, while tables, indexes, migrations, transactions and recursive queries work.
+#[test]
+fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), String> {
+    let mut fakes = Fakes::default();
+    let db = handle_of(&open_fake(&mut fakes, "only.db"))?;
+    let works = [
+        "create table notes (n integer, text text)",
+        "create index by_n on notes (n)",
+        "alter table notes add column kept integer",
+        "insert into notes (n, text) values (1, 'fox')",
+        "update notes set text = upper(text) where n = 1",
+        "savepoint here",
+        "release here",
+        "with recursive count(n) as (select 1 union all select n + 1 from count where n < 3) select n from count",
+        "delete from notes where n = 2",
+        "reindex notes",
+        "drop index by_n",
+    ];
+    for text in works {
+        let said = run(db, "_execute", &query(text, &[], &[]))?;
+        assert!(said.starts_with("Ok("), "{text}: {said}");
+    }
+    let refused = [
+        "create trigger kept after insert on notes begin insert into notes (n) values (0); end",
+        "create view seen as select n from notes",
+        "create temp table elsewhere (n integer)",
+        "create temp trigger t after insert on notes begin select 1; end",
+        "analyze",
+        "pragma foreign_keys = on",
+        "pragma table_info(notes)",
+        "pragma main.user_version = 3",
+        "pragma writable_schema = on",
+        "detach database main",
+    ];
+    for text in refused {
+        let said = run(db, "_execute", &query(text, &[], &[]))?;
+        assert!(said.contains("not authorized"), "{text}: {said}");
+    }
     Ok(())
 }

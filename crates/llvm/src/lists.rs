@@ -1211,6 +1211,47 @@ impl Emit<'_, '_, '_> {
         Ok(same)
     }
 
+    /// Whether a boxed value of this layout is an enum's, whose case is the first word of its fields.
+    pub(crate) fn is_boxed_enum(&self, id: u32) -> bool {
+        self.module.layouts.get(id).is_some_and(|layout| layout.cases.is_some())
+    }
+
+    /// Whether two boxed enums are equal. Another case is unequal at once, with no call, which is
+    /// what most compares of a value against a case find; the same case asks the runtime, which
+    /// compares that case's fields.
+    pub(crate) fn same_boxed_enums(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        if self.checks_proofs() {
+            // A value read is always there: no block is only a slot not written yet, or let go.
+            let (no_a, no_b, either) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{no_a} = icmp eq ptr {a}, null"));
+            self.line(&format!("{no_b} = icmp eq ptr {b}, null"));
+            self.line(&format!("{either} = or i1 {no_a}, {no_b}"));
+            let span = self.here_span();
+            self.proof_held(&either, "an enum in a block is there", span);
+        }
+        let (a_at, b_at) = (self.offset(a, FIELDS_OFFSET), self.offset(b, FIELDS_OFFSET));
+        let (a_case, b_case, other_case) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{a_case} = load i64, ptr {a_at}"));
+        self.line(&format!("{b_case} = load i64, ptr {b_at}"));
+        self.line(&format!("{other_case} = icmp ne i64 {a_case}, {b_case}"));
+        let (ask, done) = (self.label("same_case"), self.label("compared"));
+        let came = self.current.clone();
+        self.line(&format!("br i1 {other_case}, label %{done}, label %{ask}"));
+        self.start_block(&ask);
+        let asked = self.same_blocks(BinOp::Eq, (a, b));
+        let asked_from = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let same = self.temp();
+        self.line(&format!("{same} = phi i1 [ false, %{came} ], [ {asked}, %{asked_from} ]"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let flipped = self.temp();
+        self.line(&format!("{flipped} = xor i1 {same}, true"));
+        flipped
+    }
+
     /// Whether a value of this layout has a float anywhere in it, in place.
     pub(crate) fn holds_a_float(&self, id: u32) -> bool {
         let Some(layout) = self.module.layouts.get(id) else { return false };
@@ -1344,7 +1385,11 @@ impl Emit<'_, '_, '_> {
             self.proof_inside(list, &position, "index checked before still inside its list", span);
             return position;
         }
-        let position = self.position(list, index, span);
+        let position = if self.index_not_negative() {
+            self.position_not_negative(list, index, span)
+        } else {
+            self.position(list, index, span)
+        };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
                 slot.clone()
@@ -1357,6 +1402,38 @@ impl Emit<'_, '_, '_> {
             self.inside_items.push(fact);
         }
         position
+    }
+
+    /// Whether the index of the instruction being written is proven not negative (see `signs`).
+    fn index_not_negative(&self) -> bool {
+        self.module
+            .whole
+            .non_negative
+            .get(self.function.name.as_str())
+            .is_some_and(|found| found.contains(&self.at))
+    }
+
+    /// Where an index proven not negative points: one unsigned comparison with the length, with
+    /// no way back from the end. A build that checks proofs checks it isn't negative.
+    fn position_not_negative(&mut self, list: &str, index: &str, span: Span) -> String {
+        if self.checks_proofs() {
+            let negative = self.temp();
+            self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
+            self.proof_held(&negative, "index not negative", span);
+        }
+        let length = self.list_length(list);
+        let (inside, ok, fail) = (self.temp(), self.label("ok"), self.label("outside"));
+        self.line(&format!("{inside} = icmp ult i64 {index}, {length}"));
+        self.line(&format!("br i1 {inside}, label %{ok}, label %{fail}, !prof !8"));
+        self.start_block(&ok);
+        self.declare("declare void @fennec_out_of_range(i64, i64, i64, i64) #1");
+        let (place, args) = self.span_values(&fail, span);
+        self.next_check(span, Some(crate::CheckKind::Bounds));
+        let failed = self.failed_exit();
+        self.cold_block(&format!(
+            "{fail}:\n{place}  call void @fennec_out_of_range(i64 {index}, i64 {length}, {args})\n  {failed}\n"
+        ));
+        index.to_owned()
     }
 
     /// Where an index points: from the start, or the end if it's negative, failing outside.
@@ -2322,7 +2399,7 @@ pub(crate) fn list_item(list: &Kind) -> Result<ListItem, String> {
 
 impl Emit<'_, '_, '_> {
     /// `insert` on a list or a buffer: the runtime opens a zeroed slot at the place, failing
-    /// outside it as the interpreter says, and the item goes in it.
+    /// outside it, and the item goes in it.
     pub(crate) fn insert(&mut self, args: &[Operand], call: &str, span: Span) -> Result<(), String> {
         let [Operand::Local(list), at, value] = args else {
             return Err("`insert` with the wrong arguments".to_owned());
@@ -2370,7 +2447,7 @@ impl Emit<'_, '_, '_> {
             }
             ("Buffer.push", _) => self.append(args),
             ("Buffer.pop", [Operand::Local(buffer)]) => {
-                // Empty, it fails as the interpreter says, rather than as a list's pop does.
+                // Empty, it fails with a buffer's own message, rather than as a list's pop does.
                 let slot = self.slot(*buffer);
                 let list = self.temp();
                 self.line(&format!("{list} = load ptr, ptr {slot}"));

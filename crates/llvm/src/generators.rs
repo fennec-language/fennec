@@ -244,8 +244,7 @@ impl<'p> Emit<'_, '_, 'p> {
         self.line(&failed);
     }
 
-    /// `result.expect(reason)`: what it holds, or the end of the program, saying why in the
-    /// interpreter's words.
+    /// `result.expect(reason)`: what it holds, or the end of the program, saying why.
     pub(crate) fn expect(
         &mut self,
         dest: Option<LocalId>,

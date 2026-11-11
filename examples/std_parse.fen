@@ -1,0 +1,62 @@
+# Text is read as a number with `int.parse` and `float.parse`, which fail with `InvalidValue`
+# saying what the text was. `std.math.NAN` and `std.math.INFINITY` are the floats text alone
+# could make before, for code that needs one.
+from std import math
+
+## What `run` fails with, in words, or "fine" if it doesn't.
+def why[T](run: () -> T fails InvalidValue) -> str:
+    _ = run() else as error:
+        return error.message
+    "fine"
+
+test "int.parse reads an int written in decimal, with a sign and space around it"():
+    assert int.parse("42")? == 42
+    assert int.parse("-17")? == -17
+    assert int.parse("+7")? == 7
+    assert int.parse("-0")? == 0
+    assert int.parse(" 42 ")? == 42
+    assert int.parse("9223372036854775807")? == 9223372036854775807
+    assert int.parse("-9223372036854775808")? == -9223372036854775807 - 1
+
+test "int.parse fails on anything else, saying what it was given"():
+    assert why(() => int.parse("")?) == "\"\" isn't an int"
+    assert why(() => int.parse("4_2")?) == "\"4_2\" isn't an int"
+    assert why(() => int.parse("0x10")?) == "\"0x10\" isn't an int"
+    assert why(() => int.parse("1e3")?) == "\"1e3\" isn't an int"
+    assert why(() => int.parse("1.0")?) == "\"1.0\" isn't an int"
+    assert why(() => int.parse("٣")?) == "\"٣\" isn't an int"
+    # Past an int's range is no int either.
+    assert why(() => int.parse("9223372036854775808")?) == "\"9223372036854775808\" isn't an int"
+
+test "float.parse reads decimals and exponents, and too big is infinity"():
+    assert float.parse("1.5")? == 1.5
+    assert float.parse(".5")? == 0.5
+    assert float.parse("5.")? == 5.0
+    assert float.parse("-2e3")? == -2000.0
+    assert float.parse(" 2 ")? == 2.0
+    assert float.parse("1e400")? == math.INFINITY
+    # As in Python and Rust, the words for NaN and infinity read as them.
+    assert float.parse("inf")? == math.INFINITY
+    assert float.parse("-inf")? == -math.INFINITY
+    assert float.parse("nan")? == math.NAN
+
+test "float.parse fails on anything else, saying what it was given"():
+    assert why(() => float.parse("")?) == "\"\" isn't a float"
+    assert why(() => float.parse("1_0.5")?) == "\"1_0.5\" isn't a float"
+    assert why(() => float.parse("one")?) == "\"one\" isn't a float"
+    assert why(() => float.parse("1.5.2")?) == "\"1.5.2\" isn't a float"
+
+test "math.NAN is a NaN, equal to itself, and INFINITY is bigger than any other float"():
+    assert math.NAN - math.NAN != 0.0
+    # Every NaN is the same float, so one equals another.
+    assert math.NAN == float.parse("nan")?
+    assert math.INFINITY > 1.7976931348623157e308
+    assert -math.INFINITY < -1.7976931348623157e308
+    assert math.INFINITY - math.INFINITY != 0.0
+
+test "int(text) and float(text) still read as they did"():
+    assert int("42")? == int.parse("42")?
+    assert float("1.5")? == float.parse("1.5")?
+
+def main(stdout: Stdout):
+    stdout.print(int.parse("42") else 0, float.parse("2.5") else 0.0, math.NAN, math.INFINITY)

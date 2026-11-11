@@ -26,8 +26,6 @@ mod named;
 pub(super) mod shown;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons, share_abandons};
 pub(super) use named::packable;
@@ -1545,7 +1543,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                     }
                     Value::Instance(made)
                 }
-                other => named::interpreted(name, other),
+                other => named::pinned_outcome(name, other),
             }
         }
         Element::Enum { name, cases, words: size } => {
@@ -1553,7 +1551,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             let at = usize::try_from(word(&mut mine)).unwrap_or(0);
             let (case, fields) = cases.get(at).or_else(|| cases.first()).cloned().unwrap_or_default();
             let fields = read_fields(state, &fields, &mut mine);
-            let value = named::interpreted(name, instance(name, Some(case), fields));
+            let value = named::pinned_outcome(name, instance(name, Some(case), fields));
             mine.for_each(drop);
             value
         }

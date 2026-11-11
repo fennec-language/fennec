@@ -4,7 +4,7 @@
 
 ## Where it stands
 
-`selfhost/` is a Fennec kit of 3,761 lines that mirrors the Rust front end file for file. `crates/fennec/tests/selfhost.rs` builds it through LLVM and compares its output with the Rust front end's on 151 examples, 202 error examples, 58 kit files, the standard library's Fennec sources, selfhost's own 13 files and about 100 small cases. It also runs a sample of those on the JIT.
+`selfhost/` is a Fennec kit of 3,761 lines that mirrors the Rust front end file for file. `crates/fennec/tests/selfhost.rs` builds it through LLVM and compares its output with the Rust front end's on 151 examples, 202 error examples, 58 kit files, the standard library's Fennec sources, selfhost's own 13 files and about 100 small cases.
 
 | Part | Lines | How far it gets |
 |---|---|---|

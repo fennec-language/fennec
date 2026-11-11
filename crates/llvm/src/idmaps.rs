@@ -3,7 +3,7 @@
 //! how many are live, and its tag, a number from the runtime no other `Table` has, so an `Id`
 //! from another finds nothing in it: a removed slot's generation is stored as `-1 - generation`, and its item
 //! is zero, so a stale `Id` never finds the wrong thing and a slot is used again with the next
-//! generation, as the interpreter's are. A slot whose generation can't go higher is retired, never
+//! generation. A slot whose generation can't go higher is retired, never
 //! used again, so a generation never comes round. The first free slot is used first, and the map says how
 //! far up there's none, so filling a map doesn't look again at what it's filled already.
 
@@ -14,7 +14,7 @@ use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::Kind;
 use crate::lists::{FIELDS_OFFSET, list_item};
 
-/// What failing to find an `Id` says, as the interpreter does.
+/// What failing to find an `Id` says.
 const REMOVED: &str = "this Id refers to something that's been removed";
 const ANOTHER: &str = "this Id is from another Table";
 
@@ -920,7 +920,7 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &out)
     }
 
-    /// `map[id]`, failing as the interpreter does when the `Id`'s item has been removed.
+    /// `map[id]`, failing when the `Id`'s item has been removed.
     pub(crate) fn id_map_index(
         &mut self,
         dest: LocalId,

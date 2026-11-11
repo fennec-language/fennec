@@ -1,0 +1,5 @@
+# A width under 1 can't hold any text, so wrapping to one is a bug in the program, as Python says.
+from std import string
+
+def main(stdout: Stdout):
+    stdout.print(string.wrap("one two three", width=0))

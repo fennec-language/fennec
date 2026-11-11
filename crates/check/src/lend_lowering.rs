@@ -353,7 +353,7 @@ impl Lowering<'_> {
     fn is_source(&self, value: &Expr) -> bool {
         let call = match &value.kind {
             ExprKind::Try { value: inner, context: None } => inner.as_ref(),
-            ExprKind::Else { value: inner, default } if default.leaves() => inner.as_ref(),
+            ExprKind::Else { value: inner, default, .. } if default.leaves() => inner.as_ref(),
             _ => value,
         };
         self.sources.contains_key(&(call.span.start, call.span.end))
@@ -381,7 +381,7 @@ impl Lowering<'_> {
                     self.instead = None;
                     let call = match &value.kind {
                         ExprKind::Try { value: inner, context: None } => inner.as_ref(),
-                        ExprKind::Else { value: inner, default } if default.leaves() => {
+                        ExprKind::Else { value: inner, default, .. } if default.leaves() => {
                             self.instead = Some(default.as_ref().clone());
                             inner.as_ref()
                         }
@@ -1225,6 +1225,9 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
     // gives back may be nothing, which no name holds.
     if let StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) = &held.kind {
         let span = held.span;
+        // The `?`s inside what it's of run first, each with the cleanup on its failure.
+        let mut value = value.as_ref().clone();
+        hoist_inside(&mut value, otherwise, before, made, span);
         let ok = MatchArm {
             pattern: Pattern::Variant {
                 name: "Ok".to_owned(),
@@ -1237,60 +1240,180 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             span: here(span),
         };
         let matched = Expr {
-            kind: ExprKind::Match { subject: value.clone(), arms: vec![ok, failed_arm(otherwise, span)] },
+            kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, failed_arm(otherwise, span)] },
             span: here(span),
         };
         held.kind = StmtKind::Expr(matched);
         return true;
     }
-    loop {
-        let mut taken = None;
-        let span = held.span;
-        let at = *made;
-        let mut take = |expr: &mut Expr| {
-            if taken.is_none()
-                && let ExprKind::Try { value, context: None } = &expr.kind
-            {
-                // A span of its own, as each written-in copy of a source gets the same `?` at the
-                // same place, and two copies in one block would declare one name twice.
-                let got = format!("got__try{}_{at}", here(span).start);
-                taken = Some((got.clone(), value.as_ref().clone()));
-                expr.kind = ExprKind::Name(got);
-            }
-        };
-        match &mut held.kind {
-            StmtKind::Expr(value)
-            | StmtKind::Fail(value)
-            | StmtKind::Yield(value)
-            | StmtKind::Assert(value)
-            | StmtKind::Return(Some(value))
-            | StmtKind::For { iter: value, .. }
-            | StmtKind::With { value, .. } => outside_functions(value, &mut take),
-            StmtKind::Assign { target, value, .. } => {
-                outside_functions(value, &mut take);
-                outside_functions(target, &mut take);
-            }
-            StmtKind::If { branches, .. } => {
-                if let Some((cond, _)) = branches.first_mut() {
-                    outside_functions(cond, &mut take);
-                }
-            }
-            _ => {}
+    let span = held.span;
+    match &mut held.kind {
+        StmtKind::Expr(value)
+        | StmtKind::Fail(value)
+        | StmtKind::Yield(value)
+        | StmtKind::Assert(value)
+        | StmtKind::Return(Some(value))
+        | StmtKind::For { iter: value, .. }
+        | StmtKind::With { value, .. } => hoist_inside(value, otherwise, before, made, span),
+        StmtKind::Assign { target, value, .. } => {
+            hoist_inside(value, otherwise, before, made, span);
+            hoist_inside(target, otherwise, before, made, span);
         }
-        let Some((got, value)) = taken else { return false };
+        StmtKind::If { branches, .. } => {
+            if let Some((cond, _)) = branches.first_mut() {
+                hoist_inside(cond, otherwise, before, made, span);
+            }
+        }
+        _ => {}
+    }
+    // The line stays, its `?`s taken out before it, for the rest of the walk to look at.
+    false
+}
+
+/// Takes the `?`s out of `value` into `before` in the order they run, each with the cleanup on its
+/// failure, leaving a name for what each gave. Anything that runs before a `?`, to its left, goes
+/// into a name of its own first, so it still runs first, as `f(log(x), g()?)` runs `log` before
+/// `g`. What runs after the last `?` stays where it is.
+fn hoist_inside(value: &mut Expr, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize, span: Span) {
+    let holding: Vec<bool> = runs_first(value).into_iter().map(holds_try).collect();
+    let places = places_first(value);
+    if let Some(last) = holding.iter().rposition(|holds| *holds) {
+        let parts = runs_first(value).into_iter().zip(holding).zip(places);
+        for ((part, holds), place) in parts.take(last + 1) {
+            if holds {
+                hoist_inside(part, otherwise, before, made, span);
+            } else if !place && !written_out(part) {
+                let kept = format!("ran__try{}_{}", here(span).start, *made);
+                *made += 1;
+                // The name keeps the span of what it stands for, which its type is found by.
+                let held = Expr { kind: ExprKind::Name(kept.clone()), span: part.span };
+                let ran = std::mem::replace(part, held);
+                before.push(assign(&kept, ran, false, None));
+            }
+        }
+    }
+    // A `?` itself, once what it's of has run: a name for what it gives, or the cleanup on its
+    // failure. A span of its own, as each written-in copy of a source gets the same `?` at the same
+    // place, and two copies in one block would declare one name twice.
+    if let ExprKind::Try { value: inner, context: None } = &mut value.kind {
+        let got = format!("got__try{}_{}", here(span).start, *made);
         *made += 1;
+        let inner = std::mem::replace(inner.as_mut(), name(&got, span));
+        let at = value.span;
         let ok = arm("Ok", "value__try", vec![stmt_value(name("value__try", span))], span);
         let matched = Expr {
-            kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, failed_arm(otherwise, span)] },
+            kind: ExprKind::Match { subject: Box::new(inner), arms: vec![ok, failed_arm(otherwise, span)] },
             span: here(span),
         };
-        let mut hoisted = assign(&got, matched, false, None);
-        // What was taken out may hold `?`s of its own, which go before it.
-        let mut inner = Vec::new();
-        let _ = hoist_tries(&mut hoisted, otherwise, &mut inner, made);
-        before.extend(inner);
-        before.push(hoisted);
+        before.push(assign(&got, matched, false, None));
+        // As the `?` it stands for, whose span its type is found by.
+        *value = Expr { kind: ExprKind::Name(got), span: at };
     }
+}
+
+/// What in `value` always runs, before it does, in the order it runs: a call's receiver and
+/// arguments, an operator's sides, a list's items, and so on. A `?` that might not run, in a
+/// branch, after `else` or past `and` or `or`, is refused in a source's block
+/// (`lend::unplaced_try`), so what might not run isn't here.
+fn runs_first(value: &mut Expr) -> Vec<&mut Expr> {
+    match &mut value.kind {
+        ExprKind::Call { callee, args } => {
+            let mut parts = Vec::with_capacity(args.len() + 1);
+            parts.extend(runs_before_call(callee));
+            parts.extend(args.iter_mut().map(|arg| &mut arg.value));
+            parts
+        }
+        ExprKind::Attr { object, .. } => vec![object.as_mut()],
+        ExprKind::Index { object, index } => vec![object.as_mut(), index.as_mut()],
+        ExprKind::Binary { op: fennec_syntax::BinOp::And | fennec_syntax::BinOp::Or, lhs, .. } => {
+            vec![lhs.as_mut()]
+        }
+        ExprKind::Binary { lhs, rhs, .. } => vec![lhs.as_mut(), rhs.as_mut()],
+        ExprKind::FStr(parts) => parts
+            .iter_mut()
+            .filter_map(|part| match part {
+                fennec_syntax::FStrPart::Expr { expr, .. } => Some(expr),
+                fennec_syntax::FStrPart::Text(_) => None,
+            })
+            .collect(),
+        ExprKind::Dict(pairs) => pairs.iter_mut().flat_map(|(key, value)| [key, value]).collect(),
+        ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => items.iter_mut().collect(),
+        ExprKind::Slice { object, start, end } => {
+            let mut parts = vec![object.as_mut()];
+            parts.extend([start, end].into_iter().flatten().map(Box::as_mut));
+            parts
+        }
+        ExprKind::Unary { expr: always, .. }
+        | ExprKind::Cond { cond: always, .. }
+        | ExprKind::Else { value: always, .. }
+        | ExprKind::Match { subject: always, .. }
+        | ExprKind::Try { value: always, .. } => vec![always.as_mut()],
+        _ => Vec::new(),
+    }
+}
+
+/// What of a call's callee runs before its arguments: a method's receiver, or a function worked
+/// out, and nothing for a function by its name. A call's `[...]` names types, as
+/// `db.query[int?](...)` does, where a `?` is an optional's, so it isn't looked in. A call through
+/// an indexed value, as `handlers[at](x)`, isn't built natively yet; once it is, its index runs
+/// first and has to be looked in.
+fn runs_before_call(callee: &mut Expr) -> Option<&mut Expr> {
+    if matches!(callee.kind, ExprKind::Name(_) | ExprKind::Variant(_)) {
+        return None;
+    }
+    if !matches!(callee.kind, ExprKind::Index { .. } | ExprKind::Attr { .. }) {
+        return Some(callee);
+    }
+    match &mut callee.kind {
+        ExprKind::Index { object, .. } => runs_before_call(object),
+        ExprKind::Attr { object, .. } => Some(object.as_mut()),
+        _ => None,
+    }
+}
+
+/// Whether a `?` that's hoisted is in `value`, where it always runs.
+fn holds_try(value: &mut Expr) -> bool {
+    matches!(value.kind, ExprKind::Try { context: None, .. }) || runs_first(value).into_iter().any(holds_try)
+}
+
+/// Whether `value` is written out, and so is the same whenever it's worked out: a `?` to its
+/// right needn't go after it. A name or a field is read where it's written, even so, as a `?` to
+/// its right may change it, as `count + bump(ref count)?` does.
+fn written_out(value: &Expr) -> bool {
+    matches!(
+        value.kind,
+        ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Duration(_)
+            | ExprKind::Bytes(_)
+            | ExprKind::Folder(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None
+            | ExprKind::Variant(_)
+            | ExprKind::Lambda { .. }
+    )
+}
+
+/// For each of `runs_first(value)`, whether it has to stay the place it is rather than be read
+/// into a name: a call's receiver, which a method may change through `ref self`, and an argument
+/// passed with `ref`.
+fn places_first(value: &mut Expr) -> Vec<bool> {
+    let ExprKind::Call { callee, args } = &mut value.kind else {
+        return vec![false; runs_first(value).len()];
+    };
+    // A call's `[...]` names types, so the receiver is what's before them.
+    let mut called: &Expr = callee;
+    while let ExprKind::Index { object, .. } = &called.kind {
+        called = object;
+    }
+    let receiver = matches!(called.kind, ExprKind::Attr { .. });
+    let mut places = Vec::with_capacity(args.len() + 1);
+    if runs_before_call(callee).is_some() {
+        places.push(receiver);
+    }
+    places.extend(args.iter().map(|arg| arg.is_mut));
+    places
 }
 
 /// A hoisted `?`'s `Err` case: the `lend`'s `else:`, then the failure passes on.
@@ -1470,7 +1593,7 @@ fn fail_instead(body: &mut [Stmt], instead: &Expr) {
         }
         match &mut expr.kind {
             ExprKind::Try { value, context: None } => {
-                let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
+                let kind = ExprKind::Else { value: value.clone(), default: leaving.clone(), except: false };
                 expr.kind = kind;
             }
             // `value else fail E` fails as the source does, so with what's said instead.
@@ -1575,7 +1698,8 @@ fn quietly(cleanup: &[Stmt]) -> Option<Vec<Stmt>> {
     fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
         if let ExprKind::Try { value, context } = &expr.kind {
             let (value, context) = (value.clone(), context.as_deref().cloned());
-            expr.kind = ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)) };
+            expr.kind =
+                ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)), except: false };
         }
     });
     ends_saying(&mut quiet);
@@ -1788,54 +1912,6 @@ fn arm(variant: &str, bound: &str, body: Vec<Stmt>, span: Span) -> MatchArm {
         fields: Vec::new(),
     };
     MatchArm { pattern, guard: None, body, span: here(span) }
-}
-
-/// Calls `change` on each expression in `value` outside the arrow functions, comprehensions and
-/// `match` arms in it, whose `?`s don't fail the block where they're written.
-fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
-    change(value);
-    match &mut value.kind {
-        ExprKind::Call { callee, args } => {
-            outside_functions(callee, change);
-            for arg in args {
-                outside_functions(&mut arg.value, change);
-            }
-        }
-        ExprKind::Attr { object, .. } => outside_functions(object, change),
-        ExprKind::Index { object, index } => {
-            outside_functions(object, change);
-            outside_functions(index, change);
-        }
-        // What `and` and `or` may not run stays where it is: the checker allows no `?` there.
-        ExprKind::Binary { op: fennec_syntax::BinOp::And | fennec_syntax::BinOp::Or, lhs, .. } => {
-            outside_functions(lhs, change);
-        }
-        ExprKind::Binary { lhs, rhs, .. } => {
-            outside_functions(lhs, change);
-            outside_functions(rhs, change);
-        }
-        ExprKind::FStr(parts) => {
-            for part in parts {
-                if let fennec_syntax::FStrPart::Expr { expr, .. } = part {
-                    outside_functions(expr, change);
-                }
-            }
-        }
-        ExprKind::Dict(pairs) => {
-            for (key, value) in pairs {
-                outside_functions(key, change);
-                outside_functions(value, change);
-            }
-        }
-        ExprKind::Unary { expr, .. } => outside_functions(expr, change),
-        ExprKind::Try { value, .. } => outside_functions(value, change),
-        ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
-            for item in items {
-                outside_functions(item, change);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// The names a body declares: what it assigns, and what its loops and `with`s name.

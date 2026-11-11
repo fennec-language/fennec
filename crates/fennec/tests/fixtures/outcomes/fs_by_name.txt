@@ -1,0 +1,8 @@
+source 68ef3f2c0480534cfc17cc27aceede84a198e7f2099068a4ab96ad39da1d3af8
+code 0
+stdout 23
+fox fox
+den
+True
+False
+stderr 0

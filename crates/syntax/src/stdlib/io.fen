@@ -69,7 +69,7 @@ export struct StdoutWriter:
 
     ## Writes `data`, which has to be UTF-8 text: standard output takes text.
     def write(self, data: bytes) fails IoError:
-        text = data.decode() else fail IoError(
+        text = data.decode() else fail .Other(
             reason="standard output takes text, and these bytes aren't UTF-8",
         )
         self._out.write(text)
@@ -138,7 +138,7 @@ export struct MemoryStream:
         pass
 
     def read_chunk(ref self, size: int) -> bytes fails IoError:
-        if size < 0: fail IoError(reason=f"can't read {size} bytes")
+        if size < 0: fail .Other(reason=f"can't read {size} bytes")
         end = min(self._at + size, self._data.len())
         chunk = self._data[self._at:end]
         self._at = end
@@ -153,7 +153,7 @@ export struct MemoryStream:
         self._at = min(end + 1, self._data.len())
         if line.len() > 0 and line[line.len() - 1] == 13:
             line = line[:line.len() - 1]
-        line.decode() else fail IoError(reason="a line isn't UTF-8 text")
+        line.decode() else fail .Other(reason="a line isn't UTF-8 text")
 
     ## Each line left, without moving where reading has got to.
     def lines(self) -> Iterator[str] fails IoError:
@@ -166,7 +166,7 @@ export struct MemoryStream:
             at = end + 1
             if line.len() > 0 and line[line.len() - 1] == 13:
                 line = line[:line.len() - 1]
-            yield line.decode() else fail IoError(reason="a line isn't UTF-8 text")
+            yield line.decode() else fail .Other(reason="a line isn't UTF-8 text")
 
     ## Everything written, as bytes.
     def bytes(self) -> bytes:
@@ -174,7 +174,7 @@ export struct MemoryStream:
 
     ## Everything written, as text.
     def text(self) -> str fails IoError:
-        self._data.decode() else fail IoError(reason="what was written isn't UTF-8 text")
+        self._data.decode() else fail .Other(reason="what was written isn't UTF-8 text")
 
 ## Everything left in `src`, read a chunk at a time.
 export def read_all[R: Reader](ref src: R) -> bytes fails IoError:

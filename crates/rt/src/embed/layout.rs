@@ -169,41 +169,8 @@ mod tests {
         finish();
     }
 
-    /// For measuring: `FENNEC_LOOPS` allocations and frees of a small block.
     #[test]
-    #[ignore = "a measurement"]
-    fn measure_alloc_and_free() {
-        let boxed = Element::Boxed(0);
-        let node = Element::Struct {
-            name: "Node".into(),
-            fields: vec![("l".into(), boxed.clone()), ("r".into(), boxed)],
-        };
-        let shapes = vec![Rc::new(node), Rc::new(Element::Str)];
-        let tables = Tables { shapes, str_shape: 1, ..Tables::default() };
-        start(tables, crate::Inputs::default());
-        let loops: u64 = std::env::var("FENNEC_LOOPS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
-        let names = ["", "spare", "pop", "nothing", "table", "with", "alloc", "allocdrop"];
-        let part =
-            std::env::var("FENNEC_PART").ok().and_then(|part| names.iter().position(|name| *name == part));
-        let part = u8::try_from(part.unwrap_or(0)).unwrap();
-        for _ in 0..loops {
-            match part {
-                5 => {
-                    std::hint::black_box(with(|state| state.heap.live()));
-                }
-                6 => {
-                    std::hint::black_box(heap::alloc(0));
-                }
-                1..=4 => heap::measure_part(part, 0),
-                7 => heap::measure_part(5, usize::try_from(heap::alloc(0)).unwrap()),
-                _ => heap::free(std::hint::black_box(heap::alloc(0))),
-            }
-        }
-        finish();
-    }
-
-    #[test]
-    fn strings_strip_as_the_interpreter_does_from_any_byte() {
+    fn strings_strip_as_pinned_from_any_byte() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
@@ -232,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn floats_sort_as_the_interpreter_sorts_them() {
+    fn floats_sort_as_pinned() {
         let tables = Tables { elements: vec![Rc::new(Element::Float)], ..Tables::default() };
         start(tables, crate::Inputs::default());
         let nans = [f64::NAN, -f64::NAN, f64::from_bits(f64::NAN.to_bits() | 1)];

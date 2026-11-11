@@ -32,8 +32,8 @@ fn run_tests(dir: &Path, args: &[&str]) -> std::io::Result<Output> {
         .output()
 }
 
-/// What the JIT printed and said for one of these programs' tests, pinned when it was removed, with
-/// their folder written as `<dir>`.
+/// What one of these programs' tests printed and said, pinned before the engines were removed,
+/// with their folder written as `<dir>`.
 fn pinned(name: &str) -> (String, String) {
     let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned");
     let read = |extension: &str| {
@@ -508,7 +508,7 @@ fn llvm_here() -> bool {
 }
 
 #[test]
-fn tests_through_llvm_pass_and_fail_as_they_did_on_the_jit() {
+fn tests_through_llvm_pass_and_fail_as_pinned() {
     if !llvm_here() {
         return;
     }
@@ -538,11 +538,11 @@ fn tests_through_llvm_pass_and_fail_as_they_did_on_the_jit() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A test that fails through LLVM says why as the JIT did, and isn't run again another way to
+/// A test that fails through LLVM says why, as pinned, and isn't run again another way to
 /// find out: both sides of a comparison, a plain condition, a failure passed up with `?`, a check
 /// the runtime makes, and `is not None`.
 #[test]
-fn failing_tests_say_why_through_llvm_as_they_did_on_the_jit_and_run_once() {
+fn failing_tests_say_why_through_llvm_and_run_once() {
     if !llvm_here() {
         return;
     }
@@ -569,11 +569,11 @@ fn failing_tests_say_why_through_llvm_as_they_did_on_the_jit_and_run_once() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A property test that fails through LLVM makes what it failed for as simple as it can, as the
-/// interpreter did, and says the same: ints, words, lists, bools, two inputs at once, and a
+/// A property test that fails through LLVM makes what it failed for as simple as it can, and
+/// says what was pinned: ints, words, lists, bools, two inputs at once, and a
 /// test with capabilities, which gets new fakes for each attempt.
 #[test]
-fn failing_property_tests_shrink_through_llvm_as_they_did_on_the_jit() {
+fn failing_property_tests_shrink_through_llvm() {
     if !llvm_here() {
         return;
     }

@@ -282,107 +282,124 @@ fn walk(
         *first = Some(start);
     }
     let mut waiting: std::collections::BTreeSet<usize> = std::collections::BTreeSet::from([0]);
-    while let Some(at) = waiting.pop_first() {
-        let (Some(block), Some(Some(entry))) = (function.blocks.get(at), coming_in.get(at)) else { continue };
-        let mut now = entry.clone();
-        // The int each local was set to here, when it was set to one: for a constant compared with.
-        let mut exact: HashMap<LocalId, i64> = HashMap::new();
-        // What each comparison local compares, for a branch on it.
-        let mut compares: HashMap<LocalId, (BinOp, Operand, Operand)> = HashMap::new();
-        // Which local each copy here holds the same value as.
-        let mut copies: HashMap<LocalId, LocalId> = HashMap::new();
-        for (index, inst) in block.insts.iter().enumerate() {
-            if let Some(found) = found.as_deref_mut() {
-                let indexed = match &inst.kind {
-                    InstKind::GetIndex { object, index: by, .. } if list_of(function, object) => Some(by),
-                    InstKind::SetIndex { object, path, index: by, .. } if path.is_empty() => {
-                        list_of(function, &Operand::Local(*object)).then_some(by)
-                    }
-                    _ => None,
-                };
-                if let Some(by) = indexed
-                    && floor_of(by, &now).non_negative()
-                {
-                    found.insert((at, index));
-                }
-            }
-            step(function, &inst.kind, (facts, outside), next, &mut now, &mut exact);
-            // What this writes no longer stands for what it did.
-            let mut written = Vec::new();
-            crate::analysis::visit(&inst.kind, |_| {}, |local| written.push(local));
-            for local in &written {
-                let operand = Operand::Local(*local);
-                compares.retain(|cond, (_, lhs, rhs)| cond != local && *lhs != operand && *rhs != operand);
-                copies.retain(|copy, of| copy != local && of != local);
-            }
-            match &inst.kind {
-                InstKind::Binary { dest, op, lhs, rhs } => {
-                    let constant = |operand: &Operand| match operand {
-                        Operand::Local(local) => {
-                            exact.get(local).map_or_else(|| operand.clone(), |v| Operand::Int(*v))
-                        }
-                        _ => operand.clone(),
-                    };
-                    compares.insert(*dest, (*op, constant(lhs), constant(rhs)));
-                }
-                InstKind::Copy { dest, value: Operand::Local(from) } => {
-                    let root = copies.get(from).copied().unwrap_or(*from);
-                    copies.insert(*dest, root);
-                }
-                _ => {}
-            }
+    // What's proven is found only once every block's state has settled: a pass before that may see
+    // a local as it is on the first turn of a loop, before a later turn makes it negative.
+    for settled in [false, true] {
+        if settled {
+            waiting = (0..function.blocks.len())
+                .filter(|at| coming_in.get(*at).is_some_and(Option::is_some))
+                .collect();
         }
-        let mut send = |to: BlockId, state: Vec<Floor>, waiting: &mut std::collections::BTreeSet<usize>| {
-            let Some(theirs) = coming_in.get_mut(to.0) else { return };
-            if let Some(known) = theirs {
-                let joined: Vec<Floor> = known.iter().zip(&state).map(|(a, b)| a.join(*b)).collect();
-                if joined != *known {
-                    *known = joined;
-                    waiting.insert(to.0);
-                }
-            } else {
-                *theirs = Some(state);
-                waiting.insert(to.0);
-            }
-        };
-        match &block.end {
-            Terminator::Jump(to) => send(*to, now, &mut waiting),
-            Terminator::Branch { cond, then, otherwise } => {
-                let (mut on_then, mut on_otherwise) = (now.clone(), now.clone());
-                if let Operand::Local(cond) = cond
-                    && let Some((op, lhs, rhs)) = compares.get(cond)
-                {
-                    // The local compared, and every local holding the same value, are refined.
-                    let compared = [lhs, rhs].into_iter().find_map(|operand| match operand {
-                        Operand::Local(local) => Some(*local),
+        while let Some(at) = waiting.pop_first() {
+            let (Some(block), Some(Some(entry))) = (function.blocks.get(at), coming_in.get(at)) else {
+                continue;
+            };
+            let mut now = entry.clone();
+            // The int each local was set to here, when it was set to one: for a constant compared with.
+            let mut exact: HashMap<LocalId, i64> = HashMap::new();
+            // What each comparison local compares, for a branch on it.
+            let mut compares: HashMap<LocalId, (BinOp, Operand, Operand)> = HashMap::new();
+            // Which local each copy here holds the same value as.
+            let mut copies: HashMap<LocalId, LocalId> = HashMap::new();
+            for (index, inst) in block.insts.iter().enumerate() {
+                if settled && let Some(found) = found.as_deref_mut() {
+                    let indexed = match &inst.kind {
+                        InstKind::GetIndex { object, index: by, .. } if list_of(function, object) => Some(by),
+                        InstKind::SetIndex { object, path, index: by, .. } if path.is_empty() => {
+                            list_of(function, &Operand::Local(*object)).then_some(by)
+                        }
                         _ => None,
-                    });
-                    let mut same: Vec<LocalId> = compared.into_iter().collect();
-                    if let Some(compared) = compared {
-                        let root = copies.get(&compared).copied().unwrap_or(compared);
-                        same.push(root);
-                        same.extend(copies.iter().filter(|(_, of)| **of == root).map(|(copy, _)| *copy));
-                    }
-                    for local in same {
-                        let swap = |operand: &Operand| match operand {
-                            Operand::Local(_) => Operand::Local(local),
-                            other => other.clone(),
-                        };
-                        refine(*op, &swap(lhs), &swap(rhs), &mut on_then, &mut on_otherwise);
+                    };
+                    if let Some(by) = indexed
+                        && floor_of(by, &now).non_negative()
+                    {
+                        found.insert((at, index));
                     }
                 }
-                send(*then, on_then, &mut waiting);
-                send(*otherwise, on_otherwise, &mut waiting);
+                step(function, &inst.kind, (facts, outside), next, &mut now, &mut exact);
+                // What this writes no longer stands for what it did.
+                let mut written = Vec::new();
+                crate::analysis::visit(&inst.kind, |_| {}, |local| written.push(local));
+                for local in &written {
+                    let operand = Operand::Local(*local);
+                    compares
+                        .retain(|cond, (_, lhs, rhs)| cond != local && *lhs != operand && *rhs != operand);
+                    copies.retain(|copy, of| copy != local && of != local);
+                }
+                match &inst.kind {
+                    InstKind::Binary { dest, op, lhs, rhs } => {
+                        let constant = |operand: &Operand| match operand {
+                            Operand::Local(local) => {
+                                exact.get(local).map_or_else(|| operand.clone(), |v| Operand::Int(*v))
+                            }
+                            _ => operand.clone(),
+                        };
+                        compares.insert(*dest, (*op, constant(lhs), constant(rhs)));
+                    }
+                    InstKind::Copy { dest, value: Operand::Local(from) } => {
+                        let root = copies.get(from).copied().unwrap_or(*from);
+                        copies.insert(*dest, root);
+                    }
+                    _ => {}
+                }
             }
-            Terminator::Return(Some(value)) => {
-                let returned = floor_of(value, &now);
-                let known = next.returns.entry(function.name.clone()).or_insert(Floor::Unset);
-                *known = known.join(returned);
+            // The settled pass only reads what's proven: nothing it sees goes on.
+            if settled {
+                continue;
             }
-            Terminator::Return(None)
-            | Terminator::NoMatch { .. }
-            | Terminator::Stop { .. }
-            | Terminator::Unreachable => {}
+            let mut send =
+                |to: BlockId, state: Vec<Floor>, waiting: &mut std::collections::BTreeSet<usize>| {
+                    let Some(theirs) = coming_in.get_mut(to.0) else { return };
+                    if let Some(known) = theirs {
+                        let joined: Vec<Floor> = known.iter().zip(&state).map(|(a, b)| a.join(*b)).collect();
+                        if joined != *known {
+                            *known = joined;
+                            waiting.insert(to.0);
+                        }
+                    } else {
+                        *theirs = Some(state);
+                        waiting.insert(to.0);
+                    }
+                };
+            match &block.end {
+                Terminator::Jump(to) => send(*to, now, &mut waiting),
+                Terminator::Branch { cond, then, otherwise } => {
+                    let (mut on_then, mut on_otherwise) = (now.clone(), now.clone());
+                    if let Operand::Local(cond) = cond
+                        && let Some((op, lhs, rhs)) = compares.get(cond)
+                    {
+                        // The local compared, and every local holding the same value, are refined.
+                        let compared = [lhs, rhs].into_iter().find_map(|operand| match operand {
+                            Operand::Local(local) => Some(*local),
+                            _ => None,
+                        });
+                        let mut same: Vec<LocalId> = compared.into_iter().collect();
+                        if let Some(compared) = compared {
+                            let root = copies.get(&compared).copied().unwrap_or(compared);
+                            same.push(root);
+                            same.extend(copies.iter().filter(|(_, of)| **of == root).map(|(copy, _)| *copy));
+                        }
+                        for local in same {
+                            let swap = |operand: &Operand| match operand {
+                                Operand::Local(_) => Operand::Local(local),
+                                other => other.clone(),
+                            };
+                            refine(*op, &swap(lhs), &swap(rhs), &mut on_then, &mut on_otherwise);
+                        }
+                    }
+                    send(*then, on_then, &mut waiting);
+                    send(*otherwise, on_otherwise, &mut waiting);
+                }
+                Terminator::Return(Some(value)) => {
+                    let returned = floor_of(value, &now);
+                    let known = next.returns.entry(function.name.clone()).or_insert(Floor::Unset);
+                    *known = known.join(returned);
+                }
+                Terminator::Return(None)
+                | Terminator::NoMatch { .. }
+                | Terminator::Stop { .. }
+                | Terminator::Unreachable => {}
+            }
         }
     }
 }
@@ -693,6 +710,18 @@ def main(stdout: Stdout):
         assert_eq!(proven(&CURSOR.replace("READ", ""), "pick")?, 1);
         let read = "stdout.print(pick(xs, json.loads[Cursor](\"{\\\"at\\\": -1}\") else Cursor(at=0)))";
         assert_eq!(proven(&CURSOR.replace("READ", read), "pick")?, 0);
+        Ok(())
+    }
+
+    /// What a loop makes negative on a later turn isn't proven from its first: a sign that flips
+    /// each turn, and an index that starts at 0 and steps down. Proving from the first turn, before
+    /// the loop's state settled, gave fannkuch's `sign * total` an unsigned check, and it stopped.
+    #[test]
+    fn what_a_later_turn_makes_negative_isnt_proven() -> Result<(), String> {
+        let flipped = "def f(n: int) -> int:\n    mut sign = 1\n    mut total = 0\n    for i in range(n):\n        total += sign * i\n        sign = -sign\n    return total\n\ndef main(stdout: Stdout):\n    stdout.print(f(5))\n    return\n";
+        assert_eq!(proven(flipped, "f")?, 0);
+        let stepped = "def g(xs: list[int]) -> int:\n    mut at = 0\n    mut total = 0\n    for _ in range(3):\n        total += xs[at]\n        at -= 1\n    return total\n\ndef main(stdout: Stdout):\n    stdout.print(g([1, 2, 3]))\n    return\n";
+        assert_eq!(proven(stepped, "g")?, 0);
         Ok(())
     }
 

@@ -155,9 +155,6 @@ struct Logs {
     spare: Vec<Log>,
     /// The plain saves of every lock held.
     buffer: Buffer,
-    /// How many of the buffer's saves the logs know of. Native code may add saves without asking the
-    /// runtime, past this; the runtime takes them in (`take_in`) before it looks at any log.
-    known: usize,
 }
 
 /// This thread's plain saves, of every lock it holds, oldest first: each a word that holds no
@@ -167,7 +164,12 @@ struct Logs {
 ///
 /// Each log's plain saves start where the buffer ended when it began (`Log::start`), so the
 /// innermost's are the last. A save of an outer lock's own cell is that lock's, wherever it is.
-struct Buffer(Vec<u64>);
+struct Buffer {
+    words: Vec<u64>,
+    /// How many of its saves the logs know of. Native code may add saves past this without asking
+    /// the runtime, which takes them in (`Logs::take_in`) before it looks at any log.
+    known: usize,
+}
 
 /// The words before a buffer's first save.
 const BUFFER_HEADER: usize = 2;
@@ -179,21 +181,39 @@ const FIRST_ROOM: usize = 16;
 const KEPT_ROOM: usize = 4096;
 
 impl Buffer {
+    const EMPTY: Buffer = Buffer { words: Vec::new(), known: 0 };
+
+    #[inline]
     fn header(&self, at: usize) -> usize {
-        self.0.get(at).map_or(0, |word| usize::try_from(*word).unwrap_or(0))
+        self.words.get(at).map_or(0, |word| usize::try_from(*word).unwrap_or(0))
     }
 
+    #[inline]
     fn len(&self) -> usize {
         self.header(0)
     }
 
+    #[inline]
     fn room(&self) -> usize {
         self.header(1)
     }
 
+    #[inline]
+    /// Says how many saves it holds, all of them known.
     fn set_len(&mut self, len: usize) {
-        if let Some(word) = self.0.first_mut() {
+        if let Some(word) = self.words.first_mut() {
             *word = u64::try_from(len).unwrap_or(0);
+        }
+        self.known = len;
+    }
+
+    /// Native code adding a save as it will, without the runtime knowing, for tests.
+    #[cfg(test)]
+    fn add_as_native_code(&mut self, saved: Saved) {
+        let len = self.len();
+        self.write(len, saved);
+        if let Some(word) = self.words.first_mut() {
+            *word = u64::try_from(len + 1).unwrap_or(0);
         }
     }
 
@@ -203,8 +223,9 @@ impl Buffer {
         first..first + SAVE_WORDS
     }
 
+    #[inline]
     fn get(&self, at: usize) -> Option<Saved> {
-        let &[block, word, old] = self.0.get(Self::words(at))? else { return None };
+        let &[block, word, old] = self.words.get(Self::words(at))? else { return None };
         Some(Saved { block, word: usize::try_from(word).ok()?, old, held: false, marked: false })
     }
 
@@ -212,13 +233,15 @@ impl Buffer {
         self.len().checked_sub(1).and_then(|at| self.get(at))
     }
 
+    #[inline]
     fn write(&mut self, at: usize, saved: Saved) {
-        if let Some(words) = self.0.get_mut(Self::words(at)) {
+        if let Some(words) = self.words.get_mut(Self::words(at)) {
             words.copy_from_slice(&[saved.block, u64::try_from(saved.word).unwrap_or(0), saved.old]);
         }
     }
 
     /// Adds a save at the end, making room first if there's none.
+    #[inline]
     fn push(&mut self, saved: Saved) {
         let len = self.len();
         if len >= self.room() {
@@ -229,17 +252,19 @@ impl Buffer {
     }
 
     /// Twice the room, or the first, with the `len` saves there are copied over.
+    #[cold]
+    #[inline(never)]
     fn grow(&mut self, len: usize) {
         let room = (self.room() * 2).max(FIRST_ROOM);
         let mut words = vec![0; BUFFER_HEADER + room * SAVE_WORDS];
         let used = BUFFER_HEADER + len * SAVE_WORDS;
-        if let (Some(to), Some(from)) = (words.get_mut(..used), self.0.get(..used)) {
+        if let (Some(to), Some(from)) = (words.get_mut(..used), self.words.get(..used)) {
             to.copy_from_slice(from);
         }
         if let Some(word) = words.get_mut(1) {
             *word = u64::try_from(room).unwrap_or(0);
         }
-        self.0 = words;
+        self.words = words;
         self.set_len(len);
     }
 
@@ -267,7 +292,7 @@ impl Buffer {
 
 thread_local! {
     static LOGS: RefCell<Logs> = const {
-        RefCell::new(Logs { held: Vec::new(), spare: Vec::new(), buffer: Buffer(Vec::new()), known: 0 })
+        RefCell::new(Logs { held: Vec::new(), spare: Vec::new(), buffer: Buffer::EMPTY })
     };
     /// For a crash, what goes back in the lock's own cell, by word, for native code to write.
     static CELL: RefCell<HashMap<usize, Saved>> = RefCell::new(HashMap::new());
@@ -282,21 +307,24 @@ fn target(held: &[Log], block: u64) -> Option<usize> {
 impl Logs {
     /// Takes in the saves native code added to the buffer since the runtime last looked: each one of
     /// a place its log saved already is dropped, as a save the runtime adds would be.
+    #[cold]
+    #[inline(never)]
     fn take_in(&mut self) {
-        let Logs { held, buffer, known, .. } = self;
-        if *known < buffer.len() {
-            buffer.retain_from(*known, |saved| {
+        let Logs { held, buffer, .. } = self;
+        if buffer.known < buffer.len() {
+            buffer.retain_from(buffer.known, |saved| {
                 target(held, saved.block)
                     .and_then(|at| held.get_mut(at))
                     .is_some_and(|log| log.places.insert(place(&saved)))
             });
         }
-        *known = buffer.len();
+        buffer.known = buffer.len();
     }
 
     /// Adds a save to the log of the lock it's for: the log whose cell it is, or the innermost. A
     /// plain one goes in the buffer, unless it's for a log around the innermost, of a block that
     /// isn't its cell: that log's saves in the buffer are behind the innermost's.
+    #[inline]
     fn push(&mut self, saved: Saved) -> Pushed {
         let Logs { held, buffer, .. } = self;
         let Some(at) = target(held, saved.block) else { return Pushed::NoLog };
@@ -320,9 +348,10 @@ impl Logs {
     }
 
     /// A lock's log is let go of. With none left, a buffer grown big is let go of too.
+    #[inline]
     fn ended(&mut self, mut log: Log) {
         if self.held.is_empty() && self.buffer.room() > KEPT_ROOM {
-            self.buffer = Buffer(Vec::new());
+            self.buffer = Buffer::EMPTY;
         }
         log.saved.clear();
         log.places.clear();
@@ -336,10 +365,10 @@ impl Logs {
 /// The logs of the locks this thread holds, to change, with any saves native code added taken in.
 fn with_logs<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
     LOGS.with_borrow_mut(|logs| {
-        logs.take_in();
-        let result = f(logs);
-        logs.known = logs.buffer.len();
-        result
+        if logs.buffer.known != logs.buffer.len() {
+            logs.take_in();
+        }
+        f(logs)
     })
 }
 

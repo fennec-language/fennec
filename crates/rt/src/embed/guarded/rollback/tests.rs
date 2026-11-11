@@ -428,12 +428,9 @@ fn save_as_native_code(block: i64, word: usize, old: i64) {
         return;
     }
     LOGS.with_borrow_mut(|logs| {
-        let at = logs.buffer.len();
-        logs.buffer.write(
-            at,
-            Saved { block: address(block), word, old: old.cast_unsigned(), held: false, marked: false },
-        );
-        logs.buffer.set_len(at + 1);
+        let saved =
+            Saved { block: address(block), word, old: old.cast_unsigned(), held: false, marked: false };
+        logs.buffer.add_as_native_code(saved);
     });
 }
 

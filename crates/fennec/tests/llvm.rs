@@ -15858,6 +15858,21 @@ fn floats_in_cases_and_fields_compare_and_hash_as_floats_do() -> std::io::Result
     )
 }
 
+/// `in`, `index` and `remove` on a list of strings find an item by its text, held in its header or
+/// in a block, with nothing made to compare: empty, 8, 23 and 24 bytes, long, and past ASCII.
+#[test]
+fn a_list_of_strings_finds_its_items_by_text_however_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "string_list_in",
+        include_str!("fixtures/string_list_in.fen"),
+        "True True 0 False\nTrue True 1 False\nTrue True 2 False\nTrue True 3 False\nTrue True 4 False\n\
+         True True 5 False\nTrue True 6 False\nFalse False False False\n5 False False True\n",
+    )
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
 /// it. The JIT's `==` and keys never followed it.

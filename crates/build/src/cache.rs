@@ -127,11 +127,10 @@ impl Cache {
         let whole = match beside(&path) {
             // A kept program is the whole file, with its hash beside it.
             Some(sum) => sum_of(&bytes) == sum,
-            None => match bytes.len().checked_sub(HASH_LEN) {
-                Some(end) => {
-                    let whole = bytes
-                        .get(end..)
-                        .is_some_and(|hash| hash == fennec_blake3::hash(&bytes[..end]).as_bytes());
+            None => match bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end)) {
+                Some((text, hash)) => {
+                    let whole = hash == fennec_blake3::hash(text).as_bytes();
+                    let end = text.len();
                     bytes.truncate(end);
                     whole
                 }
@@ -392,7 +391,7 @@ fn linked_beside(from: &Path, path: &Path) -> std::io::Result<PathBuf> {
         let temporary = temporary_beside(path);
         match std::fs::hard_link(from, &temporary) {
             Ok(()) => return Ok(temporary),
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
             Err(_) => {
                 let bytes = std::fs::read(from)?;
                 put(&temporary, &[&bytes])?;

@@ -152,6 +152,10 @@ fn a_cache_others_can_write_isnt_used() {
     assert_eq!(mode(&home), 0o700);
     cache.write("llvm", "x", b"kept").unwrap();
     assert!(cache.read("llvm", "x").is_some());
+    // Taking away what others may do never gives its user more: a read-only folder stays so.
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let _ = Cache::new(&home);
+    assert_eq!(mode(&home.join("cache")), 0o500);
     std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o777)).unwrap();
     let open = Cache::new(&home);
     assert_eq!(open.read("llvm", "x"), None, "a cache others can write was read");
@@ -262,7 +266,10 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
     let old = fennec_build::KEPT_RECENT.as_secs() + 600;
     entry(&cache.path("llvm", "just stored"), 100, 5).unwrap();
     cache.write("llvm", "used", &[0; 68]).unwrap();
-    File::open(cache.path("llvm", "used")).unwrap().set_modified(SystemTime::now() - Duration::from_secs(old)).unwrap();
+    File::open(cache.path("llvm", "used"))
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(old))
+        .unwrap();
     assert!(cache.read("llvm", "used").is_some());
     entry(&cache.path("llvm", "old"), 100, old).unwrap();
     let program = home.join("launched");

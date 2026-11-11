@@ -32,8 +32,9 @@ pub fn private_folder(folder: &Path) -> Result<(), Refused> {
         if found.mode() & 0o022 != 0 {
             return Err(Refused(format!("{shown} can be written by others")));
         }
+        // Only what others may do is taken away: a folder its user made read-only stays so.
         if found.mode() & 0o077 != 0 {
-            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))
+            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(found.mode() & 0o7700))
                 .map_err(|err| Refused(format!("{shown} can't be made private: {err}")))?;
         }
     }

@@ -21,6 +21,9 @@ struct File {
     /// Where each of its lines starts, worked out the first time a diagnostic is rendered against
     /// it, so rendering many is the same work for each, wherever in the file it points.
     lines: std::sync::OnceLock<Vec<usize>>,
+    /// The hash of its text, worked out the first time it's asked for and shared by whatever
+    /// asks after: a run keys its parse and its check on it.
+    hash: std::sync::OnceLock<fennec_blake3::Hash>,
 }
 
 impl Sources {
@@ -37,6 +40,7 @@ impl Sources {
             text: text.into(),
             base,
             lines: std::sync::OnceLock::new(),
+            hash: std::sync::OnceLock::new(),
         });
         base
     }
@@ -223,12 +227,28 @@ impl Sources {
         self.files.iter().find(|file| file.path == path).map(|file| (file.text.as_str(), file.base))
     }
 
+    /// The text of the file added at `base`, with its hash, which is worked out only the first
+    /// time it's asked for. Many threads may ask at once.
+    pub fn hashed_text_at(&self, base: u32) -> Option<(&str, fennec_blake3::Hash)> {
+        let file = self.files.iter().find(|file| file.base == base)?;
+        Some((file.text.as_str(), file.text_hash()))
+    }
+
+    /// Each file's path and the hash of its text, in the order they were added.
+    pub fn hashed_files(&self) -> impl Iterator<Item = (&str, fennec_blake3::Hash)> {
+        self.files.iter().map(|file| (file.path.as_str(), file.text_hash()))
+    }
+
     fn file(&self, span: Span) -> Option<&File> {
         self.files.iter().rev().find(|file| file.base <= span.start && span.start <= file.end())
     }
 }
 
 impl File {
+    fn text_hash(&self) -> fennec_blake3::Hash {
+        *self.hash.get_or_init(|| fennec_blake3::hash(self.text.as_bytes()))
+    }
+
     fn end(&self) -> u32 {
         self.base.saturating_add(u32::try_from(self.text.len()).unwrap_or(u32::MAX))
     }

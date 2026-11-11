@@ -1,0 +1,26 @@
+# Throwaway: whether macOS holds a new executable's first launch on GitHub's runners.
+name: First launch
+on:
+  push:
+    branches: [claude/profile-edit-run]
+permissions:
+  contents: read
+jobs:
+  hold:
+    strategy:
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Launch new files
+        run: |
+          t() { perl -MTime::HiRes=time -e '$s=time; system(@ARGV); printf "%.0f ms", (time-$s)*1000' "$@"; }
+          cd "$RUNNER_TEMP"
+          for n in 1 2 3 4 5; do
+            printf 'int main(void){return 0;} int x%s = %s;\n' $n $n > p$n.c
+            cc -o p$n p$n.c
+            echo "new program $n: first $(t ./p$n), second $(t ./p$n)"
+          done
+          cp p1 q1; echo "same bytes at a new path: $(t ./q1)"
+          ln p2 r2; echo "hard link to a launched file: $(t ./r2)"

@@ -212,7 +212,9 @@ export struct Pool[T]:
         waiting = wait else self._wait
         with channel[Lent[T]](size=1) as reply:
             self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) else fail .Closed
-            lent = reply.receive(timeout=waiting) else fail .Timeout(waited=waiting)
+            lent = reply.receive(timeout=waiting) else:
+                gave_up[T](self._notes, reply)
+                fail .Timeout(waited=waiting)
             if lent.failure != "": fail .Open(reason=lent.failure)
             value = lent.value else fail .Closed
             back = lent.back else fail .Closed
@@ -229,11 +231,24 @@ export struct Borrowed[T]:
     def give_back(self, succeeded: bool):
         told(self._back, Given[T](value=self.value, succeeded=succeeded))
 
-## What a borrower is lent: the value and where to give it back, or why it couldn't be opened.
+## What a borrower is lent: the value and where to give it back, or why it couldn't be opened, or
+## word that it's been dropped from the queue after it gave up waiting.
 struct Lent[T]:
     value: T?
     back: Sender[Given[T]]?
     failure: str
+    dropped = False
+
+## Tells the dispatcher a borrower gave up waiting, then takes the one answer its `reply` still
+## gets: word that it was dropped from the queue, or a value a keeper lent it meanwhile, which goes
+## straight back. So a reply is never left with a value no one takes, and no keeper waits on a
+## borrower that's gone.
+def gave_up[T](notes: Sender[PoolNote[T]], reply: Channel[Lent[T]]):
+    notes.send(PoolNote[T](kind=GAVE_UP, reply=reply.sender())) else return
+    late = reply.receive() else return
+    back = late.back else return
+    value = late.value else return
+    told(back, Given[T](value=value, succeeded=True))
 
 ## A value given back to its keeper, and whether the block that had it succeeded.
 struct Given[T]:
@@ -261,6 +276,8 @@ FREE = 2
 EMPTY = 3
 ## The pool has ended.
 STOP = 4
+## A borrower gave up waiting.
+GAVE_UP = 5
 
 ## What `open` gives, or its failure as a `PoolError`.
 def opened[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
@@ -313,6 +330,17 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
                 told(keepers[empty_free.pop(0)], KeeperOrder[T](reply=reply))
             else:
                 waiting.append(reply)
+        elif note.kind == GAVE_UP:
+            gone = note.reply else continue
+            # Still queued, it's dropped and told so. Otherwise a keeper was sent to it already,
+            # and lends it the value, which it gives straight back.
+            mut queued = -1
+            for at, wanted in enumerate(waiting):
+                if wanted._channel == gone._channel:
+                    queued = at
+            if queued >= 0:
+                _ = waiting.pop(queued)
+                told(gone, Lent[T](value=None, back=None, failure="", dropped=True))
         else:
             keeper = note.keeper
             if note.kind == HELLO:

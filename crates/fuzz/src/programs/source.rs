@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Nested, Op, Place, Program,
+    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
     RefPlace, Stmt, Via,
 };
 
@@ -437,6 +437,17 @@ def named_depth(named: Named) -> int:
                 return depth
     depth
 
+def ward(name: str, stdout: Stdout) -> with str:
+    stdout.print(\"open\", name)
+    lend name else:
+        stdout.print(\"undo\", name)
+    stdout.print(\"close\", name)
+
+def present(i: int, at: int) -> int?:
+    if i == at:
+        return None
+    i
+
 def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
     stdout.print(\"guard\", code)
     lend Tally(count=code) else:
@@ -521,6 +532,78 @@ pub(crate) fn source(program: &Program) -> String {
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
     format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+}
+
+/// The names `Left`'s `ward`s are lent as, outermost first.
+pub(crate) const WARDS: [&str; 3] = ["a", "b", "c"];
+
+/// `left{id}`, the function a `Left` calls: a loop whose `with` blocks round `at` leaves by `how`.
+fn left_written(id: usize, depth: usize, together: bool, rounds: i64, at: i64, how: Leave) -> String {
+    let names = WARDS.get(..depth).unwrap_or(&WARDS);
+    let mut out = format!(
+        "def left{id}(stdout: Stdout) fails Refused:\n    mut total = 0\n    for i in range({rounds}):\n"
+    );
+    let mut indent = 2;
+    let pad = |indent: usize| "    ".repeat(indent);
+    if together {
+        let opened: Vec<String> =
+            names.iter().map(|name| format!("ward(\"{name}\", stdout) as {name}")).collect();
+        let _ = writeln!(out, "{}with {}:", pad(indent), opened.join(", "));
+        indent += 1;
+    } else {
+        for name in names {
+            let _ = writeln!(out, "{}with ward(\"{name}\", stdout) as {name}:", pad(indent));
+            indent += 1;
+        }
+    }
+    let at_most = at - 1;
+    let lines: Vec<String> = match how {
+        Leave::ElseReturn => {
+            vec![format!("got = present(i, at={at}) else return"), "total = total + got".to_owned()]
+        }
+        Leave::ElseFail => {
+            vec![
+                format!("got = present(i, at={at}) else fail Refused(code=i)"),
+                "total = total + got".to_owned(),
+            ]
+        }
+        Leave::ElseContinue => {
+            vec![format!("got = present(i, at={at}) else continue"), "total = total + got".to_owned()]
+        }
+        Leave::ElseBreak => {
+            vec![format!("got = present(i, at={at}) else break"), "total = total + got".to_owned()]
+        }
+        Leave::Question => {
+            vec![format!("got = capped(i, limit={at_most})?"), "total = total + got".to_owned()]
+        }
+        Leave::QuestionInside => vec![format!("total = total + capped(i, limit={at_most})? * 2")],
+        Leave::NestedReturn => vec![
+            format!("if i >= {at}:"),
+            "    match i % 2:".to_owned(),
+            "        case 0:".to_owned(),
+            "            return".to_owned(),
+            "        case _:".to_owned(),
+            "            if total > -1:".to_owned(),
+            "                return".to_owned(),
+            "total = total + i".to_owned(),
+        ],
+        Leave::Return | Leave::Break | Leave::Continue | Leave::Crash => {
+            let leave = match how {
+                Leave::Return => "return",
+                Leave::Break => "break",
+                Leave::Continue => "continue",
+                _ => "_ = [1, 2][i + 2]",
+            };
+            vec![format!("if i == {at}:"), format!("    {leave}"), "total = total + i".to_owned()]
+        }
+    };
+    let _ = writeln!(out, "{}stdout.print(\"in\", {}, i)", pad(indent), names.join(", "));
+    for line in lines {
+        let _ = writeln!(out, "{}{line}", pad(indent));
+    }
+    let _ = writeln!(out, "{}stdout.print(\"kept\", i)", pad(indent));
+    let _ = write!(out, "        stdout.print(\"round\", i)\n    stdout.print(\"total\", total)\n\n");
+    out
 }
 
 struct Writer {
@@ -1012,6 +1095,11 @@ impl Writer {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 self.line(indent, &format!("guard_all([{}], stdout) else:", items.join(", ")));
                 self.line(indent + 1, "stdout.print(\"stopped\")");
+            }
+            Stmt::Left { id, depth, together, rounds, at, how } => {
+                let _ = write!(self.helpers, "{}", left_written(*id, *depth, *together, *rounds, *at, *how));
+                self.line(indent, &format!("left{id}(stdout) else as why:"));
+                self.line(indent + 1, "stdout.print(\"refused\", why.code)");
             }
             Stmt::FloatKeys { held, names: (keyed, seen), values, probe, asked, pair: (left, right) } => {
                 let ty = match held {

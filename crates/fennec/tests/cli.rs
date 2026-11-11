@@ -188,7 +188,9 @@ fn the_proof_program_checks_passes_its_tests_and_runs() {
 /// under its failure. The cleanup runs once, where a whole line that's a `?` fails the block.
 #[test]
 fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-cleanup-notes", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-cleanup-notes", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("notes.fen");
     std::fs::write(
@@ -376,7 +378,8 @@ fn test_says_how_to_use_it_when_its_arguments_are_wrong() {
 
 /// Runs `fennec <command>` on a program written to a temporary file of its own.
 fn fennec_on(command: &str, name: &str, source: &str) -> std::io::Result<Output> {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-{name}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-cli-{}-{name}", std::process::id())));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
@@ -494,7 +497,7 @@ fn test_checks_the_program_before_running_its_tests() {
 
 #[test]
 fn tests_get_fakes_unless_asked_for_the_real_thing() {
-    let dir = std::env::temp_dir().join(format!("fennec-real-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-real-{}", std::process::id())));
     std::fs::create_dir_all(&dir).unwrap();
     let written = dir.join("written.txt");
     let start = dir.join("start.txt");
@@ -557,7 +560,9 @@ fn real_tests_run_through_llvm() {
 /// yet, so both go another way, and with `--real` too.
 #[test]
 fn a_standard_library_default_works_in_a_test_off_llvm() {
-    let dir = std::env::temp_dir().join(format!("fennec-std-default-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-std-default-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("response.fen");
     let source = "from std.net import Response\n\ndef handle(path: str) -> Response:\n    match path:\n        case \"/hello\":\n            Response(status=200, body=\"hi\".encode())\n        case _:\n            Response(status=404)\n\ntest \"plain\":\n    assert handle(\"/hello\").status == 200\n    assert handle(\"/\").headers.len() == 0\n\ntest \"net only\"(net: Net):\n    with net.listen(0)? as server:\n        assert server.port >= 0\n";
@@ -572,7 +577,8 @@ fn a_standard_library_default_works_in_a_test_off_llvm() {
 
 #[test]
 fn the_clock_is_fixed_unless_asked_for_the_real_one() {
-    let dir = std::env::temp_dir().join(format!("fennec-clock-{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-clock-{}", std::process::id())));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("clock.fen");
     let source = "from std.time import Duration\n\ntest \"clock\"(clock: Clock):\n    start = clock.now()\n    clock.sleep(Duration.seconds(0.01))\n    assert (clock.now() - start).nanos > 10_000_000\n";
@@ -610,8 +616,9 @@ fn unknown_commands_show_usage() {
 }
 
 /// A fresh empty folder for one test.
-fn scratch(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{name}-{}", std::process::id()));
+fn scratch(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-cli-{name}-{}", std::process::id())));
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
@@ -1070,7 +1077,10 @@ fn dev_copies_lists_what_may_cost_hot_code_first() {
 
 /// The last lines of `fennec dev copies --run` on a program that does nothing else.
 fn counted_in_a_run(name: &str, body: &str) -> String {
-    let dir = scratch(name).unwrap_or_default();
+    let dir = match scratch(name) {
+        Ok(dir) => dir,
+        Err(err) => return format!("couldn't make its folder: {err}"),
+    };
     let program = dir.join("game.fen");
     let source = format!("def main(stdout: Stdout):\n{body}");
     let path = program.to_string_lossy();
@@ -1478,7 +1488,7 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
 }
 
 /// A kit whose `Parser` gets `step` from a file that only extends it.
-fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> {
+fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<fennec_temp::Temp> {
     let kit = scratch(name)?;
     std::fs::create_dir_all(kit.join("src/parser"))?;
     std::fs::write(kit.join("kit.toml"), "name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
@@ -1790,7 +1800,8 @@ fn dev_changes_reports_what_changed_since_the_last_run() {
 
 #[test]
 fn fix_writes_in_return_types_and_removes_arrows_to_none() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-cli-{}-fix", std::process::id())));
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("fix.fen");
     let source = "def square(n: int):\n    n * n\n\ndef greet(stdout: Stdout) -> None:\n    stdout.print(square(3))\n\ndef main(stdout: Stdout):\n    greet(stdout)\n";
@@ -1811,7 +1822,9 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
 /// Adding `mut` may change what a program does, so `fennec fix` shows it and leaves it.
 #[test]
 fn fix_leaves_a_fix_that_may_change_what_a_program_does_to_be_made_by_hand() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-by-hand", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-by-hand", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("by_hand.fen");
     let source = "def main(stdout: Stdout):\n    people = [\"Ash\"]\n    people = [\"Vex\"]\n    stdout.print(people)\n";
@@ -1834,7 +1847,9 @@ fn fix_leaves_a_fix_that_may_change_what_a_program_does_to_be_made_by_hand() {
 /// a kit's files. It leaves one alone when the new name is taken, or an f-string uses it.
 #[test]
 fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-underscore", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-underscore", std::process::id())),
+    );
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(dir.join("kit.toml"), "name = \"tidy\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
@@ -1883,7 +1898,9 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
 /// first that has one, `main`, or a test. A function named other than in a call is left alone.
 #[test]
 fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-threaded", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-threaded", std::process::id())),
+    );
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(dir.join("kit.toml"), "name = \"hello\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
@@ -1926,7 +1943,9 @@ fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
 /// rule asks, rather than over what it changes.
 #[test]
 fn fix_takes_plain_copies_off_and_names_what_a_loop_goes_over() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-plain-copy", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-plain-copy", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("copies.fen");
     std::fs::write(
@@ -1956,7 +1975,9 @@ fn fix_takes_plain_copies_off_and_names_what_a_loop_goes_over() {
 /// part that's only `_` goes, so it reads no field.
 #[test]
 fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-named-pattern", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-named-pattern", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
     std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    text = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(why): str(why != \"\")\n    stdout.print(text)\n    said = fs.read_text(\"/nothing/here\") else as problem:\n        match problem:\n            case IoError(_): \"failed\"\n    stdout.print(said)\n").unwrap();
@@ -2097,7 +2118,9 @@ def main(stdout: Stdout):
 /// `.Case` there, which runs as the interpreter ran it.
 #[test]
 fn fix_writes_leading_dots_where_the_type_is_known() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-short-cases", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("cases.fen");
     let path = program.to_string_lossy().into_owned();
@@ -2122,7 +2145,9 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
 /// has to settle.
 #[test]
 fn fix_leaves_leading_dots_alone_in_a_kit() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases-kit", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-short-cases-kit", std::process::id())),
+    );
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("kit.toml"), "name = \"cases\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
         .unwrap();
@@ -2142,7 +2167,9 @@ fn fix_leaves_leading_dots_alone_in_a_kit() {
 /// `print` where the function has a `Stdout` is fixed, and with none there's nothing to write.
 #[test]
 fn fix_writes_the_stdout_a_function_has() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix-print", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-fix-print", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("print.fen");
     let path = program.to_string_lossy().into_owned();
@@ -2164,7 +2191,9 @@ const MUT_IN_EACH_PLACE: &str = "struct Counter:\n    count: int\n\n    def bump
 /// `mut` in a place that's now `ref` stops the program, and `fennec fix` writes `ref` in every one.
 #[test]
 fn fix_writes_ref_where_mut_was_on_a_parameter_loop_or_argument() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-to-ref", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-mut-to-ref", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("program.fen");
     let path = program.to_string_lossy().into_owned();
@@ -2196,7 +2225,9 @@ const OLD_TABLE_NAMES: &str = "from std.game import Id, IdMap\n\nstruct Unit:\n 
 /// `add` for its `insert`, and then it runs.
 #[test]
 fn fix_moves_idmap_to_table() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-table-names", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-table-names", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("table.fen");
     let path = program.to_string_lossy().into_owned();
@@ -2221,7 +2252,9 @@ fn fix_moves_idmap_to_table() {
 /// for the `with`, and then it runs.
 #[test]
 fn fix_moves_a_shared_declaration_to_shared_t_and_lock() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-shared-declaration", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-shared-declaration", std::process::id())),
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("account.fen");
     let path = program.to_string_lossy().into_owned();
@@ -2527,18 +2560,59 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+/// A small kit and a folder for Fennec's own files, in a folder that holds both and goes when the
+/// first is dropped.
+fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {
     let dir = scratch(name)?;
     std::fs::create_dir_all(dir.join("kit/src"))?;
     std::fs::write(dir.join("kit/kit.toml"), "name = \"demo\"\n")?;
     std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n")?;
-    Ok((dir.join("kit"), dir.join("home")))
+    let (kit, home) = (dir.join("kit"), dir.join("home"));
+    Ok((dir, kit, home))
+}
+
+/// A Fennec folder too deep for a socket, as one in a long temporary folder is, still gets a
+/// daemon: it listens in a short folder of its own under `/tmp`, which goes when it stops.
+#[cfg(unix)]
+#[test]
+fn a_daemon_serves_a_fennec_folder_too_deep_for_a_socket() {
+    let (folder, kit, _) = small_kit("deep-daemon").unwrap();
+    let home = folder.join("a folder with a long name, ".repeat(4));
+    let deep = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("TMPDIR", &home)
+            .env("FENNEC_DAEMON_IDLE", "30")
+            .env_remove("FENNEC_NO_DAEMON")
+            .env_remove("XDG_RUNTIME_DIR")
+            .output()
+            .unwrap()
+    };
+    let first = deep(&["dev", "changes"]);
+    assert_eq!(
+        text(&first.stdout),
+        "first run: hashed 1 files and 1 definitions\n",
+        "{}",
+        text(&first.stderr)
+    );
+    let status = text(&deep(&["daemon", "status"]).stdout);
+    assert!(status.starts_with("running: Fennec") && status.contains("1 request served\n"), "{status}");
+    assert_eq!(text(&deep(&["daemon", "stop"]).stdout), "stopped\n");
+    let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
+    let short = Path::new("/tmp").join(format!("fennec-{}", hash.get(..16).unwrap()));
+    let gone = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        text(&deep(&["daemon", "status"]).stdout) == "not running\n" && !short.exists()
+    });
+    assert!(gone, "the daemon didn't stop, or left {}", short.display());
 }
 
 #[cfg(unix)]
 #[test]
 fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
-    let (kit, home) = small_kit("daemon").unwrap();
+    let (_folder, kit, home) = small_kit("daemon").unwrap();
     let status = || text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
     assert_eq!(status(), "not running\n");
 
@@ -2565,7 +2639,7 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
 #[cfg(unix)]
 #[test]
 fn an_idle_daemon_exits_by_itself() {
-    let (kit, home) = small_kit("idle-daemon").unwrap();
+    let (_folder, kit, home) = small_kit("idle-daemon").unwrap();
     with_daemon(&kit, &home, "1", &["dev", "changes"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't exit after a second with nothing to do");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
@@ -2574,7 +2648,7 @@ fn an_idle_daemon_exits_by_itself() {
 #[cfg(unix)]
 #[test]
 fn the_daemon_keeps_the_cache_under_its_cap() {
-    let (kit, home) = small_kit("cache-daemon").unwrap();
+    let (_folder, kit, home) = small_kit("cache-daemon").unwrap();
     let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
@@ -2607,7 +2681,7 @@ fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
 /// build's folder that's gone unused for a day; `fennec cache clean` runs one when asked.
 #[test]
 fn a_command_cleans_the_cache_hourly_with_no_daemon() {
-    let (kit, home) = small_kit("cache-hourly").unwrap();
+    let (_folder, kit, home) = small_kit("cache-hourly").unwrap();
     let old = home.join("cache").join("0.0.1").join("llvm").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 1_000]).unwrap();
@@ -2974,7 +3048,9 @@ fn constants_are_worked_out_while_compiling() {
 /// `@hot` function.
 #[test]
 fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join(format!("fennec_build_refuses_{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_build_refuses_{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("copies.fen");
     std::fs::write(
@@ -3002,7 +3078,9 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
 /// A plain run builds a program with an `f32` or a `u64` natively, as it does any other.
 #[test]
 fn a_run_builds_u64_and_f32_natively() -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("sized.fen");
     std::fs::write(
@@ -3019,7 +3097,8 @@ fn a_run_builds_u64_and_f32_natively() -> std::io::Result<()> {
 /// A `u8` that overflows stops the program.
 #[test]
 fn a_sized_number_that_overflows_stops_the_program() -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join(format!("fennec_sized_{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec_sized_{}", std::process::id())));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("pixel.fen");
     std::fs::write(
@@ -3042,7 +3121,8 @@ fn a_sized_number_that_overflows_stops_the_program() -> std::io::Result<()> {
 /// What a copy names is the item it's in, as it's written.
 #[test]
 fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join(format!("fennec_copy_names_{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec_copy_names_{}", std::process::id())));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("items.fen");
     for (at, said) in [("0", "units[0].tags"), ("at", "units[at].tags")] {
@@ -3067,7 +3147,9 @@ fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
 #[test]
 #[cfg(unix)]
 fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-embed-edge-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-embed-edge-{}", std::process::id())),
+    );
     let inner = dir.join("inner");
     std::fs::create_dir_all(inner.join("data")).unwrap();
     std::fs::write(dir.join("secret.txt"), "above").unwrap();
@@ -3097,7 +3179,9 @@ fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
 #[test]
 #[cfg(unix)]
 fn embed_folder_gives_a_folders_files_by_path() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-embed-folder-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-embed-folder-{}", std::process::id())),
+    );
     let site = dir.join("game/site");
     std::fs::create_dir_all(site.join("css")).unwrap();
     std::fs::create_dir_all(site.join(".git")).unwrap();

@@ -24,5 +24,8 @@ fennec-kit.workspace = true
 fennec-lint.workspace = true
 fennec-syntax.workspace = true
 
+[dev-dependencies]
+fennec-temp.workspace = true
+
 [lints]
 workspace = true

@@ -1,0 +1,7 @@
+error: a `match` with a `ref` case is a statement of its own
+ --> examples/errors/ref_match_as_a_value.fen:6:13
+  |
+6 |     added = match slot:
+  |             ^^^^^^^^^^^
+  |
+  = help: write it on a line of its own, as `match item:`, not after `=` or `return`

@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    count = 3
+    for at in count:
+        stdout.print(at)

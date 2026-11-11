@@ -120,6 +120,18 @@ impl Runtime {
     }
 }
 
+/// What `main` reaches in `module`, copied out, rather than copying it all and cutting the rest
+/// away. A dev build of `fennec` checks it's what the cutting leaves.
+pub(crate) fn main_reaches(module: &fennec_syntax::Module) -> fennec_syntax::Module {
+    let reached = fennec_build::what_main_reaches(module);
+    if cfg!(debug_assertions) {
+        let mut cut = module.clone();
+        fennec_build::keep_what_main_reaches(&mut cut);
+        assert!(cut == reached, "what `main` reaches, copied out, isn't what cutting the rest away leaves");
+    }
+    reached
+}
+
 /// Whether `--cpu baseline` asked for code any machine of its architecture runs.
 pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -182,8 +194,7 @@ pub(crate) fn tracing_executable(
     program: &fennec_kit::Program,
     output: &Path,
 ) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = main_reaches(&program.module);
     let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false, None)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
@@ -525,8 +536,7 @@ fn llvm_objects(
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = main_reaches(&program.module);
     // What was checked is only this module if cutting it down left it as it was.
     let checked = checked.filter(|_| reached == program.module);
     let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;
@@ -558,6 +568,13 @@ fn compile_emitted(
     let Emitted { lowered, units, shared, layouts } = emitted;
     let tls = fennec_llvm::uses_tls(lowered);
     let tools = fennec_llvm::Tools::find()?;
+    // A function too big to optimize in reasonable time is compiled as written, which keeps its
+    // checks but runs slower, so the build says which.
+    for name in fennec_llvm::huge_functions(units) {
+        eprintln!(
+            "hint: `{name}` is too big to optimize, so it's compiled as written and runs slower; split it into smaller functions to have it optimized"
+        );
+    }
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
@@ -970,7 +987,9 @@ mod tests {
     #[cfg(not(windows))]
     fn a_program_of_more_objects_than_a_command_line_holds_links() {
         use std::process::Command;
-        let work = std::env::temp_dir().join(format!("fennec-many-objects-{}", std::process::id()));
+        let work = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-many-objects-{}", std::process::id())),
+        );
         // A quote and a backslash, which the file escapes, and spaces, which it quotes.
         let parts =
             work.join(format!("{}\"quoted\" and back\\slashed", "a folder with a long name, ".repeat(4)));
@@ -1007,7 +1026,9 @@ mod tests {
     /// program in many parts doesn't make a command line longer than the system takes.
     #[test]
     fn the_objects_to_link_go_in_a_file_each_on_a_line() {
-        let work = std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id()));
+        let work = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&work).unwrap();
         let objects: Vec<_> = (0..2_000).map(|at| work.join(format!("{at}.o"))).collect();
         let file = super::response_file(&objects).unwrap();

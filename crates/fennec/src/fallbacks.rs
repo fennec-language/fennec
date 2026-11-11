@@ -10,8 +10,7 @@ pub(crate) fn checks(path: &str) -> ExitCode {
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = crate::aot::main_reaches(&program.module);
     let lowered = match crate::aot::lowered_for_native(&reached) {
         Ok(lowered) => lowered,
         Err(why) => {
@@ -44,8 +43,7 @@ pub(crate) fn waits(path: &str) -> ExitCode {
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = crate::aot::main_reaches(&program.module);
     let lowered = match crate::aot::lowered_for_native(&reached) {
         Ok(lowered) => lowered,
         Err(why) => {
@@ -83,8 +81,7 @@ pub(crate) fn not_lowered(path: &str) -> ExitCode {
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = crate::aot::main_reaches(&program.module);
     match crate::aot::takes(&reached) {
         Ok(()) => println!("everything compiles to native code"),
         Err(why) => {

@@ -1,0 +1,7 @@
+error: `from` needs an error, but this is a str
+ --> examples/errors/from_not_error.fen:2:21
+  |
+2 |     int(text)? from "not a number"
+  |                     ^^^^^^^^^^^^^^
+  |
+  = help: give it an error, as `? from LoadError(why="no file")`

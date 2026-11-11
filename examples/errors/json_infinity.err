@@ -1,0 +1,7 @@
+error: `by_name["high"]` is inf, which JSON can't write: it has no NaN or infinity
+ --> examples/errors/json_infinity.fen:9:18
+  |
+9 |     stdout.print(json.dumps(Limits(by_name={"low": 0.5, "high": endless})))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = in `main`
+  = called from the standard library

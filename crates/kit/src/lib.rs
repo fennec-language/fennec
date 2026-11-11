@@ -196,11 +196,12 @@ pub fn holds_every_file(program: &Program, path: &Path, shown_as: &str) -> bool 
 /// Parses kept from earlier loads, by what was parsed, for loading to use rather than parsing a
 /// file again: a parse of the same text is the same module, wherever among a program's files it is.
 pub trait Parses: Send + Sync {
-    /// The module `text`, shown as `shown`, parses to at `base`, if a parse of it is kept.
-    fn kept(&self, text: &str, shown: &str, doc_examples: bool, base: u32) -> Option<Module>;
+    /// The module the text whose hash is `text`, shown as `shown`, parses to at `base`, if a
+    /// parse of it is kept.
+    fn kept(&self, text: &fennec_blake3::Hash, shown: &str, doc_examples: bool, base: u32) -> Option<Module>;
 
-    /// Keeps the module `text` parsed to at `base`.
-    fn keep(&self, text: &str, shown: &str, doc_examples: bool, base: u32, module: &Module);
+    /// Keeps the module the text whose hash is `text` parsed to at `base`.
+    fn keep(&self, text: &fennec_blake3::Hash, shown: &str, doc_examples: bool, base: u32, module: &Module);
 }
 
 /// Where loading finds and keeps parses, once `keep_parses_in` says.

@@ -59,6 +59,9 @@ pub struct Found {
 pub struct Kits {
     home: PathBuf,
     offline: bool,
+    /// Whether a kit fetched from git may name another by `file://`, which only fennec-deps' own
+    /// tests ask for: see `with_local_git_chains`.
+    local_git_chains: bool,
 }
 
 /// Finds a kit from git, by its name, address, commit and folder: its pin and its folder in the
@@ -80,7 +83,7 @@ impl Kits {
     /// The store in the Fennec folder `home`. Offline, a kit that isn't there is an error rather
     /// than fetched.
     pub fn new(home: &Path, offline: bool) -> Self {
-        Kits { home: home.to_path_buf(), offline }
+        Kits { home: home.to_path_buf(), offline, local_git_chains: false }
     }
 
     /// The store in this machine's Fennec folder, which fetches nothing with `FENNEC_OFFLINE` set
@@ -88,6 +91,17 @@ impl Kits {
     pub fn of_this_machine() -> Option<Self> {
         let home = fennec_build::fennec_home()?;
         Some(Kits::new(&home, std::env::var_os("FENNEC_OFFLINE").is_some()))
+    }
+
+    /// This store, letting a kit fetched from git name another by `file://`. Only fennec-deps' own
+    /// tests use it: a test can't serve a repository over https or ssh, and without it nothing
+    /// would test pinning a git kit's own git dependency. It's a call, not a setting or a Cargo
+    /// feature, so nothing a user or a build sets can turn it on: `fennec` never makes this call,
+    /// and a feature turned on for tests would reach the `fennec` its CLI tests run too.
+    #[must_use]
+    pub fn with_local_git_chains(mut self) -> Self {
+        self.local_git_chains = true;
+        self
     }
 
     /// Where a kit with these files' hash is kept.
@@ -104,7 +118,7 @@ impl Kits {
     /// fixes, and when a kit fetched isn't the one pinned.
     pub fn ensure(&self, root: &Path) -> Result<Vec<Found>, String> {
         let pinned = pins(&std::fs::read_to_string(root.join("kit.lock")).unwrap_or_default())?;
-        walk(root, &mut |name, url, commit, folder| {
+        walk(root, self.local_git_chains, &mut |name, url, commit, folder| {
             let wanted = lock::shown(url, commit, folder);
             let pin = pinned.iter().find(|pin| pin.name == name).ok_or_else(|| {
                 format!("kit.toml names `{name}` from {wanted}, which kit.lock doesn't pin yet: `fennec update` fetches it and pins it")
@@ -143,7 +157,7 @@ impl Kits {
         let lock_path = root.join("kit.lock");
         let lock_text = std::fs::read_to_string(&lock_path).unwrap_or_default();
         let before = pins(&lock_text)?;
-        let found = walk(root, &mut |name, url, commit, folder| {
+        let found = walk(root, self.local_git_chains, &mut |name, url, commit, folder| {
             if let Some(pin) = before.iter().find(|pin| pin.name == name && pin.is(url, commit, folder))
                 && self.stored(&pin.hash).is_dir()
             {
@@ -277,7 +291,13 @@ impl Kits {
 
 /// Follows the dependencies of the kit at `root`, and theirs, giving each once. `resolve` finds
 /// a kit from git: its pin and its folder in the store.
-fn walk(root: &Path, resolve: Resolve<'_>) -> Result<Vec<Found>, String> {
+///
+/// What the user's own disk holds may name what else is on it: the kit at `root`, and a kit it
+/// names by a path, and theirs. A kit fetched from git, and everything it names, may name neither
+/// a path nor a `file://` repository: one could carry a bare repository and name it, or point at
+/// any repository of the user's, and have it fetched into the build. `local_git_chains` lets a
+/// `file://` through for fennec-deps' own tests.
+fn walk(root: &Path, local_git_chains: bool, resolve: Resolve<'_>) -> Result<Vec<Found>, String> {
     let mut found: Vec<(Found, String)> = Vec::new();
     let mut queue: VecDeque<(Dependency, Named)> = VecDeque::new();
     let first = Named { folder: root.to_path_buf(), by: "this kit".to_owned(), from_git: false };
@@ -286,6 +306,12 @@ fn walk(root: &Path, resolve: Resolve<'_>) -> Result<Vec<Found>, String> {
         let name = dependency.name.as_str();
         let (place, folder, pin) = match &dependency.source {
             Source::Git { url, commit, folder } => {
+                if named.from_git && url.starts_with("file://") && !local_git_chains {
+                    return Err(format!(
+                        "{} is from git, and names `{name}` at `{url}`, a repository on this machine: a kit fetched from git names others only by `https://`, `ssh://` or `git@host:path`",
+                        named.by
+                    ));
+                }
                 let place = lock::shown(url, commit, folder.as_deref());
                 if seen(&found, name, &place)? {
                     continue;
@@ -311,7 +337,8 @@ fn walk(root: &Path, resolve: Resolve<'_>) -> Result<Vec<Found>, String> {
                 (place, folder, None)
             }
         };
-        let manifest = manifest_of(&folder)?;
+        let manifest =
+            manifest_of(&folder).map_err(|err| format!("`{name}`, which {} names: {err}", named.by))?;
         let by = format!("`{name}`");
         follow(&Named { folder: folder.clone(), by, from_git: pin.is_some() }, &manifest, &mut queue);
         let uses = manifest.dependencies.iter().map(|used| used.name.clone()).collect();

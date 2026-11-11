@@ -624,7 +624,7 @@ jobs:
   # Every example and kernel builds natively, links against the runtime, and prints what it
   # should, on one thread and on several.
   lean-runtime:
-    name: Programs with no interpreter
+    name: Every example and kernel built natively
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
@@ -662,7 +662,7 @@ jobs:
               fi
             fi
           done
-          echo "$built programs built with no interpreter"
+          echo "$built programs built natively"
           [ "$built" -ge 90 ] || { echo "::error::only $built built"; failed=1; }
           exit "$failed"
       - name: Run what uses parallel on real threads

@@ -249,9 +249,9 @@ fn hugged<'g, 'a>(group: &'g Group<'a>) -> Option<&'g Group<'a>> {
 /// The precedence of an item's loosest operator, to break before each one, unless the item
 /// has a conditional, a comprehension, an arrow function or a match, which read oddly split.
 fn loosest_operator(nodes: &[Node<'_>]) -> Option<u8> {
-    let blocked = nodes
-        .iter()
-        .any(|node| matches!(node, Node::Token { text: "if" | "else" | "for" | "=>" | "match", .. }));
+    let blocked = nodes.iter().any(|node| {
+        matches!(node, Node::Token { text: "if" | "else" | "except" | "for" | "=>" | "match", .. })
+    });
     let operators = nodes.iter().skip(1).filter_map(|node| match node {
         Node::Token { precedence, .. } if *precedence > 0 => Some(*precedence),
         _ => None,

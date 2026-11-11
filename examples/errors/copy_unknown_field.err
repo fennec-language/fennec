@@ -1,0 +1,7 @@
+error: `Enemy` has no field called `healht`
+ --> examples/errors/copy_unknown_field.fen:7:37
+  |
+7 |     stdout.print(copy(enemy, healht=5).health)
+  |                                     ^
+  |
+  = help: did you mean `health=`?

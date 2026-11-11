@@ -1,0 +1,7 @@
+error: `round` takes a number, but this is a str
+ --> examples/errors/round_text.fen:3:18
+  |
+3 |     stdout.print(round(price))
+  |                  ^^^^^^^^^^^^
+  |
+  = help: read the text as a number first, as `round(float(text)?)`

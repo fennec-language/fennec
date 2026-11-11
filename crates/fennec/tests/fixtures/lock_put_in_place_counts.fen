@@ -1,0 +1,32 @@
+## Puts under a lock where the lookup found the key, `args[0]` rounds of them into a dict with one
+## owner, every third failing after, then `args[1]` with the dict held a second time by a local.
+error Boom:
+    step: int
+
+struct Table:
+    counts: dict[int, int]
+
+def bump(table: shared Table, key: int, failing: bool) fails Boom:
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+        if failing:
+            fail Boom(step=key)
+
+def bump_held_twice(table: shared Table, key: int) -> int:
+    lock table as ref held:
+        also = held.counts
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+        also.len()
+
+def main(stdout: Stdout, args: Args):
+    rounds = int(args[0]) else 0
+    twice = int(args[1]) else 0
+    shared table = Table(counts={0: 0, 1: 0})
+    mut failed = 0
+    for step in range(rounds):
+        bump(table, key=step % 2, failing=step % 3 == 0) else:
+            failed += 1
+    for step in range(twice):
+        _ = bump_held_twice(table, key=step % 2)
+    lock table as held:
+        stdout.print(failed, held.counts[0], held.counts[1])

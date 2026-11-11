@@ -1,0 +1,111 @@
+# A pool's edges: a size it can't have, a first value handed to it, values borrowed and given back
+# by hand, as a library's own `with` source does, and a value that fails to open after the first.
+from std.concurrent import Crashed, Pool, PoolError, pool
+from std.time import Duration
+
+## A pretend connection: its number, in the order they were opened, and whether a reset works.
+struct Link:
+    number: int
+    resets = True
+
+    def reset(self) -> bool:
+        self.resets
+
+    def close(self):
+        pass
+
+## Why opening a link failed.
+error Refused:
+    why: str
+
+    def message(self) -> str:
+        self.why
+
+## How many links have been opened, and the most that can be.
+struct Tally:
+    opened = 0
+    most = 100
+
+## A new link, numbered by how many have been opened, failing once `most` are.
+def opened(tally: shared Tally, fragile: bool) -> Link fails Refused:
+    lock tally as ref counts:
+        if counts.opened == counts.most: fail Refused(why="no more links")
+        counts.opened += 1
+        Link(number=counts.opened, resets=not fragile)
+
+## Lets `most` links be opened in all.
+def allow(tally: shared Tally, most: int):
+    lock tally as ref counts:
+        counts.most = most
+
+## The number of links opened so far.
+def opens(tally: shared Tally) -> int:
+    lock tally as counts:
+        counts.opened
+
+## A pool of `size` links, never used.
+def sized(size: int) fails PoolError | Crashed:
+    shared count = Tally()
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=size)? as _:
+        pass
+
+## The number of the link `borrowed()` gives, waiting up to `wait`, given back at once.
+def borrowed_number(links: Pool[Link], wait: Duration) -> int fails PoolError:
+    lent = links.borrowed(wait=wait)?
+    lent.give_back(True)
+    lent.value.number
+
+test "a pool needs at least one value"():
+    assert sized(0) fails PoolError.Open(reason="a pool needs at least one value, not 0")
+    assert sized(-3) fails PoolError.Open(reason="a pool needs at least one value, not -3")
+    sized(1)?
+
+test "a pool given its first value opens none up front"():
+    shared count = Tally()
+    given = Link(number=99)
+    with pool[Link, Refused](
+        open=() => opened(count, fragile=False)?,
+        size=2,
+        first=given,
+    )? as links:
+        assert opens(count) == 0
+        with links.take()? as first:
+            assert first.number == 99
+            with links.take()? as second:
+                assert second.number == 1
+    assert opens(count) == 1
+
+test "a value borrowed by hand is held until it's given back"():
+    shared count = Tally()
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=1)? as links:
+        lent = links.borrowed()?
+        assert lent.value.number == 1
+        assert borrowed_number(links, wait=20ms) fails PoolError.Timeout()
+        lent.give_back(True)
+        assert borrowed_number(links, wait=5s)? == 1
+    assert opens(count) == 1
+
+test "a value given back as failed is reset, or replaced when it can't be"():
+    shared count = Tally()
+    with pool[Link, Refused](open=() => opened(count, fragile=True)?, size=1)? as links:
+        lent = links.borrowed()?
+        lent.give_back(False)
+        assert borrowed_number(links, wait=5s)? == 2
+    assert opens(count) == 2
+
+test "a value that fails to open later fails its borrower, and opens for the next"():
+    shared count = Tally(most=1)
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=2)? as links:
+        with links.take()? as first:
+            assert first.number == 1
+            assert borrowed_number(links, wait=5s) fails PoolError.Open(reason="no more links")
+            allow(count, most=2)
+            assert borrowed_number(links, wait=5s)? == 2
+
+def main(stdout: Stdout):
+    sized(0) else as why:
+        match why:
+            case PoolError.Open(reason=reason):
+                stdout.print(reason)
+            case _:
+                stdout.print("it failed another way")

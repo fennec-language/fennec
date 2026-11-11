@@ -1,0 +1,7 @@
+error: `copy` with fields copies a struct, but this is an int
+ --> examples/errors/copy_a_number.fen:3:18
+  |
+3 |     stdout.print(copy(count, value=5))
+  |                  ^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write the new value itself, as `count = 5`: `copy` with fields is for structs, as `copy(point, x=1)`

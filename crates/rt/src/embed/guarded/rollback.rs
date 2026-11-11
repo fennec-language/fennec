@@ -420,7 +420,8 @@ fn with_logs<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
 }
 
 /// The logs of the locks this thread holds, to change, as they are, for what doesn't look at their
-/// plain saves: native code adds only those, so they needn't be taken in first.
+/// plain saves of the words native code saves itself: a struct's fields and a dict's values, so
+/// they needn't be taken in first.
 fn logs_as_they_are<T>(f: impl FnOnce(&mut Logs) -> T) -> T {
     LOGS.with_borrow_mut(f)
 }
@@ -451,9 +452,9 @@ fn address(value: i64) -> u64 {
 
 /// `fennec_lock_begin(cell)`: a lock that may crash is taken, after its table, if it has one.
 /// Gives the address of this thread's buffer's record, for native code to save plain words in
-/// without a call while it has room: [`LEN`] saves at the address at [`SAVES`], with room for
-/// [`ROOM`], the innermost log's from [`START`]. A save is three words, the block's address, the
-/// word's index and what was there; native code then adds one to [`LEN`]. With no room, it calls
+/// without a call while it has room: `LEN` saves at the address at `SAVES`, with room for
+/// `ROOM`, the innermost log's from `START`. A save is three words, the block's address, the
+/// word's index and what was there; native code then adds one to `LEN`. With no room, it calls
 /// `fennec_lock_save`, which makes some. The record stays where it is for the thread's life.
 pub extern "C" fn begin(cell: i64) -> i64 {
     let depth = with(|state| state.heap.tables_behind());
@@ -942,7 +943,9 @@ pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>) -> bool {
 /// anyway. A word saved already holds what was made under the lock, which needs no saving.
 pub(in crate::embed) fn changing(state: &mut State, block: u64, word: usize, old: u64, holds: bool) {
     let saved = Saved { block, word, old, held: holds && old != 0, marked: false };
-    let pushed = logs_as_they_are(|logs| {
+    // Native code saves a dict's value word itself when it puts in place, so a word saved that way
+    // earlier in the lock is taken in first, and stays the one put back.
+    let pushed = with_logs(|logs| {
         let Some(log) = marking(&mut logs.held, block) else { return Pushed::NoLog };
         if !log.places.insert(place(&saved)) {
             return Pushed::Repeated;

@@ -381,14 +381,19 @@ const PARSING_STACK: usize = 1 << 30;
 
 /// Parses a file at its offset, with the examples in its doc comments as tests if asked, or takes
 /// its parse from where parses are kept, when one of its text is.
-fn parse_file(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
+/// Parses the file added to `sources` at `base`, or finds its parse kept, keyed by its text's
+/// hash, which `sources` keeps for whatever else asks for it.
+fn parse_file(sources: &Sources, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
+    let Some((text, hash)) = sources.hashed_text_at(base) else {
+        return Err(Diagnostic::new(format!("`{shown}` wasn't read"), Span { start: base, end: base }));
+    };
     let parses = crate::PARSES.get();
-    if let Some(kept) = parses.and_then(|parses| parses.kept(text, shown, doc_examples, base)) {
+    if let Some(kept) = parses.and_then(|parses| parses.kept(&hash, shown, doc_examples, base)) {
         return Ok(kept);
     }
     let fresh = parsed(text, base, shown, doc_examples);
     if let (Some(parses), Ok(module)) = (parses, &fresh) {
-        parses.keep(text, shown, doc_examples, base, module);
+        parses.keep(&hash, shown, doc_examples, base, module);
     }
     fresh
 }
@@ -402,19 +407,24 @@ fn parsed(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Modu
     Ok(module)
 }
 
-/// Parses each text, shown as named, at its offset, in order, on as many threads as there are CPUs.
-fn parse_all(texts: &[(String, u32, String)], doc_examples: bool) -> Vec<Result<Module, Diagnostic>> {
-    let parse = |chunk: &[(String, u32, String)]| -> Vec<Result<Module, Diagnostic>> {
-        chunk.iter().map(|(text, base, shown)| parse_file(text, *base, shown, doc_examples)).collect()
+/// Parses each file of `sources` at the offsets given, shown as named, in order, on as many
+/// threads as there are CPUs.
+fn parse_all(
+    sources: &Sources,
+    files: &[(u32, String)],
+    doc_examples: bool,
+) -> Vec<Result<Module, Diagnostic>> {
+    let parse = |chunk: &[(u32, String)]| -> Vec<Result<Module, Diagnostic>> {
+        chunk.iter().map(|(base, shown)| parse_file(sources, *base, shown, doc_examples)).collect()
     };
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    if threads < 2 || texts.len() < 2 {
-        return parse(texts);
+    if threads < 2 || files.len() < 2 {
+        return parse(files);
     }
     let parse = &parse;
     std::thread::scope(|scope| {
-        let workers: Vec<_> = texts
-            .chunks(texts.len().div_ceil(threads))
+        let workers: Vec<_> = files
+            .chunks(files.len().div_ceil(threads))
             .map(|chunk| {
                 let worker = std::thread::Builder::new()
                     .stack_size(PARSING_STACK)
@@ -544,8 +554,8 @@ impl<'a> Loader<'a> {
         } else {
             match self.read(real) {
                 Ok(text) => {
-                    let base = self.sources.add(shown.clone(), text.as_str());
-                    parse_file(&text, base, &shown, self.doc_examples && !place.is_dependency())
+                    let base = self.sources.add(shown.clone(), text);
+                    parse_file(&self.sources, base, &shown, self.doc_examples && !place.is_dependency())
                 }
                 Err(err) => {
                     match from {
@@ -607,12 +617,13 @@ impl<'a> Loader<'a> {
             }
             let (real, shown) = wanted.place.path(&wanted.module);
             if let Ok(text) = self.read(&real) {
-                let base = self.sources.add(shown.clone(), text.as_str());
+                let base = self.sources.add(shown.clone(), text);
                 names.push(name);
-                texts.push((text, base, shown));
+                texts.push((base, shown));
             }
         }
-        self.parsed.extend(names.into_iter().zip(parse_all(&texts, doc_examples)));
+        let parsed = parse_all(&self.sources, &texts, doc_examples);
+        self.parsed.extend(names.into_iter().zip(parsed));
     }
 
     /// The modules an import loads. `from game import physics` loads `game/physics.fen` when

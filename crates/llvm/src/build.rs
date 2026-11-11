@@ -487,16 +487,25 @@ fn whole_object(
     std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
 }
 
+/// What names a function's compiled object in the cache: the hash of its module's text, with the
+/// LLVM it's compiled by and how.
+fn object_key(version: &str, pipeline: &str, text: &fennec_blake3::Hash) -> String {
+    fennec_blake3::hash(format!("{version}\n{pipeline}\n{}", text.to_hex()).as_bytes()).to_hex()
+}
+
 /// Compiles every function's module, using the cache's copy of any it already has, and `entry`.
+/// The cache comes with the hash of each unit's text, in order, which the build has already
+/// worked out for its root hash.
 pub fn compile(
     tools: &Tools,
     units: &[Unit],
     entry: &str,
-    cache: Option<&Cache>,
+    cache: Option<(&Cache, &[fennec_blake3::Hash])>,
     work: &Path,
 ) -> Result<Built, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let version = tools.version()?;
+    let pipeline = pipeline();
     let threads = std::thread::available_parallelism().map_or(1, usize::from).min(MOST_THREADS);
     let next = Mutex::new(0_usize);
     let results: Mutex<Vec<(usize, Compiled)>> = Mutex::new(Vec::with_capacity(units.len()));
@@ -514,10 +523,11 @@ pub fn compile(
                         at
                     };
                     let Some(unit) = units.get(at) else { return };
-                    let key =
-                        fennec_blake3::hash(format!("{version}\n{}\n{}", pipeline(), unit.text).as_bytes())
-                            .to_hex();
-                    let cached = cache.and_then(|cache| cache.read(KIND, &key));
+                    // A unit without a hash isn't looked for in the cache, or kept there.
+                    let keyed = cache.and_then(|(cache, hashes)| {
+                        Some((cache, object_key(&version, &pipeline, hashes.get(at)?)))
+                    });
+                    let cached = keyed.as_ref().and_then(|(cache, key)| cache.read(KIND, key));
                     let result = match cached {
                         Some(bytes) => Ok((bytes, false)),
                         None => {
@@ -526,9 +536,9 @@ pub fn compile(
                             one(tools, &unit.text, work, &format!("f{at}"), way)
                         }
                         .map(|bytes| {
-                            if let Some(cache) = cache {
+                            if let Some((cache, key)) = &keyed {
                                 // A failed write only means compiling it again next time.
-                                let _ = cache.write(KIND, &key, &bytes);
+                                let _ = cache.write(KIND, key, &bytes);
                             }
                             (bytes, true)
                         }),
@@ -570,6 +580,18 @@ mod tests {
         format!(
             "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
         )
+    }
+
+    /// A compiled object is named by its text's hash, the LLVM that compiled it and how: each of
+    /// them changes the name, and nothing else does.
+    #[test]
+    fn an_objects_key_changes_with_its_text_its_llvm_and_its_pipeline() {
+        let text = fennec_blake3::hash(b"define i64 @f() {}");
+        let key = object_key("19.1", "default<O2>", &text);
+        assert_eq!(key, object_key("19.1", "default<O2>", &fennec_blake3::hash(b"define i64 @f() {}")));
+        assert_ne!(key, object_key("19.1", "default<O2>", &fennec_blake3::hash(b"define i64 @g() {}")));
+        assert_ne!(key, object_key("19.2", "default<O2>", &text));
+        assert_ne!(key, object_key("19.1", "default<O2>,asan", &text));
     }
 
     fn units(source: &str) -> Result<Vec<Unit>, String> {

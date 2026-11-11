@@ -1,0 +1,6 @@
+error Bad:
+    why: str
+
+def main(stdout: Stdout):
+    failure = Bad(why="x")
+    stdout.print(failure.notes(1))

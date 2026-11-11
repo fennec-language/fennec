@@ -25,9 +25,30 @@ pub fn keep_what_main_reaches(module: &mut Module) {
     keep_what_functions_reach(module, &|name| name == "main");
 }
 
+/// What `main` reaches in `module`, tests left out, as a module of its own: what
+/// `keep_what_main_reaches` leaves, without copying what it would let go of.
+#[must_use]
+pub fn what_main_reaches(module: &Module) -> Module {
+    let kept = reached(module, &|name| name == "main");
+    let items =
+        module.items.iter().enumerate().filter(|(at, _)| kept.contains(at)).map(|(_, item)| item.clone());
+    Module { items: items.collect(), std_rewritten: module.std_rewritten.clone() }
+}
+
 /// Removes everything that the functions `is_start` names can't reach from `module`, tests
 /// included.
 pub fn keep_what_functions_reach(module: &mut Module, is_start: &dyn Fn(&str) -> bool) {
+    let kept = reached(module, is_start);
+    let (reached, unreached): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut module.items).into_iter().enumerate().partition(|(at, _)| kept.contains(at));
+    module.items = reached.into_iter().map(|(_, item)| item).collect();
+    // What isn't reached is most of a big program, and letting it go takes as long as finding
+    // what is: it's let go of beside the run rather than before it.
+    std::thread::spawn(move || drop(unreached));
+}
+
+/// Which of `module`'s items the functions `is_start` names reach, by where they are in it.
+fn reached(module: &Module, is_start: &dyn Fn(&str) -> bool) -> HashSet<usize> {
     let nodes: Vec<Option<Node>> = module.items.iter().map(|item| node(item, is_start)).collect();
     let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut by_member: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -50,12 +71,7 @@ pub fn keep_what_functions_reach(module: &mut Module, is_start: &dyn Fn(&str) ->
             }
         }
     }
-    let (reached, unreached): (Vec<_>, Vec<_>) =
-        std::mem::take(&mut module.items).into_iter().enumerate().partition(|(at, _)| kept.contains(at));
-    module.items = reached.into_iter().map(|(_, item)| item).collect();
-    // What isn't reached is most of a big program, and letting it go takes as long as finding
-    // what is: it's let go of beside the run rather than before it.
-    std::thread::spawn(move || drop(unreached));
+    kept
 }
 
 /// What an item adds to the graph. A test adds nothing, so it's never kept.
@@ -128,12 +144,15 @@ fn uses(item: &Item) -> Uses {
 
 #[cfg(test)]
 mod tests {
-    use super::keep_what_main_reaches;
+    use super::{keep_what_main_reaches, what_main_reaches};
 
-    /// The names of the items left after keeping what `main` reaches in `source`.
+    /// The names of the items left after keeping what `main` reaches in `source`, which copying
+    /// out what it reaches gives too.
     fn kept(source: &str) -> Vec<String> {
         let mut module = fennec_syntax::parse(source).unwrap();
+        let copied = what_main_reaches(&module);
         keep_what_main_reaches(&mut module);
+        assert_eq!(copied, module, "copying out what main reaches leaves what cutting the rest away does");
         module.items.iter().map(|item| format!("{:.40}", format!("{item:?}"))).collect()
     }
 

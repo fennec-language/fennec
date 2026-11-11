@@ -3,3 +3,5 @@ error: `describe` doesn't change `health`, so it shouldn't be passed with `ref`
   |
 6 |     stdout.print(describe(ref health))
   |                               ^^^^^^
+  |
+  = help: take `ref` off the argument

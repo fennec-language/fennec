@@ -74,6 +74,8 @@ struct Run {
     /// The call, as a task of the one making it, for naming its ranges' entries in a recording or a
     /// replay. `None` in a normal run.
     task: Option<crate::replay::Task>,
+    /// The capture of the test making the call, if a test is, for what its ranges print.
+    capture: Option<Arc<crate::fakes::Capture>>,
     /// The calling thread's blocks, lent to the ranges while it waits, when they're on the pool.
     lent: RwLock<Option<Arc<super::table::Table>>>,
     /// What each range made on a worker that outlives it, for the calling thread to adopt.
@@ -146,6 +148,8 @@ struct Started {
     since: usize,
     was: Option<crate::replay::Task>,
     from: usize,
+    /// The capture what was running before printed into, put back as the range ends.
+    capture: Option<Arc<crate::fakes::Capture>>,
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +165,7 @@ impl Run {
             chunk,
             caller: super::threads::index(),
             task: crate::replay::child(),
+            capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
             failure: Mutex::new(None),
             beaten: Mutex::new(Vec::new()),
@@ -217,13 +222,16 @@ impl Run {
         }
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
-        Started { since: super::threads::made_so_far(), was, from }
+        let mut capture = self.capture.clone();
+        super::swap_capture(&mut capture);
+        Started { since: super::threads::made_so_far(), was, from, capture }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
-    fn keep_made(&self, Started { since, mut was, from }: Started) {
+    fn keep_made(&self, Started { since, mut was, from, mut capture }: Started) {
         crate::replay::swap(&mut was);
+        super::swap_capture(&mut capture);
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);

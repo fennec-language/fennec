@@ -1052,6 +1052,31 @@ pub mod eval {
     }
 }
 
+thread_local! {
+    /// The capture of the test the task or range running here was started by, which what it
+    /// prints and writes to standard error goes into, as its thread has no test world of its own.
+    static CAPTURE: RefCell<Option<std::sync::Arc<crate::fakes::Capture>>> = const { RefCell::new(None) };
+}
+
+/// The capture what's started from here prints into: the test's own on the thread running it, or
+/// the one this task or range was given. `None` outside a test, and in `fennec test --real`.
+pub(in crate::embed) fn capture_here() -> Option<std::sync::Arc<crate::fakes::Capture>> {
+    CAPTURE.with_borrow(Option::clone).or_else(|| {
+        with(|state| state.world().filter(|world| !world.real()).map(crate::fakes::TestWorld::capture))
+    })
+}
+
+/// Makes `capture` the one what runs here prints into, giving back the one before.
+pub(in crate::embed) fn swap_capture(capture: &mut Option<std::sync::Arc<crate::fakes::Capture>>) {
+    CAPTURE.with_borrow_mut(|here| std::mem::swap(here, capture));
+}
+
+/// The capture this thread prints into, when what it runs belongs to a test and the thread has no
+/// world of its own.
+fn capture_given() -> Option<std::sync::Arc<crate::fakes::Capture>> {
+    CAPTURE.with_borrow(Option::clone)
+}
+
 /// Writes what `parallel`'s ranges printed on workers, on this thread.
 fn print_handed_over(printed: &[u8]) {
     if printed.is_empty() {
@@ -1074,6 +1099,10 @@ pub mod io {
             if !world.real() {
                 return Ok(());
             }
+        } else if let Some(capture) = super::capture_given() {
+            // A task or range a test started, on a thread of its own: what it prints is the test's.
+            capture.print(text);
+            return Ok(());
         }
         state
             .output

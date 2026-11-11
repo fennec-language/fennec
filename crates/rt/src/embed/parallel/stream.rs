@@ -59,6 +59,8 @@ struct Stream {
     window: usize,
     /// The thread reading the stream, which adopts what the chunks make.
     reader: u16,
+    /// The capture of the test reading the stream, if a test is, for what its chunks print.
+    capture: Option<Arc<crate::fakes::Capture>>,
     chunks: Mutex<Chunks>,
     /// Signalled whenever a chunk is done.
     done: Condvar,
@@ -104,6 +106,8 @@ impl Stream {
         let from = at * self.chunk;
         let to = (from + self.chunk).min(self.length);
         let since = threads::made_so_far();
+        let mut capture = self.capture.clone();
+        super::super::swap_capture(&mut capture);
         let mut items = lists::new(self.element, number(to - from));
         let thread = i64::from(threads::index());
         let mut failure = None;
@@ -114,6 +118,7 @@ impl Stream {
             set_failed(0);
         }
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
+        super::super::swap_capture(&mut capture);
         Slot::Done { items, made, failure }
     }
 
@@ -181,6 +186,7 @@ pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i
         chunk,
         window,
         reader: threads::index(),
+        capture: super::super::capture_here(),
         chunks: Mutex::new(Chunks { first: 0, slots, ended: false }),
         done: Condvar::new(),
     });

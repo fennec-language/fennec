@@ -502,6 +502,9 @@ impl<'p> Module<'_, 'p> {
             saving_slots: HashMap::new(),
             rolled_back: HashSet::new(),
             lock_record: None,
+            clean_blocks: HashMap::new(),
+            locks_held: None,
+            dropped_saves: None,
             wrote_prop: false,
             traced_calls: Vec::new(),
             leave_after_crash: None,
@@ -632,6 +635,14 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// The slot holding the address of this thread's record of plain saves, once a lock that saves
     /// its changes is taken, for its saves to go in without a call (see `rollback::save_plain`).
     pub(crate) lock_record: Option<String>,
+    /// Which blocks reach a lock's end with nothing that can crash or fail on the way, worked out
+    /// the first time a save asks (see `rollback::clean_blocks`), for each set of locks held.
+    pub(crate) clean_blocks: HashMap<Vec<usize>, Vec<bool>>,
+    /// The locks that save their changes held at each block's start (see `rollback::locks_held`).
+    pub(crate) locks_held: Option<Vec<Vec<usize>>>,
+    /// In a build checking proofs, the slot saying a save was left out since the last lock began,
+    /// for a rollback to stop at: the proof that nothing after it could need it didn't hold.
+    pub(crate) dropped_saves: Option<String>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
     /// The calls a failure can leave by, as the block each is at the end of and where it is from

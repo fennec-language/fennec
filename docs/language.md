@@ -244,7 +244,7 @@ The end of a `with` block is where what it lent finishes: a file closes and a tr
 - `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below, and for files; sockets move to them next.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
-- Several handles in one `with` open left to right and finish innermost first, as one `with` inside another. If one fails to open, the ones already open run their `else:`. Built.
+- Several handles in one `with` open left to right and finish innermost first, as one `with` inside another. If one fails to open, the ones already open run their `except:` cleanup. Built.
 - `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes. Several names split what a source lends as a tuple, `-> with (Reader, Writer)`. Built for sources; connections move to them with sockets.
 - `with` never locks.
 
@@ -255,7 +255,7 @@ def transaction(self) -> with Transaction fails DbError:
     with self._pool.take()? as conn:
         conn.begin()?
         # the caller's block runs here, with the transaction lent to it
-        lend Transaction(_conn=conn) else:
+        lend Transaction(_conn=conn) except:
             # the caller's block failed or crashed
             conn.rollback()
         # the caller's block succeeded: a failure here is the `with` statement's own
@@ -273,7 +273,7 @@ with fs.create("save.dat")? as file:
 `fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Built. Closing a writer flushes it, and a failed flush fails the `with` block. Built. `std.io` has a `Writer` (`write`, `write_text`, `write_line`, `flush`) and a buffered `Reader` (`read_chunk`, `read_line`, `lines`), each failing with `IoError`. Files are both, a connection is both through `conn.writer()` and `conn.reader()`, which keep the network's words in a note, and `MemoryStream` is both in memory. `json`, `csv` and `pack` have `dump(value, ref out)` and `load(ref src)` beside `dumps` and `loads`. Built. `stderr` is a `Writer` as it is, and standard output is one through `stdout.writer()`. Standard input is a `Reader` through `stdin.reader()`. Built.
 
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
-- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles and the note: a cleanup that fails is added to the block's failure as a note, and the rest of the cleanup is skipped. Running it on a crash is built natively: the crash waits while the cleanups run, innermost first, and a cleanup that crashes too is said, with the first crash the one that goes on. A cleanup's `x = f()?` is a note too, and the rest of the cleanup is skipped. A `?` deeper in a line still replaces the block's failure.
+- `lend x except:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. It's the one bare `except`, since cleanup doesn't handle the failure: the failure carries on up by itself, so there's nothing to name and nothing to lose. It's also the one `except` that runs for a bug, a crash, where everywhere else `except` means "failed". If the cleanup in `except:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Built as `lend x else:` today, which `fennec fix` will rewrite. Running the cleanup for a failed block is built, and so are several handles and the note: a cleanup that fails is added to the block's failure as a note, and the rest of the cleanup is skipped. Running it on a crash is built natively: the crash waits while the cleanups run, innermost first, and a cleanup that crashes too is said, with the first crash the one that goes on. A cleanup's `x = f()?` is a note too, and the rest of the cleanup is skipped. A `?` deeper in a line still replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - An interface can have a source, as `def transaction(self) -> with Transaction fails SqlError`. A generic function using it, `def saved[D: Database](db: D)`, runs the source of the type it's called with. Built for functions; a method of a generic type using one isn't yet.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
@@ -306,7 +306,7 @@ def main(speakers: Speakers, input: Input):
 - The arrow is the call you'd write anyway. `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it.
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock)?)?:`.
 - The `?` on its line covers the task: `with launch(...)` fails with the task's errors and `Crashed`, from `std.concurrent`, where the block ends. `inbox_size=` is 16 unless given. Checked, and written in around `std.intrinsics`' `launch` and `launch_end`. Built natively: a task runs on the runtime's threads, with what it captured copied for it.
-- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself opens with a plain function, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `channel[T](size)` is the only way to make one, since `Channel`'s constructor is private. It builds natively, and so do `send`, `receive` and `for job in jobs`, each message copied across as it's sent.
+- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send(message)` fails with `Closed`, and `send_within(message, d)` with `Closed` or `Timeout`. `receive()` gives `T?`: the next message, or `None` once the channel is closed and empty. `receive_within(d)` gives `T? fails Timeout`. Locked on 2026-11-11, not built yet: both take `timeout=` today, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself opens with a plain function, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `channel[T](size)` is the only way to make one, since `Channel`'s constructor is private. It builds natively, and so do `send`, `receive` and `for job in jobs`, each message copied across as it's sent.
 - A channel delivers each message to one receiver by default, as a work queue. `to=.Every` gives every listener every message, as in `with channel[Hit](size=1024, to=.Every) as hits:`, and receiving reads the same either way, `for hit in hits`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. A listener asks with `for hit in hits.listen(when_behind=.DropOldest)`. There's no separate events type. Built natively.
 - Dev builds stop with a report when tasks are waiting only on each other, since a hang through channels alone can't be ruled out at compile time.
 
@@ -403,50 +403,123 @@ remaining = deadline - now
 
 ## Failures
 
+There are three outcomes. A missing value is `T?`, handled with `else`. A failure is `fails E`, passed up with `?` or handled with `except`. A bug stops the program. Chris locked this on 2026-11-11. Not built yet: `except`, and the refusals below that come with it. What's built today handles a failure with `else` and `else as why:`, which `fennec fix` will rewrite.
+
 ```fennec
 def sell(ref self, item: Item) -> Item fails SellError:
     count = self._items.get(item) else fail .NotFound(item)
     if count == 0:
         fail .OutOfStock(item)
     self._items[item] = count - 1
-    item
+    return item
 
-value = load(path)?              # pass the failure up
-count = counts.get(word) else 0  # use a default
-first = items[0]                 # must be there: a bug stops the program
+# pass the failure up
+value = load(path)?
+# a missing value's default
+count = counts.get(word) else 0
+# must be there: if it isn't, that's a bug, and the program stops
+first = items[0]
 
-stream = fs.open(filename) else:
-    stdout.print(f"Couldn't open file: {filename}")
+# one case, on the line
+port = int.parse(text) except InvalidValue(): 8080
+
+# any failure, named: the block leaves or gives a value
+text = fs.read_text(filename) except why:
+    stdout.print(f"Couldn't read {filename}: {why}")
     return
 
-# name the failure, and leave or give a value
-score = load_score(fs, path) else as why:
-    match why:
-        case .Missing(path):
-            stdout.print(f"no save at {path}, starting from 0")
-            0
-        case _:
-            fail why
+# several cases, as arms right under the name
+score = load_score(fs, path) except why:
+    case .Missing(missing_path):
+        stdout.print(f"no save at {missing_path}, starting from 0")
+        0
+    case _:
+        fail why
 ```
 
-- A failing call is handled at the call, in one of three ways: `x = f()?` passes the failure up, `x = f() else value` uses a value instead, and `x = f() else as why:` names it in a block. There's no `Ok`, `Err` or `Result`. Built.
-- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. The reason has to say something: `.expect("")` is a compile error, "say why this can't fail". Built.
-- An `else` block leaves, with `return`, `fail`, `break` or `continue`, each checked against the function's signature, or gives a value of the right type as its last line. Anything else is a compile error that says which it needs, and what its last line is. Built.
-- Different failures are handled with an ordinary `match why:` inside the block, with `_` the only catch-all, and a failure passes on as `fail why`. There's no bare `fail`. Built.
-- `else as` on a plain optional is a compile error, since there's no failure to name. On `T? fails E`, `?` handles the failure and `else` the `None`: `find(n)? else 5`. A plain `else` there would handle both, so it's a compile error, and `else as why:` handles only the failure, its block giving a `T?`. Built.
-- `T fails E` is made only by the runtime, as for the results of parallel work, and read only through `?` and `else`. What can fail is never a plain value: holding it in a name, printing it, comparing it, putting it in a collection or handing it on is a compile error, and `fennec fix` adds `?` where the function can pass the failure up. `.expect("reason")` and `assert ... fails` read it too, and an arrow function may pass it up with `?`, as `failure_of(() => load(path)?)` takes it. Built.
-- A block that stands where a value goes ends with that value, or leaves. That's `x = match ...:`, `x = lock ... as ...:` and `x = f() else as why:`, and not bare blocks or a multi-line `if`, which the one-line `x if c else y` covers. Built, and `x = if ...:` over several lines is a compile error that points at `x = a if c else b` or `match`.
+| Outcome | You write | Python |
+|---|---|---|
+| Missing | `else` | `d.get(key, default)` |
+| Failed, pass it up | `?` | happens unseen |
+| Failed, handle it | `except` | `except` |
+| Fail | `fail` | `raise` |
+| Bug | nothing: it stops | an uncaught exception |
 
+- A failing call is handled at the call. There's no `Ok`, `Err` or `Result`. Built.
+- `except` covers only the call it follows. It comes after a whole right side, `x = f() except ...`, a bare call, `f() except ...`, or `return f() except ...`, and never inside a larger expression.
+- **One case on the line**, `except InvalidValue(): 8080`, gives a value or leaves, as `except .Gone(): return` does. It must cover everything the call fails with, and an or-pattern can, as `except Closed() | Timeout(): 0`. When it leaves a case out, it's a compile error that names it and shows `except why:` with arms.
+- **Any failure**, `x = f() except why:`, names it. The block gives `x` a value, or leaves with `return`, `fail`, `break` or `continue`, each checked against the function's signature. On `_ = f() except why:` the block needn't give a value.
+- **`why` is used on every way out.** It's used when it's read into something that goes somewhere: an argument, an f-string, a field read, or `fail why`. Being the subject of a `match` or an `is` doesn't count, and neither does `_ = why`. A `fail` of a new error inside the block carries `why` along as a note, so it counts. Arms that name every case needn't read it.
+- **The name after `except` is lowercase.** `except Timeout:` reads as Python's "catch `Timeout`", but here it would name any failure, so a capitalized name there is a compile error: "write `except Timeout():` to handle only `Timeout`, or a lowercase name to handle any failure". A second `except` line under the first is refused too, and points at `case` arms.
+- **Several cases** are `case` arms directly under `except why:`, with no `match` inside. The arms cover every case. An arm wider than a named case, as `case _:` is, must use `why` or `fail`. `case other:` is refused there, since `why` already names the failure. An `except` block is all arms or all statements, never both.
+- **On an error with cases, the type-wide pattern is refused under `except`.** `except IoError(): ""` would drop every disk failure by naming the type, so it's a compile error that says to name the cases or write `except why:`. An error with no cases, as `InvalidValue()`, keeps it.
+- **Nothing is dropped without a word.** There's no bare `except:` after a call, no `except _:` and no `as _`. `_ = f()` on a call that can fail is a compile error, and `failure_of` is only for tests. Built for `_ =` and `failure_of`.
+- **`else` means "otherwise"**: `if`/`else`, `a if c else b`, and a missing value's default. After `else` comes a value or a statement that leaves: `else return`, `else fail E`, `else break` or `else continue`. `else` on a call that can fail is a compile error that shows `except`, and `except` on a plain optional is a compile error that shows `else`.
+- **On `T? fails E`**, `?` or `except` takes the failure off, and then `else` takes the `None` off: `user = db.find_user(name)? else return "Nobody here"`. An `else` for the call's own result on the same line as its `except` is refused, with the two-line form shown. An `else` inside the handler's value, as in `except InvalidValue(): 80 if secure else 8080`, is the conditional `else` and is fine.
+
+```fennec
+found = db.find_user(name) except why:
+    log.error(f"couldn't look up {name}: {why}")
+    return "Sorry, try again in a minute."
+user = found else return f"Nobody here is called {name}."
+```
+
+- **A call that can fail gets its own line.** It's the whole right side, a bare call, or `return`'s value, unless it has `?` or `.expect("reason")`, which nest anywhere: `total = parse(a)? + parse(b)?`. Anywhere else, as an argument or an operand, it's a compile error that shows the split onto two lines.
+- **A `with` or `for` line takes only `?`.** To handle a failed open or commit in place, put the `with` in a function of its own and handle that call.
+- `f().expect("reason")` crashes on purpose, with that reason, for a call that can't fail here. It's not a way to handle a failure: it says there isn't one. The reason has to say something: `.expect("")` is a compile error, "say why this can't fail". Built.
+- `try` isn't a keyword. It's reserved only so `try:` can be a compile error that shows `except` after the call.
+- `T fails E` is made only by the runtime, as for the results of parallel work, and read only through `?` and `except`. What can fail is never a plain value: holding it in a name, printing it, comparing it, putting it in a collection or handing it on is a compile error, and `fennec fix` adds `?` where the function can pass the failure up. `.expect("reason")` and `assert ... fails` read it too, and an arrow function may pass it up with `?`, as `failure_of(() => load(path)?)` takes it. Built.
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
-- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. An arrow function is held to it too: `failure_of(() => load(path)?)`, whose `?` passes the failure up as the arrow's own, not the function's around it. An arrow that can fail is refused where a builtin takes a function, as `sorted`'s `key=`, which nothing there expects to fail. Built.
-- `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `else as why:` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
-- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built. On a call that can fail, `_ = f()` is a compile error, so a failure must always be handled, and there's no `ignore`. Built.
+- A failure passes up only with `?`, so every place one can is marked: `return load(path)` in a function that fails is a compile error, and `fennec fix` adds the `?`. An arrow function is held to it too: `failure_of(() => load(path)?)`, whose `?` passes the failure up as the arrow's own, not the function's around it. An arrow that can fail is refused where a builtin takes a function, as `sorted`'s `key=`, which nothing there expects to fail. Built.
+- `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body with `except why:`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
+- Ignoring a returned value is an error, with `_ = call()` to discard one. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
-- An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Built in the checker and natively, where an error's notes are a hidden word of its own, 0 until one is added.
+- When a union's types share a case name, as `IoError | NetError` both have `NotFound` and `Other`, `.NotFound` is a compile error that names both types, and the fix writes `IoError.NotFound()`. Not built yet.
+- An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x except:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Built in the checker and natively, as `lend x else:` today, where an error's notes are a hidden word of its own, 0 until one is added.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
-- A test checks a failure with `assert load(text) fails Oops(line=3)`. The right side is a `case` pattern of what it fails with, `Oops()` matching any `Oops`. A failed one says what really happened: "it gave Config(...)" or "it failed with Oops(line=4)". It's only for `assert`: `fails` in an `if` is a compile error that points at `else as why:`. Built. `failure_of(() => load(text)?)` gives a test the failure itself, or `None`, to look at more closely. It's only for tests: anywhere else, a helper a test calls included, it's a compile error that points at `else as why:`, which names a failure where it happens. Built.
-- A one-line `x if condition else y` and a fallback `else` can't share an expression without parentheses, since `int(text) else 80 if given else 8080` reads two ways: write `int(text) else (80 if given else 8080)`, or give one of them its own line. `fennec fix` writes the parentheses the way it's read. Built.
+- A test checks a failure with `assert load(text) fails Oops(line=3)`. The right side is a `case` pattern of what it fails with, `Oops()` matching any `Oops`. A failed one says what really happened: "it gave Config(...)" or "it failed with Oops(line=4)". It's only for `assert`: `fails` in an `if` is a compile error that points at `except why:`. Built. `failure_of(() => load(text)?)` gives a test the failure itself, or `None`, to look at more closely. It's only for tests: anywhere else, a helper a test calls included, it's a compile error that points at `except why:`, which names a failure where it happens. Built.
+- A one-line `x if condition else y` and a missing value's `else` can't share an expression without parentheses, since `ports.get(name) else 80 if given else 8080` reads two ways: write `ports.get(name) else (80 if given else 8080)`, or give one of them its own line. `fennec fix` writes the parentheses the way it's read. Built.
 - Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` stops the program on a position that isn't there, like `items[at]`. A dict's `pop(key)` stops the program on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. `items.get(at)` gives `T?` for a position that may not be there, counting from the end when it's negative as `items[at]` does. Built.
+- `std`'s errors have cases wherever callers would treat them differently. `IoError` has `NotFound`, `PermissionDenied`, `AlreadyExists` and `Other`. When `std` finds itself comparing an `Other`'s text, it adds a case. Not built yet.
+- Text is read as a number with `int.parse(text)` and `float.parse(text)`, which fail with `InvalidValue`. A conversion `T(x)` never `fails`: `int("4")` and `float(text)` are compile errors whose fix writes `.parse`, as `f32("1.5")` already is. A conversion that doesn't fit is still a bug that stops, as `u8(300)` does. `std.math.NAN` is the one NaN, for where one was made from text. Not built yet.
+
+## Functions
+
+```fennec
+def total(prices: list[float]) -> float:
+    return sum(prices)
+
+def describe(items: list[str]) -> str:
+    # a block after `x =` ends with its value
+    size = match len(items):
+        case 0:
+            "empty"
+        case 1:
+            "one"
+        case _:
+            "many"
+    return f"{size} ({len(items)})"
+```
+
+- Every `def` that gives back a value says `return`. A bare value at the end of a `def` is a compile error, "a `def` gives its value with `return`", and `fennec fix` adds it. `return match x:` gives a `match`'s value, as `return f() except why:` does. Chris locked this on 2026-11-11. Not built yet: a bare last line still returns today.
+- A block after `x =`, as `x = match`, `x = lock` and `x = f() except why:` are, ends with its value. A `return` in it leaves the function, so this compiles and skips the line after it whenever the types match:
+
+```fennec
+def load_settings(fs: Fs, log: Log, clock: Clock) -> Settings:
+    mut settings = load_saved(fs) except why:
+        log.warn(f"settings.json is damaged: {why}")
+        # meant: use the defaults and carry on, but this leaves the function
+        return Settings()
+    settings.opened_at = clock.now()
+    return settings
+```
+
+  Write the block's value as its last line, `Settings()`. `fennec fix` never adds a `return` inside such a block.
+- `len` is a builtin, like `sum` and `sorted`: `len(items)`, as in Python. `len(x)` calls a type's `def len(self) -> int`, as `str(x)` calls `def str` and `x in xs` calls `def in`. `x.len()` gets a `fennec fix` suggestion that writes `len(x)`. Not built yet.
+- `abs` is a builtin the same way: `abs(x)` for the numeric types, and for any type with `def abs(self) -> Self`, which `abs(x)` calls. `x.abs()` gets a `fennec fix` suggestion that writes `abs(x)`. Chris decided this on 2026-11-11. Not built yet.
+- These names are reserved, and naming a local after one is a compile error that suggests another name: the builtins `len`, `abs`, `sum`, `sorted`, `min`, `max`, `range`, `enumerate` and `zip`, and the built-in types `int`, `float`, `bool`, `str`, `bytes`, `list`, `dict`, `set`, `array` and the ten sized numbers. That's the whole list: a builtin added later comes with a `fennec fix` rename. Fields and named arguments may still use them, as they may use keywords. Not built yet.
+- `case` is reserved too, since it starts an arm under `except why:`. Not built yet. std's serializer method that was `case` is `enum_case` already.
+- There's no cap on how many keywords Fennec has.
 
 ## Visibility
 
@@ -456,13 +529,13 @@ export struct Score:
     _best = 0                  # seen only by Score's own methods
 
 export def best(scores: list[Score]) -> int:
-    max(score.points for score in scores)
+    return max(score.points for score in scores)
 ```
 
 - `export` marks what other kits can use, and goes on top-level types and functions only. Without it, a name is private to its kit, and inside a kit every file sees everything. `fennec fix` rewrites the old `pub`. Built.
 - A `_name` field or method of a `struct` or `shared` is hidden from everything but its type's own methods. Tests get no special access. Built.
 - A top-level name never starts with `_`, since it's already private to its kit. That's a compile error, and `fennec fix` renames it everywhere. The standard library follows the same rule. Built.
-- Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
+- Other kits match an exported type's fields by name: `case Score(points=p)`, `case Point(x=a, y=_)`, or `case Score()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
 - Fields with defaults come after the ones without, in a `struct`, an `error` and an enum case, as parameters with defaults do. A field without one after a field with one is a compile error. Built.
 - From outside a type, its automatic constructor sets the public fields, and values given by position go to those. `_` fields take their defaults. A `_` field with no default needs a named constructor, a method without `self` that builds one, and a type nobody can build is a compile error. Built.
 - So a kit can add a field with a default to a type it exports, and no other kit's code that builds or matches it breaks.
@@ -480,6 +553,7 @@ back = json.loads[World](text)?
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
 - A JSON `null` is a value, and a field left out is missing. A default fills only a field left out. So a field that isn't optional fails on `null`, as in "`x` should be an int, but it's null", default or not. An optional field holds `None` for `null` even when its default is something else, so `dumps` then `loads` gives back what was saved. A field left out takes its default, or `None` if it's optional, and otherwise fails as "`x` is missing". SQL's `NULL` reads the same way. Built.
+- A `T??`, an optional holding an optional, can't be saved as JSON, since `null` can't tell `None` from an optional holding `None`: that's a compile error. Not built yet.
 - JSON has no NaN or infinity, so `json.dumps` of a value holding one stops the program, saying where it is, as in "`[1].values[1]` is nan, which JSON can't write". It's a bug in the program, as a NaN reaching `int()` is, so `dumps` itself can't fail. Built.
 - `@skip` and `@serialize(name="uid")` on a field say how it's saved. Built. A kit may define annotations of its own for fields, which generic code reads through `fields(T)`. A generic function's `for f in fields(T):` is built, checked once, with each field's name and value, and annotations a kit defines and reading them aren't built yet. A function takes only `@hot`, so routes are registered in plain code, as in `router.get("/todos/{id}", show_todo)`.
 - A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through `expose_secret()`, whose name says so. Printing one, an f-string or `str()` of one, and saving one in any format are compile errors, and so is doing any of those to something that holds one. Printed through a generic function's `T`, in a failed `assert` or in the failure that ends `main`, it shows `Secret(hidden)`. `==` on two secrets compares them in constant time, so its timing never says where they differ, and a secret of anything but text or bytes can't be compared. Built. `Secret.of(text)` makes one, and `Secret[bytes]` holds a key. A server's `Certificate`, from `std.net`, holds its private key as one, beside its chain of certificates.
@@ -515,13 +589,13 @@ def order_column(sort_by: SortBy) -> LiteralStr:
     # user input picks between literals, so the result is still a LiteralStr
     match sort_by:
         case .Name:
-            "name"
+            return "name"
         case .Score:
-            "score"
+            return "score"
 
 def order_from(request: Request) -> LiteralStr:
     # a compile error: text read while the program runs is a str, never a LiteralStr
-    request.query["sort"]
+    return request.query["sort"]
 ```
 
 ## Calling C
@@ -548,6 +622,7 @@ A chat server, not built yet: rooms that every connection shares, a database tra
 ```fennec
 from std import json
 from std.db import Database, DbError
+from std.log import Log
 
 struct Room:
     messages = list[str]()
@@ -591,7 +666,8 @@ def autosave(rooms: shared dict[str, Room], fs: Fs, clock: Clock) fails IoError:
             current
         fs.write_text("rooms.json", json.dumps(snapshot))?
 
-def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy):
+def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy, stdout: Stdout):
+    log = Log(out=stdout)
     shared rooms = dict[str, Room]()
     with postgres.connect(net, entropy, "postgres://localhost/chat")? as db:
         with launch(() => autosave(rooms, fs, clock)?, stop_after=5s)?:
@@ -599,13 +675,13 @@ def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy):
                 # each connection gets its own task, and closes when its round ends
                 for conn in parallel(server):
                     # one client's failure ends only its own round
-                    serve(conn, rooms, db) else:
-                        continue
+                    serve(conn, rooms, db) except why:
+                        log.warn(f"dropped a client: {why}")
 ```
 
 - `rooms` is made in `main` and passed down, so every function that touches it says so.
 - Nothing waits inside a lock: `recent` copies the messages out, and the writes to the client happen after.
-- A failure in one connection is handled in its round, so it ends only that round. Without the `else:`, it would pass up and end the server. When `main`'s block ends, the autosave task is stopped, the server and every connection close, and the pool closes its connections.
+- A failure in one connection is handled in its round, so it ends only that round. Without the `except why:`, it would pass up and end the server. When `main`'s block ends, the autosave task is stopped, the server and every connection close, and the pool closes its connections.
 - There's no lifetime, move, destructor or `async` anywhere in it.
 
 ## Building
@@ -615,7 +691,7 @@ def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy):
 - The launcher runs the toolchain a kit asks for, `fennec = "0.4.2"` in `kit.toml`, pinned by its signed manifest's hash in `kit.lock`. It fetches one only when it's missing, and never with `--offline`, and only `fennec update` moves a pin. Built, as `fennec-launcher` for now. No release keys are made yet, so nothing it fetches verifies today.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest. CI builds each platform twice and compares them. Built.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
-- `embed_file("path")` gives a file's `bytes`, and `embed_folder("path")` a read-only map from relative path, always with `/`, to `bytes`, in sorted path order. Both are views into the program's read-only data, with no copy and nothing loaded at startup, and need no capability. A missing path, or anything above the folder holding the nearest `kit.toml` (a lone file's own folder when there's none), symlinks included, is a compile error. Hidden files are left out, and nothing is compressed. `embed_folder` gives a `std` type with `get(path) -> bytes?`, `len()`, and `keys()`, `values()` and `items()` in sorted order. Built natively. Until native code holds them in the program's read-only data, each is made once, the first time it's reached. A lone file's `embed_file` can still follow a symlink out of its folder today.
+- `embed_file("path")` gives a file's `bytes`, and `embed_folder("path")` a read-only map from relative path, always with `/`, to `bytes`, in sorted path order. Both are views into the program's read-only data, with no copy and nothing loaded at startup, and need no capability. A missing path, or anything above the folder holding the nearest `kit.toml` (a lone file's own folder when there's none), symlinks included, is a compile error. Hidden files are left out, and nothing is compressed. `embed_folder` gives a `std` type with `get(path) -> bytes?`, `len`, and `keys()`, `values()` and `items()` in sorted order. Built natively. Until native code holds them in the program's read-only data, each is made once, the first time it's reached. A lone file's `embed_file` can still follow a symlink out of its folder today.
 
 ## Checks
 

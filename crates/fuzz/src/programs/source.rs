@@ -482,7 +482,7 @@ def guarded_run(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdou
             fail Refused(code=tally.count)
         if crash:
             _ = [1, 2][tally.count]
-        return tally.count
+        tally.count
 
 def guarded_shown(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdout) -> str:
     value = guarded_run(code, refuse=refuse, crash=crash, noted=noted, stdout=stdout) else as why:

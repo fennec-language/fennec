@@ -142,6 +142,20 @@ test "inline tables in inline tables count toward how deep TOML may nest"():
             in why_not("a = " + "{a = [" * deep + "1" + "]}" * deep + "\n")
         )
 
+test "TOML may nest 500 deep and no deeper, however it's written"():
+    fits = "`Sample` has no field \"a\", but the text has one"
+    # A header names as many tables as its key has parts.
+    assert why_not("[" + "a." * 499 + "a]\n") == fits
+    assert "nest more than 500 deep" in why_not("[" + "a." * 500 + "a]\n")
+    # A dotted key's parts before its last are tables the value is in.
+    assert why_not("a." * 500 + "a = 1\n") == fits
+    assert "nest more than 500 deep" in why_not("a." * 501 + "a = 1\n")
+    # Arrays and inline tables count, empty ones too.
+    assert why_not("a = " + "[" * 500 + "]" * 500 + "\n") == fits
+    assert "nest more than 500 deep" in why_not("a = " + "[" * 501 + "]" * 501 + "\n")
+    assert why_not("a = " + "{a = " * 499 + "{}" + "}" * 499 + "\n") == fits
+    assert "nest more than 500 deep" in why_not("a = " + "{a = " * 500 + "{}" + "}" * 500 + "\n")
+
 test "a JSON read that fails leaves nothing behind for the next read"():
     assert (
         failure_of(() => json.loads[Sample]("not json", names=.CamelCase, extra=.Ignore)?)

@@ -164,7 +164,7 @@ struct TomlParser:
         self.skip_spaces()
         keys = self.key_path()?
         # A header's tables nest as deep as its key has parts, so they count as nesting does.
-        if keys.len() - 1 > TOML_MOST_DEEP: fail self.too_deep_at(at)
+        if keys.len() > TOML_MOST_DEEP: fail self.too_deep_at(at)
         self.skip_spaces()
         closing = "]]" if array else "]"
         if not self.starts(closing):
@@ -201,9 +201,11 @@ struct TomlParser:
         if self.at == start: fail self.bad(f"expected a key, but found {self.found()}")
         text_part(self.source, start, self.at)
 
+    ## The value here, inside `depth` arrays and tables, so an array or inline table starting here
+    ## is `depth + 1` deep.
     def value(ref self, depth: int) -> TomlValue fails ParseError:
-        if depth > TOML_MOST_DEEP: fail self.too_deep()
         b = self.byte()
+        if (b == 91 or b == 123) and depth >= TOML_MOST_DEEP: fail self.too_deep()
         if self.starts("\"\"\""): return .Text(text=self.multi_line(34)?)
         if self.starts("'''"): return .Text(text=self.multi_line(39)?)
         if b == 34: return .Text(text=self.basic_string()?)

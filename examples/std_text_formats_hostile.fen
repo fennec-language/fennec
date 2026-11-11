@@ -1,0 +1,185 @@
+# JSON and TOML read text from outside, so text that lies fails with a `ParseError` saying why,
+# and never wraps a number, makes room it wasn't given, or lets one copy of a key win over
+# another: a key that comes twice fails, naming it, in either format, as a dict read through
+# `std.pack` does too, since two readers that disagree on which copy wins let a value past a
+# check.
+from std import json, pack, toml
+from std.io import MemoryStream
+
+struct Point:
+    x: int
+    y: int
+
+struct Count:
+    value: int
+
+struct Ratio:
+    value: float
+
+struct Word:
+    word: str
+
+## Why `run` fails, or "loaded" if it doesn't.
+def why_not[T](run: () -> T fails ParseError) -> str:
+    _ = run() except why:
+        return why.message
+    return "loaded"
+
+## Why reading `data` as JSON fails, through a stream, or "loaded" if it doesn't.
+def streamed(data: bytes) -> str:
+    mut src = MemoryStream.of(data)
+    _ = json.load[Word](ref src) except why:
+        case ParseError(message=message):
+            return message
+        case _:
+            return f"it couldn't be read: {why}"
+    return "loaded"
+
+test "a key that comes twice fails, naming it, in JSON, TOML and pack alike"():
+    assert (
+        why_not(() => json.loads[dict[str, int]]("{\"a\": 1, \"a\": 2}")?)
+        == "the text has `a` twice"
+    )
+    assert (
+        why_not(() => json.loads[dict[str, dict[str, int]]]("{\"o\": {\"k\": 1, \"k\": 1}}")?)
+        == "`[\"o\"]` has `k` twice"
+    )
+    assert (
+        why_not(() => json.loads[dict[int, str]]("{\"1\": \"a\", \"1\": \"b\"}")?)
+        == "the text has `1` twice"
+    )
+    assert (
+        why_not(() => json.loads[Point]("{\"x\": 1, \"x\": 2, \"y\": 3}")?)
+        == "the text has `x` twice"
+    )
+    # Keys that differ only by case, or by an escape for the same character, are told apart
+    # or not as the text they stand for is.
+    assert json.loads[dict[str, int]]("{\"a\": 1, \"A\": 2}")? == {"a": 1, "A": 2}
+    assert (
+        why_not(() => json.loads[dict[str, int]]("{\"a\": 1, \"\\u0061\": 2}")?)
+        == "the text has `a` twice"
+    )
+    assert (
+        why_not(() => toml.loads[Word]("word = \"a\"\nword = \"b\"")?)
+        == "`word` is defined twice, at line 2, column 1"
+    )
+    assert (
+        why_not(() => toml.loads[dict[str, int]]("a = 1\na = 2")?)
+        == "`a` is defined twice, at line 2, column 1"
+    )
+    assert (
+        why_not(() => toml.loads[dict[str, dict[str, int]]]("t.a = 1\nt.a = 2")?)
+        == "`t.a` is defined twice, at line 2, column 1"
+    )
+    assert (
+        why_not(() => toml.loads[dict[str, dict[str, int]]]("[t]\na = 1\n[t]\nb = 2")?)
+        == "the table `[t]` is defined twice, at line 3, column 1"
+    )
+    assert (
+        why_not(() => toml.loads[dict[str, dict[str, int]]]("t = {a = 1, a = 2}")?)
+        == "`a` is defined twice, at line 1, column 13"
+    )
+    # Bytes `std.pack` didn't write can hold a key twice too.
+    saved = pack.dumps({"a": 1, "b": 2})
+    twice = saved[0:saved.len() - 2] + "a".encode() + saved[saved.len() - 1:]
+    assert why_not(() => pack.loads[dict[str, int]](twice)?) == "the data has `a` twice, at byte 25"
+
+test "a number past an int fails as too big, at either end, and never wraps"():
+    assert json.loads[int]("9223372036854775807")? == 9223372036854775807
+    assert json.loads[int]("-9223372036854775808")? == -9223372036854775807 - 1
+    assert (
+        why_not(() => json.loads[int]("9223372036854775808")?)
+        == "`9223372036854775808` is too big for an int, at line 1, column 1"
+    )
+    assert (
+        why_not(() => json.loads[int]("-9223372036854775809")?)
+        == "`-9223372036854775809` is too big for an int, at line 1, column 1"
+    )
+    huge = "1" + "0" * 5000
+    assert "is too big for an int" in why_not(() => json.loads[int](huge)?)
+    assert why_not(() => json.loads[int]("1e5")?) == "the text should be an int, but it's a float"
+    assert (
+        why_not(() => toml.loads[Count]("value = 9223372036854775808")?)
+        == "`9223372036854775808` is too big for an int, at line 1, column 9"
+    )
+    assert (
+        why_not(() => toml.loads[Count]("value = -9223372036854775809")?)
+        == "`-9223372036854775809` is too big for an int, at line 1, column 9"
+    )
+    assert (
+        why_not(() => toml.loads[Count]("value = 1e5")?)
+        == "`value` should be an int, but it's a float"
+    )
+
+test "a float's exponent can be as long as it likes, and too big fails while too small is 0"():
+    assert (
+        why_not(() => json.loads[float]("1e99999999999999999999")?)
+        == "the text is too big for a float"
+    )
+    assert json.loads[float]("1e-99999999999999999999")? == 0.0
+    assert json.loads[float]("0." + "1" * 5000)? == json.loads[float]("0.1111111111111111")?
+    assert (
+        why_not(() => toml.loads[Ratio]("value = 1e99999999999")?)
+        == "`1e99999999999` is too big for a float, at line 1, column 9"
+    )
+    assert toml.loads[Ratio]("value = 1e-99999999999")? == Ratio(value=0.0)
+
+test "a long string reads whole, however many escapes it has"():
+    long = "a" * 2_000_000
+    assert json.loads[str](json.dumps(long))? == long
+    assert toml.loads[Word](toml.dumps(Word(word=long)))? == Word(word=long)
+    escaped = "\\n" * 100_000
+    assert json.loads[str]("\"" + escaped + "\"")? == "\n" * 100_000
+
+test "an escape that isn't a character fails, saying where"():
+    assert (
+        why_not(() => json.loads[str]("\"\\ud800\"")?)
+        == "this `\\u` escape is half of a pair, so another `\\u` must follow it, at line 1, column 4"
+    )
+    assert (
+        why_not(() => json.loads[str]("\"\\udc00\"")?)
+        == "this `\\u` escape isn't a character, at line 1, column 8"
+    )
+    assert (
+        why_not(() => json.loads[str]("\"\\ud800\\u0041\"")?)
+        == "these `\\u` escapes aren't a valid pair, at line 1, column 4"
+    )
+    assert (
+        why_not(() => json.loads[str]("\"\\u12\"")?)
+        == "`\\u` needs 4 hex digits, at line 1, column 4"
+    )
+    assert (
+        why_not(() => json.loads[str]("\"\\uzzzz\"")?)
+        == "`\\u` needs 4 hex digits, at line 1, column 4"
+    )
+    assert (
+        why_not(() => json.loads[str]("\"\\q\"")?)
+        == "`\\q` isn't a JSON escape, at line 1, column 3"
+    )
+    assert json.loads[str]("\"\\ud83d\\ude00\"")? == "😀"
+    assert json.loads[str]("\"\\u0000\"")? == "\x00"
+    assert (
+        why_not(() => toml.loads[Word]("word = \"\\ud800\"")?)
+        == "`D800` isn't a character, at line 1, column 11"
+    )
+    assert (
+        why_not(() => toml.loads[Word]("word = \"\\U00110000\"")?)
+        == "`110000` isn't a character, at line 1, column 11"
+    )
+    assert (
+        why_not(() => toml.loads[Word]("word = \"\\q\"")?)
+        == "`\\q` isn't a TOML escape, at line 1, column 9"
+    )
+    assert toml.loads[Word]("word = \"\\U0001F600\"")? == Word(word="😀")
+
+test "bytes that aren't UTF-8, an overlong form among them, don't read as JSON"():
+    # `/` written in two bytes, as UTF-8 forbids.
+    assert (
+        streamed(bytes([123, 34, 119, 111, 114, 100, 34, 58, 34, 192, 175, 34, 125]))
+        == "the JSON isn't UTF-8 text"
+    )
+    assert streamed(bytes([34, 237, 160, 128, 34])) == "the JSON isn't UTF-8 text"
+    assert streamed("{\"word\": \"ok\"}".encode()) == "loaded"
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps({"a": 1}))

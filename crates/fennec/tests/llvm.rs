@@ -5168,6 +5168,24 @@ def main(stdout: Stdout):
 /// sits: inside another `?`'s call, in a `return`, an assignment or a line of its own, a field read
 /// off it, an index, an f-string, a list item, a slice's bounds, a match's subject, a conditional's
 /// test, and `f()? else fail ...` on a `T? fails E` call. With nothing failing, each gives what it
+/// Arguments and operands run left to right whatever `?`s are among them: what's written to a
+/// `?`'s left runs before it and what's to its right after it, with the `?` failing and passing,
+/// nested and outermost, in a call, an operator, an f-string and a list, inside a `with` block and
+/// outside one. A failure in the block runs its cleanup after what ran to its left, and nothing to
+/// its right runs. A name read to a `?`'s left is read before the `?`'s call changes it through
+/// `ref`.
+#[test]
+fn arguments_run_left_to_right_around_a_question_mark() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "question_order",
+        include_str!("fixtures/question_order.fen"),
+        include_str!("fixtures/question_order.out"),
+    )
+}
+
 /// would without the block.
 #[test]
 fn a_question_mark_inside_an_expression_in_a_with_block_runs_its_cleanup() -> std::io::Result<()> {

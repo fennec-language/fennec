@@ -1,0 +1,7 @@
+error: `Point` has no field `z`: it has `x`, `y`
+ --> examples/errors/pattern_unknown_field.fen:7:9
+  |
+7 |         case Point(x=0, z=0):
+  |         ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: match one of its fields, as `x=_`

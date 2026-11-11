@@ -1,0 +1,7 @@
+error: this pattern is a tuple, but the value is an int
+ --> examples/errors/tuple_pattern_on_int.fen:3:9
+  |
+3 |         case (a, b):
+  |         ^^^^^^^^^^^^
+  |
+  = help: match it with one name, as `case value:`, or a value, as `case 3:`

@@ -1,0 +1,7 @@
+error: a guard can't change anything, so it can't pass `ref`
+ --> examples/errors/guard_passes_ref.fen:7:29
+  |
+7 |         case 0 if grown(ref items):
+  |                             ^^^^^
+  |
+  = help: take `ref` off the guard's call, and make the change in the case's body

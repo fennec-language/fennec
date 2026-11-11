@@ -1,0 +1,9 @@
+def named(count: int) -> str:
+    match count:
+        case (a, b):
+            "pair"
+        case _:
+            "one"
+
+def main(stdout: Stdout):
+    stdout.print(named(1))

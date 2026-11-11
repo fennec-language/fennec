@@ -130,6 +130,9 @@ pub(crate) struct Checker {
     pub(crate) takes_locks: BTreeMap<String, String>,
     /// The calls made inside lock bodies, judged once every function's waits are known.
     pub(crate) lock_calls: Vec<crate::waits::LockCall>,
+    /// What each function waits on or locks, itself or however many calls down, once every
+    /// function is checked: what a `lock` that calls it is judged by.
+    pub(crate) lock_verdicts: BTreeMap<String, String>,
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
@@ -233,6 +236,7 @@ impl Checker {
             again: false,
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
+            lock_verdicts: BTreeMap::new(),
             values: crate::waits::Values::default(),
             diagnostics,
         }
@@ -350,7 +354,15 @@ impl Checker {
                 State::Checking => None,
             })
             .collect();
-        let signatures = Signatures { functions, structs, enums, errors, locals, ..Signatures::default() };
+        let signatures = Signatures {
+            functions,
+            structs,
+            enums,
+            errors,
+            locals,
+            lock_verdicts: self.lock_verdicts,
+            ..Signatures::default()
+        };
         let types = Types { functions: self.typed };
         Checked {
             signatures,

@@ -197,8 +197,7 @@ impl Kits {
                 "kit.lock pins every dependency already\n".to_owned()
             });
         }
-        std::fs::write(&lock_path, with_pins(&lock_text, &after))
-            .map_err(|err| format!("couldn't write {}: {err}", lock_path.display()))?;
+        fennec_dist::write_kit_file(&lock_path, &with_pins(&lock_text, &after))?;
         Ok(said)
     }
 

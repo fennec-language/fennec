@@ -137,6 +137,8 @@ impl Cache {
         if !path.is_file() {
             return Ok(false);
         }
+        // An entry kept some other way, as by `write`, may not be runnable yet.
+        read_only_program(&path)?;
         let _ = std::fs::remove_file(to);
         if std::fs::hard_link(&path, to).is_err() {
             std::fs::copy(&path, to)?;
@@ -353,6 +355,13 @@ mod tests {
         assert!(cache.link_out("programs", "root", &next).unwrap());
         assert_eq!(inode(&launched), inode(&next));
         assert!(!cache.link_out("programs", "gone", &dir.join("none")).unwrap());
+        // One written as any other entry is put out runnable too.
+        cache.write("programs", "written", b"another program").unwrap();
+        let written = dir.join("written");
+        assert!(cache.link_out("programs", "written", &written).unwrap());
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&written).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o555);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

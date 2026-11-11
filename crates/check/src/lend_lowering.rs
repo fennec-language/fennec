@@ -18,8 +18,6 @@ use fennec_syntax::{
     Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
 };
 
-use crate::HashSet;
-
 /// A source a `with` uses: its definition, and whether it's a method, called on a value.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Source {
@@ -1428,7 +1426,7 @@ fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
     if otherwise.is_empty() {
         return None;
     }
-    let body = quietly(otherwise);
+    let body = quietly(otherwise)?;
     let held = format!("{ON_CRASH}{}", here(at).start);
     let def = FnDef {
         name: held.clone(),
@@ -1449,26 +1447,38 @@ fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
     Some((stmt(StmtKind::Def(def), at), call("crash_cleanup"), call("crash_cleanup_done")))
 }
 
-/// A cleanup as a crash runs it, giving back how it failed, as text, for the runtime to say with
+/// A cleanup as a crash runs it, giving back how it failed, as text, for the runtime to note on
 /// the crash, or `""`. There's no failure to pass up, so a `?` anywhere in it that fails ends it,
 /// as `else as why: return f"{why}"`, and so does a `fail`: the rest of it is skipped, as when it
-/// runs for a failure, and the crash goes on. A `?` or `fail` in a function or lambda written in it
-/// passes up from that, as it would anywhere.
-fn quietly(cleanup: &[Stmt]) -> Vec<Stmt> {
+/// runs for a failure, and the crash goes on. A `?` or `fail` in a function or lambda written in
+/// it passes up from that, as it would anywhere. `None` for a `?` in a comprehension, which can't
+/// leave from where it is.
+fn quietly(cleanup: &[Stmt]) -> Option<Vec<Stmt>> {
     let mut quiet = cleanup.to_vec();
-    let theirs = tries_in_functions(&quiet);
+    let mut theirs = Shielded::default();
+    shield(&mut quiet, &mut theirs);
+    let mut stuck = false;
     fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
-        if let ExprKind::Try { value, .. } = &expr.kind
-            && !theirs.contains(&(expr.span.start, expr.span.end))
-        {
-            let value = value.clone();
-            expr.kind = ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span)) };
+        if matches!(expr.kind, ExprKind::Comprehension { .. }) {
+            fennec_syntax::visit::in_expr(expr, &mut |inner| {
+                stuck |= matches!(inner.kind, ExprKind::Try { .. });
+            });
+        }
+    });
+    if stuck {
+        return None;
+    }
+    fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
+        if let ExprKind::Try { value, context } = &expr.kind {
+            let (value, context) = (value.clone(), context.as_deref().cloned());
+            expr.kind = ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)) };
         }
     });
     ends_saying(&mut quiet);
     let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(Span::default()) };
     quiet.push(stmt(StmtKind::Return(Some(nothing)), Span::default()));
-    quiet
+    unshield(&mut quiet, theirs);
+    Some(quiet)
 }
 
 /// The text a crash's cleanup gives back for `failure`: how it's printed.
@@ -1478,66 +1488,117 @@ fn said(failure: Expr, at: Span) -> Expr {
 }
 
 /// `else as why: return f"{why}"`, as the parser writes it: one case, over a value nothing wrote,
-/// that leaves.
-fn ends_cleanup(at: Span) -> Expr {
+/// that leaves. For a `? from Context(...)`, what's given back is the context, which is what
+/// would pass up.
+fn ends_cleanup(at: Span, context: Option<Expr>) -> Expr {
     let subject = Box::new(Expr { kind: ExprKind::Bool(false), span: here(at) });
     let why = format!("crash__why{}", here(at).start);
-    let leave = stmt(StmtKind::Return(Some(said(name(&why, at), at))), at);
+    let failure = context.unwrap_or_else(|| name(&why, at));
+    let leave = stmt(StmtKind::Return(Some(said(failure, at))), at);
     let arm = MatchArm { pattern: Pattern::Bind(why), guard: None, body: vec![leave], span: here(at) };
     Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span: here(at) }
 }
 
-/// Where each `?` is in the functions and lambdas written in `body`, which pass up from those.
-fn tries_in_functions(body: &[Stmt]) -> HashSet<(u32, u32)> {
-    let mut found = HashSet::default();
-    let mut add = |inner: &mut Expr| {
-        if matches!(inner.kind, ExprKind::Try { .. }) {
-            found.insert((inner.span.start, inner.span.end));
+/// The bodies of the functions and lambdas written in a cleanup, taken out while it's rewritten,
+/// each by where it is, so their `?`, `fail` and `return` stay theirs.
+#[derive(Default)]
+struct Shielded {
+    defs: Vec<(Span, Vec<Stmt>)>,
+    lambdas: Vec<(Span, Expr)>,
+}
+
+/// Takes out the bodies of the functions and lambdas written in `body`, at any depth.
+fn shield(body: &mut [Stmt], kept: &mut Shielded) {
+    defs_out(body, kept);
+    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
+        ExprKind::Lambda { body: inner, .. } => {
+            let empty = Expr { kind: ExprKind::None, span: inner.span };
+            kept.lambdas.push((expr.span, std::mem::replace(&mut **inner, empty)));
         }
-    };
-    let mut copy = body.to_vec();
-    let mut nested: Vec<Vec<Stmt>> = Vec::new();
-    let mut lambdas: Vec<Expr> = Vec::new();
-    fennec_syntax::visit::in_stmts(&mut copy, &mut |expr| {
-        if let ExprKind::Lambda { body: inner, .. } = &expr.kind {
-            lambdas.push((**inner).clone());
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                defs_out(&mut arm.body, kept);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// Puts back what [`shield`] took out.
+fn unshield(body: &mut [Stmt], mut kept: Shielded) {
+    defs_back(body, &mut kept);
+    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
+        ExprKind::Lambda { body: inner, .. } => {
+            if let Some(at) = kept.lambdas.iter().position(|(span, _)| *span == expr.span) {
+                let (_, original) = kept.lambdas.swap_remove(at);
+                **inner = original;
+            }
+        }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                defs_back(&mut arm.body, &mut kept);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// The statement blocks directly inside a statement, to change.
+fn blocks_in(each: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
+    match &mut each.kind {
+        StmtKind::If { branches, otherwise } => {
+            branches.iter_mut().map(|(_, body)| body).chain(otherwise.as_mut()).collect()
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => vec![body],
+        StmtKind::Lend { otherwise, .. } => vec![otherwise],
+        StmtKind::OnFailure { cleanup, body, .. } => vec![cleanup, body],
+        _ => Vec::new(),
+    }
+}
+
+fn defs_out(body: &mut [Stmt], kept: &mut Shielded) {
+    for each in body {
+        if let StmtKind::Def(def) = &mut each.kind {
+            kept.defs.push((def.span, std::mem::take(&mut def.body)));
+            continue;
+        }
+        for block in blocks_in(each) {
+            defs_out(block, kept);
+        }
+    }
+}
+
+fn defs_back(body: &mut [Stmt], kept: &mut Shielded) {
+    for each in body {
+        if let StmtKind::Def(def) = &mut each.kind {
+            if let Some(at) = kept.defs.iter().position(|(span, _)| *span == def.span) {
+                let (_, original) = kept.defs.swap_remove(at);
+                def.body = original;
+            }
+            continue;
+        }
+        for block in blocks_in(each) {
+            defs_back(block, kept);
+        }
+    }
+}
+
+/// Each `fail` in a cleanup made a `return` of how it's printed, and each `return` one of `""`,
+/// in every block and every case of a `match`, `else as` blocks included: either ends the cleanup
+/// a crash runs, which has no failure to pass up. The functions and lambdas in it are taken out
+/// first (see [`shield`]).
+fn ends_saying(body: &mut [Stmt]) {
+    say_at_ends(body);
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &mut expr.kind {
+            for arm in arms {
+                say_at_ends(&mut arm.body);
+            }
         }
     });
-    defs_in(&copy, &mut nested);
-    for mut body in nested {
-        fennec_syntax::visit::in_stmts(&mut body, &mut add);
-    }
-    for mut lambda in lambdas {
-        fennec_syntax::visit::in_expr(&mut lambda, &mut add);
-    }
-    found
 }
 
-/// The bodies of the functions defined in `body`, at any depth of its blocks.
-fn defs_in(body: &[Stmt], found: &mut Vec<Vec<Stmt>>) {
-    for each in body {
-        match &each.kind {
-            StmtKind::Def(def) => found.push(def.body.clone()),
-            StmtKind::If { branches, otherwise } => {
-                for (_, block) in branches {
-                    defs_in(block, found);
-                }
-                if let Some(block) = otherwise {
-                    defs_in(block, found);
-                }
-            }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-                defs_in(body, found);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Each `fail` in a cleanup, but not in a function of its own, made a `return` of how it's
-/// printed, and each `return` one of `""`: either ends the cleanup a crash runs, which has no
-/// failure to pass up.
-fn ends_saying(body: &mut [Stmt]) {
+fn say_at_ends(body: &mut [Stmt]) {
     for each in body {
         let at = each.span;
         match &mut each.kind {
@@ -1549,26 +1610,12 @@ fn ends_saying(body: &mut [Stmt]) {
                 let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(at) };
                 each.kind = StmtKind::Return(Some(nothing));
             }
-            StmtKind::If { branches, otherwise } => {
-                for (_, block) in branches {
-                    ends_saying(block);
-                }
-                if let Some(block) = otherwise {
-                    ends_saying(block);
+            StmtKind::Def(_) => {}
+            _ => {
+                for block in blocks_in(each) {
+                    say_at_ends(block);
                 }
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-                ends_saying(body);
-            }
-            StmtKind::Lend { otherwise, .. } => ends_saying(otherwise),
-            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
-                if let ExprKind::Match { arms, .. } = &mut value.kind {
-                    for arm in arms {
-                        ends_saying(&mut arm.body);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 }

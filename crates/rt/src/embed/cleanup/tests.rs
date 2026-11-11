@@ -184,22 +184,25 @@ fn a_cleanup_waiting_in_its_grace_leaves_its_worker_to_other_tasks() {
     finish();
 }
 
-/// What a crash's cleanup gives back, how it failed or nothing, is let go of once it's said, and
-/// the crash held aside comes back as it was either way.
+/// What a crash's cleanup gives back, how it failed or nothing, is let go of, and a failure is a
+/// note under the crash's message, which comes back otherwise as it was.
 #[test]
-fn a_cleanup_s_note_is_let_go_of_and_the_crash_goes_on() {
+fn a_cleanup_s_failure_is_noted_on_the_crash_and_let_go_of() {
     begin();
-    crash("the first crash");
-    for said in ["Refused(code=4)", ""] {
+    for (said, message) in [
+        ("Refused(code=4)", "the first crash\nnote: the cleanup failed: Refused(code=4)"),
+        ("", "the first crash"),
+    ] {
+        crash("the first crash");
         let number = crash_hold();
         let text = with(|state| crate::embed::heap::text_address(state, said));
         let at = u64::try_from(text).unwrap();
-        assert!(with(|state| state.heap.block(at).is_some()));
-        crash_note(text);
+        crash_note(number, text);
         assert!(with(|state| state.heap.block(at).is_none()), "{said:?} let go of");
         crash_resume(number);
         assert!(failed());
-        assert_eq!(failure().as_deref(), Some("the first crash"));
+        assert_eq!(failure().as_deref(), Some(message));
+        let _ = crate::embed::take_failure();
     }
     finish();
 }

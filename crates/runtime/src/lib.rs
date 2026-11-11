@@ -167,7 +167,7 @@ export! {
     fennec_channel_listen(a0: i64, a1: i64) -> i64 => channels::channel_listen(a0, a1);
     fennec_crash_hold() -> i64 => cleanup::crash_hold();
     fennec_crash_resume(a0: i64) => cleanup::crash_resume(a0);
-    fennec_crash_note(a0: i64) => cleanup::crash_note(a0);
+    fennec_crash_note(a0: i64, a1: i64) => cleanup::crash_note(a0, a1);
     fennec_channel_send(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => channels::channel_send(a0, a1, a2, a3);
     fennec_channel_receive(a0: i64, a1: i64, a2: &mut i64) -> i64 => channels::channel_receive(a0, a1, a2);
     fennec_channel_close(a0: i64) => channels::channel_close(a0);

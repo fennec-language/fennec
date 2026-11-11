@@ -220,7 +220,7 @@ impl Emit<'_, '_, '_> {
     /// Runs `cleanup`, a closure that takes nothing, on the way out after a crash, when the block
     /// it's for hasn't ended. The crash is held aside meanwhile, so the cleanup's own calls run as
     /// normal, and goes on after; a failure or crash of the cleanup's own doesn't replace it. The
-    /// cleanup gives back how it failed, as text, or nothing, which the runtime says with the crash.
+    /// cleanup gives back how it failed, as text, or nothing, which the runtime notes on the crash.
     fn run_crash_cleanup(&mut self, cleanup: &Operand) -> Result<(), String> {
         let Some(flag) = self.held_flag(cleanup) else { return Ok(()) };
         let (closure, kind) = self.operand(cleanup)?;
@@ -232,7 +232,7 @@ impl Emit<'_, '_, '_> {
         }
         self.declare("declare i64 @fennec_crash_hold() nounwind");
         self.declare("declare void @fennec_crash_resume(i64) nounwind");
-        self.declare("declare void @fennec_crash_note(ptr) nounwind");
+        self.declare("declare void @fennec_crash_note(i64, ptr) nounwind");
         let (held, run, next) = (self.temp(), self.label("crash_cleanup"), self.label("crash_cleaned"));
         self.line(&format!("{held} = load i1, ptr {flag}"));
         self.line(&format!("br i1 {held}, label %{run}, label %{next}"));
@@ -256,7 +256,7 @@ impl Emit<'_, '_, '_> {
         } else {
             said
         };
-        self.line(&format!("call void @fennec_crash_note(ptr {block})"));
+        self.line(&format!("call void @fennec_crash_note(i64 {number}, ptr {block})"));
         self.line(&format!("call void @fennec_crash_resume(i64 {number})"));
         self.line(&format!("br label %{next}"));
         self.start_block(&next);

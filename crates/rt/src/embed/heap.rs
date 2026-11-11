@@ -1768,7 +1768,7 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         return false;
     }
     if shape_word(left) == Some(BYTES_SHAPE) {
-        return left.get(2..) == right.get(2..);
+        return super::bytes::equal(left, right);
     }
     if let (Some(mine), Some(theirs)) = (cell_value(state, left), cell_value(state, right)) {
         return mine == theirs;

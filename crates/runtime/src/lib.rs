@@ -349,6 +349,7 @@ export! {
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);
     fennec_dict_set_found(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::set_found(a0, a1, a2, a3);
+    fennec_proof_put_in_place(a0: i64, a1: i64) -> i64 => dicts::put_in_place_holds(a0, a1);
     fennec_dict_missing(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) => dicts::missing(a0, a1, a2, a3, a4);
     fennec_dict_missing_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) => dicts::missing_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);

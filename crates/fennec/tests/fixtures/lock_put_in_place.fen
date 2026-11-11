@@ -1,0 +1,81 @@
+## A dict put under `lock ... as ref` where the lookup just found the key, and the dict and the
+## struct holding it have no other owner, is written where it is with its old value saved. A
+## failure, and a crash in a task of its own, after it put the value back. A dict held a second
+## time, or a key that isn't there yet, takes the old path.
+from std.concurrent import Crashed
+
+error Boom:
+    step: int
+
+struct Table:
+    counts: dict[int, int]
+
+## Adds 1 to `key`'s count, failing after if `failing`.
+def bump(table: shared Table, key: int, failing: bool) fails Boom:
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+        if failing:
+            fail Boom(step=key)
+
+## Adds 1000 to `key`'s count in place, puts a key that isn't there by the old path, which marks the
+## dict, then adds 1 to `key`'s count again, which the runtime writes where it is, failing after if
+## `failing`: what's put back is the count before the lock, not the in-place one.
+def bump_around_new(table: shared Table, key: int, failing: bool) fails Boom:
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1000
+        held.counts[key + 50] = 1
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+        if failing:
+            fail Boom(step=key)
+
+## Adds 1000 to `key`'s count in place, then puts keys that aren't there, which grow the dict by the
+## old path, failing after if `failing`.
+def bump_then_grow(table: shared Table, key: int, failing: bool) fails Boom:
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1000
+        for n in range(100, 140):
+            held.counts[n] = n
+        if failing:
+            fail Boom(step=key)
+
+## Adds 1 to `key`'s count with the dict held a second time, by a local, all through.
+def bump_held_twice(table: shared Table, key: int) -> int:
+    lock table as ref held:
+        also = held.counts
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+        also.len()
+
+## Adds 100 to `key`'s count, then crashes.
+def crash_after(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 100
+        values = [1]
+        held.counts[key + 1] = values[key]
+
+def crashed(table: shared Table, key: int) fails Crashed:
+    with launch(() => crash_after(table, key)) as task:
+        pass
+
+def show(table: shared Table) -> str:
+    lock table as held:
+        f"{held.counts}"
+
+def main(stdout: Stdout):
+    shared table = Table(counts={1: 10, 2: 20})
+    bump(table, key=1, failing=False) else:
+        stdout.print("failed")
+    bump(table, key=1, failing=True) else as why:
+        stdout.print("put back", why.step, show(table))
+    bump(table, key=3, failing=False) else:
+        stdout.print("failed")
+    bump(table, key=3, failing=True) else as why:
+        stdout.print("put back", why.step, show(table))
+    before = show(table)
+    bump_around_new(table, key=1, failing=True) else as why:
+        stdout.print("put back", why.step, show(table) == before)
+    bump_then_grow(table, key=1, failing=True) else as why:
+        stdout.print("put back", why.step, show(table) == before)
+    stdout.print("held twice", bump_held_twice(table, key=2), show(table))
+    crashed(table, key=2) else:
+        stdout.print("crashed", show(table))
+    stdout.print(show(table))

@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    price = "2.5"
+    stdout.print(round(price))

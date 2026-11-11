@@ -1770,6 +1770,64 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        let Some(done) = self.put_in_place(object, path, index, value, span)? else {
+            return self.set_index_as_ever(object, path, index, value, span);
+        };
+        // What the old way learns holds only on that way: the put in place learned nothing.
+        let alone_fields = self.alone_fields.clone();
+        self.set_index_as_ever(object, path, index, value, span)?;
+        self.alone_fields = alone_fields;
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// Under a lock that saves what it changes, a dict put where the lookup finds the key, written
+    /// in place when the dict and the blocks on the way to it have one owner (see
+    /// `put_found_in_place`). Gives back the label the two ways join at, with the old way's block
+    /// started, or `None`, writing nothing, when it doesn't fit.
+    fn put_in_place(
+        &mut self,
+        object: LocalId,
+        path: &[String],
+        index: &Operand,
+        value: &Operand,
+        span: Span,
+    ) -> Result<Option<String>, String> {
+        if self.saving.is_empty() {
+            return Ok(None);
+        }
+        let kind = self.place_kind(object, path)?;
+        let Kind::Dict(key_word, value_word) = kind else { return Ok(None) };
+        if self.is_id_map(&kind)
+            || matches!(index, Operand::Local(sliced) if self.known.slice_keys.contains_key(&sliced.0))
+        {
+            return Ok(None);
+        }
+        let same_dict = |dict: LocalId| match path {
+            [] => dict == object,
+            [field] => self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field),
+            _ => false,
+        };
+        let found = self
+            .found_entries
+            .iter()
+            .rev()
+            .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
+            .map(|(_, _, entry)| entry.clone());
+        let Some((place, alone)) = self.dict_alone_along(object, path)? else { return Ok(None) };
+        self.put_found_in_place((&place, &alone), (key_word, value_word), (index, value, found), span)
+    }
+
+    /// `object.path[index] = value` as it's always been written.
+    fn set_index_as_ever(
+        &mut self,
+        object: LocalId,
+        path: &[String],
+        index: &Operand,
+        value: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
         if !self.saving.is_empty() {
             self.save_along(object, path)?;
         }

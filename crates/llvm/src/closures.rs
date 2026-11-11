@@ -261,6 +261,11 @@ impl Emit<'_, '_, '_> {
                     release,
                     "{block}  %z{at} = call i1 {gone}(ptr %h{at})\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
                 );
+            } else if kind.in_memory() {
+                // A struct captured whole holds an owner of each counted field in it, which making
+                // the closure gave it, so letting go of the closure lets go of them.
+                let place = format!("%c{at}_at");
+                release.push_str(&self.written_apart(|emit| emit.release_inline(kind, &place)));
             }
             offset += kind.size(layouts);
         }

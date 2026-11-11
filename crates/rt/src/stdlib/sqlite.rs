@@ -188,6 +188,13 @@ mod real {
             // a file, as `ATTACH` or `VACUUM INTO` gives, could reach any.
             AuthAction::Attach { filename: "" } => Authorization::Allow,
             AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+            // An attach whose name is worked out by an expression, like `'' || path`, comes with
+            // no name at all, since SQLite can't say what it comes to: it could be any file.
+            AuthAction::Unknown { code, .. }
+                if code == rusqlite::ffi::SQLITE_ATTACH || code == rusqlite::ffi::SQLITE_DETACH =>
+            {
+                Authorization::Deny
+            }
             AuthAction::Pragma { pragma_name, .. } if !OWN_PRAGMAS.contains(&pragma_name) => {
                 Authorization::Deny
             }

@@ -146,3 +146,45 @@ fn a_database_cant_attach_or_vacuum_into_another_file() -> Result<(), String> {
     std::fs::remove_dir_all(&folder).map_err(|err| err.to_string())?;
     Ok(())
 }
+
+/// The one attach a connection allows is for the database of no file a plain `VACUUM` makes, and
+/// it can't be stretched: a user's own `ATTACH ''` gets a database of no file and makes none, and
+/// every other way of naming one is refused by what it is, not by the count. A name worked out by
+/// an expression is the way to watch, since SQLite's authorizer isn't told what it comes to.
+#[test]
+fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
+    let folder = std::env::temp_dir().join(format!("fennec-sqlite-stretch-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+    let file = |name: &str| folder.join(name).to_string_lossy().into_owned();
+    let other = file("other.db");
+    let refused = [
+        ("attach database ':memory:' as m".to_owned(), Vec::new()),
+        (format!("attach database 'file:{other}?mode=rwc' as u"), Vec::new()),
+        (format!("attach database '{other}?mode=rwc' as q"), Vec::new()),
+        (format!("attach database '' || '{other}' as e"), Vec::new()),
+        (format!("attach database printf('%s', '{other}') as p"), Vec::new()),
+        ("attach database ? as b".to_owned(), vec![other.as_str()]),
+    ];
+    // Each on a connection of its own, so the one attach a connection allows is still free, and
+    // what refuses it is that it names something.
+    for (at, (text, given)) in refused.iter().enumerate() {
+        let db = handle_of(&super::open_file(&file(&format!("own{at}.db"))))?;
+        let said = run(db, "_execute", &query(text, &[], given))?;
+        assert!(said.contains("not authorized"), "{text}: {said}");
+        assert_eq!(run(db, "_close", &[])?, "");
+    }
+    // Its own `ATTACH ''` is a database of no file, which holds what's put in it and makes none.
+    let db = handle_of(&super::open_file(&file("own.db")))?;
+    assert_eq!(run(db, "_execute", &query("attach database '' as scratch", &[], &[]))?, "Ok(0)");
+    assert_eq!(run(db, "_execute", &query("create table scratch.notes (n integer)", &[], &[]))?, "Ok(0)");
+    assert_eq!(run(db, "_execute", &query("insert into scratch.notes values (?)", &[1], &[]))?, "Ok(1)");
+    assert_eq!(run(db, "_close", &[])?, "");
+    let made: Vec<String> = std::fs::read_dir(&folder)
+        .map_err(|err| err.to_string())?
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .filter(|name| !name.starts_with("own"))
+        .collect();
+    assert!(made.is_empty(), "files were made: {made:?}");
+    std::fs::remove_dir_all(&folder).map_err(|err| err.to_string())?;
+    Ok(())
+}

@@ -153,7 +153,8 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         let done = match &receiver {
             Value::Capability(capability) => fakes.method(*capability, &name, &given, at),
             Value::Limited(limited) => {
-                Some(narrowed(limited, &name, &given, &mut |capability, method, args| {
+                let real = fakes.real();
+                Some(narrowed(limited, &name, &given, (real, at), &mut |capability, method, args| {
                     fakes
                         .method(capability, method, args, at)
                         .unwrap_or_else(|| native_method(capability, method, args, at))
@@ -172,9 +173,11 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     // The method runs with nothing borrowed, so a task waiting in it, on the network, can park.
     let live = || match &receiver {
         Value::Capability(capability) => native_method(*capability, &name, &given, at),
-        Value::Limited(limited) => narrowed(limited, &name, &given, &mut |capability, method, args| {
-            native_method(capability, method, args, at)
-        }),
+        Value::Limited(limited) => {
+            narrowed(limited, &name, &given, (true, at), &mut |capability, method, args| {
+                native_method(capability, method, args, at)
+            })
+        }
         other => Err(crate::methods::no_method(other, &name, at)),
     };
     // What a capability gives is an outside input, recorded and replayed (see `crate::replay`):

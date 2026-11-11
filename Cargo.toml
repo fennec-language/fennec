@@ -74,6 +74,12 @@ corosensei = { version = "=0.3.4", default-features = false, features = ["defaul
 # Waiting on many sockets at once, for `parallel(server)`: epoll, kqueue and IOCP behind one
 # API, the event loop under Tokio, without its logging. Under MIT.
 mio = { version = "=1.2.4", default-features = false, features = ["net", "os-ext", "os-poll"] }
+# A `Fs` narrowed with `fs.only` opens what it's given beneath the folder it's narrowed to, through a
+# handle held on that folder, so nothing swapped in partway down the path can lead outside between
+# the check and the open. That takes `openat`-style calls, which the standard library doesn't have
+# and which can't be written without `unsafe`. cap-std is the Bytecode Alliance's safe API for it,
+# on rustix, as Wasmtime uses.
+cap-std = { version = "=4.0.3", default-features = false }
 # Every float function, `sin` through `**`, is computed by this one pure-Rust library on every
 # platform, so a program prints the same bits on arm64, x86-64, Windows and WebAssembly: each
 # platform's own C library rounds some results differently in the last bit, and replays and

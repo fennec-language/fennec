@@ -112,3 +112,26 @@ fn a_tests_databases_left_open_are_closed_and_gone_when_it_ends() -> Result<(), 
     assert!(after.contains("was closed"), "{after}");
     Ok(())
 }
+
+/// A database opened for a narrowed `Fs` is kept only while SQLite's file is the one the narrowed
+/// `Fs` found: once another file is swapped in at its path, SQLite and the path both say so.
+#[cfg(unix)]
+#[test]
+fn a_database_whose_file_was_swapped_is_told_apart() {
+    use std::os::unix::fs::MetadataExt as _;
+    let folder = std::env::temp_dir().join(format!("fennec-sqlite-swapped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("data.db");
+    let path_text = path.to_string_lossy().into_owned();
+    std::fs::write(&path, b"").unwrap();
+    let found = std::fs::metadata(&path).unwrap();
+    let noted = (found.dev(), found.ino());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert!(super::real::still_the_file(&conn, &path_text, noted));
+    std::fs::rename(&path, folder.join("moved.db")).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    assert!(!super::real::still_the_file(&conn, &path_text, noted));
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&folder);
+}

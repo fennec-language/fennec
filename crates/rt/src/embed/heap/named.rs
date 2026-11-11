@@ -71,7 +71,7 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
 }
 
 /// What a `Value` holds for a struct or enum read from a block named `name`.
-pub(super) fn interpreted(name: &str, value: Value) -> Value {
+pub(super) fn pinned_outcome(name: &str, value: Value) -> Value {
     let Value::Instance(instance) = &value else { return value };
     if is_option(name) {
         return match instance.case.as_deref() {

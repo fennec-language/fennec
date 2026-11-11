@@ -306,8 +306,24 @@ pub(crate) fn stored_executable(cache: &fennec_build::Cache, root: &str, output:
         return cache.link_out(PROGRAMS, root, output).ok()?.then_some(());
     }
     let bytes = cache.read(PROGRAMS, root)?;
-    std::fs::write(output, bytes).ok()?;
-    executable_mode(output).ok()
+    put_program(output, &bytes).ok()
+}
+
+/// Writes a program to `output` as a new file, put in place of what's there by a rename, never
+/// written into the file already there. macOS remembers the code signature of a file it has
+/// launched, and a program written over one it launched before is killed when it starts.
+fn put_program(output: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = output.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let writing = output.with_file_name(format!(".{name}.{}.writing", std::process::id()));
+    let put = || {
+        std::fs::write(&writing, bytes)
+            .map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
+        executable_mode(&writing)?;
+        std::fs::rename(&writing, output).map_err(|err| format!("couldn't write {}: {err}", output.display()))
+    };
+    put().inspect_err(|_| {
+        let _ = std::fs::remove_file(&writing);
+    })
 }
 
 /// Whether a program at `path` is kept as one file with the store's: on macOS, which holds a new
@@ -330,16 +346,14 @@ pub(crate) fn dev_build_settings() -> String {
 /// objects linked, which then go in the store under it, with the list of its functions' hashes
 /// beside them. Gives back how long linking took, which is nothing for a stored one.
 fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
-    let written = |bytes: &[u8]| -> Result<(), String> {
-        std::fs::write(output, bytes).map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
-        executable_mode(output)
-    };
     if let Some(Stored { cache, root, program: Some(bytes), .. }) = &compiled.stored {
         if stored_executable(cache, root, output).is_none() {
-            written(bytes)?;
+            put_program(output, bytes)?;
         }
         return Ok(std::time::Duration::ZERO);
     }
+    // The linker writes a new file where none is, rather than into one a run may have launched.
+    let _ = std::fs::remove_file(output);
     let linked = link_objects(
         &compiled.objects,
         output,
@@ -352,11 +366,14 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
         // A store that can't be written only means linking it again next time. A run's program
         // is kept as the file just linked, the one about to be launched, so a later run of the
         // same program launches a file macOS has checked already.
-        let _ = cache.write(PROGRAMS, &format!("{root}.functions"), functions.as_bytes());
+        fennec_build::kept(
+            "keep a program's list of functions",
+            cache.write(PROGRAMS, &format!("{root}.functions"), functions.as_bytes()),
+        );
         if fennec_owns(output) {
-            let _ = cache.keep_file(PROGRAMS, root, output);
+            fennec_build::kept("keep the program it linked", cache.keep_file(PROGRAMS, root, output));
         } else if let Ok(bytes) = std::fs::read(output) {
-            let _ = cache.write(PROGRAMS, root, &bytes);
+            fennec_build::kept("keep the program it linked", cache.write(PROGRAMS, root, &bytes));
         }
     }
     Ok(linked)
@@ -956,7 +973,11 @@ fn stamp_of(path: &Path) -> Option<String> {
     let build = stamp_in(&std::fs::read(path).ok()?);
     if let Some(cache) = &cache {
         // A store that can't be written only means reading the library again next time.
-        let _ = cache.write("runtime-stamps", &name, build.as_deref().unwrap_or("").as_bytes());
+        let stamp = build.as_deref().unwrap_or("").as_bytes();
+        fennec_build::kept(
+            "keep which build a runtime library is",
+            cache.write("runtime-stamps", &name, stamp),
+        );
     }
     build
 }

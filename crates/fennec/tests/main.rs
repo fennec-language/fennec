@@ -1,6 +1,7 @@
 //! The `fennec` command's tests, as one program.
 
 mod cli;
+mod environment;
 mod examples;
 mod executables;
 mod game_math;

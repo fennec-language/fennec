@@ -32,6 +32,11 @@ impl Parser {
             Tok::Name(word) if word == "lock" && matches!(self.peek_at(1), Tok::Name(_)) => {
                 self.with_stmt(true)
             }
+            Tok::Kw(Kw::Except) => {
+                Err(Diagnostic::new("`except` goes after the call it handles", self.span()).with_help(
+                    "write it on the call's line, as `x = f() except why:`, with the block under it",
+                ))
+            }
             Tok::Kw(Kw::Def) => {
                 let function = self.def()?;
                 let span = function.span;
@@ -47,6 +52,7 @@ impl Parser {
             Tok::Kw(Kw::Return) => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::Dedent);
+                self.value_at_top = !at_end;
                 StmtKind::Return(if at_end { None } else { Some(self.expr()?) })
             }
             Tok::Kw(Kw::Fail) => self.keyword_with_expr(StmtKind::Fail)?,
@@ -127,6 +133,7 @@ impl Parser {
 
     /// An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
+        self.value_at_top = true;
         let mut target = self.expr()?;
         if matches!(target.kind, ExprKind::Name(_)) && self.eat_p(Punct::Colon) {
             let ty = Some(self.type_expr()?);
@@ -187,6 +194,7 @@ impl Parser {
                 "write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
             ));
         }
+        self.value_at_top = true;
         self.expr()
     }
 
@@ -327,7 +335,7 @@ impl Parser {
     fn lend_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
         let value = self.or_expr()?;
-        let otherwise = if self.eat_kw(Kw::Else) {
+        let otherwise = if self.eat_kw(Kw::Else) || self.eat_kw(Kw::Except) {
             self.expect_p(Punct::Colon)?;
             self.block()?
         } else {
@@ -345,6 +353,7 @@ impl Parser {
         let name = self.name("a name after `shared`")?;
         let target = Expr { kind: ExprKind::Name(name), span: at };
         self.expect_p(Punct::Assign)?;
+        self.value_at_top = true;
         let value = self.expr()?;
         let ty = TypeExpr { name: "shared".to_owned(), args: Vec::new(), optional: false, span: word };
         Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty: Some(ty) })
@@ -387,6 +396,9 @@ impl Parser {
 fn python_only(word: &str, span: Span) -> Diagnostic {
     let help = match word {
         "raise" => "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error",
+        "try" | "finally" => {
+            "a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`"
+        }
         _ => {
             "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
         }

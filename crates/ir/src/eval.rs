@@ -1,6 +1,6 @@
 //! Working out constants while compiling: a small evaluator over the IR, so a constant like
 //! `SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]` is baked into the program as the
-//! literal of its value, with no interpreter.
+//! literal of its value.
 //!
 //! It runs the functions lowering gives each constant, and the functions they call, one
 //! instruction at a time within a budget of steps. It knows the operators, the collections and

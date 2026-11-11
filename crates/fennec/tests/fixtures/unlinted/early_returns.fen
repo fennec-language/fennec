@@ -1,0 +1,26 @@
+# Functions that return as they go, with every return written, and lints with fixes that keep
+# each `return`: an `if` that only gives back its condition, a needless `else`, an f-string with
+# nothing in it and a `pass` beside something else.
+
+def is_big(n: int) -> bool:
+    if n > 9:
+        return True
+    return False
+
+def is_small(n: int) -> bool:
+    if n > 2:
+        return False
+    else:
+        return True
+
+def describe(n: int) -> str:
+    if n < 0:
+        return f"below"
+    else:
+        pass
+        return f"{n} up"
+
+def main(stdout: Stdout):
+    for n in [-1, 1, 5, 12]:
+        stdout.print(describe(n), is_big(n), is_small(n))
+    return

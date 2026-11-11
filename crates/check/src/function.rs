@@ -132,6 +132,12 @@ pub(crate) struct FnCx<'c> {
     /// The fields and method calls in the chain before an `else`, which may be on a value
     /// that might be missing.
     pub(crate) else_chain: std::collections::HashSet<(u32, u32)>,
+    /// The subjects of the `match`es `except` arms are written in as, by span, so a case they
+    /// leave out is said to be the `except`'s.
+    pub(crate) except_subjects: std::collections::HashSet<(u32, u32)>,
+    /// Those of them whose arms take a whole type of error, already refused, so what they leave
+    /// out isn't said again.
+    pub(crate) except_refused: std::collections::HashSet<(u32, u32)>,
     /// Which locks are held while checking a lock body, a `shared` type's method or a `with`
     /// block that locks handles, for messages: "while `x` is locked".
     pub(crate) lock: Option<String>,
@@ -183,6 +189,8 @@ impl<'c> FnCx<'c> {
             loops: 0,
             arrows: 0,
             else_chain: std::collections::HashSet::new(),
+            except_subjects: std::collections::HashSet::new(),
+            except_refused: std::collections::HashSet::new(),
             fails: None,
             lock: None,
             locked_types: Vec::new(),

@@ -174,18 +174,24 @@ jobs:
           .github/scripts/windows.sh folder target/debug/llvm
           echo "FENNEC_LLVM_BIN=$(cygpath -w "$PWD/target/debug/llvm/bin")" >> "$GITHUB_ENV"
       # Every test binary runs even after one fails, so a red run shows every failure, not the
-      # first binary's alone; the step still fails if any test did.
+      # first binary's alone; the step still fails if any test did. Each step fails too if the
+      # tests' connections, waiting out their close, ever hold more than 3,000 local ports: of the
+      # 16,384 macOS gives out, the rest are what other runs on a shared machine need. A test whose
+      # clients close first holds one each; see `time-wait.sh`.
       - name: Run cargo test --locked
         if: matrix.os == 'ubuntu-24.04-arm'
-        run: cargo test --locked --no-fail-fast
+        shell: bash
+        run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast
       # Between them, each other platform's two jobs run every test once: no test outside
       # `fennec`'s main test binary has `llvm::` in its name.
       - name: Run every test but the LLVM ones
         if: matrix.os != 'ubuntu-24.04-arm' && matrix.part == 'main'
-        run: cargo test --locked --no-fail-fast -- --skip 'llvm::'
+        shell: bash
+        run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast -- --skip 'llvm::'
       - name: Run the LLVM tests
         if: matrix.part == 'llvm'
-        run: cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'
+        shell: bash
+        run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'
       # Every test removes what it makes in the temporary folder, passing or failing, so a run
       # leaves no `fennec-*` folder there.
       - name: Check the tests left nothing in the temporary folder
@@ -453,8 +459,7 @@ jobs:
       # Valgrind counts by simulating instead.
       - name: Install tools that count instructions
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq valgrind linux-tools-common "linux-tools-$(uname -r)" || echo "some aren't available"
+          .github/scripts/apt.sh valgrind linux-tools-common "linux-tools-$(uname -r)" || echo "some aren't available"
           sudo sysctl -w kernel.perf_event_paranoid=1 || true
       - name: Measure each kernel against its target and the previous commit
         run: |
@@ -486,7 +491,7 @@ jobs:
         run: |
           rustup component add llvm-tools-preview
           echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
-          sudo apt-get install -y -qq musl-tools
+          .github/scripts/apt.sh musl-tools
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # The `musl` folder a release has beside `fennec`, so builds here link as an installed
       # Fennec's do: on their own, with LLD, rather than through the system's `cc` and its linker.
@@ -496,8 +501,7 @@ jobs:
       # on which machine this lands on. Their times are shown too, and warn.
       - name: Install what counts instructions
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq valgrind
+          .github/scripts/apt.sh valgrind
       - run: ./target/release/fennec-bench budgets
 
   # Programs built through LLVM, with their code and the runtime library instrumented by
@@ -621,10 +625,10 @@ jobs:
           done
       - run: cargo test --locked -p fennec --test fennec 'llvm::'
 
-  # Every example and kernel builds with no interpreter in it, and prints what it should, on one
-  # thread and on several.
+  # Every example and kernel builds natively, links against the runtime, and prints what it
+  # should, on one thread and on several.
   lean-runtime:
-    name: Programs with no interpreter
+    name: Every example and kernel built natively
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
@@ -662,7 +666,7 @@ jobs:
               fi
             fi
           done
-          echo "$built programs built with no interpreter"
+          echo "$built programs built natively"
           [ "$built" -ge 90 ] || { echo "::error::only $built built"; failed=1; }
           exit "$failed"
       - name: Run what uses parallel on real threads
@@ -709,7 +713,7 @@ jobs:
           persist-credentials: false
       - name: Install musl's C compiler and LLVM's tools
         run: |
-          sudo apt-get install -y -q musl-tools
+          .github/scripts/apt.sh musl-tools
           rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtime library, and the runtime libraries for musl

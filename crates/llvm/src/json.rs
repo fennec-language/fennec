@@ -126,7 +126,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Writes what a temporary holds at `at`, as a value of this kind, with an owner of its own,
-    /// failing as the interpreter does when it isn't one.
+    /// failing when it isn't one.
     pub(crate) fn native_at(
         &mut self,
         handle: &str,

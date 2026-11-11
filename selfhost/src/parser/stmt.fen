@@ -32,6 +32,12 @@ extend Parser:
         # `lock scores as ref current:`, where a name follows `lock`.
         if self.at_soft("lock") and is_name(self.peek_at(1)):
             return self.with_stmt(True)?
+        if self.at_keyword("except"):
+            fail Diagnostic(
+                message="`except` goes after the call it handles",
+                span=self.span(),
+                help="write it on the call's line, as `x = f() except why:`, with the block under it",
+            )
         if self.at_keyword("def"):
             function = self.function()?
             return Stmt(kind=.Def(function), span=function.span)
@@ -67,6 +73,7 @@ extend Parser:
             case "return":
                 if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
                     return .Return(None)
+                self.value_at_top = True
                 .Return(self.expr()?)
             case "fail": .Fail(self.expr()?)
             case "yield": .Yield(self.expr()?)
@@ -87,7 +94,7 @@ extend Parser:
         start = self.advance().span
         value = self.or_expr()?
         mut otherwise = list[Stmt]()
-        if self.eat_keyword("else"):
+        if self.eat_keyword("else") or self.eat_keyword("except"):
             _ = self.expect_punct(":")?
             otherwise = self.block()?
         else:
@@ -102,6 +109,7 @@ extend Parser:
         name = self.name("a name after `shared`")?
         target = Expr(kind=.Name(name), span=at)
         _ = self.expect_punct("=")?
+        self.value_at_top = True
         value = self.expr()?
         ty = TypeExpr(name="shared", args=[], optional=False, span=word)
         .Assign(target, None, value, declare_mut=False, ty=ty)
@@ -143,6 +151,7 @@ extend Parser:
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     def expr_or_assign(ref self) -> StmtKind fails Diagnostic:
+        self.value_at_top = True
         mut target = self.expr()?
         if is_name_expr(target) and self.eat_punct(":"):
             ty = self.type_expr()?
@@ -180,6 +189,7 @@ extend Parser:
                 span=self.span(),
                 help="write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
             )
+        self.value_at_top = True
         self.expr()?
 
     def if_stmt(ref self) -> Stmt fails Diagnostic:
@@ -351,6 +361,8 @@ def python_only(word: str, span: Span) -> Diagnostic:
     mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
     if word == "raise":
         help = "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error"
+    elif word == "try" or word == "finally":
+        help = "a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`"
     Diagnostic(message=f"Fennec doesn't have `{word}`", span=span, help=help)
 
 ## Whether a value can start with this token, so `lend` before it starts a `lend`.

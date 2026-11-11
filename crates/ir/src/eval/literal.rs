@@ -8,9 +8,11 @@ use fennec_syntax::{Arg, Expr, ExprKind, Span, UnaryOp};
 use super::value::{Instance, Value};
 use crate::Program;
 
-/// Where the literals point: past any source, and each unique, so the typed tree tells them
-/// apart.
-const BAKED_SPANS: u32 = 1 << 30;
+/// Where the literals point: each unique, so the typed tree tells them apart, and in the
+/// prelude's range, past its own text and short of what `lend_lowering` copies, as code the
+/// compiler writes is. A check of the program then holds them to nothing a person writes, as a
+/// case named in full where its type is known, which is how a literal names every enum value.
+const BAKED_SPANS: u32 = Span::PRELUDE + (1 << 29);
 
 /// What writing literals needs: the program's own types, which it can name to build one, and
 /// each one's field names.

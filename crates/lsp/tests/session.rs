@@ -296,11 +296,11 @@ fn codes(diagnostics: &[Json]) -> Vec<&str> {
 #[test]
 fn lints_and_copies_show_with_their_rules_and_fixes() {
     let mut editor = Editor::new("lints").unwrap();
-    let text = "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+    let text = "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
                 held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n";
     let published = editor.open("src/main.fen", text);
     let in_main = for_file(&published, "main.fen").unwrap();
-    assert_eq!(codes(in_main), ["needless-return", "copies"], "{:?}", messages(in_main));
+    assert_eq!(codes(in_main), ["needless-pass", "copies"], "{:?}", messages(in_main));
     let severity = |at: usize| in_main[at].get("severity").and_then(Json::as_usize);
     assert_eq!(
         (severity(0), severity(1)),
@@ -311,10 +311,7 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
 
     let params = Json::object([
         ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),
-        (
-            "range",
-            Json::object([("start", position(text, "return", 0)), ("end", position(text, "return", 6))]),
-        ),
+        ("range", Json::object([("start", position(text, "pass", 0)), ("end", position(text, "pass", 4))])),
         ("context", Json::object([("diagnostics", Json::Array(Vec::new()))])),
     ]);
     let actions = editor.request("textDocument/codeAction", params);
@@ -327,16 +324,16 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
 #[test]
 fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
     let mut editor = Editor::new("quick_lints").unwrap();
-    editor.open("src/combat.fen", &COMBAT.replace("    power * 2", "    return power * 2"));
+    editor.open("src/combat.fen", &COMBAT.replace("    power * 2", "    pass\n    power * 2"));
     editor.open("src/main.fen", MAIN);
     let published = editor.change("src/main.fen", &MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)"));
-    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-return"], "kept");
+    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-pass"], "kept");
     assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
     let with_lint =
         MAIN.replace("    stdout.print(fighter", "    stdout.print(f\"go\")\n    stdout.print(fighter");
     let published = editor.change("src/main.fen", &with_lint);
     assert_eq!(codes(for_file(&published, "main.fen").unwrap()), ["plain-fstring"], "found in the edit");
-    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-return"], "still kept");
+    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-pass"], "still kept");
 }
 
 #[test]
@@ -466,6 +463,45 @@ fn names_bound_in_a_case_are_found_from_its_guard_and_body() {
         let found = editor.at("textDocument/definition", "src/main.fen", text, needle, into);
         assert_eq!(found.as_array().unwrap()[0].at(&["range", "start"]), Some(&bound), "{needle}");
     }
+}
+
+/// Inside `except`, what it names and what its `case` arms bind are found, shown and offered as
+/// a `match`'s are, and a program written with every form has nothing to say about it.
+#[test]
+fn names_under_except_are_found_shown_and_offered() {
+    let mut editor = Editor::new("excepts").unwrap();
+    let text = "error Bad:\n    Empty\n    Long(size: int)\n\nerror Big:\n    why: str\n\n\
+        def risky(n: int) -> int fails Big:\n    if n > 5:\n        fail Big(\"big\")\n    return n\n\n\
+        def act(n: int) fails Big:\n    if n == 2:\n        fail Big(\"two\")\n\n\
+        def load(n: int) -> int fails Bad:\n    if n == 0:\n        fail .Empty\n    if n > 5:\n        fail .Long(size=n)\n    return n\n\n\
+        def main(stdout: Stdout):\n    small = load(9) except why:\n        stdout.print(f\"{why}\")\n        0\n    \
+        sized = load(9) except why:\n        case .Long(size):\n            size\n        case .Empty:\n            0\n    \
+        port = risky(7) except Big(): 8080\n    \
+        act(2) except failed:\n        stdout.print(failed)\n    \
+        stdout.print(small + sized + port)\n    return\n";
+    let published = editor.open("src/main.fen", text);
+    assert_eq!(
+        for_file(&published, "main.fen"),
+        Some(&[][..]),
+        "{:?}",
+        messages(for_file(&published, "main.fen").unwrap())
+    );
+    let bound = position(text, "size):", 0);
+    let found = editor.at("textDocument/definition", "src/main.fen", text, "size\n        case .Empty", 0);
+    assert_eq!(found.as_array().unwrap()[0].at(&["range", "start"]), Some(&bound));
+    let named = position(text, "why:\n        stdout", 0);
+    let found = editor.at("textDocument/definition", "src/main.fen", text, "why}", 0);
+    assert_eq!(found.as_array().unwrap()[0].at(&["range", "start"]), Some(&named));
+    let shown =
+        |hover: &Json| hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("").to_owned();
+    let hover = editor.at("textDocument/hover", "src/main.fen", text, "failed)\n    stdout", 0);
+    assert_eq!(shown(&hover), "```fennec\nfailed: Big\n```");
+    let typing = text.replace("        stdout.print(failed)\n", "        _ = fai\n");
+    editor.change("src/main.fen", &typing);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "fai\n", 3));
+    assert_eq!(offered.first().map(String::as_str), Some("failed"), "{offered:?}");
+    let keyword = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "fai\n", 0));
+    assert!(keyword.iter().any(|label| label == "except"), "{keyword:?}");
 }
 
 /// Names that aren't plain uses: a named argument, a case in a pattern, a test's capability, a

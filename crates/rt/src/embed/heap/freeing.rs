@@ -50,12 +50,16 @@ fn free_plain_list(state: &mut State, address: u64) -> bool {
     true
 }
 
-/// Frees what other threads let go of last, which waits for this one, which made it.
+/// Frees what other threads let go of last, which waits for this one, which made it. Only a
+/// block this heap holds is freed: anything else on the queue isn't this runtime's to let go of,
+/// a `shared` value's handle above all, whose count is never queued.
 #[cold]
 #[inline(never)]
 fn free_waiting(state: &mut State) {
     for waiting in crate::embed::threads::waiting() {
-        free_block(state, waiting);
+        if usize::try_from(waiting).is_ok_and(|at| state.heap.holds_block(at)) {
+            free_block(state, waiting);
+        }
     }
 }
 
@@ -520,43 +524,6 @@ fn release_planned_child(
     }
 }
 
-/// For measuring parts of making and freeing a block.
-#[cfg(test)]
-pub(in crate::embed) fn measure_part(part: u8, address: usize) {
-    with(|state| match part {
-        1 => {
-            let block = state.heap.fresh(4);
-            state.heap.recycle(std::hint::black_box(block));
-        }
-        2 => {
-            if let Some(block) = state.heap.spare.get_mut(4).and_then(Vec::pop) {
-                state.heap.spare_words -= block.len();
-                state.heap.recycle(std::hint::black_box(block));
-            } else {
-                let block = state.heap.fresh(4);
-                state.heap.recycle(block);
-            }
-        }
-        3 => {
-            std::hint::black_box(&mut state.heap);
-        }
-        5 => {
-            if let Some(block) = state.heap.blocks.remove(address) {
-                state.heap.recycle(block);
-            }
-        }
-        4 => {
-            let block = state.heap.fresh(4);
-            let at = block.as_ptr().addr();
-            state.heap.blocks.insert(block);
-            if let Some(block) = state.heap.blocks.remove(std::hint::black_box(at)) {
-                state.heap.recycle(block);
-            }
-        }
-        _ => {}
-    });
-}
-
 /// Gives up one owner of a block, freeing it when that was the last.
 pub(in crate::embed) fn release(state: &mut State, address: u64) {
     let block = state.heap.block_mut(address);
@@ -654,8 +621,9 @@ mod tests {
         start(Tables::default(), crate::Inputs::default());
         let made = Box::new([1_u64, 0, 0]);
         let address = i64::try_from(std::ptr::from_ref(&made[0]).addr()).unwrap();
-        // Not one of generated code's: nothing happens.
-        with(|state| super::release(state, address.cast_unsigned() + 64));
+        // Not one of generated code's, and inside a block of this test's own, so no other test's
+        // block or `shared` value can be there: nothing happens.
+        with(|state| super::release(state, address.cast_unsigned() + 8));
         super::super::native_made(address);
         with(|state| super::release(state, address.cast_unsigned()));
     }

@@ -55,8 +55,7 @@ jobs:
       - name: Install Valgrind
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq valgrind
+          .github/scripts/apt.sh valgrind
       - name: Build fennec, its runtime library and the suite
         run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # A release build puts what it uses of the runtime in the program's own unit, from this.

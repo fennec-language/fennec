@@ -31,6 +31,10 @@ struct Parser:
     ## Set when an expression ended with an indented block (a `match`), so the statement
     ## holding it has no line ending of its own to consume.
     block_ended = False
+    ## Set just before the value a statement is written with: the whole right side of an
+    ## assignment, a bare call or what `return` gives. Only there may `except` follow it, so the
+    ## next expression takes it and what it holds sees it unset.
+    value_at_top = False
 
     def over(tokens: list[Token]) -> Parser:
         end = tokens[-1].span if tokens.len() > 0 else Span(start=0, end=0)

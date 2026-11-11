@@ -556,8 +556,7 @@ mod tests {
         );
     }
 
-    /// The JIT compiles a type's methods only once something gives it one, so every method
-    /// that gives back a standard library type has to be listed.
+    /// Every method that gives back a standard library type says which type it gives.
     #[test]
     fn methods_say_which_types_they_give() {
         let given: Vec<_> = super::given().collect();

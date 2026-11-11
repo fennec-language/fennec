@@ -111,6 +111,32 @@ pub(crate) fn name_in(sources: &Sources, span: Span, name: &str) -> Span {
     Span { start, end: start.saturating_add(u32::try_from(name.len()).unwrap_or(0)) }
 }
 
+/// The name `except why:` or `else as why:` gives the failure, where it's written and the block
+/// that sees it. The name comes before the block, where the one case's span starts, as the last
+/// word of that name on the line.
+fn failure_written<'e>(sources: &Sources, handler: &'e Expr) -> Option<(&'e str, Span, &'e [Stmt])> {
+    let (name, body) = handler.failure_named()?;
+    let ExprKind::Match { arms, .. } = &handler.kind else { return None };
+    let at = name_before(sources, arms.first()?.span.start, name)?;
+    Some((name, at, body))
+}
+
+/// Where `name` is last written as a word on the line before `at`, if it is.
+fn name_before(sources: &Sources, at: u32, name: &str) -> Option<Span> {
+    let (_, text, base) = sources.file_at(Span { start: at, end: at })?;
+    let end = usize::try_from(at.checked_sub(base)?).ok()?;
+    let line = text.get(..end)?.rfind('\n').map_or(0, |newline| newline + 1);
+    let written = text.get(line..end)?;
+    let word = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+    let (offset, _) = written.rmatch_indices(name).find(|(found, _)| {
+        let before = written.get(..*found).and_then(|text| text.chars().next_back());
+        let after = written.get(found + name.len()..).and_then(|text| text.chars().next());
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })?;
+    let start = base + u32::try_from(line + offset).ok()?;
+    Some(Span { start, end: start + u32::try_from(name.len()).ok()? })
+}
+
 /// The part of an import that lists the names it brings in: what follows `import`, past the
 /// module's path, which may hold the same words.
 pub(crate) fn imported_names(sources: &Sources, span: Span) -> Span {
@@ -163,6 +189,11 @@ impl Finder<'_> {
     /// place refers to.
     fn declare(&mut self, name: &str, declared: Span) {
         let name_at = name_in(self.sources, declared, name);
+        self.declare_at(name, name_at, declared);
+    }
+
+    /// Declares `name`, written at `name_at`, in `declared`.
+    fn declare_at(&mut self, name: &str, name_at: Span, declared: Span) {
         if self.contains(name_at) {
             self.found(local(name, name_at, declared, self.function.clone()));
         }
@@ -454,6 +485,18 @@ impl Finder<'_> {
                 }
                 finder.expr(body);
             }),
+            ExprKind::Else { value, default, .. } => match failure_written(self.sources, default) {
+                // `except why:` and `else as why:` name the failure before the block, declared
+                // by what failed, as the checker records its type.
+                Some((name, at, body)) => {
+                    self.expr(value);
+                    self.scoped(|finder| {
+                        finder.declare_at(name, at, value.span);
+                        finder.block(body);
+                    });
+                }
+                None => children(expr, &mut |child| self.expr(child)),
+            },
             ExprKind::Match { subject, arms } => {
                 self.expr(subject);
                 for arm in arms {
@@ -673,7 +716,7 @@ fn children(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             visit(cond);
             visit(otherwise);
         }
-        ExprKind::Else { value, default } => {
+        ExprKind::Else { value, default, .. } => {
             visit(value);
             visit(default);
         }

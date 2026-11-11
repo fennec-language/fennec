@@ -47,7 +47,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install musl's C compiler
-        run: sudo apt-get install -y -q musl-tools
+        run: .github/scripts/apt.sh musl-tools
       - run: .github/scripts/musl-runtime.sh musl
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

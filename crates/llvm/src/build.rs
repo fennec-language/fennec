@@ -226,7 +226,7 @@ impl Tools {
             let folder = toolchain_tools()
                 .map_err(|err| format!("LLVM's tools aren't in `llvm/bin` beside `fennec`, and {err}"))?;
             if let Some(at) = &remembered {
-                let _ = std::fs::write(at, folder.to_string_lossy().as_bytes());
+                remember(at, &folder.to_string_lossy());
             }
             folder
         };
@@ -271,9 +271,20 @@ impl Tools {
         let out = Command::new(&self.llc).arg("--version").output().map_err(|err| err.to_string())?;
         let version = String::from_utf8_lossy(&out.stdout).lines().take(2).collect::<Vec<_>>().join(" ");
         if let (Some(stamp), Some(at)) = (stamp, remembered) {
-            let _ = std::fs::write(at, format!("{stamp}\n{version}"));
+            remember(&at, &format!("{stamp}\n{version}"));
         }
         Ok(version)
+    }
+}
+
+/// Keeps `text` in the file at `at` for later builds, written beside it and renamed into place, so
+/// a build reading it at the same moment, as another command sharing the Fennec home may, finds
+/// the old text or the new and never part of one: half a version would name every function's
+/// object as new. One that can't be written is asked again next time.
+fn remember(at: &Path, text: &str) {
+    let writing = at.with_extension(format!("{}.writing", std::process::id()));
+    if std::fs::write(&writing, text).is_err() || std::fs::rename(&writing, at).is_err() {
+        let _ = std::fs::remove_file(&writing);
     }
 }
 
@@ -553,7 +564,10 @@ pub fn compile(
                         .map(|bytes| {
                             if let Some((cache, key)) = &keyed {
                                 // A failed write only means compiling it again next time.
-                                let _ = cache.write(KIND, key, &bytes);
+                                fennec_build::kept(
+                                    "keep a compiled function",
+                                    cache.write(KIND, key, &bytes),
+                                );
                             }
                             (bytes, true)
                         }),
@@ -582,6 +596,36 @@ pub fn compile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remembered file read while it's written again is the old text or the new, whole.
+    #[test]
+    fn a_remembered_file_is_never_read_half_written() {
+        let dir = std::env::temp_dir().join(format!("fennec-remember-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = dir.join("llvm-version");
+        let (short, long) = ("1 stamp\nLLVM 19".to_owned(), format!("2 stamp\n{}", "LLVM 19 ".repeat(4096)));
+        remember(&at, &short);
+        let writing = std::thread::spawn({
+            let (at, short, long) = (at.clone(), short.clone(), long.clone());
+            move || {
+                for n in 0..400 {
+                    remember(&at, if n % 2 == 0 { &long } else { &short });
+                }
+            }
+        });
+        let mut reads = 0;
+        while !writing.is_finished() {
+            let read = std::fs::read_to_string(&at).unwrap();
+            assert!(read == short || read == long, "read {} bytes of neither", read.len());
+            reads += 1;
+        }
+        writing.join().unwrap();
+        assert!(reads > 0);
+        let left: Vec<_> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(left.len(), 1, "nothing but the file is left: {left:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A program whose `long` makes a list and a string on each of `lines` lines, which only it
     /// formats.

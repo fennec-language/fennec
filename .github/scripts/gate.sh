@@ -57,19 +57,33 @@ runtime() {
   done
 }
 
+# `fennec` with these arguments, within its limit, saying what was run and how it ended if it
+# fails: a program killed by a signal prints nothing of its own.
+fennec_ok() {
+  local status=0
+  .github/scripts/within.sh 120 ./target/debug/fennec "$@" || status=$?
+  [ "$status" -eq 0 ] && return 0
+  if [ "$status" -gt 128 ] && [ "$status" -ne 124 ]; then
+    echo "\`fennec $*\` was killed by signal $((status - 128))" >&2
+  else
+    echo "\`fennec $*\` gave $status" >&2
+  fi
+  return 1
+}
+
 # Every example and kit through the command, as the first thing a person would do with them.
 examples() {
   local printed="$logs/printed.txt" program kit
   for program in examples/*.fen; do
-    .github/scripts/within.sh 120 ./target/debug/fennec run "$program" > "$printed" || return 1
+    fennec_ok run "$program" > "$printed" || return 1
     diff --strip-trailing-cr "${program%.fen}.out" "$printed" || return 1
-    .github/scripts/within.sh 120 ./target/debug/fennec test "$program" > /dev/null || return 1
+    fennec_ok test "$program" > /dev/null || return 1
   done
   for kit in examples/projects/*/; do
     [ -f "$kit/kit.toml" ] || continue
-    .github/scripts/within.sh 120 ./target/debug/fennec run "$kit" > "$printed" || return 1
+    fennec_ok run "$kit" > "$printed" || return 1
     diff --strip-trailing-cr "${kit%/}.out" "$printed" || return 1
-    .github/scripts/within.sh 120 ./target/debug/fennec test "$kit" > /dev/null || return 1
+    fennec_ok test "$kit" > /dev/null || return 1
   done
 }
 
@@ -80,8 +94,9 @@ rosetta() {
   local probe="$logs/rosetta"
   printf 'int main(void) { return 0; }\n' > "$probe.c" || return 1
   /usr/bin/cc -arch x86_64 -o "$probe" "$probe.c" || return 1
-  # Rosetta's first translation of a program took 15 seconds on a busy Mac, so this waits a minute.
-  if ! .github/scripts/within.sh 60 "$probe"; then
+  # Rosetta's first translation of a program took 15 seconds on a busy Mac, so this waits a minute
+  # by the clock: a wedged Rosetta spends no CPU time.
+  if ! WITHIN_WALL=60 .github/scripts/within.sh 60 "$probe"; then
     echo "Rosetta isn't running new x86-64 programs; restart the Mac or \`sudo launchctl kickstart -k system/com.apple.oahd\`" >&2
     return 1
   fi

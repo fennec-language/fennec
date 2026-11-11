@@ -21,6 +21,7 @@ const KEYWORDS: &[&str] = &[
     "else",
     "enum",
     "error",
+    "except",
     "export",
     "extend",
     "fail",

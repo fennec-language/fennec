@@ -324,7 +324,11 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
             handles: AtomicU64::new(count),
             replay: crate::replay::place("s"),
         };
-        tables(|tables| tables.insert(address, Arc::new(slot)));
+        // A value kept at this address before, by a run that ended without letting go of it, has
+        // gone: what any thread remembers of it goes too.
+        if tables(|tables| tables.insert(address, Arc::new(slot))).is_some() {
+            GONE.fetch_add(1, Ordering::Release);
+        }
         // The counts it held of what it was given go, with their copies in the table.
         for old in held.into_iter().filter(|old| *old != 0) {
             super::heap::release(state, old);
@@ -346,9 +350,16 @@ pub extern "C" fn shared_enter(cell: i64, write: i64) -> i64 {
 fn enter(state: &mut State, slot: &Slot, write: bool) -> Result<(), Diagnostic> {
     if write {
         let mut held = slot.held.write().unwrap_or_else(PoisonError::into_inner);
+        // Taken only once this thread has the table: a reader still holding it leaves it read.
         let table = match std::mem::replace(&mut *held, Held::Taken) {
             Held::Free(table) => table,
-            Held::Read(table) => Box::new(Arc::try_unwrap(table).map_err(|_| still_read())?),
+            Held::Read(table) => match Arc::try_unwrap(table) {
+                Ok(table) => Box::new(table),
+                Err(table) => {
+                    *held = Held::Read(table);
+                    return Err(still_read());
+                }
+            },
             Held::Taken => return Err(still_read()),
         };
         drop(held);
@@ -371,6 +382,16 @@ fn enter(state: &mut State, slot: &Slot, write: bool) -> Result<(), Diagnostic> 
     Ok(())
 }
 
+/// What's wrong when a `shared` value's lock is let go of and the value has gone, though this
+/// thread held its table: something let go of a value it didn't hold.
+fn gone_while_held(address: u64) -> Diagnostic {
+    Diagnostic::new(
+        format!("the `shared` value at {address:#x} went while its lock was held"),
+        Span::default(),
+    )
+    .with_help("this is a bug in Fennec; please report it")
+}
+
 /// What's wrong when a lock's word lets in more than it should, which would be a bug in native code.
 fn still_read() -> Diagnostic {
     Diagnostic::new("a `shared` value's lock let two threads in", Span::default())
@@ -382,11 +403,13 @@ pub extern "C" fn shared_leave(cell: i64, write: i64) -> i64 {
     attempt(|state: &mut State| {
         let address = u64::try_from(cell).unwrap_or(0);
         if write != 0 {
-            let table = state.heap.leave_table();
+            // The table leaves this thread only for its slot: with none, it stays, and what it holds
+            // with it, rather than going with nowhere to be put back.
             let left = with_slot(address, |slot| {
+                let table = state.heap.leave_table();
                 *slot.held.write().unwrap_or_else(PoisonError::into_inner) = Held::Free(table);
             });
-            left.ok_or_else(|| lost(address))?;
+            left.ok_or_else(|| gone_while_held(address))?;
         } else {
             state.heap.reading.pop();
         }

@@ -91,8 +91,15 @@ export struct Certificate:
 ## wait as long as it takes, unless given `timeout=`.
 export shared Connection:
     _handle: int
+    ## Which of the program's connections it is, counted from 1 as they're made: what it prints as.
+    _label: int
     ## The other side's address, like `"127.0.0.1:52811"`.
     peer: str
+
+    ## `Connection(#3)`, its label, rather than its handle, which is random so that nothing could
+    ## guess it, and so would print differently every run.
+    def str(self, ref out: StrWriter):
+        out.write(f"Connection(#{self._label})")
 
     ## Each line it's sent, until the other side is done. A failure of the connection fails the
     ## loop, rather than looking like the end.
@@ -166,8 +173,14 @@ export struct Packet:
 ## `close()`.
 export shared UdpSocket:
     _handle: int
+    ## Which of the program's UDP sockets it is, counted from 1: what it prints as.
+    _label: int
     ## The port it listens on: the one asked for, or the one the system picked for port 0.
     port: int
+
+    ## `UdpSocket(#1)`, its label, rather than its random handle.
+    def str(self, ref out: StrWriter):
+        out.write(f"UdpSocket(#{self._label})")
 
     ## Each packet as it arrives, until the socket is closed or fails.
     def iter(self) -> Iterator[Packet]:
@@ -218,8 +231,14 @@ export struct Net:
 ## `accept()` waits for the next one.
 export shared Server:
     _handle: int
+    ## Which of the program's servers it is, counted from 1: what it prints as.
+    _label: int
     ## The port it listens on: the one asked for, or the one the system picked for port 0.
     port: int
+
+    ## `Server(#1)`, its label, rather than its random handle.
+    def str(self, ref out: StrWriter):
+        out.write(f"Server(#{self._label})")
 
     ## The next connection, lent for a `with` block and closed when it ends. It waits for one as
     ## long as it takes, or up to `timeout`.

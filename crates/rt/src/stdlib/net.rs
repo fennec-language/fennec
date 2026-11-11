@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -919,8 +919,37 @@ fn packet_value((data, sender): (Vec<u8>, String)) -> Value {
     Value::made("Packet", vec![("data", Value::Bytes(Rc::from(data))), ("sender", Value::str(&sender))])
 }
 
+/// The labels the program has given its connections, servers and UDP sockets, each counted on
+/// its own. A value's label is what it prints as, `Connection(#3)`. Its handle is random, so that
+/// nothing could guess it, and printing it would show a different number every run.
+static LABELS: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+
+/// Starts the labels from 1 again, for a test, so what it prints doesn't depend on the tests that
+/// ran before it.
+pub(crate) fn labels_start_over() {
+    for count in &LABELS {
+        count.store(0, Ordering::Relaxed);
+    }
+}
+
+/// A network value with its label: the next of its kind's.
+fn labelled((type_name, mut fields): Made) -> Made {
+    let kind = match type_name {
+        "Connection" => 0,
+        "Server" => 1,
+        "UdpSocket" => 2,
+        _ => return (type_name, fields),
+    };
+    let label = LABELS.get(kind).map_or(0, |count| count.fetch_add(1, Ordering::Relaxed) + 1);
+    fields.push(("_label", Value::Int(label)));
+    (type_name, fields)
+}
+
 fn made_or_failed(found: Result<Made, Failure>) -> Value {
-    done_or_failed(found.map(|(type_name, fields)| Value::made(type_name, fields)))
+    done_or_failed(found.map(|made| {
+        let (type_name, fields) = labelled(made);
+        Value::made(type_name, fields)
+    }))
 }
 
 pub(crate) fn done_or_failed(done: Result<Value, Failure>) -> Value {

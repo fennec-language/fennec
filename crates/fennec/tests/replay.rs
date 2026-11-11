@@ -477,6 +477,55 @@ fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Resul
     Ok(())
 }
 
+/// A program connecting to a server of its own and printing what it made.
+const NET_LABELS: &str = "from std.net import NetError
+
+def main(stdout: Stdout, net: Net) fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port)? as first:
+            with server.accept()? as taken:
+                stdout.print(server, first, taken)
+    with net.udp()? as socket:
+        stdout.print(socket)
+    return
+";
+
+/// Connections, servers and UDP sockets print as their labels, counted as the program makes them,
+/// not their handles, which are random: the same every run, and in a replay.
+#[test]
+fn network_values_print_the_same_every_run_and_in_a_replay() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("net-labels")?;
+    let program = dir.join("labels.fen");
+    std::fs::write(&program, NET_LABELS)?;
+    let wanted = "Server(#1) Connection(#1) Connection(#2)\nUdpSocket(#1)\n";
+    for _ in 0..2 {
+        let ran =
+            outcome(&fennec_command().arg("run").arg(&program).current_dir(&dir).output_before(DEADLINE)?);
+        assert_eq!((ran.0.as_str(), ran.2), (wanted, Some(0)), "{}", ran.1);
+    }
+    let log = dir.join("labels.log");
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(recorded.0, wanted, "{}", recorded.1);
+    let replayed = outcome(
+        &fennec_command()
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(replayed, recorded);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example runs more than one task, whose order between them isn't recorded yet, or
 /// serves until it's stopped, so its run doesn't end by itself.
 fn several_tasks_or_serves(source: &str) -> bool {

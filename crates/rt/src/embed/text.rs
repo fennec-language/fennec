@@ -109,6 +109,25 @@ pub(super) fn string_element(state: &State) -> Rc<Element> {
     Rc::new(if state.tables.text_headers { Element::Text } else { Element::Str })
 }
 
+/// Whether the string held as `words`, a header, is the one in the block at `wanted`, with nothing
+/// made to compare them: their lengths, then the words their bytes take up. An inline header packs
+/// its bytes as a block does, with zeros after them, so equal bytes are equal words.
+pub(super) fn header_is(state: &State, words: &[u64; 3], wanted: u64) -> bool {
+    if tag(words) & INLINE == 0 {
+        return block_of(words).is_some_and(|address| super::heap::same(state, address, wanted));
+    }
+    let Some(block) = state.heap.block(wanted) else { return false };
+    let length = usize::from(tag(words) & !INLINE).min(INLINE_BYTES);
+    if block.get(2).copied() != u64::try_from(length).ok() {
+        return false;
+    }
+    let [first, second, last] = *words;
+    let mine = [first, second, last & (u64::MAX >> 8)];
+    let used = length.div_ceil(8);
+    let theirs = block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + used);
+    mine.get(..used) == theirs
+}
+
 /// The texts of a list of headers' items, laid out three words each.
 pub(super) fn texts(state: &State, words: &[u64]) -> Vec<String> {
     words.as_chunks::<3>().0.iter().map(|header| text_of(state, header)).collect()

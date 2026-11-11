@@ -4,7 +4,8 @@ use std::process::Command;
 
 #[test]
 fn it_writes_the_page_and_fails_on_a_decision_that_isnt_there() {
-    let dir = std::env::temp_dir().join(format!("fennec-reference-{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-reference-{}", std::process::id())));
     for folder in ["docs", "examples", "site/src/pages"] {
         std::fs::create_dir_all(dir.join(folder)).unwrap();
     }

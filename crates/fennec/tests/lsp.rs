@@ -5,8 +5,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-/// A kit whose `main` uses a name that doesn't exist, and a folder for Fennec's own files.
-fn broken_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+/// A kit whose `main` uses a name that doesn't exist, and a folder for Fennec's own files, in a
+/// folder that holds both and goes when the first is dropped.
+fn broken_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {
     let dir = std::env::temp_dir().join(format!("fennec-lsp-cli-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("kit/src"))?;
@@ -14,7 +15,8 @@ fn broken_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(dir.join("kit/kit.toml"), manifest)?;
     std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(nope)\n")?;
-    Ok((std::fs::canonicalize(dir.join("kit"))?, dir.join("home")))
+    let kit = std::fs::canonicalize(dir.join("kit"))?;
+    Ok((fennec_temp::Temp::at(dir.clone()), kit, dir.join("home")))
 }
 
 fn framed(message: &str) -> String {
@@ -58,7 +60,7 @@ fn check(output: &str) {
 
 #[test]
 fn the_language_server_runs_in_process_without_a_daemon() {
-    let (kit, home) = broken_kit("in-process").unwrap();
+    let (_folder, kit, home) = broken_kit("in-process").unwrap();
     let (output, clean) = session(&kit, &home, false).unwrap();
     check(&output);
     assert!(clean);
@@ -68,7 +70,7 @@ fn the_language_server_runs_in_process_without_a_daemon() {
 #[cfg(unix)]
 #[test]
 fn the_language_server_runs_in_the_daemon() {
-    let (kit, home) = broken_kit("daemon").unwrap();
+    let (_folder, kit, home) = broken_kit("daemon").unwrap();
     let (output, clean) = session(&kit, &home, true).unwrap();
     check(&output);
     assert!(clean);

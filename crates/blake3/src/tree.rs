@@ -2,8 +2,15 @@
 //! a chaining value, and pairs of chaining values are merged into parents up to one root.
 
 use crate::compress::{
-    BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, PARENT, ROOT, compress, first_eight, words,
+    BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, LANES, PARENT, ROOT, chunks_at_once, compress, first_eight,
+    words,
 };
+
+/// Whether whole chunks are compressed `LANES` at a time. On arm64 each operation on a lane of
+/// words is one vector instruction, rotations included, so it takes well under half the
+/// instructions. Baseline x86-64 has no vector rotation and too few vector registers, so there
+/// the compiler leaves the lanes as scalar code that costs as much as a chunk at a time.
+const AT_ONCE: bool = cfg!(target_arch = "aarch64");
 
 /// What's needed to finish a node: either its chaining value or, for the root, its output.
 #[derive(Clone, Copy)]
@@ -72,31 +79,57 @@ impl Chunk {
     /// Adds input, which must fit in the chunk. A full block is compressed only once more
     /// input arrives, since the last block of a chunk is compressed differently.
     fn update(&mut self, input: &[u8]) {
-        let room = BLOCK_LEN - self.block_len;
-        let (first, rest) = input.split_at(room.min(input.len()));
-        self.append(first);
-        for piece in rest.chunks(BLOCK_LEN) {
-            let flags = self.flags | self.start_flag();
-            let block = compress(&self.cv, &words(&self.block), self.counter, block_len(BLOCK_LEN), flags);
-            self.cv = first_eight(&block);
-            self.blocks_compressed += 1;
-            self.block = [0; BLOCK_LEN];
-            self.block_len = 0;
+        let mut rest = input;
+        while !rest.is_empty() {
+            if self.block_len == BLOCK_LEN {
+                self.compress(&words(&self.block));
+                self.block_len = 0;
+            }
+            // Whole blocks are compressed straight from the input, while more input follows them.
+            while self.block_len == 0
+                && let Some((block, after)) = rest.split_first_chunk::<BLOCK_LEN>()
+                && !after.is_empty()
+            {
+                self.compress(&words(block));
+                rest = after;
+            }
+            let room = BLOCK_LEN - self.block_len;
+            let (piece, after) = rest.split_at(room.min(rest.len()));
             self.append(piece);
+            rest = after;
         }
     }
 
+    /// Compresses a block that isn't the chunk's last into its chaining value.
+    fn compress(&mut self, block: &[u32; 16]) {
+        let flags = self.flags | self.start_flag();
+        self.cv = first_eight(&compress(&self.cv, block, self.counter, block_len(BLOCK_LEN), flags));
+        self.blocks_compressed += 1;
+    }
+
     fn append(&mut self, bytes: &[u8]) {
-        for (slot, byte) in self.block.iter_mut().skip(self.block_len).zip(bytes) {
-            *slot = *byte;
+        let end = self.block_len + bytes.len();
+        if let Some(slots) = self.block.get_mut(self.block_len..end) {
+            slots.copy_from_slice(bytes);
+            self.block_len = end;
         }
-        self.block_len += bytes.len();
+    }
+
+    /// The last block, its unused bytes zero.
+    fn last_block(&self) -> [u32; 16] {
+        let mut block = [0; BLOCK_LEN];
+        if let (Some(slots), Some(bytes)) =
+            (block.get_mut(..self.block_len), self.block.get(..self.block_len))
+        {
+            slots.copy_from_slice(bytes);
+        }
+        words(&block)
     }
 
     fn output(&self) -> Output {
         Output {
             cv: self.cv,
-            block: words(&self.block),
+            block: self.last_block(),
             counter: self.counter,
             block_len: block_len(self.block_len),
             flags: self.flags | self.start_flag() | CHUNK_END,
@@ -120,15 +153,35 @@ impl Tree {
     }
 
     pub(crate) fn update(&mut self, input: &[u8]) {
-        let room = CHUNK_LEN - self.chunk.len();
-        let (first, rest) = input.split_at(room.min(input.len()));
-        self.chunk.update(first);
-        for piece in rest.chunks(CHUNK_LEN) {
-            let cv = self.chunk.output().chaining_value();
-            let total = self.chunk.counter + 1;
-            self.push(cv, total);
-            self.chunk = Chunk::new(self.key, total, self.flags);
+        let mut rest = input;
+        while !rest.is_empty() {
+            // A full chunk is finished once more input follows it: only the last can be the root.
+            if self.chunk.len() == CHUNK_LEN {
+                let cv = self.chunk.output().chaining_value();
+                let total = self.chunk.counter + 1;
+                self.push(cv, total);
+                self.chunk = Chunk::new(self.key, total, self.flags);
+            }
+            // Whole chunks are compressed `LANES` at a time, while more input follows them.
+            if AT_ONCE
+                && self.chunk.len() == 0
+                && let Some((chunks, after)) = rest.split_first_chunk::<{ LANES * CHUNK_LEN }>()
+                && !after.is_empty()
+                && let Ok(chunks) = <&[[u8; CHUNK_LEN]; LANES]>::try_from(chunks.as_chunks::<CHUNK_LEN>().0)
+            {
+                let counter = self.chunk.counter;
+                for (total, cv) in (counter + 1..).zip(chunks_at_once(&self.key, chunks, counter, self.flags))
+                {
+                    self.push(cv, total);
+                }
+                self.chunk = Chunk::new(self.key, counter + LANES as u64, self.flags);
+                rest = after;
+                continue;
+            }
+            let room = CHUNK_LEN - self.chunk.len();
+            let (piece, after) = rest.split_at(room.min(rest.len()));
             self.chunk.update(piece);
+            rest = after;
         }
     }
 

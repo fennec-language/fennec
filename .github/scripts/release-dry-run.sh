@@ -25,6 +25,7 @@ target=${2:-}
 (cd "$repo" && cargo build --locked --quiet --release -p fennec-launcher --bins --example dry_run ${target:+--target "$target"})
 built="$repo/target/${target:+$target/}release"
 work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
 # The launcher's folder as bash's own `PATH` takes it, which is `/c/...` on Windows.
 bin="$work/bin"
 # On Windows the programs are Windows' own, which read `C:/...` and not Git Bash's `/tmp/...`.
@@ -139,5 +140,4 @@ if grep -rqF "$repo" "$home" 2> /dev/null; then
   grep -rlF "$repo" "$home"
   failed=1
 fi
-rm -rf "$work"
 exit "$failed"

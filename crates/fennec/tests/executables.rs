@@ -346,8 +346,10 @@ pub(crate) fn at_once<T: Sync, R: Send>(
 }
 
 /// A fresh folder for this test's executables.
-fn work_dir(test: &str) -> std::io::Result<PathBuf> {
-    let work = std::env::temp_dir().join(format!("fennec-executables-{test}-{}", std::process::id()));
+fn work_dir(test: &str) -> std::io::Result<fennec_temp::Temp> {
+    let work = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-executables-{test}-{}", std::process::id())),
+    );
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work)?;
     Ok(work)

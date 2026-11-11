@@ -1,15 +1,17 @@
 //! `fennec run` checks all of a program the first time and only what `main` reaches while its
 //! text stays the same, which must never change what a program does or what's rejected.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Output;
 
 const SOURCE: &str = "def used() -> int:\n    41 + 1\n\ndef unused() -> int:\n    2\n\n\
     def main(stdout: Stdout):\n    stdout.print(used())\n";
 
 /// A folder for a program and for Fennec's own files, with `SOURCE` written in it.
-fn scratch(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("fennec-reached-{name}-{}", std::process::id()));
+fn scratch(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-reached-{name}-{}", std::process::id())),
+    );
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
@@ -176,7 +178,7 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
 }
 
 /// A kit whose `main` prints what it embeds, with `test` added to what it holds.
-fn embedding_kit(name: &str, test: &str) -> std::io::Result<PathBuf> {
+fn embedding_kit(name: &str, test: &str) -> std::io::Result<fennec_temp::Temp> {
     let dir = scratch(name)?;
     std::fs::create_dir_all(dir.join("src"))?;
     let manifest =

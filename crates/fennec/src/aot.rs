@@ -970,7 +970,9 @@ mod tests {
     #[cfg(not(windows))]
     fn a_program_of_more_objects_than_a_command_line_holds_links() {
         use std::process::Command;
-        let work = std::env::temp_dir().join(format!("fennec-many-objects-{}", std::process::id()));
+        let work = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-many-objects-{}", std::process::id())),
+        );
         // A quote and a backslash, which the file escapes, and spaces, which it quotes.
         let parts =
             work.join(format!("{}\"quoted\" and back\\slashed", "a folder with a long name, ".repeat(4)));
@@ -1007,7 +1009,9 @@ mod tests {
     /// program in many parts doesn't make a command line longer than the system takes.
     #[test]
     fn the_objects_to_link_go_in_a_file_each_on_a_line() {
-        let work = std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id()));
+        let work = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&work).unwrap();
         let objects: Vec<_> = (0..2_000).map(|at| work.join(format!("{at}.o"))).collect();
         let file = super::response_file(&objects).unwrap();

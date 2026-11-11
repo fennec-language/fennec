@@ -555,7 +555,9 @@ mod tests {
     fn a_capability_call_from_native_code_leaves_nothing_behind() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(tables, crate::Inputs::default());
-        let dir = std::env::temp_dir().join(format!("fennec-capability-calls-{}", std::process::id()));
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-capability-calls-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("w.txt");
         std::fs::write(&path, "z".repeat(500)).unwrap();

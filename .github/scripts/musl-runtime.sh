@@ -40,8 +40,8 @@ cp "$from"/{crt1.o,crti.o,crtn.o,crtbegin.o,crtend.o,libc.a,libunwind.a} "$out/s
 # and a release build that links only the runtime's C parts gets them from here, so linking needs
 # no `libgcc` from the machine.
 helpers="$(mktemp -d)"
+trap 'rm -rf "$helpers"' EXIT
 at="$(cd "$out" && pwd)"
 ar t "$at/libfennec_runtime.a" | grep '^compiler_builtins-' > "$helpers/names"
 [ -s "$helpers/names" ] || { echo "musl-runtime: the runtime holds no compiler_builtins" >&2; exit 1; }
 (cd "$helpers" && xargs ar x "$at/libfennec_runtime.a" < names && xargs ar rcs "$at/self-contained/libcompiler_builtins.a" < names)
-rm -rf "$helpers"

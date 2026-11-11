@@ -28,8 +28,10 @@ pub(crate) fn ready() -> bool {
 }
 
 /// A folder of its own, emptied when the test is done.
-fn folder(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("fennec-llvm-{}-{name}", std::process::id()));
+fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-llvm-{}-{name}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -1697,6 +1699,21 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
         "lock_undo_in_place",
         include_str!("fixtures/lock_undo_in_place.fen"),
         include_str!("fixtures/lock_undo_in_place.out"),
+    )
+}
+
+/// Plain words a lock saves, past the room its buffer starts with, written once or in a loop, go
+/// back on a failure and stay at an end: saved by native code itself while there's room, and by the
+/// runtime once it's full.
+#[test]
+fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_plain_saves",
+        include_str!("fixtures/lock_plain_saves.fen"),
+        "10 24500 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 False\n",
     )
 }
 
@@ -9202,7 +9219,7 @@ fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<(
 fn stopping_server(
     threads: &str,
     name: &str,
-) -> std::io::Result<(PathBuf, Running, u16, std::io::BufReader<std::process::ChildStdout>)> {
+) -> std::io::Result<(fennec_temp::Temp, Running, u16, std::io::BufReader<std::process::ChildStdout>)> {
     if threads == "1" {
         assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
     }
@@ -12863,7 +12880,7 @@ fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Res
     if !ready() {
         return Ok(());
     }
-    let shower = shows_its_arguments("process_template_shower")?;
+    let (_shower_folder, shower) = shows_its_arguments("process_template_shower")?;
     let printed = printed_by(
         "process_template",
         &r#"from std.process import ProcessError
@@ -12905,7 +12922,8 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
 /// Builds a program that prints each argument it's given in brackets, the same on every system,
 /// and gives back its path as a template's text can name it: with `/` between folders, which
 /// Windows takes too, and no spaces.
-fn shows_its_arguments(name: &str) -> std::io::Result<String> {
+/// A program that prints its arguments, with the folder it's in, which goes when that's dropped.
+fn shows_its_arguments(name: &str) -> std::io::Result<(fennec_temp::Temp, String)> {
     let dir = folder(name)?;
     let program = dir.join("shower.fen");
     std::fs::write(
@@ -12918,7 +12936,7 @@ fn shows_its_arguments(name: &str) -> std::io::Result<String> {
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let path = executable.to_string_lossy().replace('\\', "/");
     assert!(!path.contains([' ', '{', '}']), "a template can't name {path}");
-    Ok(path)
+    Ok((dir, path))
 }
 
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
@@ -13094,7 +13112,9 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
+    let place = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id())),
+    );
     let path = place.to_string_lossy().into_owned();
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
@@ -13210,7 +13230,8 @@ fn replacing_a_file_keeps_its_mode_and_goes_through_a_link() -> std::io::Result<
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-fs-safety-{}", std::process::id()));
+    let place =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-fs-safety-{}", std::process::id())));
     std::fs::create_dir_all(&place)?;
     let mode_of = |name: &str| -> std::io::Result<u32> {
         Ok(std::fs::metadata(place.join(name))?.permissions().mode() & 0o777)
@@ -13252,7 +13273,8 @@ fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> 
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-fs-only-{}", std::process::id()));
+    let place =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-fs-only-{}", std::process::id())));
     std::fs::create_dir_all(place.join("inside"))?;
     std::fs::create_dir_all(place.join("outside"))?;
     std::fs::write(place.join("outside/secret.txt"), "secret")?;
@@ -13551,7 +13573,8 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let place = std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id()));
+    let place =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-iter-fail-{}", std::process::id())));
     std::fs::create_dir_all(place.join("folder"))?;
     std::fs::write(place.join("bad.txt"), [97, 10, 255, 10, 98])?;
     std::fs::write(place.join("good.txt"), "one\ntwo\n")?;

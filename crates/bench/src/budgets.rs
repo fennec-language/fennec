@@ -287,14 +287,15 @@ struct Kit {
     fennec: PathBuf,
 }
 
-/// The file edits are made to, and the line in it that changes.
+/// The file edits are made to, and the line in it that changes: in its first function, which
+/// `main` calls and a test runs.
 const EDITED: &str = "src/m3.fen";
 const EDITED_FILE: usize = 3;
-const EDITED_LINE: &str = "    bigger = number + 300\n";
+const EDITED_LINE: &str = "    bigger = number + 288\n";
 
 /// The edited line, as the `edit`th edit leaves it.
 fn edited_line(edit: usize) -> String {
-    format!("    bigger = number + 300 + {edit}\n")
+    format!("    bigger = number + 288 + {edit}\n")
 }
 
 /// A function that checks and runs natively, and that nothing else depends on. The kit has nothing
@@ -778,12 +779,27 @@ mod tests {
     }
 
     #[test]
+    fn the_edited_line_is_in_a_function_main_calls_and_a_test_runs() {
+        let dir = std::env::temp_dir().join(format!("fennec-budgets-kit-{}", std::process::id()));
+        let kit = super::Kit::write(&dir, "fennec".into(), super::EDITED_FILE + 1).unwrap();
+        let read = |file: &str| std::fs::read_to_string(kit.dir.join(file)).unwrap();
+        let edited = super::EDITED_FILE * super::FUNCTIONS_PER_FILE;
+        let text = read(super::EDITED);
+        assert!(text.contains(&format!("def step_{edited}(number: int) -> int:\n{}", super::EDITED_LINE)));
+        assert!(text.contains(&format!("assert step_{edited}(1)")), "a test runs it");
+        assert!(read("src/main.fen").contains(&format!("step_{edited}(1)")), "main calls it");
+        // Under the 800 lines `long-file` allows.
+        assert!(text.lines().count() <= 800, "{} lines", text.lines().count());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_session_script_is_framed_messages_ending_in_exit() {
         let script = super::session_script("file:///a.fen", super::EDITED_LINE, 2).unwrap();
         let text = String::from_utf8_lossy(&script);
         assert_eq!(text.matches("Content-Length").count(), 5, "{text}");
         assert!(
-            text.contains("didOpen") && text.contains("300 + 2") && text.ends_with("{\"method\":\"exit\"}"),
+            text.contains("didOpen") && text.contains("288 + 2") && text.ends_with("{\"method\":\"exit\"}"),
             "{text}"
         );
     }

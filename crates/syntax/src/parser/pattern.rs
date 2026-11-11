@@ -23,6 +23,14 @@ impl Parser {
         let subject = self.or_expr()?;
         self.expect_p(Punct::Colon)?;
         self.expect_block_start()?;
+        let arms = self.arms()?;
+        let span = start.to(self.prev_span());
+        Ok(Expr { kind: ExprKind::Match { subject: Box::new(subject), arms }, span })
+    }
+
+    /// The `case` arms of an indented block, up to its end: a `match`'s, or those right under
+    /// `except why:`.
+    pub(super) fn arms(&mut self) -> Result<Vec<MatchArm>, Diagnostic> {
         let mut arms = Vec::new();
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
             if !self.at_soft("case") {
@@ -36,8 +44,7 @@ impl Parser {
             arms.push(MatchArm { pattern, guard, body, span: arm_start.to(self.prev_span()) });
         }
         self.block_ended = true;
-        let span = start.to(self.prev_span());
-        Ok(Expr { kind: ExprKind::Match { subject: Box::new(subject), arms }, span })
+        Ok(arms)
     }
 
     /// A pattern, or several separated by `|`, any of which matches.

@@ -116,7 +116,7 @@ pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
         }
         ExprKind::Unary { expr: inner, .. } | ExprKind::Attr { object: inner, .. } => vec![inner],
         ExprKind::Binary { lhs: a, rhs: b, .. }
-        | ExprKind::Else { value: a, default: b }
+        | ExprKind::Else { value: a, default: b, .. }
         | ExprKind::Index { object: a, index: b } => vec![a, b],
         ExprKind::Cond { then, cond, otherwise } => vec![then, cond, otherwise],
         ExprKind::Try { value, context } => {

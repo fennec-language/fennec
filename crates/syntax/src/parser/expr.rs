@@ -91,10 +91,92 @@ impl Parser {
                 }
             };
             let span = value.span.to(default.span);
-            let kind = ExprKind::Else { value: Box::new(value), default: Box::new(default) };
+            let kind = ExprKind::Else { value: Box::new(value), default: Box::new(default), except: false };
+            return Ok((Expr { kind, span }, Formed::Fallback));
+        }
+        if self.at(&Tok::Kw(Kw::Except)) {
+            let handler = self.except_handler()?;
+            let span = value.span.to(handler.span);
+            let kind = ExprKind::Else { value: Box::new(value), default: Box::new(handler), except: true };
             return Ok((Expr { kind, span }, Formed::Fallback));
         }
         Ok((value, Formed::Plain))
+    }
+
+    /// What follows `except`, written in as the same one-case `match` an `else` block is: any
+    /// failure, `except why:` with a block of statements or of `case` arms, which becomes a
+    /// `match why:` in the block, or one case, as `except InvalidValue(): 8080`, whose pattern is
+    /// the case's.
+    fn except_handler(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.advance().span;
+        if let (Tok::Name(name), Tok::P(Punct::Colon)) = (self.peek().clone(), self.peek_at(1))
+            && name.starts_with(char::is_uppercase)
+        {
+            let help = format!(
+                "write `except {name}():` to handle only `{name}`, or a lowercase name to handle any failure"
+            );
+            return Err(Diagnostic::new(
+                format!("`{name}` after `except` would name any failure"),
+                self.span(),
+            )
+            .with_help(help));
+        }
+        if let (Tok::Name(name), Tok::P(Punct::Colon)) = (self.peek().clone(), self.peek_at(1))
+            && name != "_"
+        {
+            let at = self.advance().span;
+            return self.named_handler(start, (name, at));
+        }
+        if self.at_p(Punct::Colon) {
+            return Err(Diagnostic::new("`except` names the failure it handles", self.span())
+                .with_help("write `except why:` and use `why` in the block, or name one case, as `except InvalidValue(): 8080`"));
+        }
+        let pattern = self.pattern()?;
+        if !self.at_p(Punct::Colon) {
+            return Err(Diagnostic::new("`except` and its case need a `:`", self.span())
+                .with_help("write the case, a `:` and what it gives, as `except InvalidValue(): 8080`"));
+        }
+        let arm_start = self.advance().span;
+        let indented = self.at(&Tok::Newline);
+        let body = self.block()?;
+        // On the line, the case's statement has ended the line, and the statement it's in with it.
+        self.block_ended = !indented || self.block_ended;
+        let span = arm_start.to(self.prev_span());
+        // The failure has a name nobody can write, as the one case's `match` is over it.
+        let failure = format!("except{}failure", crate::visit::HIDDEN);
+        let arm = MatchArm { pattern, guard: None, body, span };
+        Ok(self.handler_over(start, (failure, start), vec![arm]))
+    }
+
+    /// `except why:` and its block, of statements, or of `case` arms, which are a `match why:`
+    /// in the block.
+    fn named_handler(&mut self, start: Span, (failure, at): (String, Span)) -> Result<Expr, Diagnostic> {
+        let arms_follow = matches!(self.peek_at(1), Tok::Newline)
+            && matches!(self.peek_at(2), Tok::Indent)
+            && matches!(self.peek_at(3), Tok::Name(word) if word == "case");
+        if !arms_follow {
+            let mut handler = self.leaving_block(Some(failure))?;
+            handler.span = start.to(handler.span);
+            return Ok(handler);
+        }
+        self.advance();
+        self.expect_block_start()?;
+        let arms = self.arms()?;
+        Ok(self.handler_over(start, (failure, at), arms))
+    }
+
+    /// A handler whose block is a `match` over the failure, named `failure`, with these arms.
+    fn handler_over(&self, start: Span, (failure, at): (String, Span), arms: Vec<MatchArm>) -> Expr {
+        let span = start.to(self.prev_span());
+        let subject = Box::new(Expr { kind: ExprKind::Name(failure.clone()), span: at });
+        let matched = Expr { kind: ExprKind::Match { subject, arms }, span };
+        let mut handler = leaving_match(start, vec![Stmt { kind: StmtKind::Expr(matched), span }], span);
+        if let ExprKind::Match { arms, .. } = &mut handler.kind
+            && let Some(arm) = arms.first_mut()
+        {
+            arm.pattern = Pattern::Bind(failure);
+        }
+        handler
     }
 
     /// `continue`, `break`, `return` or `fail` after `else`, as a `match` with one case that leaves, which

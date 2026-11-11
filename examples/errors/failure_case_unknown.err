@@ -1,7 +1,7 @@
 error: none of `Bad | Lost` has a case called `Gon`
-  --> examples/errors/failure_case_unknown.fen:18:13
+  --> examples/errors/failure_case_unknown.fen:16:13
    |
-18 |             case .Gon:
+16 |             case .Gon:
    |             ^^^^^^^^^^
    |
    = help: did you mean `.Gone`?

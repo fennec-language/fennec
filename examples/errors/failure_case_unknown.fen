@@ -6,10 +6,8 @@ error Lost:
     Moved(to: str)
 
 def risky(n: int) -> int fails Bad | Lost:
-    if n < 0:
-        fail Bad(why="negative")
-    if n == 0:
-        fail .Gone
+    if n < 0: fail Bad(why="negative")
+    if n == 0: fail .Gone
     n
 
 def main(stdout: Stdout):

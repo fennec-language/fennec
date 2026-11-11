@@ -1,5 +1,11 @@
 ## `float`'s methods written in Fennec.
 extend float:
+    ## The float `text` writes, as `"1.5"`, `".5"`, `"-2e3"` or `"inf"`, with space around it. One too big
+    ## to hold is infinity, and `"nan"` and `"inf"` read as NaN and infinity, as Python's and Rust's
+    ## do. Anything else fails, saying what it was given.
+    def parse(text: str) -> float fails InvalidValue:
+        float(text)?
+
     def serialize(self, ref out: Serializer):
         out.float(self)
 

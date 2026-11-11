@@ -144,7 +144,7 @@ impl FnCx<'_> {
             spans.push((item.span.start, item.span.end));
             match &item.kind {
                 ExprKind::Try { value: inner, .. } => spans.push((inner.span.start, inner.span.end)),
-                ExprKind::Else { value: inner, default } if default.leaves() => {
+                ExprKind::Else { value: inner, default, .. } if default.leaves() => {
                     spans.push((inner.span.start, inner.span.end));
                 }
                 _ => {}
@@ -222,7 +222,7 @@ fn conditional_try(value: &Expr, conditional: bool) -> Option<Span> {
         ExprKind::Binary { lhs, rhs, .. } => each(&mut [lhs.as_ref(), rhs.as_ref()].into_iter(), conditional),
         ExprKind::Cond { then, cond, otherwise } => conditional_try(cond, conditional)
             .or_else(|| each(&mut [then.as_ref(), otherwise.as_ref()].into_iter(), true)),
-        ExprKind::Else { value: held, default } => {
+        ExprKind::Else { value: held, default, .. } => {
             conditional_try(held, conditional).or_else(|| conditional_try(default, true))
         }
         ExprKind::Match { subject, arms } => conditional_try(subject, conditional)

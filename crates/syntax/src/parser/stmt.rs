@@ -32,6 +32,11 @@ impl Parser {
             Tok::Name(word) if word == "lock" && matches!(self.peek_at(1), Tok::Name(_)) => {
                 self.with_stmt(true)
             }
+            Tok::Kw(Kw::Except) => {
+                Err(Diagnostic::new("`except` goes after the call it handles", self.span()).with_help(
+                    "write it on the call's line, as `x = f() except why:`, with the block under it",
+                ))
+            }
             Tok::Kw(Kw::Def) => {
                 let function = self.def()?;
                 let span = function.span;
@@ -327,7 +332,7 @@ impl Parser {
     fn lend_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
         let value = self.or_expr()?;
-        let otherwise = if self.eat_kw(Kw::Else) {
+        let otherwise = if self.eat_kw(Kw::Else) || self.eat_kw(Kw::Except) {
             self.expect_p(Punct::Colon)?;
             self.block()?
         } else {
@@ -387,6 +392,9 @@ impl Parser {
 fn python_only(word: &str, span: Span) -> Diagnostic {
     let help = match word {
         "raise" => "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error",
+        "try" | "finally" => {
+            "a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`"
+        }
         _ => {
             "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
         }

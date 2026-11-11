@@ -306,7 +306,7 @@ fn walk_expr(value: &Expr, visit: &mut dyn FnMut(&Expr)) {
         }
         ExprKind::Unary { expr, .. } | ExprKind::Lambda { body: expr, .. } => walk_expr(expr, visit),
         ExprKind::Binary { lhs: first, rhs: second, .. }
-        | ExprKind::Else { value: first, default: second }
+        | ExprKind::Else { value: first, default: second, .. }
         | ExprKind::Index { object: first, index: second } => {
             walk_expr(first, visit);
             walk_expr(second, visit);

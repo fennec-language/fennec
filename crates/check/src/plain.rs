@@ -129,7 +129,7 @@ impl Walk<'_> {
                     self.expr(context);
                 }
             }
-            ExprKind::Else { value, default } => {
+            ExprKind::Else { value, default, .. } => {
                 self.chain(value);
                 self.expr(default);
             }

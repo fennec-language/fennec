@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    names = ["Kit", "Ash"]
+    stdout.print(sorted(names, kye=name => name.len()))

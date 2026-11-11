@@ -2,7 +2,7 @@
 //! to be `None`, and `is None`, `else`, `fail` and `?`.
 
 use fennec_check::{Signatures, Type};
-use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Pattern, Span, UnaryOp};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, MatchArm, Pattern, Span, Stmt, StmtKind, UnaryOp};
 
 use super::places::Leaving;
 use super::{Lowered, Lowering, Options, Tail};
@@ -30,7 +30,7 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
 /// block calls.
 pub(super) struct OnFailure {
     pub(super) name: String,
-    pub(super) cleanup: Vec<fennec_syntax::Stmt>,
+    pub(super) cleanup: Vec<Stmt>,
 }
 
 impl Lowering<'_> {
@@ -264,6 +264,14 @@ impl Lowering<'_> {
             return self.tail_expr(default, tail);
         };
         self.scopes.push(std::collections::HashMap::new());
+        // One case on the line, `except InvalidValue(): 8080`, that binds nothing: the checker has
+        // it cover every failure, so its body runs as an `else` does, without taking the failure
+        // out to match it.
+        if let Some(body) = failure.and_then(|failure| one_case_binding_nothing(failure, block)) {
+            let lowered = self.stmts(body, tail);
+            self.scopes.pop();
+            return lowered;
+        }
         if let Some(failure) = failure {
             let Some(Type::Result(_, error)) = type_in(&self.locals, value) else {
                 return Err("it names the failure of something that can't fail".to_owned());
@@ -660,4 +668,29 @@ fn stop_on_failure(function: &mut Function, span: Span) {
 #[expect(clippy::cast_possible_truncation, reason = "rounding to the nearest f32 is what's meant")]
 pub(crate) fn nearest_f32(value: f64) -> f64 {
     f64::from(value as f32)
+}
+
+/// The body of the one case an `except` on the line wrote, when that case binds nothing: the
+/// block is the `match` over the failure's hidden name, with just that arm.
+fn one_case_binding_nothing<'b>(failure: &str, block: &'b [Stmt]) -> Option<&'b [Stmt]> {
+    if failure != format!("except{}failure", fennec_syntax::visit::HIDDEN) {
+        return None;
+    }
+    let [Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Match { subject, arms }, .. }), .. }] = block
+    else {
+        return None;
+    };
+    let [MatchArm { pattern, guard: None, body, .. }] = arms.as_slice() else { return None };
+    let over_it = matches!(&subject.kind, ExprKind::Name(name) if name == failure);
+    (over_it && binds_nothing(pattern)).then_some(body.as_slice())
+}
+
+/// Whether a pattern names nothing it matches.
+fn binds_nothing(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard | Pattern::Literal(_) => true,
+        Pattern::Bind(_) | Pattern::RefBind(_) => false,
+        Pattern::Variant { args, fields, .. } => fields.is_empty() && args.iter().all(binds_nothing),
+        Pattern::Tuple(patterns) | Pattern::Or(patterns) => patterns.iter().all(binds_nothing),
+    }
 }

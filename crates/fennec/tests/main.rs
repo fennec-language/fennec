@@ -9,6 +9,8 @@ mod hints;
 mod lint_fixes;
 mod live;
 mod llvm;
+#[cfg(test)]
+mod loader;
 mod lsp;
 mod parallel;
 mod projects;

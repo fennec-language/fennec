@@ -59,6 +59,29 @@ pub(super) enum Released {
     Missing,
 }
 
+/// Stops the program: a block was put in a table at an address another block there already has.
+/// Only a bug in Fennec gets here, two owners of one block's memory, and going on would free it
+/// while the new one is used.
+#[cfg(not(test))]
+#[cold]
+#[inline(never)]
+fn two_owners(address: usize) -> ! {
+    use std::io::Write as _;
+    super::write_kept_output();
+    let _ = writeln!(
+        std::io::stderr(),
+        "error: the runtime put a block at {address:#x}, where it already had one\n  \
+         = help: this is a bug in Fennec; please report it"
+    );
+    super::aot::stop_now(1)
+}
+
+/// [`two_owners`] in a test, which goes on to be caught, where a program stops.
+#[cfg(test)]
+fn two_owners(address: usize) -> ! {
+    panic!("the runtime put a block at {address:#x}, where it already had one");
+}
+
 /// An address's region, page in it, and place in the page. A 32-bit address space is one
 /// region.
 fn split(address: usize) -> (usize, usize, usize) {
@@ -176,7 +199,9 @@ impl Table {
         }
     }
 
-    /// Adds a block at its own address, replacing one already there.
+    /// Adds a block at its own address. Another already there would be a second owner of the same
+    /// memory, which only a bug in Fennec makes, so the program stops rather than free it under
+    /// the new one.
     pub(super) fn insert(&mut self, block: Box<[u64]>) {
         let address = at(&block);
         if block.len() < PLACED_WORDS || self.hashed {
@@ -185,9 +210,10 @@ impl Table {
         }
         match place_mut(&mut self.regions, address) {
             Some(slot) => {
-                if slot.is_none() {
-                    self.len += 1;
+                if slot.is_some() {
+                    two_owners(address);
                 }
+                self.len += 1;
                 *slot = Some(block);
             }
             None => self.insert_in_new_page(block),
@@ -198,9 +224,11 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn insert_short(&mut self, address: usize, block: Box<[u64]>) {
-        if self.short.insert(address, block).is_none() {
-            self.len += 1;
+        if self.short.contains_key(&address) {
+            two_owners(address);
         }
+        self.short.insert(address, block);
+        self.len += 1;
     }
 
     /// `insert`, for a block on a page with no block yet.
@@ -220,9 +248,10 @@ impl Table {
             self.made += 1;
         }
         if let Some(slot) = page.as_mut().and_then(|page| page.get_mut(place)) {
-            if slot.is_none() {
-                self.len += 1;
+            if slot.is_some() {
+                two_owners(at(&block));
             }
+            self.len += 1;
             *slot = Some(block);
         }
         if self.made >= self.kept.max(PAGES_BEFORE_LOOKING) {
@@ -331,6 +360,18 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block put where the table already has one stops the program, rather than free one under
+    /// the other: two empty blocks are the only ones safe code can give one address.
+    #[test]
+    #[should_panic(expected = "where it already had one")]
+    fn a_block_put_where_another_is_stops_rather_than_frees_it() {
+        let mut table = Table::hashed();
+        let first: Box<[u64]> = Box::new([]);
+        let second: Box<[u64]> = Box::new([]);
+        table.insert(first);
+        table.insert(second);
+    }
 
     #[test]
     #[should_panic(expected = "a string left with its place still kept")]

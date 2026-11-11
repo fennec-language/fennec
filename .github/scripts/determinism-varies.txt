@@ -1,0 +1,3 @@
+# Programs whose output is meant to vary from run to run, one a line: the path, then why. Each is
+# still recorded and replayed, which must agree; only its runs with other seeds, threads and load
+# aren't compared. A program belongs here only when varying is its point, like printing the time.

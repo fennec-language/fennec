@@ -438,7 +438,7 @@ fn nothing_waits_inside_a_lock() {
              def rest(clock: Clock):\n    clock.sleep(1s)\n\n\
              def deeper(clock: Clock):\n    rest(clock)\n\n\
              def bump(ref scores: Scores):\n    scores.total += 1\n\n\
-             def ask(jobs: Channel[int]) -> int fails Closed | Timeout:\n    jobs.receive()?\n\n\
+             def ask(jobs: Channel[int]) -> int fails Closed | Timeout:\n    jobs.receive() else fail Closed()\n\n\
              def through[T: Napper](napper: T, clock: Clock, shared_scores: shared Scores):\n    \
              lock shared_scores as held:\n        napper.nap(clock)\n        _ = held\n\n\
              def main(stdout: Stdout, clock: Clock, jobs: Channel[int]) fails Closed | Timeout:\n    \
@@ -458,7 +458,7 @@ fn nothing_waits_inside_a_lock() {
         ["`ask` waits on a channel's `receive` while `held` is locked"]
     );
     assert_eq!(
-        found("        got = jobs.receive()?\n        held.total += got\n"),
+        found("        got = jobs.receive() else fail Closed()\n        held.total += got\n"),
         ["`receive` waits on a channel's `receive` while `held` is locked"]
     );
     assert_eq!(

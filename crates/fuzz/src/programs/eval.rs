@@ -1391,7 +1391,11 @@ impl Machine {
                     _ => continue,
                 }
             }
-            let kept = if how == Leave::QuestionInside { checked(i.checked_mul(2))? } else { i };
+            let doubled = matches!(
+                how,
+                Leave::QuestionInside | Leave::QuestionNestedInner | Leave::QuestionNestedOuter
+            );
+            let kept = if doubled { checked(i.checked_mul(2))? } else { i };
             total = checked(total.checked_add(kept))?;
             let _ = writeln!(self.out, "kept {i}");
             for name in names.iter().rev() {

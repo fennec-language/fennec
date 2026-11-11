@@ -50,9 +50,22 @@ test "title and capitalize change only letters"():
     assert "3rd place".title() == "3Rd Place"
     assert "é".capitalize() == "É"
 
-test "wrap counts characters, and a width it can't meet puts each word on its own line"():
+test "a word starts in title case, so a letter whose upper case is two starts with one"():
+    # As Python writes them: `ß` is `SS` upper case, but `Ss` starting a word.
+    assert "ßa".capitalize() == "Ssa"
+    assert "ßa ßb".title() == "Ssa Ssb"
+    assert "ﬁx".capitalize() == "Fix"
+    assert "ßa".upper() == "SSA"
+    # A letter that's two Latin ones has a title case of its own.
+    assert "ǆungla".capitalize() == "ǅungla"
+    assert "ǈubav".title() == "ǈubav"
+
+test "wrap counts characters, and breaks a word longer than the width across lines"():
     assert string.wrap("日本語 です", width=2) == ["日本", "語", "です"]
-    assert string.wrap("one two three", width=0) == ["one", "two", "three"]
+    assert (
+        string.wrap("one two three", width=1)
+        == ["o", "n", "e", "t", "w", "o", "t", "h", "r", "e", "e"]
+    )
     assert string.wrap("", width=5) == []
 
 test "dedent takes off only what every line shares, tabs included"():

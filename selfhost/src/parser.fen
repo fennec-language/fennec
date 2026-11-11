@@ -306,7 +306,7 @@ struct Parser:
             elif annotations.len() == 0 and self.eat_keyword("pass"):
                 self.end_line()?
             elif is_enum or (is_error and self.at_case()):
-                type_def.cases.append(self.case()?)
+                type_def.cases.append(self.enum_case()?)
             else:
                 field = self.field(True)?
                 default_comes_last(type_def.fields, field)?
@@ -361,7 +361,7 @@ struct Parser:
             )
         Field(name=name, ty=ty, default=default, rule=rule, span=start.to(self.prev_span()))
 
-    def case(ref self) -> Case fails Diagnostic:
+    def enum_case(ref self) -> Case fails Diagnostic:
         start = self.span()
         name = self.name("an enum case")?
         mut fields = []

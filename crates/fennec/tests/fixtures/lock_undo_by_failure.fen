@@ -149,7 +149,7 @@ def main(stdout: Stdout):
     mut wrong = 0
     mut crashed = 0
     mut kept = 0
-    for case in range(3000):
+    for trial in range(3000):
         seed = picker.below(1000000)
         steps = 1 + picker.below(30)
         crash_at = picker.below(steps * 2)
@@ -168,7 +168,7 @@ def main(stdout: Stdout):
             ):
                 wrong += 1
                 if wrong < 4:
-                    stdout.print("case", case, held.words, words, held.numbers, numbers)
+                    stdout.print("case", trial, held.words, words, held.numbers, numbers)
                     stdout.print(held.counts.items(), counts.items(), held.names.items(), names.items())
                 # Back in step with what the shared value holds, to find the next.
                 words = list(held.words)

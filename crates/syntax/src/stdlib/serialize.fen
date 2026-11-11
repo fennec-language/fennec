@@ -43,11 +43,11 @@ export interface Serializer:
 
     ## An enum's case with no data, by name, and by where it is among the type's cases, `at`, for
     ## a format that saves no names.
-    def case(ref self, name: str, case: str, at: int)
+    def enum_case(ref self, name: str, case_name: str, at: int)
 
     ## Starts an enum's case with `count` fields of data, which follow as a struct's do. `at` is
     ## where it is among the type's cases.
-    def case_record(ref self, name: str, case: str, at: int, count: int)
+    def case_record(ref self, name: str, case_name: str, at: int, count: int)
 
     ## Starts a union's member, by its type's name, and `at`, where it is among the union's members,
     ## for a format that saves no names. Its own value follows, with `value`, and `end_member`
@@ -161,7 +161,7 @@ export interface Deserializer:
 
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError
     def end_case(ref self) fails ParseError
 
     ## Which of `names` the union's member that comes next is, as a place in it: each its type's

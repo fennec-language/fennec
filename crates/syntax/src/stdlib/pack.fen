@@ -470,10 +470,10 @@ export struct PackWriter:
     def end_items(ref self):
         pass
 
-    def case(ref self, name: str, case: str, at: int):
+    def enum_case(ref self, name: str, case_name: str, at: int):
         self._varint(at)
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
         self._optional = False
         self._varint(at)
 
@@ -821,7 +821,7 @@ export struct PackReader:
     def exact(self) -> bool:
         self._exact
 
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         start = self._at
         at = self._varint()?
         if at < 0 or at >= cases.len(): fail self._fail_at(start, f"`{name}` has no case {at}")
@@ -967,11 +967,11 @@ struct PackByName:
             open.append(node)
             for _ in range(n):
                 name = self._word()?
-                case = self._made(CASE)
+                case_name = self._made(CASE)
                 for _ in range(self._count()?):
                     field = self._word()?
-                    self._kid(case, field, ref open, depth + 1)?
-                self._kids[node].append(case)
+                    self._kid(case_name, field, ref open, depth + 1)?
+                self._kids[node].append(case_name)
                 self._names[node].append(name)
             _ = open.pop()
         elif kind == OWN:
@@ -1278,7 +1278,7 @@ struct PackByName:
         self._raw._exact
 
     ## A case by its name, which may be at another place among the cases now.
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         node = self._expect
         if self._kinds[node] != ENUM: fail self._was(f"a `{name}`")
         start = self._raw._at
@@ -1286,14 +1286,14 @@ struct PackByName:
         if at < 0 or at >= self._kids[node].len():
             fail self._raw._fail_at(start, f"`{name}` has no case {at}")
         saved = self._names[node][at]
-        case = self._kids[node][at]
+        case_name = self._kids[node][at]
         for found, each in enumerate(cases):
             if each[0] == saved:
                 if each[1]:
-                    self._case = case
+                    self._case = case_name
                 else:
                     # It has no fields now: those it was saved with are passed over.
-                    for kid in self._kids[case]:
+                    for kid in self._kids[case_name]:
                         self._skip(kid)?
                 return found
         fail self._raw._fail_at(

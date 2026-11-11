@@ -113,7 +113,10 @@ test "a connection closed here says so when it's written to"(net: Net):
     with net.listen(9000)? as _:
         with net.connect("localhost", 9000)? as client:
             client.close()
-            assert reason(() => client.write("late\n")?) == "the socket was closed here, so it can't be used any more"
+            assert (
+                reason(() => client.write("late\n")?)
+                == "the socket was closed here, so it can't be used any more"
+            )
 
 test "a packet sent where nothing listens is lost"(net: Net):
     with net.udp()? as socket:

@@ -849,7 +849,11 @@ impl Io {
         let Some(mut here) = self.servers.remove(&id) else { return };
         self.waiting.retain(|_, (task, ..)| !here.tasks.contains(task));
         self.ready.retain(|(task, _)| !here.tasks.contains(task));
-        for task in here.tasks.drain() {
+        // In the order the tasks started, not the set's, so their cleanups run the same way each
+        // time.
+        let mut tasks: Vec<TaskId> = here.tasks.drain().collect();
+        tasks.sort_unstable();
+        for task in tasks {
             self.owners.remove(&task);
             let _ = self.with_own_temporaries(task, |io| io.scheduler.cancel(task));
             self.temporaries.remove(&task);
@@ -1068,7 +1072,9 @@ impl Io {
     /// next message are woken, to end, before it drains as `break` does.
     fn drain_stopping(&mut self, id: u64) {
         if let Some(here) = self.servers.get(&id) {
-            let idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
+            let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
+            // In the order they parked, not the set's.
+            idle.sort_unstable();
             for token in idle {
                 let parked = self.waiting.get(&token).map(|(task, ..)| *task);
                 if let Some(task) = parked.filter(|task| here.tasks.contains(task)) {
@@ -1184,19 +1190,25 @@ impl Io {
                 self.ready.push_back((task, Wake::Ready(READY)));
             }
         }
-        let now = Instant::now();
-        let expired: Vec<usize> = self
-            .waiting
-            .iter()
-            .filter(|(_, (_, _, deadline))| deadline.is_some_and(|deadline| deadline <= now))
-            .map(|(token, _)| *token)
-            .collect();
-        for token in expired {
+        for token in timed_out(&self.waiting, Instant::now()) {
             if let Some((task, ..)) = self.waiting.remove(&token) {
                 self.ready.push_back((task, Wake::Ready(TIMED_OUT)));
             }
         }
     }
+}
+
+/// The waits whose deadlines have passed by `now`, soonest first and, at the same deadline, in the
+/// order they parked, rather than the map's: tasks sleeping as long wake in the order they slept.
+fn timed_out(waiting: &HashMap<usize, (TaskId, Interest, Option<Instant>)>, now: Instant) -> Vec<usize> {
+    let mut due: Vec<(Instant, usize)> = waiting
+        .iter()
+        .filter_map(|(token, (_, _, deadline))| {
+            deadline.filter(|deadline| *deadline <= now).map(|at| (at, *token))
+        })
+        .collect();
+    due.sort_unstable();
+    due.into_iter().map(|(_, token)| token).collect()
 }
 
 /// Waits for each worker to leave a server. A task parks meanwhile, looking again now and then, as

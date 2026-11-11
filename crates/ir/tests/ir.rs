@@ -1538,6 +1538,24 @@ fn a_tuple_pattern_tests_each_part() {
     );
 }
 
+/// One case on the line, `except InvalidValue(): 8080`, lowers as the old `else 8080` does: the
+/// case covers every failure and binds nothing, so the failure isn't taken out to match.
+#[test]
+fn one_case_that_binds_nothing_lowers_as_else_does() -> Result<(), String> {
+    let program = |handler: &str| {
+        format!(
+            "def port_of(text: str) -> int:\n    return int.parse(text) {handler}\n\ndef main(stdout: Stdout):\n    stdout.print(port_of(\"80\"))\n    return\n"
+        )
+    };
+    let old = printed(&program("else 8080"), "port_of")?;
+    let one_case = printed(&program("except InvalidValue(): 8080"), "port_of")?;
+    assert_eq!(one_case, old);
+    // One that binds what failed takes it out, as `except why:` does.
+    let named = printed(&program("except why: 8080 if why.message == \"\" else 1"), "port_of")?;
+    assert!(named.contains("err"), "{named}");
+    Ok(())
+}
+
 #[test]
 fn an_else_chain_gives_the_default_for_none() {
     let source = "struct P:
@@ -3076,8 +3094,8 @@ fn a_type_with_its_own_str_prints_through_it() {
 fn two_channels_of_different_types_in_one_function_lower() {
     let source = "from std.concurrent import Closed, Timeout, channel\n\n\
         def main(stdout: Stdout) fails Closed | Timeout:\n    \
-        with channel[int](size=4) as numbers:\n        numbers.send(1)?\n        stdout.print(numbers.receive()?)\n    \
-        with channel[list[float]](size=1) as lists:\n        lists.send([1.5])?\n        stdout.print(lists.receive()?)\n";
+        with channel[int](size=4) as numbers:\n        numbers.send(1)?\n        stdout.print(numbers.receive() else fail Closed())\n    \
+        with channel[list[float]](size=1) as lists:\n        lists.send([1.5])?\n        stdout.print(lists.receive() else fail Closed())\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
 }
@@ -3099,7 +3117,7 @@ fn a_task_failing_several_ways_lowers() {
         def tell(replies: Channel[int]) fails Closed | Timeout:\n    replies.send(1)?\n\n\
         def main(stdout: Stdout) fails Closed | Crashed | Timeout:\n    \
         with channel[int](size=4) as replies:\n        with launch(() => tell(replies)?)?:\n            pass\n        \
-        stdout.print(replies.receive()?)\n";
+        stdout.print(replies.receive() else fail Closed())\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
 }

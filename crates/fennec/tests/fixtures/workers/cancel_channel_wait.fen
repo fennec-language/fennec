@@ -1,5 +1,5 @@
-from std.net import NetError
 from std.concurrent import Channel, Closed, Timeout, channel
+from std.net import NetError
 
 error Boom:
     why: str
@@ -11,7 +11,7 @@ def serving(ch: Channel[int], net: Net, stdout: Stdout) fails NetError | Boom | 
             line = conn.read_line()? else "none"
             if line == "wait":
                 conn.write("waiting\n")?
-                got = ch.receive()?
+                got = ch.receive() else fail Closed()
                 conn.write(f"{got}\n")?
             else:
                 fail Boom(why="a round failed")

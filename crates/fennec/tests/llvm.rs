@@ -5605,7 +5605,7 @@ fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "task_crash_cleanup",
-        r#"from std.concurrent import Crashed, Sender, channel
+        r#"from std.concurrent import Crashed, Sender, Timeout, channel
 
 ## Says `text` on `done`, whether or not anything's there to hear it.
 def tell(done: Sender[str], text: str):
@@ -5638,7 +5638,9 @@ def launched(done: Sender[str], at: int) fails Crashed:
 def main(stdout: Stdout):
     with channel[str](size=4) as said:
         stdout.print(ran(said.sender(), at=1), said.receive() else "none")
-        stdout.print(ran(said.sender(), at=9), said.receive(timeout=1s) else "none")
+        ended = ran(said.sender(), at=9)
+        late = said.receive_within(1s) except Timeout(): None
+        stdout.print(ended, late else "none")
 "#,
         "ended finished\ncrashed crashed\n",
     )
@@ -13050,8 +13052,8 @@ def main(stdout: Stdout):
 }
 
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
-/// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
-/// timeout fails as `Timeout`.
+/// enough for a block, a struct held in place, and a list. A `receive_within` or `send_within`
+/// that waits past its time fails as `Timeout`.
 #[test]
 fn channels_carry_each_kind_of_message_natively() -> std::io::Result<()> {
     if !ready() {
@@ -13070,26 +13072,26 @@ def numbers(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=4) as ch:
         ch.send(7)?
         ch.send(8)?
-        stdout.print(ch.receive()?, ch.receive()?)
+        stdout.print(ch.receive() else fail Closed(), ch.receive() else fail Closed())
 
 def signs(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=2) as ints:
         ints.send(-7)?
-        stdout.print(ints.receive()?)
+        stdout.print(ints.receive() else fail Closed())
     with channel[float](size=2) as floats:
         floats.send(-1.5)?
-        stdout.print(floats.receive()?)
+        stdout.print(floats.receive() else fail Closed())
     with channel[u64](size=2) as big:
         half: u64 = 9223372036854775807
         big.send(half + half + 1)?
-        stdout.print(big.receive()?)
+        stdout.print(big.receive() else fail Closed())
     with channel[f32](size=2) as small:
         tenth: f32 = -0.1
         small.send(tenth)?
-        stdout.print(small.receive()?)
+        stdout.print(small.receive() else fail Closed())
     with channel[int](size=1) as waits:
-        got: int? = waits.receive(timeout=Duration(nanos=-5)) else as problem:
-            stdout.print(\"at once:\", problem)
+        got: int? = waits.receive_within(Duration(nanos=-5)) except problem:
+            stdout.print(\"at once:\", problem.waited)
             None
         if got is not None:
             stdout.print(\"got\", got)
@@ -13098,28 +13100,30 @@ def words(stdout: Stdout) fails Closed | Timeout:
     with channel[str](size=4) as ch:
         ch.send(\"hi\")?
         ch.send(\"a string long enough to live in a block of its own\")?
-        stdout.print(ch.receive()?, ch.receive()?.len())
+        short = ch.receive() else fail Closed()
+        long = ch.receive() else fail Closed()
+        stdout.print(short, long.len())
 
 def jobs(stdout: Stdout) fails Closed | Timeout:
     with channel[Job](size=2) as ch:
         ch.send(Job(name=\"first\", weight=3))?
-        got = ch.receive()?
+        got = ch.receive() else fail Closed()
         stdout.print(got.name, got.weight)
 
 def lists(stdout: Stdout) fails Closed | Timeout:
     with channel[list[float]](size=1) as ch:
         ch.send([1.5, 2.5])?
-        stdout.print(ch.receive()?)
+        stdout.print(ch.receive() else fail Closed())
 
 def waits(stdout: Stdout) fails Closed | Timeout:
     with channel[int](size=1) as ch:
-        got: int? = ch.receive(timeout=Duration(nanos=2_000_000)) else as problem:
-            stdout.print(\"empty:\", problem)
+        got: int? = ch.receive_within(Duration(nanos=2_000_000)) except problem:
+            stdout.print(\"empty:\", problem.waited)
             None
         if got is not None:
             stdout.print(\"got\", got)
         ch.send(1)?
-        ch.send(2, timeout=Duration(nanos=2_000_000)) else as full:
+        ch.send_within(2, Duration(nanos=2_000_000)) except full:
             stdout.print(\"full:\", full)
 
 def main(stdout: Stdout) fails Closed | Timeout:
@@ -13133,7 +13137,7 @@ def main(stdout: Stdout) fails Closed | Timeout:
     )?;
     assert_eq!(
         printed,
-        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: Timeout(waited=Duration(nanos=-5))\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: -5ns\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: 2ms\nfull: Timeout(waited=Duration(nanos=2000000))\n"
     );
     Ok(())
 }

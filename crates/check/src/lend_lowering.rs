@@ -1003,8 +1003,11 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
         let exit = caller.exit;
         let set = |kind: i64| assign(exit, int(kind, span), false, None);
         // A way out written in an `else`, or another `match` inside the line, leaves the block too.
+        // A loop's condition and what it goes through are its own, as its body is: a `break` there
+        // is the loop's, not the block's.
+        let own_loop = in_loop || matches!(stmt.kind, StmtKind::While { .. } | StmtKind::For { .. });
         for value in stmt_exprs(stmt) {
-            outer_cases(value, &mut |cases| exits(cases, caller, in_loop));
+            outer_cases(value, &mut |cases| exits(cases, caller, own_loop));
         }
         let replaced = match &mut stmt.kind {
             StmtKind::Return(value) => {
@@ -1106,11 +1109,16 @@ fn stmt_exprs(each: &mut Stmt) -> Vec<&mut Expr> {
 /// Calls `each` on the cases of every `match` in `value`, an `else`'s block among them, but not of
 /// one inside another's case, which `each` reaches through that case, nor one in a lambda, which
 /// leaves only the lambda.
+///
+/// The `match`es are told apart by their spans, worked out before `each` changes anything, so one
+/// `each` adds isn't walked. A `match` with the same span as one inside its own case would be taken
+/// as inner and left out: that needs a pass to copy one into its own case without new spans, which
+/// none does.
 fn outer_cases(value: &mut Expr, each: &mut dyn FnMut(&mut Vec<Stmt>)) {
     let mut inner = Vec::new();
     let mut outer = Vec::new();
-    let mut copy = value.clone();
-    fennec_syntax::visit::in_expr(&mut copy, &mut |expr| match &mut expr.kind {
+    // Only read here, though the walk takes it to change.
+    fennec_syntax::visit::in_expr(value, &mut |expr| match &mut expr.kind {
         ExprKind::Match { arms, .. } => {
             outer.push((expr.span.start, expr.span.end));
             for arm in arms {

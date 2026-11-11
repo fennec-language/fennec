@@ -1,0 +1,5 @@
+def doubled(count: int) -> int:
+    count? * 2
+
+def main(stdout: Stdout):
+    stdout.print(doubled(2))

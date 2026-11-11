@@ -4847,6 +4847,165 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A crash runs a cleanup with a `?` in it, wherever the `?` is, and stops it where one fails: a
+/// line of its own, a value kept, one deeper in a line, and a `fail` in a loop each end it, with the
+/// rest skipped, and its failure said under the crash as a note, while a `?` in a function written
+/// there passes up from that function. A cleanup with any of these once didn't run at all.
+#[test]
+fn a_crash_runs_a_cleanup_with_a_question_mark_until_one_fails() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_question_marks")?;
+    let program = dir.join("cleanup.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_question_marks.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("cleanup"));
+    let output = output.to_string_lossy().into_owned();
+    // What each crash's cleanup prints, and the failure that ended it, if one did.
+    let wanted = [
+        ("1", "cleanup 1\nkept 1\ndeeper 1\n", Some("Refused(code=1)")),
+        ("3", "cleanup 3\nkept 3\ndeeper 3\ninner 3\nended 3\n", None),
+        ("4", "cleanup 4\nkept 4\ndeeper 4\ninner 4\n", Some("Refused(code=4)")),
+        ("7", "cleanup 7\nkept 7\ndeeper 7\ninner -1\n", Some("Refused(code=7)")),
+        ("12", "cleanup 12\nkept 12\n", Some("Refused(code=12)")),
+        ("25", "cleanup 25\n", Some("Refused(code=25)")),
+    ];
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for (code, out, failed) in wanted {
+            let ran = Command::new(&output).arg(code).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {code}: {err}");
+            assert!(!ran.status.success(), "{how:?} {code}");
+            assert!(err.contains(&format!("index {code} is out of range for length 1")), "{err}");
+            // A failure is a note under the crash's message, on the line after it.
+            let crashed = format!("error: index {code} is out of range for length 1\n");
+            let noted = failed.map(|failure| format!("{crashed}note: the cleanup failed: {failure}\n"));
+            assert!(err.contains(noted.as_deref().unwrap_or(&crashed)), "{how:?} {code}: {err}");
+            assert_eq!(err.matches("note: ").count(), usize::from(failed.is_some()), "{how:?} {code}: {err}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A crash's cleanup whose own failure passes from an `else as` block or through `? from`, with a
+/// function written inside a case of a `match` whose `?` stays its own: each ends the cleanup where
+/// it fails, noted under the crash, and one that crashes too has nothing noted. A `fail` in such a
+/// block, or a function's `?` taken as the cleanup's, once made the cleanup's rewrite an internal
+/// error.
+#[test]
+fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_shapes")?;
+    let program = dir.join("shapes.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_shapes.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("shapes"));
+    let output = output.to_string_lossy().into_owned();
+    // What each crash's cleanup prints, and the note under the crash, if any.
+    let wanted = [
+        ("25", "cleanup 25\n", Some("Wrapped(why=\"Refused(code=25)\")")),
+        ("6", "cleanup 6\nkept 6\ninner -1\nended 6\n", None),
+        ("12", "cleanup 12\nkept 12\ninner -1\n", Some("Wrapped(why=\"too big\")")),
+        ("4", "cleanup 4\nkept 4\nother\nended 4\n", None),
+        ("7", "cleanup 7\n", None),
+    ];
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for (code, out, failed) in wanted {
+            let ran = Command::new(&output).arg(code).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {code}: {err}");
+            assert!(!ran.status.success(), "{how:?} {code}");
+            let crashed = format!("error: index {code} is out of range for length 1\n");
+            let noted = failed.map(|failure| format!("{crashed}note: the cleanup failed: {failure}\n"));
+            assert!(err.contains(noted.as_deref().unwrap_or(&crashed)), "{how:?} {code}: {err}");
+            assert_eq!(err.matches("note: ").count(), usize::from(failed.is_some()), "{how:?} {code}: {err}");
+            // A cleanup that crashes too gives back nothing to note, and its crash is said apart.
+            let again = "index 7 is out of range for length 2 (while cleaning up after a crash)";
+            assert_eq!(err.contains(again), code == "7", "{how:?} {code}: {err}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Not built yet: a crash's cleanup with a `?` inside a comprehension, which can't end the cleanup
+/// from where it is, doesn't run at all, as before any `?` could be in one. The program builds and
+/// crashes as it would with no cleanup. Turning the comprehension into a loop would let it run.
+#[test]
+fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "error Refused:\n    code: int\n\ndef capped(n: int, limit: int) -> int fails Refused:\n    if n > limit:\n        fail Refused(code=n)\n    n\n\ndef guarded(code: int, stdout: Stdout) -> with int fails Refused:\n    lend code else:\n        stdout.print(\"cleanup\", code)\n        kept = [capped(step, limit=code)? for step in range(3)]\n        stdout.print(\"kept\", kept.len())\n    stdout.print(\"released\", code)\n\ndef crashes(code: int, stdout: Stdout) fails Refused:\n    with guarded(code, stdout)? as held:\n        values = [1]\n        stdout.print(values[held])\n\ndef main(stdout: Stdout):\n    crashes(4, stdout) else:\n        stdout.print(\"failed\")\n";
+    let dir = folder("crash_cleanup_comprehension")?;
+    let program = dir.join("comprehension.fen");
+    std::fs::write(&program, source)?;
+    let output = dir.join("comprehension").to_string_lossy().into_owned();
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &output], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&output).output_within()?;
+    let err = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "", "{err}");
+    assert!(err.contains("index 4 is out of range for length 1"), "{err}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A launched task that crashes inside a `with` runs its source's cleanup, which a failing `x = f()?`
+/// or a `fail` in a loop ends, with its failure said under the task's crash, and the task's crash
+/// still comes out as `Crashed`.
+#[test]
+fn a_crashing_task_s_cleanup_ends_where_it_fails_and_says_so() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_in_a_task")?;
+    let program = dir.join("task.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_in_a_task.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("task"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "crashed, cleanup 9\ncrashed, cleanup 2\ncrashed, cleanup 4, ended 4\n",
+            "{how:?}: {err}"
+        );
+        let notes: Vec<&str> = err.lines().filter(|line| line.starts_with("note: ")).collect();
+        assert_eq!(
+            notes,
+            ["note: the cleanup failed: Refused(code=9)", "note: the cleanup failed: Refused(code=2)"],
+            "{how:?}: {err}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task that crashes inside a `with` runs the block's `lend x else:` before its crash ends it,
 /// and a task that doesn't runs the rest of the source instead.
 #[test]
@@ -5585,6 +5744,57 @@ def main(stdout: Stdout):
     stdout.print(matched(store, 0), matched(store, 3))
 "#,
         "lite x 40 4\n400 7\n",
+    )
+}
+
+/// A function whose last line is a `with` over a source that can fail after its `lend`, whose
+/// block's last line is the value it gives back: alone, in each branch of an `if`, and in a case
+/// of a `match`. The source's code after `lend` is written in after the block, so the value was
+/// lost and the build stopped with an internal error. A failure after `lend` still passes up.
+#[test]
+fn a_with_whose_last_line_is_the_functions_value_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "with_last_value",
+        r#"error Refused:
+    code: int
+
+struct Tally:
+    count: int
+
+def held(code: int) -> with Tally fails Refused:
+    lend Tally(count=code)
+    if code == 3:
+        fail Refused(code=code)
+
+def counted(code: int) -> int fails Refused:
+    with held(code)? as tally:
+        tally.count
+
+def branched(code: int, twice: bool) -> int fails Refused:
+    if twice:
+        with held(code)? as tally:
+            tally.count * 2
+    else:
+        with held(code)? as tally:
+            tally.count
+
+def matched(code: int) -> str fails Refused:
+    match code:
+        case 0:
+            "none"
+        case _:
+            with held(code)? as tally:
+                f"tally {tally.count}"
+
+def main(stdout: Stdout):
+    stdout.print(counted(4) else 0, counted(3) else 0)
+    stdout.print(branched(4, twice=True) else 0, branched(5, twice=False) else 0, branched(3, twice=True) else -1)
+    stdout.print(matched(0) else "failed", matched(6) else "failed", matched(3) else "failed")
+"#,
+        "4 0\n8 5 -1\nnone tally 6 failed\n",
     )
 }
 
@@ -8166,6 +8376,58 @@ fn failing_partway() -> String {
     format!(
         "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    total\n"
     )
+}
+
+/// A function too big to optimize in reasonable time, `long` of 400 lines that each make a list
+/// and a string, is compiled as written: in a dev build on its own, and in a release apart from
+/// the whole, which keeps what it calls, the runtime's formatting that only it uses included. Both
+/// print what it adds up.
+#[test]
+fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let lines = 400;
+    let mut body = String::new();
+    let mut total: i64 = 0;
+    for line in 0..lines {
+        let _ = writeln!(
+            body,
+            "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + f\"{{total}}\".len()"
+        );
+        let picked = if line % 2 == 0 { line } else { line + 1 };
+        let written = i64::try_from(total.to_string().len()).unwrap_or(0);
+        total += picked + written;
+    }
+    let source = format!(
+        "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+    );
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("huge_function")?;
+        let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
+        std::fs::write(&program, &source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(built.status.success(), "{how:?}: {said}");
+        // It runs slower, so the build says so.
+        assert!(said.contains("hint: `long` is too big to optimize"), "{how:?}: {said}");
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            format!("{total}\n"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
 }
 
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed

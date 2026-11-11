@@ -12,7 +12,7 @@ error: can't mix int and float in `+`
 7 |     stdout.print(enemy.health + 0.5)
   |                  ^^^^^^^^^^^^^^^^^^
   |
-  = help: convert one side with float(...) or int(...)
+  = help: convert one side with `float(...)` or `int(...)`
 
 error: there's no global `print`
  --> examples/errors/several.fen:8:5

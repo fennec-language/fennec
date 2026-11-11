@@ -1,0 +1,11 @@
+enum Shape:
+    Circle(radius: float)
+    Square(side: float)
+
+def size(shape: Shape) -> float:
+    match shape:
+        case .Circle(radius) | .Square(side):
+            1.0
+
+def main(stdout: Stdout):
+    stdout.print(size(.Circle(radius=1.0)))

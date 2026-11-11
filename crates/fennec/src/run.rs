@@ -247,9 +247,8 @@ fn reached(
     let program = loaded.ok_or(ExitCode::FAILURE)?;
     let name = passed_name(path);
     let embedded = program.embedded_texts();
-    let text = fingerprint(
-        program.sources.files().chain(embedded.iter().map(|(path, text)| (path.as_str(), text.as_str()))),
-    );
+    let embedded = embedded.iter().map(|(path, text)| (path.as_str(), fennec_blake3::hash(text.as_bytes())));
+    let text = fingerprint(program.sources.hashed_files().chain(embedded));
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
         // An edit that only changed functions' bodies is checked on its own, which is all a
         // change there can break, rather than checking all of a big kit again.
@@ -307,16 +306,18 @@ pub(crate) fn absolute(path: &str) -> String {
     std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |path| path.display().to_string())
 }
 
-/// A hash of every file of a program, by name and text, and of which build of Fennec read
-/// them, since another build's checker may find what this one doesn't.
-pub(crate) fn fingerprint<'t>(files: impl Iterator<Item = (&'t str, &'t str)>) -> fennec_blake3::Hash {
-    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build cache 2026-10-31 passed check");
+/// A hash of every file of a program, by name and the hash of its text, and of which build of
+/// Fennec read them, since another build's checker may find what this one doesn't. A loaded
+/// program's texts were hashed as they were parsed, so they aren't read through again here.
+pub(crate) fn fingerprint<'t>(
+    files: impl Iterator<Item = (&'t str, fennec_blake3::Hash)>,
+) -> fennec_blake3::Hash {
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build cache 2026-11-10 passed check");
     hasher.update(env!("FENNEC_BUILD").as_bytes());
     for (path, text) in files {
-        for part in [path, text] {
-            hasher.update(&part.len().to_le_bytes());
-            hasher.update(part.as_bytes());
-        }
+        hasher.update(&path.len().to_le_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(text.as_bytes());
     }
     hasher.finalize()
 }

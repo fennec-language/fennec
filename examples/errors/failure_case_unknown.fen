@@ -1,0 +1,20 @@
+error Bad:
+    why: str
+
+error Lost:
+    Gone
+    Moved(to: str)
+
+def risky(n: int) -> int fails Bad | Lost:
+    if n < 0: fail Bad(why="negative")
+    if n == 0: fail .Gone
+    n
+
+def main(stdout: Stdout):
+    value = risky(1) else as why:
+        match why:
+            case .Gon:
+                0
+            case _:
+                1
+    stdout.print(value)

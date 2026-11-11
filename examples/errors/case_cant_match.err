@@ -1,0 +1,7 @@
+error: this case can't match: the value is an int, and this is a str
+ --> examples/errors/case_cant_match.fen:3:14
+  |
+3 |         case "one":
+  |              ^^^^^
+  |
+  = help: write an int here instead, or `case _:` for anything else

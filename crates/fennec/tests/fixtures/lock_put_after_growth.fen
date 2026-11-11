@@ -1,0 +1,152 @@
+## A lookup, then puts of new keys that grow the dict and move it to a block of its own, then a put
+## of the key looked up: the put goes in the dict as it is now, never in the old block the
+## lookup's entry was in. Outside a lock, in a lock on a struct's dict, and in a lock on a dict.
+struct Box:
+    counts: dict[int, int]
+
+def plain(stdout: Stdout):
+    mut b = Box(counts={1: 1})
+    x = b.counts.get(1) else 0
+    b.counts[100] = 100
+    b.counts[101] = 101
+    b.counts[102] = 102
+    b.counts[103] = 103
+    b.counts[104] = 104
+    b.counts[105] = 105
+    b.counts[106] = 106
+    b.counts[107] = 107
+    b.counts[108] = 108
+    b.counts[109] = 109
+    b.counts[110] = 110
+    b.counts[111] = 111
+    b.counts[112] = 112
+    b.counts[113] = 113
+    b.counts[114] = 114
+    b.counts[115] = 115
+    b.counts[116] = 116
+    b.counts[117] = 117
+    b.counts[118] = 118
+    b.counts[119] = 119
+    b.counts[120] = 120
+    b.counts[121] = 121
+    b.counts[122] = 122
+    b.counts[123] = 123
+    b.counts[124] = 124
+    b.counts[125] = 125
+    b.counts[126] = 126
+    b.counts[127] = 127
+    b.counts[128] = 128
+    b.counts[129] = 129
+    b.counts[130] = 130
+    b.counts[131] = 131
+    b.counts[132] = 132
+    b.counts[133] = 133
+    b.counts[134] = 134
+    b.counts[135] = 135
+    b.counts[136] = 136
+    b.counts[137] = 137
+    b.counts[138] = 138
+    b.counts[139] = 139
+    b.counts[1] = x + 5
+    stdout.print("plain", b.counts[1], b.counts.len())
+
+def locked(stdout: Stdout):
+    shared box = Box(counts={1: 1})
+    lock box as ref held:
+        x = held.counts.get(1) else 0
+        held.counts[100] = 100
+        held.counts[101] = 101
+        held.counts[102] = 102
+        held.counts[103] = 103
+        held.counts[104] = 104
+        held.counts[105] = 105
+        held.counts[106] = 106
+        held.counts[107] = 107
+        held.counts[108] = 108
+        held.counts[109] = 109
+        held.counts[110] = 110
+        held.counts[111] = 111
+        held.counts[112] = 112
+        held.counts[113] = 113
+        held.counts[114] = 114
+        held.counts[115] = 115
+        held.counts[116] = 116
+        held.counts[117] = 117
+        held.counts[118] = 118
+        held.counts[119] = 119
+        held.counts[120] = 120
+        held.counts[121] = 121
+        held.counts[122] = 122
+        held.counts[123] = 123
+        held.counts[124] = 124
+        held.counts[125] = 125
+        held.counts[126] = 126
+        held.counts[127] = 127
+        held.counts[128] = 128
+        held.counts[129] = 129
+        held.counts[130] = 130
+        held.counts[131] = 131
+        held.counts[132] = 132
+        held.counts[133] = 133
+        held.counts[134] = 134
+        held.counts[135] = 135
+        held.counts[136] = 136
+        held.counts[137] = 137
+        held.counts[138] = 138
+        held.counts[139] = 139
+        held.counts[1] = x + 5
+    lock box as held:
+        stdout.print("locked", held.counts[1], held.counts.len())
+
+def locked_dict(stdout: Stdout):
+    shared counts = {1: 1}
+    lock counts as ref held:
+        x = held.get(1) else 0
+        held[100] = 100
+        held[101] = 101
+        held[102] = 102
+        held[103] = 103
+        held[104] = 104
+        held[105] = 105
+        held[106] = 106
+        held[107] = 107
+        held[108] = 108
+        held[109] = 109
+        held[110] = 110
+        held[111] = 111
+        held[112] = 112
+        held[113] = 113
+        held[114] = 114
+        held[115] = 115
+        held[116] = 116
+        held[117] = 117
+        held[118] = 118
+        held[119] = 119
+        held[120] = 120
+        held[121] = 121
+        held[122] = 122
+        held[123] = 123
+        held[124] = 124
+        held[125] = 125
+        held[126] = 126
+        held[127] = 127
+        held[128] = 128
+        held[129] = 129
+        held[130] = 130
+        held[131] = 131
+        held[132] = 132
+        held[133] = 133
+        held[134] = 134
+        held[135] = 135
+        held[136] = 136
+        held[137] = 137
+        held[138] = 138
+        held[139] = 139
+        held[1] = x + 5
+    lock counts as held:
+        stdout.print("locked dict", held[1], held.len())
+
+def main(stdout: Stdout):
+    plain(stdout)
+    locked(stdout)
+    locked_dict(stdout)

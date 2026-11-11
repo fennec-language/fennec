@@ -1,0 +1,13 @@
+enum Light:
+    Red
+    Green
+
+def named(light: Light) -> str:
+    match light:
+        case .Gren:
+            "go"
+        case _:
+            "stop"
+
+def main(stdout: Stdout):
+    stdout.print(named(.Red))

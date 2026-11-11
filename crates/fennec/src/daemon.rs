@@ -347,7 +347,7 @@ mod unix {
                     // Once a second: whether another daemon took the path, leaving this one
                     // unreachable. It leaves the other's socket where it is.
                     ticks = ticks.wrapping_add(1);
-                    if ticks % 50 == 0 && replaced() {
+                    if ticks.is_multiple_of(50) && replaced() {
                         return ExitCode::SUCCESS;
                     }
                     // The daemon owns the cache, so it keeps it under its cap, in time when
@@ -532,7 +532,9 @@ mod unix {
         #[test]
         fn the_sockets_folder_is_its_users_alone() {
             use std::os::unix::fs::PermissionsExt;
-            let home = fennec_temp::Temp::folder("private-daemon").unwrap();
+            // Short, so the socket fits in Fennec's own folder rather than the one under `/tmp`.
+            let home = fennec_temp::Temp::at(Path::new("/tmp").join(format!("fpd-{}", std::process::id())));
+            std::fs::create_dir_all(&home).unwrap();
             let socket = socket_in(&home, None, true).unwrap();
             assert_eq!(socket.parent(), Some(home.join("daemon").as_path()));
             let mode =

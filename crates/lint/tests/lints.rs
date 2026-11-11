@@ -583,12 +583,17 @@ fn pass_is_only_for_an_empty_block() {
     assert_eq!(fixed(source), "def f():\n    \n    g()\n");
 }
 
+/// A `def` gives its value with `return`, its last line's too, so no lint flags one there or
+/// takes it off.
 #[test]
-fn a_last_line_needs_no_return() {
-    let source = "def f() -> int:\n    return 1\n";
-    assert_eq!(rules(source), ["needless-return"]);
-    assert_eq!(fixed(source), "def f() -> int:\n    1\n");
-    assert_eq!(rules("def f(a: bool) -> int:\n    if a: return 1\n    2\n"), NONE);
+fn a_last_line_keeps_its_return() {
+    for source in [
+        "def f() -> int:\n    return 1\n",
+        "def f(a: bool) -> int:\n    if a:\n        return 1\n    return 2\n",
+        "def f():\n    g()\n    return\n",
+    ] {
+        assert_eq!(rules(source), NONE, "{source}");
+    }
 }
 
 #[test]
@@ -797,9 +802,9 @@ fn an_else_after_branches_that_leave_goes() {
 #[test]
 fn an_if_that_only_gives_back_its_condition_is_its_condition() {
     for (written, plain) in [
-        ("    if a > 0: return True\n    False\n", "    a > 0\n"),
-        ("    if a > 0: return False\n    return True\n", "    not (a > 0)\n"),
-        ("    if a > 0:\n        return True\n    else:\n        return False\n", "    a > 0\n"),
+        ("    if a > 0: return True\n    False\n", "    return a > 0\n"),
+        ("    if a > 0: return False\n    return True\n", "    return not (a > 0)\n"),
+        ("    if a > 0:\n        return True\n    else:\n        return False\n", "    return a > 0\n"),
     ] {
         let source = format!("def f(a: int) -> bool:\n{written}");
         assert!(rules(&source).contains(&"return-bool"), "{written}");
@@ -1121,5 +1126,5 @@ fn the_file_put_beside_each_tests_parses_and_has_lints_of_its_own() {
     let rules: Vec<&str> = module
         .map(|module| lint(&module, &sources).iter().map(|lint| lint.rule).collect())
         .unwrap_or_default();
-    assert!(rules.contains(&"unused-name") && rules.contains(&"needless-return"), "{rules:?}");
+    assert!(rules.contains(&"unused-name"), "{rules:?}");
 }

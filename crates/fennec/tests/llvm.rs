@@ -2155,6 +2155,91 @@ def main(stdout: Stdout):
 
 /// Natively, a place's index can be known from the line before, so a call that changes the index
 /// has to forget it. A call that changes the index of a place it's also given doesn't compile.
+/// An index proven not negative is checked once, unsigned. One kept as -1 for none still counts
+/// from the end where nothing says it isn't -1, and one counted down past 0 does too. Built
+/// checking proofs, so a wrong proof would stop the program.
+#[test]
+fn an_index_proven_not_negative_and_one_that_counts_from_the_end() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"import std.json as json
+
+NONE = -1
+
+struct Node:
+    next: int
+
+struct Cursor:
+    at: int
+
+def pick(xs: list[int], cursor: Cursor) -> int:
+    xs[cursor.at]
+
+def walk(nodes: list[Node], start: int) -> int:
+    mut at = start
+    mut seen = 0
+    while at != NONE:
+        seen += 1
+        at = nodes[at].next
+    seen
+
+def last_of(nodes: list[Node], at: int) -> int:
+    nodes[at].next
+
+def down(xs: list[int]) -> int:
+    mut i = xs.len() - 1
+    mut total = 0
+    while i >= 0:
+        total += xs[i]
+        i -= 1
+    total
+
+def down_too_far(xs: list[int]) -> int:
+    mut i = xs.len() - 1
+    mut total = 0
+    while i > -3:
+        total += xs[i]
+        i -= 1
+    total
+
+def main(stdout: Stdout):
+    nodes = [Node(next=2), Node(next=NONE), Node(next=1)]
+    stdout.print(walk(nodes, start=0), last_of(nodes, at=NONE))
+    stdout.print(down([1, 2, 3]), down_too_far([1, 2, 3]))
+    xs = [10, 20, 30]
+    read = json.loads[Cursor]("{\"at\": -1}") else Cursor(at=0)
+    stdout.print(pick(xs, Cursor(at=1)), pick(xs, read))
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("index_signs")?;
+        let (program, executable) = (dir.join("signs.fen"), dir.join("signs"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        // `walk` goes 0, 2, 1; `last_of` reads the last node; `down_too_far` adds 3, 2, 1, then
+        // xs[-1] and xs[-2], 3 and 2. A cursor JSON gave -1 reads the last item: a field a reader
+        // can fill isn't proven, however the program itself sets it.
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "3 1\n6 11\n20 30\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {
@@ -6636,6 +6721,66 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     let interpreted = interpreted_by(&program, "own_text_inside")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
+    Ok(())
+}
+
+/// A value whose field writes its own text prints the same alone as inside a union or a list:
+/// the channel's `Timeout`, whose `Duration` has its own `def str`, didn't build printed alone.
+#[test]
+fn a_value_whose_field_writes_its_own_text_prints_the_same_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Tag:
+    name: str
+
+    def str(self, ref out: StrWriter):
+        out.write("<" + self.name + ">")
+
+error Late:
+    tag: Tag
+    after: int
+
+error Gone:
+    why: str
+
+struct Holder:
+    tag: Tag
+
+def main(stdout: Stdout):
+    late = Late(tag=Tag(name="t"), after=3)
+    stdout.print(late)
+    either: Late | Gone = late
+    stdout.print(either)
+    stdout.print([late])
+    held = Holder(tag=Tag(name="h"))
+    stdout.print(held)
+    stdout.print([held])
+    stdout.print(f"{held} and {late}")
+"#;
+    let dir = folder("own-text-alone")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"].into_iter().chain(how.iter().copied()).collect();
+        let built = fennec(&[&args[..], &[&path(&program), "-o", &path(&executable)]].concat(), &dir)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+        let lines: Vec<&str> = printed.lines().collect();
+        let [alone, in_union, in_list, holder, holders, formatted] = lines[..] else {
+            panic!("{how:?}: {printed}{}", String::from_utf8_lossy(&ran.stderr));
+        };
+        assert!(alone.contains("<t>"), "{how:?}: {printed}");
+        assert_eq!(alone, in_union, "{how:?}");
+        assert_eq!(format!("[{alone}]"), in_list, "{how:?}");
+        assert!(holder.contains("<h>"), "{how:?}: {printed}");
+        assert_eq!(format!("[{holder}]"), holders, "{how:?}");
+        assert_eq!(formatted, format!("{holder} and {alone}"), "{how:?}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -15960,6 +16105,24 @@ fn a_list_of_strings_finds_its_items_by_text_however_held() -> std::io::Result<(
         include_str!("fixtures/string_list_in.fen"),
         "True True 0 False\nTrue True 1 False\nTrue True 2 False\nTrue True 3 False\nTrue True 4 False\n\
          True True 5 False\nTrue True 6 False\nFalse False False False\n5 False False True\n",
+    )
+}
+
+/// Enums held in blocks, as one holding itself is, compare by case first, with no call for another
+/// case, and the same case compares its fields: a string, a list, a float, itself and none. `!=`
+/// is the opposite, a value is equal to itself, and a module constant compares as one made here.
+#[test]
+fn enums_in_blocks_compare_by_case_then_fields() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "boxed_enum_equal",
+        include_str!("fixtures/boxed_enum_equal.fen"),
+        "False True False True False False False True\nTrue False False True False False False True\n\
+         False False True True False False False True\nFalse False False False False False False True\n\
+         False False False True True False False True\nFalse False False True False True False True\n\
+         False False False True False False True True\nTrue True True\n",
     )
 }
 

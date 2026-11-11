@@ -1225,6 +1225,9 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
     // gives back may be nothing, which no name holds.
     if let StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) = &held.kind {
         let span = held.span;
+        // The `?`s inside what it's of run first, each with the cleanup on its failure.
+        let mut value = value.as_ref().clone();
+        hoist_inside(&mut value, otherwise, before, made, span);
         let ok = MatchArm {
             pattern: Pattern::Variant {
                 name: "Ok".to_owned(),
@@ -1237,7 +1240,7 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             span: here(span),
         };
         let matched = Expr {
-            kind: ExprKind::Match { subject: value.clone(), arms: vec![ok, failed_arm(otherwise, span)] },
+            kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, failed_arm(otherwise, span)] },
             span: here(span),
         };
         held.kind = StmtKind::Expr(matched);
@@ -1277,19 +1280,31 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             }
             _ => {}
         }
-        let Some((got, value)) = taken else { return false };
+        let Some((got, mut value)) = taken else { return false };
         *made += 1;
+        // What was taken out may hold `?`s of its own, as `f(g()?)?` does, which go before it:
+        // once it's the subject of the `match` below, nothing would look inside it again.
+        hoist_inside(&mut value, otherwise, before, made, span);
         let ok = arm("Ok", "value__try", vec![stmt_value(name("value__try", span))], span);
         let matched = Expr {
             kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, failed_arm(otherwise, span)] },
             span: here(span),
         };
-        let mut hoisted = assign(&got, matched, false, None);
-        // What was taken out may hold `?`s of its own, which go before it.
-        let mut inner = Vec::new();
-        let _ = hoist_tries(&mut hoisted, otherwise, &mut inner, made);
+        before.push(assign(&got, matched, false, None));
+    }
+}
+
+/// Takes every `?` out of `value` that always runs, innermost first, into `before`, each with the
+/// cleanup on its failure, leaving a name for what it gave.
+fn hoist_inside(value: &mut Expr, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize, span: Span) {
+    // As the value of a `return`, so a `?` that's all of it is taken out too, as one inside is.
+    let mut held = stmt(StmtKind::Return(Some(value.clone())), span);
+    let mut inner = Vec::new();
+    if hoist_tries(&mut held, otherwise, &mut inner, made) || !inner.is_empty() {
         before.extend(inner);
-        before.push(hoisted);
+        if let StmtKind::Return(Some(rewritten)) = held.kind {
+            *value = rewritten;
+        }
     }
 }
 
@@ -1797,7 +1812,12 @@ fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
     change(value);
     match &mut value.kind {
         ExprKind::Call { callee, args } => {
-            outside_functions(callee, change);
+            // A call's `[...]` names types, as `db.query[int?](...)` does, where a `?` is an
+            // optional's, not one that fails.
+            match &mut callee.kind {
+                ExprKind::Index { object, .. } => outside_functions(object, change),
+                _ => outside_functions(callee, change),
+            }
             for arg in args {
                 outside_functions(&mut arg.value, change);
             }
@@ -1829,7 +1849,19 @@ fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
             }
         }
         ExprKind::Unary { expr, .. } => outside_functions(expr, change),
-        ExprKind::Try { value, .. } => outside_functions(value, change),
+        ExprKind::Slice { object, start, end } => {
+            outside_functions(object, change);
+            for bound in [start, end].into_iter().flatten() {
+                outside_functions(bound, change);
+            }
+        }
+        // Only what always runs: a conditional's test, the value before `else`, a match's subject,
+        // and what a `?` is of. A `?` that might not run, in a branch, after `else` or past `and`
+        // or `or`, is refused in a source's block (`lend::unplaced_try`), so it's never here.
+        ExprKind::Cond { cond: always, .. }
+        | ExprKind::Else { value: always, .. }
+        | ExprKind::Match { subject: always, .. }
+        | ExprKind::Try { value: always, .. } => outside_functions(always, change),
         ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
             for item in items {
                 outside_functions(item, change);

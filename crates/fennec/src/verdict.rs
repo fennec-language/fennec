@@ -200,6 +200,10 @@ pub(crate) fn plan(
     })
 }
 
+/// What checking an edit on its own found: the lock verdicts and the changed files as loaded, when
+/// it passed, or the program and its mistakes, when it didn't.
+pub(crate) type Quickly = Result<(LockVerdicts, Option<Program>), (Program, Vec<fennec_syntax::Diagnostic>)>;
+
 /// What each function waits on or locks, by its key, as the checker judges a `lock` that calls it.
 pub(crate) type LockVerdicts = BTreeMap<String, String>;
 
@@ -276,12 +280,9 @@ fn checked_name(path: &str) -> String {
 ///
 /// A body can still reach a `lock` in a file it doesn't import: one that calls it, which a `lock`
 /// refuses if it now waits or locks, however many calls down. So each changed function's lock
-/// verdict has to be what the last full check found, and those verdicts are what a pass gives.
-pub(crate) fn checked_quickly(
-    path: &str,
-    cache: &Cache,
-    files: &[KitFile],
-) -> Option<Result<LockVerdicts, (Program, Vec<fennec_syntax::Diagnostic>)>> {
+/// verdict has to be what the last full check found, and those verdicts are what a pass gives,
+/// with the changed files and what they import, as loaded, which a run patches its program from.
+pub(crate) fn checked_quickly(path: &str, cache: &Cache, files: &[KitFile]) -> Option<Quickly> {
     let state = cache.kit_state(&checked_name(path), BUILD)?;
     let verdicts = stored_verdicts(cache, &checked_name(path), &state)?;
     if state.files.len() != files.len() {
@@ -294,7 +295,7 @@ pub(crate) fn checked_quickly(
         }
     }
     if changed.is_empty() {
-        return Some(Ok(verdicts));
+        return Some(Ok((verdicts, None)));
     }
     if changed.iter().any(|module| module == "kit.toml" || module.starts_with(fennec_kit::EMBEDDED)) {
         return None;
@@ -311,9 +312,8 @@ pub(crate) fn checked_quickly(
     match crate::copy_rule::check_rules(&mut loaded.module.clone(), &loaded.sources) {
         // Everything a changed function calls is loaded, so its verdict here is the whole
         // program's: the same as before, and no `lock` that calls it can have changed.
-        Ok(signatures) => {
-            same_lock_verdicts(&bodies, &verdicts, signatures.lock_verdicts()).then_some(Ok(verdicts))
-        }
+        Ok(signatures) => same_lock_verdicts(&bodies, &verdicts, signatures.lock_verdicts())
+            .then_some(Ok((verdicts, Some(loaded)))),
         Err(diagnostics) => Some(Err((loaded, diagnostics))),
     }
 }

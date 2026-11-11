@@ -241,6 +241,15 @@ fn reached(
         return Ok((program, signatures, Some(kept)));
     }
     let files = crate::image::files_now(path, &cache);
+    // An edit that only changed functions' bodies is checked on its own, which is all a change
+    // there can break, rather than checking all of a big kit again. When it passes, what `main`
+    // reaches is patched from what the last run kept, rather than loaded whole.
+    let quickly = files.as_deref().map(|files| crate::verdict::checked_quickly(path, &cache, files));
+    if let (Some(files), Some(Some(Ok((verdicts, Some(partial)))))) = (&files, &quickly)
+        && let Some(run) = patched_run(path, &cache, files, partial, verdicts)
+    {
+        return Ok(run);
+    }
     let loaded = crate::load(path, fennec_kit::Entry::Main).map(std::sync::Arc::new);
     // The lint errors are found from this load, when it has every file they'd look at.
     crate::lint::lend_loaded(loaded.as_ref(), path);
@@ -250,12 +259,9 @@ fn reached(
     let embedded = embedded.iter().map(|(path, text)| (path.as_str(), fennec_blake3::hash(text.as_bytes())));
     let text = fingerprint(program.sources.hashed_files().chain(embedded));
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
-        // An edit that only changed functions' bodies is checked on its own, which is all a
-        // change there can break, rather than checking all of a big kit again.
-        let quickly = files.as_deref().and_then(|files| crate::verdict::checked_quickly(path, &cache, files));
-        let verdicts = match quickly {
+        let verdicts = match quickly.flatten() {
             Some(Err((partial, diagnostics))) => return Err(reject(&partial, &diagnostics)),
-            Some(Ok(verdicts)) => verdicts,
+            Some(Ok((verdicts, _))) => verdicts,
             None => match crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources) {
                 Ok(signatures) => signatures.lock_verdicts().clone(),
                 Err(diagnostics) => return Err(reject(&program, &diagnostics)),
@@ -268,9 +274,19 @@ fn reached(
         let _ = cache.write("checked", &name, text.as_bytes());
     }
     // What `main` reaches is copied out, rather than the rest cut away, since the lint errors may
-    // still be being found from all of it. The whole program is let go of beside the run.
+    // still be being found from all of it. The whole program is let go of beside the run, once
+    // what the next edit's run can be patched from is kept.
     let loaded = program;
-    let mut program = loaded.with_module(fennec_build::what_main_reaches(&loaded.module));
+    let kept = fennec_build::reached_by_main(&loaded.module);
+    if let Some(files) = &files {
+        crate::image::store_parts(path, &cache, files, &loaded, &kept);
+    }
+    let items = loaded.module.items.iter().enumerate().filter(|(at, _)| kept.contains(at));
+    let module = fennec_syntax::Module {
+        items: items.map(|(_, item)| item.clone()).collect(),
+        std_rewritten: loaded.module.std_rewritten.clone(),
+    };
+    let mut program = loaded.with_module(module);
     std::thread::spawn(move || drop(loaded));
     // The image keeps the constants as worked out while compiling, so a cached run skips that.
     if let Err(diagnostics) = crate::copy_rule::bake(&mut program.module) {
@@ -284,6 +300,35 @@ fn reached(
         // Cutting it down missed something the whole program has.
         Err(_) => whole(path).map(|(program, _)| (program, None, None)),
     }
+}
+
+/// A run after an edit whose check passed on its own, with its program patched from what the last
+/// run kept rather than loaded whole, as `reached` gives it; None to load it whole after all. The
+/// lint errors are found from a load of their own.
+fn patched_run(
+    path: &str,
+    cache: &fennec_build::Cache,
+    files: &[fennec_build::KitFile],
+    partial: &fennec_kit::Program,
+    verdicts: &crate::verdict::LockVerdicts,
+) -> Option<(fennec_kit::Program, Option<fennec_check::Signatures>, Option<String>)> {
+    let module = crate::image::patched(path, cache, files, partial)?;
+    let mut program = fennec_kit::Program {
+        module,
+        sources: fennec_syntax::Sources::new(),
+        manifest: None,
+        embedded: Vec::new(),
+        kit_src: None,
+        dependency_files: std::collections::HashSet::new(),
+    };
+    // A constant is worked out again from what it's written as, so one whose value calls an edited
+    // function has its new value. One that fails is shown by a whole load.
+    crate::copy_rule::bake(&mut program.module).ok()?;
+    let signatures = fennec_check::check_to_build(&mut program.module).ok()?;
+    crate::lint::lend_loaded(None, path);
+    crate::verdict::remember_checked(path, cache, (files, partial), verdicts);
+    crate::image::store(path, cache, files, &program);
+    Some((program, signatures, None))
 }
 
 /// The cache, unless `FENNEC_NO_CACHE` is set.

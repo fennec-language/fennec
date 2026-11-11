@@ -325,3 +325,89 @@ fn a_body_edit_that_waits_under_another_files_lock_is_refused() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A kit in a folder of its own, of `files` by module, beside a folder for Fennec's own files.
+fn kit_of(name: &str, files: &[(&str, &str)]) -> std::io::Result<fennec_temp::Temp> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("kit/src"))?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit/kit.toml"), manifest)?;
+    for (module, text) in files {
+        std::fs::write(dir.join(format!("kit/src/{module}.fen")), text)?;
+    }
+    Ok(dir)
+}
+
+/// A constant whose value calls a function in another file has that function's new value after
+/// an edit to its body, each time the program runs: it's worked out again, never kept as it was.
+#[test]
+fn a_constant_calling_an_edited_function_has_its_new_value() {
+    let main =
+        "from rate import base\n\nLIMIT = base() + 1\n\ndef main(stdout: Stdout):\n    stdout.print(LIMIT)\n";
+    let dir = kit_of("baked", &[("rate", "def base() -> int:\n    41\n"), ("main", main)]).unwrap();
+    let (home, kit) = (dir.join("home"), dir.join("kit"));
+    for _ in 0..2 {
+        let ran = run_untested(&home, &kit).unwrap();
+        assert_eq!(stdout(&ran), "42\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    std::fs::write(kit.join("src/rate.fen"), "def base() -> int:\n    x = 98\n    x + 1\n").unwrap();
+    for _ in 0..2 {
+        let ran = run_untested(&home, &kit).unwrap();
+        assert_eq!(stdout(&ran), "100\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A failure names the line it's on after edits that move it: one to another file's body, which
+/// moves where this file's text starts, and one to its own.
+#[test]
+fn a_failure_names_its_line_after_edits_move_it() {
+    let first = "def add(x: int) -> int:\n    x + 1\n";
+    let second = "def checked(n: int) -> int:\n    assert n < 0\n    n\n";
+    let main = "from first import add\nfrom second import checked\n\n\
+                def main(stdout: Stdout):\n    stdout.print(checked(add(1)))\n";
+    let dir = kit_of("moved", &[("first", first), ("second", second), ("main", main)]).unwrap();
+    let (home, kit) = (dir.join("home"), dir.join("kit"));
+    let failed_at = |line: usize| {
+        let ran = run_untested(&home, &kit).unwrap();
+        let said = String::from_utf8_lossy(&ran.stderr).replace('\\', "/");
+        assert!(!ran.status.success(), "{said}");
+        assert!(said.contains(&format!("src/second.fen:{line}:")), "line {line}: {said}");
+    };
+    failed_at(2);
+    failed_at(2);
+    let longer = "def add(x: int) -> int:\n    y = x * 1\n    z = y + 0\n    z + 1\n";
+    std::fs::write(kit.join("src/first.fen"), longer).unwrap();
+    failed_at(2);
+    let moved = "def checked(n: int) -> int:\n    m = n\n    k = m\n    assert k < 0\n    n\n";
+    std::fs::write(kit.join("src/second.fen"), moved).unwrap();
+    failed_at(4);
+    failed_at(4);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A mistake an edit makes in a function `main` doesn't reach, in a kit whose run is patched from
+/// what it kept, stops the run with that mistake, as a whole load's check would.
+#[test]
+fn a_mistake_in_an_edited_kit_file_main_doesnt_reach_stops_the_run() {
+    let tools = "def used() -> int:\n    41 + 1\n\ndef unused() -> int:\n    2\n";
+    let main = "from tools import used\n\ndef main(stdout: Stdout):\n    stdout.print(used())\n";
+    let dir = kit_of("unreached_mistake", &[("tools", tools), ("main", main)]).unwrap();
+    let (home, kit) = (dir.join("home"), dir.join("kit"));
+    for _ in 0..2 {
+        let ran = run_untested(&home, &kit).unwrap();
+        assert_eq!(stdout(&ran), "42\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    std::fs::write(kit.join("src/tools.fen"), tools.replace("    2\n", "    \"two\"\n")).unwrap();
+    for _ in 0..2 {
+        let refused = run_untested(&home, &kit).unwrap();
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{said}");
+        assert!(said.contains("src/tools.fen"), "{said}");
+    }
+    std::fs::write(kit.join("src/tools.fen"), tools.replace("    41 + 1\n", "    40 + 3\n")).unwrap();
+    let ran = run_untested(&home, &kit).unwrap();
+    assert_eq!(stdout(&ran), "43\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

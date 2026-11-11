@@ -1,0 +1,15 @@
+error: `match why:` goes away under `except`
+  --> examples/errors/except_match_nested.fen:11:9
+   |
+11 |         match why:
+   |         ^^^^^^^^^^
+   |
+   = help: write the `case` arms right under `except why:`, with no `match`
+
+error: `why` isn't used on this way out, so it drops the failure
+  --> examples/errors/except_match_nested.fen:11:9
+   |
+11 |         match why:
+   |         ^^^^^^^^^^
+   |
+   = help: use it, as `log.warn(f"{why}")`, or pass it on with `fail why`

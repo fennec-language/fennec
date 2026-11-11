@@ -52,6 +52,7 @@ impl Parser {
             Tok::Kw(Kw::Return) => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::Dedent);
+                self.value_at_top = !at_end;
                 StmtKind::Return(if at_end { None } else { Some(self.expr()?) })
             }
             Tok::Kw(Kw::Fail) => self.keyword_with_expr(StmtKind::Fail)?,
@@ -132,6 +133,7 @@ impl Parser {
 
     /// An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
+        self.value_at_top = true;
         let mut target = self.expr()?;
         if matches!(target.kind, ExprKind::Name(_)) && self.eat_p(Punct::Colon) {
             let ty = Some(self.type_expr()?);
@@ -192,6 +194,7 @@ impl Parser {
                 "write it on one line, `x = a if condition else b`, or use `x = match`, whose cases each give a value",
             ));
         }
+        self.value_at_top = true;
         self.expr()
     }
 
@@ -350,6 +353,7 @@ impl Parser {
         let name = self.name("a name after `shared`")?;
         let target = Expr { kind: ExprKind::Name(name), span: at };
         self.expect_p(Punct::Assign)?;
+        self.value_at_top = true;
         let value = self.expr()?;
         let ty = TypeExpr { name: "shared".to_owned(), args: Vec::new(), optional: false, span: word };
         Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty: Some(ty) })

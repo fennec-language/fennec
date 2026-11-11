@@ -1,0 +1,7 @@
+error: `except` goes after a whole right side, a bare call or `return`
+  --> examples/errors/except_inside_an_expression.fen:11:35
+   |
+11 |     stdout.print(load("save.txt") except LoadError(): 0)
+   |                                   ^^^^^^
+   |
+   = help: give the call a line of its own, as `got = f() except why:`, and use `got` here

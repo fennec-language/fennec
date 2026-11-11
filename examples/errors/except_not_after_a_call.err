@@ -1,0 +1,15 @@
+error: `except` goes right after the call it handles
+  --> examples/errors/except_not_after_a_call.fen:11:13
+   |
+11 |     first = counts[0] except why:
+   |             ^^^^^^^^^
+   |
+   = help: give the call a line of its own, as `got = f() except why:`, and use `got` here
+
+error: this can't fail, so `except` has nothing to handle
+  --> examples/errors/except_not_after_a_call.fen:11:13
+   |
+11 |     first = counts[0] except why:
+   |             ^^^^^^^^^
+   |
+   = help: take `except` and its block off

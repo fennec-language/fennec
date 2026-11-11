@@ -130,12 +130,82 @@ fn except_handles_a_failure_in_three_forms() {
     let fine = "def named(n: int) -> int:\n    x = load(n) except why:\n        return why.notes().len()\n    x\n\n\
         def arms(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case .Long(size):\n            size\n        case _:\n            fail why\n    x\n\n\
         def one(n: int) -> int:\n    x = only(n) except InvalidValue(): 8080\n    y = only(n) except InvalidValue(): return 0\n    x + y\n\n\
-        def bare(n: int):\n    act(n) except why:\n        _ = why.message\n";
+        def bare(n: int) -> str:\n    act(n) except why:\n        return why.message\n    return \"\"\n";
     assert_eq!(problems(&format!("{declared}{fine}")), Vec::<String>::new());
     let one_of_two = "def f(n: int) -> int:\n    x = load(n) except .Empty: 0\n    x\n";
     assert_eq!(
         problems(&format!("{declared}{one_of_two}")),
-        ["this `match` doesn't handle `Bad.Long` @ except"]
+        ["this `except` doesn't handle `Bad.Long` @ except"]
+    );
+}
+
+/// What `except` names goes somewhere on every way out: read into an argument, an f-string, a
+/// field read or `fail why`. Looking at it with `match` or `is`, or throwing it away with `_ =`,
+/// drops it. A `case _:` under it uses it too, and nothing else may drop every failure.
+#[test]
+fn except_drops_no_failure_without_a_word() {
+    let declared = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+        error Other:\n    why: str\n\n\
+        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+        def plain(n: int) -> int:\n    return n\n\n\
+        def maybe(n: int) -> int?:\n    return None\n\n";
+    let body = |handled: &str| -> Vec<String> {
+        let program = format!("{declared}def f(n: int) -> int fails Other:\n    {handled}\n    return 0\n");
+        problems(&program)
+            .into_iter()
+            .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+            .collect()
+    };
+    let dropped = "`why` isn't used on this way out, so it drops the failure";
+    assert_eq!(body("x = load(n) except why:\n        return 0"), [dropped]);
+    assert_eq!(body("x = load(n) except why:\n        _ = why\n        return 0"), [dropped]);
+    assert_eq!(
+        body(
+            "x = load(n) except why:\n        if n > 1:\n            return 0\n        return why.notes().len()"
+        ),
+        [dropped]
+    );
+    // A `match` over it is the arms under `except`, written another way.
+    let matched =
+        body("x = load(n) except why:\n        match why:\n            case _:\n                return 0");
+    assert!(matched.contains(&"`match why:` goes away under `except`".to_owned()), "{matched:?}");
+    for used in [
+        "x = load(n) except why:\n        return why.notes().len()",
+        "x = load(n) except why:\n        fail Other(why=f\"{why}\")",
+        "x = load(n) except why:\n        fail Other(why=\"lost\")",
+        "x = load(n) except why:\n        case .Empty:\n            0\n        case .Long(size):\n            size",
+        "x = load(n) except why:\n        case .Empty:\n            0\n        case _:\n            fail Other(why=f\"{why}\")",
+    ] {
+        assert_eq!(body(used), Vec::<String>::new(), "{used}");
+    }
+    assert_eq!(
+        body(
+            "x = load(n) except why:\n        case .Empty:\n            0\n        case _:\n            return 1"
+        ),
+        ["`case _:` takes every other failure, so it uses `why`"]
+    );
+    assert_eq!(
+        body(
+            "x = load(n) except why:\n        case .Empty:\n            0\n        case other:\n            return 1"
+        ),
+        ["`case other:` names the failure again, which `why` already names"]
+    );
+    assert_eq!(body("x = load(n) except _: 0"), ["`except _` drops every failure"]);
+    assert_eq!(
+        body("x = load(n) except Bad(): 0"),
+        ["`Bad()` takes every case of `Bad`, which drops them all"]
+    );
+    assert_eq!(
+        body("x = plain(n) except why:\n        return why.notes().len()"),
+        ["this can't fail, so `except` has nothing to handle"]
+    );
+    let optional = helps(&format!(
+        "{declared}def f(n: int) -> int:\n    x = maybe(n) except why:\n        return 1\n    return 0\n"
+    ));
+    assert!(optional.iter().any(|help| help.contains("takes `else`")), "{optional:?}");
+    assert!(
+        body("x = n except why:\n        return why.notes().len()")
+            .contains(&"`except` goes right after the call it handles".to_owned())
     );
 }
 

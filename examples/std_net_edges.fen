@@ -66,7 +66,7 @@ def write_after_close(net: Net) -> str fails NetError:
         with net.connect("localhost", server.port)? as client:
             client.close()
             client.writer().write_line("late") else as error:
-                return error.reason
+                return error.message()
             return "written"
     ""
 
@@ -88,9 +88,9 @@ def flushed(net: Net) -> str fails NetError:
         with net.connect("localhost", server.port)? as client:
             out = client.writer()
             out.write_line("one") else as error:
-                return error.reason
+                return error.message()
             out.flush() else as error:
-                return error.reason
+                return error.message()
             with server.accept()? as other:
                 return other.read_line()? else "nothing"
     ""

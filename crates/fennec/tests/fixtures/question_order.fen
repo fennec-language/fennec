@@ -1,0 +1,88 @@
+## Arguments run left to right, whatever `?`s are among them: a side effect written to the left
+## of a `?` happens before it, and one to its right after it, whether it fails or passes, nested
+## or outermost, inside a `with` block and outside one. A failure inside the block runs its
+## cleanup after what ran before it, and nothing to its right runs. A name read to a `?`'s left is
+## read before the `?`'s call changes it through `ref`.
+error Refused:
+    code: int
+
+def capped(n: int, limit: int) -> int fails Refused:
+    if n > limit:
+        fail Refused(code=n)
+    n
+
+def noted(name: str, value: int, stdout: Stdout) -> int:
+    stdout.print("ran", name)
+    value
+
+def three(first: int, second: int, third: int) -> int:
+    first * 100 + second * 10 + third
+
+def ward(stdout: Stdout) -> with int:
+    lend 0 else:
+        stdout.print("undo")
+
+def outermost(cap: int, stdout: Stdout) -> int fails Refused:
+    with ward(stdout) as _:
+        return three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout))
+
+def nested(cap: int, stdout: Stdout) -> int fails Refused:
+    with ward(stdout) as _:
+        got = capped(three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout)), limit=999)?
+        return got
+
+def operands(cap: int, stdout: Stdout) -> int fails Refused:
+    with ward(stdout) as _:
+        return noted("left", 1, stdout) + capped(noted("mid", 2, stdout), limit=cap)? * noted("right", 3, stdout)
+
+def pieces(cap: int, stdout: Stdout) -> int fails Refused:
+    with ward(stdout) as _:
+        names = ["left", "mid", "right"]
+        stdout.print(f"{noted(names[0], 1, stdout)} {capped(noted(names[1], 2, stdout), limit=cap)?} {noted(names[2], 3, stdout)}")
+        items = [noted("first", 1, stdout), capped(noted("second", 2, stdout), limit=cap)?, noted("third", 3, stdout)]
+        return items.len()
+
+def plain(cap: int, stdout: Stdout) -> int fails Refused:
+    three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout))
+
+def bump(ref count: int) -> int fails Refused:
+    count += 10
+    count
+
+struct Bag:
+    size = 1
+
+    def grow(ref self) -> int fails Refused:
+        self.size += 10
+        self.size
+
+## A name read to a `?`'s left is read before it, though the `?`'s call changes it through `ref`.
+def written(stdout: Stdout) -> int fails Refused:
+    with ward(stdout) as _:
+        mut count = 1
+        total = count + bump(ref count)?
+        return total
+
+def grown(stdout: Stdout) -> int fails Refused:
+    with ward(stdout) as _:
+        mut bag = Bag()
+        return three(bag.size, second=bag.grow()?, third=bag.size)
+
+def plain_grown() -> int fails Refused:
+    mut bag = Bag()
+    three(bag.size, second=bag.grow()?, third=bag.size)
+
+def main(stdout: Stdout):
+    for cap in [9, 0]:
+        stdout.print("cap", cap)
+        for which in range(5):
+            stdout.print("shape", which)
+            mut ran: int? = None
+            ran = match which:
+                case 0: outermost(cap, stdout) else None
+                case 1: nested(cap, stdout) else None
+                case 2: operands(cap, stdout) else None
+                case 3: pieces(cap, stdout) else None
+                case _: plain(cap, stdout) else None
+            stdout.print("gave", ran)
+    stdout.print("read before", written(stdout) else -1, grown(stdout) else -1, plain_grown() else -1)

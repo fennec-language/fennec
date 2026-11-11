@@ -1,0 +1,109 @@
+# Each of `Fs`'s methods and a `File`'s, with what each gives and how each fails. A test is given
+# an `Fs` of its own in an empty folder. What the system says when a call fails differs from one
+# system to another, so these check only that it fails with an `IoError`.
+
+test "bytes written are read back as they were, even bytes that aren't text"(fs: Fs):
+    data = bytes([0, 255, 10, 128])
+    fs.write_bytes("raw.bin", data)?
+    assert fs.read_bytes("raw.bin")? == data
+    assert fs.read_text("raw.bin") fails IoError()
+    found = fs.metadata("raw.bin")?
+    assert found.size == 4
+    assert found.is_file
+    assert not found.is_dir
+
+test "writing text again replaces what was there"(fs: Fs):
+    fs.write_text("note.txt", "a longer first note")?
+    fs.write_text("note.txt", "short")?
+    assert fs.read_text("note.txt")? == "short"
+    assert fs.metadata("note.txt")?.size == 5
+
+test "what isn't there is no, for exists, and a failure for everything else"(fs: Fs):
+    assert not fs.exists("missing.txt")?
+    assert fs.read_text("missing.txt") fails IoError()
+    assert fs.read_bytes("missing.txt") fails IoError()
+    assert fs.metadata("missing.txt") fails IoError()
+    assert fs.list_dir("missing") fails IoError()
+    assert fs.walk("missing") fails IoError()
+    assert fs.remove("missing.txt") fails IoError()
+    assert fs.write_text("missing/note.txt", "x") fails IoError()
+    assert fs.write_bytes("missing/raw.bin", bytes([1])) fails IoError()
+
+test "make_dir makes every folder on the way, and a folder already there is fine"(fs: Fs):
+    fs.make_dir("a/b/c")?
+    fs.make_dir("a/b/c")?
+    assert fs.metadata("a/b")?.is_dir
+    assert fs.exists("a/b/c")?
+    fs.write_text("a/file.txt", "")?
+    assert fs.make_dir("a/file.txt") fails IoError()
+
+test "list_dir gives a folder's paths in order, and fails on a file"(fs: Fs):
+    fs.make_dir("box/inner")?
+    fs.write_text("box/b.txt", "b")?
+    fs.write_text("box/a.txt", "a")?
+    fs.write_text("box/inner/deep.txt", "")?
+    assert [path.text for path in fs.list_dir("box")?] == ["box/a.txt", "box/b.txt", "box/inner"]
+    assert fs.list_dir("box/a.txt") fails IoError()
+
+test "remove takes a file or an empty folder, and leaves a full one"(fs: Fs):
+    fs.make_dir("full")?
+    fs.write_text("full/kept.txt", "kept")?
+    assert fs.remove("full") fails IoError()
+    assert fs.read_text("full/kept.txt")? == "kept"
+    fs.remove("full/kept.txt")?
+    assert not fs.exists("full/kept.txt")?
+    fs.remove("full")?
+    assert not fs.exists("full")?
+
+test "read_line gives each line without its ending, then None for good"(fs: Fs):
+    fs.write_text("lines.txt", "one\ntwo\r\n\nlast")?
+    mut found = list[str]()
+    with fs.open("lines.txt")? as file:
+        mut line = file.read_line()?
+        while line is not None:
+            found.append(line)
+            line = file.read_line()?
+        assert file.read_line()? is None
+    assert found == ["one", "two", "", "last"]
+
+test "lines of an empty file give nothing"(fs: Fs):
+    fs.write_text("empty.txt", "")?
+    with fs.open("empty.txt")? as file:
+        got = file.lines()?
+        assert [line for line in got] == []
+
+test "read_chunk gives up to its size, and empty bytes at the end"(fs: Fs):
+    fs.write_text("letters.txt", "abcdefghi")?
+    with fs.open("letters.txt")? as file:
+        assert file.read_chunk(0)?.len() == 0
+        assert file.read_chunk(5)? == "abcde".encode()
+        assert file.read_chunk(100)? == "fghi".encode()
+        assert file.read_chunk(100)?.len() == 0
+
+test "a file being made isn't at its path until its block ends, flushed or synced"(fs: Fs):
+    with fs.create("made.txt")? as file:
+        file.write_text("half")?
+        file.flush()?
+        assert not fs.exists("made.txt")?
+        file.write_line(" more")?
+        file.sync()?
+        assert not fs.exists("made.txt")?
+    assert fs.read_text("made.txt")? == "half more\n"
+
+## Opens `path` and reads all of it.
+def read_through(fs: Fs, path: str) -> bytes fails IoError:
+    with fs.open(path)? as file:
+        return file.read()?
+
+test "opening what isn't there, or reading a folder, fails"(fs: Fs):
+    fs.write_text("there.txt", "here")?
+    assert read_through(fs, "there.txt")? == "here".encode()
+    assert read_through(fs, "missing.txt") fails IoError()
+    fs.make_dir("folder")?
+    assert read_through(fs, "folder") fails IoError()
+
+def main(stdout: Stdout, fs: Fs):
+    # A failure is named where it happens, and the program carries on.
+    _ = fs.read_text("no/such/file.txt") else:
+        stdout.print("there's no such file")
+        ""

@@ -1,0 +1,102 @@
+# What each kind of value becomes in SQLite and comes back as, and how each of a database's rules
+# and mistakes fails: a rule of the table's with `Constraint`, a query SQLite refuses with
+# `Failed`, and a column that doesn't fit its field with `Column`.
+from std.sql import SqlError
+# `open` is imported by name: the check that every example is fully typed finds no type for
+# `sqlite` in `with sqlite.open(...)`.
+from std.sqlite import open
+
+struct Item:
+    name: str
+    weight: float
+    data: bytes
+    note: str?
+
+## What `run` fails with, as the case's name and its reason, or `fine`.
+def outcome[T](run: () -> T fails SqlError) -> str:
+    _ = run() else as why:
+        match why:
+            case .Constraint(reason=reason):
+                return f"Constraint: {reason}"
+            case .Busy(reason=reason):
+                return f"Busy: {reason}"
+            case .Column(name=name, reason=reason):
+                return f"Column {name}: {reason}"
+            case .Failed(reason=reason):
+                return f"Failed: {reason}"
+    "fine"
+
+test "every kind of value goes in as a parameter and comes back as it was"(fs: Fs):
+    with open(fs, "kinds.db")? as db:
+        _ = db.execute(t"create table items (name text, weight real, data blob, note text)")?
+        name = "it's \"quoted\"; drop table items; --"
+        weight = 0.1
+        data = bytes([0, 255, 7])
+        _ = db.execute(t"insert into items values ({name}, {weight}, {data}, null)")?
+        assert (
+            db.query[Item](t"select name, weight, data, note from items")?
+            == [Item(name=name, weight=weight, data=data, note=None)]
+        )
+
+test "a bool goes in as 1 or 0"(fs: Fs):
+    with open(fs, "flags.db")? as db:
+        _ = db.execute(t"create table flags (value int)")?
+        yes = True
+        no = False
+        _ = db.execute(t"insert into flags values ({yes}), ({no})")?
+        assert db.query[int](t"select value from flags order by value")? == [0, 1]
+        assert db.query[bool](t"select value from flags order by value")? == [False, True]
+
+test "execute gives how many rows changed, and a query that finds none gives none"(fs: Fs):
+    with open(fs, "counts.db")? as db:
+        _ = db.execute(t"create table counts (value int)")?
+        assert db.execute(t"insert into counts values (1), (2), (3)")? == 3
+        least = 2
+        assert db.execute(t"update counts set value = value + 10 where value >= {least}")? == 2
+        assert db.execute(t"delete from counts where value > 100")? == 0
+        assert db.query[int](t"select value from counts where value > 100")? == []
+        assert db.query[int](t"select value from counts order by value")? == [1, 12, 13]
+
+test "a table's rules refuse a change with Constraint"(fs: Fs):
+    with open(fs, "rules.db")? as db:
+        _ = db.execute(
+            t"create table rules (id int primary key, name text not null, size int check (size > 0))",
+        )?
+        _ = db.execute(t"insert into rules values (1, 'a', 1)")?
+        assert outcome(() => db.execute(t"insert into rules values (2, null, 1)")?).startswith(
+            "Constraint: NOT NULL",
+        )
+        assert outcome(() => db.execute(t"insert into rules values (3, 'c', 0)")?).startswith(
+            "Constraint: CHECK",
+        )
+        assert outcome(() => db.execute(t"insert into rules values (1, 'd', 1)")?).startswith(
+            "Constraint: UNIQUE",
+        )
+        # None of the refused rows went in.
+        assert db.query[int](t"select id from rules")? == [1]
+
+test "a query SQLite refuses fails with Failed"(fs: Fs):
+    with open(fs, "refused.db")? as db:
+        assert outcome(() => db.execute(t"create tabel nope (x int)")?).startswith("Failed: ")
+        assert outcome(() => db.query[int](t"select x from no_such_table")?).startswith("Failed: ")
+
+test "a null goes only into a field that can hold one"(fs: Fs):
+    with open(fs, "nulls.db")? as db:
+        _ = db.execute(t"create table nulls (value int)")?
+        _ = db.execute(t"insert into nulls values (null)")?
+        assert db.query[int?](t"select value from nulls")? == [None]
+        assert (
+            outcome(() => db.query[int](t"select value from nulls")?)
+            == "Column value: it holds null, not an int"
+        )
+
+test "a transaction's queries see its own changes, kept when its block ends"(fs: Fs):
+    with open(fs, "kept.db")? as db:
+        _ = db.execute(t"create table kept (value int)")?
+        with db.transaction()? as tx:
+            assert tx.execute(t"insert into kept values (1), (2)")? == 2
+            assert tx.query[int](t"select count(*) from kept")? == [2]
+        assert db.query[int](t"select count(*) from kept")? == [2]
+
+def main(stdout: Stdout):
+    stdout.print(SqlError.Column(name="size", reason="it holds text, not an int").message())

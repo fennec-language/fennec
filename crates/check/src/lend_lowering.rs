@@ -1811,7 +1811,12 @@ fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
     change(value);
     match &mut value.kind {
         ExprKind::Call { callee, args } => {
-            outside_functions(callee, change);
+            // A call's `[...]` names types, as `db.query[int?](...)` does, where a `?` is an
+            // optional's, not one that fails.
+            match &mut callee.kind {
+                ExprKind::Index { object, .. } => outside_functions(object, change),
+                _ => outside_functions(callee, change),
+            }
             for arg in args {
                 outside_functions(&mut arg.value, change);
             }

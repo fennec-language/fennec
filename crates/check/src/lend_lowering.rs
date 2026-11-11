@@ -1002,6 +1002,13 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
         let span = caller.span;
         let exit = caller.exit;
         let set = |kind: i64| assign(exit, int(kind, span), false, None);
+        // A way out written in an `else`, or another `match` inside the line, leaves the block too.
+        // A loop's condition and what it goes through are its own, as its body is: a `break` there
+        // is the loop's, not the block's.
+        let own_loop = in_loop || matches!(stmt.kind, StmtKind::While { .. } | StmtKind::For { .. });
+        for value in stmt_exprs(stmt) {
+            outer_cases(value, &mut |cases| exits(cases, caller, own_loop));
+        }
         let replaced = match &mut stmt.kind {
             StmtKind::Return(value) => {
                 caller.ways.returned.get_or_insert(false);
@@ -1044,14 +1051,6 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 exits(body, caller, in_loop);
                 None
             }
-            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
-                if let ExprKind::Match { arms, .. } = &mut value.kind {
-                    for arm in arms {
-                        exits(&mut arm.body, caller, in_loop);
-                    }
-                }
-                None
-            }
             _ => None,
         };
         match replaced {
@@ -1089,6 +1088,73 @@ fn stmt_break(span: Span) -> Stmt {
     stmt(StmtKind::Break, span)
 }
 
+/// The expressions a statement is written with, but not those in the blocks inside it.
+fn stmt_exprs(each: &mut Stmt) -> Vec<&mut Expr> {
+    match &mut each.kind {
+        StmtKind::Expr(value)
+        | StmtKind::Return(Some(value))
+        | StmtKind::Yield(value)
+        | StmtKind::Assert(value)
+        | StmtKind::Fail(value)
+        | StmtKind::While { cond: value, .. }
+        | StmtKind::For { iter: value, .. }
+        | StmtKind::With { value, .. }
+        | StmtKind::Lend { value, .. } => vec![value],
+        StmtKind::Assign { target, value, .. } => vec![target, value],
+        StmtKind::If { branches, .. } => branches.iter_mut().map(|(cond, _)| cond).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Calls `each` on the cases of every `match` in `value`, an `else`'s block among them, but not of
+/// one inside another's case, which `each` reaches through that case, nor one in a lambda, which
+/// leaves only the lambda.
+///
+/// The `match`es are told apart by their spans, worked out before `each` changes anything, so one
+/// `each` adds isn't walked. A `match` with the same span as one inside its own case would be taken
+/// as inner and left out: that needs a pass to copy one into its own case without new spans, which
+/// none does.
+fn outer_cases(value: &mut Expr, each: &mut dyn FnMut(&mut Vec<Stmt>)) {
+    let mut inner = Vec::new();
+    let mut outer = Vec::new();
+    // Only read here, though the walk takes it to change.
+    fennec_syntax::visit::in_expr(value, &mut |expr| match &mut expr.kind {
+        ExprKind::Match { arms, .. } => {
+            outer.push((expr.span.start, expr.span.end));
+            for arm in arms {
+                fennec_syntax::visit::in_stmts(&mut arm.body, &mut |deeper| {
+                    if matches!(deeper.kind, ExprKind::Match { .. }) {
+                        inner.push((deeper.span.start, deeper.span.end));
+                    }
+                });
+            }
+        }
+        ExprKind::Lambda { body, .. } => {
+            fennec_syntax::visit::in_expr(body, &mut |deeper| {
+                if matches!(deeper.kind, ExprKind::Match { .. }) {
+                    inner.push((deeper.span.start, deeper.span.end));
+                }
+            });
+        }
+        _ => {}
+    });
+    outer.retain(|span| !inner.contains(span));
+    if outer.is_empty() {
+        return;
+    }
+    fennec_syntax::visit::in_expr(value, &mut |expr| {
+        let at = (expr.span.start, expr.span.end);
+        if let ExprKind::Match { arms, .. } = &mut expr.kind
+            && let Some(found) = outer.iter().position(|span| *span == at)
+        {
+            outer.swap_remove(found);
+            for arm in arms {
+                each(&mut arm.body);
+            }
+        }
+    });
+}
+
 /// Each way the caller's block can fail, a `fail` or a `?`, runs `otherwise` first.
 fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
     let mut at = 0;
@@ -1108,6 +1174,10 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
             body.splice(at..at, before);
             at += count + 1;
             continue;
+        }
+        // A `fail` written in an `else`, or another `match` inside the line, fails the block too.
+        for value in stmt_exprs(stmt) {
+            outer_cases(value, &mut |cases| fail_through(cases, otherwise));
         }
         match &mut stmt.kind {
             StmtKind::Fail(error) if otherwise.iter().any(cleanup_fails) => {
@@ -1138,13 +1208,6 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
             StmtKind::OnFailure { cleanup, body, .. } => {
                 fail_through(cleanup, otherwise);
                 fail_through(body, otherwise);
-            }
-            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
-                if let ExprKind::Match { arms, .. } = &mut value.kind {
-                    for arm in arms {
-                        fail_through(&mut arm.body, otherwise);
-                    }
-                }
             }
             _ => {}
         }

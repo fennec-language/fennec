@@ -1850,7 +1850,8 @@ fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
             }
         }
         // Only what always runs: a conditional's test, the value before `else`, a match's subject,
-        // and what a `?` is of.
+        // and what a `?` is of. A `?` that might not run, in a branch, after `else` or past `and`
+        // or `or`, is refused in a source's block (`lend::unplaced_try`), so it's never here.
         ExprKind::Cond { cond: always, .. }
         | ExprKind::Else { value: always, .. }
         | ExprKind::Match { subject: always, .. }

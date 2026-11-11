@@ -45,3 +45,5 @@ fennec-temp.workspace = true
 crossbeam-deque.workspace = true
 fennec-parked.workspace = true
 mio.workspace = true
+# To let go of a test's connection without holding its port: see the server tests' `goodbye`.
+socket2.workspace = true

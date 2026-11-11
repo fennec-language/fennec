@@ -464,8 +464,9 @@ mod tests {
             "    case Refused(code=code):",
             "except Refused(): -1",
             "except Refused(): \"refused\"",
+            "            case _:",
         ];
-        let mut found = [0_usize; 6];
+        let mut found = [0_usize; 7];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))

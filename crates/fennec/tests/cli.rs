@@ -2142,6 +2142,38 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
     assert_eq!(text(&native.stdout), CASES_PRINTED, "{}", text(&native.stderr));
 }
 
+/// A constant worked out while compiling is written back as a literal, with its enum values named
+/// in full. That's nothing to fix, even where one sits in a field whose type is known, as in a
+/// constant list of an enum that holds itself, with a declared type or without.
+#[test]
+fn a_worked_out_constant_is_nothing_to_fix() {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-baked-cases", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    let declared = ["", ": list[Tok]"];
+    for (at, written) in declared.iter().enumerate() {
+        let items = if written.is_empty() {
+            "[Tok.Name(\"x\"), Tok.Eof, Tok.Wrapped(PAREN)]"
+        } else {
+            "[.Name(\"x\"), .Eof, .Wrapped(PAREN)]"
+        };
+        let source = format!(
+            "enum Tok:\n    Name(text: str)\n    Punct(text: str)\n    Wrapped(inner: Tok)\n    Eof\n\n\
+             PAREN = Tok.Punct(\"(\")\nKNOWN{written} = {items}\n\n\
+             def main(stdout: Stdout):\n    stdout.print(KNOWN[0] == .Name(\"x\"), KNOWN[2] == .Wrapped(.Punct(\"(\")))\n"
+        );
+        let program = dir.join(format!("baked{at}.fen"));
+        let path = program.to_string_lossy().into_owned();
+        std::fs::write(&program, &source).unwrap();
+        let checked = fennec(&["check", &path], "").unwrap();
+        assert!(checked.status.success(), "{written}: {}", text(&checked.stderr));
+        let ran = fennec(&["run", "--no-test", &path], "").unwrap();
+        assert_eq!(text(&ran.stdout), "True True\n", "{written}: {}", text(&ran.stderr));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// In a kit, the leading dot of a case its own file declares comes to the checker with its enum
 /// written in, as another file may have a case by that name. That's nothing to fix, so `fennec fix`
 /// has to settle.

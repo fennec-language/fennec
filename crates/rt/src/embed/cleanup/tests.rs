@@ -183,3 +183,23 @@ fn a_cleanup_waiting_in_its_grace_leaves_its_worker_to_other_tasks() {
     assert!(cut < ended, "the other task was cut short while the cleanup still waited");
     finish();
 }
+
+/// What a crash's cleanup gives back, how it failed or nothing, is let go of once it's said, and
+/// the crash held aside comes back as it was either way.
+#[test]
+fn a_cleanup_s_note_is_let_go_of_and_the_crash_goes_on() {
+    begin();
+    crash("the first crash");
+    for said in ["Refused(code=4)", ""] {
+        let number = crash_hold();
+        let text = with(|state| crate::embed::heap::text_address(state, said));
+        let at = u64::try_from(text).unwrap();
+        assert!(with(|state| state.heap.block(at).is_some()));
+        crash_note(text);
+        assert!(with(|state| state.heap.block(at).is_none()), "{said:?} let go of");
+        crash_resume(number);
+        assert!(failed());
+        assert_eq!(failure().as_deref(), Some("the first crash"));
+    }
+    finish();
+}

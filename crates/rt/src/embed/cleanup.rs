@@ -52,5 +52,21 @@ pub extern "C" fn crash_resume(number: i64) {
     set_failed(1);
 }
 
+/// `fennec_crash_note(text)`: a crash's cleanup ended, giving back `text`, a string's block it lets
+/// go of: how it failed, said under the crash as a note, as a failed block's cleanup is noted on
+/// its failure, or nothing when it didn't fail.
+pub extern "C" fn crash_note(text: i64) {
+    let Ok(at) = u64::try_from(text) else { return };
+    let note = with(|state| {
+        let note = state.heap.block(at).map(super::heap::block_text);
+        super::heap::release(state, at);
+        note
+    });
+    if let Some(note) = note.filter(|note| !note.is_empty()) {
+        super::write_kept_output();
+        let _ = writeln!(std::io::stderr(), "note: {note} (while cleaning up after a crash)");
+    }
+}
+
 #[cfg(test)]
 mod tests;

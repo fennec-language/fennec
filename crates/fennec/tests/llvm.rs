@@ -4830,6 +4830,94 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A crash runs a cleanup with a `?` in it, wherever the `?` is, and stops it where one fails: a
+/// line of its own, a value kept, one deeper in a line, and a `fail` in a loop each end it, with the
+/// rest skipped, and its failure said under the crash as a note, while a `?` in a function written
+/// there passes up from that function. A cleanup with any of these once didn't run at all.
+#[test]
+fn a_crash_runs_a_cleanup_with_a_question_mark_until_one_fails() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_question_marks")?;
+    let program = dir.join("cleanup.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_question_marks.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("cleanup"));
+    let output = output.to_string_lossy().into_owned();
+    // What each crash's cleanup prints, and the failure that ended it, if one did.
+    let wanted = [
+        ("1", "cleanup 1\nkept 1\ndeeper 1\n", Some("Refused(code=1)")),
+        ("3", "cleanup 3\nkept 3\ndeeper 3\ninner 3\nended 3\n", None),
+        ("4", "cleanup 4\nkept 4\ndeeper 4\ninner 4\n", Some("Refused(code=4)")),
+        ("7", "cleanup 7\nkept 7\ndeeper 7\ninner -1\n", Some("Refused(code=7)")),
+        ("12", "cleanup 12\nkept 12\n", Some("Refused(code=12)")),
+        ("25", "cleanup 25\n", Some("Refused(code=25)")),
+    ];
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for (code, out, failed) in wanted {
+            let ran = Command::new(&output).arg(code).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {code}: {err}");
+            assert!(!ran.status.success(), "{how:?} {code}");
+            assert!(err.contains(&format!("index {code} is out of range for length 1")), "{err}");
+            let notes: Vec<&str> = err.lines().filter(|line| line.starts_with("note: ")).collect();
+            let noted = failed.map(|failure| format!("note: {failure} (while cleaning up after a crash)"));
+            assert_eq!(notes, noted.as_deref().into_iter().collect::<Vec<_>>(), "{how:?} {code}: {err}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A launched task that crashes inside a `with` runs its source's cleanup, which a failing `x = f()?`
+/// or a `fail` in a loop ends, with its failure said under the task's crash, and the task's crash
+/// still comes out as `Crashed`.
+#[test]
+fn a_crashing_task_s_cleanup_ends_where_it_fails_and_says_so() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_in_a_task")?;
+    let program = dir.join("task.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_in_a_task.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("task"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "crashed, cleanup 9\ncrashed, cleanup 2\ncrashed, cleanup 4, ended 4\n",
+            "{how:?}: {err}"
+        );
+        let notes: Vec<&str> = err.lines().filter(|line| line.starts_with("note: ")).collect();
+        assert_eq!(
+            notes,
+            [
+                "note: Refused(code=9) (while cleaning up after a crash)",
+                "note: Refused(code=2) (while cleaning up after a crash)"
+            ],
+            "{how:?}: {err}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task that crashes inside a `with` runs the block's `lend x else:` before its crash ends it,
 /// and a task that doesn't runs the rest of the source instead.
 #[test]

@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    names = ["ash", "kit"]
+    stdout.print(3 in names)

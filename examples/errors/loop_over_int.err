@@ -1,0 +1,7 @@
+error: can't loop over an int
+ --> examples/errors/loop_over_int.fen:3:15
+  |
+3 |     for at in count:
+  |               ^^^^^
+  |
+  = help: loop over a range of numbers, as `for at in range(count):`

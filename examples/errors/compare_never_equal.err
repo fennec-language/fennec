@@ -1,0 +1,7 @@
+error: `==` compares an int with a str, which are never equal
+ --> examples/errors/compare_never_equal.fen:3:18
+  |
+3 |     stdout.print(count == "3")
+  |                  ^^^^^^^^^^^^
+  |
+  = help: convert one side so both are one type, as `str(count) == text`

@@ -352,11 +352,14 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
         // A store that can't be written only means linking it again next time. A run's program
         // is kept as the file just linked, the one about to be launched, so a later run of the
         // same program launches a file macOS has checked already.
-        let _ = cache.write(PROGRAMS, &format!("{root}.functions"), functions.as_bytes());
+        fennec_build::kept(
+            "keep a program's list of functions",
+            cache.write(PROGRAMS, &format!("{root}.functions"), functions.as_bytes()),
+        );
         if fennec_owns(output) {
-            let _ = cache.keep_file(PROGRAMS, root, output);
+            fennec_build::kept("keep the program it linked", cache.keep_file(PROGRAMS, root, output));
         } else if let Ok(bytes) = std::fs::read(output) {
-            let _ = cache.write(PROGRAMS, root, &bytes);
+            fennec_build::kept("keep the program it linked", cache.write(PROGRAMS, root, &bytes));
         }
     }
     Ok(linked)
@@ -956,7 +959,11 @@ fn stamp_of(path: &Path) -> Option<String> {
     let build = stamp_in(&std::fs::read(path).ok()?);
     if let Some(cache) = &cache {
         // A store that can't be written only means reading the library again next time.
-        let _ = cache.write("runtime-stamps", &name, build.as_deref().unwrap_or("").as_bytes());
+        let stamp = build.as_deref().unwrap_or("").as_bytes();
+        fennec_build::kept(
+            "keep which build a runtime library is",
+            cache.write("runtime-stamps", &name, stamp),
+        );
     }
     build
 }

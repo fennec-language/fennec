@@ -102,7 +102,10 @@ fn built_and_run(
         let built = build_for_run((program, checked), path, &executable)?;
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
             // A store that can't be written only means building it again next time.
-            let _ = cache.write(RUN_ROOTS, name, root.as_bytes());
+            fennec_build::kept(
+                "keep which program a run built",
+                cache.write(RUN_ROOTS, name, root.as_bytes()),
+            );
         }
     }
     crate::lint::show_errors_found();
@@ -265,7 +268,7 @@ fn reached(
             crate::verdict::remember_checked(path, &cache, (files, &program), &facts);
         }
         // A cache that can't be written only means checking all of it again next time.
-        let _ = cache.write("checked", &name, text.as_bytes());
+        fennec_build::kept("keep the program's check", cache.write("checked", &name, text.as_bytes()));
     }
     // What `main` reaches is copied out, rather than the rest cut away, since the lint errors may
     // still be being found from all of it. The whole program is let go of beside the run.

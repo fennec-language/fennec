@@ -2678,6 +2678,39 @@ fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
     std::fs::File::options().write(true).open(path)?.set_modified(used)
 }
 
+/// A cache that can't be written costs only work done again: the command does what it was asked,
+/// and says, once, that the cache couldn't keep what it made, rather than nothing at all.
+#[test]
+#[cfg(unix)]
+fn a_cache_that_cant_be_written_is_said_once_and_the_command_goes_on() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_cache_unwritable_{}", std::process::id())),
+    );
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join("cache"))?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n    return\n")?;
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o555))?;
+    let ran = crate::executables::fennec_command()
+        .arg("run")
+        .arg(&program)
+        .env("FENNEC_HOME", &home)
+        .env("FENNEC_NO_DAEMON", "1")
+        .output_within();
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o755))?;
+    let ran = ran?;
+    let said = text(&ran.stderr);
+    assert_eq!((ran.status.code(), text(&ran.stdout)), (Some(0), "hello\n".to_owned()), "{said}");
+    assert_eq!(said.matches("warning: Fennec's cache couldn't").count(), 1, "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// With no daemon, a command starts a cleanup once none has run for an hour, which removes another
 /// build's folder that's gone unused for a day; `fennec cache clean` runs one when asked.
 #[test]

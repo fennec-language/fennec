@@ -1,0 +1,150 @@
+# `server.serve` reads each request itself, and answers one it won't take with the status that says
+# why, without calling `respond`. These tests send raw requests through a test's in-memory `Net`
+# and read what comes back, so each refusal is seen as a client sees it.
+from std.net import NetError, Request, Response
+
+## Answers with the request's method, path, query, `x` header and body, each told apart.
+def echo(request: Request) -> Response:
+    x = request.headers.get("x") else "-"
+    said = f"{request.method} {request.path} {request.query} {x} {request.text()}"
+    Response(status=200, body=said.encode())
+
+## Answers with a header whose value would start a header of its own.
+def smuggling(request: Request) -> Response:
+    Response(status=200, headers={"x-note": "a\r\nset-cookie: stolen"})
+
+## What the server answers `raw` with, by `respond`: its lines joined by ` | `.
+def answered(net: Net, raw: str, respond: (Request) -> Response) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(raw)?
+            server.serve(respond, timeout=1s)
+            got = client.lines()?
+            return " | ".join(list(got))
+    ""
+
+## The status and the reason the server gave for refusing `raw`.
+def refused(net: Net, raw: str) -> str fails NetError:
+    said = answered(net, raw, respond=echo)?
+    parts = said.split(" | ")
+    status = parts[0].removeprefix("HTTP/1.1 ")
+    f"{status}: {parts[-1]}"
+
+test "a request's parts reach respond, its path and query decoded"(net: Net):
+    raw = "GET /a%20b?x=1&y=two HTTP/1.1\r\nX: hi\r\nConnection: close\r\n\r\n"
+    said = answered(net, raw, respond=echo)?
+    assert (
+        said
+        == (
+            "HTTP/1.1 200 OK | content-length: 35 | connection: close |  | "
+            + "GET /a b {\"x\": \"1\", \"y\": \"two\"} hi "
+        )
+    )
+
+test "an HTTP/1.0 request with a body is answered, and closed"(net: Net):
+    said = answered(net, "POST /p HTTP/1.0\r\nContent-Length: 3\r\n\r\nabc", respond=echo)?
+    assert said.endswith("connection: close |  | POST /p {} - abc")
+
+test "blank lines before a request are passed over"(net: Net):
+    raw = "\r\n\r\nGET /after HTTP/1.1\r\nConnection: close\r\n\r\n"
+    assert answered(net, raw, respond=echo)?.endswith("GET /after {} - ")
+
+test "the answer to HEAD says how long its body is, and doesn't send it"(net: Net):
+    said = answered(net, "HEAD / HTTP/1.1\r\nConnection: close\r\n\r\n", respond=echo)?
+    assert said == "HTTP/1.1 200 OK | content-length: 12 | connection: close | "
+
+test "a request the server won't take is answered with why"(net: Net):
+    assert (
+        refused(net, "GET / HTTP/2\r\n\r\n")?
+        == "400 Bad Request: that isn't an HTTP/1.1 request line"
+    )
+    assert (
+        refused(net, "G(T / HTTP/1.1\r\n\r\n")?
+        == "400 Bad Request: that isn't an HTTP/1.1 request line"
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nNoColon\r\n\r\n")? == "400 Bad Request: a header has no `:`"
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n")?
+        == "400 Bad Request: a header's name isn't one"
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\n folded\r\n\r\n")?
+        == ("400 Bad Request: a header has a character it can't have")
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\nX: y\n\n")?
+        == ("400 Bad Request: a line ended without a carriage return")
+    )
+
+test "a body the server can't read is answered with why"(net: Net):
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n")?
+        == ("501 Not Implemented: chunked bodies aren't taken yet")
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nContent-Length: x\r\n\r\n")?
+        == ("400 Bad Request: the content length isn't a number")
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nContent-Length: -1\r\n\r\n")?
+        == ("400 Bad Request: the content length isn't a number")
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nContent-Length: 99999999999\r\n\r\n")?
+        == ("413 Content Too Large: the body is too big")
+    )
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\nab")?
+        == ("400 Bad Request: there's more than one `content-length` header")
+    )
+
+test "headers past the limit are refused"(net: Net):
+    many = "".join([f"X-{at}: y\r\n" for at in range(101)])
+    assert (
+        refused(net, f"GET / HTTP/1.1\r\n{many}\r\n")?
+        == ("431 Request Header Fields Too Large: the headers are too big")
+    )
+    long = "y" * 16400
+    assert (
+        refused(net, f"GET / HTTP/1.1\r\nX: {long}\r\n\r\n")?
+        == ("431 Request Header Fields Too Large: the headers are too big")
+    )
+
+test "a response header that would start another is answered as a 500"(net: Net):
+    said = answered(net, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n", respond=smuggling)?
+    assert said.startswith("HTTP/1.1 500 Internal Server Error")
+    assert "stolen" not in said
+
+test "ok is the 200s, and json reads the body or says what's wrong"():
+    assert not Response(status=199).ok()
+    assert Response(status=200).ok()
+    assert Response(status=299).ok()
+    assert not Response(status=300).ok()
+    assert Response(status=200, body="[1, 2]".encode()).json[list[int]]()? == [1, 2]
+    assert Response(status=200, body="[1,".encode()).json[list[int]]() fails ParseError()
+    assert Response(status=200, body="{}".encode()).json[list[int]]() fails ParseError()
+
+test "a connection is a Writer and a Reader, from std.io"(net: Net):
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            out = client.writer()
+            out.write_line("one")?
+            out.write_text("two\n")?
+            out.write(bytes([51, 10]))?
+            out.flush()?
+        with server.accept()? as conn:
+            got = conn.reader().lines()?
+            assert list(got) == ["one", "two", "3"]
+
+test "each NetError says what went wrong"():
+    assert NetError.NotFound(host="nowhere").message() == "there's no host called `nowhere`"
+    assert NetError.Refused(host="h", port=1).message() == "`h` refused a connection on port 1"
+    assert NetError.TimedOut(after=20ms).message() == "gave up after 0.02s"
+    assert NetError.Closed().message() == "the other side closed the connection"
+    assert NetError.Denied(reason="not that host").message() == "not that host"
+    assert NetError.Status(code=503).message() == "the response's status was 503"
+
+def main(stdout: Stdout):
+    stdout.print(Response(status=404).ok())

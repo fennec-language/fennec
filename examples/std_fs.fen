@@ -102,6 +102,45 @@ test "opening what isn't there, or reading a folder, fails"(fs: Fs):
     fs.make_dir("folder")?
     assert read_through(fs, "folder") fails IoError()
 
+## What `run` fails with, in words, or "fine" if it doesn't.
+def why[T](run: () -> T fails IoError) -> str:
+    _ = run() else as error:
+        return error.reason
+    "fine"
+
+## Opens `path` to read, then writes to it.
+def write_while_reading(fs: Fs, path: str) -> str fails IoError:
+    with fs.open(path)? as file:
+        file.write_text("more")?
+    "written"
+
+## Makes `path`, then reads from it while it's being made.
+def read_while_making(fs: Fs, path: str) -> bytes fails IoError:
+    with fs.create(path)? as file:
+        file.write_text("a")?
+        return file.read()?
+    bytes([])
+
+## Opens `path` to read, then flushes and syncs it.
+def flush_while_reading(fs: Fs, path: str) -> str fails IoError:
+    with fs.open(path)? as file:
+        file.flush()?
+        file.sync()?
+    "flushed"
+
+test "a file opened to read can't be written, and one being made can't be read"(fs: Fs):
+    fs.write_text("kept.txt", "kept")?
+    assert (
+        why(() => write_while_reading(fs, "kept.txt")?)
+        == "this file was opened to read, not to write"
+    )
+    assert fs.read_text("kept.txt")? == "kept"
+    assert (
+        why(() => read_while_making(fs, "new.txt")?) == "this file was made to write, not to read"
+    )
+    # Flushing or syncing a file opened to read has nothing to do, so it's fine.
+    assert flush_while_reading(fs, "kept.txt")? == "flushed"
+
 def main(stdout: Stdout, fs: Fs):
     # A failure is named where it happens, and the program carries on.
     _ = fs.read_text("no/such/file.txt") else:

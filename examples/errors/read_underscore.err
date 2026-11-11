@@ -1,0 +1,7 @@
+error: `_` throws away what it's given, so it can't be read
+ --> examples/errors/read_underscore.fen:3:18
+  |
+3 |     stdout.print(_)
+  |                  ^
+  |
+  = help: write a name where `_` is, as `item`, and read that

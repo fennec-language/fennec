@@ -1,0 +1,7 @@
+error: the format `.2f` doesn't apply to a str
+ --> examples/errors/format_on_text.fen:3:21
+  |
+3 |     stdout.print(f"{price:.2f}")
+  |                     ^^^^^
+  |
+  = help: drop the format, or read the text as a number first, as `{float(text)?:.2f}`

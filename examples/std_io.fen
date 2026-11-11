@@ -1,7 +1,7 @@
 # `std.io`: a `Writer` and a `Reader` are whatever bytes go to and come from, so one function serves
 # a file, a connection and memory alike. Formats write to and read from them, as `json.dump` and
 # `json.load` do.
-from std import csv, json, pack
+from std import csv, io, json, pack
 from std.io import MemoryStream, Reader, Writer
 
 struct Score:
@@ -41,6 +41,21 @@ test "a memory stream reads in chunks, and lines end with or without a carriage 
     assert src.read_line()? == "two"
     assert src.read_chunk(100)? == "three".encode()
     assert src.read_chunk(100)? == bytes([])
+
+test "read_all gives exactly what's left, equal to the same bytes"():
+    mut empty = MemoryStream.of(bytes([]))
+    assert io.read_all(ref empty)? == bytes([])
+    mut two = MemoryStream.of(bytes([1, 2]))
+    assert io.read_all(ref two)? == bytes([1, 2])
+    # Past one 64 KiB chunk, so it reads more than once.
+    big = bytes([at % 256 for at in range(70000)])
+    mut stream = MemoryStream.of(big)
+    _ = stream.read_chunk(10)?
+    rest = io.read_all(ref stream)?
+    assert rest == big[10:]
+    assert rest.len() == 69990
+    # Nothing's left after it.
+    assert io.read_all(ref stream)? == bytes([])
 
 test "a file is a writer and a reader"(fs: Fs):
     with fs.create("scores.txt")? as file:

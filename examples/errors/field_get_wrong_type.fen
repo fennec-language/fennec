@@ -1,0 +1,15 @@
+struct Point:
+    x: int
+    y: int
+
+def take[V](item: V) -> int:
+    1
+
+def walk[T](value: T) -> int:
+    mut count = 0
+    for field in fields(T):
+        count += take(field.get(1.5))
+    count
+
+def main(stdout: Stdout):
+    stdout.print(walk(Point(1, 2)))

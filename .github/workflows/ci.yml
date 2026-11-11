@@ -410,6 +410,8 @@ jobs:
         run: .github/scripts/test-landing.sh
       - name: Opening a pull request, on a throwaway repository
         run: .github/scripts/test-open-pr.sh
+      - name: Giving up on a command that won't stop, as the gate must when Rosetta is wedged
+        run: .github/scripts/test-within.sh
       - name: Sweeping old build files, on worktrees made for it
         run: .github/scripts/test-sweep-builds.sh
       # The installer runs as `sh` on machines Fennec has never seen, so it keeps to POSIX sh.

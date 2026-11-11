@@ -100,6 +100,24 @@ test "a packet goes to a port, and an answer goes to who sent it"(net: Net):
             first.send_to("pong".encode(), packet.sender)?
             assert second.receive()?.data == "pong".encode()
 
+test "a receive with nothing waiting gives up, and a loop over a socket ends"(net: Net):
+    with net.udp()? as socket:
+        assert reason(() => socket.receive(timeout=10ms)?) == "gave up after 0.01s"
+        socket.send_to("one", f"localhost:{socket.port}")?
+        socket.send_to("two", f"localhost:{socket.port}")?
+        # In a test, nothing more can come once none is waiting, so the loop ends.
+        heard = [packet.data.decode() else "" for packet in socket]
+        assert heard == ["one", "two"]
+
+test "a connection closed here says so when it's written to"(net: Net):
+    with net.listen(9000)? as _:
+        with net.connect("localhost", 9000)? as client:
+            client.close()
+            assert (
+                reason(() => client.write("late\n")?)
+                == "the socket was closed here, so it can't be used any more"
+            )
+
 test "a packet sent where nothing listens is lost"(net: Net):
     with net.udp()? as socket:
         socket.send_to("gone", "localhost:9")?

@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    ages = {"Ash": 3, "Kit": 5}
+    stdout.print(ages[1])

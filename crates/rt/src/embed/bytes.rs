@@ -49,6 +49,29 @@ pub(super) fn data_of(block: &[u64]) -> Vec<u8> {
     data
 }
 
+/// The words two blocks of bytes are compared and hashed by: the length, then the words its bytes
+/// take up, the last with nothing after its bytes. A builder's spare room, and whatever's left in
+/// it, never counts, so equal bytes are equal however their block was made.
+pub(super) fn words_of(block: &[u64]) -> Vec<u64> {
+    let length = block.get(2).copied().unwrap_or(0);
+    let bytes = usize::try_from(length).unwrap_or(0);
+    let mut words = Vec::with_capacity(1 + bytes.div_ceil(8));
+    words.push(length);
+    words.extend_from_slice(block.get(HEADER_WORDS..HEADER_WORDS + bytes.div_ceil(8)).unwrap_or_default());
+    let used = bytes % 8;
+    if used != 0
+        && let Some(last) = words.last_mut()
+    {
+        *last &= u64::MAX >> (64 - 8 * used);
+    }
+    words
+}
+
+/// Whether two blocks of bytes hold the same bytes (see `words_of`).
+pub(super) fn equal(left: &[u64], right: &[u64]) -> bool {
+    left.get(2) == right.get(2) && words_of(left) == words_of(right)
+}
+
 /// The bytes from `from` up to `to` in a block, which are inside its length.
 fn part_of(block: &[u64], from: usize, to: usize) -> Vec<u8> {
     let words = block.get(HEADER_WORDS + from / 8..HEADER_WORDS + to.div_ceil(8)).unwrap_or_default();
@@ -67,7 +90,8 @@ fn text_at(state: &State, at: i64) -> String {
 /// The room a byte builder's block has for `length` bytes: the next power of two, and at least 16.
 /// Native code works it out from the length alone, so a builder needs no word for it. Only std's
 /// own builder intrinsics write into one, and it's copied to its exact size before anything else
-/// sees it, so nothing that compares or hashes bytes by their words meets the room.
+/// sees it. Equality and hashing go by the length anyway (`words_of`), so one that isn't still
+/// compares and hashes as the same bytes would.
 fn builder_room(length: usize) -> usize {
     length.max(16).next_power_of_two()
 }
@@ -318,4 +342,60 @@ pub extern "C" fn encode(text: i64) -> i64 {
 pub(super) fn write(state: &mut State, value: &Value) -> Option<i64> {
     let Value::Bytes(data) = value else { return None };
     Some(make(state, data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEADER_WORDS, grow, make};
+    use crate::embed::{Tables, dicts, finish, heap, start, with};
+
+    /// A builder's block for these bytes, with its room past them filled with junk, as nothing
+    /// promises it's zero.
+    fn built(data: &[u8]) -> i64 {
+        let exact = with(|state| make(state, data));
+        let built = grow(exact, 0);
+        with(|state| {
+            let Some(words) = state.heap.block_mut(built.cast_unsigned()) else { panic!("no builder") };
+            let used = HEADER_WORDS + data.len().div_ceil(8);
+            assert!((words.len() - HEADER_WORDS) * 8 > data.len(), "a builder has room past its bytes");
+            for word in words.iter_mut().skip(used) {
+                *word = u64::MAX;
+            }
+            let tail = data.len() % 8;
+            if tail != 0
+                && let Some(last) = words.get_mut(used - 1)
+            {
+                *last |= u64::MAX << (8 * tail);
+            }
+        });
+        built
+    }
+
+    fn hashes(bytes: i64) -> (u64, u64) {
+        with(|state| dicts::block_key_hashes(state, bytes.cast_unsigned()))
+    }
+
+    /// Equal bytes are equal, and hash alike, whether their block is a builder's, with room and
+    /// junk after them, or exactly their size: empty, and either side of a word's end. Bytes that
+    /// differ only by a zero on the end are not.
+    #[test]
+    fn equal_bytes_from_a_builder_and_an_exact_block_are_equal_and_hash_alike() {
+        start(Tables::default(), crate::Inputs::default());
+        for length in [0_u8, 7, 8, 9, 17] {
+            let data: Vec<u8> = (1..=length).collect();
+            let exact = with(|state| make(state, &data));
+            let from_builder = built(&data);
+            assert_eq!(heap::equal(exact, from_builder), 1, "{length} bytes");
+            assert_eq!(heap::equal(from_builder, exact), 1, "{length} bytes");
+            assert_eq!(hashes(exact), hashes(from_builder), "{length} bytes");
+            let mut longer = data.clone();
+            longer.push(0);
+            let longer = with(|state| make(state, &longer));
+            assert_eq!(heap::equal(longer, from_builder), 0, "{length} bytes and a zero");
+            for block in [exact, from_builder, longer] {
+                heap::free(block);
+            }
+        }
+        finish();
+    }
 }

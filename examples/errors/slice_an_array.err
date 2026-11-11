@@ -1,0 +1,7 @@
+error: an array can't be sliced
+ --> examples/errors/slice_an_array.fen:3:18
+  |
+3 |     stdout.print(weights[1:3])
+  |                  ^^^^^^^^^^^^
+  |
+  = help: make a list of it first, as `list(items)[1:3]`

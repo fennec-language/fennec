@@ -353,7 +353,7 @@ impl Lowering<'_> {
     fn is_source(&self, value: &Expr) -> bool {
         let call = match &value.kind {
             ExprKind::Try { value: inner, context: None } => inner.as_ref(),
-            ExprKind::Else { value: inner, default } if default.leaves() => inner.as_ref(),
+            ExprKind::Else { value: inner, default, .. } if default.leaves() => inner.as_ref(),
             _ => value,
         };
         self.sources.contains_key(&(call.span.start, call.span.end))
@@ -381,7 +381,7 @@ impl Lowering<'_> {
                     self.instead = None;
                     let call = match &value.kind {
                         ExprKind::Try { value: inner, context: None } => inner.as_ref(),
-                        ExprKind::Else { value: inner, default } if default.leaves() => {
+                        ExprKind::Else { value: inner, default, .. } if default.leaves() => {
                             self.instead = Some(default.as_ref().clone());
                             inner.as_ref()
                         }
@@ -1593,7 +1593,7 @@ fn fail_instead(body: &mut [Stmt], instead: &Expr) {
         }
         match &mut expr.kind {
             ExprKind::Try { value, context: None } => {
-                let kind = ExprKind::Else { value: value.clone(), default: leaving.clone() };
+                let kind = ExprKind::Else { value: value.clone(), default: leaving.clone(), except: false };
                 expr.kind = kind;
             }
             // `value else fail E` fails as the source does, so with what's said instead.
@@ -1698,7 +1698,8 @@ fn quietly(cleanup: &[Stmt]) -> Option<Vec<Stmt>> {
     fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
         if let ExprKind::Try { value, context } = &expr.kind {
             let (value, context) = (value.clone(), context.as_deref().cloned());
-            expr.kind = ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)) };
+            expr.kind =
+                ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)), except: false };
         }
     });
     ends_saying(&mut quiet);

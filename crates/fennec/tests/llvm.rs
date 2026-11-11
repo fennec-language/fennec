@@ -541,6 +541,79 @@ def main(stdout: Stdout):
         stdout.print(held)
 "#;
 
+/// `except` handles a failure natively in each of its forms: any failure named, `case` arms under
+/// the name, one case on the line giving a value or leaving, a bare call's, and a `with` source's
+/// cleanup, `lend x except:`.
+#[test]
+fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_forms",
+        EXCEPT_FORMS,
+        "failed: big\n0\nlong 9\n8080\n-1\nskipped 2\nrolled back\n",
+    )
+}
+
+const EXCEPT_FORMS: &str = r#"error Bad:
+    Empty
+    Long(size: int)
+
+error Big:
+    why: str
+
+def risky(n: int) -> int fails Big:
+    if n > 5:
+        fail Big("big")
+    return n
+
+def load(n: int) -> int fails Bad:
+    if n == 0:
+        fail .Empty
+    if n > 5:
+        fail .Long(size=n)
+    return n
+
+def act(n: int) fails Big:
+    if n == 2:
+        fail Big("two")
+
+def guarded(stdout: Stdout) -> with int fails Big:
+    lend 1 except:
+        stdout.print("rolled back")
+
+def first(n: int) -> int:
+    x = risky(n) except Big(): return -1
+    return x
+
+def used(stdout: Stdout) fails Big:
+    with guarded(stdout)? as one:
+        fail Big(f"inside {one}")
+
+def main(stdout: Stdout):
+    small = risky(9) except why:
+        stdout.print(f"failed: {why.why}")
+        0
+    stdout.print(small)
+    sized = load(9) except why:
+        case .Long(size):
+            stdout.print(f"long {size}")
+            size
+        case .Empty:
+            0
+    port = risky(7) except Big(): 8080
+    stdout.print(port)
+    stdout.print(first(9))
+    for turn in range(4):
+        act(turn) except why:
+            stdout.print(f"skipped {turn}")
+            _ = why.why
+    used(stdout) except why:
+        _ = why.why
+    _ = sized
+"#;
+
 /// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
 /// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
 #[test]
@@ -5008,12 +5081,14 @@ def main(stdout: Stdout):
 /// failure-style one (`fail`, `?` on a line, kept, or in an expression, an `else` that fails, a
 /// A `?` failing inside an expression inside a `with` block runs the source's cleanup wherever it
 /// sits: inside another `?`'s call, in a `return`, an assignment or a line of its own, a field read
-/// off it, an index, an f-string, a list item, a slice's bounds, a match's subject and a
+/// off it, an index, an f-string, a list item, a slice's bounds, a match's subject, a conditional's
+/// test, and `f()? else fail ...` on a `T? fails E` call. With nothing failing, each gives what it
 /// Arguments and operands run left to right whatever `?`s are among them: what's written to a
 /// `?`'s left runs before it and what's to its right after it, with the `?` failing and passing,
 /// nested and outermost, in a call, an operator, an f-string and a list, inside a `with` block and
 /// outside one. A failure in the block runs its cleanup after what ran to its left, and nothing to
-/// its right runs.
+/// its right runs. A name read to a `?`'s left is read before the `?`'s call changes it through
+/// `ref`.
 #[test]
 fn arguments_run_left_to_right_around_a_question_mark() -> std::io::Result<()> {
     if !ready() {
@@ -5026,7 +5101,7 @@ fn arguments_run_left_to_right_around_a_question_mark() -> std::io::Result<()> {
     )
 }
 
-/// conditional's test. With nothing failing, each gives what it would without the block.
+/// would without the block.
 #[test]
 fn a_question_mark_inside_an_expression_in_a_with_block_runs_its_cleanup() -> std::io::Result<()> {
     if !ready() {
@@ -15891,6 +15966,21 @@ fn floats_in_cases_and_fields_compare_and_hash_as_floats_do() -> std::io::Result
     )
 }
 
+/// `in`, `index` and `remove` on a list of strings find an item by its text, held in its header or
+/// in a block, with nothing made to compare: empty, 8, 23 and 24 bytes, long, and past ASCII.
+#[test]
+fn a_list_of_strings_finds_its_items_by_text_however_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "string_list_in",
+        include_str!("fixtures/string_list_in.fen"),
+        "True True 0 False\nTrue True 1 False\nTrue True 2 False\nTrue True 3 False\nTrue True 4 False\n\
+         True True 5 False\nTrue True 6 False\nFalse False False False\n5 False False True\n",
+    )
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
 /// it. The JIT's `==` and keys never followed it.
@@ -17810,8 +17900,7 @@ fn types_holding_themselves_through_a_list_match_the_jit() -> std::io::Result<()
 /// own and leaves nothing behind.
 #[test]
 fn a_type_holding_itself_through_a_list_allocates_no_block_of_its_own() -> std::io::Result<()> {
-    // Told to box what holds blocks, it does.
-    if !ready() || std::env::var_os("FENNEC_INLINE_STRUCTS").is_some_and(|set| set == "0") {
+    if !ready() {
         return Ok(());
     }
     let source = "enum Json:\n    Number(value: int)\n    Items(values: list[Json])\n\ndef main(stdout: Stdout):\n    mut items = []\n    for n in range(1000):\n        items.append(Json.Number(n))\n    stdout.print(Json.Items(items) == .Number(0))\n";

@@ -384,10 +384,13 @@ impl Tree {
                 tree.expr(cond);
                 tree.expr(otherwise);
             }),
-            ExprKind::Else { value, default } => self.node("else", span, |tree| {
-                tree.expr(value);
-                tree.expr(default);
-            }),
+            ExprKind::Else { value, default, except } => {
+                let word = if *except { "except" } else { "else" };
+                self.node(word, span, |tree| {
+                    tree.expr(value);
+                    tree.expr(default);
+                });
+            }
             ExprKind::Try { value, context } => self.node("try", span, |tree| {
                 tree.expr(value);
                 if let Some(context) = context {

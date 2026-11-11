@@ -424,6 +424,7 @@ impl Conn {
 
     /// `write`, giving up once `timeout` passes, as for a client that never reads.
     pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+        crate::stdlib::net::wrote_to_a_connection();
         let until = Until::after(timeout);
         self.read_since_write.set(false);
         if self.tls.borrow().is_some() {

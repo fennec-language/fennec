@@ -79,9 +79,15 @@ pub(crate) fn filled(holding: &Holding, inst: &InstKind) -> Vec<usize> {
 }
 
 /// Steps over one instruction: what it writes may hold after, and what it lets go of doesn't.
-pub(crate) fn step(emit: &Emit<'_, '_, '_>, holding: &Holding, inst: &InstKind, set: &mut BTreeSet<usize>) {
+pub(crate) fn step(
+    emit: &Emit<'_, '_, '_>,
+    holding: &Holding,
+    place: (usize, usize),
+    inst: &InstKind,
+    set: &mut BTreeSet<usize>,
+) {
     set.extend(filled(holding, inst));
-    for local in emit.let_go_of(inst) {
+    for local in emit.let_go_of(place, inst) {
         set.remove(&local.0);
     }
 }
@@ -107,8 +113,8 @@ pub(crate) fn holding(emit: &Emit<'_, '_, '_>, untracked: &BTreeSet<usize>, spli
             continue;
         };
         let mut set = start.clone();
-        for inst in &block.insts {
-            step(emit, &holding, &inst.kind, &mut set);
+        for (index, inst) in block.insts.iter().enumerate() {
+            step(emit, &holding, (at, index), &inst.kind, &mut set);
         }
         for next in block.end.targets() {
             let Some(theirs) = holding.coming_in.get_mut(next.0) else { continue };
@@ -130,13 +136,13 @@ pub(crate) fn holding(emit: &Emit<'_, '_, '_>, untracked: &BTreeSet<usize>, spli
         for (at, block) in function.blocks.iter().enumerate() {
             let Some(Some(start)) = holding.coming_in.get(at) else { continue };
             let mut set = start.clone();
-            for inst in &block.insts {
+            for (index, inst) in block.insts.iter().enumerate() {
                 for local in set.iter().copied().chain(filled(&holding, &inst.kind)) {
                     if let Some(count) = places.get_mut(local) {
                         *count += 1;
                     }
                 }
-                step(emit, &holding, &inst.kind, &mut set);
+                step(emit, &holding, (at, index), &inst.kind, &mut set);
             }
         }
         holding.short =

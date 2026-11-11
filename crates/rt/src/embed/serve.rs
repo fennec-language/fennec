@@ -424,6 +424,7 @@ impl Conn {
 
     /// `write`, giving up once `timeout` passes, as for a client that never reads.
     pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+        crate::stdlib::net::wrote_to_a_connection();
         let until = Until::after(timeout);
         self.read_since_write.set(false);
         if self.tls.borrow().is_some() {
@@ -866,6 +867,11 @@ impl Io {
 
     /// Makes a task for a connection of the server `id`, ready to start.
     fn take(&mut self, stream: TcpStream, id: u64) {
+        // Each write goes out at once. A response is its head and then its body, two writes, and
+        // waiting to send the second until the first is acknowledged, which a client delays by up
+        // to 40 ms on Linux, held every answer with a body that long. If it can't be set, the
+        // connection only answers more slowly.
+        let _ = stream.set_nodelay(true);
         let Some(here) = self.servers.get_mut(&id) else { return };
         let handler = Arc::clone(&here.server.handler);
         let tls = here.server.tls.clone();

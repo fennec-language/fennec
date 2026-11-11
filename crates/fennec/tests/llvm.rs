@@ -1790,6 +1790,40 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     )
 }
 
+/// Writes under a lock that nothing after them can undo go unsaved, and the rest are saved: kept,
+/// put back by a failure, or by a crash in a launched task, every value is right. Built checking
+/// proofs, which stop at a rollback after a write left unsaved.
+#[test]
+fn a_write_nothing_after_can_undo_goes_unsaved_and_the_rest_go_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_unsaved_writes")?;
+        let (program, executable) = (dir.join("unsaved.fen"), dir.join("unsaved"));
+        std::fs::write(&program, include_str!("fixtures/workers/lock_unsaved_writes.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            include_str!("fixtures/workers/lock_unsaved_writes.out"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Locks taken alone begin and end in native code, with no log; two taken together, a save the
 /// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
 /// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.
@@ -8722,6 +8756,171 @@ def main(stdout: Stdout):
     stdout.print(failed, failed_many)
 "#;
 
+/// A program that reads a value where letting go of it too soon is easiest to get wrong prints the
+/// same in a dev build and a release, built as written and checking proofs, and holds as many
+/// blocks at its end after 30 rounds as after 3. Too soon would read what's freed, which the
+/// sanitizer's job sees; too late adds up.
+fn read_until_its_last_use(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    prints_in_both_builds(name, source, wanted)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder(&format!("{name}_checked"))?;
+        let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    let live = |rounds: u32| -> std::io::Result<Option<u64>> {
+        let source = source.replace("rounds = 3", &format!("rounds = {rounds}"));
+        Ok(count(&counts_of(&format!("{name}_{rounds}"), &source)?, "live"))
+    };
+    let (few, many) = (live(3)?, live(30)?);
+    assert!(few.is_some(), "the run says how many blocks it still held");
+    assert_eq!(few, many, "blocks still held after 3 rounds and after 30");
+    Ok(())
+}
+
+/// A list read on each turn of a loop is kept for every turn, though its last read is inside it,
+/// and one replaced on each turn, `current = longer`, is kept until it's replaced.
+#[test]
+fn a_value_read_in_a_loop_is_kept_for_every_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use("read_in_a_loop", READ_IN_A_LOOP, "w0\n11 4 c0\nw1\n11 4 c1\nw2\n11 4 c2\n")
+}
+
+const READ_IN_A_LOOP: &str = r#"def main(stdout: Stdout):
+    rounds = 3
+    for round in range(rounds):
+        words = [f"w{round}", "bb", "ccc"]
+        mut total = 0
+        for at in range(5):
+            total += words[at % 3].len()
+            if at == 4:
+                stdout.print(words[0])
+        mut current = [f"c{round}"]
+        mut steps = 0
+        while steps < 3:
+            longer = current + [f"s{steps}"]
+            current = longer
+            steps += 1
+        stdout.print(total, current.len(), current[0])
+"#;
+
+/// A value read in an `else` block a failure runs is kept for it, though the call that fails reads
+/// it last on the way that doesn't, and one read only in the `else` is kept until the call.
+#[test]
+fn a_value_read_where_a_failure_goes_is_kept_for_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use(
+        "read_where_a_failure_goes",
+        READ_WHERE_A_FAILURE_GOES,
+        "6 0\n7 1\nnote 2 bad 8\nlabel 2\n-1 0\n",
+    )
+}
+
+const READ_WHERE_A_FAILURE_GOES: &str = r#"error Bad:
+    why: str
+
+def risky(n: int) -> int fails Bad:
+    if n % 3 == 2: fail Bad(why=f"bad {n}")
+    n
+
+def main(stdout: Stdout):
+    rounds = 3
+    for round in range(rounds):
+        note = f"note {round}"
+        got = risky(note.len() + round) else as why:
+            stdout.print(note, why.why)
+            -1
+        label = f"label {round}"
+        other = risky(round) else:
+            stdout.print(label)
+            0
+        stdout.print(got, other)
+"#;
+
+/// A value a `with` source reads before its `lend`, in its `else:` and after it, is kept across
+/// the caller's block, and the caller's own, read inside the block and after it, is kept too.
+#[test]
+fn a_value_read_around_a_lend_is_kept_across_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use(
+        "read_around_a_lend",
+        READ_AROUND_A_LEND,
+        "ANN0 ann0\n4\nANN1 ann1\n4\nANN2 ann2\n4\n6 open ann0\n",
+    )
+}
+
+const READ_AROUND_A_LEND: &str = r#"struct Ledger:
+    lines = list[str]()
+
+def entry(ref ledger: Ledger, name: str) -> with str:
+    ledger.lines.append(f"open {name}")
+    lend name.upper() else:
+        ledger.lines.append(f"undo {name}")
+    ledger.lines.append(f"close {name}")
+
+def main(stdout: Stdout):
+    rounds = 3
+    mut ledger = Ledger()
+    for round in range(rounds):
+        name = f"ann{round}"
+        with entry(ref ledger, name) as label:
+            stdout.print(label, name)
+        stdout.print(name.len())
+    stdout.print(ledger.lines.len(), ledger.lines[0])
+"#;
+
+/// A value an arrow function captures is kept for every call of it, though making the arrow is
+/// the last read written where the value is, and one read again after is kept for that too.
+#[test]
+fn a_value_an_arrow_captures_is_kept_for_its_calls() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    read_until_its_last_use(
+        "captured_by_an_arrow",
+        CAPTURED_BY_AN_ARROW,
+        "hi 0 1 hi 0!2\n4 i0\nhi 1 1 hi 1!2\n4 i1\nhi 2 1 hi 2!2\n4 i2\n",
+    )
+}
+
+const CAPTURED_BY_AN_ARROW: &str = r#"def apply(run: (int) -> str, n: int) -> str:
+    run(n)
+
+def count_with(run: () -> int) -> int:
+    run() + run()
+
+def main(stdout: Stdout):
+    rounds = 3
+    for round in range(rounds):
+        greeting = f"hi {round}"
+        stdout.print(apply((x) => f"{greeting} {x}", 1), apply((x) => f"{greeting}!{x}", 2))
+        items = [f"i{round}", "j"]
+        stdout.print(count_with(() => items.len()), items[0])
+"#;
+
 /// [`FAILING_PARTWAY`] with `many`, a function of 50 lines that each make a list and a string
 /// held only for the line, enough short-lived values for each failure to let go of its own where
 /// it leaves. Round `at` fails at line `49 - at`.
@@ -8787,6 +8986,49 @@ fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Resul
             String::from_utf8_lossy(&ran.stderr)
         );
     }
+    Ok(())
+}
+
+/// A release builds a huge function apart and keeps what it calls seen from outside the rest, by
+/// name. A generic's instance, `f_twice[int]`, has brackets, which the list of names kept read as
+/// a pattern: it was made internal, and linking said "Undefined symbols".
+#[test]
+fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let lines = 400;
+    let mut body = String::new();
+    let mut total: i64 = 0;
+    for line in 0..lines {
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let written = i64::try_from(total.to_string().len()).unwrap_or(0);
+        total += line + written;
+    }
+    let source = format!(
+        "def twice[T](value: T) -> list[T]:\n    [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+    );
+    let dir = folder("huge_generic")?;
+    let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    assert!(built.status.success(), "{said}");
+    assert!(said.contains("hint: `long` is too big to optimize"), "{said}");
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
     Ok(())
 }
 
@@ -11090,6 +11332,130 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
     ];
     assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
+/// How many writes a run asked of its connections, from what it said under `FENNEC_COUNTS`.
+fn connection_writes(said: &str) -> Option<u64> {
+    let line = said.lines().find(|line| line.starts_with("copies "))?;
+    let mut words = line.split(' ');
+    words.by_ref().find(|word| *word == "connection_writes")?;
+    words.next()?.parse().ok()
+}
+
+/// `source` built natively in `dir` as `name`.
+fn built_in(dir: &Path, name: &str, source: &str) -> std::io::Result<PathBuf> {
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let executable = dir.join(name);
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    Ok(executable)
+}
+
+/// A response's head and body go out in one write, so it goes in one packet: written apart, the
+/// body waits for the client to acknowledge the head, which it may hold back for 40 ms. Counted
+/// under `FENNEC_COUNTS`: three responses, two with a body, are three writes.
+#[cfg(unix)]
+#[test]
+fn a_response_goes_out_in_one_write() -> std::io::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("one_write_response")?;
+    let server = built_in(
+        &dir,
+        "serve",
+        r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    match request.path:
+        case "/missing":
+            Response(status=404)
+        case _:
+            Response(status=200, body=f"at {request.path}".encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+"#,
+    )?;
+    let mut serving = Running(
+        Command::new(&server)
+            .env("FENNEC_COUNTS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(serving.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    client.write_all(
+        b"GET /a HTTP/1.1\r\n\r\nGET /missing HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nconnection: close\r\n\r\n",
+    )?;
+    let mut answers = String::new();
+    client.read_to_string(&mut answers)?;
+    assert_eq!(answers.matches("HTTP/1.1 ").count(), 3, "{answers}");
+    terminate(&serving)?;
+    let mut said = String::new();
+    serving.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?.read_to_string(&mut said)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(connection_writes(&said), Some(3), "{said}");
+    Ok(())
+}
+
+/// A request's head and body go out in one write too: two posts with a body are two writes.
+#[test]
+fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    // A server here, which answers each post once it's all come, and closes.
+    let answering = std::thread::spawn(move || -> std::io::Result<()> {
+        for _ in 0..2 {
+            let (mut conn, _) = listener.accept()?;
+            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            let mut heard = Vec::new();
+            let mut buffer = [0; 4096];
+            while !String::from_utf8_lossy(&heard).ends_with("\r\n\r\ndata") {
+                let got = conn.read(&mut buffer)?;
+                if got == 0 {
+                    break;
+                }
+                heard.extend_from_slice(buffer.get(..got).unwrap_or_default());
+            }
+            conn.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")?;
+        }
+        Ok(())
+    });
+    let dir = folder("one_write_request")?;
+    let poster = built_in(
+        &dir,
+        "post",
+        r#"from std.net import NetError
+
+def main(net: Net, args: Args, stdout: Stdout) fails NetError:
+    port = int(args[0]) else 0
+    for path in ["/a", "/b"]:
+        answer = net.post(f"http://127.0.0.1:{port}{path}", body="data", timeout=10s)?
+        stdout.print(answer.status, answer.text())
+"#,
+    )?;
+    let ran = Command::new(&poster).arg(port.to_string()).env("FENNEC_COUNTS", "1").output_within()?;
+    answering.join().map_err(|_| std::io::Error::other("the answering thread panicked"))??;
+    std::fs::remove_dir_all(&dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "200 ok\n200 ok\n", "{said}");
+    assert_eq!(connection_writes(&said), Some(2), "{said}");
     Ok(())
 }
 
@@ -15550,6 +15916,21 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// Floats inside an enum's case and a struct's fields compare field by field as Fennec compares
+/// floats, with no value read whole: NaN equals NaN, `-0.0` equals `0.0`, another case is unequal,
+/// and a block field goes by what it holds. Keys found equal hash alike, so a dict keeps one.
+#[test]
+fn floats_in_cases_and_fields_compare_and_hash_as_floats_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_fields_equal",
+        include_str!("fixtures/float_fields_equal.fen"),
+        "True True False False True\nTrue True False False\nTrue False False\n3 nan again zero again\n1 2 False\n",
+    )
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
 /// it. The JIT's `==` and keys never followed it.
@@ -19457,11 +19838,11 @@ struct Words:
     def rule(self, message: str) -> ParseError:
         ParseError(message=f"in the text, {message}", line=0, column=self.at)
 
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         word = self.next()?
         mut at = 0
-        for case, _ in cases:
-            if case == word:
+        for case_name, _ in cases:
+            if case_name == word:
                 return at
             at += 1
         fail ParseError(message=f"no case `{word}` in {name}", line=0, column=self.at)

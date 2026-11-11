@@ -61,11 +61,11 @@ struct Shown:
     def end_items(ref self):
         self.parts.append("]")
 
-    def case(ref self, name: str, case: str, at: int):
-        self.parts.append(f"{name}.{case}")
+    def enum_case(ref self, name: str, case_name: str, at: int):
+        self.parts.append(f"{name}.{case_name}")
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
-        self.parts.append(f"{name}.{case}/{count}")
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
+        self.parts.append(f"{name}.{case_name}/{count}")
 
     def member(ref self, name: str, at: int):
         pass
@@ -146,10 +146,10 @@ struct Counted:
     def end_items(ref self):
         pass
 
-    def case(ref self, name: str, case: str, at: int):
+    def enum_case(ref self, name: str, case_name: str, at: int):
         self.total += 1
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
         self.total += 1
 
     def member(ref self, name: str, at: int):

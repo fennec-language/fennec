@@ -74,7 +74,10 @@ fn start(executable: &Path, dir: &Path) -> std::io::Result<Server> {
 
 /// Sends one request on `stream` and reads its whole response, giving back its status.
 fn ask(stream: &mut TcpStream, method: &str, path: &str, body: &str) -> std::io::Result<u16> {
-    write!(stream, "{method} {path} HTTP/1.1\r\nhost: here\r\ncontent-length: {}\r\n\r\n{body}", body.len())?;
+    // In one write: `write!` on a socket sends each piece as a write of its own.
+    let request =
+        format!("{method} {path} HTTP/1.1\r\nhost: here\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+    stream.write_all(request.as_bytes())?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut status = String::new();
     reader.read_line(&mut status)?;
@@ -106,13 +109,17 @@ fn send(server: &Server, kept: &mut Option<TcpStream>, kind: &str, n: usize) -> 
     let connect = || {
         let stream = TcpStream::connect(("127.0.0.1", server.port))?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        // As a real client would, so no write waits for the last to be acknowledged.
+        stream.set_nodelay(true)?;
         Ok::<_, std::io::Error>(stream)
     };
     match kind {
         "crash" => {
             // It closes its connection.
             let mut stream = connect()?;
-            write!(stream, "GET /crash?n={} HTTP/1.1\r\nhost: here\r\n\r\n", n % 100 + 1)?;
+            stream.write_all(
+                format!("GET /crash?n={} HTTP/1.1\r\nhost: here\r\n\r\n", n % 100 + 1).as_bytes(),
+            )?;
             let mut back = [0; 16];
             let _ = stream.read(&mut back);
             return Ok(());

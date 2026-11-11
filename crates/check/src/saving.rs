@@ -424,7 +424,7 @@ fn pair_for(checker: &mut Checker, unions: &mut Unions, def: &TypeDef) -> Option
         let list = cases.collect::<Vec<_>>().join(", ");
         let _ = writeln!(text, "{} = [{list}]\n", constant(name, ""));
         let mut saving = String::from("        match self:\n");
-        let mut loading = format!("        match src__.case(\"{name}\", {})?:\n", constant(name, ""));
+        let mut loading = format!("        match src__.enum_case(\"{name}\", {})?:\n", constant(name, ""));
         for (at, case) in def.cases.iter().enumerate() {
             let fields = reads(checker, unions, name, Some(&case.name), &case.fields)?;
             save_case(&mut saving, name, (at, &case.name), &fields.0);
@@ -495,7 +495,7 @@ fn save_case(out: &mut String, name: &str, (at, case): (usize, &str), fields: &[
     if fields.is_empty() {
         let _ = writeln!(
             out,
-            "            case .{case}:\n                out__.case(\"{name}\", \"{case}\", {at})"
+            "            case .{case}:\n                out__.enum_case(\"{name}\", \"{case}\", {at})"
         );
         return;
     }
@@ -511,6 +511,11 @@ fn save_case(out: &mut String, name: &str, (at, case): (usize, &str), fields: &[
 fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &Fields<'_>) {
     for read in fields {
         let _ = writeln!(out, "{indent}mut read_{}: {} = None", read.field.name, read.or_none);
+        // An optional field's own None can't be told from one not read, so whether it was read
+        // is kept apart, and a None read stays None rather than taking the default.
+        if read.optional && read.field.default.is_some() {
+            let _ = writeln!(out, "{indent}mut seen_{} = False", read.field.name);
+        }
     }
     let _ = writeln!(out, "{indent}while src__.next_field({list})?:\n{indent}    match src__.field_at():");
     for (at, read) in fields.iter().enumerate() {
@@ -518,11 +523,16 @@ fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &
         let _ = writeln!(out, "{indent}        case {at}:");
         if read.optional {
             let _ = writeln!(out, "{indent}            read_{name} = {}", read.read());
+            if read.field.default.is_some() {
+                let _ = writeln!(out, "{indent}            seen_{name} = True");
+            }
             continue;
         }
-        // A format with a missing value, like JSON's `null`, may give one for any field, which
-        // then takes its default. One with none reads what the field holds. Either way the value
-        // is read as what the field holds, never wrapped as an optional on the way.
+        // A format whose saved data can say a value isn't there, as pack's does for a field that
+        // was optional when it was saved, may give one for any field, which then takes its
+        // default. JSON's and SQL's null is a value, which a field that isn't optional can't
+        // hold, so they say no. Either way the value is read as what the field holds, never
+        // wrapped as an optional on the way.
         let _ = writeln!(
             out,
             "{indent}            if src__.none_next() and src__.none()?:\n{indent}                read_{name} = None\n{indent}            else:\n{indent}                read_{name} = {}",
@@ -533,7 +543,14 @@ fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &
     for read in fields {
         let name = &read.field.name;
         let shown = renamed(read.field).unwrap_or(name);
-        if read.field.default.is_some() && read.union.is_some() {
+        if read.field.default.is_some() && read.optional {
+            // Read, it holds what was read, None included; left out, it takes its default.
+            let _ = writeln!(
+                out,
+                "{indent}mut {name}: {} = DEFAULT_{name}\n{indent}if seen_{name}: {name} = read_{name}",
+                read.ty
+            );
+        } else if read.field.default.is_some() && read.union.is_some() {
             // A default that's one of a union's members is given as the union.
             let _ = writeln!(
                 out,

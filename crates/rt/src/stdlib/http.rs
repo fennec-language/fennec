@@ -225,8 +225,11 @@ fn once<'h>(
         let _ = write!(head, "Content-Length: {}\r\n", body.len());
     }
     head.push_str("Connection: close\r\n\r\n");
-    stream.write_all_by(head.as_bytes(), deadline, timeout)?;
-    stream.write_all_by(body, deadline, timeout)?;
+    // The head and the body in one write, so a small request goes in one packet: written apart,
+    // the body waits for the server to acknowledge the head, which it may hold back for 40 ms.
+    let mut request = head.into_bytes();
+    request.extend_from_slice(body);
+    stream.write_all_by(&request, deadline, timeout)?;
     read_answer(&mut stream, method, deadline, timeout)
 }
 
@@ -254,7 +257,13 @@ fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream,
             return Err(Failure::TimedOut(timeout));
         }
         match TcpStream::connect_timeout(&address, left) {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                // A request is its head and then its body, two writes. Each goes out at once,
+                // rather than the body waiting for the head to be acknowledged, which a server
+                // may delay by up to 40 ms. If it can't be set, the request is only slower.
+                let _ = stream.set_nodelay(true);
+                return Ok(stream);
+            }
             Err(error) => {
                 failure = match error.kind() {
                     ErrorKind::ConnectionRefused => Failure::Refused(url.host.clone(), i64::from(url.port)),
@@ -371,6 +380,7 @@ impl Stream {
     }
 
     fn write_all_by(&mut self, data: &[u8], deadline: Instant, timeout: Duration) -> Result<(), Failure> {
+        crate::stdlib::net::wrote_to_a_connection();
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout));

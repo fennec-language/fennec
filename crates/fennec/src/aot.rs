@@ -297,10 +297,24 @@ pub(crate) fn executable_checked(
 }
 
 /// Puts the finished program in the store under `root` at `output`, if it's there.
+/// For a run, into Fennec's own folder, the file is the store's own, linked out rather than
+/// copied: macOS holds the first launch of each new file for seconds while it checks it, and this
+/// one it has launched before. Anywhere else, as for `fennec build -o`, it's a copy, since a file
+/// someone else may write into must never be the one the store keeps.
 pub(crate) fn stored_executable(cache: &fennec_build::Cache, root: &str, output: &Path) -> Option<()> {
+    if fennec_owns(output) {
+        return cache.link_out(PROGRAMS, root, output).ok()?.then_some(());
+    }
     let bytes = cache.read(PROGRAMS, root)?;
     std::fs::write(output, bytes).ok()?;
     executable_mode(output).ok()
+}
+
+/// Whether a program at `path` is kept as one file with the store's: on macOS, which holds a new
+/// file's first launch, and in Fennec's own folder for what it makes and throws away, where
+/// nothing but Fennec writes, and only once. Elsewhere a copy costs nothing a link would save.
+fn fennec_owns(path: &Path) -> bool {
+    cfg!(target_os = "macos") && path.starts_with(fennec_build::work_folder())
 }
 
 /// What a dev build depends on besides the program: which runtime it links, as far as anything
@@ -320,8 +334,10 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
         std::fs::write(output, bytes).map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
         executable_mode(output)
     };
-    if let Some(Stored { program: Some(bytes), .. }) = &compiled.stored {
-        written(bytes)?;
+    if let Some(Stored { cache, root, program: Some(bytes), .. }) = &compiled.stored {
+        if stored_executable(cache, root, output).is_none() {
+            written(bytes)?;
+        }
         return Ok(std::time::Duration::ZERO);
     }
     let linked = link_objects(
@@ -332,12 +348,16 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
         compiled.tls,
         compiled.statically,
     )?;
-    if let Some(Stored { cache, root, functions, .. }) = &compiled.stored
-        && let Ok(bytes) = std::fs::read(output)
-    {
-        // A store that can't be written only means linking it again next time.
+    if let Some(Stored { cache, root, functions, .. }) = &compiled.stored {
+        // A store that can't be written only means linking it again next time. A run's program
+        // is kept as the file just linked, the one about to be launched, so a later run of the
+        // same program launches a file macOS has checked already.
         let _ = cache.write(PROGRAMS, &format!("{root}.functions"), functions.as_bytes());
-        let _ = cache.write(PROGRAMS, root, &bytes);
+        if fennec_owns(output) {
+            let _ = cache.keep_file(PROGRAMS, root, output);
+        } else if let Ok(bytes) = std::fs::read(output) {
+            let _ = cache.write(PROGRAMS, root, &bytes);
+        }
     }
     Ok(linked)
 }
@@ -358,11 +378,13 @@ fn executable_mode(path: &Path) -> Result<(), String> {
 const PROGRAMS: &str = "programs";
 
 /// A build's place in the store: its root hash, the program kept under it when there is one, and
-/// the list of its functions' hashes to keep beside a program it links.
+/// the list of its functions' hashes to keep beside a program it links, with each function's
+/// hash as it is, which also names its compiled object, so no function's text is hashed twice.
 struct Stored {
     cache: fennec_build::Cache,
     root: String,
     functions: String,
+    hashes: Vec<fennec_blake3::Hash>,
     program: Option<Vec<u8>>,
 }
 
@@ -376,9 +398,10 @@ fn root_hash(
     entry: &str,
     runtime: Runtime,
     (release, statically): (bool, bool),
-) -> (String, String) {
-    let functions: Vec<String> =
-        units.iter().map(|unit| fennec_blake3::hash(unit.text.as_bytes()).to_hex()).collect();
+) -> (String, String, Vec<fennec_blake3::Hash>) {
+    let texts: Vec<fennec_blake3::Hash> =
+        units.iter().map(|unit| fennec_blake3::hash(unit.text.as_bytes())).collect();
+    let functions: Vec<String> = texts.iter().map(fennec_blake3::Hash::to_hex).collect();
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build root 2026-11-07");
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
     let target = format!(
@@ -406,7 +429,7 @@ fn root_hash(
         hasher.update(function.as_bytes());
     }
     hasher.update(fennec_blake3::hash(entry.as_bytes()).to_hex().as_bytes());
-    (hasher.finalize().to_hex(), functions.join("\n"))
+    (hasher.finalize().to_hex(), functions.join("\n"), texts)
 }
 
 /// What compiling a program with LLVM gives.
@@ -587,9 +610,9 @@ fn compile_emitted(
         .map(fennec_build::Cache::new);
     // A build that's been made before is in the store whole, under its root hash.
     let stored = cache.clone().map(|cache| {
-        let (root, functions) = root_hash(units, &entry, runtime, (release, statically));
+        let (root, functions, hashes) = root_hash(units, &entry, runtime, (release, statically));
         let program = cache.read(PROGRAMS, &root);
-        Stored { cache, root, functions, program }
+        Stored { cache, root, functions, hashes, program }
     });
     if stored.as_ref().is_some_and(|stored| stored.program.is_some()) {
         return Ok(Compiled {
@@ -612,7 +635,8 @@ fn compile_emitted(
             runtime_bitcode(runtime, statically).as_deref(),
         )
     } else {
-        fennec_llvm::compile(&tools, units, &entry, cache.as_ref(), &work)
+        let cached = stored.as_ref().map(|stored| (&stored.cache, stored.hashes.as_slice()));
+        fennec_llvm::compile(&tools, units, &entry, cached, &work)
     };
     // `FENNEC_LLVM_KEEP` leaves the modules' text to look at.
     if std::env::var_os("FENNEC_LLVM_KEEP").is_none() {

@@ -502,11 +502,15 @@ impl<'p> Module<'_, 'p> {
             saving_slots: HashMap::new(),
             rolled_back: HashSet::new(),
             lock_record: None,
+            clean_blocks: HashMap::new(),
+            locks_held: None,
+            dropped_saves: None,
             wrote_prop: false,
             traced_calls: Vec::new(),
             leave_after_crash: None,
             holding: Holding::default(),
             holding_now: BTreeSet::new(),
+            dying: crate::dying::Dying::new(),
             filling: Vec::new(),
             split: false,
         };
@@ -526,6 +530,7 @@ impl<'p> Module<'_, 'p> {
         for place in &function.places {
             untracked.extend([place.root.0, place.value.0]);
         }
+        emit.dying = emit.last_reads(&untracked);
         emit.holding = holding(&emit, &untracked, emit.split);
         emit.body()?;
         emit.write_traced_exit();
@@ -630,6 +635,14 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// The slot holding the address of this thread's record of plain saves, once a lock that saves
     /// its changes is taken, for its saves to go in without a call (see `rollback::save_plain`).
     pub(crate) lock_record: Option<String>,
+    /// Which blocks reach a lock's end with nothing that can crash or fail on the way, worked out
+    /// the first time a save asks (see `rollback::clean_blocks`), for each set of locks held.
+    pub(crate) clean_blocks: HashMap<Vec<usize>, Vec<bool>>,
+    /// The locks that save their changes held at each block's start (see `rollback::locks_held`).
+    pub(crate) locks_held: Option<Vec<Vec<usize>>>,
+    /// In a build checking proofs, the slot saying a save was left out since the last lock began,
+    /// for a rollback to stop at: the proof that nothing after it could need it didn't hold.
+    pub(crate) dropped_saves: Option<String>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
     /// The calls a failure can leave by, as the block each is at the end of and where it is from
@@ -644,6 +657,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     holding: Holding,
     /// The locals that may hold something as the instruction being written starts.
     holding_now: BTreeSet<usize>,
+    /// The owned locals each instruction reads for the last time, let go of after it.
+    dying: crate::dying::Dying,
     /// What the instruction being written, and the one after, which it may be written with,
     /// may fill.
     filling: Vec<usize>,
@@ -922,7 +937,7 @@ impl Emit<'_, '_, '_> {
                 }
                 self.let_go_after(&inst.kind);
                 let mut now = std::mem::take(&mut self.holding_now);
-                step(self, &self.holding, &inst.kind, &mut now);
+                step(self, &self.holding, (at, index), &inst.kind, &mut now);
                 self.holding_now = now;
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
@@ -1279,26 +1294,22 @@ impl Emit<'_, '_, '_> {
         short.retain(|local| self.holding.short(*local));
         short.sort_unstable();
         short.dedup();
-        // A build that checks proofs checks that the short-lived locals left here are empty.
-        let empty: Vec<usize> = if self.checks_proofs() {
-            (0..self.kinds.len()).filter(|at| self.holding.short(*at) && !short.contains(at)).collect()
-        } else {
-            Vec::new()
-        };
-        if short.is_empty() && empty.is_empty() {
+        if short.is_empty() {
             return (then.to_owned(), None);
         }
         let label = self.label("let_go");
         let (hot, block) = (std::mem::take(&mut self.out), self.current.clone());
         self.start_block(&label);
-        for local in empty {
-            self.check_empty(local, "a local a failure leaves is empty");
-        }
         for local in short {
             let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
             let (held, slot, text) = (self.temp(), self.slot(LocalId(local)), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
             self.release_kind(&held, &kind);
+            // A build that checks proofs empties it too, for `prop` to check that every short-lived
+            // local is empty once each way out has let go of what it held.
+            if self.checks_proofs() && text == "ptr" {
+                self.line(&format!("store ptr null, ptr {slot}"));
+            }
         }
         self.line(&format!("br label %{then}"));
         let written = std::mem::replace(&mut self.out, hot);
@@ -2879,7 +2890,7 @@ impl Emit<'_, '_, '_> {
     /// A local read once lets go of its value right after that, rather than when the function
     /// returns, so it doesn't still count as an owner when the next line changes what it read.
     fn let_go_after(&mut self, inst: &InstKind) {
-        for local in self.let_go_of(inst) {
+        for local in self.let_go_of(self.at, inst) {
             let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
             let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
@@ -2889,7 +2900,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The locals [`Self::let_go_after`] lets go of after `inst`, leaving their slots empty.
-    pub(crate) fn let_go_of(&self, inst: &InstKind) -> Vec<LocalId> {
+    pub(crate) fn let_go_of(&self, at: (usize, usize), inst: &InstKind) -> Vec<LocalId> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
@@ -2927,7 +2938,65 @@ impl Emit<'_, '_, '_> {
                 let_go.push(local);
             }
         }
+        // And what's read here for the last time on every way on.
+        for local in self.dying.get(&at).into_iter().flatten() {
+            if !let_go.contains(local) && !writes.contains(local) {
+                let_go.push(*local);
+            }
+        }
         let_go
+    }
+
+    /// The owned locals this function reads for the last time at each instruction, which are let
+    /// go of there: see `dying`. `untracked` are left to the function's end, as are any something
+    /// else stands for, a crash reads, or a generator keeps across a pause.
+    fn last_reads(&self, untracked: &BTreeSet<usize>) -> crate::dying::Dying {
+        let function = self.function;
+        let name = function.name.as_str();
+        if self.module.whole.generators.contains_key(name) {
+            return crate::dying::Dying::new();
+        }
+        // What's read by an instruction whose result stands for it, borrows from it or takes from
+        // it, and what anything borrows from.
+        let mut leaned_on: BTreeSet<usize> = BTreeSet::new();
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            let (mut reads, mut writes) = (Vec::new(), Vec::new());
+            visit(&inst.kind, |operand| reads.push(operand.clone()), |local| writes.push(local));
+            let leans = writes.iter().any(|dest| {
+                self.known.is_borrowed(*dest)
+                    || self.known.is_taken(*dest)
+                    || self.known.alias(*dest).is_some()
+                    || self.known.unmade.contains(&dest.0)
+                    || self.known.enumerated.contains_key(&dest.0)
+                    || self.known.map_walks.contains_key(&dest.0)
+            });
+            if leans {
+                leaned_on.extend(reads.iter().filter_map(|read| match read {
+                    Operand::Local(local) => Some(local.0),
+                    _ => None,
+                }));
+            }
+        }
+        for at in 0..function.locals.len() {
+            let mut local = LocalId(at);
+            while let Some(lender) = self.known.lender(local) {
+                leaned_on.insert(lender.0);
+                local = lender;
+            }
+        }
+        let eligible = |at: usize| {
+            at >= function.params
+                && self.owns(LocalId(at))
+                && !untracked.contains(&at)
+                && !leaned_on.contains(&at)
+                && !self.on_crash.contains(&at)
+                && !self.saving.contains(&at)
+                && self
+                    .kinds
+                    .get(at)
+                    .is_some_and(|kind| crate::dying::lets_go_quietly(self.module.layouts, kind))
+        };
+        crate::dying::dying(function, &eligible)
     }
 
     /// Everything local lets go of what it owns, except what's leaving, on a return: what's known
@@ -2946,7 +3015,11 @@ impl Emit<'_, '_, '_> {
     /// before getting there.
     fn release_locals_at_prop(&mut self) {
         for at in 0..self.kinds.len() {
+            // Each way out let go of the short-lived locals it held, so a build that checks proofs
+            // checks here that none holds anything: once for each local, rather than at each of
+            // the function's ways out, which grew with their product.
             if self.split && self.holding.short(at) {
+                self.check_empty(at, "a local a failure leaves is empty");
                 continue;
             }
             self.release_local(at, None);
@@ -3384,6 +3457,31 @@ def main(stdout: Stdout):
         for proof in ["gets one a turn, from 0", "is as long as its loop", "whose length was kept aside"] {
             assert!(said.iter().any(|text| text.contains(proof)), "{proof}: {said:?}");
         }
+        Ok(())
+    }
+
+    /// A build that checks proofs checks each short-lived local is empty once, where the failures
+    /// come together, not at each way out: the checks grew with the lines times the locals, and
+    /// a 200-line `main` came to 239,800 of them and 143 MB of IR.
+    #[test]
+    fn checking_proofs_checks_each_local_once_however_many_ways_out() -> Result<(), String> {
+        let checks = |lines: usize| -> Result<usize, String> {
+            let line = "    stdout.print(area(.Square(at_or_zero([3, 1, 2], at_or_zero([1, 2], 1)))))\n";
+            let source = format!(
+                "enum Shape:\n    Circle(radius: int)\n    Square(side: int)\n    Empty\n\ndef area(shape: Shape) -> int:\n    match shape:\n        case .Circle(radius): radius * radius * 3\n        case .Square(side): side * side\n        case .Empty: 0\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef main(stdout: Stdout):\n{}",
+                line.repeat(lines)
+            );
+            let program = lowered(&source)?;
+            let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+            let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+            let said: Vec<&String> = shared.literals.values().collect();
+            assert!(said.iter().any(|text| text.contains("a local a failure leaves is empty")), "{said:?}");
+            let main = units.iter().find(|unit| unit.function == "main").ok_or("no main")?;
+            Ok(main.text.matches("call void @fennec_proof_broken(").count())
+        };
+        let (fewer, more) = (checks(100)?, checks(200)?);
+        assert!(fewer > 0);
+        assert!(more <= fewer * 5 / 2, "{fewer} checks for 100 lines and {more} for 200");
         Ok(())
     }
 

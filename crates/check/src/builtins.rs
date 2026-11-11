@@ -281,8 +281,8 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Clock", "now") => reads(&[], Type::named("Instant")),
         ("Clock", "time") => reads(&[], Type::named("Time")),
         ("Args", "len") | ("Entropy", "seed") => reads(&[], Type::Int),
-        // What a test printed, a line each, sorted, as what tasks print comes out in the order
-        // they write it, which differs between runs; and standard input's lines.
+        // A test's printed lines, sorted, since tasks print in no fixed order; and standard
+        // input's lines.
         ("Stdout", "sorted_lines") | ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         // The next line without its ending, `None` at the end, and up to `size` bytes, empty at
         // the end: what makes `Stdin` a `Reader`.

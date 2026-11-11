@@ -59,6 +59,10 @@ struct Stream {
     window: usize,
     /// The thread reading the stream, which adopts what the chunks make.
     reader: u16,
+    /// The stream, as a task of the one reading it, for naming its chunks' entries in a recording
+    /// or a replay: each chunk as a `parallel` call's range is, by where it starts. `None` in a
+    /// normal run.
+    task: Option<crate::replay::Task>,
     chunks: Mutex<Chunks>,
     /// Signalled whenever a chunk is done.
     done: Condvar,
@@ -104,6 +108,8 @@ impl Stream {
         let from = at * self.chunk;
         let to = (from + self.chunk).min(self.length);
         let since = threads::made_so_far();
+        let mut was = crate::replay::range(self.task.as_ref(), from);
+        crate::replay::swap(&mut was);
         let mut items = lists::new(self.element, number(to - from));
         let thread = i64::from(threads::index());
         let mut failure = None;
@@ -114,6 +120,11 @@ impl Stream {
             set_failed(0);
         }
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
+        // In a recording or a replay, what the chunk printed goes out under its name.
+        if crate::replay::active() {
+            super::super::write_kept_output();
+        }
+        crate::replay::swap(&mut was);
         Slot::Done { items, made, failure }
     }
 
@@ -181,6 +192,7 @@ pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i
         chunk,
         window,
         reader: threads::index(),
+        task: crate::replay::child(),
         chunks: Mutex::new(Chunks { first: 0, slots, ended: false }),
         done: Condvar::new(),
     });

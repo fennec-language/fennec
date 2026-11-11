@@ -31,6 +31,11 @@ pub const DEFAULT_CAP: u64 = 1 << 30;
 /// An entry used this recently is already near the end of cleanup's order.
 const MARKED_RECENTLY: Duration = Duration::from_secs(600);
 
+/// An entry stored or used this recently is never removed, however far over the cap the cache
+/// is: a command may be about to read it, or to start the program it is. It's twice the time an
+/// entry goes unmarked, so one used since is always inside it.
+pub const KEPT_RECENT: Duration = Duration::from_mins(20);
+
 /// Another build's folder that nothing has used for this long goes whole at any cleanup, under the
 /// cap or over it: only that build of Fennec could read it, and it's most likely gone.
 pub const UNUSED_BUILD: Duration = Duration::from_hours(24);
@@ -65,6 +70,8 @@ struct Entry {
     used: SystemTime,
     /// The build folder it's in.
     build: PathBuf,
+    /// How many names the file has: more than one once a run has a program put out as it.
+    links: u64,
 }
 
 impl Cache {
@@ -88,11 +95,8 @@ impl Cache {
         let bytes = std::fs::read(&path).ok()?;
         // Marking costs a write, so an entry marked in the last few minutes isn't marked again.
         let age = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
-        if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY)
-            && let Ok(file) = File::options().write(true).open(&path)
-        {
-            // Only cleanup's order depends on this, so a failure here doesn't matter.
-            let _ = file.set_modified(SystemTime::now());
+        if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
+            mark_used(&path);
         }
         Some(bytes)
     }
@@ -106,6 +110,48 @@ impl Cache {
         let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
         std::fs::write(&temporary, bytes)?;
         std::fs::rename(&temporary, &path)
+    }
+
+    /// Keeps the program at `from` as an entry, as that very file rather than a copy of it:
+    /// linked in, so the entry and `from` are one file. A program kept this way is the file that
+    /// was launched, which macOS has checked already: it holds each new file's first launch for
+    /// seconds while it does. Where a link can't be made, as across disks, it's copied.
+    ///
+    /// Nothing is ever written into a file once kept: it's made read-only, and a new program kept
+    /// under the same name is a new file put in its place, so a link to the old one goes on
+    /// holding the old program, never the new one. `from` has to be a file nothing else writes.
+    pub fn keep_file(&self, kind: &str, name: &str, from: &Path) -> std::io::Result<()> {
+        let path = self.path(kind, name);
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&temporary);
+        if std::fs::hard_link(from, &temporary).is_err() {
+            std::fs::copy(from, &temporary)?;
+        }
+        read_only_program(&temporary)?;
+        std::fs::rename(&temporary, &path)
+    }
+
+    /// Puts the entry at `to` as that very file rather than a copy, marked as just used: linked
+    /// out, where a link can be made. Gives back whether there was one.
+    pub fn link_out(&self, kind: &str, name: &str, to: &Path) -> std::io::Result<bool> {
+        let path = self.path(kind, name);
+        if !path.is_file() {
+            return Ok(false);
+        }
+        // An entry kept some other way, as by `write`, may not be runnable yet.
+        read_only_program(&path)?;
+        // Marked before it's put out: a linked file is the entry, with its time, and a sweep of
+        // what earlier runs built goes by that time, so it has to be the time of this run.
+        mark_used(&path);
+        let _ = std::fs::remove_file(to);
+        if std::fs::hard_link(&path, to).is_err() {
+            std::fs::copy(&path, to)?;
+            read_only_program(to)?;
+        }
+        Ok(true)
     }
 
     /// How many bytes the cache holds, across every version.
@@ -133,9 +179,12 @@ impl Cache {
             Err(_) => false,
         };
         if due || since.is_err() {
-            // A mark that can't be written means asking again next time, which is harmless.
-            let _ = std::fs::create_dir_all(&self.root);
-            let _ = File::create(&mark).and_then(|file| file.set_modified(SystemTime::now()));
+            // A mark that can't be written means asking again next time, which is harmless, but
+            // it's said.
+            let marked = std::fs::create_dir_all(&self.root)
+                .and_then(|()| File::create(&mark))
+                .and_then(|file| file.set_modified(SystemTime::now()));
+            crate::kept("mark when it was last cleaned up", marked);
         }
         due
     }
@@ -172,7 +221,7 @@ impl Cache {
         if size > cap {
             let goal = cap / 5 * 4;
             kept.sort_by_key(|entry| entry.used);
-            for entry in kept {
+            for entry in kept.iter().filter(|entry| !entry.held()) {
                 if size <= goal {
                     break;
                 }
@@ -201,6 +250,23 @@ impl Cache {
     }
 }
 
+impl Entry {
+    /// Whether the entry can't go yet: it was stored or used in the last [`KEPT_RECENT`], or a
+    /// program it is has been put out where a run started it, as a second name for the same file.
+    fn held(&self) -> bool {
+        let recent = self.used.elapsed().map_or(true, |age| age < KEPT_RECENT);
+        recent || self.links > 1
+    }
+}
+
+/// Marks an entry as just used, for cleanup's order. A program kept read-only can't be opened to
+/// write, but its owner may still set its time. Cleanup's order and the sweep of old runs depend
+/// on this, so a failure is said; an entry another command's cleanup took meanwhile is none.
+fn mark_used(path: &Path) {
+    let marked = File::open(path).and_then(|file| file.set_modified(SystemTime::now()));
+    crate::touched("mark what it used as used", marked);
+}
+
 /// Every file under `dir`, in the build folder `build`.
 fn files(dir: &Path, build: &Path, found: &mut Vec<Entry>) {
     let Ok(listing) = std::fs::read_dir(dir) else { return };
@@ -211,7 +277,11 @@ fn files(dir: &Path, build: &Path, found: &mut Vec<Entry>) {
             files(&path, build, found);
         } else {
             let used = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            found.push(Entry { path, size: metadata.len(), used, build: build.to_path_buf() });
+            #[cfg(unix)]
+            let links = std::os::unix::fs::MetadataExt::nlink(&metadata);
+            #[cfg(not(unix))]
+            let links = 1;
+            found.push(Entry { path, size: metadata.len(), used, build: build.to_path_buf(), links });
         }
     }
 }
@@ -246,7 +316,10 @@ impl Lock {
                     if !age.and_then(|time| time.elapsed().ok()).is_some_and(is_stale) {
                         return Ok(None);
                     }
-                    let _ = std::fs::remove_file(path);
+                    crate::touched(
+                        "take over a cleanup lock left by one that died",
+                        std::fs::remove_file(path),
+                    );
                 }
                 Err(err) => return Err(err),
             }
@@ -262,14 +335,98 @@ fn is_stale(age: Duration) -> bool {
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        crate::touched("let go of its cleanup lock", std::fs::remove_file(&self.path));
     }
+}
+
+/// Lets a program run and keeps anything from writing into it.
+fn read_only_program(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::is_stale;
     use std::time::Duration;
+
+    /// A file kept and then put out again is one file in all three places, where the system can
+    /// link files: what was launched, the entry, and what the next run launches.
+    #[test]
+    #[cfg(unix)]
+    fn a_file_kept_and_put_out_again_is_the_same_file() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-keep-file-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let launched = dir.join("launched");
+        std::fs::write(&launched, b"a program").unwrap();
+        cache.keep_file("programs", "root", &launched).unwrap();
+        let next = dir.join("next");
+        assert!(cache.link_out("programs", "root", &next).unwrap());
+        let inode = |path: &std::path::Path| std::fs::metadata(path).unwrap().ino();
+        assert_eq!(inode(&launched), inode(&cache.path("programs", "root")));
+        assert_eq!(inode(&launched), inode(&next));
+        assert_eq!(std::fs::read(&next).unwrap(), b"a program");
+        // Put out again over what's there, it's still the one file.
+        assert!(cache.link_out("programs", "root", &next).unwrap());
+        assert_eq!(inode(&launched), inode(&next));
+        assert!(!cache.link_out("programs", "gone", &dir.join("none")).unwrap());
+        // One written as any other entry is put out runnable too.
+        cache.write("programs", "written", b"another program").unwrap();
+        let written = dir.join("written");
+        assert!(cache.link_out("programs", "written", &written).unwrap());
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&written).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o555);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A program kept under a name another was kept under replaces it with a file of its own: a
+    /// link to the old one still holds the old program, the next one put out holds the new, and
+    /// neither can be written into.
+    #[test]
+    #[cfg(unix)]
+    fn a_program_kept_again_never_changes_one_put_out_before() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-kept-again-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let (first, second) = (dir.join("first"), dir.join("second"));
+        std::fs::write(&first, b"the old program").unwrap();
+        cache.keep_file("programs", "root", &first).unwrap();
+        let (old, new) = (dir.join("old"), dir.join("new"));
+        assert!(cache.link_out("programs", "root", &old).unwrap());
+        std::fs::write(&second, b"the new program").unwrap();
+        cache.keep_file("programs", "root", &second).unwrap();
+        assert!(cache.link_out("programs", "root", &new).unwrap());
+        assert_eq!(std::fs::read(&old).unwrap(), b"the old program");
+        assert_eq!(std::fs::read(&new).unwrap(), b"the new program");
+        let metadata = |path: &std::path::Path| std::fs::metadata(path).unwrap();
+        assert_ne!(metadata(&old).ino(), metadata(&new).ino());
+        for path in [&old, &new, &cache.path("programs", "root")] {
+            assert_eq!(metadata(path).permissions().mode() & 0o222, 0, "{} can be written", path.display());
+            assert!(std::fs::OpenOptions::new().write(true).open(path).is_err());
+        }
+        // Read-only files go as any other.
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_lock_is_stale_after_ten_minutes() {

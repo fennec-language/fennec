@@ -1,7 +1,6 @@
 //! Inputs for property tests through LLVM, as ordinary Fennec functions a test calls, so building
 //! them takes nothing but what any program takes. They draw the same values from the same seed, in
-//! the same order, as the interpreter's `generate` did, so a test fails on the inputs it failed on
-//! there.
+//! the same order, every run, so a test fails on the same inputs each time.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -78,9 +77,8 @@ impl<'m> Inputs<'m> {
         Some(name)
     }
 
-    /// The function giving a value's simpler values to try, in the order the interpreter's
-    /// `simpler` gave them, written if it hasn't been, or None for a type whose
-    /// values can't be made here.
+    /// The function giving a value's simpler values to try, simplest first, written if it hasn't
+    /// been, or None for a type whose values can't be made here.
     pub(crate) fn simpler_for(&mut self, ty: &TypeExpr) -> Option<String> {
         let shown = written(ty);
         if let Some(name) = self.simpler.get(&shown) {

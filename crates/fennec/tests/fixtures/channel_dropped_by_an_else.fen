@@ -8,7 +8,10 @@ from std.concurrent import Crashed, Inbox, Sender, Timeout, channel
 def gives_up(helper: Sender[Sender[int]]) -> int:
     with channel[int](size=1) as reply:
         helper.send(reply.sender()) else return -1
-        got = reply.receive(timeout=10ms) else return -2
+        # A plain block. The one-line case and a `case` arm are in channel_dropped_by_an_except_*.
+        answered = reply.receive_within(10ms) except why:
+            return -2
+        got = answered else return -2
         return got
     -3
 
@@ -16,7 +19,8 @@ def gives_up(helper: Sender[Sender[int]]) -> int:
 def fails_out(helper: Sender[Sender[int]]) -> int fails Timeout:
     with channel[int](size=1) as reply:
         helper.send(reply.sender()) else return -1
-        got = reply.receive(timeout=10ms) else fail Timeout(waited=10ms)
+        answered = reply.receive_within(10ms)?
+        got = answered else fail Timeout(waited=10ms)
         return got
     -3
 

@@ -177,7 +177,8 @@ impl Cache {
 
     /// Forgets a kit's state, once a test has failed.
     pub fn clear_kit_state(&self, program: &str, build: &str) {
-        let _ = std::fs::remove_file(self.path("kit-state", &Self::state_name(program, build)));
+        let path = self.path("kit-state", &Self::state_name(program, build));
+        crate::touched("forget a kit's state", std::fs::remove_file(path));
     }
 
     /// The definitions of a file with this text, if they've been kept.

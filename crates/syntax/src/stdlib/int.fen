@@ -1,5 +1,11 @@
 ## `int`'s methods written in Fennec.
 extend int:
+    ## The int `text` writes in decimal, with an optional sign and space around it, as `"-42"`.
+    ## Anything else fails, saying what it was given: digit separators, hex, a fraction, an
+    ## exponent, digits that aren't ASCII, and an int too big to hold.
+    def parse(text: str) -> int fails InvalidValue:
+        int(text)?
+
     def serialize(self, ref out: Serializer):
         out.int(self)
 

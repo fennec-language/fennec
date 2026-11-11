@@ -520,43 +520,6 @@ fn release_planned_child(
     }
 }
 
-/// For measuring parts of making and freeing a block.
-#[cfg(test)]
-pub(in crate::embed) fn measure_part(part: u8, address: usize) {
-    with(|state| match part {
-        1 => {
-            let block = state.heap.fresh(4);
-            state.heap.recycle(std::hint::black_box(block));
-        }
-        2 => {
-            if let Some(block) = state.heap.spare.get_mut(4).and_then(Vec::pop) {
-                state.heap.spare_words -= block.len();
-                state.heap.recycle(std::hint::black_box(block));
-            } else {
-                let block = state.heap.fresh(4);
-                state.heap.recycle(block);
-            }
-        }
-        3 => {
-            std::hint::black_box(&mut state.heap);
-        }
-        5 => {
-            if let Some(block) = state.heap.blocks.remove(address) {
-                state.heap.recycle(block);
-            }
-        }
-        4 => {
-            let block = state.heap.fresh(4);
-            let at = block.as_ptr().addr();
-            state.heap.blocks.insert(block);
-            if let Some(block) = state.heap.blocks.remove(std::hint::black_box(at)) {
-                state.heap.recycle(block);
-            }
-        }
-        _ => {}
-    });
-}
-
 /// Gives up one owner of a block, freeing it when that was the last.
 pub(in crate::embed) fn release(state: &mut State, address: u64) {
     let block = state.heap.block_mut(address);

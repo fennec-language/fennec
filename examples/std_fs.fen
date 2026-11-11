@@ -29,6 +29,89 @@ test "what isn't there is no, for exists, and a failure for everything else"(fs:
     assert fs.write_text("missing/note.txt", "x") fails IoError()
     assert fs.write_bytes("missing/raw.bin", bytes([1])) fails IoError()
 
+## Which case of `IoError` `run` fails with, or "fine" if it doesn't.
+def case_of[T](run: () -> T fails IoError) -> str:
+    _ = run() else as error:
+        match error:
+            case .NotFound():
+                return "NotFound"
+            case .PermissionDenied():
+                return "PermissionDenied"
+            case .AlreadyExists():
+                return "AlreadyExists"
+            case .Other():
+                return "Other"
+    "fine"
+
+test "what isn't there fails as NotFound, however it's reached"(fs: Fs):
+    assert case_of(() => fs.read_text("missing.txt")?) == "NotFound"
+    assert case_of(() => fs.read_bytes("missing.txt")?) == "NotFound"
+    assert case_of(() => fs.metadata("missing.txt")?) == "NotFound"
+    assert case_of(() => fs.list_dir("missing")?) == "NotFound"
+    assert case_of(() => fs.walk("missing")?) == "NotFound"
+    assert case_of(() => fs.remove("missing.txt")?) == "NotFound"
+    # Writing into a folder that isn't there finds nothing to write in.
+    assert case_of(() => fs.write_text("missing/note.txt", "x")?) == "NotFound"
+    # It still says what it couldn't find.
+    assert why(() => fs.read_text("missing.txt")?) == "missing.txt doesn't exist"
+
+test "a narrowed Fs reaching outside its folder fails as PermissionDenied"(fs: Fs):
+    fs.make_dir("saves")?
+    fs.write_text("outside.txt", "x")?
+    saves = fs.only("saves")
+    assert case_of(() => saves.read_text("outside.txt")?) == "PermissionDenied"
+    assert case_of(() => saves.write_text("outside.txt", "y")?) == "PermissionDenied"
+    assert "is outside what this Fs can reach" in why(() => saves.read_text("outside.txt")?)
+    # Inside it, it reads as any Fs does.
+    saves.write_text("saves/slot.txt", "kept")?
+    assert saves.read_text("saves/slot.txt")? == "kept"
+
+## What `read_text_if_present` gives for `path`, or which case it fails with.
+def present_text(fs: Fs, path: str) -> str:
+    found = fs.read_text_if_present(path) except why:
+        case .NotFound():
+            return "NotFound, which it never fails with"
+        case .PermissionDenied():
+            return "PermissionDenied"
+        case .AlreadyExists():
+            return "AlreadyExists"
+        case .Other():
+            return "Other"
+    return found else "None"
+
+test "read_text_if_present gives None for nothing there, and fails for everything else"(fs: Fs):
+    fs.write_text("there.txt", "here")?
+    assert present_text(fs, "there.txt") == "here"
+    assert present_text(fs, "missing.txt") == "None"
+    # A folder that isn't there has nothing in it either.
+    assert present_text(fs, "missing/note.txt") == "None"
+    # A folder at the path is there, so reading it is a real failure.
+    fs.make_dir("folder")?
+    assert present_text(fs, "folder") == "Other"
+    # So is reaching outside a narrowed Fs.
+    fs.make_dir("saves")?
+    assert present_text(fs.only("saves"), "there.txt") == "PermissionDenied"
+    # The usual case: no file yet means a default.
+    text = fs.read_text_if_present("settings.txt")? else "volume = 5"
+    assert text == "volume = 5"
+
+test "read_bytes_if_present gives the bytes, or None for nothing there"(fs: Fs):
+    fs.write_bytes("raw.bin", bytes([0, 255]))?
+    found = fs.read_bytes_if_present("raw.bin")? else bytes([])
+    assert found == bytes([0, 255])
+    gone = fs.read_bytes_if_present("missing.bin")? else bytes([7])
+    assert gone == bytes([7])
+    fs.make_dir("folder")?
+    assert case_of(() => fs.read_bytes_if_present("folder")?) == "Other"
+
+test "everything else that goes wrong is Other"(fs: Fs):
+    fs.make_dir("folder/inner")?
+    fs.write_text("note.txt", "x")?
+    assert case_of(() => fs.read_text("folder")?) == "Other"
+    assert case_of(() => fs.list_dir("note.txt")?) == "Other"
+    assert case_of(() => fs.remove("folder")?) == "Other"
+    assert case_of(() => write_while_reading(fs, "note.txt")?) == "Other"
+
 test "make_dir makes every folder on the way, and a folder already there is fine"(fs: Fs):
     fs.make_dir("a/b/c")?
     fs.make_dir("a/b/c")?
@@ -105,7 +188,7 @@ test "opening what isn't there, or reading a folder, fails"(fs: Fs):
 ## What `run` fails with, in words, or "fine" if it doesn't.
 def why[T](run: () -> T fails IoError) -> str:
     _ = run() else as error:
-        return error.reason
+        return error.message()
     "fine"
 
 ## Opens `path` to read, then writes to it.

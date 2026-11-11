@@ -18,7 +18,7 @@ struct Point:
     y: int
 
     def total(self) -> int:
-        self.x + self.y
+        return self.x + self.y
 
     def moved(ref self, by: int):
         self.x += by
@@ -30,17 +30,17 @@ enum Shape:
 
 def area(shape: Shape) -> int:
     match shape:
-        case .Circle(radius): radius * radius * 3
-        case .Square(side): side * side
-        case .Empty: 0
+        case .Circle(radius): return radius * radius * 3
+        case .Square(side): return side * side
+        case .Empty: return 0
 
 def at_or_zero(items: list[int], at: int) -> int:
     if items.len() == 0: return 0
-    items[at % items.len()]
+    return items[at % items.len()]
 
 def bump(ref value: int, by: int) -> int:
     value += by
-    value * 10
+    return value * 10
 
 error Refused:
     code: int
@@ -64,7 +64,7 @@ def buffer_of(made: Buffer[int], items: list[int]) -> Buffer[int]:
     mut buffer = made
     for item in items:
         buffer.push(item)
-    buffer
+    return buffer
 
 def counted(limit: int) -> Iterator[int]:
     for at in range(limit):
@@ -113,12 +113,12 @@ def summed_until(limit: int, stop: int, stdout: Stdout) -> int fails Shut:
         if value == stop:
             break
         total += value
-    total
+    return total
 
 def summed_shown(limit: int, stop: int, stdout: Stdout) -> str:
     total = summed_until(limit, stop=stop, stdout=stdout) else:
         return \"shut\"
-    str(total)
+    return str(total)
 
 struct Holder:
     items: list[int]
@@ -142,7 +142,7 @@ struct Lite:
     name: str
 
     def run(self, text: str) -> int:
-        text.len()
+        return text.len()
 
     def session(self) -> with Session:
         lend Session(log=\"lite\") else:
@@ -152,7 +152,7 @@ struct Pg:
     host: str
 
     def run(self, text: str) -> int:
-        text.len() * 2
+        return text.len() * 2
 
     def session(self) -> with Session:
         lend Session(log=\"pg\") else:
@@ -162,7 +162,7 @@ struct Mem:
     size: int
 
     def run(self, text: str) -> int:
-        text.len() * 3
+        return text.len() * 3
 
     def session(self) -> with Session:
         lend Session(log=\"mem\") else:
@@ -190,7 +190,7 @@ def checked2(store: Two, text: str) -> str:
     if store is Pg:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
-    \"\"
+    return \"\"
 
 def direct2(store: Two, text: str) -> str:
     count = store.run(text)
@@ -200,7 +200,7 @@ def direct2(store: Two, text: str) -> str:
     if store is Pg:
         with store.session() as session:
             return f\"{session.log} {count}\"
-    \"\"
+    return \"\"
 
 def matched3(store: Three, text: str) -> str:
     match store:
@@ -223,7 +223,7 @@ def checked3(store: Three, text: str) -> str:
     if store is Mem:
         with store.session() as session:
             return f\"{session.log} {store.run(text)}\"
-    \"\"
+    return \"\"
 
 def plain2(store: Two, text: str) -> str:
     with store.session() as session:
@@ -234,7 +234,7 @@ def plain3(store: Three, text: str) -> str:
         return f\"{session.log} {store.run(text)}\"
 
 def rested(rest: Pg | Mem, text: str) -> int:
-    rest.run(text)
+    return rest.run(text)
 
 def rest3(store: Three, text: str) -> str:
     if store is Lite:
@@ -260,33 +260,38 @@ def direct3(store: Three, text: str) -> str:
     if store is Mem:
         with store.session() as session:
             return f\"{session.log} {count}\"
-    \"\"
+    return \"\"
 
 def capped(n: int, limit: int) -> int fails Refused:
     if n > limit:
         fail Refused(code=n)
-    n
+    return n
 
 def shut_below(n: int, limit: int) -> int fails Shut:
     if n < -limit:
         fail Shut(code=n)
-    n
+    return n
 
 def tried(run: () -> int fails Refused) -> str:
     value = run() else as why:
         return f\"refused {why.code}\"
-    str(value)
+    return str(value)
+
+def fallback(run: () -> int fails Refused) -> str:
+    value = run() else as why:
+        why.code * 100
+    return str(value)
 
 def tried_twice(run: () -> int fails Refused) -> str fails Refused:
     first = run()?
     second = run()?
-    f\"{first} {second}\"
+    return f\"{first} {second}\"
 
 ## Whether `run` gives its value rather than failing.
 def ran_fine(run: () -> int fails Refused) -> bool:
     _ = run() else:
         return False
-    True
+    return True
 
 def tried_each(items: list[int], run: (int) -> int fails Refused) -> str:
     mut kept = list[int]()
@@ -294,10 +299,10 @@ def tried_each(items: list[int], run: (int) -> int fails Refused) -> str:
         value = run(item) else as why:
             return f\"refused {why.code} after {kept}\"
         kept.append(value)
-    str(kept)
+    return str(kept)
 
 def paired(a: int, b: int) -> str:
-    f\"{a} {b}\"
+    return f\"{a} {b}\"
 
 def either(run: () -> str fails Refused | Shut) -> str:
     text = run() else as why:
@@ -306,7 +311,7 @@ def either(run: () -> str fails Refused | Shut) -> str:
                 return f\"refused {code}\"
             case Shut(code=code):
                 return f\"shut {code}\"
-    text
+    return text
 
 struct Gauge:
     at: float
@@ -327,7 +332,7 @@ type Marked = Gauge | str
 
 def nan() -> float:
     big = 1e308 * 10.0
-    big - big
+    return big - big
 
 struct Spot:
     label: str
@@ -341,14 +346,14 @@ def plan(x: int, world: list[Spot]) -> Change:
     at = x % world.len()
     if x % 2 == 0:
         return .Move(at=at, by=x)
-    .Rename(at=at, label=f\"<{x}>\")
+    return .Rename(at=at, label=f\"<{x}>\")
 
 def regrown(seed: int) -> int:
     mut holder = Holder(items=[seed, seed + 1], tag=seed)
     holder.items.append(holder.tag)
     own = holder.items
     holder.grown_by(own)
-    sum(holder.items) + own.len()
+    return sum(holder.items) + own.len()
 
 enum Node:
     Leaf(name: str)
@@ -360,7 +365,7 @@ def deep(depth: int, label: str) -> Node:
     mut node = Node.Leaf(name=label)
     for _ in range(depth):
         node = .Branch(label=label, children=[node])
-    node
+    return node
 
 def depth_of(node: Node) -> int:
     mut at = node
@@ -374,36 +379,36 @@ def depth_of(node: Node) -> int:
                 depth += 1
             case _:
                 return depth
-    depth
+    return depth
 
 def digest(node: Node) -> str:
     match node:
         case .Leaf(name):
-            \"L(\" + name + \")\"
+            return \"L(\" + name + \")\"
         case .Number(value):
-            f\"N({value})\"
+            return f\"N({value})\"
         case .Branch(label, children):
             mut text = \"B(\" + label
             for child in children:
                 text += \" \" + digest(child)
-            text + \")\"
+            return text + \")\"
         case .Tagged(tags, inner):
             mut text = \"T(\"
             for tag in tags:
                 text += tag + \",\"
             for child in inner:
                 text += \" \" + digest(child)
-            text + \")\"
+            return text + \")\"
 
 def digest_all(nodes: list[Node]) -> str:
     mut text = \"[\"
     for node in nodes:
         text += digest(node) + \";\"
-    text + \"]\"
+    return text + \"]\"
 
 def node_or_leaf(nodes: list[Node], at: int) -> Node:
     if nodes.len() == 0: return .Leaf(name=\"none\")
-    nodes[at % nodes.len()]
+    return nodes[at % nodes.len()]
 
 enum Named:
     Leaf(name: str)
@@ -413,17 +418,17 @@ def chain(depth: int, label: str) -> Named:
     mut named = Named.Leaf(name=label)
     for at in range(depth):
         named = .Pair(left=named, right=.Leaf(name=f\"<{at}>\"), label=label, tags=[label])
-    named
+    return named
 
 def named_digest(named: Named) -> str:
     match named:
         case .Leaf(name):
-            \"l(\" + name + \")\"
+            return \"l(\" + name + \")\"
         case .Pair(left, right, label, tags):
             mut text = \"p(\" + label
             for tag in tags:
                 text += \",\" + tag
-            text + \" \" + named_digest(left) + \" \" + named_digest(right) + \")\"
+            return text + \" \" + named_digest(left) + \" \" + named_digest(right) + \")\"
 
 def named_depth(named: Named) -> int:
     mut at = named
@@ -435,7 +440,7 @@ def named_depth(named: Named) -> int:
                 depth += 1
             case _:
                 return depth
-    depth
+    return depth
 
 def ward(name: str, stdout: Stdout) -> with str:
     stdout.print(\"open\", name)
@@ -446,7 +451,7 @@ def ward(name: str, stdout: Stdout) -> with str:
 def present(i: int, at: int) -> int?:
     if i == at:
         return None
-    i
+    return i
 
 def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
     stdout.print(\"guard\", code)
@@ -482,12 +487,12 @@ def guarded_run(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdou
             fail Refused(code=tally.count)
         if crash:
             _ = [1, 2][tally.count]
-        tally.count
+        return tally.count
 
 def guarded_shown(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdout) -> str:
     value = guarded_run(code, refuse=refuse, crash=crash, noted=noted, stdout=stdout) else as why:
         return f\"refused {why.code} {why.notes()}\"
-    str(value)
+    return str(value)
 
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
@@ -531,7 +536,98 @@ pub(crate) fn source(program: &Program) -> String {
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
-    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    let written = format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out);
+    if EXCEPT_PARSES { excepted(&written) } else { written }
+}
+
+/// Whether failures are handled with `except`, as the syntax locked on 2026-11-11 has it, rather
+/// than `else`. It parses and runs since #1398. Once the migration makes the old forms errors,
+/// `excepted` becomes how the program is written, and this goes.
+pub(crate) const EXCEPT_PARSES: bool = true;
+
+/// What each function a program handles the failures of fails with, so its `except` block can
+/// have a `case` for each. Every one is an error without cases, so the cases cover it by name
+/// and needn't read `why`.
+const FAILS_WITH: [(&str, &[&str]); 8] = [
+    ("change", &["Refused"]),
+    ("bump_outer", &["Refused"]),
+    ("locked", &["Refused"]),
+    ("run", &["Refused"]),
+    ("summed_until", &["Shut"]),
+    ("tally", &["Crashed", "Closed", "Timeout"]),
+    ("sent", &["Crashed", "Closed", "Timeout"]),
+    ("guard_all", &["Crashed", "Closed", "Timeout", "Refused"]),
+];
+
+/// A program's failures handled with `except`, the old `else` forms rewritten line by line:
+/// - `lend x else:` is `lend x except:`;
+/// - `x = f() else as why:` is `x = f() except why:`, and a `match why:` straight under it gives
+///   its `case` arms to the `except`;
+/// - `f() else:` on a call that fails is `f() except why:`, with a `case` for each error it fails
+///   with, each holding what the `else:` held.
+///
+/// It reads the program as `source` writes it, four spaces an indent.
+pub(crate) fn excepted(program: &str) -> String {
+    let lines: Vec<&str> = program.lines().collect();
+    let indent_of = |line: &str| line.len() - line.trim_start().len();
+    let block_end = |from: usize, indent: usize| {
+        (from..lines.len())
+            .find(|&at| {
+                lines.get(at).is_some_and(|line| !line.trim().is_empty() && indent_of(line) <= indent)
+            })
+            .unwrap_or(lines.len())
+    };
+    let mut out = String::with_capacity(program.len() + program.len() / 8);
+    let mut at = 0;
+    while let Some(&line) = lines.get(at) {
+        let trimmed = line.trim_start();
+        let indent = indent_of(line);
+        let pad = " ".repeat(indent);
+        let opens = ["if ", "elif ", "while ", "for ", "else:", "with ", "lock ", "def ", "case "];
+        if trimmed.starts_with("lend ") && trimmed.ends_with(" else:") {
+            let _ = writeln!(out, "{pad}{} except:", trimmed.trim_end_matches(" else:"));
+        } else if let Some(handled) = trimmed.strip_suffix(" else as why:") {
+            let _ = writeln!(out, "{pad}{handled} except why:");
+            let next = lines.get(at + 1).copied().unwrap_or_default();
+            if next.trim() == "match why:" {
+                // The arms go straight under the `except`, an indent nearer.
+                let end = block_end(at + 2, indent_of(next));
+                for arm in lines.get(at + 2..end).unwrap_or_default() {
+                    out.push_str(arm.get(4..).unwrap_or(arm));
+                    out.push('\n');
+                }
+                at = end;
+                continue;
+            }
+        } else if trimmed.ends_with(") else:") && !opens.iter().any(|open| trimmed.starts_with(open)) {
+            let handled = trimmed.trim_end_matches(" else:");
+            let call = handled.split_once(" = ").map_or(handled, |(_, call)| call);
+            let callee =
+                call.split('(').next().unwrap_or_default().trim_end_matches(|c: char| c.is_ascii_digit());
+            // A call whose errors aren't known is left as it was, which the tests catch.
+            let Some((_, errors)) = FAILS_WITH.iter().find(|(name, _)| *name == callee) else {
+                out.push_str(line);
+                out.push('\n');
+                at += 1;
+                continue;
+            };
+            let _ = writeln!(out, "{pad}{handled} except why:");
+            let end = block_end(at + 1, indent);
+            for error in *errors {
+                let _ = writeln!(out, "{pad}    case {error}():");
+                for held in lines.get(at + 1..end).unwrap_or_default() {
+                    let _ = writeln!(out, "    {held}");
+                }
+            }
+            at = end;
+            continue;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+        at += 1;
+    }
+    out
 }
 
 /// The names `Left`'s `ward`s are lent as, outermost first.
@@ -577,6 +673,31 @@ fn left_written(id: usize, depth: usize, together: bool, rounds: i64, at: i64, h
             vec![format!("got = capped(i, limit={at_most})?"), "total = total + got".to_owned()]
         }
         Leave::QuestionInside => vec![format!("total = total + capped(i, limit={at_most})? * 2")],
+        Leave::ExceptReturn | Leave::ExceptContinue => vec![
+            format!("got = capped(i, limit={at_most}) except why:"),
+            "    stdout.print(\"caught\", why.code)".to_owned(),
+            (if how == Leave::ExceptReturn { "    return" } else { "    continue" }).to_owned(),
+            "total = total + got".to_owned(),
+        ],
+        Leave::ExceptValue => {
+            vec![
+                format!("got = capped(i, limit={at_most}) except Refused(): -1"),
+                "total = total + got".to_owned(),
+            ]
+        }
+        Leave::ExceptArms => vec![
+            format!("got = capped(i, limit={at_most}) except why:"),
+            "    case _:".to_owned(),
+            "        stdout.print(\"caught\", why.code)".to_owned(),
+            "        break".to_owned(),
+            "total = total + got".to_owned(),
+        ],
+        Leave::QuestionNestedInner => {
+            vec![format!("total = total + capped(capped(i, limit={at_most})?, limit=1000)? * 2")]
+        }
+        Leave::QuestionNestedOuter => {
+            vec![format!("total = total + capped(capped(i, limit=1000)?, limit={at_most})? * 2")]
+        }
         Leave::NestedReturn => vec![
             format!("if i >= {at}:"),
             "    match i % 2:".to_owned(),
@@ -1053,12 +1174,23 @@ impl Writer {
                 let capped = format!("capped({n}, limit={limit})?");
                 match how {
                     Arrow::Tried => self.line(indent, &format!("stdout.print(tried(() => {capped}))")),
+                    Arrow::Twice if EXCEPT_PARSES => {
+                        // A failing call can't sit inside another expression, so it has a line.
+                        self.made += 1;
+                        let name = format!("twice{}", self.made);
+                        self.line(
+                            indent,
+                            &format!("{name} = tried_twice(() => {capped}) except Refused(): \"refused\""),
+                        );
+                        self.line(indent, &format!("stdout.print({name})"));
+                    }
                     Arrow::Twice => {
                         self.line(
                             indent,
                             &format!("stdout.print(tried_twice(() => {capped}) else \"refused\")"),
                         );
                     }
+                    Arrow::Fallback => self.line(indent, &format!("stdout.print(fallback(() => {capped}))")),
                     Arrow::Each(list) => {
                         let list = self.expr(list, false);
                         self.line(

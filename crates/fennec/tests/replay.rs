@@ -360,7 +360,7 @@ fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<
     let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
     let connect = || -> std::io::Result<std::net::TcpStream> {
         let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
         Ok(stream)
     };
     let mut idle = connect()?;

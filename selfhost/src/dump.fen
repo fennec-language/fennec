@@ -386,8 +386,8 @@ struct Tree:
             case .Cond(then, cond, otherwise):
                 self.open("cond", span)
                 self.write_exprs([then, cond, otherwise])
-            case .Else(value, default):
-                self.open("else", span)
+            case .Else(value, default, is_except):
+                self.open("except" if is_except else "else", span)
                 self.write_exprs([value, default])
             case .Try(value, context):
                 self.open("try", span)

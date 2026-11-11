@@ -57,7 +57,7 @@ fn get(sources: &Sources, (table, key, default): (&Expr, &Expr, &Expr), span: Sp
         Some(parts) => get(sources, parts, default.span),
         None => default.clone(),
     };
-    Expr { kind: ExprKind::Else { value: Box::new(call), default: Box::new(default) }, span }
+    Expr { kind: ExprKind::Else { value: Box::new(call), default: Box::new(default), except: false }, span }
 }
 
 /// The module with the conditional at `span` written with `get`.

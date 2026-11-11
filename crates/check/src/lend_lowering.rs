@@ -1276,11 +1276,13 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
 /// `g`. What runs after the last `?` stays where it is.
 fn hoist_inside(value: &mut Expr, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize, span: Span) {
     let holding: Vec<bool> = runs_first(value).into_iter().map(holds_try).collect();
+    let places = places_first(value);
     if let Some(last) = holding.iter().rposition(|holds| *holds) {
-        for (part, holds) in runs_first(value).into_iter().zip(holding).take(last + 1) {
+        let parts = runs_first(value).into_iter().zip(holding).zip(places);
+        for ((part, holds), place) in parts.take(last + 1) {
             if holds {
                 hoist_inside(part, otherwise, before, made, span);
-            } else if !stays_put(part) {
+            } else if !place && !written_out(part) {
                 let kept = format!("ran__try{}_{}", here(span).start, *made);
                 *made += 1;
                 // The name keeps the span of what it stands for, which its type is found by.
@@ -1352,7 +1354,9 @@ fn runs_first(value: &mut Expr) -> Vec<&mut Expr> {
 
 /// What of a call's callee runs before its arguments: a method's receiver, or a function worked
 /// out, and nothing for a function by its name. A call's `[...]` names types, as
-/// `db.query[int?](...)` does, where a `?` is an optional's, so it isn't looked in.
+/// `db.query[int?](...)` does, where a `?` is an optional's, so it isn't looked in. A call through
+/// an indexed value, as `handlers[at](x)`, isn't built natively yet; once it is, its index runs
+/// first and has to be looked in.
 fn runs_before_call(callee: &mut Expr) -> Option<&mut Expr> {
     if matches!(callee.kind, ExprKind::Name(_) | ExprKind::Variant(_)) {
         return None;
@@ -1372,24 +1376,44 @@ fn holds_try(value: &mut Expr) -> bool {
     matches!(value.kind, ExprKind::Try { context: None, .. }) || runs_first(value).into_iter().any(holds_try)
 }
 
-/// Whether `value` reads the same whenever it's read, so a `?` to its right needn't go after it:
-/// something written out, or a name and the fields read off it, a place a `ref` may pass.
-fn stays_put(value: &mut Expr) -> bool {
-    match &mut value.kind {
+/// Whether `value` is written out, and so is the same whenever it's worked out: a `?` to its
+/// right needn't go after it. A name or a field is read where it's written, even so, as a `?` to
+/// its right may change it, as `count + bump(ref count)?` does.
+fn written_out(value: &Expr) -> bool {
+    matches!(
+        value.kind,
         ExprKind::Int(_)
-        | ExprKind::Float(_)
-        | ExprKind::Duration(_)
-        | ExprKind::Bytes(_)
-        | ExprKind::Folder(_)
-        | ExprKind::Str(_)
-        | ExprKind::Bool(_)
-        | ExprKind::None
-        | ExprKind::Name(_)
-        | ExprKind::Variant(_)
-        | ExprKind::Lambda { .. } => true,
-        ExprKind::Attr { object, .. } => stays_put(object),
-        _ => false,
+            | ExprKind::Float(_)
+            | ExprKind::Duration(_)
+            | ExprKind::Bytes(_)
+            | ExprKind::Folder(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None
+            | ExprKind::Variant(_)
+            | ExprKind::Lambda { .. }
+    )
+}
+
+/// For each of `runs_first(value)`, whether it has to stay the place it is rather than be read
+/// into a name: a call's receiver, which a method may change through `ref self`, and an argument
+/// passed with `ref`.
+fn places_first(value: &mut Expr) -> Vec<bool> {
+    let ExprKind::Call { callee, args } = &mut value.kind else {
+        return vec![false; runs_first(value).len()];
+    };
+    // A call's `[...]` names types, so the receiver is what's before them.
+    let mut called: &Expr = callee;
+    while let ExprKind::Index { object, .. } = &called.kind {
+        called = object;
     }
+    let receiver = matches!(called.kind, ExprKind::Attr { .. });
+    let mut places = Vec::with_capacity(args.len() + 1);
+    if runs_before_call(callee).is_some() {
+        places.push(receiver);
+    }
+    places.extend(args.iter().map(|arg| arg.is_mut));
+    places
 }
 
 /// A hoisted `?`'s `Err` case: the `lend`'s `else:`, then the failure passes on.

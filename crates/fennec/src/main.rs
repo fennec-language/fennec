@@ -67,6 +67,8 @@ const USAGE: &str = "usage:
   fennec lint [path]        what the checker and linter find, and hints about what may copy or allocate;
                             add --json to either for JSON on standard output
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
+  fennec fix --migrate [path]  also move it to the failure forms of 2026-11-11: `except`, `lend x except:`
+      and a `return` on each `def`'s value
   fennec lsp                the language server, for editors, over standard input and output
   fennec notices <program>  the third-party notices a program built by `fennec build` holds
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
@@ -148,8 +150,10 @@ fn main() -> ExitCode {
         ["check", "--json"] => on_big_stack(lint::check_json, "."),
         ["check", "--json", path] => on_big_stack(lint::check_json, path),
         ["check", path] => on_big_stack(lint::check, path),
-        ["fix"] => fix::fix("."),
-        ["fix", path] => fix::fix(path),
+        ["fix"] => fix::fix(".", false),
+        ["fix", "--migrate"] => fix::fix(".", true),
+        ["fix", "--migrate", path] => fix::fix(path, true),
+        ["fix", path] => fix::fix(path, false),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
@@ -177,11 +181,14 @@ fn main() -> ExitCode {
             println!("🦊 fennec {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
-        }
+        _ => usage(),
     }
+}
+
+/// What `fennec` says to a command it doesn't know: how it's used.
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
 }
 
 /// `fennec dev reference [--check]`: writes the language reference, or checks it can be.

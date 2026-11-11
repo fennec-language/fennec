@@ -837,3 +837,27 @@ fn a_write_nobody_reads_times_out() {
     assert!(started.elapsed() < Duration::from_secs(20));
     drop(client);
 }
+
+/// Waits that time out together are woken soonest deadline first and, at one deadline, in the order
+/// they parked, whatever order the map keeps them in, so tasks sleeping as long resume the same way
+/// each run. Waits not yet due, or with no deadline, stay.
+#[test]
+fn waits_that_time_out_together_wake_by_deadline_then_in_the_order_they_parked() {
+    let now = std::time::Instant::now();
+    let earlier = now.checked_sub(Duration::from_millis(5)).unwrap();
+    let later = now + Duration::from_secs(60);
+    let mut waiting = std::collections::HashMap::new();
+    for token in 0..64_usize {
+        let deadline = match token % 4 {
+            0 => Some(now),
+            1 => Some(earlier),
+            2 => Some(later),
+            _ => None,
+        };
+        waiting.insert(token, (u64::try_from(token).unwrap(), mio::Interest::READABLE, deadline));
+    }
+    let woken = super::timed_out(&waiting, now);
+    let wanted: Vec<usize> =
+        (0..64).filter(|token| token % 4 == 1).chain((0..64).filter(|token| token % 4 == 0)).collect();
+    assert_eq!(woken, wanted);
+}

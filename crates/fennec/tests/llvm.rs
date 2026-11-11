@@ -11020,6 +11020,130 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// How many writes a run asked of its connections, from what it said under `FENNEC_COUNTS`.
+fn connection_writes(said: &str) -> Option<u64> {
+    let line = said.lines().find(|line| line.starts_with("copies "))?;
+    let mut words = line.split(' ');
+    words.by_ref().find(|word| *word == "connection_writes")?;
+    words.next()?.parse().ok()
+}
+
+/// `source` built natively in `dir` as `name`.
+fn built_in(dir: &Path, name: &str, source: &str) -> std::io::Result<PathBuf> {
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let executable = dir.join(name);
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    Ok(executable)
+}
+
+/// A response's head and body go out in one write, so it goes in one packet: written apart, the
+/// body waits for the client to acknowledge the head, which it may hold back for 40 ms. Counted
+/// under `FENNEC_COUNTS`: three responses, two with a body, are three writes.
+#[cfg(unix)]
+#[test]
+fn a_response_goes_out_in_one_write() -> std::io::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("one_write_response")?;
+    let server = built_in(
+        &dir,
+        "serve",
+        r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    match request.path:
+        case "/missing":
+            Response(status=404)
+        case _:
+            Response(status=200, body=f"at {request.path}".encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+"#,
+    )?;
+    let mut serving = Running(
+        Command::new(&server)
+            .env("FENNEC_COUNTS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(serving.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    client.write_all(
+        b"GET /a HTTP/1.1\r\n\r\nGET /missing HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nconnection: close\r\n\r\n",
+    )?;
+    let mut answers = String::new();
+    client.read_to_string(&mut answers)?;
+    assert_eq!(answers.matches("HTTP/1.1 ").count(), 3, "{answers}");
+    terminate(&serving)?;
+    let mut said = String::new();
+    serving.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?.read_to_string(&mut said)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(connection_writes(&said), Some(3), "{said}");
+    Ok(())
+}
+
+/// A request's head and body go out in one write too: two posts with a body are two writes.
+#[test]
+fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    // A server here, which answers each post once it's all come, and closes.
+    let answering = std::thread::spawn(move || -> std::io::Result<()> {
+        for _ in 0..2 {
+            let (mut conn, _) = listener.accept()?;
+            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            let mut heard = Vec::new();
+            let mut buffer = [0; 4096];
+            while !String::from_utf8_lossy(&heard).ends_with("\r\n\r\ndata") {
+                let got = conn.read(&mut buffer)?;
+                if got == 0 {
+                    break;
+                }
+                heard.extend_from_slice(buffer.get(..got).unwrap_or_default());
+            }
+            conn.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")?;
+        }
+        Ok(())
+    });
+    let dir = folder("one_write_request")?;
+    let poster = built_in(
+        &dir,
+        "post",
+        r#"from std.net import NetError
+
+def main(net: Net, args: Args, stdout: Stdout) fails NetError:
+    port = int(args[0]) else 0
+    for path in ["/a", "/b"]:
+        answer = net.post(f"http://127.0.0.1:{port}{path}", body="data", timeout=10s)?
+        stdout.print(answer.status, answer.text())
+"#,
+    )?;
+    let ran = Command::new(&poster).arg(port.to_string()).env("FENNEC_COUNTS", "1").output_within()?;
+    answering.join().map_err(|_| std::io::Error::other("the answering thread panicked"))??;
+    std::fs::remove_dir_all(&dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "200 ok\n200 ok\n", "{said}");
+    assert_eq!(connection_writes(&said), Some(2), "{said}");
+    Ok(())
+}
+
 /// An HTTP server natively: a handler answers each request, a connection stays open for more
 /// until it asks to close, and what's too big or isn't HTTP is answered without the handler.
 #[test]

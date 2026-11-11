@@ -1,5 +1,6 @@
 # `std.string`: wrapping and indenting text, as Python's `textwrap` does, and the sets of
 # characters Python's `string` names. Most of what's done to text is a method of `str`.
+from std.intrinsics import stop
 
 export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
 export ASCII_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -12,13 +13,16 @@ export WHITESPACE = " \t\n\r\x0b\x0c"
 
 ## `text`'s words in lines of at most `width` characters, as many on each line as fit. Words
 ## are what's between spaces, tabs and line breaks, and a word longer than `width` is broken
-## across lines. Text with no words gives no lines.
+## across lines. Text with no words gives no lines. A `width` under 1 can't hold any text, so
+## it's a bug in the program, as Python says too.
 export def wrap(text: str, width: int) -> list[str]:
+    if width < 1:
+        stop(f"a width of {width} can't hold any text: wrap takes 1 or more")
     mut lines = list[str]()
     mut line = ""
     for word in text.split():
         mut rest = word
-        while rest.len() > width and width > 0:
+        while rest.len() > width:
             if line != "":
                 lines.append(line)
                 line = ""

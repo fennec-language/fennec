@@ -1,0 +1,16 @@
+struct Point:
+    x: int
+    y: int
+
+def show(value: str):
+    pass
+
+def walk[T](value: T) -> int:
+    mut count = 0
+    for field in fields(T):
+        show(f"{field.get()}")
+        count += 1
+    count
+
+def main(stdout: Stdout):
+    stdout.print(walk(Point(1, 2)))

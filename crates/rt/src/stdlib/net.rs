@@ -238,7 +238,7 @@ impl Fake {
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
             }
-            ("UdpSocket", "receive", []) => self.receive(handle, span)?.map(packet_value),
+            ("UdpSocket", "receive", []) => self.receive(handle, timeout).map(packet_value),
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
@@ -323,7 +323,7 @@ impl Fake {
 
     /// `connection.start_tls(host)` in a test: refused as a real one is, for what a real one can tell.
     fn start_tls(&mut self, handle: i64) -> Result<(), Failure> {
-        let Some(stream) = self.streams.get(&handle) else { return Err(Failure::Closed) };
+        let Some(stream) = self.streams.get(&handle) else { return Err(closed_here()) };
         if !stream.inbox.is_empty() {
             return Err(Failure::Tls(SENT_BEFORE_TLS.to_owned()));
         }
@@ -347,29 +347,27 @@ impl Fake {
     }
 
     /// The next packet for a socket in a test. With none waiting, none can come, since nothing
-    /// else runs while a test waits.
+    /// else runs while a test waits: given `timeout`, it gives up as a real one would once that
+    /// passed, and otherwise it fails as `accept` does, so a loop over the socket ends.
     pub(crate) fn receive(
         &mut self,
         handle: i64,
-        span: Span,
-    ) -> Result<Result<(Vec<u8>, String), Failure>, Diagnostic> {
+        timeout: Option<Duration>,
+    ) -> Result<(Vec<u8>, String), Failure> {
         let fake = self;
-        let Some((port, waiting)) = fake.udp.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
-        match waiting.pop_front() {
-            Some(packet) => Ok(Ok(packet)),
-            None => Err(waits_forever(
-                &format!(
-                    "this socket on port {port} in the test's fake network would wait forever for a packet"
-                ),
-                span,
+        let Some((port, waiting)) = fake.udp.get_mut(&handle) else { return Err(closed_here()) };
+        waiting.pop_front().ok_or_else(|| match timeout {
+            Some(after) => Failure::TimedOut(after),
+            None => Failure::Other(format!(
+                "no packet is waiting for the test's fake socket on port {port}, and none can come while a test waits"
             )),
-        }
+        })
     }
 
     /// Sends a packet in a test. Sent to a port nothing has, it's lost, as UDP's are.
     pub(crate) fn send_to(&mut self, handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
         let fake = self;
-        let Some((from, _)) = fake.udp.get(&handle) else { return Err(Failure::Closed) };
+        let Some((from, _)) = fake.udp.get(&handle) else { return Err(closed_here()) };
         let sender = format!("localhost:{from}");
         let Some((host, port)) = address.rsplit_once(':') else {
             return Err(Failure::Other(format!("`{address}` isn't an address like `host:port`")));
@@ -389,7 +387,7 @@ impl Fake {
     /// since nothing else runs while a test waits, so the server is done and its loop ends.
     pub(crate) fn accept(&mut self, handle: i64) -> Result<(i64, String), Failure> {
         let fake = self;
-        let Some((port, waiting)) = fake.servers.get_mut(&handle) else { return Err(Failure::Closed) };
+        let Some((port, waiting)) = fake.servers.get_mut(&handle) else { return Err(closed_here()) };
         waiting.pop_front().ok_or_else(|| {
             Failure::Other(format!(
                 "no connection is waiting for the test's fake server on port {port}, and none can come while a test waits"
@@ -417,7 +415,7 @@ impl Fake {
         span: Span,
     ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
         let fake = self;
-        let Some(stream) = fake.streams.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
+        let Some(stream) = fake.streams.get_mut(&handle) else { return Ok(Err(closed_here())) };
         let take = match count {
             Some(count) => count.min(stream.inbox.len()),
             None => stream.inbox.iter().position(|byte| *byte == b'\n').map_or(0, |end| end + 1),
@@ -464,7 +462,7 @@ impl Fake {
 
     pub(crate) fn write(&mut self, handle: i64, data: &[u8]) -> Result<(), Failure> {
         let fake = self;
-        let Some(stream) = fake.streams.get(&handle) else { return Err(Failure::Closed) };
+        let Some(stream) = fake.streams.get(&handle) else { return Err(closed_here()) };
         if stream.peer_closed {
             return Err(Failure::Closed);
         }
@@ -501,6 +499,13 @@ pub(crate) enum Failure {
     Closed,
     Tls(String),
     Other(String),
+}
+
+/// The failure of using a socket this end closed already: a handle's only taken out of the open
+/// ones by its own `close()`, which a `with` block's end calls. Its other side closing is
+/// `Failure::Closed`.
+fn closed_here() -> Failure {
+    Failure::Other("the socket was closed here, so it can't be used any more".to_owned())
 }
 
 impl Failure {
@@ -1091,7 +1096,7 @@ fn listen(port: u16, tls: Option<Arc<dyn TlsServer>>) -> Result<Made, Failure> {
 fn stream(handle: i64) -> Result<Arc<Stream>, Failure> {
     match open(|open| open.get(&handle).cloned()) {
         Some(Socket::Stream(stream)) => Ok(stream),
-        _ => Err(Failure::Closed),
+        _ => Err(closed_here()),
     }
 }
 
@@ -1457,7 +1462,7 @@ fn wait_to_write(socket: &TcpStream, deadline: Option<Instant>) -> bool {
 
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
     let Some(Socket::Listener(listening)) = open(|open| open.get(&handle).cloned()) else {
-        return Err(Failure::Closed);
+        return Err(closed_here());
     };
     let listener = &listening.listener;
     let accepted = match timeout {
@@ -1584,7 +1589,7 @@ fn udp(port: u16) -> Result<Made, Failure> {
 fn udp_socket(handle: i64) -> Result<Arc<Udp>, Failure> {
     match open(|open| open.get(&handle).cloned()) {
         Some(Socket::Udp(udp)) => Ok(udp),
-        _ => Err(Failure::Closed),
+        _ => Err(closed_here()),
     }
 }
 
@@ -1927,6 +1932,47 @@ pub(crate) mod tests {
         drop(writing.join());
     }
 
+    /// A test's socket with no packet waiting fails at once, as nothing can come while a test
+    /// waits: given `timeout=`, it gave up after it, and otherwise it says none can come, so a loop
+    /// over the socket ends.
+    #[test]
+    fn a_tests_receive_with_nothing_waiting_fails_rather_than_waiting() {
+        let mut fake = Fake::default();
+        let Ok((_, socket)) = fake.udp(0) else { panic!("no socket") };
+        let Some((_, Value::Int(handle))) = socket.first().cloned() else { panic!("no handle") };
+        let limit = std::time::Duration::from_millis(10);
+        assert!(matches!(fake.receive(handle, Some(limit)), Err(Failure::TimedOut(after)) if after == limit));
+        let none = fake.receive(handle, None);
+        assert!(matches!(&none, Err(Failure::Other(why)) if why.contains("none can come")), "{none:?}");
+    }
+
+    /// A test's connection or socket closed at this end says so when it's used again, not that the
+    /// other side closed it.
+    #[test]
+    fn a_tests_socket_closed_here_says_so_when_used_again() {
+        let mut fake = Fake::default();
+        let Ok((_, server)) = fake.listen(0, false) else { panic!("it didn't listen") };
+        let Some((_, Value::Int(port))) = server.get(1).cloned() else { panic!("no port") };
+        let Ok((_, client)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(client))) = client.first().cloned() else { panic!("no handle") };
+        let Some(other_end) = fake.streams.get(&client).map(|stream| stream.peer) else {
+            panic!("no other end")
+        };
+        fake.close(client);
+        let here = |failed: Result<(), Failure>| matches!(failed, Err(Failure::Other(why)) if why.contains("closed here"));
+        assert!(here(fake.write(client, b"gone")));
+        assert!(
+            matches!(fake.write(other_end, b"to nobody"), Err(Failure::Closed)),
+            "the other end's is closed"
+        );
+        let Ok((_, socket)) = fake.udp(0) else { panic!("no socket") };
+        let Some((_, Value::Int(socket))) = socket.first().cloned() else { panic!("no handle") };
+        fake.close(socket);
+        assert!(here(fake.send_to(socket, b"gone", "localhost:9")));
+    }
+
     /// UDP has no `shutdown`, so a read on another thread has to find out for itself.
     #[test]
     fn closing_a_udp_socket_ends_a_read_waiting_on_another_thread() {
@@ -1935,7 +1981,7 @@ pub(crate) mod tests {
         let waiting = std::thread::spawn(move || receive(handle, None));
         std::thread::sleep(std::time::Duration::from_millis(20));
         close(handle);
-        assert!(matches!(waiting.join().ok(), Some(Err(Failure::Closed))));
+        assert!(matches!(waiting.join().ok(), Some(Err(Failure::Other(why))) if why.contains("closed here")));
     }
 
     #[test]

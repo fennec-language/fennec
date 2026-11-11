@@ -4,7 +4,7 @@
 
 from span import Diagnostic
 from ast import Module, FnDef, Generic, Field, TypeExpr, Stmt, StmtKind, Expr, ExprKind
-from check.program import Program, FnEntry, TypeKind
+from check.program import Program, FnEntry, TypeKind, built_in_types, unknown_type
 
 ## Checks a module against the standard library's modules. Returns every problem found,
 ## in source order.
@@ -148,6 +148,7 @@ struct Checker:
                     self.check_expr(cond, generics)
                     self.check_body(body, generics)
                 case .For(_, _, iter, body):
+                    self.check_fields_of(iter, generics)
                     self.check_expr(iter, generics)
                     self.check_body(body, generics)
                 case .With(value, _, body):
@@ -263,6 +264,26 @@ struct Checker:
                                     help=f"write one type for each of its parameters, as `{name}[{listed}]`",
                                 ),
                             )
+                    case _: pass
+            case _: pass
+
+    ## `for field in fields(T):`, when `fields` is the language's own: `T` has to be a type.
+    def check_fields_of(ref self, iter: Expr, generics: list[Generic]):
+        match iter.kind:
+            case .Call(callee, args):
+                match callee.kind:
+                    case .Name(called) if called == "fields" and called not in self.program.functions:
+                        if args.len() == 1 and args[0].name is None and not args[0].is_mut:
+                            match args[0].value.kind:
+                                case .Name(of):
+                                    if (
+                                        of not in built_in_types()
+                                        and of not in generic_names(generics)
+                                        and of not in self.program.types
+                                        and of not in self.program.aliases
+                                    ):
+                                        self.diagnostics.append(unknown_type(of, iter.span))
+                                case _: pass
                     case _: pass
             case _: pass
 

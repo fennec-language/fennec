@@ -1,0 +1,7 @@
+error: a field has a `name` and a `get(...)`, not `size`
+ --> examples/errors/field_has_no_size.fen:8:22
+  |
+8 |         found.append(field.size)
+  |                      ^^^^^^^^^^
+  |
+  = help: write `field.name` for its name, or `field.get(value)` for its value in `value`

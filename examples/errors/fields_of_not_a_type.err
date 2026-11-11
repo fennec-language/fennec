@@ -1,0 +1,7 @@
+error: `Ponit` isn't a type
+ --> examples/errors/fields_of_not_a_type.fen:7:18
+  |
+7 |     for field in fields(Ponit):
+  |                  ^^^^^^^^^^^^^
+  |
+  = help: declare it, like `struct Ponit:`, or check the spelling

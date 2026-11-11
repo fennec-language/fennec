@@ -82,7 +82,10 @@ fn arguments_have_the_parameters_types() {
         helps("def f(n: int):\n    n\n\ndef g():\n    f(1.5)\n"),
         ["convert it with int(...), round(...) or math.floor(...)"]
     );
-    assert_eq!(helps("def f(n: str):\n    n\n\ndef g():\n    f(1.5)\n"), [""]);
+    assert_eq!(
+        helps("def f(n: str):\n    n\n\ndef g():\n    f(1.5)\n"),
+        ["turn it into text with an f-string, as `f\"{count}\"`, or `str(count)`"]
+    );
     assert_eq!(
         helps("def f(n: float):\n    n\n\ndef g():\n    f(1)\n"),
         ["write it with a decimal point, like `1.0`, or convert it with float(...)"]

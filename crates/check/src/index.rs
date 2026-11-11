@@ -75,7 +75,15 @@ impl FnCx<'_> {
                 Type::Unknown
             }
             other => {
-                self.error(Diagnostic::new(format!("{} can't be indexed", article(&other.kind())), span));
+                let help = match other {
+                    Type::Set(_) => {
+                        "a set has no order: check for an item with `item in items`, or index `sorted(items)`"
+                    }
+                    Type::Iterator(_) => "make a list of it first, as `list(items)[0]`",
+                    _ => "index a list, str, dict, tuple or array, as `items[0]`",
+                };
+                let message = format!("{} can't be indexed", article(&other.kind()));
+                self.error(Diagnostic::new(message, span).with_help(help));
                 Type::Unknown
             }
         }
@@ -90,7 +98,7 @@ impl FnCx<'_> {
             Type::Int => format!("an index must be an int, not {}", article(&actual.kind())),
             other => format!("this is looked up by {}, not {}", a(other), a(actual)),
         };
-        self.error(Diagnostic::new(message, span));
+        self.error(Diagnostic::new(message, span).with_help(convert_help(expected, actual)));
     }
 
     /// `slots[20]` on an `array[Item?, 20]`: a position written as a number has to be inside
@@ -111,7 +119,7 @@ impl FnCx<'_> {
         let last = size - 1;
         self.error(
             Diagnostic::new(format!("this array has {size} items, so there's no item {written}"), index.span)
-                .with_help(format!("its items are 0 to {last}")),
+                .with_help(format!("its items are 0 to {last}: write one of those, or `-1` for the last")),
         );
     }
 
@@ -128,7 +136,8 @@ impl FnCx<'_> {
         if at.is_some() {
             let message =
                 format!("this tuple has {} items, so there's no item {}", items.len(), at.unwrap_or(0));
-            self.error(Diagnostic::new(message, index.span));
+            let help = format!("its items are 0 to {}: write one of those", items.len().saturating_sub(1));
+            self.error(Diagnostic::new(message, index.span).with_help(help));
             return Type::Unknown;
         }
         if let Some(joined) = self.checker.join_all(items) {
@@ -156,14 +165,19 @@ impl FnCx<'_> {
             let at = self.expr(bound);
             if !self.checker.fits(&Type::Int, &at) {
                 let message = format!("a slice position must be an int, not {}", article(&at.kind()));
-                self.error(Diagnostic::new(message, bound.span));
+                self.error(Diagnostic::new(message, bound.span).with_help(convert_help(&Type::Int, &at)));
             }
         }
         match ty {
             Type::List(_) | Type::Str | Type::Bytes | Type::Unknown => ty,
             Type::Tuple(items) => self.tuple_slice(&items, start, end, span),
             other => {
-                self.error(Diagnostic::new(format!("{} can't be sliced", article(&other.kind())), span));
+                let help = match other {
+                    Type::Array(..) => "make a list of it first, as `list(items)[1:3]`",
+                    _ => "slice a list, str, bytes or tuple, as `items[1:3]`",
+                };
+                let message = format!("{} can't be sliced", article(&other.kind()));
+                self.error(Diagnostic::new(message, span).with_help(help));
                 Type::Unknown
             }
         }
@@ -195,5 +209,20 @@ impl FnCx<'_> {
                 .with_help("write it like `triple[1:]`"),
         );
         Type::Unknown
+    }
+}
+
+/// How to turn `actual` into the `expected` index or key.
+fn convert_help(expected: &Type, actual: &Type) -> String {
+    match (expected, actual) {
+        (Type::Int, Type::Str | Type::LiteralStr) => {
+            "read the text as a number, as `items[int(text)?]`".to_string()
+        }
+        (Type::Int, Type::Float) => "turn it into an int, as `items[int(position)]`".to_string(),
+        (Type::Str, Type::Int | Type::Float | Type::Sized(_)) => {
+            "turn it into text, as `table[str(key)]`".to_string()
+        }
+        (Type::Int, _) => "write an int, as `items[0]`".to_string(),
+        (other, _) => format!("look it up by {}", a(other)),
     }
 }

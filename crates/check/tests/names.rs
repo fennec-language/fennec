@@ -27,7 +27,7 @@ fn habits_from_other_languages_get_a_hint() {
         ("x = undefined", "write `None`"),
         ("lambda", "write an arrow function: `x => x * 2`"),
         ("raise(1)", "Fennec has no exceptions: write `fail SomeError(...)`"),
-        ("nothing_here", ""),
+        ("nothing_here", "give it a value first, as `nothing_here = ...`, or check the spelling"),
     ];
     for (body, help) in hints {
         let program = format!("def main(stdout: Stdout):\n    {body}\n");
@@ -105,15 +105,21 @@ fn a_name_spelled_nearly_like_another_says_so() {
     }
 }
 
+/// A name like nothing in sight guesses at no other name: it says to give it a value.
 #[test]
-fn a_name_like_nothing_in_sight_says_nothing_more() {
-    for body in ["stdout.print(health)", "stdout.print(ab)", "unit = 1\n    stdout.print(unit, tin)"] {
+fn a_name_like_nothing_in_sight_guesses_at_none() {
+    let none_like = |name: &str| format!("give it a value first, as `{name} = ...`, or check the spelling");
+    for (body, name) in [
+        ("stdout.print(health)", "health"),
+        ("stdout.print(ab)", "ab"),
+        ("unit = 1\n    stdout.print(unit, tin)", "tin"),
+    ] {
         let program = format!("def main(stdout: Stdout):\n    {body}\n");
-        assert_eq!(helps(&program), [""], "{body}");
+        assert_eq!(helps(&program), [none_like(name)], "{body}");
     }
     // What's out of sight isn't suggested, and neither is the standard library.
     let program = "def other():\n    secret = 1\n\ndef main(stdout: Stdout):\n    stdout.print(secrte)\n";
-    assert_eq!(helps(program), [""]);
+    assert_eq!(helps(program), [none_like("secrte")]);
 }
 
 /// `mut` on the wrong argument says which one the function does change.

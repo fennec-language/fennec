@@ -181,6 +181,7 @@ export def read_all[R: Reader](ref src: R) -> bytes fails IoError:
     mut all = bytes_builder()
     while True:
         chunk = src.read_chunk(65536)?
-        if chunk.len() == 0: return all
+        # Copied to its exact size, as a builder has to be before anything else sees it.
+        if chunk.len() == 0: return all[0:all.len()]
         bytes_push_bytes(ref all, chunk)
     all

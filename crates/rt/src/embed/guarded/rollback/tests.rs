@@ -527,3 +527,173 @@ fn a_buffer_grown_big_goes_when_the_last_lock_ends() {
     shared_leave(cell, 1);
     finish();
 }
+
+/// A `shared` value holding a `Log` of these lines and the number 3, locked to write, its log not
+/// yet begun. Gives back its cell.
+fn taken(items: &[&str]) -> i64 {
+    let held = list(items);
+    let cell = heap::alloc(LOG);
+    set_word(cell, LINES_AT, held);
+    set_word(cell, COUNT_AT, 3);
+    shared_new(cell);
+    shared_enter(cell, 1);
+    cell
+}
+
+/// A word of the record, as native code reads it, without the runtime looking.
+fn record_word(at: usize) -> usize {
+    LOGS.with_borrow(|logs| logs.buffer.read(at))
+}
+
+/// What native code does as a lock's taken: once the record's made, with no lock held, it notes the
+/// lock's cell as pending, with no call; otherwise it calls `begin`. Says whether it was pending.
+fn begin_as_native_code(cell: i64) -> bool {
+    let pending = LOGS.with_borrow_mut(|logs| {
+        let buffer = &mut logs.buffer;
+        if buffer.record.is_empty() || buffer.read(LOCKS) != 0 {
+            return false;
+        }
+        buffer.put(PENDING, usize::try_from(cell).unwrap());
+        buffer.put(LOCKS, 1);
+        buffer.put(START, buffer.read(LEN));
+        true
+    });
+    if !pending {
+        begin(cell);
+    }
+    pending
+}
+
+/// What native code does at a lock's normal end: one still pending empties the buffer back to its
+/// start, with no call; any other calls `kept`. Says whether it was pending.
+fn kept_as_native_code() -> bool {
+    let pending = LOGS.with_borrow_mut(|logs| {
+        let buffer = &mut logs.buffer;
+        if buffer.read(PENDING) == 0 {
+            return false;
+        }
+        buffer.put(PENDING, 0);
+        buffer.put(LOCKS, 0);
+        buffer.put(LEN, buffer.read(START));
+        true
+    });
+    if !pending {
+        kept();
+    }
+    pending
+}
+
+/// A first lock on `cell`, which asks the runtime, as the record's not made yet, and saves a word,
+/// so the buffer has room for native code's saves after it.
+fn first_lock(cell: i64) {
+    assert!(!begin_as_native_code(cell), "the first lock makes the record");
+    save_as_native_code(cell, COUNT_AT, word(cell, COUNT_AT));
+    assert!(!kept_as_native_code());
+    assert!(room() > 0);
+}
+
+/// How many logs there are, without making a pending one's.
+fn logs_made() -> usize {
+    LOGS.with_borrow(|logs| logs.held.len())
+}
+
+/// A lock taken with no other held begins and ends with no log once the record's made, keeping what
+/// it saved as plain words: the first lock asks the runtime, for the record.
+#[test]
+fn a_lock_alone_that_saves_only_plain_words_begins_and_ends_with_no_log() {
+    begin_run();
+    let cell = taken(&["one"]);
+    first_lock(cell);
+    for turn in 0..3 {
+        assert!(begin_as_native_code(cell));
+        assert_eq!((logs_made(), record_word(LOCKS)), (0, 1));
+        save_as_native_code(cell, COUNT_AT, word(cell, COUNT_AT));
+        set_word(cell, COUNT_AT, 10 + turn);
+        assert!(kept_as_native_code());
+        assert_eq!((record_word(LEN), record_word(LOCKS), record_word(PENDING)), (0, 0, 0));
+    }
+    assert_eq!(word(cell, COUNT_AT), 12);
+    assert_eq!((held(), saved_entries()), (0, 0));
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// A pending lock's log is made the first time the runtime's asked to save, from where its plain
+/// saves start, so a crash puts back what native code saved before then and what the runtime saved
+/// after.
+#[test]
+fn a_pending_lock_s_log_is_made_when_the_runtime_saves_and_a_crash_puts_back_both() {
+    begin_run();
+    let cell = taken(&["one", "two"]);
+    first_lock(cell);
+    assert!(begin_as_native_code(cell));
+    save_as_native_code(cell, COUNT_AT, 3);
+    set_word(cell, COUNT_AT, 9);
+    assert_eq!(logs_made(), 0);
+    let inside = word(cell, LINES_AT);
+    save(cell, i64::try_from(LINES_AT).unwrap(), inside, 1);
+    set_word(cell, LINES_AT, list(&["changed"]));
+    assert_eq!((logs_made(), record_word(PENDING), record_word(LOCKS)), (1, 0, 1));
+    crash(cell);
+    assert_eq!(word(cell, COUNT_AT), 3);
+    assert_eq!(word(cell, LINES_AT), inside);
+    assert_eq!(lines(inside), ["one", "two"]);
+    assert_eq!((held(), record_word(LOCKS), saved_entries()), (0, 0, 0));
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// A crash in a lock still pending puts back its plain saves: the runtime makes its log to undo it.
+#[test]
+fn a_crash_in_a_pending_lock_puts_back_its_plain_saves() {
+    begin_run();
+    let cell = taken(&["one"]);
+    first_lock(cell);
+    assert!(begin_as_native_code(cell));
+    save_as_native_code(cell, COUNT_AT, 3);
+    set_word(cell, COUNT_AT, 7);
+    save_as_native_code(cell, COUNT_AT, 7);
+    set_word(cell, COUNT_AT, 8);
+    crash(cell);
+    assert_eq!(word(cell, COUNT_AT), 3);
+    assert_eq!((held(), record_word(LOCKS), record_word(PENDING), saved_entries()), (0, 0, 0, 0));
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// A lock taken inside a pending one makes the pending one's log first, as its table comes in, with
+/// the tables behind as they were when it began; the inner one asks the runtime. What the inner
+/// changed of the outer's still goes back on the outer's crash.
+#[test]
+fn a_lock_inside_a_pending_one_makes_its_log_first_with_the_tables_it_began_with() {
+    begin_run();
+    let outer = taken(&["outer"]);
+    first_lock(outer);
+    assert!(begin_as_native_code(outer));
+    let outer_list = word(outer, LINES_AT);
+    let line = word(outer_list, LIST_HEADER_WORDS);
+    save_as_native_code(outer, COUNT_AT, 3);
+    set_word(outer, COUNT_AT, 9);
+    let inner = taken(&["inner"]);
+    assert_eq!(logs_made(), 1, "the inner's table coming in made the outer's log");
+    assert!(!begin_as_native_code(inner));
+    assert_eq!(read_logs(|held| held.iter().map(|log| log.depth).collect::<Vec<_>>()), [1, 2]);
+    save(outer_list, i64::try_from(LIST_HEADER_WORDS).unwrap(), line, 1);
+    set_word(outer_list, LIST_HEADER_WORDS, string("changed"));
+    save_as_native_code(inner, COUNT_AT, 3);
+    set_word(inner, COUNT_AT, 5);
+    assert!(!kept_as_native_code());
+    shared_leave(inner, 1);
+    assert_eq!(held(), 1);
+    assert_eq!(count_of(line), 1, "the outer's log holds what was taken out of it");
+    crash(outer);
+    assert_eq!(word(outer, COUNT_AT), 3);
+    assert_eq!(word(outer_list, LIST_HEADER_WORDS), line);
+    assert_eq!(lines(outer_list), ["outer"]);
+    assert_eq!((held(), record_word(LOCKS)), (0, 0));
+    shared_leave(outer, 1);
+    shared_enter(inner, 1);
+    assert_eq!(word(inner, COUNT_AT), 5, "the inner kept its change");
+    shared_leave(inner, 1);
+    finish();
+}

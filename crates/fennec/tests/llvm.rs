@@ -1717,6 +1717,41 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     )
 }
 
+/// Locks taken alone begin and end in native code, with no log; two taken together, a save the
+/// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
+/// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.
+/// Built checking proofs, which stop at a lock's end that no begin came before.
+#[test]
+fn locks_begun_without_the_runtime_put_back_exactly_whatever_comes_inside() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_begun_inline")?;
+        let (program, executable) = (dir.join("inline.fen"), dir.join("inline"));
+        std::fs::write(&program, include_str!("fixtures/workers/lock_begun_inline.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            include_str!("fixtures/workers/lock_begun_inline.out"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// A put after a lookup of the same key under a lock writes where the lookup found it, unless what
 /// came between grew the dict, popped the key or put another: each kept, and each put back by a
 /// failure.
@@ -1796,6 +1831,43 @@ fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Resul
             "put back 1 {1: 11, 2: 20}\nput back 3 {1: 11, 2: 20, 3: 1}\nput back 1 True\nput back 1 True\n\
              held twice 3 {1: 11, 2: 21, 3: 1}\n\
              crashed {1: 11, 2: 21, 3: 1}\n{1: 11, 2: 21, 3: 1}\n",
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A put after a lookup of the same key under a lock writes where the lookup found it, with no
+/// second search, only when the dict there now is the one it searched: a different key, a
+/// different dict, a key worked out again with a side effect, a field set to another dict, a dict
+/// grown through another local, and a key's local changed in between each search. Kept, or put
+/// back by a failure, every one is right. Built checking proofs.
+#[test]
+fn a_put_after_a_lookup_reuses_it_only_for_the_same_key_and_dict() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_one_lookup")?;
+        let (program, executable) = (dir.join("one.fen"), dir.join("one"));
+        std::fs::write(&program, include_str!("fixtures/lock_one_lookup.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "2 {0: 6, 1: 40227, 50: 1, 2: 30227, 51: 1, 3: 30233, 52: 1, 4: 30236, 53: 1, 55: 1, 56: 1, 57: 1, 58: 1, \
+             60: 1, 61: 1} {3: 31232}\n",
             "{how:?}: {}",
             String::from_utf8_lossy(&ran.stderr)
         );

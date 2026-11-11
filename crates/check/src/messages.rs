@@ -12,7 +12,7 @@ pub(crate) const TABLE: &str = "it's called `Table` now, from `std.collections`"
 pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
     if name.starts_with(&format!("_{}", fennec_syntax::visit::HIDDEN)) {
         return Diagnostic::new("`_` throws away what it's given, so it can't be read", span)
-            .with_help("give what you want to read a name of its own");
+            .with_help("write a name where `_` is, as `item`, and read that");
     }
     let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
     match name {
@@ -164,6 +164,7 @@ pub(crate) fn wrong_args(function: &str, span: Span) -> Diagnostic {
 
 pub(crate) fn needless_mut(function: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{function}` doesn't change its arguments, so don't pass `ref`"), span)
+        .with_help("take `ref` off the argument")
 }
 
 /// A value of the wrong type for a parameter or field.
@@ -187,6 +188,14 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         }
         (Type::Int, Type::Float) => {
             diagnostic.with_help("convert it with int(...), round(...) or math.floor(...)")
+        }
+        (Type::Int | Type::Float, Type::Str) => {
+            let number = if *expected == Type::Int { "int" } else { "float" };
+            diagnostic
+                .with_help(format!("read the text as a number, as `{number}(text)?`, or write a number"))
+        }
+        (Type::Str, Type::Int | Type::Float | Type::Bool) => {
+            diagnostic.with_help("turn it into text with an f-string, as `f\"{count}\"`, or `str(count)`")
         }
         (Type::Arrow(..), Type::Function(key)) => {
             let name = key.rsplit('.').next().unwrap_or(key);
@@ -248,6 +257,7 @@ pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> 
         (Type::Float, "d", _) => {
             "show it with no decimal places with `.0f`, or round it to an int with `round(x)`"
         }
+        (Type::Str, _, _) => "drop the format, or read the text as a number first, as `{float(text)?:.2f}`",
         _ => "only an int or a float takes a format: turn it into one first, or drop the format",
     };
     Some(Diagnostic::new(format!("the format `{spec}` doesn't apply to {}", a(ty)), span).with_help(help))

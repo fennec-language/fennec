@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    _ = 5
+    stdout.print(_)

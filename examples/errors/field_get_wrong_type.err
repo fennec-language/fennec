@@ -1,0 +1,7 @@
+error: `get` reads a field of a T, not a float
+  --> examples/errors/field_get_wrong_type.fen:11:33
+   |
+11 |         count += take(field.get(1.5))
+   |                                 ^^^
+   |
+   = help: pass a T, the type the loop is over

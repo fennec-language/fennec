@@ -109,8 +109,8 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
     let state = cached.and_then(crate::verdict::last_state);
     let files = crate::verdict::kit_files(path, state.as_ref());
     let planned = match (cached, &state, &files) {
-        (Some((cache, _)), Some(state), Some(files)) if options.run == Run::Affected => {
-            crate::verdict::plan(path, cache, (state, files), &results.passed)
+        (Some(cached), Some(state), Some(files)) if options.run == Run::Affected => {
+            crate::verdict::plan(path, cached, (state, files), &results.passed)
         }
         _ => None,
     };
@@ -130,13 +130,13 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
         return Err(ExitCode::FAILURE);
     };
     // The standard library as a run checks it: just what the tests reach.
-    match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
-        Ok(_) => {}
+    let verdicts = match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
+        Ok(signatures) => signatures.lock_verdicts().clone(),
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));
             return Err(ExitCode::FAILURE);
         }
-    }
+    };
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     let unchanged: Vec<TestRecord> = graph
         .tests()
@@ -146,7 +146,7 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
         .collect();
     let is_unchanged = |name: &str| unchanged.iter().any(|record| record.test == name);
     let wanted = graph.tests().filter(|name| !is_unchanged(name)).map(str::to_owned).collect();
-    Ok(Plan { program, wanted, unchanged })
+    Ok(Plan { program, wanted, unchanged, verdicts })
 }
 
 /// A test as it's kept once it has passed.
@@ -173,7 +173,7 @@ fn run_plan(
     files: Option<&[fennec_build::KitFile]>,
     plan: Plan,
 ) -> ExitCode {
-    let Plan { program, wanted, unchanged } = plan;
+    let Plan { program, wanted, unchanged, verdicts } = plan;
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     if let Some(why) = crate::aot::not_ready() {
@@ -244,7 +244,7 @@ fn run_plan(
         if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
             if failed == 0 {
                 // A cache that can't be written only means looking at all of it next time.
-                let _ = crate::verdict::remember((cache, name), files, &program);
+                let _ = crate::verdict::remember((cache, name), (files, &program), &verdicts);
             } else {
                 crate::verdict::forget((cache, name));
             }

@@ -1,0 +1,7 @@
+error: a set can't be indexed
+ --> examples/errors/index_a_set.fen:3:18
+  |
+3 |     stdout.print(seen[0])
+  |                  ^^^^^^^
+  |
+  = help: a set has no order: check for an item with `item in items`, or index `sorted(items)`

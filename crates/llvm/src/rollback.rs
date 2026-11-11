@@ -144,6 +144,64 @@ done:
 
 ";
 
+/// A lock that saves its changes begins, giving the address of this thread's record of saves. With
+/// the record made and no such lock held, which the record says, the lock is noted there as pending,
+/// without a call: the runtime makes its log when it's next asked. Otherwise the runtime begins it,
+/// and gives the record, which this thread keeps in `@fennec_lock_record`. Its words are those of
+/// `rollback::Buffer` in `crates/rt`: 0 how many saves there are, 3 where the innermost lock's
+/// start, 4 how many locks are held, and 5 the pending lock's cell.
+const BEGIN: &str = "define internal i64 @fen_lock_begin(i64 %cell) #2 {
+entry:
+  %record = load i64, ptr @fennec_lock_record
+  %made = icmp ne i64 %record, 0
+  br i1 %made, label %look, label %call, !prof !8
+look:
+  %rec = inttoptr i64 %record to ptr
+  %locks.at = getelementptr i64, ptr %rec, i64 4
+  %locks = load i64, ptr %locks.at
+  %none = icmp eq i64 %locks, 0
+  br i1 %none, label %pending, label %call, !prof !8
+pending:
+  %pending.at = getelementptr i64, ptr %rec, i64 5
+  store i64 %cell, ptr %pending.at
+  store i64 1, ptr %locks.at
+  %len = load i64, ptr %rec
+  %start.at = getelementptr i64, ptr %rec, i64 3
+  store i64 %len, ptr %start.at
+  ret i64 %record
+call:
+  %given = call i64 @fennec_lock_begin(i64 %cell)
+  store i64 %given, ptr @fennec_lock_record
+  ret i64 %given
+}
+
+";
+
+/// The innermost lock that saves its changes ends normally. One still pending saved only plain
+/// words, which stay as they are, so the buffer's emptied back to where it started, without a call.
+/// Otherwise the runtime ends it.
+const KEPT: &str = "define internal void @fen_lock_kept(i64 %record) #2 {
+entry:
+  %rec = inttoptr i64 %record to ptr
+  %pending.at = getelementptr i64, ptr %rec, i64 5
+  %pending = load i64, ptr %pending.at
+  %is = icmp ne i64 %pending, 0
+  br i1 %is, label %alone, label %call, !prof !8
+alone:
+  store i64 0, ptr %pending.at
+  %locks.at = getelementptr i64, ptr %rec, i64 4
+  store i64 0, ptr %locks.at
+  %start.at = getelementptr i64, ptr %rec, i64 3
+  %start = load i64, ptr %start.at
+  store i64 %start, ptr %rec
+  ret void
+call:
+  call void @fennec_lock_kept()
+  ret void
+}
+
+";
+
 impl Emit<'_, '_, '_> {
     /// Whether a crash gives back `handle`'s lock with nothing to put back: it's a read lock.
     pub(crate) fn read_lock_given_back(&self, handle: &Operand) -> bool {
@@ -177,9 +235,13 @@ impl Emit<'_, '_, '_> {
     /// The lock on `handle`'s cell has just been taken: its log begins.
     pub(crate) fn rollback_begin(&mut self, handle: &Operand, cell: &str) {
         self.declare("declare i64 @fennec_lock_begin(i64) nounwind");
+        // Each thread's own, when there are threads; each module has it, and the linker keeps one.
+        let local = if self.module.threads { "thread_local(initialexec) " } else { "" };
+        self.declare(&format!("@fennec_lock_record = linkonce_odr {local}global i64 0"));
+        self.module.add_helper("fen_lock_begin", BEGIN.to_owned());
         let (address, record) = (self.temp(), self.temp());
         self.line(&format!("{address} = ptrtoint ptr {cell} to i64"));
-        self.line(&format!("{record} = call i64 @fennec_lock_begin(i64 {address})"));
+        self.line(&format!("{record} = call i64 @fen_lock_begin(i64 {address})"));
         let slot = self.record_slot();
         self.line(&format!("store i64 {record}, ptr {slot}"));
         if let Some(flag) = self.held_flag(handle) {
@@ -193,7 +255,18 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store i1 false, ptr {flag}"));
         }
         self.declare("declare void @fennec_lock_kept() nounwind");
-        self.line("call void @fennec_lock_kept()");
+        self.module.add_helper("fen_lock_kept", KEPT.to_owned());
+        let (slot, record) = (self.record_slot(), self.temp());
+        self.line(&format!("{record} = load i64, ptr {slot}"));
+        // The record's from the lock's begin, which comes before every normal end, so a 0 here is
+        // a path to an end that missed it.
+        if self.checks_proofs() {
+            let unset = self.temp();
+            self.line(&format!("{unset} = icmp eq i64 {record}, 0"));
+            let span = self.here_span();
+            self.proof_held(&unset, "a lock's normal end comes after its begin", span);
+        }
+        self.line(&format!("call void @fen_lock_kept(i64 {record})"));
     }
 
     /// `lock.roll_back(handle)`: a failure is leaving this lock's block, so what the block changed
@@ -775,10 +848,20 @@ def main(stdout: Stdout):
 ";
         let text = texts(source)?;
         let pay = text.split("define").find(|function| function.contains("@\"f_pay\"(")).unwrap_or_default();
-        assert!(pay.contains("call i64 @fennec_lock_begin("), "{pay}");
-        for call in ["save_text", "save_ref", "kept"] {
+        // The lock begins and ends inline, asking the runtime only when another lock's held or
+        // it saved what the runtime has to see.
+        assert!(pay.contains("call i64 @fen_lock_begin("), "{pay}");
+        assert!(pay.contains("call void @fen_lock_kept("), "{pay}");
+        for call in ["save_text", "save_ref"] {
             assert!(pay.contains(&format!("call void @fennec_lock_{call}(")), "{call}: {pay}");
         }
+        for helper in ["define internal i64 @fen_lock_begin(", "define internal void @fen_lock_kept("] {
+            assert!(text.contains(helper), "{helper}: {text}");
+        }
+        assert!(
+            text.contains("call i64 @fennec_lock_begin(") && text.contains("call void @fennec_lock_kept()")
+        );
+        assert!(text.contains("@fennec_lock_record = linkonce_odr global i64 0"), "{text}");
         // The balance, a number, is saved without a call while there's room.
         assert!(pay.contains("call void @fen_lock_save("), "{pay}");
         // The record's slot starts at 0, before any lock's begin stores the record in it.
@@ -792,7 +875,7 @@ def main(stdout: Stdout):
         assert!(text.contains("define internal void @fen_lock_save("), "{text}");
         let main =
             text.split("define").find(|function| function.contains("@\"f_main\"(")).unwrap_or_default();
-        assert!(!main.contains("@fennec_lock_begin("), "{main}");
+        assert!(!main.contains("@fennec_lock_begin(") && !main.contains("@fen_lock_begin("), "{main}");
         Ok(())
     }
 
@@ -822,6 +905,84 @@ def main(stdout: Stdout):
         assert!(prop.contains("call void @fennec_lock_undo()"), "{hit}");
         assert!(prop.contains("call i64 @fennec_lock_undo_word("), "{hit}");
         assert!(hit.contains("br label %prop"), "{hit}");
+        Ok(())
+    }
+
+    /// A put after a lookup of the same key in the same dict, under a lock, uses the lookup's
+    /// entry when the dict there now is the block it searched. A different key, a different dict,
+    /// a key worked out again by a call, a put between that may grow the dict, and a key's local
+    /// changed between each look on their own, with no entry to reuse.
+    #[test]
+    fn a_put_reuses_a_lookup_of_its_own_key_and_dict_only() -> Result<(), String> {
+        let source = "\
+struct Table:
+    counts = dict[int, int]()
+    others = dict[int, int]()
+
+def next(key: int) -> int:
+    key + 1
+
+def same(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+
+def other_key(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[key + 1] = (held.counts.get(key) else 0) + 1
+
+def other_dict(table: shared Table, key: int):
+    lock table as ref held:
+        held.others[key] = (held.counts.get(key) else 0) + 1
+
+def called(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[next(key)] = (held.counts.get(next(key)) else 0) + 1
+
+def grown(table: shared Table, key: int):
+    lock table as ref held:
+        through = held.counts
+        found = through.get(key) else 0
+        held.counts[key + 50] = 1
+        held.counts[key] = found + 1
+
+def moved(table: shared Table, key: int):
+    lock table as ref held:
+        mut moving = key
+        found = held.counts.get(moving) else 0
+        moving = moving + 1
+        held.counts[moving] = found + 1
+
+def main(stdout: Stdout):
+    shared table = Table()
+    same(table, key=1)
+    grown(table, key=1)
+    moved(table, key=1)
+    other_key(table, key=1)
+    other_dict(table, key=1)
+    called(table, key=1)
+    lock table as held:
+        stdout.print(held.counts, held.others)
+";
+        let text = texts(source)?;
+        let function = |name: &str| {
+            text.split("define")
+                .find(|function| function.contains(&format!("@\"f_{name}\"(")))
+                .unwrap_or_default()
+        };
+        // The block a reused entry comes into: `have` and its number, not `have_bytes`.
+        let reuses = |body: &str| {
+            body.match_indices("label %have").any(|(at, found)| {
+                body.get(at + found.len()..)
+                    .and_then(|rest| rest.chars().next())
+                    .is_some_and(|next| next.is_ascii_digit())
+            })
+        };
+        assert!(reuses(function("same")), "{}", function("same"));
+        for name in ["other_key", "other_dict", "called", "grown", "moved"] {
+            let body = function(name);
+            assert!(body.contains("label %in_place"), "{name} still writes in place: {body}");
+            assert!(!reuses(body), "{name}: {body}");
+        }
         Ok(())
     }
 }

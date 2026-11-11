@@ -38,7 +38,9 @@ const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_m
 const LINT: Budget = Budget { name: "lint one file", limit: Duration::from_millis(50), enforced: false };
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: true };
 /// After an edit is checked, going to a definition in the file: answered from the files the edit
-/// reached, not all of a big kit checked again.
+/// reached, not all of a big kit checked again. It's held to a count of instructions, as an edit
+/// is: its time on CI's machines was within a few milliseconds of its limit, so one reading on a
+/// slow machine failed runs that changed nothing it does.
 const DEFINITION: Budget =
     Budget { name: "then a definition", limit: Duration::from_millis(100), enforced: true };
 const VERDICT: Budget =
@@ -90,6 +92,9 @@ const MOST_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
 
 /// What an edit may cost the language server: 100 ms.
 const MOST_CHECK_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+
+/// What going to a definition after an edit may cost the language server: 100 ms.
+const MOST_DEFINITION_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
 
 /// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
 /// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by
@@ -265,8 +270,9 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     let counted = kit.counted_edit();
     let check =
         Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted, programs: Vec::new() };
+    let counted = kit.counted_definition();
     let definition =
-        Measured { budget: DEFINITION, warm: definition, cold: None, counted: None, programs: Vec::new() };
+        Measured { budget: DEFINITION, warm: definition, cold: None, counted, programs: Vec::new() };
     let mut measured = vec![check, definition, kit.format(runs)?, kit.lint(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
@@ -574,30 +580,58 @@ impl Kit {
     /// How many instructions one edit costs a language server of its own, where they can be
     /// counted: a session with an edit, less the same session without it.
     fn counted_edit(&self) -> Option<Counted> {
+        let without = self.counted_session("without an edit", 1, false)?;
+        let with = self.counted_session("with an edit", 2, false)?;
+        Some(Counted { instructions: with.saturating_sub(without), most: MOST_CHECK_INSTRUCTIONS })
+    }
+
+    /// How many instructions going to a definition after an edit costs a language server of its
+    /// own, where they can be counted: a session that asks after its edit, less the same session
+    /// that doesn't.
+    fn counted_definition(&self) -> Option<Counted> {
+        let without = self.counted_session("without a definition", 1, false)?;
+        let with = self.counted_session("with a definition", 1, true)?;
+        Some(Counted { instructions: with.saturating_sub(without), most: MOST_DEFINITION_INSTRUCTIONS })
+    }
+
+    /// How many instructions a language server of its own runs for a session of `edits` edits to
+    /// the edited file, each followed by going to a definition if `definitions`.
+    fn counted_session(&self, name: &str, edits: usize, definitions: bool) -> Option<u64> {
         let path = std::fs::canonicalize(self.dir.join(EDITED)).ok()?;
         let uri = fennec_lsp::uri_of(&path);
         let text = std::fs::read_to_string(&path).ok()?;
         let folder = self.dir.join("counting");
         std::fs::create_dir_all(&folder).ok()?;
         let counter = Counter::find(&folder)?;
-        let count = |name: &str, edits: usize| -> Option<u64> {
-            let script = folder.join(name);
-            std::fs::write(&script, session_script(&uri, &text, edits).ok()?).ok()?;
-            let program =
-                Program { command: self.fennec.clone(), args: vec!["lsp".to_owned()], stdin: Some(script) };
-            counter.count_set_up(&program, |command| {
-                self.set_up(command);
-                command.env("FENNEC_NO_DAEMON", "1");
-            })
-        };
-        let without = count("without", 1)?;
-        let with = count("with", 2)?;
-        Some(Counted { instructions: with.saturating_sub(without), most: MOST_CHECK_INSTRUCTIONS })
+        let script = folder.join(name);
+        std::fs::write(&script, session_script(&uri, &text, edits, definitions).ok()?).ok()?;
+        let program =
+            Program { command: self.fennec.clone(), args: vec!["lsp".to_owned()], stdin: Some(script) };
+        counter.count_set_up(&program, |command| {
+            self.set_up(command);
+            command.env("FENNEC_NO_DAEMON", "1");
+        })
     }
 }
 
-/// What an editor sends a language server: opening a document, then `edits` edits to it.
-fn session_script(uri: &str, text: &str, edits: usize) -> std::io::Result<Vec<u8>> {
+/// Asking where `number` in the edited line is declared: the parameter of its function.
+fn definition_request(uri: &str, text: &str, id: usize) -> Json {
+    let line =
+        text.get(..text.find(EDITED_LINE).unwrap_or(0)).map_or(0, |before| before.matches('\n').count());
+    // At `number`, which the definition is the parameter of.
+    let place = Json::object([("line", Json::number(line)), ("character", Json::number(13))]);
+    let document = Json::object([("uri", Json::string(uri))]);
+    let params = Json::object([("textDocument", document), ("position", place)]);
+    Json::object([
+        ("id", Json::number(id)),
+        ("method", Json::string("textDocument/definition")),
+        ("params", params),
+    ])
+}
+
+/// What an editor sends a language server: opening a document, then `edits` edits to it, each
+/// followed by going to a definition in it if `definitions`.
+fn session_script(uri: &str, text: &str, edits: usize, definitions: bool) -> std::io::Result<Vec<u8>> {
     let mut script = Vec::new();
     let document = Json::object([
         ("uri", Json::string(uri)),
@@ -615,6 +649,9 @@ fn session_script(uri: &str, text: &str, edits: usize) -> std::io::Result<Vec<u8
         let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
         let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
         fennec_lsp::write(&mut script, &message("textDocument/didChange", params))?;
+        if definitions {
+            fennec_lsp::write(&mut script, &definition_request(uri, text, 100 + edit))?;
+        }
     }
     let shutdown = Json::object([("id", Json::number(1)), ("method", Json::string("shutdown"))]);
     fennec_lsp::write(&mut script, &shutdown)?;
@@ -635,17 +672,14 @@ impl Editor {
     }
 
     /// Sends a request, and waits for its answer.
-    fn answered(&mut self, id: usize, method: &str, params: Json) -> Result<Duration, String> {
+    fn answered(&mut self, request: &Json) -> Result<Duration, String> {
+        let id = request.get("id").ok_or("a request has an id")?.clone();
         let start = Instant::now();
-        self.send(&Json::object([
-            ("id", Json::number(id)),
-            ("method", Json::string(method)),
-            ("params", params),
-        ]))?;
+        self.send(request)?;
         loop {
             let message = fennec_lsp::read(&mut self.output).map_err(|err| err.to_string())?;
             let message = message.ok_or("the language server stopped")?;
-            if message.get("id") == Some(&Json::number(id)) {
+            if message.get("id") == Some(&id) {
                 return Ok(start.elapsed());
             }
         }
@@ -700,13 +734,7 @@ fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration, Durati
         let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
         let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
         times.push(editor.settled("textDocument/didChange", params)?);
-        let line =
-            text.get(..text.find(EDITED_LINE).unwrap_or(0)).map_or(0, |before| before.matches('\n').count());
-        // At `number`, which the definition is the parameter of.
-        let place = Json::object([("line", Json::number(line)), ("character", Json::number(13))]);
-        let document = Json::object([("uri", Json::string(uri.as_str()))]);
-        let params = Json::object([("textDocument", document), ("position", place)]);
-        definitions.push(editor.answered(100 + run, "textDocument/definition", params)?);
+        definitions.push(editor.answered(&definition_request(&uri, &text, 100 + run))?);
     }
     editor.send(&Json::object([("id", Json::number(2)), ("method", Json::string("shutdown"))]))?;
     editor.send(&Json::object([("method", Json::string("exit"))]))?;
@@ -798,13 +826,26 @@ mod tests {
 
     #[test]
     fn a_session_script_is_framed_messages_ending_in_exit() {
-        let script = super::session_script("file:///a.fen", super::EDITED_LINE, 2).unwrap();
+        let script = super::session_script("file:///a.fen", super::EDITED_LINE, 2, false).unwrap();
         let text = String::from_utf8_lossy(&script);
         assert_eq!(text.matches("Content-Length").count(), 5, "{text}");
         assert!(
             text.contains("didOpen") && text.contains("288 + 2") && text.ends_with("{\"method\":\"exit\"}"),
             "{text}"
         );
+        assert!(!text.contains("definition"), "{text}");
+    }
+
+    #[test]
+    fn a_session_going_to_definitions_asks_after_each_edit() {
+        let script = super::session_script("file:///a.fen", super::EDITED_LINE, 2, true).unwrap();
+        let text = String::from_utf8_lossy(&script);
+        assert_eq!(text.matches("Content-Length").count(), 7, "{text}");
+        let asked: Vec<usize> = text.match_indices("textDocument/definition").map(|(at, _)| at).collect();
+        let edited: Vec<usize> = text.match_indices("didChange").map(|(at, _)| at).collect();
+        assert_eq!(asked.len(), 2, "{text}");
+        assert!(edited.iter().zip(&asked).all(|(edit, ask)| edit < ask), "each after its edit: {text}");
+        assert!(text.contains("\"id\":101") && text.contains("\"id\":102"), "{text}");
     }
 
     #[test]

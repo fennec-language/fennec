@@ -1,0 +1,7 @@
+error: an index must be an int, not a str
+ --> examples/errors/index_by_text.fen:4:24
+  |
+4 |     stdout.print(names[position])
+  |                        ^^^^^^^^
+  |
+  = help: read the text as a number, as `items[int(text)?]`

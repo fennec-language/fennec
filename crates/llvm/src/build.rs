@@ -120,7 +120,7 @@ fn kept_for(huge: &[&Unit]) -> Result<(String, Vec<String>), String> {
 }
 
 /// The functions of `units` too big to optimize, which are compiled as written and run slower,
-/// for a build to say so. Only a module of more than [`SMALLEST_HUGE`] bytes is looked through.
+/// for a build to say so. Only a module of more than `SMALLEST_HUGE` bytes is looked through.
 #[must_use]
 pub fn huge_functions(units: &[Unit]) -> Vec<String> {
     units
@@ -361,7 +361,7 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, way: Way) -> Result<V
 /// with nothing but `main` seen from outside, so LLVM inlines and specializes across the whole
 /// program. Given the runtime's own bitcode, what the program uses of it joins the unit too, so
 /// its calls inline as well. Nothing's cached, as any change changes the whole. A huge function
-/// (see [`HUGE`]) is compiled apart, as written, and what it reaches stays as it calls it.
+/// (see `HUGE`) is compiled apart, as written, and what it reaches stays as it calls it.
 pub fn compile_whole(
     tools: &Tools,
     units: &[Unit],

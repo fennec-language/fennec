@@ -12,7 +12,7 @@ export error IoError:
 
     ## What went wrong, in words.
     def message(self) -> str:
-        match self:
+        return match self:
             case NotFound(reason) | PermissionDenied(reason):
                 reason
             case AlreadyExists(reason) | Other(reason):

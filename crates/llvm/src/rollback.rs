@@ -232,7 +232,7 @@ impl Emit<'_, '_, '_> {
         }
         self.declare("declare i64 @fennec_crash_hold() nounwind");
         self.declare("declare void @fennec_crash_resume(i64) nounwind");
-        self.declare("declare void @fennec_crash_note(i64, ptr) nounwind");
+        self.declare("declare void @fennec_crash_note(i64, i64) nounwind");
         let (held, run, next) = (self.temp(), self.label("crash_cleanup"), self.label("crash_cleaned"));
         self.line(&format!("{held} = load i1, ptr {flag}"));
         self.line(&format!("br i1 {held}, label %{run}, label %{next}"));
@@ -241,7 +241,17 @@ impl Emit<'_, '_, '_> {
         let number = self.temp();
         self.line(&format!("{number} = call i64 @fennec_crash_hold()"));
         self.line("store ptr null, ptr %err");
-        let (said, _) = self.call_closure_unchecked(&closure, &returns, &[]);
+        let (said, failed) = self.call_closure_unchecked(&closure, &returns, &[]);
+        // A cleanup that crashed too, or failed some way it can't, gave back nothing to read: the
+        // runtime says its crash on resuming.
+        let flag_at = self.failure_flag();
+        let (flag, crashed, broke) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{flag} = load i8, ptr {flag_at}"));
+        self.line(&format!("{crashed} = icmp ne i8 {flag}, 0"));
+        self.line(&format!("{broke} = or i1 {failed}, {crashed}"));
+        let (noted, resume) = (self.label("crash_noted"), self.label("crash_resume"));
+        self.line(&format!("br i1 {broke}, label %{resume}, label %{noted}"));
+        self.start_block(&noted);
         let said = if returns.in_memory() {
             let header = self.temp();
             self.line(&format!("{header} = load {}, ptr {said}", self.text_of(&returns)));
@@ -256,7 +266,11 @@ impl Emit<'_, '_, '_> {
         } else {
             said
         };
-        self.line(&format!("call void @fennec_crash_note(i64 {number}, ptr {block})"));
+        let address = self.temp();
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("call void @fennec_crash_note(i64 {number}, i64 {address})"));
+        self.line(&format!("br label %{resume}"));
+        self.start_block(&resume);
         self.line(&format!("call void @fennec_crash_resume(i64 {number})"));
         self.line(&format!("br label %{next}"));
         self.start_block(&next);

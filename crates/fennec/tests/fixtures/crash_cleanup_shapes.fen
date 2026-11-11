@@ -1,6 +1,7 @@
 ## A crash's cleanup that fails in an `else as` block, in a function written inside a case of a
 ## `match`, and through `? from`: the cleanup ends where its own failure passes, said under the
-## crash as a note, while the function's `?` stays its own. Run with the code the block crashes at.
+## crash as a note, while the function's `?` stays its own. At 7 the cleanup crashes too, giving
+## back nothing to note. Run with the code the block crashes at.
 error Refused:
     code: int
 
@@ -15,6 +16,8 @@ def capped(n: int, limit: int) -> int fails Refused:
 def guarded(code: int, stdout: Stdout) -> with int fails Refused | Wrapped:
     lend code else:
         stdout.print("cleanup", code)
+        if code == 7:
+            stdout.print([0, 0][code])
         kept = capped(code, limit=20) else as why:
             fail Wrapped(why=f"{why}")
         stdout.print("kept", kept)

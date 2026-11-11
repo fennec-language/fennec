@@ -4880,8 +4880,9 @@ fn a_crash_runs_a_cleanup_with_a_question_mark_until_one_fails() -> std::io::Res
 
 /// A crash's cleanup whose own failure passes from an `else as` block or through `? from`, with a
 /// function written inside a case of a `match` whose `?` stays its own: each ends the cleanup where
-/// it fails, noted under the crash. A `fail` in such a block, or a function's `?` taken as the
-/// cleanup's, once made the cleanup's rewrite an internal error.
+/// it fails, noted under the crash, and one that crashes too has nothing noted. A `fail` in such a
+/// block, or a function's `?` taken as the cleanup's, once made the cleanup's rewrite an internal
+/// error.
 #[test]
 fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails() -> std::io::Result<()> {
     if !ready() {
@@ -4898,6 +4899,7 @@ fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails()
         ("6", "cleanup 6\nkept 6\ninner -1\nended 6\n", None),
         ("12", "cleanup 12\nkept 12\ninner -1\n", Some("Wrapped(why=\"too big\")")),
         ("4", "cleanup 4\nkept 4\nother\nended 4\n", None),
+        ("7", "cleanup 7\n", None),
     ];
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let args: Vec<&str> = ["build"]
@@ -4916,6 +4918,9 @@ fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails()
             let noted = failed.map(|failure| format!("{crashed}note: the cleanup failed: {failure}\n"));
             assert!(err.contains(noted.as_deref().unwrap_or(&crashed)), "{how:?} {code}: {err}");
             assert_eq!(err.matches("note: ").count(), usize::from(failed.is_some()), "{how:?} {code}: {err}");
+            // A cleanup that crashes too gives back nothing to note, and its crash is said apart.
+            let again = "index 7 is out of range for length 2 (while cleaning up after a crash)";
+            assert_eq!(err.contains(again), code == "7", "{how:?} {code}: {err}");
         }
     }
     std::fs::remove_dir_all(&dir)?;

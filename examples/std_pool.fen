@@ -95,6 +95,17 @@ test "a borrower waits up to wait, then fails"():
             assert problem is not None
             assert problem.message() == "no value came free in 0.02s"
 
+test "a borrower that gave up leaves the value for the next"():
+    shared count = Tally()
+    with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=1)? as links:
+        with links.take()? as _:
+            # Two give up while the only link is held, so neither may keep it once it's back.
+            assert taken_number(links, wait=20ms) fails PoolError.Timeout()
+            assert taken_number(links, wait=Duration(nanos=-1)) fails PoolError.Timeout()
+        assert taken_number(links, wait=5s)? == 1
+        assert taken_number(links, wait=5s)? == 1
+    assert opens(count) == 1
+
 test "a pool that can't open one fails at its with"():
     assert pool_that_cant_open() fails Open(reason="the server's away")
 

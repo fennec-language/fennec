@@ -24,7 +24,7 @@ impl Kept {
     /// What a parse is kept as: the text, and the build that parsed it, since another build may
     /// parse the same text differently. A file's doc examples are part of its parse when they're
     /// wanted, and their tests are named for the file.
-    fn name(&self, text: &str, shown: &str, doc_examples: bool) -> String {
+    fn name(&self, text: &fennec_blake3::Hash, shown: &str, doc_examples: bool) -> String {
         let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec parses 2026-11-10");
         hasher.update(self.build.as_bytes());
         hasher.update(&[0, u8::from(doc_examples)]);
@@ -38,12 +38,12 @@ impl Kept {
 }
 
 impl fennec_kit::Parses for Kept {
-    fn kept(&self, text: &str, shown: &str, doc_examples: bool, base: u32) -> Option<Module> {
+    fn kept(&self, text: &fennec_blake3::Hash, shown: &str, doc_examples: bool, base: u32) -> Option<Module> {
         let bytes = self.cache.read(PARSES, &self.name(text, shown, doc_examples))?;
         Module::decode(&mut Reader::with_spans_at(&bytes, base))
     }
 
-    fn keep(&self, text: &str, shown: &str, doc_examples: bool, base: u32, module: &Module) {
+    fn keep(&self, text: &fennec_blake3::Hash, shown: &str, doc_examples: bool, base: u32, module: &Module) {
         let mut writer = Writer::with_spans_from(base);
         module.encode(&mut writer);
         // A cache that can't be written only means parsing the file again next time.
@@ -84,6 +84,10 @@ mod tests {
 
     use super::Kept;
 
+    fn hashed(text: &str) -> fennec_blake3::Hash {
+        fennec_blake3::hash(text.as_bytes())
+    }
+
     fn kept(dir: &std::path::Path, build: &'static str) -> Kept {
         Kept { cache: fennec_build::Cache::new(dir), build }
     }
@@ -96,17 +100,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let text = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
         let parses = kept(&dir, "build one");
-        assert!(parses.kept(text, "src/maths.fen", false, 0).is_none(), "nothing's kept yet");
-        parses.keep(text, "src/maths.fen", false, 40, &fennec_syntax::parse_at(text, 40).unwrap());
+        assert!(parses.kept(&hashed(text), "src/maths.fen", false, 0).is_none(), "nothing's kept yet");
+        parses.keep(&hashed(text), "src/maths.fen", false, 40, &fennec_syntax::parse_at(text, 40).unwrap());
         for base in [0, 40, 1234] {
-            let found = parses.kept(text, "src/maths.fen", false, base);
+            let found = parses.kept(&hashed(text), "src/maths.fen", false, base);
             assert_eq!(found, Some(fennec_syntax::parse_at(text, base).unwrap()), "at {base}");
         }
         let edited = text.replace("number * 2", "number * 3");
-        assert!(parses.kept(&edited, "src/maths.fen", false, 40).is_none(), "an edited file is parsed again");
-        assert!(parses.kept(text, "src/maths.fen", true, 40).is_none(), "doc examples are another parse");
         assert!(
-            kept(&dir, "build two").kept(text, "src/maths.fen", false, 40).is_none(),
+            parses.kept(&hashed(&edited), "src/maths.fen", false, 40).is_none(),
+            "an edited file is parsed again"
+        );
+        assert!(
+            parses.kept(&hashed(text), "src/maths.fen", true, 40).is_none(),
+            "doc examples are another parse"
+        );
+        assert!(
+            kept(&dir, "build two").kept(&hashed(text), "src/maths.fen", false, 40).is_none(),
             "another build parses again"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -146,8 +156,8 @@ mod tests {
             let text = std::fs::read_to_string(file).unwrap();
             for doc_examples in [false, true] {
                 let Some(module) = parse(&text, 3, doc_examples) else { continue };
-                parses.keep(&text, "src/example.fen", doc_examples, 3, &module);
-                let read = parses.kept(&text, "src/example.fen", doc_examples, 90_001);
+                parses.keep(&hashed(&text), "src/example.fen", doc_examples, 3, &module);
+                let read = parses.kept(&hashed(&text), "src/example.fen", doc_examples, 90_001);
                 assert_eq!(read, parse(&text, 90_001, doc_examples), "{}", file.display());
                 compared += 1;
             }

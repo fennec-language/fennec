@@ -442,7 +442,8 @@ impl FnCx<'_> {
             if path && *expected == Type::Str {
                 let message =
                     format!("`{name}` takes a path, as a str or a `Path`, but this is {}", a(actual));
-                self.error(Diagnostic::new(message, *at));
+                let help = "pass the path as text, as `\"data/scores.txt\"`, or a `Path`";
+                self.error(Diagnostic::new(message, *at).with_help(help));
                 continue;
             }
             let expected = self.checker.settled(expected);
@@ -466,6 +467,17 @@ impl FnCx<'_> {
         method.returns
     }
 
+    /// `{name}(other=...)`, where `name` takes only `named` by name.
+    fn no_parameter(&mut self, name: &str, other: &str, named: &[&str], at: Span) {
+        let help = if named.is_empty() {
+            format!("take `{other}=` off: `{name}` takes nothing by name")
+        } else {
+            named_help(other, named, &format!("take `{other}=` off: `{name}` takes "))
+        };
+        let message = format!("`{name}` has no parameter called `{other}`");
+        self.error(Diagnostic::new(message, at).with_help(help));
+    }
+
     /// Checks a builtin's arguments: none is `mut`, and only those in `named` may be named.
     /// Returns the plain arguments' types and where they are.
     fn builtin_args(
@@ -482,7 +494,8 @@ impl FnCx<'_> {
             let ty = self.arg_value(arg, receives);
             match arg.name.as_deref() {
                 Some("key") if !named.contains(&"key") => {
-                    self.error(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
+                    let message = format!("`{name}` doesn't take `key`");
+                    self.error(Diagnostic::new(message, span).with_help("take `key=` off"));
                 }
                 Some("key") => {}
                 Some("start") if named.contains(&"start") => start = Some((ty, arg.value.span)),
@@ -544,10 +557,7 @@ impl FnCx<'_> {
                 Some(option @ ("names" | "extra")) if named.contains(&option) => {
                     self.json_option(option, &ty, arg.value.span);
                 }
-                Some(other) => self.error(Diagnostic::new(
-                    format!("`{name}` has no parameter called `{other}`"),
-                    arg.value.span,
-                )),
+                Some(other) => self.no_parameter(name, other, named, arg.value.span),
                 None => plain.push((ty, arg.value.span)),
             }
         }
@@ -671,7 +681,10 @@ impl FnCx<'_> {
         if written < least || written > most {
             let ty = Type::Sized(num);
             let message = format!("{written} doesn't fit in {ty}");
-            let help = format!("{} holds {least} to {most}", a(&ty));
+            let help = format!(
+                "{} holds {least} to {most}: write one in that range, or use a wider type, as `int`",
+                a(&ty)
+            );
             self.error(Diagnostic::new(message, value.span).with_help(help));
         }
     }
@@ -721,7 +734,10 @@ impl FnCx<'_> {
             }
             "range" => {
                 if !types.iter().all(|ty| self.checker.fits(&Type::Int, ty)) {
-                    self.error(Diagnostic::new("`range` takes one to three ints", span));
+                    self.error(
+                        Diagnostic::new("`range` takes one to three ints", span)
+                            .with_help("give it ints, as `range(10)`, `range(2, 10)` or `range(0, 10, 2)`"),
+                    );
                 }
                 Type::list(Type::Int)
             }
@@ -741,7 +757,13 @@ impl FnCx<'_> {
                     Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
                 ) {
                     let message = format!("`{name}` converts a number or text, not {}", a(&first));
-                    self.error(Diagnostic::new(message, at));
+                    let help = match self.checker.settled(&first) {
+                        Type::List(_) | Type::Set(_) => {
+                            format!("convert each item, as `[{name}(item) for item in items]`")
+                        }
+                        _ => format!("pass a number or text, as `{name}(\"42\")`"),
+                    };
+                    self.error(Diagnostic::new(message, at).with_help(help));
                 }
                 let number = if name == "int" { Type::Int } else { Type::Float };
                 // Text might not be a number, so reading one can fail.
@@ -763,7 +785,12 @@ impl FnCx<'_> {
         if num.is_float() {
             if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
                 let message = format!("`{name}(...)` converts a number, not {}", a(first));
-                self.error(Diagnostic::new(message, at));
+                let help = if *first == Type::Str {
+                    format!("read the text as a number first, as `{name}(float(text)?)`")
+                } else {
+                    format!("pass a number, as `{name}(1.5)`")
+                };
+                self.error(Diagnostic::new(message, at).with_help(help));
             }
             return Type::Sized(num);
         }
@@ -790,7 +817,12 @@ impl FnCx<'_> {
         let digits = types.get(1).is_none_or(|digits| self.checker.fits(&Type::Int, digits));
         if !number || !digits {
             let message = format!("`{name}` takes a number, but this is {}", a(&first));
-            self.error(Diagnostic::new(message, span));
+            let help = if first == Type::Str {
+                format!("read the text as a number first, as `{name}(float(text)?)`")
+            } else {
+                format!("pass a number, as `{name}(2.5)`")
+            };
+            self.error(Diagnostic::new(message, span).with_help(help));
             return Type::Unknown;
         }
         match name {
@@ -903,7 +935,8 @@ impl FnCx<'_> {
         let Some(type_name) = ty.type_name() else {
             if ty.is_known() {
                 let message = format!("`copy` with fields copies a struct, but this is {}", a(ty));
-                self.error(Diagnostic::new(message, span));
+                let help = "write the new value itself, as `count = 5`: `copy` with fields is for structs, as `copy(point, x=1)`";
+                self.error(Diagnostic::new(message, span).with_help(help));
             }
             return ty.clone();
         };
@@ -919,10 +952,18 @@ impl FnCx<'_> {
                 .type_info(type_name)
                 .is_some_and(|info| info.def.fields.iter().any(|field| &field.name == name));
             if !has_field {
-                self.error(Diagnostic::new(
-                    format!("`{type_name}` has no field called `{name}`"),
-                    arg.value.span,
-                ));
+                let fields: Vec<String> = self
+                    .checker
+                    .program
+                    .type_info(type_name)
+                    .map(|info| info.def.fields.iter().map(|field| field.name.clone()).collect())
+                    .unwrap_or_default();
+                let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+                let help = named_help(name, &fields, "change one of its fields: ");
+                self.error(
+                    Diagnostic::new(format!("`{type_name}` has no field called `{name}`"), arg.value.span)
+                        .with_help(help),
+                );
                 continue;
             }
             let expected = self
@@ -953,4 +994,14 @@ fn peek_item(ty: &Type) -> Type {
         Type::Bytes => Type::Int,
         _ => Type::Unknown,
     }
+}
+
+/// The help for `given=` where only `options` can be given by name: the one it's spelled most
+/// like, or `otherwise` and then each of them.
+fn named_help(given: &str, options: &[&str], otherwise: &str) -> String {
+    if let Some(similar) = crate::messages::spelled_most_like(given, options.iter().copied()) {
+        return format!("did you mean `{similar}=`?");
+    }
+    let shown: Vec<String> = options.iter().map(|option| format!("`{option}=`")).collect();
+    format!("{otherwise}{}", shown.join(", "))
 }

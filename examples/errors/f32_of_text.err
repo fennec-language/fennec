@@ -1,0 +1,7 @@
+error: `f32(...)` converts a number, not a str
+ --> examples/errors/f32_of_text.fen:2:17
+  |
+2 |     speed = f32("1.5")
+  |                 ^^^^^
+  |
+  = help: read the text as a number first, as `f32(float(text)?)`

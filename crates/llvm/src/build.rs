@@ -345,16 +345,28 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, way: Way) -> Result<V
     } else {
         &input
     };
-    let level = if way == Way::Quickly { "-O0" } else { "-O3" };
     run(
         Command::new(&tools.llc)
-            .args([level, "-filetype=obj", "-relocation-model=pic"])
+            .args(llc_levels(way))
+            .args(["-filetype=obj", "-relocation-model=pic"])
             .arg(compiled_from)
             .arg("-o")
             .arg(&output),
         "llc",
     )?;
     std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
+}
+
+/// How hard `llc` works on a module compiled `way`. A huge function is compiled at `-O0`, but
+/// through the same instruction selection as `-O3` rather than the fast one. On x86-64 the fast
+/// one folds the load of a call's error into a compare against memory, and that compare reads
+/// the error pointer the function was given, not the error the call left in `r12`. So every
+/// failure check read address zero, and the program crashed.
+fn llc_levels(way: Way) -> &'static [&'static str] {
+    match way {
+        Way::Quickly => &["-O0", "-fast-isel=false"],
+        Way::Optimized | Way::AsWritten => &["-O3"],
+    }
 }
 
 /// For a release: every function's module and `entry` linked into one, optimized as a whole,
@@ -613,6 +625,50 @@ mod tests {
         assert!(module.contains("@llvm.used = appending global ["), "{module}");
         assert!(!module.contains("f_at_or_zero"), "a copy is only named: {module}");
         assert!(!module.lines().any(|line| line.starts_with("declare") && line.contains(" #")), "{module}");
+        Ok(())
+    }
+
+    /// A huge function compiled for x86-64 checks each call's error in `r12`, where the call left
+    /// it. The fast instruction selection compared memory at the error pointer the function was
+    /// given instead, which crashed. This builds the assembly, so it runs on any machine.
+    #[test]
+    fn a_huge_function_checks_errors_where_calls_leave_them_on_x86_64() -> Result<(), String> {
+        let Ok(tools) = Tools::find() else {
+            return Ok(());
+        };
+        let units = units(&long_program(400))?;
+        let unit = units.iter().find(|unit| huge(&unit.text)).ok_or("no huge function")?;
+        let header = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n";
+        let body: String = unit.text.lines().filter(|line| !line.starts_with("target ")).fold(
+            String::new(),
+            |mut text, line| {
+                text.push_str(line);
+                text.push('\n');
+                text
+            },
+        );
+        let work = std::env::temp_dir().join(format!("fennec-x86-errors-{}", std::process::id()));
+        std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
+        let (input, output) = (work.join("long.ll"), work.join("long.s"));
+        std::fs::write(&input, format!("{header}{body}")).map_err(|err| err.to_string())?;
+        let done = Command::new(&tools.llc)
+            .args(llc_levels(Way::Quickly))
+            .args(["-filetype=asm", "-relocation-model=pic"])
+            .arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .output()
+            .map_err(|err| err.to_string());
+        let assembly = std::fs::read_to_string(&output).map_err(|err| err.to_string());
+        let _ = std::fs::remove_dir_all(&work);
+        let done = done?;
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        let assembly = assembly?;
+        let calls =
+            assembly.lines().filter(|line| line.contains("call") && line.contains("f_at_or_zero")).count();
+        let checks = assembly.lines().filter(|line| line.trim() == "testq\t%r12, %r12").count();
+        assert_eq!(calls, 400, "a call a line");
+        assert!(checks >= calls, "{checks} checks of r12 for {calls} calls");
         Ok(())
     }
 }

@@ -7591,6 +7591,59 @@ def main(stdout: Stdout):
     )
 }
 
+/// A closure that captures a struct holding blocks lets go of them when it's let go of: an arrow
+/// reading a struct's list, and the `else:` a `with` source's crash runs, which captures a `ref`
+/// argument. Each round left the struct's blocks behind.
+#[test]
+fn a_closure_lets_go_of_a_struct_it_captured() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let live = |rounds: u32| -> std::io::Result<(Option<u64>, String)> {
+        let source = STRUCT_CAPTURED.replace("rounds = 3", &format!("rounds = {rounds}"));
+        let counts = counts_of(&format!("struct_captured_{rounds}"), &source)?;
+        let printed = printed_by(&format!("struct_captured_printed_{rounds}"), &source)?;
+        Ok((count(&counts, "live"), printed))
+    };
+    let (few, many) = (live(3)?, live(30)?);
+    assert_eq!(few.1, "129 3\n");
+    assert_eq!(many.1, "1310 30\n");
+    assert!(few.0.is_some(), "the run says how many blocks it still held");
+    assert_eq!(few.0, many.0, "blocks still held after 3 rounds and after 30");
+    Ok(())
+}
+
+const STRUCT_CAPTURED: &str = r#"struct Bag:
+    items: list[str]
+
+struct Ledger:
+    lines = list[str]()
+
+def apply(run: () -> int) -> int:
+    run()
+
+def entry(ref ledger: Ledger) -> with str:
+    lend "x" else:
+        ledger.lines.append("undo")
+
+def once() -> int:
+    mut ledger = Ledger()
+    ledger.lines.append("first line, long enough for a block of its own")
+    with entry(ref ledger) as label:
+        assert label == "x"
+    ledger.lines.len()
+
+def main(stdout: Stdout):
+    rounds = 3
+    mut total = 0
+    mut lines = 0
+    for round in range(rounds):
+        bag = Bag(items=[f"item {round}, long enough for a block of its own"])
+        total += apply(() => bag.items.len() + bag.items[0].len())
+        lines += once()
+    stdout.print(total, lines)
+"#;
+
 /// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
 /// out as the interpreter gives them: appended, read in a loop and by index, shared by a copy of
 /// the list, popped, replaced, and captured by a generator that calls one. Natively a list of

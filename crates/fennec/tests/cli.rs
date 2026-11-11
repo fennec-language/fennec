@@ -2053,7 +2053,7 @@ def main(stdout: Stdout):
     stdout.print(unsaid() else \"failed\")
 ";
 
-/// What `CASES_AFTER` prints, as the interpreter printed it.
+/// What `CASES_AFTER` prints, as pinned.
 const CASES_PRINTED: &str = "green 1\nred red True red 1 False\nred True\nclosed\nfailed\n";
 
 /// What `fennec fix` makes of `CASES_BEFORE`: a dot wherever the type is known, and nothing where
@@ -2117,7 +2117,7 @@ def main(stdout: Stdout):
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
-/// `.Case` there, which runs as the interpreter ran it.
+/// `.Case` there, which runs and prints what it should.
 #[test]
 fn fix_writes_leading_dots_where_the_type_is_known() {
     let dir = fennec_temp::Temp::at(

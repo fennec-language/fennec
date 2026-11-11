@@ -12,8 +12,7 @@ use crate::kinds::Kind;
 use crate::lists::FIELDS_OFFSET;
 
 impl Emit<'_, '_, '_> {
-    /// A method of `Clock` or `Args`, which the runtime does without the interpreter. Says
-    /// whether `name` is one.
+    /// A method of `Clock` or `Args`, which the runtime does. Says whether `name` is one.
     fn native_capability(
         &mut self,
         dest: Option<LocalId>,
@@ -207,7 +206,7 @@ impl Emit<'_, '_, '_> {
         self.take_what_crossed(dest, &handle, (&mark, crossed), span)
     }
 
-    /// One of `std.crypto`'s functions, which the runtime runs with no interpreter.
+    /// One of `std.crypto`'s functions, which the runtime runs.
     pub(crate) fn crypto_call(
         &mut self,
         dest: Option<LocalId>,

@@ -1,5 +1,5 @@
 //! The runtime library compiled executables link against: every function their code
-//! calls, exported under the name it calls it by. It has no interpreter in it. `fennec build`
+//! calls, exported under the name it calls it by. `fennec build`
 //! links an executable's object file with this library and the system's C libraries.
 //!
 //! The functions are `fennec_rt::embed`'s; this crate only gives them names a linker

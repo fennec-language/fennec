@@ -1429,7 +1429,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// As [`Self::leave_if`], after a call from the program into the standard library: a failure
-    /// inside it is said to be here, where the program called it, as the interpreter says it.
+    /// inside it is said to be here, where the program called it.
     fn leave_pointing_here(&mut self, failed: &str, span: Span) {
         let (here, ok) = (self.label("from_std"), self.label("ok"));
         self.needs_prop = true;
@@ -2608,7 +2608,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = select i1 {negative}, i64 {flipped}, i64 {value}"));
                 self.assign(dest.ok_or("no result")?, &temp)
             }
-            // A capability's method, run by the runtime as the interpreter runs it.
+            // A capability's method, run by the runtime.
             other
                 if other.contains('.')
                     && matches!(first, Some(Operand::Local(local)) if self.kind_of(*local).ok() == Some(&Kind::Cap)) =>
@@ -3324,7 +3324,7 @@ mod tests {
     }
 
     #[test]
-    fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
+    fn arguments_and_the_clock_are_native_calls() -> Result<(), String> {
         let source = "\
 from std.time import Clock, Duration
 

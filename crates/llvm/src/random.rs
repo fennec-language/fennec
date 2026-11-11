@@ -1,4 +1,4 @@
-//! std's random numbers, drawn by position as the interpreter draws them: `SplitMix64` gives a
+//! std's random numbers, drawn by position: `SplitMix64` gives a
 //! seed's `n`th number, and Lemire's method narrows it to a range without bias.
 
 use fennec_ir::{LocalId, Operand};
@@ -133,8 +133,7 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &block)
     }
 
-    /// "can't pick a number from LOW to HIGH: `low` is bigger than `high`", as the interpreter
-    /// says it.
+    /// "can't pick a number from LOW to HIGH: `low` is bigger than `high`".
     fn pick_message(&mut self, low: &str, high: &str) -> String {
         self.declare("declare ptr @fennec_int_text(i64) nounwind");
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");

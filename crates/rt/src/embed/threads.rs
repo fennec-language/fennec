@@ -19,6 +19,7 @@
 //! applies those changes (`settle`), freeing what they took the last owner from.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 #[cfg(any(test, feature = "threads"))]
 use std::sync::Arc;
 #[cfg(any(test, feature = "threads"))]
@@ -142,9 +143,30 @@ pub fn index() -> u16 {
     INDEX.get()
 }
 
-/// Gives this thread a number of its own, for a worker before its runtime starts.
+/// The last number a thread can take: those above it mark blocks that are never freed, a `shared`
+/// value's own block, and blocks in a `shared` value's table, and 0 is the main thread's.
+const LAST_INDEX: u16 = 0xFFFC;
+
+/// The next number from `next`, or `None` once they're all taken: it never comes round again to
+/// 0 or to the numbers that mark blocks.
+fn next_index(next: &AtomicU16) -> Option<u16> {
+    next.try_update(Ordering::Relaxed, Ordering::Relaxed, |index| (index <= LAST_INDEX).then(|| index + 1))
+        .ok()
+}
+
+/// Gives this thread a number of its own, for a worker before its runtime starts. A process
+/// starts a worker once for each of its pool's threads, so running out is a bug in Fennec, and the
+/// program stops rather than give two threads one number.
 pub fn take_index() -> u16 {
-    let index = NEXT.fetch_add(1, Ordering::Relaxed);
+    let Some(index) = next_index(&NEXT) else {
+        super::write_kept_output();
+        let _ = writeln!(
+            std::io::stderr(),
+            "error: more than {LAST_INDEX} threads asked for a number of their own\n  \
+             = help: this is a bug in Fennec; please report it"
+        );
+        super::aot::stop_now(1)
+    };
     INDEX.set(index);
     index
 }
@@ -642,6 +664,24 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// Thread numbers run out rather than come round again to 0 or to the numbers that mark
+    /// blocks: the last one taken is the last before those.
+    #[test]
+    fn thread_numbers_stop_before_the_ones_that_mark_blocks() {
+        use std::sync::atomic::AtomicU16;
+        let next = AtomicU16::new(super::LAST_INDEX - 1);
+        assert_eq!(super::next_index(&next), Some(super::LAST_INDEX - 1));
+        assert_eq!(super::next_index(&next), Some(super::LAST_INDEX));
+        assert_eq!(super::next_index(&next), None);
+        assert_eq!(super::next_index(&next), None);
+        let reserved = [
+            heap::NEVER_FREED_OWNER,
+            super::super::guarded::HANDLE_OWNER,
+            super::super::guarded::GUARDED_OWNER,
+        ];
+        assert!(reserved.iter().all(|owner| *owner > u64::from(super::LAST_INDEX)));
     }
 
     /// A run that ends while another thread still counts one of its blocks leaves nothing behind

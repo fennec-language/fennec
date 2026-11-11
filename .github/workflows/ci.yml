@@ -186,6 +186,12 @@ jobs:
       - name: Run the LLVM tests
         if: matrix.part == 'llvm'
         run: cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'
+      # Every test removes what it makes in the temporary folder, passing or failing, so a run
+      # leaves no `fennec-*` folder there.
+      - name: Check the tests left nothing in the temporary folder
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: .github/scripts/temp-left.sh
       # Which tests passed. A pull request reads its own results, then the shared ones, and
       # keeps its own apart: GitHub never shows one pull request's cache to another run, so
       # none can plant a false pass. Only a full run on main writes the shared results.

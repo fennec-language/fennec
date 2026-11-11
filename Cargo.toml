@@ -107,6 +107,7 @@ fennec-deps = { path = "crates/deps" }
 fennec-dist = { path = "crates/dist" }
 fennec-launcher = { path = "crates/launcher" }
 fennec-count = { path = "crates/count" }
+fennec-temp = { path = "crates/temp" }
 fennec-fmt = { path = "crates/fmt" }
 fennec-fuzz = { path = "crates/fuzz" }
 fennec-ir = { path = "crates/ir" }

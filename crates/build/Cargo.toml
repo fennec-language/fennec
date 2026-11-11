@@ -19,7 +19,11 @@ fennec-blake3.workspace = true
 
 [dependencies]
 fennec-blake3.workspace = true
+fennec-rt.workspace = true
 fennec-syntax.workspace = true
+
+[dev-dependencies]
+fennec-temp.workspace = true
 
 [lints]
 workspace = true

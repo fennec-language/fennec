@@ -16,6 +16,7 @@ rustls.workspace = true
 rustls-platform-verifier.workspace = true
 
 [dev-dependencies]
+fennec-temp.workspace = true
 # Signing the releases the tests make, with keys made for them.
 ring = { workspace = true, features = ["alloc"] }
 

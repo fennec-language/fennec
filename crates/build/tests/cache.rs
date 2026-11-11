@@ -1,14 +1,16 @@
 //! The cache: entries written whole, reads marking use, and cleanup's order and lock.
 
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use fennec_build::{Cache, Cleanup, FOLDER};
 
 /// A fresh Fennec folder for one test.
-fn home(name: &str) -> std::io::Result<PathBuf> {
-    let home = std::env::temp_dir().join(format!("fennec-cache-{name}-{}", std::process::id()));
+fn home(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let home = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cache-{name}-{}", std::process::id())),
+    );
     if home.exists() {
         std::fs::remove_dir_all(&home)?;
     }

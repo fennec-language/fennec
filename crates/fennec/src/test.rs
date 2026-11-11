@@ -82,8 +82,9 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
     if !texts.iter().any(|(_, text)| text.contains("test \"")) {
         return None;
     }
-    let files = || texts.iter().map(|(path, text)| (path.as_str(), text.as_str()));
-    let passed = crate::run::fingerprint(files());
+    let passed = crate::run::fingerprint(
+        texts.iter().map(|(path, text)| (path.as_str(), fennec_blake3::hash(text.as_bytes()))),
+    );
     let cache = crate::run::cache();
     let name = crate::run::passed_name(path);
     if let Some(cache) = &cache

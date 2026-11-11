@@ -13,6 +13,7 @@ fennec-blake3.workspace = true
 ring.workspace = true
 
 [dev-dependencies]
+fennec-temp.workspace = true
 # Making a hardware key's signatures for the tests, which takes generating a key.
 ring = { workspace = true, features = ["alloc"] }
 

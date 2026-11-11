@@ -57,7 +57,7 @@ fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Di
         }
         (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => {
             Err(Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
-                .with_help("convert one side with float(...) or int(...)"))
+                .with_help("convert one side with `float(...)` or `int(...)`"))
         }
         (lhs, rhs) => Err(Diagnostic::new(
             format!("can't use `{}` on a {} and a {}", op.symbol(), lhs.type_name(), rhs.type_name()),

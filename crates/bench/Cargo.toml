@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 fennec-blake3.workspace = true
 fennec-count.workspace = true
+fennec-temp.workspace = true
 fennec-lsp.workspace = true
 
 [lints]

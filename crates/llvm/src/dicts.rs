@@ -1426,8 +1426,8 @@ found:
         Ok(())
     }
 
-    /// `dict.pop(key)`: the runtime takes the key out, failing as the interpreter does if it
-    /// isn't there, and hands back its value with its owner.
+    /// `dict.pop(key)`: the runtime takes the key out, failing if it isn't there, and hands back
+    /// its value with its owner.
     /// `dict.clear()` or `set.clear()`: the runtime takes over the owner and gives back an empty
     /// one's.
     pub(crate) fn dict_clear(&mut self, dict: LocalId) {

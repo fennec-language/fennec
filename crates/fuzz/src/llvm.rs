@@ -257,8 +257,8 @@ fn outcome(source: &str, work: &Path, release: bool) -> Result<Option<Outcome>, 
 
 /// The folders of inputs the `llvm` target has outputs pinned for, beside each input: what it
 /// printed in `<input>.out`, and when it failed, the first line it said in `<input>.fails`. They
-/// were written while the interpreter could say what each program does.
-const PINNED: [&str; 2] = ["seeds/jit", "found/llvm"];
+/// were pinned before the engines were removed.
+const PINNED: [&str; 2] = ["seeds/llvm", "found/llvm"];
 
 /// Whether a file is a pinned output rather than an input.
 pub(crate) fn is_pinned_output(path: &Path) -> bool {

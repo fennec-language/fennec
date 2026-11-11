@@ -124,7 +124,7 @@ fn a_list_of_tuples_reads_back_as_tuples() {
 }
 
 #[test]
-fn strings_have_the_interpreter_s_methods() {
+fn strings_have_their_methods() {
     let str = Rc::new(Element::Str);
     let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
     start(tables, crate::Inputs::default());

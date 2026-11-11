@@ -15843,6 +15843,22 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// `in` and `not in` on a list or set written out of constants, strings or ints, which only that
+/// test reads, compare with each constant and make nothing, giving what a made one would.
+#[test]
+fn looking_in_constants_written_out_gives_what_a_made_collection_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_constants",
+        include_str!("fixtures/in_constants.fen"),
+        "def True False\nde False False\ndeff False False\n True False\n\
+         a keyword much longer than eight bytes True False\na keyword much longer than eight bytes! False False\n\
+         else True False\nreturn True False\n-> True\n= False\n<= True\n>=> False\n[0, 1, 4, 6, 8, 9, 10, 12, 14]\n",
+    )
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, as the interpreter pinned
 /// it. The JIT's `==` and keys never followed it.

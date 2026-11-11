@@ -2984,6 +2984,10 @@ impl Emit<'_, '_, '_> {
                 && !leaned_on.contains(&at)
                 && !self.on_crash.contains(&at)
                 && !self.saving.contains(&at)
+                && self
+                    .kinds
+                    .get(at)
+                    .is_some_and(|kind| crate::dying::lets_go_quietly(self.module.layouts, kind))
         };
         crate::dying::dying(function, &eligible)
     }

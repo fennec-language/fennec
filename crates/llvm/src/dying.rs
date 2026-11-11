@@ -6,12 +6,18 @@
 //! Only a local nothing else stands for is let go of this way: not one something borrows from,
 //! takes from, or reads in its place, nor a lock's handle or a crash's cleanup, which a crash reads
 //! where nothing here says so, nor anything in a generator, whose locals live across a pause.
+//!
+//! Nor is a value whose letting go runs code: a generator or a closure, whose cleanup may print or
+//! fail, or anything holding one, or something the runtime holds for it. Those go when the
+//! function leaves, as written, so what their cleanup does comes after the code before it.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use fennec_ir::{Function, InstKind, LocalId, Operand, Terminator};
+use fennec_layout::{Layouts, Ty, Word};
 
 use crate::analysis::visit;
+use crate::kinds::Kind;
 
 /// The locals let go of after each instruction, by its block and place in it.
 pub(crate) type Dying = HashMap<(usize, usize), Vec<LocalId>>;
@@ -114,4 +120,42 @@ pub(crate) fn dying(function: &Function, eligible: &dyn Fn(usize) -> bool) -> Dy
 /// What's live as `block` ends: what any block after it reads before writing.
 fn live_out(block: &fennec_ir::Block, live_in: &[BTreeSet<usize>]) -> BTreeSet<usize> {
     block.end.targets().iter().filter_map(|next| live_in.get(next.0)).flatten().copied().collect()
+}
+
+/// Whether letting go of a value of `kind` only frees memory: it holds no generator or closure,
+/// whose cleanup runs code, and nothing the runtime holds for it.
+pub(crate) fn lets_go_quietly(layouts: &Layouts, kind: &Kind) -> bool {
+    let ty = match kind {
+        Kind::Gen | Kind::Closure(..) => return false,
+        Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id) => Ty::Struct(*id),
+        Kind::List(item) => Ty::List(*item),
+        Kind::Dict(key, value) => Ty::Dict(*key, *value),
+        Kind::Maybe(inner) => return lets_go_quietly(layouts, inner),
+        _ => return true,
+    };
+    quiet(layouts, ty, &mut HashSet::new())
+}
+
+/// [`lets_go_quietly`] for a layout's type, `seen` the layouts already looked through.
+fn quiet(layouts: &Layouts, ty: Ty, seen: &mut HashSet<u32>) -> bool {
+    match ty {
+        Ty::Gen | Ty::Obj => false,
+        Ty::Struct(id) | Ty::Boxed(id) => {
+            if !seen.insert(id) {
+                return true;
+            }
+            let Some(layout) = layouts.get(id) else { return false };
+            let cases = layout.cases.iter().flatten().flat_map(|case| &case.fields);
+            layout.fields.iter().chain(cases).all(|field| quiet(layouts, field.ty, seen))
+        }
+        Ty::List(item) => quiet(layouts, item.ty(), seen),
+        Ty::Maybe(block) => quiet(layouts, block.ty(), seen),
+        Ty::Block(number) => layouts.block(number).is_some_and(|held| quiet(layouts, held, seen)),
+        Ty::Dict(key, value) => [key, value].into_iter().all(|word| match word {
+            Word::Plain(id) => quiet(layouts, Ty::Struct(id), seen),
+            Word::Block(number) => quiet(layouts, Ty::Block(number), seen),
+            _ => true,
+        }),
+        _ => true,
+    }
 }

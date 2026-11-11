@@ -123,8 +123,10 @@ jobs:
             part: llvm
     runs-on: ${{ matrix.os }}
     # Windows' tests took 20 minutes in one job, and a build with no cache there takes 10 more. A
-    # job that runs out of time saves no cache, so the limit leaves room for a cold one.
-    timeout-minutes: 35
+    # job that runs out of time saves no cache, so the limit leaves room for a cold one. On
+    # 2026-11-11 Linux and macOS ran out at 35: their tests took 20 to 30 minutes, and the examples
+    # 6 more. The limit is half again what a warm job takes, so one slow runner doesn't fail it.
+    timeout-minutes: 50
     # Everything runs through LLVM, so its tests have to run on every platform: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.

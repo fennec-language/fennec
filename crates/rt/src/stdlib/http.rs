@@ -254,7 +254,13 @@ fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream,
             return Err(Failure::TimedOut(timeout));
         }
         match TcpStream::connect_timeout(&address, left) {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                // A request is its head and then its body, two writes. Each goes out at once,
+                // rather than the body waiting for the head to be acknowledged, which a server
+                // may delay by up to 40 ms. If it can't be set, the request is only slower.
+                let _ = stream.set_nodelay(true);
+                return Ok(stream);
+            }
             Err(error) => {
                 failure = match error.kind() {
                     ErrorKind::ConnectionRefused => Failure::Refused(url.host.clone(), i64::from(url.port)),

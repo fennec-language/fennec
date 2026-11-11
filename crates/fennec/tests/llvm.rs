@@ -1717,6 +1717,40 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     )
 }
 
+/// Writes under a lock that nothing after them can undo go unsaved, and the rest are saved: kept,
+/// put back by a failure, or by a crash in a launched task, every value is right. Built checking
+/// proofs, which stop at a rollback after a write left unsaved.
+#[test]
+fn a_write_nothing_after_can_undo_goes_unsaved_and_the_rest_go_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_unsaved_writes")?;
+        let (program, executable) = (dir.join("unsaved.fen"), dir.join("unsaved"));
+        std::fs::write(&program, include_str!("fixtures/workers/lock_unsaved_writes.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            include_str!("fixtures/workers/lock_unsaved_writes.out"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Locks taken alone begin and end in native code, with no log; two taken together, a save the
 /// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
 /// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.

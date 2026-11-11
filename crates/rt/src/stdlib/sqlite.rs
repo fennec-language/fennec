@@ -32,6 +32,9 @@ mod real {
     use std::time::{Duration, Instant};
 
     use fennec_syntax::{Diagnostic, Span};
+    use rusqlite::config::DbConfig;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use rusqlite::limits::Limit;
     use rusqlite::types::{Value as Cell, ValueRef};
     use rusqlite::{Connection, ErrorCode, OpenFlags};
 
@@ -151,7 +154,8 @@ mod real {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
         let (Place::File(path) | Place::Test(path)) = place;
-        let conn = Connection::open_with_flags(path, flags)?;
+        let mut conn = Connection::open_with_flags(path, flags)?;
+        kept_to_its_file(&mut conn)?;
         // Readers go on while a writer writes, and a commit is on the disk before it's done,
         // as SQLite's default `synchronous=FULL` has it.
         let _: String = conn.query_row("pragma journal_mode=wal", [], |row| row.get(0))?;
@@ -162,6 +166,33 @@ mod real {
         }
         conn.busy_timeout(Duration::ZERO)?;
         Ok(conn)
+    }
+
+    /// The pragmas `std.sqlite` itself runs, the only ones a connection takes.
+    const OWN_PRAGMAS: [&str; 2] = ["journal_mode", "synchronous"];
+
+    /// Keeps a connection to its own file. A query's text is the program's, so without this it
+    /// could `ATTACH` any file the process can open, write a copy of the database anywhere with
+    /// `VACUUM INTO`, or move SQLite's temporary files with a pragma, reaching past the `Fs` it
+    /// was opened through. So no database with a file may be attached, a pragma runs only if it's one of
+    /// `std.sqlite`'s own, and SQLite's defensive mode is on, with the schema not trusted to
+    /// call functions or views that could do the same.
+    fn kept_to_its_file(conn: &mut Connection) -> rusqlite::Result<()> {
+        // One, for the database of no file a plain `VACUUM` attaches while it works. The
+        // authorizer below refuses any that names a file.
+        conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+        conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            // A plain `VACUUM` attaches a database of no file, which reaches nothing; one with
+            // a file, as `ATTACH` or `VACUUM INTO` gives, could reach any.
+            AuthAction::Attach { filename: "" } => Authorization::Allow,
+            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+            AuthAction::Pragma { pragma_name, .. } if !OWN_PRAGMAS.contains(&pragma_name) => {
+                Authorization::Deny
+            }
+            _ => Authorization::Allow,
+        }))
     }
 
     fn open(place: Place) -> Result<i64, String> {

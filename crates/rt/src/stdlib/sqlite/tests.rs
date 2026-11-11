@@ -112,3 +112,37 @@ fn a_tests_databases_left_open_are_closed_and_gone_when_it_ends() -> Result<(), 
     assert!(after.contains("was closed"), "{after}");
     Ok(())
 }
+
+/// A `Database` reaches only its own file. A query's text is the program's, so without a guard
+/// it could `ATTACH` any file the process can open, write a copy of itself anywhere with
+/// `VACUUM INTO`, or move SQLite's temporary files with a pragma: each fails with `SqlError`,
+/// and no file appears. The database itself still works, its own pragmas included.
+#[test]
+fn a_database_cant_attach_or_vacuum_into_another_file() -> Result<(), String> {
+    let folder = std::env::temp_dir().join(format!("fennec-sqlite-reach-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+    let file = |name: &str| folder.join(name).to_string_lossy().into_owned();
+    let db = handle_of(&super::open_file(&file("own.db")))?;
+    assert_eq!(run(db, "_execute", &query("create table notes (n integer)", &[], &[]))?, "Ok(0)");
+    assert_eq!(run(db, "_execute", &query("insert into notes values (?)", &[7], &[]))?, "Ok(1)");
+    let attach = format!("attach database '{}' as other", file("other.db"));
+    let vacuum = format!("vacuum into '{}'", file("copy.db"));
+    let temp = format!("pragma temp_store_directory = '{}'", folder.display());
+    let second = format!("attach database '{}' as second", file("own.db"));
+    for text in
+        [attach.as_str(), second.as_str(), vacuum.as_str(), temp.as_str(), "pragma writable_schema = on"]
+    {
+        let said = run(db, "_execute", &query(text, &[], &[]))?;
+        assert!(said.contains("SqlError"), "{text}: {said}");
+    }
+    assert!(!std::path::Path::new(&file("other.db")).exists(), "an attached file was made");
+    assert!(!std::path::Path::new(&file("copy.db")).exists(), "a vacuumed copy was made");
+    let found = run(db, "_query", &query("select n from notes", &[], &[]))?;
+    assert!(found.contains("ints=[7]"), "{found}");
+    // Its own file can still be vacuumed.
+    let vacuumed = run(db, "_execute", &query("vacuum", &[], &[]))?;
+    assert!(vacuumed.starts_with("Ok("), "{vacuumed}");
+    assert_eq!(run(db, "_close", &[])?, "");
+    std::fs::remove_dir_all(&folder).map_err(|err| err.to_string())?;
+    Ok(())
+}

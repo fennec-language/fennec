@@ -703,6 +703,11 @@ fn every_example_tested_through_llvm_passes_and_keeps_what_it_ran() {
         }
         let compared = llvm.len();
         let traced = llvm.values().filter(|ran| ran.is_some()).count();
+        // Every example here has tests, so one that kept no record of any failed to test at all,
+        // which says why: counted as none, it would only show as too few traces kept.
+        if compared == 0 {
+            wrong.push(format!("{} kept no test records: {through_llvm:?}", path.display()));
+        }
         Ok((compared, traced, wrong))
     })
     .unwrap();

@@ -2699,18 +2699,27 @@ fn a_command_cleans_the_cache_hourly_with_no_daemon() {
             .unwrap()
     };
     assert!(fennec(&["dev", "changes"]).status.success());
-    let cleaned = (0..250).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        !old.parent().unwrap().exists()
-    });
+    // The cleanup is a process of its own, which a busy machine may take a while to start: it's
+    // waited for as long as two minutes, which ends the moment it's done.
+    let done = |gone: &dyn Fn() -> bool| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while std::time::Instant::now() < until {
+            if gone() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    };
+    let cleaned = done(&|| !old.parent().unwrap().exists());
     assert!(cleaned, "a build folder unused for two days should go once a cleanup is due");
 
     // The background cleanup may still be letting go of its lock, and one asked for meanwhile
     // would say so.
-    let _ = (0..250).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        !home.join("cache").join("cleanup.lock").exists()
-    });
+    assert!(
+        done(&|| !home.join("cache").join("cleanup.lock").exists()),
+        "the cleanup never let go of its lock"
+    );
     let asked = fennec(&["cache", "clean"]);
     assert!(asked.status.success());
     assert!(

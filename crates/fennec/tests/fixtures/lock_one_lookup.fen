@@ -1,8 +1,8 @@
 ## A put after a lookup of the same key, under a lock, uses where the lookup found it rather than
 ## looking again, but only for the same key in the dict that's there now. A different key, a
-## different dict, a key worked out again with a side effect, and a field set to another dict
-## between the lookup and the put each look again. Every one is right, kept, or put back by a
-## failure.
+## different dict, a key worked out again with a side effect, a field set to another dict, a dict
+## grown, and a key's local changed between the lookup and the put each look again. Every one is
+## right, kept, or put back by a failure.
 error Boom:
     step: int
 
@@ -31,6 +31,16 @@ def change(table: shared Table, step: int, failing: bool) fails Boom:
         old = held.others
         held.others = {key: 5}
         held.others[key] = (old.get(key) else 0) + 1
+        # The dict grown between the lookup, through another local, and the put.
+        through = held.counts
+        grown = through.get(key) else 0
+        held.counts[step + 50] = 1
+        held.counts[key] = grown + 2
+        # The key's local changed between the lookup and the put.
+        mut moving = key
+        moved = held.counts.get(moving) else 0
+        moving = moving + 1
+        held.counts[moving] = moved + 3
         if failing:
             fail Boom(step=step)
 

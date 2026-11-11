@@ -1805,8 +1805,9 @@ fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Resul
 
 /// A put after a lookup of the same key under a lock writes where the lookup found it, with no
 /// second search, only when the dict there now is the one it searched: a different key, a
-/// different dict, a key worked out again with a side effect, and a field set to another dict
-/// between each search. Kept, or put back by a failure, every one is right. Built checking proofs.
+/// different dict, a key worked out again with a side effect, a field set to another dict, a dict
+/// grown through another local, and a key's local changed in between each search. Kept, or put
+/// back by a failure, every one is right. Built checking proofs.
 #[test]
 fn a_put_after_a_lookup_reuses_it_only_for_the_same_key_and_dict() -> std::io::Result<()> {
     if !ready() {
@@ -1830,7 +1831,8 @@ fn a_put_after_a_lookup_reuses_it_only_for_the_same_key_and_dict() -> std::io::R
         std::fs::remove_dir_all(&dir)?;
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
-            "2 {0: 2, 1: 30205, 2: 20205, 3: 20306, 4: 20406} {3: 21307}\n",
+            "2 {0: 6, 1: 40227, 50: 1, 2: 30227, 51: 1, 3: 30233, 52: 1, 4: 30236, 53: 1, 55: 1, 56: 1, 57: 1, 58: 1, \
+             60: 1, 61: 1} {3: 31232}\n",
             "{how:?}: {}",
             String::from_utf8_lossy(&ran.stderr)
         );

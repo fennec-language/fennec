@@ -65,7 +65,10 @@ test "a string's escapes read as what they stand for, and others fail":
 test "a struct needs each field once, of its type, and no others":
     assert json.loads[Point]("{\"x\": 1, \"y\": 2}")? == Point(x=1, y=2)
     assert what(() => json.loads[Point]("{\"x\": 1}")?) == "`y` is missing"
-    assert what(() => json.loads[Point]("{\"x\": null, \"y\": 2}")?) == "`x` is missing"
+    assert (
+        what(() => json.loads[Point]("{\"x\": null, \"y\": 2}")?)
+        == "`x` should be an int, but it's null"
+    )
     assert (
         what(() => json.loads[Point]("{\"x\": \"1\", \"y\": 2}")?)
         == "`x` should be an int, but it's a str"
@@ -89,6 +92,49 @@ test "a struct needs each field once, of its type, and no others":
     )
     # A trailing comma isn't JSON.
     assert where(() => json.loads[Point]("{\"x\": 1, \"y\": 2,}")?) == "1:17"
+
+## A field of each shape: plain, with a default, optional, and optional with a default.
+struct Plain:
+    x: int
+
+struct Defaulted:
+    x = 5
+
+struct Maybe:
+    x: int?
+
+struct MaybeDefaulted:
+    x: int? = 7
+
+## What `run` loads, as text, or why it fails.
+def loaded[T](run: () -> T fails ParseError) -> str:
+    value = run() else as why:
+        return why.message
+    f"{value}"
+
+test "null is a value, and a default fills only a key that isn't there":
+    # A field that isn't optional can't hold null, default or not.
+    assert (
+        loaded(() => json.loads[Plain]("{\"x\": null}")?) == "`x` should be an int, but it's null"
+    )
+    assert (
+        loaded(() => json.loads[Defaulted]("{\"x\": null}")?)
+        == "`x` should be an int, but it's null"
+    )
+    # An optional field given null holds None, even with a default.
+    assert loaded(() => json.loads[Maybe]("{\"x\": null}")?) == "Maybe(x=None)"
+    assert loaded(() => json.loads[MaybeDefaulted]("{\"x\": null}")?) == "MaybeDefaulted(x=None)"
+    # Missing means the key isn't there: then a default is taken, None for an optional, and a
+    # field with neither fails.
+    assert loaded(() => json.loads[Plain]("{}")?) == "`x` is missing"
+    assert loaded(() => json.loads[Defaulted]("{}")?) == "Defaulted(x=5)"
+    assert loaded(() => json.loads[Maybe]("{}")?) == "Maybe(x=None)"
+    assert loaded(() => json.loads[MaybeDefaulted]("{}")?) == "MaybeDefaulted(x=7)"
+
+test "an optional field holding None reads back as None, whatever its default":
+    for value in [MaybeDefaulted(x=None), MaybeDefaulted(x=3), MaybeDefaulted()]:
+        assert json.loads[MaybeDefaulted](json.dumps(value))? == value
+    assert json.dumps(MaybeDefaulted(x=None)) == "{\"x\": null}"
 
 test "extra=.Ignore skips a key no field has, however deep it goes":
     text = "{\"x\": 1, \"z\": {\"deep\": [1, {\"deeper\": null}]}, \"y\": 2}"

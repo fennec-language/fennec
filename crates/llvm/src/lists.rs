@@ -1211,6 +1211,38 @@ impl Emit<'_, '_, '_> {
         Ok(same)
     }
 
+    /// Whether a boxed value of this layout is an enum's, whose case is the first word of its fields.
+    pub(crate) fn is_boxed_enum(&self, id: u32) -> bool {
+        self.module.layouts.get(id).is_some_and(|layout| layout.cases.is_some())
+    }
+
+    /// Whether two boxed enums are equal. Another case is unequal at once, with no call, which is
+    /// what most compares of a value against a case find; the same case asks the runtime, which
+    /// compares that case's fields.
+    pub(crate) fn same_boxed_enums(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        let (a_at, b_at) = (self.offset(a, FIELDS_OFFSET), self.offset(b, FIELDS_OFFSET));
+        let (a_case, b_case, other_case) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{a_case} = load i64, ptr {a_at}"));
+        self.line(&format!("{b_case} = load i64, ptr {b_at}"));
+        self.line(&format!("{other_case} = icmp ne i64 {a_case}, {b_case}"));
+        let (ask, done) = (self.label("same_case"), self.label("compared"));
+        let came = self.current.clone();
+        self.line(&format!("br i1 {other_case}, label %{done}, label %{ask}"));
+        self.start_block(&ask);
+        let asked = self.same_blocks(BinOp::Eq, (a, b));
+        let asked_from = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let same = self.temp();
+        self.line(&format!("{same} = phi i1 [ false, %{came} ], [ {asked}, %{asked_from} ]"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let flipped = self.temp();
+        self.line(&format!("{flipped} = xor i1 {same}, true"));
+        flipped
+    }
+
     /// Whether a value of this layout has a float anywhere in it, in place.
     pub(crate) fn holds_a_float(&self, id: u32) -> bool {
         let Some(layout) = self.module.layouts.get(id) else { return false };

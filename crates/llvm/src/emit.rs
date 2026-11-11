@@ -1829,6 +1829,9 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
                 same
             }
+            Kind::Boxed(id) if self.is_boxed_enum(id) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                self.same_boxed_enums(op, (&a, &b))
+            }
             Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
             {
@@ -3249,6 +3252,30 @@ def main(stdout: Stdout, args: Args, clock: Clock):
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");
         assert!(!text.contains("fennec_capability_call"), "{text}");
+        Ok(())
+    }
+
+    /// `==` on an enum held in a block compares the cases first, with no call: only the same case
+    /// asks the runtime, `fennec_box_equal`, to compare its fields.
+    #[test]
+    fn an_enum_in_a_block_compares_its_case_before_asking_the_runtime() -> Result<(), String> {
+        let source = "\
+enum Tok:
+    Name(text: str)
+    Wrapped(inner: Tok)
+    Eof
+
+def is_eof(token: Tok) -> bool:
+    token == .Eof
+
+def main(stdout: Stdout):
+    stdout.print(is_eof(.Name(\"x\")))
+";
+        let text = text_of(source, "is_eof")?;
+        let (before, after) = text.split_once("same_case").ok_or_else(|| text.clone())?;
+        assert!(before.contains("icmp ne i64"), "the cases are compared first: {text}");
+        assert!(!before.contains("call i8 @fennec_box_equal("), "{text}");
+        assert!(after.contains("call i8 @fennec_box_equal("), "{text}");
         Ok(())
     }
 

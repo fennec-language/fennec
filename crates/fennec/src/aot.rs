@@ -120,6 +120,18 @@ impl Runtime {
     }
 }
 
+/// What `main` reaches in `module`, copied out, rather than copying it all and cutting the rest
+/// away. A dev build of `fennec` checks it's what the cutting leaves.
+pub(crate) fn main_reaches(module: &fennec_syntax::Module) -> fennec_syntax::Module {
+    let reached = fennec_build::what_main_reaches(module);
+    if cfg!(debug_assertions) {
+        let mut cut = module.clone();
+        fennec_build::keep_what_main_reaches(&mut cut);
+        assert!(cut == reached, "what `main` reaches, copied out, isn't what cutting the rest away leaves");
+    }
+    reached
+}
+
 /// Whether `--cpu baseline` asked for code any machine of its architecture runs.
 pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -182,8 +194,7 @@ pub(crate) fn tracing_executable(
     program: &fennec_kit::Program,
     output: &Path,
 ) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = main_reaches(&program.module);
     let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false, None)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
@@ -525,8 +536,7 @@ fn llvm_objects(
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+    let reached = main_reaches(&program.module);
     // What was checked is only this module if cutting it down left it as it was.
     let checked = checked.filter(|_| reached == program.module);
     let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;

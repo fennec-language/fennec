@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    level = u8(300)
+    stdout.print(level)

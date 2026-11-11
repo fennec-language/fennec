@@ -533,6 +533,75 @@ impl Emit<'_, '_, '_> {
         self.dict_store_word(place, (key_word, value_word), &key, &held, found)
     }
 
+    /// A put under a lock that saves what it changes, written where the dict holds the key, with no
+    /// call: when `alone`, an `i1`, holds (the dict, and every block on the way to it from the
+    /// lock's cell, has one owner), the key's there, and the value holds no block. Its old value
+    /// is saved first, as a field's is, so a crash or a failure puts back exactly that word.
+    /// Nothing else can reach a block whose only owner is the cell while the lock's held, so
+    /// nothing else sees the write before the lock ends. Anything else takes the path a put under
+    /// such a lock always took, which marks the dict. Gives back the label to join at, with the
+    /// block for that other path started; `None`, writing nothing, when the dict's kinds don't
+    /// fit.
+    pub(crate) fn put_found_in_place(
+        &mut self,
+        (place, alone): (&str, &str),
+        (key_word, value_word): (Word, Word),
+        (key, value, found): (&Operand, &Operand, Option<String>),
+        span: Span,
+    ) -> Result<Option<String>, String> {
+        let Some(value_kind) = self.word_kind(value_word) else { return Ok(None) };
+        if !plain_value(value_word)
+            || value_word == Word::Nothing
+            || value_kind.counted()
+            || value_kind.in_memory()
+        {
+            return Ok(None);
+        }
+        let (fast, write, old_way, done) =
+            (self.label("in_place"), self.label("write"), self.label("old_way"), self.label("put"));
+        self.line(&format!("br i1 {alone}, label %{fast}, label %{old_way}"));
+        self.start_block(&fast);
+        let dict = self.temp();
+        self.line(&format!("{dict} = load ptr, ptr {place}"));
+        let entry = if let Some(entry) = found {
+            entry
+        } else {
+            let key = self.key_value(key, key_word)?;
+            self.find(&dict, key_word, &key)
+        };
+        let missing = self.temp();
+        self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+        self.line(&format!("br i1 {missing}, label %{old_way}, label %{write}"));
+        self.start_block(&write);
+        if self.checks_proofs() {
+            // The runtime says for itself that the dict has one owner and no mark, and that the
+            // entry is one of its live ones.
+            self.declare("declare i64 @fennec_proof_put_in_place(ptr, ptr) nounwind");
+            let (holds, broken) = (self.temp(), self.temp());
+            self.line(&format!("{holds} = call i64 @fennec_proof_put_in_place(ptr {dict}, ptr {entry})"));
+            self.line(&format!("{broken} = icmp eq i64 {holds}, 0"));
+            self.proof_held(
+                &broken,
+                "a put in place under a lock has its dict alone and its key there",
+                span,
+            );
+        }
+        let value_at = self.temp();
+        self.line(&format!(
+            "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
+            entry_value(key_word)
+        ));
+        let old = self.temp();
+        self.line(&format!("{old} = load i64, ptr {value_at}"));
+        let (block, word) = self.word_in(&dict, &value_at);
+        self.save_plain(&block, &word, &old);
+        let (held, _) = self.operand(value)?;
+        self.store_field(&value_kind, &held, &value_at, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&old_way);
+        Ok(Some(done))
+    }
+
     /// As [`Self::dict_store_at`], with the key and value already worked out.
     fn dict_store_word(
         &mut self,

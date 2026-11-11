@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    for step in range(2.5):
+        stdout.print(step)

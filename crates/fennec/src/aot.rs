@@ -980,9 +980,9 @@ mod tests {
     }
 
     /// A program in more parts than a command line can name links, as a kit's tests that reach
-    /// 14,000 functions do: 20,000 objects, with paths that come to several megabytes, past the
-    /// megabyte or two `ARG_MAX` allows on macOS and Linux. They go to `cc` in a file. Named on
-    /// the command line, running the linker failed with "Argument list too long".
+    /// 14,000 functions do: objects whose paths come to twice the `ARG_MAX` this system allows,
+    /// a megabyte or two on macOS and Linux. They go to `cc` in a file. Named on the command line,
+    /// running the linker failed with "Argument list too long".
     #[test]
     #[cfg(not(windows))]
     fn a_program_of_more_objects_than_a_command_line_holds_links() {
@@ -1003,15 +1003,22 @@ mod tests {
         };
         let main = compile("main", "int main(void) { return 7; }\n");
         let empty = compile("empty", "/* Nothing: a part with no code. */\n");
-        let objects: Vec<_> = (0..20_000)
-            .map(|at| {
-                let object = parts.join(format!("part {at}.o"));
-                std::fs::hard_link(&empty, &object).unwrap();
-                object
-            })
-            .collect();
-        let named: usize = objects.iter().map(|object| object.as_os_str().len() + 1).sum();
-        assert!(named > 4 << 20, "{named} bytes of names, more than a command line holds");
+        // Twice what this system lets a command's arguments be, however long the temporary
+        // folder's name: Linux's `/tmp` is short, so a fixed count fell short there.
+        let most = Command::new("getconf")
+            .arg("ARG_MAX")
+            .output()
+            .ok()
+            .and_then(|asked| String::from_utf8_lossy(&asked.stdout).trim().parse::<usize>().ok())
+            .unwrap_or(2 << 20);
+        let (mut objects, mut named) = (Vec::new(), 0);
+        while named <= 2 * most {
+            let object = parts.join(format!("part {}.o", objects.len()));
+            std::fs::hard_link(&empty, &object).unwrap();
+            named += object.as_os_str().len() + 1;
+            objects.push(object);
+        }
+        assert!(named > 2 * most, "{named} bytes of names, more than the {most} a command line holds");
         let output = work.join("linked");
         let mut linking = super::linker(&objects, &main, &output, false);
         let line: usize = linking.get_args().map(|arg| arg.len() + 1).sum();

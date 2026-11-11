@@ -1,0 +1,7 @@
+error: `range` takes one to three ints
+ --> examples/errors/range_of_a_float.fen:2:17
+  |
+2 |     for step in range(2.5):
+  |                 ^^^^^^^^^^
+  |
+  = help: give it ints, as `range(10)`, `range(2, 10)` or `range(0, 10, 2)`

@@ -1,0 +1,64 @@
+# `str`'s methods written in Fennec, and `std.string`'s, at their edges: text that isn't ASCII
+# counts in characters, not bytes, an empty part or prefix is handled as Python does, and line
+# endings and widths that can't be met don't lose any text.
+from std import string
+
+test "padding counts characters, not bytes"():
+    assert "é".ljust(3, fill=".") == "é.."
+    assert "é".rjust(3) == "  é"
+    assert "é".center(4, fill="*") == "*é**"
+    assert "日本".ljust(4, fill="-") == "日本--"
+    # A fill longer than one is cut to the width.
+    assert "ab".ljust(5, fill="xy") == "abxyx"
+
+test "zfill puts zeros after a sign, and nothing when the text is long enough"():
+    assert "-".zfill(3) == "-00"
+    assert "+5".zfill(1) == "+5"
+    assert "".zfill(2) == "00"
+
+test "finding and counting go by characters"():
+    assert "éaé".rfind("é") == 2
+    assert "aéa".rfind("a") == 2
+    assert "éé".count("é") == 2
+    assert "abc".rfind("") == 3
+    assert "".rfind("a") is None
+
+test "an empty prefix or suffix takes nothing off"():
+    assert "x".removeprefix("") == "x"
+    assert "x".removesuffix("") == "x"
+    assert "aaa".removeprefix("aaaa") == "aaa"
+    assert "aaa".removesuffix("aaaa") == "aaa"
+
+test "text repeated fewer than once is empty"():
+    assert "ab" * -2 == ""
+    assert "ab" * 0 == ""
+    assert "ab" * 2 == "abab"
+
+test "lines takes off each line's ending, and a last one adds no line"():
+    assert "".lines() == []
+    assert "\n".lines() == [""]
+    assert "a\n\nb\n".lines() == ["a", "", "b"]
+    assert "a\r\nb".lines() == ["a", "b"]
+
+test "isdigit is only ASCII digits, and never empty text"():
+    assert "12".isdigit()
+    assert not "".isdigit()
+    assert not "٣".isdigit()
+    assert not "1.5".isdigit()
+
+test "title and capitalize change only letters"():
+    assert "3rd place".title() == "3Rd Place"
+    assert "é".capitalize() == "É"
+
+test "wrap counts characters, and a width it can't meet puts each word on its own line"():
+    assert string.wrap("日本語 です", width=2) == ["日本", "語", "です"]
+    assert string.wrap("one two three", width=0) == ["one", "two", "three"]
+    assert string.wrap("", width=5) == []
+
+test "dedent takes off only what every line shares, tabs included"():
+    assert string.dedent("\t a\n\t  b") == "a\n b"
+    assert string.dedent(" a\n\tb") == " a\n\tb"
+    assert string.indent("", prefix="> ") == ""
+
+def main(stdout: Stdout):
+    stdout.print("é".center(5, fill="*"))

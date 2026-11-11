@@ -57,6 +57,8 @@ pub(crate) struct Checker {
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
+    /// The calls `len(x)` and `abs(x)`, which become `x.len()` and `x.abs()`.
+    pub(crate) method_calls: BTreeSet<(u32, u32)>,
     /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
     pub(crate) array_zeros: BTreeMap<(u32, u32), Expr>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
@@ -207,6 +209,7 @@ impl Checker {
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
+            method_calls: BTreeSet::new(),
             array_zeros: BTreeMap::new(),
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
@@ -373,6 +376,7 @@ impl Checker {
             defaults: self.defaults,
             generator_types: self.generator_types,
             not_equals: self.not_equals,
+            method_calls: self.method_calls,
             array_zeros: self.array_zeros,
             optional_steps: self.optional_steps,
             failing_steps: self.failing_steps,

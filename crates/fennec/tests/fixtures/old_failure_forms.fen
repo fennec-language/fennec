@@ -1,0 +1,58 @@
+error Bad:
+    Empty
+    Long(size: int)
+
+error Other:
+    why: str
+
+def load(n: int) -> int fails Bad:
+    if n == 1: fail .Empty
+    if n > 5: fail .Long(size=n)
+    return n
+
+def both(n: int) -> int fails Bad | Other:
+    if n == 2: fail Other(why="two")
+    return load(n)?
+
+def ward(name: str, stdout: Stdout) -> with str:
+    stdout.print("open", name)
+    lend name else:
+        stdout.print("undo", name)
+    stdout.print("close", name)
+
+def named(n: int) -> int:
+    got = load(n) else as why:
+        match why:
+            case .Empty:
+                0
+            case .Long(size):
+                size
+    got
+
+def dropped(n: int) -> int:
+    got = both(n) else 7
+    got
+
+def leaves(n: int) -> int:
+    got = load(n) else return -1
+    got + 1
+
+def block(n: int, stdout: Stdout) -> int:
+    got = load(n) else:
+        stdout.print("no load")
+        return 0
+    got
+
+def logged(n: int, stdout: Stdout) -> int:
+    got = load(n) else as problem:
+        stdout.print(f"{problem}")
+        3
+    got
+
+def tailed(stdout: Stdout) -> str:
+    with ward("t", stdout) as name:
+        name
+
+def main(stdout: Stdout):
+    stdout.print(named(1), named(9), dropped(2), leaves(1))
+    stdout.print(block(1, stdout), logged(1, stdout), tailed(stdout))

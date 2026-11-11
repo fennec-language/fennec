@@ -147,10 +147,10 @@ impl Parser {
                 .with_help("write the case, a `:` and what it gives, as `except InvalidValue(): 8080`"));
         }
         let arm_start = self.advance().span;
-        let indented = self.at(&Tok::Newline);
         let body = self.block()?;
-        // On the line, the case's statement has ended the line, and the statement it's in with it.
-        self.block_ended = !indented || self.block_ended;
+        // The case's statement on the line has ended the line, and an indented block has ended
+        // with its dedent: either way the statement it's in has no line ending of its own left.
+        self.block_ended = true;
         let span = arm_start.to(self.prev_span());
         // The failure has a name nobody can write, as the one case's `match` is over it.
         let failure = format!("except{}failure", crate::visit::HIDDEN);

@@ -174,7 +174,9 @@ pub fn core_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
     let made = CORE_RUN.get_or_init(|| {
         let mut core = Vec::new();
         for (name, source) in CORE {
-            core.push(parse_module(name, source)?);
+            let mut module = parse_module(name, source)?;
+            qualify_core_imports(&mut module)?;
+            core.push(module);
         }
         let interfaces = crate::visit::interface_names(&core);
         for module in &mut core {
@@ -272,7 +274,9 @@ fn is_typed_empty(expr: &crate::Expr) -> bool {
 fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
     let mut parsed = Vec::new();
     for (name, source) in CORE {
-        parsed.push(parse_module(name, source)?);
+        let mut module = parse_module(name, source)?;
+        qualify_core_imports(&mut module)?;
+        parsed.push(module);
     }
     let mut modules = Vec::new();
     for module in MODULES.iter().filter(|module| !module.source.is_empty()) {
@@ -339,22 +343,77 @@ fn qualify_functions(modules: &mut [(&'static str, crate::Module)]) {
                 }
             }
         }
-        // A function's own parameter or local of the same name shadows the module's function.
-        crate::visit::exprs_in_scope_mut(module, &mut |expr, bound: &HashSet<String>| {
-            let function = match &expr.kind {
-                ExprKind::Name(found) if bound.contains(found) => None,
-                ExprKind::Name(found) => names.get(found).cloned(),
-                ExprKind::Attr { object, name, optional: false } => crate::dotted(object)
-                    .and_then(|alias| aliases.get(&alias))
-                    .map(|module| format!("{module}.{name}"))
-                    .filter(|function| all.contains(function)),
-                _ => None,
-            };
-            if let Some(function) = function {
-                expr.kind = ExprKind::Name(function);
-            }
-        });
+        name_functions(module, (&names, &aliases), &|function| all.contains(function));
     }
+}
+
+/// Writes each call in `module` to a standard library function by the name `qualify_functions`
+/// gives it: a name `names` maps, or `alias.function` for a module imported as `alias`, which
+/// `aliases` maps, when `is_function` says the module has it. A function's own parameter or local
+/// of the same name shadows the module's function.
+fn name_functions(
+    module: &mut crate::Module,
+    (names, aliases): (&HashMap<String, String>, &HashMap<String, &'static str>),
+    is_function: &dyn Fn(&str) -> bool,
+) {
+    crate::visit::exprs_in_scope_mut(module, &mut |expr, bound: &HashSet<String>| {
+        let function = match &expr.kind {
+            ExprKind::Name(found) if bound.contains(found) => None,
+            ExprKind::Name(found) => names.get(found).cloned(),
+            ExprKind::Attr { object, name, optional: false } => crate::dotted(object)
+                .and_then(|alias| aliases.get(&alias))
+                .map(|module| format!("{module}.{name}"))
+                .filter(|function| is_function(function)),
+            _ => None,
+        };
+        if let Some(function) = function {
+            expr.kind = ExprKind::Name(function);
+        }
+    });
+}
+
+/// A core file's imports from the standard library's modules, as str.fen's
+/// `from std.intrinsics import stop`, named as `qualify_functions` names them in a module that
+/// imports them: `intrinsics.stop`. A core file's own functions keep their names, since nothing
+/// shares them, so only what it imports is named. The modules it imports from are parsed for
+/// their functions' names.
+fn qualify_core_imports(module: &mut crate::Module) -> Result<(), crate::Diagnostic> {
+    let imported = imported_modules(module);
+    if imported.is_empty() {
+        return Ok(());
+    }
+    let mut functions = HashSet::new();
+    for name in imported {
+        let Some(from) = MODULES.iter().find(|from| from.name == name && !from.source.is_empty()) else {
+            continue;
+        };
+        for item in parse_module(from.name, from.source)?.items {
+            if let Item::Function(def) = item {
+                functions.insert(format!("{}.{}", from.name, def.name));
+            }
+        }
+    }
+    let mut names = HashMap::new();
+    let mut aliases = HashMap::new();
+    let imports = module.items.iter().filter_map(|item| match item {
+        Item::Import(import) => crate::std_import(import).ok(),
+        _ => None,
+    });
+    for imported in imports.flatten() {
+        match imported {
+            Imported::Module { alias, module } => {
+                aliases.insert(alias, module);
+            }
+            Imported::Name { name, alias, module } => {
+                let function = format!("{module}.{name}");
+                if functions.contains(&function) {
+                    names.insert(alias, function);
+                }
+            }
+        }
+    }
+    name_functions(module, (&names, &aliases), &|function| functions.contains(function));
+    Ok(())
 }
 
 /// Standard library types a program gets values of without naming them, by the method
@@ -390,6 +449,32 @@ mod tests {
             assert_eq!(found.get(builtin).copied(), Some(builtin), "{builtin}");
         }
         assert_eq!(found.get("Optional").copied(), Some("optional"));
+    }
+
+    /// A core file's import from a module, as `from std.intrinsics import stop`, is named as that
+    /// module's function is everywhere else, `intrinsics.stop`, so the engines find it. A local
+    /// of the same name still shadows it, and the core file's own functions keep their names.
+    #[test]
+    fn a_core_files_import_names_the_modules_function() {
+        let source = "from std.intrinsics import stop\n\n\
+            def padded(fill: str) -> str:\n    if fill == \"\": stop(\"empty\")\n    return fill\n\n\
+            def shadowed(stop: int) -> int:\n    return stop\n";
+        let mut module = super::parse_module("str", source).unwrap();
+        super::qualify_core_imports(&mut module).unwrap();
+        let named = |function: &str| -> Vec<String> {
+            let mut found = Vec::new();
+            let mut module = module.clone();
+            module.items.retain(|item| matches!(item, crate::Item::Function(def) if def.name == function));
+            crate::visit::exprs_mut(&mut module, &mut |expr| {
+                if let crate::ExprKind::Name(name) = &expr.kind {
+                    found.push(name.clone());
+                }
+            });
+            found
+        };
+        assert!(named("padded").contains(&"intrinsics.stop".to_owned()), "{:?}", named("padded"));
+        assert!(!named("padded").contains(&"stop".to_owned()));
+        assert_eq!(named("shadowed"), ["stop"]);
     }
 
     /// A module's own functions are qualified where they're named, apart from where a

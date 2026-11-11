@@ -127,16 +127,10 @@ impl Layouts {
             enums: HashMap::new(),
             definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
         };
-        // `FENNEC_INLINE_TEXT=0` holds strings as blocks again, in case headers show a problem.
-        let text_headers = std::env::var_os("FENNEC_INLINE_TEXT").is_none_or(|set| set != "0");
         let mut layouts = Layouts {
             one_word_optionals: true,
             native_buffers: true,
-            in_place: InPlace {
-                text_headers,
-                // `FENNEC_INLINE_STRUCTS=0` boxes them again, in case one shows a problem.
-                counted_fields: std::env::var_os("FENNEC_INLINE_STRUCTS").is_none_or(|set| set != "0"),
-            },
+            in_place: InPlace { text_headers: true, counted_fields: true },
             ..Layouts::default()
         };
         for (name, def) in definitions {

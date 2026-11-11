@@ -673,7 +673,7 @@ fn children(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             visit(cond);
             visit(otherwise);
         }
-        ExprKind::Else { value, default } => {
+        ExprKind::Else { value, default, .. } => {
             visit(value);
             visit(default);
         }

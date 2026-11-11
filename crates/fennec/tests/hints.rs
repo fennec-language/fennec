@@ -55,7 +55,7 @@ fn conditions_need_bools() {
             "`if` needs a bool, but this is a None",
             "write `x is None` or `x is not None`",
         ),
-        ("if [1]:\n        pass", "`if` needs a bool, but this is a list", "write `x.len() > 0`"),
+        ("if [1]:\n        pass", "`if` needs a bool, but this is a list", "write `len(x) > 0`"),
         (
             "if 1:\n        pass",
             "`if` needs a bool, but this is an int",

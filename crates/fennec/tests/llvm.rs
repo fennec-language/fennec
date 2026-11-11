@@ -19198,6 +19198,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// `len(x)` and `abs(x)` call the value's own method: a list's, a string's, a dict's, a
+/// comprehension's, a number's and a type's own `def len` and `def abs`.
+#[test]
+fn len_and_abs_call_the_values_own_method() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "len_and_abs",
+        r#"struct Bag:
+    items: list[int]
+
+    def len(self) -> int:
+        return len(self.items)
+
+struct Turn:
+    by: int
+
+    def abs(self) -> Turn:
+        return Turn(by=abs(self.by))
+
+def main(stdout: Stdout):
+    numbers = [1, 2, 3]
+    bag = Bag(items=numbers)
+    stdout.print(len(numbers), len("héllo"), len({1: 2}), len(bag), len([n for n in numbers if n > 1]))
+    stdout.print(abs(-3), abs(-2.5), abs(Turn(by=-4)).by, abs(len(numbers) - 10))
+"#,
+        "3 5 1 3 2\n3 2.5 4 7\n",
+    )
+}
+
 /// Programs whose `main` fails, each with what comes first in it, in every way it can: an error
 /// of one type, one of several, one held in a block of its own, and only after printing.
 const FAILING_MAINS: [(&str, &str); 4] = [

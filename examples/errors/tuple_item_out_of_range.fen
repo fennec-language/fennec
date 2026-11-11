@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    pair = ("Ash", 3)
+    stdout.print(pair[2])

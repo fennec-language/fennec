@@ -80,7 +80,7 @@ test "a case that doesn't exist says where":
     assert failure(() => json.loads[Order]("3")?) == "the text should be an Order, but it's an int"
     assert (
         failure(() => json.loads[Order]("{\"Hold\": 1, \"Move\": 2}")?)
-        == "the text should be an Order, but it's a table"
+        == "the text should be an Order, but it's an object"
     )
 
 def main(stdout: Stdout):

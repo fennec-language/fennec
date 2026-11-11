@@ -230,7 +230,8 @@ impl Sources {
     /// The text of the file added at `base`, with its hash, which is worked out only the first
     /// time it's asked for. Many threads may ask at once.
     pub fn hashed_text_at(&self, base: u32) -> Option<(&str, fennec_blake3::Hash)> {
-        let file = self.files.iter().find(|file| file.base == base)?;
+        let at = self.files.binary_search_by_key(&base, |file| file.base).ok()?;
+        let file = self.files.get(at)?;
         Some((file.text.as_str(), file.text_hash()))
     }
 
@@ -239,8 +240,12 @@ impl Sources {
         self.files.iter().map(|file| (file.path.as_str(), file.text_hash()))
     }
 
+    /// The file a span starts in. Files are added each one past the end of the last, so their
+    /// bases only grow and their ranges never overlap: the one it can be in is the last that
+    /// starts at or before it, found by halving, since lints ask this of every item of a program.
     fn file(&self, span: Span) -> Option<&File> {
-        self.files.iter().rev().find(|file| file.base <= span.start && span.start <= file.end())
+        let after = self.files.partition_point(|file| file.base <= span.start);
+        self.files.get(after.checked_sub(1)?).filter(|file| span.start <= file.end())
     }
 }
 
@@ -379,6 +384,28 @@ mod tests {
     use super::Sources;
     use crate::diagnostic::{Also, Diagnostic};
     use crate::span::Span;
+
+    /// Finding a span's file by halving finds the one reading every file from the last finds: at
+    /// each file's first and last offset, one past the last file, and in an empty file.
+    #[test]
+    fn a_span_is_in_the_file_reading_them_all_would_find() {
+        let mut sources = Sources::new();
+        for (at, text) in ["one\n", "", "two words\n", "x", "", "and the last\n"].iter().enumerate() {
+            sources.add(format!("f{at}.fen"), *text);
+        }
+        let end = sources.files.last().map_or(0, super::File::end);
+        for start in 0..=end + 2 {
+            let span = Span { start, end: start };
+            let read = sources.files.iter().rev().find(|file| file.base <= start && start <= file.end());
+            let halved = sources.file(span);
+            assert_eq!(halved.map(|file| &file.path), read.map(|file| &file.path), "at {start}");
+            if let Some(file) = read {
+                let (_, hash) = sources.hashed_text_at(file.base).unwrap();
+                assert_eq!(hash, fennec_blake3::hash(file.text.as_bytes()), "at {start}");
+            }
+        }
+        assert!(sources.hashed_text_at(end + 2).is_none());
+    }
 
     /// Rendering against a program's files finds each line from an index of where lines start,
     /// and must say what reading the file up to the diagnostic says: at the start and end of a

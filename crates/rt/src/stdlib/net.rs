@@ -1055,6 +1055,11 @@ fn keep_stream_as(
     served: bool,
 ) -> Result<i64, Failure> {
     bound_send_buffer(&socket);
+    // Each write goes out at once. What std writes, a request or a response, is its head and then
+    // its body, and waiting to send the body until the head is acknowledged, which the other end
+    // delays by up to 40 ms on Linux, held each one that long. If it can't be set, the connection
+    // is only slower.
+    let _ = socket.set_nodelay(true);
     let reading = match secured {
         Some(secured) => Reading::Tls(secured),
         None => Reading::Plain(BufReader::new(
@@ -1868,6 +1873,26 @@ pub(crate) mod tests {
         match fields.first() {
             Some((_, Value::Int(handle))) => *handle,
             _ => -1,
+        }
+    }
+
+    /// A connection kept, whether a server took it or a client made it, sends each write at once,
+    /// without waiting for the last to be acknowledged.
+    #[test]
+    fn a_kept_connection_sends_each_write_at_once() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        assert!(!client.nodelay().unwrap(), "a new socket waits, until it's kept");
+        for (socket, served) in [(client, false), (server, true)] {
+            let Ok(handle) = super::keep_stream_as(socket, "peer".to_owned(), None, served) else {
+                panic!("no stream")
+            };
+            let kept = super::open(|open| open.get(&handle).cloned());
+            let Some(super::Socket::Stream(stream)) = kept else { panic!("not kept") };
+            assert!(stream.socket.nodelay().unwrap(), "served: {served}");
+            close(handle);
         }
     }
 

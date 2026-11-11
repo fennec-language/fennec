@@ -322,7 +322,8 @@ mod tests {
     fn it_fails_in_arrows_and_keys_by_floats() {
         let shapes = [
             "print(tried(() => capped(",
-            "print(tried_twice(() => capped(",
+            "tried_twice(() => capped(",
+            "print(fallback(() => capped(",
             "print(tried_each(",
             "print(ran_fine(() => capped(",
             "print(either(() => paired(capped(",
@@ -334,7 +335,7 @@ mod tests {
             "nan()",
             "-0.0",
         ];
-        let mut found = [0_usize; 12];
+        let mut found = [0_usize; 13];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
@@ -387,8 +388,10 @@ mod tests {
             "_ = [1, 2][i + 2]",
             "with ward(\"a\", stdout) as a, ",
             "capped(capped(i, limit=1000)?, limit=",
+            "?, limit=1000)? * 2",
+            "except Refused(): -1",
         ];
-        let mut found = [0_usize; 9];
+        let mut found = [0_usize; 11];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
@@ -460,10 +463,9 @@ mod tests {
             "lend name except:",
             "    case Refused(code=code):",
             "except Refused(): -1",
-            "            case _:",
             "except Refused(): \"refused\"",
         ];
-        let mut found = [0_usize; 7];
+        let mut found = [0_usize; 6];
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))

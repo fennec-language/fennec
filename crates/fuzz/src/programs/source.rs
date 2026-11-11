@@ -680,7 +680,10 @@ fn left_written(id: usize, depth: usize, together: bool, rounds: i64, at: i64, h
             "total = total + got".to_owned(),
         ],
         Leave::ExceptValue => {
-            vec![format!("got = capped(i, limit={at_most}) except Refused(): -1"), "total = total + got".to_owned()]
+            vec![
+                format!("got = capped(i, limit={at_most}) except Refused(): -1"),
+                "total = total + got".to_owned(),
+            ]
         }
         Leave::ExceptArms => vec![
             format!("got = capped(i, limit={at_most}) except why:"),

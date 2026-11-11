@@ -86,7 +86,7 @@ fn an_entry_another_build_wrote_is_never_read() {
     let cache = Cache::new(&home);
     assert_eq!(FOLDER, format!("{}-{}", fennec_build::VERSION, env!("FENNEC_BUILD")));
     let other = home.join("cache").join(format!("{}-{}", fennec_build::VERSION, "0".repeat(64)));
-    entry(&other.join("llvm").join("same key"), 10, 1).unwrap();
+    entry(&other.join("llvm").join("same key"), 10, 3_600).unwrap();
     assert_eq!(cache.read("llvm", "same key"), None);
     cache.write("llvm", "same key", b"this build's").unwrap();
     assert_eq!(cache.read("llvm", "same key").as_deref(), Some(&b"this build's"[..]));
@@ -101,17 +101,19 @@ fn an_entry_another_build_wrote_is_never_read() {
 fn cleanup_drops_the_least_recently_used_whichever_build_wrote_them() {
     let home = home("over").unwrap();
     let cache = Cache::new(&home);
+    // Each used longer ago than an entry is always kept for.
+    let old = fennec_build::KEPT_RECENT.as_secs();
     let other = home.join("cache").join("0.0.0-other").join("functions").join("x");
-    entry(&other, 300, 1).unwrap();
-    entry(&cache.path("functions", "oldest"), 300, 300).unwrap();
-    entry(&cache.path("functions", "middle"), 300, 200).unwrap();
-    entry(&cache.path("functions", "newest"), 300, 100).unwrap();
+    entry(&other, 300, old + 10).unwrap();
+    entry(&cache.path("functions", "oldest"), 300, old + 300).unwrap();
+    entry(&cache.path("functions", "middle"), 300, old + 200).unwrap();
+    entry(&cache.path("functions", "newest"), 300, old + 100).unwrap();
 
-    // 1,200 bytes against a cap of 1,000: down to 800, so two entries go. Another build used a
-    // second ago may be one in use elsewhere, so it isn't put first.
+    // 1,200 bytes against a cap of 1,000: down to 800, so two entries go. Another build used
+    // since may be one in use elsewhere, so it isn't put first.
     let cleanup = cache.cleanup(1_000).unwrap();
     assert_eq!(cleanup, Cleanup { removed: 2, freed: 600, size: 600, skipped: false });
-    assert!(other.exists(), "another build's entry used a second ago stays");
+    assert!(other.exists(), "another build's entry used since stays");
     assert!(!cache.path("functions", "oldest").exists());
     assert!(!cache.path("functions", "middle").exists());
     assert!(cache.path("functions", "newest").exists());
@@ -134,8 +136,9 @@ fn the_cap_is_for_every_build_folder_together() {
     let cache = Cache::new(&home);
     let build = |at: usize| home.join("cache").join(format!("{}-{at:064}", fennec_build::VERSION));
     // Five other builds and this one, 200 bytes each, each used a minute later than the last.
+    let old = fennec_build::KEPT_RECENT.as_secs() + 600;
     for at in 0..5_u64 {
-        entry(&build(usize::try_from(at).unwrap()).join("llvm").join("f"), 200, 600 - at * 60).unwrap();
+        entry(&build(usize::try_from(at).unwrap()).join("llvm").join("f"), 200, old - at * 60).unwrap();
     }
     entry(&cache.path("llvm", "f"), 200, 1).unwrap();
     assert_eq!(cache.size(), 1_200);
@@ -146,6 +149,52 @@ fn the_cap_is_for_every_build_folder_together() {
     assert!(!build(0).exists() && !build(1).exists(), "the two used longest ago went, folders and all");
     assert!((2..5).all(|at| build(at).join("llvm").join("f").exists()));
     assert!(cache.path("llvm", "f").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// However far over its cap the cache is, an entry stays while it was stored or used in the last
+/// [`fennec_build::KEPT_RECENT`], or while a run has its program put out: a command may be about
+/// to read it, or to start it. A program put out is marked as used then, read-only as it is, so a
+/// sweep of what earlier runs built, which goes by that time, never takes one about to start.
+#[test]
+fn an_entry_just_stored_used_or_put_out_is_never_removed() {
+    let home = home("held").unwrap();
+    let cache = Cache::new(&home);
+    let old = fennec_build::KEPT_RECENT.as_secs() + 600;
+    entry(&cache.path("llvm", "just stored"), 100, 5).unwrap();
+    entry(&cache.path("llvm", "used"), 100, old).unwrap();
+    assert!(cache.read("llvm", "used").is_some());
+    entry(&cache.path("llvm", "old"), 100, old).unwrap();
+    let program = home.join("launched");
+    std::fs::write(&program, b"a program").unwrap();
+    cache.keep_file("programs", "root", &program).unwrap();
+    entry(&cache.path("llvm", "spare"), 0, 0).unwrap();
+    let kept = cache.path("programs", "root");
+    // Kept long ago, read-only, then put out for a run now.
+    File::open(&kept).unwrap().set_modified(SystemTime::now() - Duration::from_secs(old)).unwrap();
+    let run = home.join("work").join("fennec-run-1");
+    std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+    assert!(cache.link_out("programs", "root", &run).unwrap());
+    assert!(
+        modified(&run).unwrap().elapsed().unwrap() < Duration::from_secs(60),
+        "put out, it's marked used"
+    );
+    std::fs::remove_file(&program).unwrap();
+    let cleanup = cache.cleanup(0).unwrap();
+    assert_eq!(cleanup.removed, 1, "{cleanup:?}");
+    assert!(!cache.path("llvm", "old").exists());
+    for name in ["just stored", "used"] {
+        assert!(cache.path("llvm", name).exists(), "{name}");
+    }
+    assert!(kept.exists() && run.exists());
+    // Long unused, it still stays while the run has it put out, and goes once it doesn't.
+    let long_ago = SystemTime::now() - Duration::from_secs(old);
+    File::open(&kept).unwrap().set_modified(long_ago).unwrap();
+    cache.cleanup(0).unwrap();
+    assert!(kept.exists(), "a program a run has put out stays");
+    std::fs::remove_file(&run).unwrap();
+    cache.cleanup(0).unwrap();
+    assert!(!kept.exists());
     std::fs::remove_dir_all(&home).unwrap();
 }
 
@@ -192,7 +241,7 @@ fn a_cleanup_is_due_once_an_hour() {
 fn a_cleanup_already_running_is_left_to_finish() {
     let home = home("locked").unwrap();
     let cache = Cache::new(&home);
-    entry(&cache.path("functions", "a"), 500, 10).unwrap();
+    entry(&cache.path("functions", "a"), 500, 3_600).unwrap();
     let lock = home.join("cache").join("cleanup.lock");
     entry(&lock, 0, 1).unwrap();
     assert!(cache.cleanup(100).unwrap().skipped);

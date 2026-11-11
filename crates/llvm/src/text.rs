@@ -91,7 +91,7 @@ impl Emit<'_, '_, '_> {
 
     /// Prints one value: an optional as what it holds, or `None`.
     fn print_one(&mut self, value: &str, kind: &Kind) -> Result<(), String> {
-        // An `Id` shows its slot, as the interpreter's does.
+        // An `Id` shows its slot.
         if let Kind::Struct(id) = kind
             && self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id")
         {
@@ -210,7 +210,7 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// A new string with a plain value's text, as the interpreter writes it: `True`, `(1, 2)`,
+    /// A new string with a plain value's text, as it prints: `True`, `(1, 2)`,
     /// `Point(x=1, y=2)` or `Kind.Stay`. `value` is a bool, or a plain struct's or enum's address.
     fn plain_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
         if self.is_one_of_several(kind) || self.is_union(kind) {
@@ -256,8 +256,7 @@ impl Emit<'_, '_, '_> {
                 self.release(&block);
                 Ok(text)
             }
-            // An `Id` shows its slot, as the interpreter's does, and never its tag, which differs
-            // from run to run.
+            // An `Id` shows its slot and never its tag, which differs from run to run.
             Kind::Struct(id) if self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id") => {
                 let (key, slot) = (self.temp(), self.temp());
                 self.line(&format!("{key} = load i64, ptr {value}"));
@@ -333,9 +332,9 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// A failed comparison in an `assert`, saying what each side was, as the interpreter shows
-    /// them. Nothing made for this is let go of, since the program is ending. A value it has no
-    /// text for leaves the failure to say only that it failed.
+    /// A failed comparison in an `assert`, saying what each side was. Nothing made for this is let
+    /// go of, since the program is ending. A value it has no text for leaves the failure to say
+    /// only that it failed.
     /// Fails an `assert ... fails`, with what really happened as its help.
     pub(crate) fn assert_said(&mut self, happened: &Operand, span: Span) -> Result<(), String> {
         let (value, kind) = self.operand(happened)?;
@@ -427,8 +426,8 @@ impl Emit<'_, '_, '_> {
             self.start_block(&this);
             let place = self.offset(&base, field.offset);
             let inside = if held.in_memory() { place } else { self.load_field(&held, &place, "") };
-            // Printed as itself, a string member is its text, as an interpreter's value prints;
-            // anything else is written as it's shown.
+            // Printed as itself, a string member is its text, unquoted; anything else is written
+            // as it's shown.
             let text = match (how, &held) {
                 (Shown::Plain, Kind::Str) if self.headers() => self.owned_text_block(&inside),
                 (Shown::Plain, Kind::Str) => {
@@ -484,7 +483,7 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// A new string with a value's text as the interpreter shows it, with a string in quotes.
+    /// A new string with a value's text as it's shown, with a string in quotes.
     fn shown_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
         if self.is_one_of_several(kind) {
             return self.one_of_several_text(value, kind, Shown::Quoted);
@@ -568,7 +567,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A new string with the text of a list, a dict or a block of a struct, which the runtime
-    /// writes from an interpreter value.
+    /// writes from the block.
     fn text_of_block(&mut self, value: &str) -> String {
         self.declare("declare ptr @fennec_block_text(ptr) nounwind");
         let text = self.temp();
@@ -1514,7 +1513,7 @@ tagged:
             "str" => self.text_of_value(dest.ok_or("no result")?, first.ok_or("no argument")?, span),
             "str.code" => {
                 // One byte of ASCII is its own code; anything else goes to the runtime, which
-                // also fails as the interpreter does for a string that isn't one character.
+                // also fails for a string that isn't one character.
                 let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let bytes_at = self.offset(&text, TEXT_BYTES.unsigned_abs());
                 let (bytes, one) = (self.temp(), self.temp());
@@ -1612,7 +1611,7 @@ tagged:
                 self.line(&format!("store i64 {value}, ptr {place}"));
                 Ok(())
             }
-            // With no separator, on runs of spaces. An empty one fails, as in the interpreter.
+            // With no separator, on runs of spaces. An empty one fails.
             "str.split" => {
                 let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let separator = match args.get(1) {

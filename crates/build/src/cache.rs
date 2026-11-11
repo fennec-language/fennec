@@ -31,6 +31,11 @@ pub const DEFAULT_CAP: u64 = 1 << 30;
 /// An entry used this recently is already near the end of cleanup's order.
 const MARKED_RECENTLY: Duration = Duration::from_secs(600);
 
+/// An entry stored or used this recently is never removed, however far over the cap the cache
+/// is: a command may be about to read it, or to start the program it is. It's twice the time an
+/// entry goes unmarked, so one used since is always inside it.
+pub const KEPT_RECENT: Duration = Duration::from_mins(20);
+
 /// Another build's folder that nothing has used for this long goes whole at any cleanup, under the
 /// cap or over it: only that build of Fennec could read it, and it's most likely gone.
 pub const UNUSED_BUILD: Duration = Duration::from_hours(24);
@@ -65,6 +70,8 @@ struct Entry {
     used: SystemTime,
     /// The build folder it's in.
     build: PathBuf,
+    /// How many names the file has: more than one once a run has a program put out as it.
+    links: u64,
 }
 
 impl Cache {
@@ -88,11 +95,8 @@ impl Cache {
         let bytes = std::fs::read(&path).ok()?;
         // Marking costs a write, so an entry marked in the last few minutes isn't marked again.
         let age = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
-        if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY)
-            && let Ok(file) = File::options().write(true).open(&path)
-        {
-            // Only cleanup's order depends on this, so a failure here doesn't matter.
-            let _ = file.set_modified(SystemTime::now());
+        if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
+            mark_used(&path);
         }
         Some(bytes)
     }
@@ -139,14 +143,13 @@ impl Cache {
         }
         // An entry kept some other way, as by `write`, may not be runnable yet.
         read_only_program(&path)?;
+        // Marked before it's put out: a linked file is the entry, with its time, and a sweep of
+        // what earlier runs built goes by that time, so it has to be the time of this run.
+        mark_used(&path);
         let _ = std::fs::remove_file(to);
         if std::fs::hard_link(&path, to).is_err() {
             std::fs::copy(&path, to)?;
             read_only_program(to)?;
-        }
-        if let Ok(file) = File::options().write(true).open(&path) {
-            // Only cleanup's order depends on this, so a failure here doesn't matter.
-            let _ = file.set_modified(SystemTime::now());
         }
         Ok(true)
     }
@@ -215,7 +218,7 @@ impl Cache {
         if size > cap {
             let goal = cap / 5 * 4;
             kept.sort_by_key(|entry| entry.used);
-            for entry in kept {
+            for entry in kept.iter().filter(|entry| !entry.held()) {
                 if size <= goal {
                     break;
                 }
@@ -244,6 +247,24 @@ impl Cache {
     }
 }
 
+impl Entry {
+    /// Whether the entry can't go yet: it was stored or used in the last [`KEPT_RECENT`], or a
+    /// program it is has been put out where a run started it, as a second name for the same file.
+    fn held(&self) -> bool {
+        let recent = self.used.elapsed().map_or(true, |age| age < KEPT_RECENT);
+        recent || self.links > 1
+    }
+}
+
+/// Marks an entry as just used, for cleanup's order. A program kept read-only can't be opened to
+/// write, but its owner may still set its time. Only cleanup's order and the sweep of old runs
+/// depend on this, so a failure here doesn't matter.
+fn mark_used(path: &Path) {
+    if let Ok(file) = File::open(path) {
+        let _ = file.set_modified(SystemTime::now());
+    }
+}
+
 /// Every file under `dir`, in the build folder `build`.
 fn files(dir: &Path, build: &Path, found: &mut Vec<Entry>) {
     let Ok(listing) = std::fs::read_dir(dir) else { return };
@@ -254,7 +275,11 @@ fn files(dir: &Path, build: &Path, found: &mut Vec<Entry>) {
             files(&path, build, found);
         } else {
             let used = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            found.push(Entry { path, size: metadata.len(), used, build: build.to_path_buf() });
+            #[cfg(unix)]
+            let links = std::os::unix::fs::MetadataExt::nlink(&metadata);
+            #[cfg(not(unix))]
+            let links = 1;
+            found.push(Entry { path, size: metadata.len(), used, build: build.to_path_buf(), links });
         }
     }
 }

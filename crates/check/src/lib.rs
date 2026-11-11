@@ -265,8 +265,8 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
 
 /// Makes the calls to `json.dumps`, `json.loads`, `toml.dumps` and `toml.loads` in a checked and
 /// resolved module call std's readers and writers written in Fennec instead, where what's read or
-/// written has its own `def serialize` or `def deserialize`, so native code needs no interpreter
-/// for them. The rest stay as they were. Says whether anything changed. If the changed module
+/// written has its own `def serialize` or `def deserialize`, so they build natively. The rest
+/// stay as they were. Says whether anything changed. If the changed module
 /// doesn't check, which would be a mistake here, it's left as it was.
 pub fn route_formats_natively(module: &mut Module) -> bool {
     if !imports_a_format(module) && !sends_json(module) {
@@ -333,8 +333,8 @@ fn sends_json(module: &Module) -> bool {
     sends
 }
 
-/// The function `route_sorts_natively` calls in place of `sorted`, written in Fennec: the
-/// interpreter's merge sort, which splits a list at its middle and, merging, takes from the right
+/// The function `route_sorts_natively` calls in place of `sorted`, written in Fennec: a
+/// merge sort, which splits a list at its middle and, merging, takes from the right
 /// only when its item is `<` the left one, so the order is the same where `<` is.
 const SORTED_IN_ORDER: &str = "\
 def fennec_sorted_in_order[T: Ordered](items: list[T]) -> list[T]:

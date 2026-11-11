@@ -535,8 +535,8 @@ fn leaving_with_else_is_checked_like_the_statement() {
 /// A failure passes up from an arrow function only with `?`, as from a `def`, and `fennec fix`
 /// adds it. What it passes up is the arrow's own failure, not one more way the function around it
 /// fails. An arrow that can fail is refused where a builtin takes a function, as `sorted`'s
-/// `key=`: nothing there is told to expect a failure. Where this got through, the JIT ended the
-/// program there with no error and an exit code of 0.
+/// `key=`: nothing there is told to expect a failure. Where this got through, the program once
+/// ended there with no error and an exit code of 0.
 #[test]
 fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
     let unmarked = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(why=\"neg\")\n    n // 2\n\ntest \"half\":\n    assert failure_of(() => half(-1)) is not None\n";

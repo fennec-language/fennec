@@ -85,7 +85,7 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             out.insert(
                 "Id".to_owned(),
                 // Its slot in the high 32 bits of `key` and its generation in the low 32, so an
-                // `Id` is two words, as the interpreter's is.
+                // `Id` is two words.
                 Written::Struct(vec![field("key", &Type::Int), field("tag", &Type::Int)]),
             );
         }

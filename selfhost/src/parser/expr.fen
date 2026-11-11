@@ -139,11 +139,17 @@ extend Parser:
         self.handler_over(start, failure, at, arms)
 
     ## A handler whose block is a `match` over the failure, named `failure`, with these arms.
+    ## The `match` over the failure covers only its arms, a span of its own: analyses tell
+    ## expressions apart by span, and one that shared the handler's would hide both, as a way out
+    ## of an arm did from a `with` source's cleanup.
     def handler_over(self, start: Span, failure: str, at: Span, arms: list[MatchArm]) -> Expr:
         span = start.to(self.prev_span())
+        mut over = span
+        if arms.len() > 0:
+            over = arms[0].span.to(arms[arms.len() - 1].span)
         subject = Expr(kind=.Name(failure), span=at)
-        matched = Expr(kind=.Match(subject, arms), span=span)
-        leaving_match(start, [Stmt(kind=.Expr(matched), span=span)], span, failure=failure)
+        matched = Expr(kind=.Match(subject, arms), span=over)
+        leaving_match(start, [Stmt(kind=.Expr(matched), span=over)], span, failure=failure)
 
     def at_leaving(self) -> bool:
         self.peek() in [.Keyword("continue"), .Keyword("break"), .Keyword("return"), .Keyword("fail")]

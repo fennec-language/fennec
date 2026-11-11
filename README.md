@@ -68,7 +68,7 @@ Until then, install it from a checkout of this repository. This builds `fennec` 
 .github/scripts/install.sh
 ```
 
-Or run it from the checkout with Cargo. Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and hands what LLVM can't build yet to the interpreter, which no example needs.
+Or run it from the checkout with Cargo. Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and where LLVM can't build something yet, it says why.
 
 ```bash
 cargo run -q -p fennec -- run examples/game.fen

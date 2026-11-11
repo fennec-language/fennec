@@ -35,9 +35,18 @@ said() {
   echo "$1" >> "$report"
   echo "$1"
 }
-# A program meant to vary, named in `determinism-varies.txt`.
-meant_to_vary() {
-  grep -qE "^$1( |$)" "$varies" 2> /dev/null
+# How `determinism-varies.txt` names `$1`: `sorted` when only the order of its lines may vary, as
+# what `parallel` bodies print does, `varies` when its output is meant to vary, or nothing.
+named() {
+  awk -v name="$1" '$1 == name { print ($2 == "sorted" ? "sorted" : "varies"); exit }' "$varies" 2> /dev/null
+}
+# Whether runs `$1` and `$2` of a program named `$3` printed the same: sorted, if it's named so.
+same() {
+  if [ "$3" = sorted ]; then
+    cmp -s <(sort "$1") <(sort "$2")
+  else
+    cmp -s "$1" "$2"
+  fi
 }
 # Keeps every core busy until `unload`, so a run's timing is a loaded machine's.
 load() {
@@ -81,10 +90,12 @@ check() {
   unload
   run "$executable" "$folder" "$work/recorded" FENNEC_RECORD="$work/log"
   run "$executable" "$folder" "$work/replayed" FENNEC_REPLAY="$work/log"
-  if ! meant_to_vary "$name"; then
-    cmp -s "$work/first" "$work/loaded" ||
+  local how
+  how=$(named "$name")
+  if [ "$how" != varies ]; then
+    same "$work/first" "$work/loaded" "$how" ||
       differs "$name" "with seed 1 on 1 thread" "$work/first" "with seed 2 on $many threads, loaded" "$work/loaded"
-    cmp -s "$work/first" "$work/recorded" ||
+    same "$work/first" "$work/recorded" "$how" ||
       differs "$name" "with seed 1 on 1 thread" "$work/first" "recorded" "$work/recorded"
   fi
   cmp -s "$work/recorded" "$work/replayed" ||
@@ -147,7 +158,7 @@ if [ -z "${NIGHTLY_ONLY:-}" ] && [ -x "$fuzz" ]; then
 fi
 # The programs named as meant to vary, so the report shows the list as it stands.
 while read -r name _; do
-  [ -n "$name" ] && [ "${name#\#}" = "$name" ] && said "- \`$name\` is named as meant to vary, so only its replay is compared."
+  [ -n "$name" ] && [ "${name#\#}" = "$name" ] && said "- \`$name\` is named in determinism-varies.txt: $(named "$name")."
 done < "$varies"
 said "- $checked programs ran four ways each$([ "$different" = 0 ] && echo ", all the same")."
 exit "$different"

@@ -1,3 +1,9 @@
-# Programs whose output is meant to vary from run to run, one a line: the path, then why. Each is
-# still recorded and replayed, which must agree; only its runs with other seeds, threads and load
-# aren't compared. A program belongs here only when varying is its point, like printing the time.
+# Programs whose output may vary from run to run, one a line: the path, how, then why.
+#
+#   examples/clock.fen varies prints the time
+#   examples/workers.fen sorted its parallel bodies print, in real call order
+#
+# `sorted`: only the order of its lines may vary, as with what `parallel` bodies print, so its runs
+# are compared with their lines sorted. `varies`: its output is meant to vary, so only its replay is
+# compared. A replay must always agree with its recording, whichever it is. A program belongs here
+# only when that's its point; anything else that varies is a bug.

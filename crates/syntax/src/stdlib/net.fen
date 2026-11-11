@@ -485,9 +485,12 @@ def write_response(
     if not keep:
         head += "connection: close\r\n"
     head += "\r\n"
-    connection.write(head)?
+    # The head and the body in one write, so a small response goes in one packet: written apart,
+    # the body waits for the client to acknowledge the head, which it may hold back for 40 ms.
     if response.body.len() > 0 and not head_only:
-        connection.write(response.body)?
+        connection.write(head.encode() + response.body)?
+    else:
+        connection.write(head)?
 
 ## The words that go with a status.
 def reason_phrase(status: int) -> str:

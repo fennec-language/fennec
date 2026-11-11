@@ -204,8 +204,8 @@ struct Tree:
         self.write_generics(type_def.generics)
         for field in type_def.fields:
             self.write_field(field)
-        for case in type_def.cases:
-            self.write_case(case)
+        for case_name in type_def.cases:
+            self.write_case(case_name)
         for method in type_def.methods:
             self.write_function(method)
         self.close()
@@ -235,9 +235,9 @@ struct Tree:
         self.write_expr(expr)
         self.close()
 
-    def write_case(ref self, case: Case):
-        self.open(f"case {case.name}", case.span)
-        for field in case.fields:
+    def write_case(ref self, case_name: Case):
+        self.open(f"case {case_name.name}", case_name.span)
+        for field in case_name.fields:
             self.write_field(field)
         self.close()
 

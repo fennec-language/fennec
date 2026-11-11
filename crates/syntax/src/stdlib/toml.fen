@@ -1019,15 +1019,15 @@ struct TomlReader:
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 
-    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         match self._here:
             case .Text(key):
                 mut at = 0
-                for case, has_data in cases:
-                    if case == key:
+                for case_name, has_data in cases:
+                    if case_name == key:
                         if has_data:
                             fail ParseError(
-                                message=f"{self._where()} is `{name}.{case}`, which needs its fields",
+                                message=f"{self._where()} is `{name}.{case_name}`, which needs its fields",
                                 line=0,
                                 column=0,
                             )
@@ -1045,11 +1045,11 @@ struct TomlReader:
                 match inner:
                     case .Table(fields):
                         mut at = 0
-                        for case, has_data in cases:
-                            if case == key:
+                        for case_name, has_data in cases:
+                            if case_name == key:
                                 if not has_data and fields.keys.len() > 0:
                                     fail ParseError(
-                                        message=f"`{name}.{case}` has no field \"{fields.keys[0]}\", but {self._where()} has one",
+                                        message=f"`{name}.{case_name}` has no field \"{fields.keys[0]}\", but {self._where()} has one",
                                         line=0,
                                         column=0,
                                     )
@@ -1196,12 +1196,12 @@ struct TomlWriter:
             self._done = .Table(table=outer)
             self._after_case = True
 
-    def case(ref self, name: str, case: str, at: int):
-        self._done = .Text(text=case)
+    def enum_case(ref self, name: str, case_name: str, at: int):
+        self._done = .Text(text=case_name)
 
-    def case_record(ref self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case_name: str, at: int, count: int):
         self._tables.append(TomlTable())
-        self._wraps.append(case)
+        self._wraps.append(case_name)
 
     def member(ref self, name: str, at: int):
         self._optional = False

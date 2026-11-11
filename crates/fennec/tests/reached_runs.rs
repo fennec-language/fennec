@@ -394,6 +394,10 @@ fn a_body_edit_using_a_kit_name_from_a_file_not_imported_is_refused() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A kit to run without its tests: its name, its files, the edit to `main.fen`, and what refusing
+/// the edit says.
+type Untested<'f> = (&'f str, &'f [(&'f str, &'f str)], &'f str, &'f str);
+
 /// `--no-test` only leaves out the tests: a run checks as much without them, so what it accepts
 /// is what a whole check accepts, cached or not. A run loads only `main` and what it imports, so
 /// a name another file defines, or a case two enums share, has the whole kit checked.
@@ -409,7 +413,7 @@ fn a_run_without_its_tests_refuses_what_a_whole_check_does() {
         ("util.fen", "def sorted(items: list[int]) -> list[int]:\n    return items\n"),
         ("main.fen", "def main(stdout: Stdout):\n    stdout.print(1)\n"),
     ];
-    let cases: [(&str, &[(&str, &str)], &str, &str); 2] = [
+    let cases: [Untested<'_>; 2] = [
         (
             "untested_case",
             &colors,

@@ -315,10 +315,9 @@ impl KitNames {
         program: &Program,
     ) -> Option<KitNames> {
         let loaded = items_of_modules(program, files, &|_| true);
-        let paths: HashMap<String, std::path::PathBuf> =
-            fennec_kit::kit_paths(Path::new(path))?.into_iter().collect();
+        let paths = own_sources(path)?;
         let mut each = Vec::new();
-        for file in files.iter().filter(|file| !file.module.starts_with(fennec_kit::EMBEDDED)) {
+        for file in files.iter().filter(|file| paths.contains_key(&file.module)) {
             if let Some(items) = loaded.get(&file.module) {
                 each.push(FileNames::of(items.iter().copied()));
                 continue;
@@ -440,13 +439,21 @@ pub(crate) fn kit_items(program: &Program, files: &[KitFile]) -> Vec<Item> {
     items_of_modules(program, files, &|_| true).into_values().flatten().cloned().collect()
 }
 
-/// Whether `program` holds every one of the kit's own files.
-pub(crate) fn has_every_file(program: &Program, files: &[KitFile]) -> bool {
+/// Whether `program` holds every one of the source files of the kit at `path`.
+pub(crate) fn has_every_file(path: &str, program: &Program, files: &[KitFile]) -> bool {
+    let Some(sources) = own_sources(path) else { return false };
     let loaded = items_of_modules(program, files, &|_| true);
-    files
-        .iter()
-        .filter(|file| !file.module.starts_with(fennec_kit::EMBEDDED))
-        .all(|file| loaded.contains_key(&file.module))
+    sources.keys().all(|module| loaded.contains_key(module))
+}
+
+/// The kit at `path`'s own source files, under its `src`, by module: not its manifest, its lock
+/// or a dependency's.
+fn own_sources(path: &str) -> Option<HashMap<String, std::path::PathBuf>> {
+    let paths = fennec_kit::kit_paths(Path::new(path))?;
+    let root = paths.iter().find(|(module, _)| module == "kit.toml")?.1.parent()?.to_path_buf();
+    let src = root.join("src");
+    let is_source = |file: &Path| file.starts_with(&src) && file.extension().is_some_and(|ext| ext == "fen");
+    Some(paths.into_iter().filter(|(_, file)| is_source(file)).collect())
 }
 
 /// The changed modules' items, as `program` loaded them.

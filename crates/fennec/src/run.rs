@@ -307,7 +307,7 @@ fn refused_as_a_whole(
     files: Option<&[fennec_build::KitFile]>,
     program: &fennec_kit::Program,
 ) -> Result<crate::verdict::KitNames, ExitCode> {
-    let Some(files) = files.filter(|files| !crate::verdict::has_every_file(program, files)) else {
+    let Some(files) = files.filter(|files| !crate::verdict::has_every_file(path, program, files)) else {
         return Ok(crate::verdict::KitNames::of(&program.module.items));
     };
     let kit = crate::verdict::KitNames::of_kit(path, cache, files, program);

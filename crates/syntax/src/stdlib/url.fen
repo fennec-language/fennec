@@ -16,13 +16,25 @@ export struct Url:
     port = 0
     path = ""
     ## The query's parameters by name, in the order the URL has them. A name given twice
-    ## keeps its last value.
+    ## keeps its first value, and `query_all` gives every one. It isn't the last, so a value
+    ## tacked onto the end of a URL can't take the place of the one written before it.
     query = dict[str, str]()
     fragment = ""
     ## Whether it was written with `//`, which `mailto:a@b` wasn't, and its path as it was written:
     ## decoding one loses whether a `/` was a `%2F`.
     _authority = False
     _raw_path = ""
+    ## Its query as it was written, so `query_all` still has the values `query` doesn't keep.
+    _raw_query = ""
+
+    ## Every value the query gives `name`, in the order the URL has them, where `query` keeps
+    ## only the first: `?tag=a&tag=b` gives `["a", "b"]`. A name it doesn't have gives none.
+    def query_all(self, name: str) -> list[str]:
+        # As it was written, unless the query has been changed since.
+        if self._raw_query != "" and decode_query(self._raw_query) == self.query:
+            return [value for given, value in query_pairs(self._raw_query) if given == name]
+        if name in self.query: return [self.query[name]]
+        return []
 
     ## `host`, then `:port` when a port was given: what the URL says to connect to.
     def address(self) -> str:
@@ -65,7 +77,8 @@ export def parse(text: str) -> Url fails InvalidValue:
         rest = rest[:at_hash]
     at_question = rest.find("?")
     if at_question is not None:
-        found = copy(found, query=decode_query(rest[at_question + 1:]))
+        raw_query = rest[at_question + 1:]
+        found = copy(found, query=decode_query(raw_query), _raw_query=raw_query)
         rest = rest[:at_question]
     colon = rest.find(":")
     slash = rest.find("/") else rest.len()
@@ -181,17 +194,26 @@ export def encode_query(params: dict[str, str]) -> str:
     "&".join([form_quoted(name) + "=" + form_quoted(value) for name, value in params.items()])
 
 ## A query's pairs, with their escapes read and `+` read as a space, in the order the query
-## has them. A name with no `=` has the value "", and a name given twice keeps its last value.
+## has them. A name with no `=` has the value "", and a name given twice keeps its first value,
+## as `Url.query` does.
 export def decode_query(text: str) -> dict[str, str]:
     mut found = dict[str, str]()
+    for name, value in query_pairs(text):
+        if name not in found:
+            found[name] = value
+    return found
+
+## Every pair in a query, repeated names and all, in the order it has them.
+def query_pairs(text: str) -> list[(str, str)]:
+    mut found = list[(str, str)]()
     for pair in text.split("&"):
         if pair == "": continue
         equals = pair.find("=")
         if equals is None:
-            found[decoded(pair, plus=True)] = ""
+            found.append((decoded(pair, plus=True), ""))
         else:
-            found[decoded(pair[:equals], plus=True)] = decoded(pair[equals + 1:], plus=True)
-    found
+            found.append((decoded(pair[:equals], plus=True), decoded(pair[equals + 1:], plus=True)))
+    return found
 
 def form_quoted(text: str) -> str:
     quoted(text, keep=" ").replace(" ", "+")

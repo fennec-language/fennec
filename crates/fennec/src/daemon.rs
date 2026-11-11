@@ -133,22 +133,61 @@ mod unix {
     use super::{BUILD, Outcome, VERSION};
     use crate::changes::Snapshots;
 
-    /// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket
-    /// (about 100 bytes on macOS), in which case the user's runtime folder or the temp folder,
-    /// named by a hash of Fennec's folder.
-    fn socket_path(home: &Path) -> PathBuf {
-        let preferred =
-            home.join("daemon").join(format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD)));
-        if preferred.as_os_str().len() < 100 {
-            return preferred;
+    /// How long a socket's path may be: a little under the 104 bytes macOS takes, and the 108
+    /// Linux does.
+    const LONGEST_SOCKET: usize = 100;
+
+    /// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket, in
+    /// which case the user's runtime folder, or a short folder of its own under `/tmp` named by a
+    /// hash of Fennec's folder. None when none of those will do, and then commands do their work
+    /// themselves. Only the daemon, which listens there, `makes` that folder.
+    fn socket_path(home: &Path, makes: bool) -> Option<PathBuf> {
+        socket_in(home, std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), makes)
+    }
+
+    /// `socket_path`, with the user's runtime folder as given.
+    fn socket_in(home: &Path, runtime: Option<PathBuf>, makes: bool) -> Option<PathBuf> {
+        let name = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
+        let preferred = home.join("daemon").join(&name);
+        if preferred.as_os_str().len() < LONGEST_SOCKET {
+            return Some(preferred);
         }
         let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
-        let folder = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-        folder.join(format!(
-            "fennec-{}-{VERSION}-{}.sock",
-            hash.get(..16).unwrap_or(&hash),
-            BUILD.get(..16).unwrap_or(BUILD)
-        ))
+        let hash = hash.get(..16).unwrap_or(&hash);
+        // The user's own runtime folder, which only they can reach.
+        if let Some(runtime) = runtime {
+            let socket = runtime.join(format!("fennec-{hash}-{name}"));
+            if socket.as_os_str().len() < LONGEST_SOCKET {
+                return Some(socket);
+            }
+        }
+        let folder = Path::new("/tmp").join(format!("fennec-{hash}"));
+        owned_privately(&folder, home, makes)?;
+        Some(folder.join(name))
+    }
+
+    /// Whether `folder` will do for a socket: open to nobody but its owner, who owns Fennec's
+    /// folder at `home` too. `/tmp` is shared, so a folder someone else made there first, or one
+    /// others can reach, is never used. The daemon `makes` it if it isn't there; for a command
+    /// that only connects, one that isn't there will do, as there's nothing in it to connect to.
+    fn owned_privately(folder: &Path, home: &Path, makes: bool) -> Option<()> {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        // What its group and everyone else may do with it, which has to be nothing.
+        const OTHERS: u32 = 0o077;
+        if makes {
+            match std::fs::DirBuilder::new().mode(0o700).create(folder) {
+                Err(err) if err.kind() != ErrorKind::AlreadyExists => return None,
+                _ => {}
+            }
+        }
+        // Not followed if it's a link, which could point anywhere.
+        let found = match std::fs::symlink_metadata(folder) {
+            Ok(found) => found,
+            Err(err) if err.kind() == ErrorKind::NotFound && !makes => return Some(()),
+            Err(_) => return None,
+        };
+        let owner = std::fs::metadata(home).ok()?.uid();
+        (found.is_dir() && found.uid() == owner && found.mode() & OTHERS == 0).then_some(())
     }
 
     /// The first line of every request: the version and build of the `fennec` asking.
@@ -191,7 +230,7 @@ mod unix {
     }
 
     pub(super) fn send(home: &Path, request: &[&str]) -> Option<Outcome> {
-        let mut stream = UnixStream::connect(socket_path(home)).ok()?;
+        let mut stream = UnixStream::connect(socket_path(home, false)?).ok()?;
         let message = format!("{}\n{}\n", header(), request.join("\n"));
         stream.write_all(message.as_bytes()).ok()?;
         stream.shutdown(std::net::Shutdown::Write).ok()?;
@@ -202,13 +241,14 @@ mod unix {
 
     /// Opens a language server session: after `lsp`, the connection carries its messages.
     pub(super) fn open_session(home: &Path) -> Option<UnixStream> {
-        let mut stream = UnixStream::connect(socket_path(home)).ok()?;
+        let mut stream = UnixStream::connect(socket_path(home, false)?).ok()?;
         stream.write_all(format!("{}\nlsp\n", header()).as_bytes()).ok()?;
         Some(stream)
     }
 
     /// Starts the daemon in the background and waits until it answers, for up to 2 seconds.
     pub(super) fn start(home: &Path) -> Option<()> {
+        let socket = socket_path(home, false)?;
         let exe = std::env::current_exe().ok()?;
         // The daemon outlives the command that starts it, so it's never waited for.
         let _daemon = std::process::Command::new(exe)
@@ -218,7 +258,6 @@ mod unix {
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
-        let socket = socket_path(home);
         for _ in 0..200 {
             if UnixStream::connect(&socket).is_ok() {
                 return Some(());
@@ -230,7 +269,9 @@ mod unix {
 
     /// Serves requests until stopped or idle for too long.
     pub(super) fn serve(home: &Path) -> ExitCode {
-        let socket = socket_path(home);
+        // Its owner is whom the socket's folder has to belong to.
+        let _ = std::fs::create_dir_all(home);
+        let Some(socket) = socket_path(home, true) else { return ExitCode::FAILURE };
         if UnixStream::connect(&socket).is_ok() {
             return ExitCode::SUCCESS;
         }
@@ -282,6 +323,10 @@ mod unix {
             }
         }
         let _ = std::fs::remove_file(&socket);
+        // The short folder under `/tmp`, once no daemon of another build is listening in it.
+        if let Some(folder) = socket.parent().filter(|folder| folder.parent() == Some(Path::new("/tmp"))) {
+            let _ = std::fs::remove_dir(folder);
+        }
         ExitCode::SUCCESS
     }
 
@@ -368,16 +413,16 @@ mod unix {
         use std::path::Path;
         use std::time::Instant;
 
-        use super::{BUILD, State, VERSION, handle, socket_path};
+        use super::{BUILD, State, VERSION, handle, socket_in, socket_path};
 
         /// A daemon answers only a command of its own build: one of the same version built from
         /// other source would get what an older compiler does.
         #[test]
         fn a_daemon_answers_only_its_own_build() {
             let home = Path::new("/home/fennec/.fennec");
-            let socket = socket_path(home);
+            let socket = socket_path(home, false);
             let named = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
-            assert_eq!(socket, home.join("daemon").join(named));
+            assert_eq!(socket, Some(home.join("daemon").join(named)));
             let mut state = State {
                 home: home.to_path_buf(),
                 snapshots: HashMap::new(),
@@ -394,6 +439,33 @@ mod unix {
                 assert_eq!(refused.code, 1, "{other}");
                 assert!(refused.stderr.contains("built from other source"), "{refused:?}");
             }
+        }
+
+        /// Where Fennec's folder is too deep for a socket, the daemon listens in a short folder of
+        /// its own under `/tmp`, open to nobody else, and a folder there that others can reach is
+        /// never used.
+        #[test]
+        fn a_deep_fennec_folder_listens_in_a_short_private_folder() {
+            use std::os::unix::fs::PermissionsExt;
+            let folder = fennec_temp::Temp::folder("deep-daemon").unwrap();
+            let home = folder.join("a folder with a long name, ".repeat(4));
+            std::fs::create_dir_all(&home).unwrap();
+            let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
+            let short =
+                fennec_temp::Temp::at(Path::new("/tmp").join(format!("fennec-{}", hash.get(..16).unwrap())));
+            assert_eq!(socket_in(&home, None, false).as_deref().map(Path::parent), Some(Some(short.path())));
+            assert!(!short.exists(), "only the daemon makes it");
+            let socket = socket_in(&home, None, true).unwrap();
+            assert!(socket.as_os_str().len() < 100, "{}", socket.display());
+            let made = std::fs::symlink_metadata(&short).unwrap();
+            assert_eq!(made.permissions().mode() & 0o777, 0o700);
+            std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(socket_in(&home, None, true), None, "others can reach it");
+            assert_eq!(socket_in(&home, None, false), None, "nor connected to");
+            // The runtime folder, when there is one, comes before `/tmp`, and nothing's made in it.
+            let runtime = Path::new("/run/user/1000");
+            let in_runtime = socket_in(&home, Some(runtime.to_path_buf()), true).unwrap();
+            assert_eq!(in_runtime.parent(), Some(runtime));
         }
     }
 }

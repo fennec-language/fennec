@@ -188,6 +188,9 @@ struct JsonWriter:
     _found = False
     _wants_tables = False
     _optional = False
+    ## Whether a float JSON can't write, NaN or infinity, came up. Which one and where it is are
+    ## found apart from writing, so writing what JSON can hold costs nothing more.
+    _unwritable = False
 
     def written(self) -> str:
         self._text
@@ -196,8 +199,10 @@ struct JsonWriter:
         self._text += str(value)
 
     def float(ref self, value: float):
-        if value != value or value - value != 0.0:
-            assert False
+        # NaN and infinity are the floats less themselves isn't 0.
+        if value - value != 0.0:
+            self._unwritable = True
+            return
         self._text += float_text(value)
 
     def bool(ref self, value: bool):
@@ -402,12 +407,23 @@ export def native_dumps[T: Serializable](value: T, names: JsonNames? = None, ind
     spelled = names else JsonNames.SnakeCase
     mut out = JsonWriter(_names=spelled, _indent=indent)
     value.serialize(ref out)
+    if out._unwritable:
+        stop_at_unwritable(value)
     if not out._wants_tables: return out.written()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     tables = tables_in(value)
     mut again = JsonWriter(_names=spelled, _indent=indent, _tables=tables, _found=True)
     value.serialize(ref again)
     again.written()
+
+## Stops the program at the first float in `value` that JSON can't write, NaN or infinity, saying
+## where it is. It's a bug in the program, as a NaN reaching `int()` is, and not a failure, since
+## everything else `dumps` is given can be written.
+def stop_at_unwritable[T: Serializable](value: T):
+    mut finder = TableFinder(_floats=True)
+    value.serialize(ref finder)
+    problem = finder.problem()
+    stop(problem if problem != "" else "JSON can't write NaN or infinity")
 
 ## Where each `Id` in `value` is in its `Table`, by the name of its type and its `id_key`. A value
 ## with an `Id` that can't be saved stops the program, saying why and where.
@@ -521,6 +537,8 @@ struct TableFinder:
     _optional = False
     ## Whether `Table`s are saved slot for slot, so an `Id` whose item has gone is saved as it is.
     _exact = False
+    ## Whether a float JSON can't write, NaN or infinity, is the problem, said with where it is.
+    _floats = False
 
     def exact(self) -> bool:
         self._exact
@@ -537,7 +555,9 @@ struct TableFinder:
         pass
 
     def float(ref self, value: float):
-        pass
+        if self._floats and self._problem == "" and value - value != 0.0:
+            here = place_text(self._path)
+            self._problem = f"{here} is {value}, which JSON can't write: it has no NaN or infinity"
 
     def bool(ref self, value: bool):
         pass
@@ -1550,11 +1570,12 @@ struct JsonReader:
             at += 1
         ParseError(message=f"{message}, at line {line}, column {column}", line=line, column=column)
 
-    ## Goes past one value, saying what's wrong with it if anything is.
+    ## Goes past one value inside `depth` arrays and objects, saying what's wrong with it if
+    ## anything is. An array or object starting here is `depth + 1` deep.
     def _skip(ref self, depth: int) fails ParseError:
-        if depth > JSON_MOST_DEEP:
-            fail self._bad(f"arrays and objects nest more than {JSON_MOST_DEEP} deep here")
         b = self._space()
+        if (b == 123 or b == 91) and depth >= JSON_MOST_DEEP:
+            fail self._bad(f"arrays and objects nest more than {JSON_MOST_DEEP} deep here")
         if b == 123:
             self._skip_object(depth)?
         elif b == 91:

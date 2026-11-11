@@ -1,0 +1,7 @@
+error: `radius` is bound by only some of the alternatives of this `case`
+ --> examples/errors/alternatives_bind_different_names.fen:7:9
+  |
+7 |         case .Circle(radius) | .Square(side):
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: bind `radius` in every alternative, or write `_` in its place in all of them

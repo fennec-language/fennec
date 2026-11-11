@@ -1,0 +1,7 @@
+error: the value is -inf, which JSON can't write: it has no NaN or infinity
+ --> examples/errors/json_negative_infinity.fen:6:18
+  |
+6 |     stdout.print(json.dumps(endless))
+  |                  ^^^^^^^^^^^^^^^^^^^
+  = in `main`
+  = called from the standard library

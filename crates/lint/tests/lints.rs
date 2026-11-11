@@ -837,7 +837,8 @@ fn printing_inside_a_parallel_loop_is_a_hint_about_order() {
         let help = hints[0].diagnostic.help.as_deref().unwrap_or_default();
         assert!(help.contains("for line in (render(x) for x in parallel(xs)): stdout.print(line)"), "{help}");
     }
-    let renamed = "def main(out: Stdout):\n    for x in parallel([1, 2]):\n        out.print(x)\n    return\n";
+    let renamed =
+        "def main(out: Stdout):\n    for x in parallel([1, 2]):\n        out.print(x)\n    return\n";
     assert!(all_rules(renamed).contains(&"parallel-print"));
     for clean in [
         "    for x in [1, 2]:\n        stdout.print(x)\n    return\n",

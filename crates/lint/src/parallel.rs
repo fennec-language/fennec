@@ -18,7 +18,7 @@ pub(crate) fn of(module: &Module) -> Vec<Lint> {
             in_block(&def.body, &streams, &mut found);
         }
     }
-    found.into_iter().map(|at| Lint::hint("parallel-print", hint(at))).collect()
+    found.into_iter().map(|(start, end)| Lint::hint("parallel-print", hint(Span { start, end }))).collect()
 }
 
 /// The parameters a function is given standard output or error by.
@@ -32,14 +32,14 @@ fn streams(def: &FnDef) -> Vec<&str> {
 
 /// Where each `parallel` loop in `stmts`, at any depth, uses one of `streams`. A use inside two
 /// nested loops is found once.
-fn in_block(stmts: &[Stmt], streams: &[&str], found: &mut BTreeSet<Span>) {
+fn in_block(stmts: &[Stmt], streams: &[&str], found: &mut BTreeSet<(u32, u32)>) {
     for stmt in stmts {
         if let StmtKind::For { iter, body, .. } = &stmt.kind
             && is_parallel(iter)
         {
             fennec_syntax::read::in_stmts(body, &mut |expr| {
                 if let Some(at) = writes(expr, streams) {
-                    found.insert(at);
+                    found.insert((at.start, at.end));
                 }
             });
         }

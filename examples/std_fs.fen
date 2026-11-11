@@ -66,6 +66,44 @@ test "a narrowed Fs reaching outside its folder fails as PermissionDenied"(fs: F
     saves.write_text("saves/slot.txt", "kept")?
     assert saves.read_text("saves/slot.txt")? == "kept"
 
+## What `read_text_if_present` gives for `path`, or which case it fails with.
+def present_text(fs: Fs, path: str) -> str:
+    found = fs.read_text_if_present(path) except why:
+        case .NotFound():
+            return "NotFound, which it never fails with"
+        case .PermissionDenied():
+            return "PermissionDenied"
+        case .AlreadyExists():
+            return "AlreadyExists"
+        case .Other():
+            return "Other"
+    return found else "None"
+
+test "read_text_if_present gives None for nothing there, and fails for everything else"(fs: Fs):
+    fs.write_text("there.txt", "here")?
+    assert present_text(fs, "there.txt") == "here"
+    assert present_text(fs, "missing.txt") == "None"
+    # A folder that isn't there has nothing in it either.
+    assert present_text(fs, "missing/note.txt") == "None"
+    # A folder at the path is there, so reading it is a real failure.
+    fs.make_dir("folder")?
+    assert present_text(fs, "folder") == "Other"
+    # So is reaching outside a narrowed Fs.
+    fs.make_dir("saves")?
+    assert present_text(fs.only("saves"), "there.txt") == "PermissionDenied"
+    # The usual case: no file yet means a default.
+    text = fs.read_text_if_present("settings.txt")? else "volume = 5"
+    assert text == "volume = 5"
+
+test "read_bytes_if_present gives the bytes, or None for nothing there"(fs: Fs):
+    fs.write_bytes("raw.bin", bytes([0, 255]))?
+    found = fs.read_bytes_if_present("raw.bin")? else bytes([])
+    assert found == bytes([0, 255])
+    gone = fs.read_bytes_if_present("missing.bin")? else bytes([7])
+    assert gone == bytes([7])
+    fs.make_dir("folder")?
+    assert case_of(() => fs.read_bytes_if_present("folder")?) == "Other"
+
 test "everything else that goes wrong is Other"(fs: Fs):
     fs.make_dir("folder/inner")?
     fs.write_text("note.txt", "x")?

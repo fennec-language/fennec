@@ -28,6 +28,26 @@ export struct Fs:
             self._discard(file)
         self._finish(file)?
 
+    ## The text at `path`, or `None` when nothing is there, for a file that may not be made yet:
+    ## `text = fs.read_text_if_present(path)? else ""`. Anything else that goes wrong, as a folder
+    ## at the path or one it isn't let into, still fails.
+    def read_text_if_present(self, path: str) -> str? fails IoError:
+        text = self.read_text(path) except why:
+            case .NotFound():
+                return None
+            case _:
+                fail why
+        return text
+
+    ## The bytes at `path`, or `None` when nothing is there, as `read_text_if_present` does.
+    def read_bytes_if_present(self, path: str) -> bytes? fails IoError:
+        data = self.read_bytes(path) except why:
+            case .NotFound():
+                return None
+            case _:
+                fail why
+        return data
+
     ## The file at `path` to read, lent for a `with` block: `with fs.open("save.txt")? as file:`.
     ## It's closed when the block ends.
     def open(self, path: str) -> with File fails IoError:

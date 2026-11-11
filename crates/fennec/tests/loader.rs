@@ -348,6 +348,41 @@ fn built(program: &str, scratch: &Path) -> (Vec<Vec<u8>>, Executable, std::path:
     (objects, exe, executable)
 }
 
+/// Where each object's own copy of a local symbol many objects have is, as `__MergedGlobals`: the
+/// executable's copies of that name in a section of the same name, in the order the objects are,
+/// which is how the linker laid them out. The program's objects come before the runtime library,
+/// which may have copies of its own after them. A name with too few copies has none.
+fn ranked(plan: &fennec_loader::Plan, exe: &Executable) -> BTreeMap<(usize, String), u64> {
+    let mut owners: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for section in plan.sections() {
+        for (name, _, weak) in &section.symbols {
+            if !weak && !exe.symbols.contains_key(name) {
+                owners.entry((name.clone(), section.name.clone())).or_default().push(section.object);
+            }
+        }
+    }
+    let within = |address: u64, wanted: &str| {
+        exe.sections
+            .iter()
+            .any(|(name, addr, size)| name == wanted && (*addr..addr + size).contains(&address))
+    };
+    let mut found = BTreeMap::new();
+    for ((name, place), objects) in owners {
+        let copies: Vec<u64> = exe
+            .every
+            .iter()
+            .filter(|(defined, address)| *defined == name && within(*address, &place))
+            .map(|(_, address)| *address)
+            .collect();
+        if copies.len() >= objects.len() {
+            for (object, address) in objects.iter().zip(copies) {
+                found.insert((*object, name.clone()), address);
+            }
+        }
+    }
+    found
+}
+
 /// Each section at the address the linker gave it: found by any symbol in it, or for data no
 /// external symbol names, as a literal pool the linker may have merged with others' or a table
 /// of constants, at the first place in the executable holding its bytes.
@@ -359,6 +394,7 @@ fn placed(
     let mut placed = BTreeMap::new();
     // A weak symbol is the first object's copy, which is the one a linker keeps.
     let mut first = std::collections::BTreeSet::new();
+    let ranked = ranked(plan, exe);
     for section in plan.sections() {
         let key = (section.object, section.section);
         if section.name == "__compact_unwind" || section.name == "__eh_frame" {
@@ -369,6 +405,11 @@ fn placed(
                 return None;
             }
             exe.symbols.get(name).map(|address| address - offset)
+        });
+        let named = named.or_else(|| {
+            section.symbols.iter().find_map(|(name, offset, _)| {
+                ranked.get(&(key.0, name.clone())).map(|address| address - offset)
+            })
         });
         if let Some(at) = named {
             placed.insert(key, at);
@@ -623,9 +664,8 @@ fn the_loader_links_each_program_as_the_linker_does() {
         fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-loader-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
-    // A section can't be compared when it refers to constants the linker split up and merged with
-    // other objects', as a pool of float literals: no one address holds them as the object does.
-    // Those stay a small part of what's compared.
+    // Every section is compared: none may be left out for referring to one that couldn't be
+    // placed where the linker put it.
     let mut tally = Tally::default();
     for program in PROGRAMS {
         compare(program, &scratch, &mut tally);
@@ -636,11 +676,50 @@ fn the_loader_links_each_program_as_the_linker_does() {
         tally.unwinds,
         tally.skipped.len()
     );
+    for skipped in &tally.skipped {
+        println!("  left out: {skipped}");
+    }
     assert!(
-        tally.sections > 50 && tally.unwinds > 20 && tally.skipped.len() * 20 <= tally.sections,
+        tally.sections > 50 && tally.unwinds > 20 && tally.skipped.is_empty(),
         "{} sections and {} unwind entries compared, these left out:\n{}",
         tally.sections,
         tally.unwinds,
         tally.skipped.join("\n")
     );
+}
+
+/// Each group the linker's hints let it rewrite, rewritten as it does, works out what the group as
+/// written works out; a group that works out something else is told apart.
+#[test]
+fn a_hinted_group_works_out_the_same_however_the_linker_rewrote_it() {
+    let (pc, target) = (0x1_0000_1000_u64, 0x1_0000_5678_u64);
+    // `adrp x8, target@PAGE; add x8, x8, target@PAGEOFF`, and the linker's `adr x8, target; nop`.
+    // Four pages on: the low two bits of 4 in bits 29-30, the rest from bit 5.
+    let adrp = 0x9000_0008 | (1 << 5);
+    let add = 0x9100_0108 | (0x678 << 10);
+    // 0x4678 on: its low two bits, both 0, in bits 29-30, the rest from bit 5.
+    let adr = 0x1000_0008 | ((0x4678 >> 2) << 5);
+    let nop = 0xd503_201f;
+    let written = effect(&[(pc, adrp), (pc + 4, add)]);
+    assert_eq!(written, Some((8, target.cast_signed())));
+    assert_eq!(effect(&[(pc, adr), (pc + 4, nop)]), written);
+    // `adrp x8, target@PAGE; ldr x0, [x8, target@PAGEOFF]`, and the linker's `nop; ldr x0, target`.
+    let target = 0x1_0000_5670_u64;
+    let ldr = 0xf940_0100 | ((0x670 / 8) << 10);
+    let literal = 0x5800_0000 | (u32::try_from((target - (pc + 4)) / 4).unwrap() << 5);
+    let loaded = effect(&[(pc, adrp), (pc + 4, ldr)]);
+    assert_eq!(loaded, Some((0, target.cast_signed())));
+    assert_eq!(effect(&[(pc, nop), (pc + 4, literal)]), loaded);
+    // `adrp; add; ldr [x8, #8]`, and the linker's `nop; nop; ldr x0, target + 8`.
+    let add_then = 0x9100_0108 | (0x670 << 10);
+    let ldr_8 = 0xf940_0500;
+    let literal_8 = 0x5800_0000 | (u32::try_from((target + 8 - (pc + 8)) / 4).unwrap() << 5);
+    let three = effect(&[(pc, adrp), (pc + 4, add_then), (pc + 8, ldr_8)]);
+    assert_eq!(three, Some((0, (target + 8).cast_signed())));
+    assert_eq!(effect(&[(pc, nop), (pc + 4, nop), (pc + 8, literal_8)]), three);
+    // Somewhere else, or into another register, isn't the same.
+    assert_ne!(effect(&[(pc, adrp), (pc + 4, add + (8 << 10))]), written);
+    assert_ne!(effect(&[(pc, adrp), (pc + 4, add + 1)]), written);
+    // And an instruction a hint can't cover works out nothing.
+    assert_eq!(effect(&[(pc, 0x8b00_0000)]), None);
 }

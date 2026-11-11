@@ -36,6 +36,7 @@ fennec-syntax.workspace = true
 ctrlc.workspace = true
 
 [dev-dependencies]
+fennec-loader.workspace = true
 fennec-temp.workspace = true
 
 [lints]

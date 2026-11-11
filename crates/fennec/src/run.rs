@@ -241,10 +241,10 @@ fn reached(
         return Ok((program, signatures, Some(kept)));
     }
     let files = crate::image::files_now(path, &cache);
-    let loaded = crate::load(path, fennec_kit::Entry::Main);
+    let loaded = crate::load(path, fennec_kit::Entry::Main).map(std::sync::Arc::new);
     // The lint errors are found from this load, when it has every file they'd look at.
     crate::lint::lend_loaded(loaded.as_ref(), path);
-    let mut program = loaded.ok_or(ExitCode::FAILURE)?;
+    let program = loaded.ok_or(ExitCode::FAILURE)?;
     let name = passed_name(path);
     let embedded = program.embedded_texts();
     let text = fingerprint(
@@ -271,7 +271,11 @@ fn reached(
         // A cache that can't be written only means checking all of it again next time.
         let _ = cache.write("checked", &name, text.as_bytes());
     }
-    fennec_build::keep_what_main_reaches(&mut program.module);
+    // What `main` reaches is copied out, rather than the rest cut away, since the lint errors may
+    // still be being found from all of it. The whole program is let go of beside the run.
+    let loaded = program;
+    let mut program = loaded.with_module(fennec_build::what_main_reaches(&loaded.module));
+    std::thread::spawn(move || drop(loaded));
     // The image keeps the constants as worked out while compiling, so a cached run skips that.
     if let Err(diagnostics) = crate::copy_rule::bake(&mut program.module) {
         return Err(reject(&program, &diagnostics));

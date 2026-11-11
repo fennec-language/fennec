@@ -7,7 +7,7 @@
 //! when any of its cases is written, since `.Case` names a case without its enum. `main`, an
 //! item marked `export`, which another kit may use, and a name starting with `_` are left alone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use fennec_syntax::{Diagnostic, Item, Module, Sources, Span};
 
@@ -59,25 +59,43 @@ fn public(text: &str, first: usize) -> bool {
     text.get(first..).is_some_and(|line| line.trim_start().starts_with("export "))
 }
 
-/// Where each word is written in the program's files: a word is a run of letters, digits and
-/// `_`, as a name is. Each place is its file and where in it the word starts. Made once, so
-/// finding whether an item is used costs the same however many items there are.
-fn words(sources: &Sources) -> HashMap<&str, Vec<(&str, usize)>> {
+/// Where each of `wanted` is written in the program's files as a word: a run of letters, digits
+/// and `_`, as a name is. Each place is its file and where in it the word starts. Made once, so
+/// finding whether an item is used costs the same however many items there are, and only for
+/// the names asked about, so a word that names no candidate is never hashed.
+fn words<'s>(sources: &'s Sources, wanted: &HashSet<&str>) -> HashMap<&'s str, Vec<(&'s str, usize)>> {
+    // The lengths of the names wanted, so most words are passed over without hashing them. A name
+    // longer than 63 bytes shares the last bit.
+    let lengths = wanted.iter().fold(0u64, |lengths, name| lengths | 1 << name.len().min(63));
     let mut found: HashMap<&str, Vec<(&str, usize)>> = HashMap::new();
     for (path, text) in sources.files() {
+        let bytes = text.as_bytes();
         let mut start = None;
-        for (at, ch) in text.char_indices().chain([(text.len(), ' ')]) {
-            let in_word = ch.is_alphanumeric() || ch == '_';
+        let mut at = 0;
+        while at <= bytes.len() {
+            // A byte at a time where the text is ASCII, and a whole character where it isn't.
+            let (in_word, width) = match bytes.get(at) {
+                None => (false, 1),
+                Some(&byte) if byte.is_ascii() => (byte.is_ascii_alphanumeric() || byte == b'_', 1),
+                Some(_) => text
+                    .get(at..)
+                    .and_then(|rest| rest.chars().next())
+                    .map_or((false, 1), |ch| (ch.is_alphanumeric(), ch.len_utf8())),
+            };
             match (in_word, start) {
                 (true, None) => start = Some(at),
                 (false, Some(from)) => {
-                    if let Some(word) = text.get(from..at) {
+                    if lengths & 1 << (at - from).min(63) != 0
+                        && let Some(word) = text.get(from..at)
+                        && wanted.contains(word)
+                    {
                         found.entry(word).or_default().push((path, from));
                     }
                     start = None;
                 }
                 _ => {}
             }
+            at += width;
         }
     }
     found
@@ -99,27 +117,57 @@ fn used(
         .any(|(file, at)| *file != path || !(from..to).contains(at))
 }
 
+/// An item that's a lint unless something uses it: its name, what kind of item it is, the names
+/// whose use keeps it, its file and that file's text and base, where its lines start and end, and
+/// where it's written.
+struct Candidate<'m> {
+    name: &'m str,
+    kind: &'m str,
+    names: Vec<&'m str>,
+    path: &'m str,
+    base: u32,
+    lines: (usize, usize),
+    span: Span,
+}
+
+/// The item, if nothing but its own lines could keep it: not `main`, a name starting with `_`, or
+/// one marked `export`.
+fn candidate<'m>(item: &'m Item, sources: &'m Sources) -> Option<Candidate<'m>> {
+    let (name, kind, names) = named(item)?;
+    if name == "main" || name.starts_with('_') {
+        return None;
+    }
+    let span = match item {
+        Item::Function(def) => def.span,
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.span,
+        _ => return None,
+    };
+    let (path, text, base) = sources.file_at(span)?;
+    let start = usize::try_from(span.start - base).ok()?;
+    let first = text.get(..start)?.rfind('\n').map_or(0, |at| at + 1);
+    if public(text, first) {
+        return None;
+    }
+    let (from, _, to) = lines_of(text, start)?;
+    Some(Candidate { name, kind, names, path, base, lines: (from, to), span })
+}
+
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
-    let words = words(sources);
+    let candidates: Vec<Candidate<'_>> =
+        module.items.iter().filter_map(|item| candidate(item, sources)).collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let wanted: HashSet<&str> =
+        candidates.iter().flat_map(|candidate| candidate.names.iter().copied()).collect();
+    let words = words(sources, &wanted);
     let mut found = Vec::new();
-    for item in &module.items {
-        let Some((name, kind, names)) = named(item) else { continue };
-        if name == "main" || name.starts_with('_') {
-            continue;
-        }
-        let span = match item {
-            Item::Function(def) => def.span,
-            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.span,
-            _ => continue,
-        };
-        let Some((path, text, base)) = sources.file_at(span) else { continue };
-        let Ok(start) = usize::try_from(span.start - base) else { continue };
-        let Some((from, first, to)) = lines_of(text, start) else { continue };
-        if public(text, first) || used(&words, path, (from, to), &names) {
+    for Candidate { name, kind, names, path, base, lines, span } in candidates {
+        if used(&words, path, lines, &names) {
             continue;
         }
         let at = |offset: usize| u32::try_from(offset).ok().map(|offset| base + offset);
-        let (Some(from), Some(to)) = (at(from), at(to)) else { continue };
+        let (Some(from), Some(to)) = (at(lines.0), at(lines.1)) else { continue };
         let diagnostic = Diagnostic::new(format!("nothing uses the {kind} `{name}`"), span)
             .with_fix(Span { start: from, end: to }, "");
         found.push(Lint::new("unused-item", diagnostic));

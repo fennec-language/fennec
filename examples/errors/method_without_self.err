@@ -3,3 +3,5 @@ error: `greet` needs a `Player` to call it on
   |
 8 |     stdout.print(Player.greet())
   |                  ^^^^^^^^^^^^^^
+  |
+  = help: call it on a Player, as `value.greet(...)`

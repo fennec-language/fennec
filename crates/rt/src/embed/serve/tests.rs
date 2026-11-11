@@ -94,6 +94,23 @@ fn talk(address: SocketAddr, lines: &[String]) {
     }
 }
 
+/// A connection the server takes sends each write at once, without waiting for the last to be
+/// acknowledged: a response's head and body are two writes, and the wait held each response with a
+/// body up to 40 ms on Linux.
+#[test]
+fn a_taken_connection_sends_each_write_at_once() {
+    let says_if_it_waits: Handler = Arc::new(|conn: Conn| {
+        let at_once = conn.stream.borrow().nodelay().unwrap_or(false);
+        i64::from(conn.write(if at_once { b"at once\n" } else { b"waits\n" }).is_err())
+    });
+    run(1, &says_if_it_waits, |address| {
+        let stream = std::net::TcpStream::connect(address).unwrap();
+        let mut said = String::new();
+        BufReader::new(stream).read_line(&mut said).unwrap();
+        assert_eq!(said, "at once\n");
+    });
+}
+
 #[test]
 fn hundreds_of_connections_are_served_by_a_few_workers_each_a_parked_task() {
     let served = run(3, &echo(), |address| {

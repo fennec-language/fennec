@@ -1,0 +1,129 @@
+# How `std.postgres` signs in, at its edges: the exact bytes of the messages that carry a password
+# or a SASL exchange, and each server answer SCRAM-SHA-256 refuses before it does any work for it,
+# or after it, when the server can't prove it knows the password.
+from std import postgres
+from std.crypto import Secret
+from std.postgres import PgScram
+from std.sql import SqlError
+
+## RFC 7677's own exchange: our nonce, then the server's first and last messages.
+OUR_NONCE = "rOprNGfwEbeRWgbNEkqO"
+SALT = "W22ZaJ0SNY7soEsUEjb6gQ=="
+SERVER_FIRST = f"r={OUR_NONCE}%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s={SALT},i=4096"
+SERVER_LAST = "v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4="
+
+## What a failure says: a `Failed`'s reason, or the message of any other case.
+def reason_of(error: SqlError) -> str:
+    match error:
+        case .Failed(reason=reason):
+            reason
+        case _:
+            error.message()
+
+## Why `run` fails, or "fine" if it doesn't.
+def why[T](run: () -> T fails SqlError) -> str:
+    _ = run() else as error:
+        return reason_of(error)
+    "fine"
+
+## Why `scram` refuses `server_first`, or "fine" if it answers it.
+def answering(ref scram: PgScram, server_first: bytes) -> str:
+    _ = scram.answer(server_first) else as error:
+        return reason_of(error)
+    "fine"
+
+## A sign-in started as RFC 7677's is.
+def started() -> PgScram:
+    PgScram.started(Secret.of("pencil"), nonce=OUR_NONCE, user="user")
+
+## Why the client refuses `server_first`, from a sign-in whose nonce is `abc`.
+def refused_first(server_first: str) -> str:
+    mut scram = PgScram.started(Secret.of("pencil"), nonce="abc")
+    answering(ref scram, server_first.encode())
+
+## Why the client refuses `server_last`, after answering the RFC's server first.
+def refused_last(server_last: bytes) -> str fails SqlError:
+    mut scram = started()
+    _ = scram.answer(SERVER_FIRST.encode())?
+    why(() => scram.check(server_last)?)
+
+## The four bytes of `n`, highest first, as a message's length is written.
+def int32(n: int) -> bytes:
+    bytes([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
+
+test "a password goes as a p message: its length, then the text and a zero byte"():
+    assert postgres.password("pw") == bytes([112, 0, 0, 0, 7, 112, 119, 0])
+    # An empty password is still a message: just its length and the zero byte.
+    assert postgres.password("") == bytes([112, 0, 0, 0, 5, 0])
+    # The length counts bytes, not characters.
+    assert postgres.password("é") == bytes([112, 0, 0, 0, 7, 195, 169, 0])
+
+test "SASL's first message names the mechanism, then the length of what follows and it"():
+    data = "n,,n=,r=abc".encode()
+    sent = postgres.sasl_first("SCRAM-SHA-256", data)
+    # Four for the length itself, the name and its zero, four for the data's length, the data.
+    assert (
+        sent
+        == bytes([112]) + int32(4 + 14 + 4 + 11) + "SCRAM-SHA-256".encode() + bytes([0]) + int32(
+            11,
+        ) + data
+    )
+    assert sent.len() == 1 + 33
+
+test "SASL's later messages are the data and nothing else, and terminate is just X"():
+    assert postgres.sasl_next("c=biws".encode()) == bytes([112, 0, 0, 0, 10]) + "c=biws".encode()
+    assert postgres.sasl_next(bytes([])) == bytes([112, 0, 0, 0, 4])
+    assert postgres.terminate() == bytes([88, 0, 0, 0, 4])
+
+test "the RFC's exchange signs in, and the client's first message carries the user and nonce"():
+    mut scram = started()
+    assert scram.first() == f"n,,n=user,r={OUR_NONCE}".encode()
+    proof = scram.answer(SERVER_FIRST.encode())?
+    assert proof.decode()?.startswith("c=biws,r=" + OUR_NONCE + "%hvY")
+    assert why(() => scram.check(SERVER_LAST.encode())?) == "fine"
+
+test "a server's first message is refused before any rounds are worked"():
+    extends = "the server's SCRAM nonce doesn't extend ours"
+    weak = "the server's SCRAM salt or rounds are too weak"
+    # Its nonce has to start with ours and add to it.
+    assert refused_first(f"r=xyz,s={SALT},i=4096") == extends
+    assert refused_first(f"r=abc,s={SALT},i=4096") == extends
+    assert refused_first(f"s={SALT},i=4096") == extends
+    # A salt has to be there and be base64; rounds have to be a number, 4096 or more.
+    assert refused_first("r=abcd,s=,i=4096") == weak
+    assert refused_first("r=abcd,i=4096") == weak
+    assert refused_first("r=abcd,s=!!!,i=4096") == "the server's SCRAM salt isn't base64"
+    assert refused_first(f"r=abcd,s={SALT},i=many") == "the server's SCRAM rounds aren't a number"
+    assert refused_first(f"r=abcd,s={SALT}") == weak
+    assert refused_first(f"r=abcd,s={SALT},i=4095") == weak
+    assert refused_first(f"r=abcd,s={SALT},i=-1") == weak
+    # More rounds than the limit is work a server could make the client do for hours.
+    assert (
+        refused_first(f"r=abcd,s={SALT},i=1000001")
+        == "the server asks for 1000001 SCRAM rounds, over the limit of 1000000"
+    )
+
+test "a server's first message that isn't text is refused"():
+    mut scram = PgScram.started(Secret.of("pencil"), nonce="abc")
+    assert (answering(ref scram, bytes([114, 61, 255])) == "the server's SCRAM message isn't text")
+
+test "only the server's exact signature proves it knows the password"():
+    proves = "the server couldn't prove it knows the password"
+    assert refused_last(SERVER_LAST.encode())? == "fine"
+    # Anything around a right signature, a wrong one, none, or bytes that aren't text, is refused.
+    assert refused_last((SERVER_LAST + ",x=1").encode())? == proves
+    assert refused_last(("e=other-error," + SERVER_LAST).encode())? == proves
+    assert refused_last("v=AAAA".encode())? == proves
+    assert refused_last(bytes([]))? == proves
+    assert refused_last(bytes([118, 61, 255]))? == proves
+
+test "a sign-in whose answer was refused can't then be checked"():
+    mut scram = PgScram.started(Secret.of("pencil"), nonce="abc")
+    _ = scram.answer(f"r=xyz,s={SALT},i=4096".encode()) else bytes([])
+    assert (
+        why(() => scram.check(SERVER_LAST.encode())?)
+        == "the server sent its SCRAM proof before the exchange"
+    )
+
+def main(stdout: Stdout):
+    stdout.print(postgres.terminate())

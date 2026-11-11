@@ -19,9 +19,8 @@ use super::ast::{
 };
 
 /// Whether a crash runs a `lend x else:` cleanup holding a line like `kept = capped(code)?`.
-/// Today it doesn't, natively: the crash goes on with none of the cleanup run, though one with
-/// no `?` runs. Until it does, only a block that fails is given `guarded_noted`'s cleanup.
-const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = false;
+/// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
+const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = true;
 
 /// Whether `x = f() else return`, `else fail`, `else continue` and `else break` run the cleanups
 /// of the `with` blocks they leave. They do since #1341; turned off, `Left` leaves its blocks

@@ -318,7 +318,9 @@ mod tests {
 
     #[test]
     fn every_process_report_with_a_count_is_added_up() {
-        let folder = std::env::temp_dir().join(format!("fennec-count-total-{}", std::process::id()));
+        let folder = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-count-total-{}", std::process::id())),
+        );
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
         assert_eq!(valgrind_total(&folder), None, "no reports, no count");
@@ -332,7 +334,9 @@ mod tests {
 
     #[test]
     fn each_programs_count_is_added_up_by_its_name() {
-        let folder = std::env::temp_dir().join(format!("fennec-count-programs-{}", std::process::id()));
+        let folder = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-count-programs-{}", std::process::id())),
+        );
         let reports = folder.join("valgrind");
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&reports).unwrap();

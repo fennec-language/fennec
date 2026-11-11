@@ -64,7 +64,8 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     if !ready() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-parallel-{}", std::process::id())));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("ticks.fen");
     std::fs::write(&program, PROGRAM)?;
@@ -107,7 +108,9 @@ fn a_range_that_fails_stops_the_program_natively_as_the_interpreter_does() -> st
     if !ready() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-fails-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-fails-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("fails.fen");
     std::fs::write(&program, FAILING)?;
@@ -133,7 +136,9 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
     if !ready() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-put-back-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-put-back-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("words.fen");
     std::fs::write(&program, PUT_BACK)?;
@@ -199,7 +204,9 @@ fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-threads-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-threads-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let (workers, deep) =
         (build_on_threads(&dir, ON_WORKERS, "workers")?, build_on_threads(&dir, TOO_DEEP, "deep")?);
@@ -228,7 +235,9 @@ fn a_parallel_program_built_after_a_plain_one_shares_no_cached_module_that_disag
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-cache-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-cache-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let plain = format!("{SHARED}\ndef main(stdout: Stdout):\n    stdout.print(half(10))\n");
     let threaded = format!(
@@ -256,7 +265,9 @@ fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-lent-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-lent-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let lent = build_on_threads(&dir, LENT_BLOCKS, "lent")?;
     let interpreted = interpreted(&dir, "lent")?;
@@ -278,7 +289,9 @@ fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_bod
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-prints-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-prints-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let prints = build_on_threads(&dir, PRINTS, "prints")?;
     let ran = Command::new(&prints).env("FENNEC_THREADS", "8").output_within()?;
@@ -347,7 +360,9 @@ fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-failing-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-failing-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let on_worker = build_on_threads(&dir, FAILS_ON_A_WORKER, "on_worker")?;
     let on_main = build_on_threads(&dir, FAILS_ON_THE_MAIN_THREAD, "on_main")?;
@@ -377,7 +392,9 @@ fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Resu
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-first-reads-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-first-reads-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let reads = build_on_threads(&dir, FIRST_READS, "reads")?;
     let ran = Command::new(&reads).env("FENNEC_THREADS", "4").output_within()?;
@@ -405,7 +422,9 @@ fn every_worker_sees_the_arguments_and_reads_the_one_standard_input() -> std::io
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-inputs-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-inputs-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let inputs = build_on_threads(&dir, INPUTS, "inputs")?;
     let given = "a line\n".repeat(1000);
@@ -461,7 +480,9 @@ fn workers_take_turns_at_a_shared_value() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-counters-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-counters-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/shared_counters.fen");
     matches_the_interpreter_on_workers(&dir, "shared_counters", source)?;
@@ -475,7 +496,9 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-shared-blocks-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-shared-blocks-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/shared_blocks.fen");
     matches_the_interpreter_on_workers(&dir, "shared_blocks", source)?;
@@ -489,7 +512,9 @@ fn every_task_reads_what_was_embedded() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-embed-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-embed-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("embed_in_tasks.txt"), "embedded")?;
     let source = include_str!("fixtures/workers/embed_in_tasks.fen");
@@ -510,7 +535,9 @@ fn printing_keeps_its_order_across_a_channel() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-print-order-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-print-order-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/print_order_across_a_channel.fen");
     let built = build_on_threads(&dir, source, "print_order")?;
@@ -532,7 +559,9 @@ fn a_crash_under_a_read_lock_ends_only_its_task() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-read-crash-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-read-crash-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/crash_under_a_read_lock.fen");
     let built = build_on_threads(&dir, source, "crash_under_a_read_lock")?;
@@ -549,7 +578,9 @@ fn a_task_holding_a_lock_is_not_parked() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-lock-park-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-lock-park-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/waiting_inside_a_lock.fen");
     let built = build_on_threads(&dir, source, "waiting_inside_a_lock")?;
@@ -567,7 +598,9 @@ fn what_a_server_borrowed_comes_back_when_it_ends() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-after-server-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-after-server-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/blocks_after_a_server.fen");
     let built = build_on_threads(&dir, source, "blocks_after_a_server")?;
@@ -648,7 +681,9 @@ fn a_cancelled_round_doesnt_wait_for_a_channel_or_a_task() -> std::io::Result<()
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-cancelled-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-cancelled-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let channel =
         build_on_threads(&dir, include_str!("fixtures/workers/cancel_channel_wait.fen"), "channel")?;
@@ -669,7 +704,9 @@ fn a_stop_cuts_short_a_read_on_a_served_connection() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-stopped-read-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-stopped-read-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/stop_a_connection_read.fen");
     let built = build_on_threads(&dir, source, "stop_a_connection_read")?;
@@ -688,7 +725,9 @@ fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-conn-shared-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-conn-shared-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/connection_shared_by_two_tasks.fen");
     let built = build_on_threads(&dir, source, "connection_shared_by_two_tasks")?;
@@ -726,7 +765,9 @@ fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<
 
 /// Runs a fixture on 1, 2, 4 and 8 threads and checks what it printed, in any order.
 fn fixture_prints(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-{name}-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-{name}-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let built = build_on_threads(&dir, source, name)?;
     matches_on_workers(&built, name, Some(0), wanted)?;
@@ -772,7 +813,9 @@ fn a_dicts_lists_are_copied_across_a_lock_and_into_a_task() -> std::io::Result<(
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-dict-lists-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-dict-lists-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/shared_dict_of_lists.fen");
     let built = build_on_threads(&dir, source, "shared_dict_of_lists")?;
@@ -791,7 +834,9 @@ fn a_task_ending_leaves_another_tasks_blocks_alone() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-task-blocks-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-task-blocks-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/task_end_keeps_others_blocks.fen");
     let built = build_on_threads(&dir, source, "task_end_keeps_others_blocks")?;
@@ -814,7 +859,9 @@ fn long_strings_made_on_different_threads_are_equal() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-equal-strings-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-equal-strings-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/equal_long_strings.fen");
     let built = build_on_threads(&dir, source, "equal_long_strings")?;
@@ -830,7 +877,9 @@ fn asking_for_more_room_than_can_exist_stops_with_a_message() -> std::io::Result
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-huge-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-huge-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     for (name, source) in [
         ("huge_list", include_str!("fixtures/workers/huge_list.fen")),
@@ -853,7 +902,9 @@ fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-ranges-launch-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-ranges-launch-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/ranges_that_launch.fen");
     let built = build_on_threads(&dir, source, "ranges_that_launch")?;
@@ -870,7 +921,9 @@ fn a_launched_task_can_serve() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-serve-task-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-serve-task-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/serve_from_a_task.fen");
     let built = build_on_threads(&dir, source, "serve_from_a_task")?;
@@ -914,7 +967,9 @@ fn a_task_reads_the_programs_constants() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/constants_in_a_task.fen");
     let built = build_on_threads(&dir, source, "constants_in_a_task")?;
@@ -933,7 +988,9 @@ fn what_a_read_lock_gives_back_holds_strings_the_reader_can_print() -> std::io::
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-read-out-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-read-out-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/shared_read_out.fen");
     matches_the_interpreter_on_workers(&dir, "shared_read_out", source)?;
@@ -946,7 +1003,9 @@ fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-failing-under-lock-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-failing-under-lock-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     for (name, fields) in [("numbers", ""), ("blocks", "    names = [\"x\"]\n")] {
         let source = format!(
@@ -1059,7 +1118,8 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-server-{}", std::process::id()));
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-server-{}", std::process::id())));
     std::fs::create_dir_all(&dir)?;
     let executable = build_on_threads(&dir, SERVER, "server")?;
     let mut server = Running(
@@ -1143,7 +1203,9 @@ fn a_server_task_crashing_under_a_lock_rolls_back_and_the_server_goes_on() -> st
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-server-holding-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-server-holding-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let executable = build_on_threads(&dir, SERVER_HOLDING, "server")?;
     let mut server = Running(
@@ -1186,7 +1248,9 @@ fn every_parallel_program_prints_what_it_should_on_real_threads() -> std::io::Re
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-stress-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-stress-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let programs = [
         ("non_ascii", NON_ASCII),
@@ -1231,7 +1295,9 @@ fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-places-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-places-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let places = build_on_threads(&dir, CHARACTER_PLACES, "places")?;
     let ran = Command::new(&places).env("FENNEC_THREADS", "4").output_within()?;
@@ -1249,7 +1315,9 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-worked-out-{}", std::process::id()));
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-worked-out-{}", std::process::id())),
+    );
     std::fs::create_dir_all(&dir)?;
     let source = "LONG = f\"{1 + 1} and then a string too long to fit in a header\"\n\
                   WORDS = [\"a\", \"b\", LONG]\n\n\

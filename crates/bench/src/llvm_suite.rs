@@ -602,7 +602,8 @@ pub(crate) fn run(
     runs: usize,
     json_path: Option<&Path>,
 ) -> Result<bool, String> {
-    let out_dir = std::env::temp_dir().join(format!("fennec-llvm-suite-{}", std::process::id()));
+    let out_dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-llvm-suite-{}", std::process::id())));
     std::fs::create_dir_all(&out_dir).map_err(|err| format!("couldn't make {}: {err}", out_dir.display()))?;
     let counter = Counter::find(&out_dir);
     let kernels = crate::kernels::find(kernels_dir, &out_dir, Path::new("selfhost"))?;
@@ -686,7 +687,9 @@ mod tests {
 
     #[test]
     fn a_kernel_is_built_from_a_copy_that_times_its_main() {
-        let dir = std::env::temp_dir().join(format!("fennec-timed-copy-{}", std::process::id()));
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-timed-copy-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let kernel = dir.join("k.fen");
         std::fs::write(

@@ -92,7 +92,8 @@ mod tests {
     /// edit to the file, or another build of Fennec, finds nothing kept.
     #[test]
     fn a_kept_parse_is_found_only_for_the_same_text_and_build() {
-        let dir = std::env::temp_dir().join(format!("fennec-parses-{}", std::process::id()));
+        let dir =
+            fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-parses-{}", std::process::id())));
         let _ = std::fs::remove_dir_all(&dir);
         let text = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
         let parses = kept(&dir, "build one");
@@ -128,7 +129,9 @@ mod tests {
     /// depends on where its file is but its spans.
     #[test]
     fn every_examples_parse_reads_back_as_parsing_it_elsewhere_gives() {
-        let dir = std::env::temp_dir().join(format!("fennec-parses-examples-{}", std::process::id()));
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-parses-examples-{}", std::process::id())),
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let parses = kept(&dir, "build");
         let mut files = Vec::new();
@@ -161,7 +164,9 @@ mod tests {
     #[test]
     fn the_standard_librarys_parse_reads_back_as_parsing_it_gives() {
         use fennec_syntax::KeptPrelude as _;
-        let dir = std::env::temp_dir().join(format!("fennec-prelude-{}", std::process::id()));
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-prelude-{}", std::process::id())),
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let library = fennec_syntax::prelude_modules().unwrap();
         let cache = kept(&dir, "build one");

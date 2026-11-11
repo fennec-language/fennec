@@ -35,6 +35,9 @@ fennec-syntax.workspace = true
 # Lets Ctrl-C go by while `fennec run`'s program stops, as the program sees it too.
 ctrlc.workspace = true
 
+[dev-dependencies]
+fennec-temp.workspace = true
+
 [lints]
 workspace = true
 

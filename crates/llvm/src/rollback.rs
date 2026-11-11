@@ -907,4 +907,82 @@ def main(stdout: Stdout):
         assert!(hit.contains("br label %prop"), "{hit}");
         Ok(())
     }
+
+    /// A put after a lookup of the same key in the same dict, under a lock, uses the lookup's
+    /// entry when the dict there now is the block it searched. A different key, a different dict,
+    /// a key worked out again by a call, a put between that may grow the dict, and a key's local
+    /// changed between each look on their own, with no entry to reuse.
+    #[test]
+    fn a_put_reuses_a_lookup_of_its_own_key_and_dict_only() -> Result<(), String> {
+        let source = "\
+struct Table:
+    counts = dict[int, int]()
+    others = dict[int, int]()
+
+def next(key: int) -> int:
+    key + 1
+
+def same(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[key] = (held.counts.get(key) else 0) + 1
+
+def other_key(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[key + 1] = (held.counts.get(key) else 0) + 1
+
+def other_dict(table: shared Table, key: int):
+    lock table as ref held:
+        held.others[key] = (held.counts.get(key) else 0) + 1
+
+def called(table: shared Table, key: int):
+    lock table as ref held:
+        held.counts[next(key)] = (held.counts.get(next(key)) else 0) + 1
+
+def grown(table: shared Table, key: int):
+    lock table as ref held:
+        through = held.counts
+        found = through.get(key) else 0
+        held.counts[key + 50] = 1
+        held.counts[key] = found + 1
+
+def moved(table: shared Table, key: int):
+    lock table as ref held:
+        mut moving = key
+        found = held.counts.get(moving) else 0
+        moving = moving + 1
+        held.counts[moving] = found + 1
+
+def main(stdout: Stdout):
+    shared table = Table()
+    same(table, key=1)
+    grown(table, key=1)
+    moved(table, key=1)
+    other_key(table, key=1)
+    other_dict(table, key=1)
+    called(table, key=1)
+    lock table as held:
+        stdout.print(held.counts, held.others)
+";
+        let text = texts(source)?;
+        let function = |name: &str| {
+            text.split("define")
+                .find(|function| function.contains(&format!("@\"f_{name}\"(")))
+                .unwrap_or_default()
+        };
+        // The block a reused entry comes into: `have` and its number, not `have_bytes`.
+        let reuses = |body: &str| {
+            body.match_indices("label %have").any(|(at, found)| {
+                body.get(at + found.len()..)
+                    .and_then(|rest| rest.chars().next())
+                    .is_some_and(|next| next.is_ascii_digit())
+            })
+        };
+        assert!(reuses(function("same")), "{}", function("same"));
+        for name in ["other_key", "other_dict", "called", "grown", "moved"] {
+            let body = function(name);
+            assert!(body.contains("label %in_place"), "{name} still writes in place: {body}");
+            assert!(!reuses(body), "{name}: {body}");
+        }
+        Ok(())
+    }
 }

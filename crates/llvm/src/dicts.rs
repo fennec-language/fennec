@@ -563,8 +563,12 @@ impl Emit<'_, '_, '_> {
         self.start_block(&fast);
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
-        let entry = if let Some(entry) = found {
-            entry
+        // A lookup's entry is used only when it searched this very block: then nothing between
+        // it and here changed the dict. Any other dict, as one a field held before it was set
+        // again, is searched here.
+        let reused = found.and_then(|entry| Some((self.searched.get(&entry)?.clone(), entry)));
+        let entry = if let Some(reused) = reused {
+            self.entry_if_searched(&dict, reused, (key, key_word))?
         } else {
             let key = self.key_value(key, key_word)?;
             self.find(&dict, key_word, &key)
@@ -600,6 +604,29 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&old_way);
         Ok(Some(done))
+    }
+
+    /// Where `key` is in `dict`: the entry a lookup found, when the block it searched is `dict`,
+    /// and otherwise where a search of `dict` finds it.
+    fn entry_if_searched(
+        &mut self,
+        dict: &str,
+        (searched, entry): (String, String),
+        (key, key_word): (&Operand, Word),
+    ) -> Result<String, String> {
+        let (same, look, have) = (self.temp(), self.label("look"), self.label("have"));
+        self.line(&format!("{same} = icmp eq ptr {dict}, {searched}"));
+        let came = self.current.clone();
+        self.line(&format!("br i1 {same}, label %{have}, label %{look}"));
+        self.start_block(&look);
+        let key = self.key_value(key, key_word)?;
+        let looked = self.find(dict, key_word, &key);
+        let looked_from = self.current.clone();
+        self.line(&format!("br label %{have}"));
+        self.start_block(&have);
+        let entry_now = self.temp();
+        self.line(&format!("{entry_now} = phi ptr [ {entry}, %{came} ], [ {looked}, %{looked_from} ]"));
+        Ok(entry_now)
     }
 
     /// As [`Self::dict_store_at`], with the key and value already worked out.
@@ -795,10 +822,11 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Notes where a lookup found a key's entry, or null, for a store to the same key right
-    /// after.
-    fn remember_entry(&mut self, (dict, key): &(Operand, Operand), entry: &str) {
+    /// after, and the dict it searched, `searched`.
+    fn remember_entry(&mut self, (dict, key): &(Operand, Operand), searched: &str, entry: &str) {
         if let Operand::Local(dict) = dict {
             self.found_entries.push((*dict, key.clone(), entry.to_owned()));
+            self.searched.insert(entry.to_owned(), searched.to_owned());
         }
     }
 
@@ -814,7 +842,7 @@ impl Emit<'_, '_, '_> {
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             let key = self.key_value(key, key_word)?;
             let entry = self.find(&dict, key_word, &key);
-            self.remember_entry(&looked_up, &entry);
+            self.remember_entry(&looked_up, &dict, &entry);
             let missing = self.temp();
             let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
             self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -841,7 +869,7 @@ impl Emit<'_, '_, '_> {
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         let key = self.key_value(key, key_word)?;
         let entry = self.find(&dict, key_word, &key);
-        self.remember_entry(&looked_up, &entry);
+        self.remember_entry(&looked_up, &dict, &entry);
         let missing = self.temp();
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -1281,7 +1309,7 @@ found:
         let place = self.slice_place(key)?;
         let value_at = self.slice_value_at(&dict, key_word, &place);
         // A store with the same slice next finds the value here, as nothing's changed between.
-        self.remember_entry(&looked_up, &value_at);
+        self.remember_entry(&looked_up, &dict, &value_at);
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {value_at}, null"));
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
@@ -1556,7 +1584,7 @@ found:
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let key = self.key_value(key, key_word)?;
         let entry = self.find(&dict, key_word, &key);
-        self.remember_entry(&looked_up, &entry);
+        self.remember_entry(&looked_up, &dict, &entry);
         let missing = self.temp();
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));

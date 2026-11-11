@@ -485,6 +485,7 @@ impl<'p> Module<'_, 'p> {
             self_target,
             taken_at: BTreeMap::new(),
             found_entries: Vec::new(),
+            searched: HashMap::new(),
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
@@ -599,6 +600,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where lookups since the last change found their keys: the dict's local, the key, and the
     /// entry or null.
     pub(crate) found_entries: Vec<(LocalId, Operand, String)>,
+    /// The dict each of those lookups searched, by its entry: a put that reuses an entry compares
+    /// it with the dict it's writing, and uses the entry only for that same block.
+    pub(crate) searched: HashMap<String, String>,
     /// Slots of `mut` parameters made alone on the way in, that nothing here can share since.
     alone_slots: HashSet<String>,
     /// Field paths from locals whose blocks are known alone here.

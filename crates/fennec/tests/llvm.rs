@@ -5342,6 +5342,23 @@ fn a_send_to_a_channel_whose_block_left_from_an_else_is_closed() -> std::io::Res
     )
 }
 
+/// The same when the block ends by a `return` from the one case of `except Timeout() | Closed():`,
+/// or from a `case` arm under `except why:`: the channel is closed, as the block's way out runs
+/// its cleanup from there too.
+#[test]
+fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for name in ["channel_dropped_by_an_except_case", "channel_dropped_by_an_except_arm"] {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.fen")),
+        )?;
+        prints_in_both_builds(name, &source, "gave up -2\nfailed out\nclosed\nclosed\n")?;
+    }
+    Ok(())
+}
+
 /// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost
 /// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
 /// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends

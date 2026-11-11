@@ -92,6 +92,21 @@ fn talk(address: SocketAddr, lines: &[String]) {
         reader.read_line(&mut back).unwrap();
         assert_eq!(back, format!("{line}\n"));
     }
+    goodbye(&mut stream, &mut reader);
+}
+
+/// Ends a talk with a server as a client that's done: it says so, and once the server has closed
+/// its side, lets go of the connection without holding its port. The side that closes first
+/// holds its port for a minute or so afterwards, and a test making hundreds of connections
+/// beside other runs would take every port there is: "Can't assign requested address". The
+/// server sees the same end as ever, and nothing waits on either side.
+fn goodbye(stream: &mut std::net::TcpStream, reader: &mut impl std::io::Read) {
+    // Set while the connection is open: macOS refuses it on one already waiting out its close.
+    socket2::SockRef::from(&*stream).set_linger(Some(Duration::ZERO)).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut rest = Vec::new();
+    reader.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty(), "{rest:?}");
 }
 
 /// A connection the server takes sends each write at once, without waiting for the last to be
@@ -140,10 +155,12 @@ fn many_connections_wait_at_once_on_one_worker() {
         for (at, stream) in streams.iter_mut().enumerate() {
             stream.write_all(format!("line {at}\n").as_bytes()).unwrap();
         }
-        for (at, stream) in streams.into_iter().enumerate() {
+        for (at, mut stream) in streams.into_iter().enumerate() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut back = String::new();
-            BufReader::new(stream).read_line(&mut back).unwrap();
+            reader.read_line(&mut back).unwrap();
             assert_eq!(back, format!("line {at}\n"));
+            goodbye(&mut stream, &mut reader);
         }
     });
     assert_eq!(served.connections, 100);

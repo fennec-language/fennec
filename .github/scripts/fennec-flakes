@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Lists the flake ledger by test: how many times each failed and then passed on the same code,
+# the last time, and the commits, most often first. It reads Fennec's own ledger, or the ledgers
+# named, as CI's `flakes` artifacts once downloaded:
+#
+#   .github/scripts/fennec-flakes
+#   .github/scripts/fennec-flakes flakes.log another/flakes.log
+#
+# `--show TEST` prints that test's entries whole, with what each printed when it failed.
+set -u
+show=""
+if [ "${1:-}" = --show ]; then
+  show=$2
+  shift 2
+fi
+if [ $# -eq 0 ]; then
+  set -- "${FENNEC_HOME:-$HOME/.fennec}/flakes.log"
+fi
+for ledger in "$@"; do
+  [ -f "$ledger" ] || { echo "no ledger at $ledger" >&2; exit 1; }
+done
+if [ -n "$show" ]; then
+  awk -v want="$show" '
+    /^=== flake$/ { entry = $0 "\n"; keep = 0; next }
+    /^test: / && entry != "" { keep = (substr($0, 7) == want) }
+    { entry = entry $0 "\n" }
+    /^=== end$/ { if (keep) printf "%s", entry; entry = "" }
+  ' "$@"
+  exit 0
+fi
+awk '
+  /^=== flake$/ { test = ""; when = ""; commit = ""; next }
+  /^test: / { test = substr($0, 7) }
+  /^commit: / { commit = substr($0, 9, 12) }
+  /^failed at: / { when = substr($0, 12) }
+  /^=== end$/ && test != "" {
+    count[test]++
+    if (when > last[test]) last[test] = when
+    if (index(commits[test], commit) == 0) commits[test] = commits[test] (commits[test] == "" ? "" : " ") commit
+  }
+  END {
+    for (test in count) printf "%d\t%s\t%s\t%s\n", count[test], last[test], test, commits[test]
+  }
+' "$@" | sort -t "$(printf '\t')" -k1,1nr -k2,2r | awk -F '\t' '
+  BEGIN { print "flakes  last failed           test  (commits)" }
+  { printf "%6d  %-20s  %s  (%s)\n", $1, $2, $3, $4; total += $1 }
+  END { if (NR == 0) print "none"; else printf "%d flakes in %d tests\n", total, NR }
+'

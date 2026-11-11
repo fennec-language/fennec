@@ -17792,8 +17792,7 @@ fn types_holding_themselves_through_a_list_match_the_jit() -> std::io::Result<()
 /// own and leaves nothing behind.
 #[test]
 fn a_type_holding_itself_through_a_list_allocates_no_block_of_its_own() -> std::io::Result<()> {
-    // Told to box what holds blocks, it does.
-    if !ready() || std::env::var_os("FENNEC_INLINE_STRUCTS").is_some_and(|set| set == "0") {
+    if !ready() {
         return Ok(());
     }
     let source = "enum Json:\n    Number(value: int)\n    Items(values: list[Json])\n\ndef main(stdout: Stdout):\n    mut items = []\n    for n in range(1000):\n        items.append(Json.Number(n))\n    stdout.print(Json.Items(items) == .Number(0))\n";

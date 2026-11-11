@@ -15644,7 +15644,7 @@ fn segment_kinds(elf: &[u8]) -> Vec<u32> {
 
 /// Enums held in blocks, as one holding itself is, compare by case first, with no call for another
 /// case, and the same case compares its fields: a string, a list, a float, itself and none. `!=`
-/// is the opposite, and a value is equal to itself.
+/// is the opposite, a value is equal to itself, and a module constant compares as one made here.
 #[test]
 fn enums_in_blocks_compare_by_case_then_fields() -> std::io::Result<()> {
     if !ready() {
@@ -15656,7 +15656,7 @@ fn enums_in_blocks_compare_by_case_then_fields() -> std::io::Result<()> {
         "False True False True False False False True\nTrue False False True False False False True\n\
          False False True True False False False True\nFalse False False False False False False True\n\
          False False False True True False False True\nFalse False False True False True False True\n\
-         False False False True False False True True\n",
+         False False False True False False True True\nTrue True True\n",
     )
 }
 

@@ -1220,6 +1220,15 @@ impl Emit<'_, '_, '_> {
     /// what most compares of a value against a case find; the same case asks the runtime, which
     /// compares that case's fields.
     pub(crate) fn same_boxed_enums(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        if self.checks_proofs() {
+            // A value read is always there: no block is only a slot not written yet, or let go.
+            let (no_a, no_b, either) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{no_a} = icmp eq ptr {a}, null"));
+            self.line(&format!("{no_b} = icmp eq ptr {b}, null"));
+            self.line(&format!("{either} = or i1 {no_a}, {no_b}"));
+            let span = self.here_span();
+            self.proof_held(&either, "an enum in a block is there", span);
+        }
         let (a_at, b_at) = (self.offset(a, FIELDS_OFFSET), self.offset(b, FIELDS_OFFSET));
         let (a_case, b_case, other_case) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{a_case} = load i64, ptr {a_at}"));

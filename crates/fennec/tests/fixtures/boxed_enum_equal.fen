@@ -1,6 +1,7 @@
 ## Enums held in blocks, as one that holds itself is, compare by case first: another case is
-## unequal with no call, and the same case compares its fields, here a string, a list, a float, a
-## itself and nothing at all. `!=` is the opposite, and a value is equal to itself.
+## unequal with no call, and the same case compares its fields, here a string, a list, a float,
+## itself and nothing at all. `!=` is the opposite, and a value is equal to itself. A module
+## constant compares as one made here does.
 enum Tok:
     Name(text: str)
     Punct(text: str)
@@ -8,6 +9,8 @@ enum Tok:
     Float(value: float)
     Wrapped(inner: Tok)
     Eof
+
+PAREN = Tok.Punct("(")
 
 def main(stdout: Stdout):
     long = "a name long enough to need a block of its own"
@@ -26,3 +29,8 @@ def main(stdout: Stdout):
             token == .Wrapped(.Name("x")),
             token == token,
         )
+    stdout.print(
+        tokens[1] == PAREN,
+        PAREN == .Punct("("),
+        PAREN != .Name("("),
+    )

@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
+use crate::stdlib::fs::Fail;
 use crate::value::{Capability, Value};
 
 enum Node {
@@ -91,12 +92,12 @@ impl TestWorld {
         key.is_empty() || matches!(self.nodes.get(key), Some(Node::Folder))
     }
 
-    fn read(&self, path: &str) -> Result<&[u8], String> {
+    fn read(&self, path: &str) -> Result<&[u8], Fail> {
         match self.nodes.get(&key(path)) {
             Some(Node::File(data)) => Ok(data),
-            Some(Node::Folder) => Err(format!("{path} is a folder")),
-            None if key(path).is_empty() => Err(format!("{path} is a folder")),
-            None => Err(format!("{path} doesn't exist")),
+            Some(Node::Folder) => Err(format!("{path} is a folder").into()),
+            None if key(path).is_empty() => Err(format!("{path} is a folder").into()),
+            None => Err(Fail::not_found(format!("{path} doesn't exist"))),
         }
     }
 
@@ -107,31 +108,31 @@ impl TestWorld {
         if !matches!(self.nodes.get(&key), Some(Node::File(_)))
             && let Err(reason) = self.write(path, &[])
         {
-            return crate::stdlib::fs::io_error(&reason);
+            return crate::stdlib::fs::io_failed(&reason);
         }
         crate::stdlib::sqlite::open_fake(&mut self.databases, &key)
     }
 
-    fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
+    fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Fail> {
         let key = key(path);
         if self.is_folder(&key) {
-            return Err(format!("{path} is a folder"));
+            return Err(format!("{path} is a folder").into());
         }
         if !self.is_folder(parent(&key)) {
-            return Err(format!("the folder of {path} doesn't exist"));
+            return Err(Fail::not_found(format!("the folder of {path} doesn't exist")));
         }
         self.nodes.insert(key, Node::File(data.to_vec()));
         Ok(())
     }
 
     /// Makes a folder and the folders above it, which can already be there.
-    fn make_dir(&mut self, path: &str) -> Result<(), String> {
+    fn make_dir(&mut self, path: &str) -> Result<(), Fail> {
         let key = key(path);
         let ends = key.match_indices('/').map(|(at, _)| at).chain([key.len()]);
         for end in ends {
             let folder = key.get(..end).unwrap_or_default();
             if matches!(self.nodes.get(folder), Some(Node::File(_))) {
-                return Err(format!("{folder} is a file"));
+                return Err(format!("{folder} is a file").into());
             }
             if !folder.is_empty() {
                 self.nodes.insert(folder.to_owned(), Node::Folder);
@@ -140,17 +141,17 @@ impl TestWorld {
         Ok(())
     }
 
-    fn remove(&mut self, path: &str) -> Result<(), String> {
+    fn remove(&mut self, path: &str) -> Result<(), Fail> {
         let key = key(path);
         if key.is_empty() {
-            return Err(format!("{path} can't be removed"));
+            return Err(format!("{path} can't be removed").into());
         }
         if self.children(&key).next().is_some() {
-            return Err(format!("{path} isn't empty"));
+            return Err(format!("{path} isn't empty").into());
         }
         match self.nodes.remove(&key) {
             Some(_) => Ok(()),
-            None => Err(format!("{path} doesn't exist")),
+            None => Err(Fail::not_found(format!("{path} doesn't exist"))),
         }
     }
 
@@ -164,7 +165,7 @@ impl TestWorld {
     }
 
     /// Every path under `folder`, as the real `walk` gives them.
-    fn walk_into(&self, folder: &str, found: &mut Vec<String>) -> Result<(), String> {
+    fn walk_into(&self, folder: &str, found: &mut Vec<String>) -> Result<(), Fail> {
         for name in self.list(folder)? {
             let path = crate::stdlib::fs::joined(folder, &name);
             found.push(path.clone());
@@ -175,14 +176,14 @@ impl TestWorld {
         Ok(())
     }
 
-    fn list(&self, path: &str) -> Result<Vec<String>, String> {
+    fn list(&self, path: &str) -> Result<Vec<String>, Fail> {
         let key = key(path);
         if self.is_folder(&key) {
             return Ok(self.children(&key).collect());
         }
         match self.nodes.get(&key) {
-            Some(_) => Err(format!("{path} is a file")),
-            None => Err(format!("{path} doesn't exist")),
+            Some(_) => Err(format!("{path} is a file").into()),
+            None => Err(Fail::not_found(format!("{path} doesn't exist"))),
         }
     }
 }
@@ -273,27 +274,27 @@ impl TestWorld {
             ("list_dir", [Value::Str(path)]) => {
                 return Some(match world.list(path) {
                     Ok(names) => Ok(crate::stdlib::fs::paths_in(path, &names)),
-                    Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
+                    Err(reason) => Ok(crate::stdlib::fs::io_failed(&reason)),
                 });
             }
             ("walk", [Value::Str(path)]) => {
                 let mut found = Vec::new();
                 return Some(match world.walk_into(path, &mut found) {
                     Ok(()) => Ok(crate::stdlib::fs::paths_of(&found)),
-                    Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
+                    Err(reason) => Ok(crate::stdlib::fs::io_failed(&reason)),
                 });
             }
             ("metadata", [Value::Str(path)]) => {
                 return Some(Ok(match metadata(world, path) {
                     Ok(fields) => Value::Ok(Rc::new(Value::made("Metadata", fields))),
-                    Err(reason) => crate::stdlib::fs::io_error(&reason),
+                    Err(reason) => crate::stdlib::fs::io_failed(&reason),
                 }));
             }
             _ => return None,
         };
         Some(match done {
             Ok(value) => Ok(Value::Ok(Rc::new(value))),
-            Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
+            Err(reason) => Ok(crate::stdlib::fs::io_failed(&reason)),
         })
     }
 
@@ -433,13 +434,13 @@ impl TestWorld {
     }
 }
 
-fn metadata(world: &TestWorld, path: &str) -> Result<Vec<(&'static str, Value)>, String> {
+fn metadata(world: &TestWorld, path: &str) -> Result<Vec<(&'static str, Value)>, Fail> {
     let key = key(path);
     let size = match world.nodes.get(&key) {
         Some(Node::File(data)) => Some(i64::try_from(data.len()).unwrap_or(i64::MAX)),
         Some(Node::Folder) => None,
         None if key.is_empty() => None,
-        None => return Err(format!("{path} doesn't exist")),
+        None => return Err(Fail::not_found(format!("{path} doesn't exist"))),
     };
     Ok(vec![
         ("size", Value::Int(size.unwrap_or(0))),

@@ -149,11 +149,11 @@ fn write_whole(path: &str, data: &[u8]) -> std::io::Result<()> {
 fn create(path: &str, durable: bool) -> Value {
     let given = PathBuf::from(path);
     let made = blocking(move || {
-        let target = through_links(&given).map_err(|err| err.to_string())?;
+        let target = through_links(&given).map_err(Fail::from)?;
         if !replaceable(&target) {
-            return Err(format!("`{}` isn't a file that can be replaced", target.display()));
+            return Err(Fail::from(format!("`{}` isn't a file that can be replaced", target.display())));
         }
-        let (file, temporary) = new_beside(&target).map_err(|err| err.to_string())?;
+        let (file, temporary) = new_beside(&target).map_err(Fail::from)?;
         Ok((file, temporary, target))
     });
     match made {
@@ -161,16 +161,16 @@ fn create(path: &str, durable: bool) -> Value {
             let out = BufWriter::new(file);
             Value::Ok(Rc::new(lent(OpenFile::Writing { out, temporary, target, durable })))
         }
-        Err(reason) => io_error(&reason),
+        Err(fail) => io_failed(&fail),
     }
 }
 
 /// `fs._open(path)`: the file at `path`, to read.
 fn open(path: &str) -> Value {
     let path = path.to_owned();
-    match blocking(move || std::fs::File::open(path).map_err(|err| err.to_string())) {
+    match blocking(move || std::fs::File::open(path).map_err(Fail::from)) {
         Ok(file) => Value::Ok(Rc::new(lent(OpenFile::Reading(BufReader::new(file))))),
-        Err(reason) => io_error(&reason),
+        Err(fail) => io_failed(&fail),
     }
 }
 
@@ -426,7 +426,7 @@ pub(crate) fn fake_method(
 /// them.
 pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let wrong = || Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
-    let io = |err: std::io::Error| err.to_string();
+    let io = Fail::from;
     Ok(match (method, paths) {
         // Whether there's anything at `path`, and a failure when it can't be looked at, as when
         // a folder on the way can't be read: a `False` then could be wrong.
@@ -451,7 +451,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
             let listed = blocking(move || names_in(&folder).map_err(io));
             match listed {
                 Ok(names) => paths_in(path, &names),
-                Err(reason) => io_error(&reason),
+                Err(fail) => io_failed(&fail),
             }
         }
         ("walk", [Value::Str(path)]) => {
@@ -462,7 +462,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
             });
             match walked {
                 Ok(found) => paths_of(&found),
-                Err(reason) => io_error(&reason),
+                Err(fail) => io_failed(&fail),
             }
         }
         ("make_dir", [Value::Str(path)]) => {
@@ -494,7 +494,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         ("_create", [Value::Str(path), Value::Bool(durable)]) => create(path, *durable),
         ("_open", [Value::Str(path)]) => open(path),
         ("_sqlite_open", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path),
-        ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())), |()| Value::Unit),
+        ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())).map_err(Fail::from), |()| Value::Unit),
         ("_discard", [file]) => {
             discard(file);
             Value::Unit
@@ -509,10 +509,10 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
 }
 
 /// A result's value, made into what a program gets back, or its failure as an `IoError`.
-fn done<T>(result: Result<T, String>, made: impl FnOnce(T) -> Value) -> Value {
+fn done<T>(result: Result<T, Fail>, made: impl FnOnce(T) -> Value) -> Value {
     match result {
         Ok(value) => Value::Ok(Rc::new(made(value))),
-        Err(reason) => io_error(&reason),
+        Err(fail) => io_failed(&fail),
     }
 }
 
@@ -577,9 +577,55 @@ fn walk_into(folder: &str, found: &mut Vec<String>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A failed result holding an `IoError`.
+/// A failure of the file system, as the case of `IoError` it is and what it says.
+#[derive(Debug)]
+pub(crate) struct Fail {
+    case: &'static str,
+    reason: String,
+}
+
+impl Fail {
+    /// Nothing is at the path.
+    pub(crate) fn not_found(reason: String) -> Self {
+        Self { case: "NotFound", reason }
+    }
+
+    /// The system, or a narrowed `Fs`, won't let the program do that there.
+    pub(crate) fn permission_denied(reason: String) -> Self {
+        Self { case: "PermissionDenied", reason }
+    }
+}
+
+/// A failure said only in words is `Other`.
+impl From<String> for Fail {
+    fn from(reason: String) -> Self {
+        Self { case: "Other", reason }
+    }
+}
+
+/// The system's failure, by its kind: the three a caller may handle differently have cases of
+/// their own, and the rest are `Other`.
+impl From<std::io::Error> for Fail {
+    fn from(err: std::io::Error) -> Self {
+        let case = match err.kind() {
+            std::io::ErrorKind::NotFound => "NotFound",
+            std::io::ErrorKind::PermissionDenied => "PermissionDenied",
+            std::io::ErrorKind::AlreadyExists => "AlreadyExists",
+            _ => "Other",
+        };
+        Self { case, reason: err.to_string() }
+    }
+}
+
+/// A failed result holding the `IoError` a failure is.
+pub(crate) fn io_failed(fail: &Fail) -> Value {
+    let fields = vec![("reason", Value::str(&fail.reason))];
+    Value::Err(Rc::new(Value::made_case("IoError", fail.case, fields)))
+}
+
+/// A failed result holding an `IoError` said only in words, which is `Other`.
 pub(crate) fn io_error(reason: &str) -> Value {
-    Value::Err(Rc::new(Value::made_error("IoError", vec![("reason", Value::str(reason))])))
+    io_failed(&Fail::from(reason.to_owned()))
 }
 
 /// Removes a file, or a folder if it's empty.
@@ -598,5 +644,29 @@ pub(crate) fn path_text(value: &Value) -> Value {
             instance.field("text").cloned().unwrap_or_else(|| value.clone())
         }
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fail;
+
+    /// The system's failures that a caller may handle differently each have a case of their own,
+    /// on the real file system, and the rest are `Other`, each keeping the system's words.
+    #[test]
+    fn a_systems_failure_is_the_case_its_kind_is() {
+        let gone = std::fs::read("/no/such/place/for/fennec").expect_err("it isn't there");
+        let fail = Fail::from(gone);
+        assert_eq!((fail.case, fail.reason.is_empty()), ("NotFound", false));
+        for (kind, case) in [
+            (std::io::ErrorKind::PermissionDenied, "PermissionDenied"),
+            (std::io::ErrorKind::AlreadyExists, "AlreadyExists"),
+            (std::io::ErrorKind::InvalidData, "Other"),
+            (std::io::ErrorKind::IsADirectory, "Other"),
+        ] {
+            let fail = Fail::from(std::io::Error::new(kind, "said"));
+            assert_eq!((fail.case, fail.reason.as_str()), (case, "said"));
+        }
+        assert_eq!(Fail::from("words".to_owned()).case, "Other");
     }
 }

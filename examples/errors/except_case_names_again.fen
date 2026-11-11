@@ -1,0 +1,16 @@
+error LoadError:
+    Missing(path: str)
+    Damaged(line: int)
+
+def load(path: str) -> int fails LoadError:
+    if path == "": fail .Missing(path)
+    return 7
+
+def main(stdout: Stdout):
+    score = load("save.txt") except why:
+        case.Missing(path):
+            0
+        case other:
+            stdout.print(f"{other}")
+            return
+    stdout.print(score)

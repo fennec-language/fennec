@@ -668,10 +668,10 @@ impl FnCx<'_> {
                 .map(|member| format!("`{}`", fennec_syntax::rename::shown_type_name(member)))
                 .collect();
             if !missing.is_empty() {
-                let message = format!("this `match` doesn't handle {}", missing.join(" or "));
-                self.error(Diagnostic::new(message, span).with_help(
-                    "add a case for each error it can fail with, or `case _:` for everything else",
-                ));
+                let help = "add a case for each error it can fail with, or `case _:` for everything else";
+                if let Some(problem) = self.unhandled(&missing.join(" or "), span, help) {
+                    self.error(problem);
+                }
             }
             return;
         }
@@ -708,10 +708,24 @@ impl FnCx<'_> {
         }
         let named: Vec<String> = missing.iter().map(|case| format!("`{owner}.{case}`")).collect();
         let cases: Vec<String> = missing.iter().map(|case| format!("`case .{case}:`")).collect();
-        self.error(
-            Diagnostic::new(format!("this `match` doesn't handle {}", named.join(" or ")), span)
-                .with_help(format!("add {}, or `case _:` for everything else", cases.join(" and "))),
-        );
+        let help = format!("add {}, or `case _:` for everything else", cases.join(" and "));
+        if let Some(problem) = self.unhandled(&named.join(" or "), span, &help) {
+            self.error(problem);
+        }
+    }
+
+    /// That a `match` leaves `missing` out, or the `except` whose cases it's written in as: then
+    /// the cases go under `except why:`, and a `case _:` there uses `why`.
+    fn unhandled(&self, missing: &str, span: Span, help: &str) -> Option<Diagnostic> {
+        if self.is_refused_except(span) {
+            return None;
+        }
+        if self.is_except_subject(span) {
+            return Some(Diagnostic::new(format!("this `except` doesn't handle {missing}"), span).with_help(
+                "handle every case it can fail with: write `except why:` with a `case` arm for each, or a `case _:` that uses `why`",
+            ));
+        }
+        Some(Diagnostic::new(format!("this `match` doesn't handle {missing}"), span).with_help(help))
     }
 }
 

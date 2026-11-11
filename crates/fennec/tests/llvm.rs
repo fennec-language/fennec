@@ -552,7 +552,7 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     prints_in_both_builds(
         "except_forms",
         EXCEPT_FORMS,
-        "failed: big\n0\nlong 9\n8080\n-1\nskipped 2\nrolled back\n",
+        "failed: big\n0\nlong 9\n8080\n-1\nskipped 2: two\nrolled back\ninside 1\n",
     )
 }
 
@@ -607,10 +607,9 @@ def main(stdout: Stdout):
     stdout.print(first(9))
     for turn in range(4):
         act(turn) except why:
-            stdout.print(f"skipped {turn}")
-            _ = why.why
+            stdout.print(f"skipped {turn}: {why.why}")
     used(stdout) except why:
-        _ = why.why
+        stdout.print(why.why)
     _ = sized
 "#;
 

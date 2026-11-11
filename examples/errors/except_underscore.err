@@ -1,0 +1,7 @@
+error: `except _` drops every failure
+  --> examples/errors/except_underscore.fen:10:38
+   |
+10 |     score = load("save.txt") except _: 0
+   |                                      ^^^
+   |
+   = help: name the failure, as `except why:`, and use it, or name the case it handles

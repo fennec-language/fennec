@@ -44,6 +44,7 @@ impl Parser {
     /// An expression, and whether this call made a one-line `if` or a fallback `else` of its own,
     /// rather than reading one inside parentheses.
     fn expr_made(&mut self) -> Result<(Expr, Formed), Diagnostic> {
+        let at_top = std::mem::take(&mut self.value_at_top);
         if self.at_match() {
             return Ok((self.match_expr()?, Formed::Plain));
         }
@@ -95,6 +96,15 @@ impl Parser {
             return Ok((Expr { kind, span }, Formed::Fallback));
         }
         if self.at(&Tok::Kw(Kw::Except)) {
+            if !at_top {
+                return Err(Diagnostic::new(
+                    "`except` goes after a whole right side, a bare call or `return`",
+                    self.span(),
+                )
+                .with_help(
+                    "give the call a line of its own, as `got = f() except why:`, and use `got` here",
+                ));
+            }
             let handler = self.except_handler()?;
             let span = value.span.to(handler.span);
             let kind = ExprKind::Else { value: Box::new(value), default: Box::new(handler), except: true };

@@ -20,6 +20,7 @@ mod checker;
 mod constants;
 mod effects;
 mod enumerate_lowering;
+mod except;
 mod expect;
 mod expr;
 mod extend;

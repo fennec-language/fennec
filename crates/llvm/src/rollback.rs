@@ -376,13 +376,16 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The slot holding the address of this thread's record of plain saves, which each lock that
-    /// saves its changes stores when it's taken.
+    /// saves its changes stores when it's taken. It starts at 0, so a save no lock's begin came
+    /// before would fault at once rather than read whatever the slot held. Every save comes after
+    /// one today, which LLVM sees, so it drops the store.
     fn record_slot(&mut self) -> String {
         if let Some(slot) = &self.lock_record {
             return slot.clone();
         }
         let at = self.label("%place");
         let _ = writeln!(self.allocas, "  {at} = alloca i64");
+        let _ = writeln!(self.allocas, "  store i64 0, ptr {at}");
         self.lock_record = Some(at.clone());
         at
     }
@@ -685,6 +688,14 @@ def main(stdout: Stdout):
         }
         // The balance, a number, is saved without a call while there's room.
         assert!(pay.contains("call void @fen_lock_save("), "{pay}");
+        // The record's slot starts at 0, before any lock's begin stores the record in it.
+        let lines: Vec<&str> = pay.lines().map(str::trim).collect();
+        let zeroed = lines.windows(2).any(|pair| {
+            pair[0]
+                .strip_suffix(" = alloca i64")
+                .is_some_and(|slot| pair[1] == format!("store i64 0, ptr {slot}"))
+        });
+        assert!(zeroed, "{pay}");
         assert!(text.contains("define internal void @fen_lock_save("), "{text}");
         let main =
             text.split("define").find(|function| function.contains("@\"f_main\"(")).unwrap_or_default();

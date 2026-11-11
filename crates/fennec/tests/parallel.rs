@@ -132,7 +132,7 @@ fn a_range_that_fails_stops_the_program_natively_as_pinned() -> std::io::Result<
 const PUT_BACK: &str = include_str!("fixtures/workers/put_back.fen");
 
 #[test]
-fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Result<()> {
+fn items_put_back_unchanged_stay_whole() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -144,20 +144,16 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
     std::fs::write(&program, PUT_BACK)?;
     let source = program.to_string_lossy().into_owned();
     let pinned_outcome = pinned_outcome(&dir, "words")?;
-    // Headers make a `str` item three words in place; without them it's one, a block's address.
-    for inline in ["1", "0"] {
-        let executable = dir.join(format!("words-{inline}"));
-        let built = crate::executables::fennec_command()
-            .args(["build", "--llvm", &source, "-o"])
-            .arg(&executable)
-            .env("FENNEC_HOME", &dir)
-            .env("FENNEC_INLINE_TEXT", inline)
-            .output_before(FENNEC_DEADLINE)?;
-        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        let ran = Command::new(&executable).output_within()?;
-        assert!(ran.status.success(), "inline text {inline}: {}", String::from_utf8_lossy(&ran.stderr));
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), pinned_outcome.0);
-    }
+    let executable = dir.join("words");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &source, "-o"])
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), pinned_outcome.0);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

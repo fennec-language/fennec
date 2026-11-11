@@ -1344,13 +1344,13 @@ fn check_and_lint_say_the_same_in_json() {
     };
     std::fs::write(
         &program,
-        "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+        "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
          held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n",
     )
     .unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
     assert_eq!(code, Some(1));
-    assert_eq!(rules(&report), ["needless-return", "copies"]);
+    assert_eq!(rules(&report), ["needless-pass", "copies"]);
     let first = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
     let at = |key: &str| first.and_then(|item| item.get(key)).and_then(fennec_lsp::Json::as_usize);
     assert_eq!((at("line"), at("column")), (Some(2), Some(5)));
@@ -1604,16 +1604,17 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
         text(&clean.stdout)
     );
 
-    let lints = "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(one())\n";
+    let lints =
+        "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(one())\n";
     std::fs::write(&program, lints).unwrap();
     let flagged = fennec(&["lint", &path], "").unwrap();
     assert_eq!(flagged.status.code(), Some(1));
-    assert!(text(&flagged.stderr).contains("needless-return:"), "{}", text(&flagged.stderr));
+    assert!(text(&flagged.stderr).contains("needless-pass:"), "{}", text(&flagged.stderr));
     assert!(text(&flagged.stderr).contains("1 lints, 1 of which"), "{}", text(&flagged.stderr));
 
     assert!(fennec(&["fix", &path], "").unwrap().status.success());
     let after = std::fs::read_to_string(&program).unwrap();
-    assert!(after.contains("-> int:\n    1\n"), "{after}");
+    assert!(!after.contains("pass") && after.contains("    return 1\n"), "{after}");
     assert!(fennec(&["lint", &path], "").unwrap().status.success());
 
     std::fs::write(&program, "x = 1 + \"a\"\n").unwrap();

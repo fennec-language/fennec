@@ -58,6 +58,7 @@ mod parallel;
 mod random;
 mod regex;
 mod rollback;
+mod signs;
 mod sized;
 mod text;
 mod ticks;

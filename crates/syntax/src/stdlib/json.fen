@@ -1790,11 +1790,13 @@ export def dump[T: Serializable, W: Writer](
 ) fails IoError:
     out.write_text(native_dumps(value, names=names, indent=indent))?
 
-## Reads what's left in `src`, any `Reader` from `std.io`, as JSON for a `T`, as `loads` does.
+## Reads what's left in `src`, any `Reader` from `std.io`, as JSON for a `T`, as `loads` does,
+## with the same `names=` and `extra=`.
 export def load[T: Deserializable, R: Reader](
     ref src: R,
     names: JsonNames? = None,
+    extra: JsonExtra? = None,
 ) -> T fails ParseError | IoError:
     data = read_all(ref src)?
     text = data.decode() else fail ParseError(message="the JSON isn't UTF-8 text", line=1, column=1)
-    native_loads[T](text, names=names)?
+    native_loads[T](text, names=names, extra=extra)?

@@ -118,6 +118,27 @@ fn a_match_over_a_failure_handles_each_case() {
     assert_eq!(problems(&caught), Vec::<String>::new());
 }
 
+/// `except` handles a failure as `else as` does, in its three forms: any failure named, `case`
+/// arms under the name, and one case on the line. One case covers only a call that fails in no
+/// other way, so one that leaves a case out is refused, as a `match` that does is.
+#[test]
+fn except_handles_a_failure_in_three_forms() {
+    let declared = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    n\n\n\
+        def only(n: int) -> int fails InvalidValue:\n    if n == 1: fail InvalidValue(message='one')\n    n\n\n\
+        def act(n: int) fails InvalidValue:\n    if n == 1: fail InvalidValue(message='one')\n\n";
+    let fine = "def named(n: int) -> int:\n    x = load(n) except why:\n        return why.notes().len()\n    x\n\n\
+        def arms(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case .Long(size):\n            size\n        case _:\n            fail why\n    x\n\n\
+        def one(n: int) -> int:\n    x = only(n) except InvalidValue(): 8080\n    y = only(n) except InvalidValue(): return 0\n    x + y\n\n\
+        def bare(n: int):\n    act(n) except why:\n        _ = why.message\n";
+    assert_eq!(problems(&format!("{declared}{fine}")), Vec::<String>::new());
+    let one_of_two = "def f(n: int) -> int:\n    x = load(n) except .Empty: 0\n    x\n";
+    assert_eq!(
+        problems(&format!("{declared}{one_of_two}")),
+        ["this `match` doesn't handle `Bad.Long` @ except"]
+    );
+}
+
 /// A function that can fail says so in its signature, with `fails`, and `fennec fix` writes
 /// it: with its return type, with nothing given back, and with several errors. `main` doesn't,
 /// since nothing calls it.

@@ -138,7 +138,7 @@ fn expr<'a>(value: &'a Expr, change: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Attr { object: inner, .. }
         | ExprKind::Lambda { body: inner, .. } => expr(inner, change),
         ExprKind::Binary { lhs: first, rhs: second, .. }
-        | ExprKind::Else { value: first, default: second }
+        | ExprKind::Else { value: first, default: second, .. }
         | ExprKind::Index { object: first, index: second } => {
             expr(first, change);
             expr(second, change);

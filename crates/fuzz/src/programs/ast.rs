@@ -324,6 +324,11 @@ pub(crate) enum Leave {
     Question,
     /// `total = total + capped(i, limit=at - 1)? * 2`, inside an expression.
     QuestionInside,
+    /// As [`Self::QuestionInside`], with a `?` nested inside the call's argument too, and the
+    /// inner call the one whose limit is `at - 1`: `capped(capped(i, limit=at - 1)?, limit=1000)?`.
+    QuestionNestedInner,
+    /// As [`Self::QuestionNestedInner`], with the outer call the one whose limit is `at - 1`.
+    QuestionNestedOuter,
     /// `return` inside an `if`, inside a `match`.
     NestedReturn,
     /// `return` under `if i == at`.
@@ -340,7 +345,14 @@ impl Leave {
     /// Whether leaving this way is a failure, which runs the cleanups in `lend x else:`, rather
     /// than the code after `lend`.
     pub(crate) const fn fails(self) -> bool {
-        matches!(self, Self::ElseFail | Self::Question | Self::QuestionInside)
+        matches!(
+            self,
+            Self::ElseFail
+                | Self::Question
+                | Self::QuestionInside
+                | Self::QuestionNestedInner
+                | Self::QuestionNestedOuter
+        )
     }
 }
 

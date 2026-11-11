@@ -26,8 +26,6 @@ mod named;
 pub(super) mod shown;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons, share_abandons};
 pub(super) use named::packable;

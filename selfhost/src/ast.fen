@@ -210,7 +210,8 @@ enum ExprKind:
     ## `then if cond else otherwise`.
     Cond(then: Expr, cond: Expr, otherwise: Expr)
     ## `value else default`: the value, or the default if it's None or an error.
-    Else(value: Expr, default: Expr)
+    ## `value except why:` is the same, handling only a failure: `is_except` says which was written.
+    Else(value: Expr, default: Expr, is_except: bool = False)
     ## `value?`, passing an error or None up; `value? from Context(...)` wraps the error.
     Try(value: Expr, context: Expr?)
     Call(callee: Expr, args: list[Arg])

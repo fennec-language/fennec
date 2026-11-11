@@ -1,4 +1,4 @@
-//! A string held as its 24-byte header, when the layouts say so (`FENNEC_INLINE_TEXT`): up to
+//! A string held as its 24-byte header, when the layouts say so, as a program's always do: up to
 //! 23 bytes in the header itself, or a block's address and its length. Byte 23 says which: its
 //! top bit is set for an inline string, whose length is in the rest of it, and clear for a
 //! block. A header is a `[3 x i64]` value. The runtime's string calls still take and give

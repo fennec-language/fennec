@@ -318,5 +318,10 @@ fn opened_kind(toks: &[Tok<'_>]) -> BlockKind {
             && word.text == "match"
             && !matches!(next.text, "=" | "(" | "." | "," | ")" | ":"))
     });
-    if starts_match { BlockKind::MatchBody } else { BlockKind::Other }
+    // `x = f() except why:` opens a block whose `case` arms are a match's, written the same way.
+    let handles = matches!(toks, [.., word, name, colon] if word.kind == TokenKind::Keyword
+        && word.text == "except"
+        && name.kind == TokenKind::Name
+        && colon.text == ":");
+    if starts_match || handles { BlockKind::MatchBody } else { BlockKind::Other }
 }

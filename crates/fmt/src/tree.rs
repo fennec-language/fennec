@@ -179,7 +179,7 @@ impl<'t, 'a> Line<'t, 'a> {
         let operator = range.clone().any(|at| top(at) && self.precedence.get(at).is_some_and(|&p| p > 0));
         let blocked = range
             .clone()
-            .any(|at| top(at) && matches!(self.text(at), "if" | "else" | "for" | "=>" | "match"));
+            .any(|at| top(at) && matches!(self.text(at), "if" | "else" | "except" | "for" | "=>" | "match"));
         let one_group = self.opens(from) && (from + 1..to).all(|at| !top(at) || at + 1 == to);
         (operator && !blocked && !one_group && from < to).then_some((from, to))
     }

@@ -2,6 +2,7 @@
 # for text that isn't JSON, and the field for JSON that doesn't fit the type. `json.dumps` writes
 # what `loads` reads back.
 from std import json
+from std.io import MemoryStream
 from std.json import JsonExtra, JsonNames
 
 struct Point:
@@ -140,6 +141,24 @@ test "extra=.Ignore skips a key no field has, however deep it goes":
     text = "{\"x\": 1, \"z\": {\"deep\": [1, {\"deeper\": null}]}, \"y\": 2}"
     assert json.loads[Point](text, extra=JsonExtra.Ignore)? == Point(x=1, y=2)
     assert json.loads[Point](text) fails ParseError()
+
+## Why loading a `Point` from `text` through a stream fails, or "read" if it doesn't.
+def streamed(text: str) -> str:
+    mut src = MemoryStream.of(text.encode())
+    _ = json.load[Point](ref src) else as why:
+        match why:
+            case ParseError(message=message):
+                return message
+            case _:
+                return "it couldn't be read"
+    "read"
+
+test "json.load from a stream takes extra= as loads does"():
+    text = "{\"x\": 1, \"y\": 2, \"z\": [3]}"
+    mut kept = MemoryStream.of(text.encode())
+    assert json.load[Point](ref kept, extra=.Ignore)? == Point(x=1, y=2)
+    # Without it, a key no field has is refused, as loads refuses it.
+    assert streamed(text) == "`Point` has no field \"z\", but the text has one"
 
 test "names= spells fields each way, and reads them back the same way":
     ada = Person(first_name="Ada", age_in_years=36)

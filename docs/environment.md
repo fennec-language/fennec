@@ -1,0 +1,64 @@
+# Environment variables
+
+Every `FENNEC_*` name the code uses is listed here, one line each. A test, `environment::every_fennec_name_in_the_code_is_listed`, fails when the code uses a name this page doesn't list, or this page lists a name the code no longer uses. A new switch therefore comes with its line here.
+
+A switch is for something permanent: an option a user or CI sets, or the way `fennec` talks to a program it built. A knob added to debug or measure something comes out once that work is done.
+
+## For people using Fennec
+
+- `FENNEC_HOME`: Fennec's own folder, in place of `~/.fennec`. See [store.md](store.md).
+- `FENNEC_CACHE_CAP`: the most bytes the store's cache holds; 1 GiB by default. See [store.md](store.md).
+- `FENNEC_OFFLINE`: never fetch anything. The launcher passes it on to the toolchain.
+- `FENNEC_DIST`: the mirror the launcher fetches releases from.
+- `FENNEC_VERSION`: which release `install.sh` installs.
+- `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
+- `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.
+- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default.
+- `FENNEC_THREADS_RUNTIME`: `0` or `1` picks the plain runtime or the one with threads, in place of what the program needs.
+- `FENNEC_NO_CACHE`: build without the cache, and run every test rather than reusing results.
+- `FENNEC_NO_DAEMON`: never start or use the daemon.
+- `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 600 by default.
+- `FENNEC_LLVM_BIN`: the folder holding LLVM's `opt` and `llc`.
+- `FENNEC_LLVM_KEEP`: keeps the folder of LLVM text a build writes, to read what was emitted.
+
+## For CI and the tests
+
+- `FENNEC_CHECK_PROOFS`: `1` builds an assertion for every check a proof left out, so a wrong proof stops the program.
+- `FENNEC_SANITIZE`: `address` or `thread` builds programs with that sanitizer.
+- `FENNEC_EXPECT_LLVM`: LLVM's tests fail rather than skip themselves when its tools are missing.
+- `FENNEC_EXPECT_STATIC`: the static-link test fails rather than skips when musl is missing.
+- `FENNEC_PARALLEL_STRESS`: every parallel loop runs on the pool, split one item a range.
+- `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
+- `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
+- `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
+- `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.
+- `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
+- `FENNEC_HASH_SEED`: a fixed seed for dict hashing, so a run's order repeats. `fennec test` sets it.
+- `FENNEC_GATE_LOCK`: the lock file the pre-push hook takes, so the landing script's test can use its own.
+- `FENNEC_PARKED_STOP`: a parked-code test runs itself again with this set, to crash on purpose.
+- `FENNEC_CONNECTIONS`: how many connections an ignored serve memory test opens, run by hand.
+- `FENNEC_AI_TEST_BASE_URL`: the host `tools/ai-test` sends its requests to.
+- `FENNEC_AI_TEST_MODEL`: the model `tools/ai-test` uses when `--model` isn't given.
+
+## Between `fennec` and the programs it builds
+
+- `FENNEC_COUNTS`: the program says, as it ends, what it allocated, copied and wrote. `fennec dev copies` sets it.
+- `FENNEC_RECORD`: the program records its inputs to this file, for `fennec run --record`.
+- `FENNEC_REPLAY`: the program replays the inputs recorded in this file, for `fennec replay`.
+- `FENNEC_RUN_AS`: the name `fennec run` gives the program it runs.
+- `FENNEC_TESTS_REAL`: a test binary uses real capabilities, for `fennec test --real`.
+- `FENNEC_TRACE_FILE`: where the program writes what each site cost, for `fennec dev trace`.
+
+## Set while building Fennec
+
+- `FENNEC_BUILD`: a hash of the sources, stamped on the cache, the daemon and the runtime so a stale one is never used.
+- `FENNEC_TARGET`: the target the launcher is built for.
+
+## Names that aren't switches
+
+- `FENNEC_DEADLINE`: a constant in the tests, how long a child process may take.
+- `FENNEC_DATABASE_URL`, `FENNEC_FOX`, `FENNEC_NO_SUCH_VARIABLE`: names that Fennec programs in tests and examples read or set, to test `env`.
+
+## Decided, not built yet
+
+- `FENNEC_LOG`: per-part log levels for `Log.from_env`. See [decisions.md](decisions.md).

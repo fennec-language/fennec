@@ -3,6 +3,7 @@
 # `url_encode` and `url_decode` use the one that's safe in URLs and file names, with `-` and `_`
 # for `+` and `/`, and no `=`.
 from std.intrinsics import bytes_text, text_byte, text_size
+from std.string import quoted_input
 
 ## `data` as standard base64 text, like `aGk=` for `b"hi"`.
 export def encode(data: bytes) -> str:
@@ -96,5 +97,4 @@ def read_back(text: str, url: bool) -> bytes fails InvalidValue:
     bytes(out)
 
 def not_base64(text: str, why: str) -> InvalidValue:
-    shown = text if text.len() <= 40 else text[0:40] + "…"
-    InvalidValue(message=f"`{shown}` isn't base64: {why}")
+    InvalidValue(message=f"{quoted_input(text)} isn't base64: {why}")

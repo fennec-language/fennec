@@ -44,11 +44,36 @@ pub extern "C" fn parse_float(text: i64, bits: &mut i64) -> i64 {
     })
 }
 
-/// A new string saying text isn't a number: an int if `int` isn't 0, or else a float.
+/// A new string saying text isn't a number: an int if `int` isn't 0, or else a float. The text
+/// comes from outside, so past 40 characters only its first 20 are quoted, then how long it was.
 pub extern "C" fn not_a_number(text: i64, int: i64) -> i64 {
     with(|state| {
         let what = if int == 0 { "a float" } else { "an int" };
-        let message = format!("{:?} isn't {what}", text_of(state, text));
+        let message = format!("{} isn't {what}", quoted_input(&text_of(state, text)));
         text_address(state, &message)
     })
+}
+
+/// Text from outside as a message quotes it: whole, or past 40 characters, its first 20 and `…`,
+/// then how long it was, as `"12345678901234567890…" (5,000 characters)`.
+fn quoted_input(text: &str) -> String {
+    let length = text.chars().count();
+    if length <= 40 {
+        return format!("{text:?}");
+    }
+    let start: String = text.chars().take(20).collect();
+    format!("\"{}…\" ({} characters)", start.escape_debug(), with_commas(length))
+}
+
+/// `n` with a comma between each group of three digits, as `5,000`.
+fn with_commas(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }

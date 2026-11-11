@@ -350,7 +350,7 @@ pub fn none_on_failure(step: &mut Expr) {
     let at = crate::Span { start: object.span.end, end: object.span.end };
     let value = std::mem::replace(object.as_mut(), Expr { kind: ExprKind::None, span: at });
     let default = Box::new(Expr { kind: ExprKind::None, span: at });
-    **object = Expr { kind: ExprKind::Else { value: Box::new(value), default }, span: at };
+    **object = Expr { kind: ExprKind::Else { value: Box::new(value), default, except: false }, span: at };
 }
 
 /// Makes a leading-dot case name its enum: `.Int(value)` becomes `ExprKind.Int(value)`.
@@ -530,7 +530,7 @@ fn expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::Attr { object: inner, .. }
         | ExprKind::Lambda { body: inner, .. } => expr(inner, change),
         ExprKind::Binary { lhs: first, rhs: second, .. }
-        | ExprKind::Else { value: first, default: second }
+        | ExprKind::Else { value: first, default: second, .. }
         | ExprKind::Index { object: first, index: second } => {
             expr(first, change);
             expr(second, change);

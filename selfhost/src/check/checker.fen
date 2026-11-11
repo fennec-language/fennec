@@ -211,7 +211,7 @@ struct Checker:
                 self.check_expr(then, generics)
                 self.check_expr(cond, generics)
                 self.check_expr(otherwise, generics)
-            case .Else(value, default):
+            case .Else(value, default, _):
                 self.check_expr(value, generics)
                 self.check_expr(default, generics)
             case .Try(value, context):

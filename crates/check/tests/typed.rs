@@ -195,7 +195,7 @@ fn values(expr: &Expr, found: &mut Found) {
             inner.push(lhs);
         }
         ExprKind::Binary { lhs: a, rhs: b, .. }
-        | ExprKind::Else { value: a, default: b }
+        | ExprKind::Else { value: a, default: b, .. }
         | ExprKind::Index { object: a, index: b } => inner.extend([a.as_ref(), b.as_ref()]),
         ExprKind::Cond { then, cond, otherwise } => inner.extend([then.as_ref(), cond, otherwise]),
         ExprKind::Try { value, context } => {

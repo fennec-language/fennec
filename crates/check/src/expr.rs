@@ -204,6 +204,9 @@ impl FnCx<'_> {
         let problem = unknown_name(name, span);
         match self.similar_name(name).filter(|_| problem.help.is_none()) {
             Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
+            None if problem.help.is_none() => {
+                problem.with_help(format!("give it a value first, as `{name} = ...`, or check the spelling"))
+            }
             None => problem,
         }
     }

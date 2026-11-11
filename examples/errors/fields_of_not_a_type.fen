@@ -1,0 +1,12 @@
+struct Point:
+    x: int
+    y: int
+
+def names() -> list[str]:
+    mut found = []
+    for field in fields(Ponit):
+        found.append(field.name)
+    found
+
+def main(stdout: Stdout):
+    stdout.print(names())

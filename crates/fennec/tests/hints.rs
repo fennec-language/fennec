@@ -40,7 +40,11 @@ fn names_from_other_languages_point_to_fennec_ones() {
     for (body, message, help) in cases {
         assert_eq!(first_error(body), Some((message.to_owned(), Some(help.to_owned()))), "{body}");
     }
-    assert_eq!(first_error("stdout.print(nothing)"), Some(("`nothing` doesn't exist".to_owned(), None)));
+    let none_like = "give it a value first, as `nothing = ...`, or check the spelling";
+    assert_eq!(
+        first_error("stdout.print(nothing)"),
+        Some(("`nothing` doesn't exist".to_owned(), Some(none_like.to_owned())))
+    );
 }
 
 #[test]

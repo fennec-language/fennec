@@ -1,0 +1,7 @@
+struct Point:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    mut x = 1
+    stdout.print(Point(ref x, y=2))

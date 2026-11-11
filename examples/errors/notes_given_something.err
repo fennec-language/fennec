@@ -1,0 +1,7 @@
+error: `notes()` takes nothing
+ --> examples/errors/notes_given_something.fen:6:18
+  |
+6 |     stdout.print(failure.notes(1))
+  |                  ^^^^^^^^^^^^^^^^
+  |
+  = help: call it as `notes()`

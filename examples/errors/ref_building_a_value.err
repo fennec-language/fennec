@@ -1,0 +1,7 @@
+error: building a value doesn't change its arguments, so don't pass `ref`
+ --> examples/errors/ref_building_a_value.fen:7:28
+  |
+7 |     stdout.print(Point(ref x, y=2))
+  |                            ^
+  |
+  = help: take `ref` off the argument

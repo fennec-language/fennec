@@ -360,12 +360,21 @@ fn exported(text: &str) -> HashSet<String> {
 }
 
 /// Every `.fen` file under `dir`, as module paths.
+///
+/// A folder that's a link isn't gone into: one linked into itself, as `src/a -> .`, would be walked
+/// again at every level until the path is too long, and two such double the walk at each. A file
+/// that's a link is a module like any other.
 pub(crate) fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec<Vec<String>>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(stem) = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()) else { continue };
-        if path.is_dir() {
+        // The entry's own kind, not what a link leads to.
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_symlink() && path.is_dir() {
+            continue;
+        }
+        if kind.is_dir() {
             prefix.push(stem);
             find_modules(&path, prefix, found);
             prefix.pop();

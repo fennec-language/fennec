@@ -1,0 +1,7 @@
+error: an int can't be indexed
+ --> examples/errors/index_an_int.fen:3:18
+  |
+3 |     stdout.print(count[0])
+  |                  ^^^^^^^^
+  |
+  = help: index a list, str, dict, tuple or array, as `items[0]`

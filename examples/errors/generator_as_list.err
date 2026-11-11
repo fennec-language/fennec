@@ -3,3 +3,5 @@ error: an Iterator can't be indexed
   |
 8 |     stdout.print(countdown(3)[0])
   |                  ^^^^^^^^^^^^^^^
+  |
+  = help: make a list of it first, as `list(items)[0]`

@@ -24,9 +24,9 @@ use super::ast::{
 const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = false;
 
 /// Whether `x = f() else return`, `else fail`, `else continue` and `else break` run the cleanups
-/// of the `with` blocks they leave. Today none run, natively: the runtime lane's fix is coming.
-/// Until it lands, `Left` leaves its blocks every other way.
-const ELSE_LEAVES_RUN_CLEANUPS: bool = false;
+/// of the `with` blocks they leave. They do since #1341; turned off, `Left` leaves its blocks
+/// every other way.
+const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 
 /// How many statements a program has before it ends, where the input's bytes run out sooner.
 const MOST_FROM_STREAM: usize = 60;

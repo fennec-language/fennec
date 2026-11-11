@@ -1,0 +1,7 @@
+error: this is looked up by a str, not an int
+ --> examples/errors/dict_key_wrong_type.fen:3:23
+  |
+3 |     stdout.print(ages[1])
+  |                       ^
+  |
+  = help: turn it into text, as `table[str(key)]`

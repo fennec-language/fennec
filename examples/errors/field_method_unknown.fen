@@ -1,0 +1,11 @@
+struct Point:
+    x: int
+    y: int
+
+def clear[T](value: T):
+    for field in fields(T):
+        field.set(value, 0)
+
+def main(stdout: Stdout):
+    clear(Point(1, 2))
+    stdout.print("cleared")

@@ -1,0 +1,56 @@
+## A lock taken with no other held begins and ends in native code, with no log. One taken with it
+## makes its log first, with the tables it began with, and so does a save the runtime has to see. Whatever the mix, a failure or a crash puts back exactly what came before its lock,
+## and a normal end keeps it all.
+from std.concurrent import Crashed
+
+error Boom:
+    step: int
+
+struct Tally:
+    count = 0
+    names = list[str]()
+
+def alone(tally: shared Tally, step: int, failing: bool) fails Boom:
+    lock tally as ref held:
+        held.count += step
+        if failing:
+            fail Boom(step=step)
+
+## Two locks taken together: the first begins in native code, and the second asks the runtime,
+## which makes the first one's log before its own.
+def together(first: shared Tally, second: shared Tally, step: int, failing: bool) fails Boom:
+    lock first, second as ref one, ref two:
+        one.count += 1
+        two.count += 10
+        one.names.append("kept")
+        if failing:
+            fail Boom(step=step)
+
+def crashing(tally: shared Tally, at: int):
+    lock tally as ref held:
+        held.count += 1000
+        values = [1]
+        held.count += values[at]
+
+def launched(tally: shared Tally, at: int) fails Crashed:
+    with launch(() => crashing(tally, at)) as task:
+        pass
+
+def main(stdout: Stdout):
+    shared first = Tally()
+    shared second = Tally()
+    mut failed = 0
+    for step in range(1, 31):
+        _ = alone(first, step=step, failing=step % 4 == 0) else:
+            failed += 1
+    for step in range(9):
+        _ = together(first, second=second, step=step, failing=step % 3 == 1) else:
+            failed += 1
+    for at in [0, 1]:
+        _ = launched(second, at=at) else:
+            stdout.print("crashed", at)
+    for step in range(1, 5):
+        _ = alone(second, step=step, failing=step == 2) else:
+            failed += 1
+    lock first, second as one, two:
+        stdout.print(failed, one.count, one.names.len(), two.count)

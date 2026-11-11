@@ -73,10 +73,24 @@ examples() {
   done
 }
 
+# Whether Rosetta runs a new x86-64 program. When it's wedged, every one sits unkillable instead
+# of starting, so this tries a tiny one built just now, which Rosetta hasn't translated before,
+# and fails the step at once, saying what to do, rather than letting each example hang.
+rosetta() {
+  local probe="$logs/rosetta"
+  printf 'int main(void) { return 0; }\n' > "$probe.c" || return 1
+  /usr/bin/cc -arch x86_64 -o "$probe" "$probe.c" || return 1
+  if ! .github/scripts/within.sh 20 "$probe"; then
+    echo "Rosetta isn't running new x86-64 programs; restart the Mac or \`sudo launchctl kickstart -k system/com.apple.oahd\`" >&2
+    return 1
+  fi
+}
+
 # An Arm-only pass can hide what only x86-64 does, like having two return registers, not eight. So
 # `fennec` built for x86-64 builds every example as an x86-64 program, under Rosetta, with LLVM's
 # own tools and a `cc` that links for x86-64, and each has to print its `.out`.
 x86() {
+  rosetta || return 1
   rustup target add x86_64-apple-darwin || return 1
   cargo build --locked -p fennec -p fennec-runtime --target x86_64-apple-darwin || return 1
   # And the runtime with threads, which a program that uses `launch` needs, in a folder of its

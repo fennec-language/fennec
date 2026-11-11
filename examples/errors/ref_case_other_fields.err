@@ -1,0 +1,7 @@
+error: a case with a `ref` matches its other fields by name, `_` or a literal
+ --> examples/errors/ref_case_other_fields.fen:7:9
+  |
+7 |         case .Held(ref count, (0, 0)):
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: name the field, as `ref target`, and match what's inside it in the case's body, as `match target:`

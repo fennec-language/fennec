@@ -1,0 +1,15 @@
+enum Slot:
+    Empty
+    Held(count: int, at: (int, int))
+
+def bump(ref slot: Slot):
+    match slot:
+        case .Held(ref count, (0, 0)):
+            count += 1
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut slot = Slot.Held(count=1, at=(0, 0))
+    bump(ref slot)
+    stdout.print(slot)

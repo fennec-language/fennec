@@ -2571,6 +2571,44 @@ fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf
     Ok((dir, kit, home))
 }
 
+/// A Fennec folder too deep for a socket, as one in a long temporary folder is, still gets a
+/// daemon: it listens in a short folder of its own under `/tmp`, which goes when it stops.
+#[cfg(unix)]
+#[test]
+fn a_daemon_serves_a_fennec_folder_too_deep_for_a_socket() {
+    let (folder, kit, _) = small_kit("deep-daemon").unwrap();
+    let home = folder.join("a folder with a long name, ".repeat(4));
+    let deep = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("TMPDIR", &home)
+            .env("FENNEC_DAEMON_IDLE", "30")
+            .env_remove("FENNEC_NO_DAEMON")
+            .env_remove("XDG_RUNTIME_DIR")
+            .output()
+            .unwrap()
+    };
+    let first = deep(&["dev", "changes"]);
+    assert_eq!(
+        text(&first.stdout),
+        "first run: hashed 1 files and 1 definitions\n",
+        "{}",
+        text(&first.stderr)
+    );
+    let status = text(&deep(&["daemon", "status"]).stdout);
+    assert!(status.starts_with("running: Fennec") && status.contains("1 request served\n"), "{status}");
+    assert_eq!(text(&deep(&["daemon", "stop"]).stdout), "stopped\n");
+    let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
+    let short = Path::new("/tmp").join(format!("fennec-{}", hash.get(..16).unwrap()));
+    let gone = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        text(&deep(&["daemon", "status"]).stdout) == "not running\n" && !short.exists()
+    });
+    assert!(gone, "the daemon didn't stop, or left {}", short.display());
+}
+
 #[cfg(unix)]
 #[test]
 fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {

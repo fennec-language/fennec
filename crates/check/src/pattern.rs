@@ -11,6 +11,23 @@ use crate::program::TypeKind;
 use crate::types::{Type, a};
 
 impl FnCx<'_> {
+    /// The case of `owners` spelled most like `name`, or what their cases are.
+    fn cases_help(&self, owners: &[String], name: &str) -> String {
+        let cases: Vec<String> = owners
+            .iter()
+            .filter_map(|owner| self.checker.program.type_info(owner))
+            .flat_map(|info| info.def.cases.iter().map(|case| case.name.clone()))
+            .collect();
+        match crate::messages::spelled_most_like(name, cases.iter().map(String::as_str)) {
+            Some(similar) => format!("did you mean `.{similar}`?"),
+            None if cases.is_empty() => "match it by its fields instead, as `case value:`".to_owned(),
+            None => {
+                let shown: Vec<String> = cases.iter().map(|case| format!("`.{case}`")).collect();
+                format!("its cases are {}", shown.join(", "))
+            }
+        }
+    }
+
     /// A `match`. `wanted` is the type expected of its value, if any, which each case's
     /// value is expected to have too.
     pub(crate) fn match_expr(
@@ -72,7 +89,9 @@ impl FnCx<'_> {
         if refs && statement && !matches!(self.checker.settled(&value), Type::Unit | Type::Unknown) {
             self.error(
                 Diagnostic::new("a `match` with a `ref` case gives back nothing", span)
-                    .with_help("it changes what it's over: give back a value after it, on a line of its own"),
+                    .with_help(
+                        "take the value off each case's last line, and give it back on a line after the `match`, as `total`",
+                    ),
             );
         }
         value
@@ -94,7 +113,7 @@ impl FnCx<'_> {
         if !self.statement_matches.contains(&(span.start, span.end)) {
             self.error(
                 Diagnostic::new("a `match` with a `ref` case is a statement of its own", span)
-                    .with_help("it changes what it's over and gives back nothing: write it on its own line"),
+                    .with_help("write it on a line of its own, as `match item:`, not after `=` or `return`"),
             );
         }
         if plain_place(subject) {
@@ -149,7 +168,7 @@ impl FnCx<'_> {
                         "a case with a `ref` matches its other fields by name, `_` or a literal",
                         arm.span,
                     )
-                    .with_help("match what's inside the field after, in the case's body"),
+                    .with_help("name the field, as `ref target`, and match what's inside it in the case's body, as `match target:`"),
                 );
             }
             cases.push(owner.as_ref().map(|owner| self.field_names(owner, Some(name))));
@@ -284,7 +303,8 @@ impl FnCx<'_> {
                 if !self.checker.fits(&value, &ty) && !self.checker.fits(&ty, &value) {
                     let message =
                         format!("this case can't match: the value is {}, and this is {}", a(&value), a(&ty));
-                    self.error(Diagnostic::new(message, literal.span));
+                    let help = format!("write {} here instead, or `case _:` for anything else", a(&value));
+                    self.error(Diagnostic::new(message, literal.span).with_help(help));
                 }
             }
             Pattern::Bind(name) => self.declare(name, value, false, span),
@@ -297,15 +317,25 @@ impl FnCx<'_> {
                     Type::Tuple(items) if items.len() == patterns.len() => items,
                     Type::Unknown => vec![Type::Unknown; patterns.len()],
                     other => {
-                        let message = match other {
-                            Type::Tuple(items) => format!(
-                                "this pattern has {} parts, but the value has {}, so it can't match",
-                                patterns.len(),
-                                items.len()
+                        let (message, help) = match other {
+                            Type::Tuple(items) => (
+                                format!(
+                                    "this pattern has {} parts, but the value has {}, so it can't match",
+                                    patterns.len(),
+                                    items.len()
+                                ),
+                                format!(
+                                    "write {} parts, one for each, or `_` for those it doesn't need",
+                                    items.len()
+                                ),
                             ),
-                            other => format!("this pattern is a tuple, but the value is {}", a(&other)),
+                            other => (
+                                format!("this pattern is a tuple, but the value is {}", a(&other)),
+                                "match it with one name, as `case value:`, or a value, as `case 3:`"
+                                    .to_owned(),
+                            ),
                         };
-                        self.error(Diagnostic::new(message, span));
+                        self.error(Diagnostic::new(message, span).with_help(help));
                         vec![Type::Unknown; patterns.len()]
                     }
                 };
@@ -351,7 +381,9 @@ impl FnCx<'_> {
         {
             let message =
                 format!("this pattern has {} parts, but the value has {} fields", args.len(), fields.len());
-            self.error(Diagnostic::new(message, span));
+            let named: Vec<String> = fields.iter().map(|field| format!("{field}=_")).collect();
+            let help = format!("write one part for each field, by name, as `{name}({})`", named.join(", "));
+            self.error(Diagnostic::new(message, span).with_help(help));
         }
         // Where each part goes among the fields: by position, or by the name it's given.
         let places: Vec<Option<usize>> = if given.is_empty() {
@@ -396,7 +428,17 @@ impl FnCx<'_> {
                 let listed: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
                 format!("has {}", listed.join(", "))
             };
-            self.error(Diagnostic::new(format!("`{variant}` has no field `{field}`: it {has}"), span));
+            let help = match crate::messages::spelled_most_like(field, names.iter().map(String::as_str)) {
+                Some(similar) => format!("did you mean `{similar}=`?"),
+                None => match names.first() {
+                    Some(first) => format!("match one of its fields, as `{first}=_`"),
+                    None => format!("match it with no fields, as `{variant}()`"),
+                },
+            };
+            self.error(
+                Diagnostic::new(format!("`{variant}` has no field `{field}`: it {has}"), span)
+                    .with_help(help),
+            );
         }
         place
     }
@@ -440,16 +482,17 @@ impl FnCx<'_> {
                 .next();
             if let Some(name) = only_some {
                 let message = format!("`{name}` is bound by only some of the alternatives of this `case`");
-                self.error(
-                    Diagnostic::new(message, span).with_help("every alternative has to bind the same names"),
-                );
+                self.error(Diagnostic::new(message, span).with_help(format!(
+                    "bind `{name}` in every alternative, or write `_` in its place in all of them"
+                )));
                 return;
             }
             for ((name, ty), (_, other_ty)) in first.iter().zip(other) {
                 if !self.checker.fits(ty, other_ty) || !self.checker.fits(other_ty, ty) {
                     let message =
                         format!("`{name}` is {} in one alternative and {} in another", a(ty), a(other_ty));
-                    self.error(Diagnostic::new(message, span));
+                    let help = "write the alternatives as cases of their own, each with its own body, as `case .Square(side):`";
+                    self.error(Diagnostic::new(message, span).with_help(help));
                     return;
                 }
             }
@@ -466,7 +509,7 @@ impl FnCx<'_> {
         if let Some(span) = mut_arg(guard) {
             self.error(
                 Diagnostic::new("a guard can't change anything, so it can't pass `ref`", span)
-                    .with_help("change it in the case's body instead"),
+                    .with_help("take `ref` off the guard's call, and make the change in the case's body"),
             );
         }
         self.track(guard);
@@ -511,7 +554,8 @@ impl FnCx<'_> {
             }
             if dotted {
                 let message = format!("none of `{}` has a case called `{name}`", owners.join(" | "));
-                self.error(Diagnostic::new(message, span));
+                let help = self.cases_help(owners, name);
+                self.error(Diagnostic::new(message, span).with_help(help));
                 return None;
             }
         }
@@ -527,7 +571,10 @@ impl FnCx<'_> {
                 return Some((owner.clone(), Some(name.to_owned())));
             }
             if dotted {
-                self.error(Diagnostic::new(format!("`{owner}` has no case called `{name}`"), span));
+                let help = self.cases_help(std::slice::from_ref(owner), name);
+                self.error(
+                    Diagnostic::new(format!("`{owner}` has no case called `{name}`"), span).with_help(help),
+                );
                 return None;
             }
         }

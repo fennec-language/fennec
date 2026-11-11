@@ -258,6 +258,14 @@ impl Emit<'_, '_, '_> {
         self.module.add_helper("fen_lock_kept", KEPT.to_owned());
         let (slot, record) = (self.record_slot(), self.temp());
         self.line(&format!("{record} = load i64, ptr {slot}"));
+        // The record's from the lock's begin, which comes before every normal end, so a 0 here is
+        // a path to an end that missed it.
+        if self.checks_proofs() {
+            let unset = self.temp();
+            self.line(&format!("{unset} = icmp eq i64 {record}, 0"));
+            let span = self.here_span();
+            self.proof_held(&unset, "a lock's normal end comes after its begin", span);
+        }
         self.line(&format!("call void @fen_lock_kept(i64 {record})"));
     }
 

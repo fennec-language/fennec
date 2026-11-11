@@ -111,20 +111,20 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
-        # Windows runs its tests at half the speed of the others, so its `llvm::` tests, a third
-        # of the main test binary's and each building a program, take a job of their own.
+        # The `llvm::` tests, a third of the main test binary's and each building a program, take a
+        # job of their own, except on Arm Linux, whose runners are fast enough for one. On
+        # 2026-11-11 the test step alone took 20 to 30 minutes on x86-64 Linux and macOS, and
+        # those jobs ran out of time; `llvm::` was 840 of their tests' seconds there.
         part: [main, llvm]
         exclude:
-          - os: ubuntu-latest
-            part: llvm
           - os: ubuntu-24.04-arm
-            part: llvm
-          - os: macos-latest
             part: llvm
     runs-on: ${{ matrix.os }}
     # Windows' tests took 20 minutes in one job, and a build with no cache there takes 10 more. A
-    # job that runs out of time saves no cache, so the limit leaves room for a cold one.
-    timeout-minutes: 35
+    # job that runs out of time saves no cache, so the limit leaves room for a cold one. On
+    # 2026-11-11 Linux and macOS ran out at 35: their tests took 20 to 30 minutes, and the examples
+    # 6 more. The limit is half again what a warm job takes, so one slow runner doesn't fail it.
+    timeout-minutes: 50
     # Everything runs through LLVM, so its tests have to run on every platform: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
@@ -176,12 +176,12 @@ jobs:
       # Every test binary runs even after one fails, so a red run shows every failure, not the
       # first binary's alone; the step still fails if any test did.
       - name: Run cargo test --locked
-        if: runner.os != 'Windows'
+        if: matrix.os == 'ubuntu-24.04-arm'
         run: cargo test --locked --no-fail-fast
-      # Between them, Windows' two jobs run every test once: no test outside `fennec`'s main test
-      # binary has `llvm::` in its name.
+      # Between them, each other platform's two jobs run every test once: no test outside
+      # `fennec`'s main test binary has `llvm::` in its name.
       - name: Run every test but the LLVM ones
-        if: runner.os == 'Windows' && matrix.part == 'main'
+        if: matrix.os != 'ubuntu-24.04-arm' && matrix.part == 'main'
         run: cargo test --locked --no-fail-fast -- --skip 'llvm::'
       - name: Run the LLVM tests
         if: matrix.part == 'llvm'
@@ -1003,7 +1003,7 @@ jobs:
               while IFS='|' read -r name conclusion runner steps; do
                 looked_at=1
                 [ "$conclusion" = success ] && continue
-                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest\)|macOS)$ ]] \
+                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest(, llvm::)?\)|macOS)$ ]] \
                   && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
                   echo "::warning::$name never got a runner, so it doesn't count; the push to main runs it again"
                   continue

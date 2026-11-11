@@ -314,6 +314,47 @@ fn an_edit_that_breaks_a_caller_in_another_file_is_still_found() {
     }
 }
 
+/// A kit whose `src/pause.fen` has `settle` and a test of it, and whose `src/locks.fen` calls it
+/// inside a `lock`, in a file no test reaches.
+fn locking_kit(name: &str) -> std::io::Result<fennec_temp::Temp> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest)?;
+    std::fs::write(dir.join("src/pause.fen"), settling("_ = clock.now()"))?;
+    let locks = "from pause import settle\n\nstruct Count:\n    n = 0\n\n\
+                 def bump(count: shared Count, clock: Clock):\n    lock count as ref current:\n        current.n += settle(clock)\n";
+    std::fs::write(dir.join("src/locks.fen"), locks)?;
+    Ok(dir)
+}
+
+/// `src/pause.fen`, with `settle` doing `first` before it gives back 1.
+fn settling(first: &str) -> String {
+    format!(
+        "def settle(clock: Clock) -> int:\n    {first}\n    1\n\n\
+         test \"settles\"(clock: Clock):\n    assert settle(clock) == 1\n"
+    )
+}
+
+/// An edit to one file's body that makes a function wait is checked against every `lock` that
+/// calls it, in files no affected test reaches too, even when only the affected tests run.
+#[test]
+fn a_body_edit_that_waits_under_another_files_lock_fails_the_tests() {
+    let dir = locking_kit("kit_lock").unwrap();
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "1 passed, 0 failed\n");
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "1 passed, 0 failed (0 run, 1 unchanged)\n");
+    std::fs::write(dir.join("src/pause.fen"), settling("clock.sleep(1ms)")).unwrap();
+    for _ in 0..2 {
+        let refused = test_kit(&dir).unwrap();
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{said}");
+        assert!(said.contains("`settle` waits on"), "{said}");
+        assert!(said.contains("src/locks.fen"), "{said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_mistake_in_an_edited_body_is_reported() {
     let dir = kit_with_tests("kit_mistake").unwrap();

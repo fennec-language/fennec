@@ -753,7 +753,7 @@ struct JsonReader:
     ## What the next value is, for a message.
     def _found(ref self) -> str:
         b = self._space()
-        if b == 123: return "a table"
+        if b == 123: return "an object"
         if b == 110: return "null"
         if b == 34: return "a str"
         if b == 91: return "a list"
@@ -1354,8 +1354,10 @@ struct JsonReader:
         self._tags[kind] = made
         made
 
+    ## A null is a value, not a field left out: one in a field that isn't optional fails, saying
+    ## so, rather than taking its default, as SQL's null does.
     def none_next(ref self) -> bool:
-        self._space() == 110
+        False
 
     def exact(self) -> bool:
         False

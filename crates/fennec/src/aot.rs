@@ -925,6 +925,9 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, _tls: bool) -> Com
     command
         .args(["-flavor", "gnu", "-m", "i386pep", "--dynamicbase", "--high-entropy-va", "--nxcompat"])
         .args(["--gc-sections", "--subsystem", "console"])
+        // A PE header holds the time it was linked unless told not to, so the same program linked
+        // a second later would be different bytes.
+        .arg("--no-insert-timestamp")
         .arg("-L")
         .arg(&libraries)
         .arg(libraries.join("crt2.o"));

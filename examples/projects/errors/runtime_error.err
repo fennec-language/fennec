@@ -1,7 +1,7 @@
 error: index 5 is out of range for length 2
- --> examples/projects/errors/runtime_error/src/inventory.fen:2:5
+ --> examples/projects/errors/runtime_error/src/inventory.fen:2:12
   |
-2 |     items[slot]
-  |     ^^^^^^^^^^^
+2 |     return items[slot]
+  |            ^^^^^^^^^^^
   = in `pick`
   = called from `main` at examples/projects/errors/runtime_error/src/main.fen:6:18

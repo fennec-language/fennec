@@ -895,10 +895,10 @@ def show(stdout: Stdout, xs: list[int]):
         stdout.print(x)
 
 def squares(xs: list[int]) -> list[int]:
-    [x * x for x in parallel(xs)]
+    return [x * x for x in parallel(xs)]
 
 def total(xs: list[int]) -> int:
-    sum(x for x in parallel(xs))
+    return sum(x for x in parallel(xs))
 
 def main(stdout: Stdout):
     show(stdout, [1])
@@ -945,12 +945,12 @@ def plain(n: int, ref held: list[str]) -> int:
     held.append(str(n))
     if n > 0:
         return plain(n - 1, ref held)
-    n ** 2
+    return n ** 2
 
 def in_a_range(n: int) -> int:
     if n > 0:
         return in_a_range(n - 1)
-    n ** 2
+    return n ** 2
 
 def main(stdout: Stdout):
     mut held = [\"a\"]
@@ -993,7 +993,7 @@ from std.time import Clock
 
 def rest(clock: Clock, x: int) -> int:
     clock.sleep(1ms)
-    x
+    return x
 
 def main(stdout: Stdout, clock: Clock):
     mut xs = [1, 2, 3]
@@ -1013,9 +1013,9 @@ def main(stdout: Stdout, clock: Clock):
 from std.net import Connection, NetError
 
 def heard(conn: Connection, x: int) -> int:
-    got = conn.read(1) else:
+    got = conn.read(1) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other():
         return x
-    got.len() + x
+    return len(got) + x
 
 def main(stdout: Stdout, net: Net) fails NetError:
     xs = [1, 2, 3]

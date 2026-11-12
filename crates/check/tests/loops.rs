@@ -212,7 +212,7 @@ fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
         ),
     ];
     for (call, said) in cases {
-        let found = given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n"));
+        let found = given(&format!("{call}\nstdout.print(unit.position.x, len(spots))\n"));
         let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
         assert_eq!(messages, [said], "{call}");
     }
@@ -220,7 +220,7 @@ fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
 
 #[test]
 fn a_ref_self_method_needs_its_value_to_itself() {
-    let types = "struct Bag:\n    name = \"\"\n    size = 0\n    items = list[int]()\n\n    def absorb(ref self, other: Bag):\n        self.size += other.size\n\n    def grab(ref self, more: list[int]):\n        self.items.append(more.len())\n\n    def rename(ref self, name: str):\n        self.name = name\n\n    def grow(ref self, by: int):\n        self.size += by\n\n    def has(self, other: Bag) -> bool:\n        return self.size == other.size\n";
+    let types = "struct Bag:\n    name = \"\"\n    size = 0\n    items = list[int]()\n\n    def absorb(ref self, other: Bag):\n        self.size += other.size\n\n    def grab(ref self, more: list[int]):\n        self.items.append(len(more))\n\n    def rename(ref self, name: str):\n        self.name = name\n\n    def grow(ref self, by: int):\n        self.size += by\n\n    def has(self, other: Bag) -> bool:\n        return self.size == other.size\n";
     let cases: [(&str, &[&str]); 8] = [
         ("bag.absorb(bag)", &["`bag` overlaps `bag`, which this method changes"]),
         ("bag.grab(bag.items)", &["`bag.items` overlaps `bag`, which this method changes"]),
@@ -233,7 +233,7 @@ fn a_ref_self_method_needs_its_value_to_itself() {
     ];
     for (call, said) in cases {
         let body = format!(
-            "mut bag = Bag()\nmut bags = [Bag(), Bag()]\ni = 0\nj = 1\n{call}\nstdout.print(bag.size, bags.len(), i, j)\n"
+            "mut bag = Bag()\nmut bags = [Bag(), Bag()]\ni = 0\nj = 1\n{call}\nstdout.print(bag.size, len(bags), i, j)\n"
         );
         let found = in_main_after(types, &body);
         let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
@@ -252,7 +252,7 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
     ];
     for (call, said) in cases {
         let body = format!(
-            "mut unit = Unit()\nmut units = [Unit()]\nmut spots = [Spot()]\nmut i = 0\nmut j = 0\n{call}\nstdout.print(unit.position.x, spots.len(), units.len(), i, j)\n"
+            "mut unit = Unit()\nmut units = [Unit()]\nmut spots = [Spot()]\nmut i = 0\nmut j = 0\n{call}\nstdout.print(unit.position.x, len(spots), len(units), i, j)\n"
         );
         let found = in_main_after(&types, &body);
         let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
@@ -261,13 +261,13 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
     let moved = "struct Mover:\n    x = 0\n\n    def shift(ref self, ref at: int):\n        at += self.x\n";
     let found = in_main_after(
         moved,
-        "mut movers = [Mover()]\nmut at = 0\nmovers[at].shift(ref at)\nstdout.print(movers.len(), at)\n",
+        "mut movers = [Mover()]\nmut at = 0\nmovers[at].shift(ref at)\nstdout.print(len(movers), at)\n",
     );
     let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
     assert_eq!(messages, ["`ref at` changes what picks `movers[at]`"]);
     // An index that isn't changed is fine, and so is a name changed that picks nothing here.
     let empty: [&str; 0] = [];
-    let fine = "mut movers = [Mover()]\nmut at = 0\nmut other = 0\nmovers[at].shift(ref other)\nstdout.print(movers.len(), at, other)\n";
+    let fine = "mut movers = [Mover()]\nmut at = 0\nmut other = 0\nmovers[at].shift(ref other)\nstdout.print(len(movers), at, other)\n";
     assert_eq!(in_main_after(moved, fine), empty);
 }
 
@@ -281,11 +281,11 @@ struct Pool:
 
     def grow(ref self) -> int:
         self.items.append(9)
-        self.items.len()
+        return len(self.items)
 
     def take(ref self) -> int:
         self.spare.append(1)
-        self.spare.len()
+        return len(self.spare)
 
 struct Holder:
     pool = Pool()
@@ -305,7 +305,7 @@ fn an_argument_cant_change_what_its_call_changes() {
     }
     let empty: [&str; 0] = [];
     for call in [
-        "holder.pool.items.append(holder.pool.items.len())",
+        "holder.pool.items.append(len(holder.pool.items))",
         "holder.pool.items.append(holder.pool.take())",
         "push(ref holder.pool.items, holder.pool.take())",
         "holder.pool.spare.append(holder.pool.grow())",
@@ -334,7 +334,7 @@ fn two_refs_into_one_collection_overlap_however_theyre_written() {
         ("bump(ref spots[0], ref spots[i])", "`ref spots[0]` and `ref spots[i]` overlap"),
         ("bump(ref spots[i], ref spots[i + 1])", "`ref spots[i]` and `ref spots[...]` overlap"),
     ] {
-        let found = given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n"));
+        let found = given(&format!("{call}\nstdout.print(unit.position.x, len(spots))\n"));
         let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
         assert_eq!(messages, [said], "{call}");
     }
@@ -352,12 +352,12 @@ fn different_places_can_be_given_as_mut_together() {
         "unit.absorb(ref units[0])",
         "units[i].look(ref unit.home)",
         // What's worked out from a place is a value of its own.
-        "more(ref spots, spots.len())",
+        "more(ref spots, len(spots))",
         "other = spots[j]\nread(ref spots[i], other)",
         // A method keeping what it reads from its own value isn't given it as `mut`.
         "unit.keep(unit.position)",
     ] {
-        assert_eq!(given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n")), empty, "{call}");
+        assert_eq!(given(&format!("{call}\nstdout.print(unit.position.x, len(spots))\n")), empty, "{call}");
     }
 }
 
@@ -385,7 +385,7 @@ fn every_way_in_twice_says_the_same_rule() {
     items: list[int]
 
     def grab(ref self, items: list[int]):
-        self.items.append(items.len())
+        self.items.append(len(items))
 
 def both(ref a: int, ref b: int):
     a += b

@@ -6,7 +6,7 @@ struct Player:
 
 def find(name: str) -> Player fails Missing:
     if name == "": fail Missing(name)
-    Player(name=name)
+    return Player(name=name)
 
 def main(stdout: Stdout):
     stdout.print(find("Ash").name)

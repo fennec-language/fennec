@@ -16,14 +16,14 @@ fn constants_have_the_type_of_their_value() {
         FIRST = square(3)
 
         def square(n: int) -> int:
-            n * n
+            return n * n
 
         def main(stdout: Stdout):
             stdout.print('if' in KEYWORDS, TWICE + 1, SQUARES[0] + FIRST)
             stdout.print(LIMIT + 'a', KEYWORDS + 1)
 
         def limit() -> int:
-            LIMIT
+            return LIMIT
     ";
     assert_eq!(
         problems(program),
@@ -32,7 +32,7 @@ fn constants_have_the_type_of_their_value() {
             "can't use `+` on a set and an int @ KEYWORDS + 1"
         ]
     );
-    assert_eq!(returns("LIMIT = 10\n\ndef limit() -> int:\n    LIMIT\n", "limit"), Ok(Type::Int));
+    assert_eq!(returns("LIMIT = 10\n\ndef limit() -> int:\n    return LIMIT\n", "limit"), Ok(Type::Int));
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn a_constant_can_be_hidden_by_a_parameter() {
         LIMIT = 10
 
         def clamp(LIMIT: str) -> str:
-            LIMIT.upper()
+            return LIMIT.upper()
     ";
     assert_eq!(problems(program), Vec::<String>::new());
 }
@@ -102,7 +102,7 @@ fn a_constant_has_no_capabilities_to_pass() {
         SETTINGS = load()
 
         def load(fs: Fs) -> str:
-            fs.read_text('settings.toml') else ''
+            return fs.read_text('settings.toml') else ''
     ";
     assert_eq!(problems(program), ["`load` is missing its `fs` argument @ load()"]);
 }

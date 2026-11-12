@@ -19,7 +19,7 @@ def steps_due(carried: Duration, frame: Duration, step: Duration) -> (int, Durat
     while not left < step:
         left = left - step
         steps += 1
-    (steps, left)
+    return (steps, left)
 
 test "frame times add up exactly" for millis: list[int]:
     total = Duration.millis(sum(millis))
@@ -42,7 +42,7 @@ def main(stdout: Stdout, clock: Clock):
     ]
     mut ball = Ball()
     mut carried = Duration()
-    for at in range(1, frames.len()):
+    for at in range(1, len(frames)):
         due, carried = steps_due(carried, frame=frames[at] - frames[at - 1], step=step)
         for _ in range(due):
             ball.fall(step)

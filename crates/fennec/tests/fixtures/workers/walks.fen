@@ -3,8 +3,8 @@ from std.collections import Table
 def total(map: Table[str], start: int) -> int:
     mut count = start
     for id, name in map.items():
-        count += name.len()
-    count
+        count += len(name)
+    return count
 
 def main(stdout: Stdout):
     mut map = Table[str]()
@@ -13,13 +13,13 @@ def main(stdout: Stdout):
     gone = map.add("gone")
     _ = map.remove(gone)
     results = sorted([total(map, n) for n in parallel(range(64))])
-    stdout.print(results[0], results[63], map.len())
+    stdout.print(results[0], results[63], len(map))
     maps = [map, map, map, map]
     mut each = maps
     for ref held in parallel(each):
         _ = held.add("more")
         mut sizes = 0
         for name in held.values():
-            sizes += name.len()
+            sizes += len(name)
         _ = held.add(str(sizes))
-    stdout.print(each[0].len(), map.len())
+    stdout.print(len(each[0]), len(map))

@@ -6,13 +6,13 @@ struct Grid:
 
     def [](self, at: (int, int)) -> int:
         x, y = at
-        self.cells[y * self.width + x]
+        return self.cells[y * self.width + x]
 
 struct Tree:
     label: str
 
     def describe(self) -> str:
-        f"a tree called {self.label}"
+        return f"a tree called {self.label}"
 
 struct Deque:
     items: list[int]
@@ -21,7 +21,7 @@ struct Deque:
         self.items.append(item)
 
     def len(self) -> int:
-        self.items.len()
+        return len(self.items)
 
 # `Random`'s methods compile natively in the library and here, so both can't be kept.
 struct Random:
@@ -29,7 +29,7 @@ struct Random:
 
     def randint(ref self, low: int, high: int) -> int:
         self.seed = self.seed * 3 + 1
-        low + self.seed % (high - low + 1)
+        return low + self.seed % (high - low + 1)
 
 def main(stdout: Stdout):
     grid = Grid(cells=[1, 2, 3, 4], width=2)
@@ -38,6 +38,6 @@ def main(stdout: Stdout):
     mut queue = Deque(items=[])
     queue.append(5)
     queue.append(6)
-    stdout.print(queue.len(), queue.items)
+    stdout.print(len(queue), queue.items)
     mut dice = Random(seed=1)
     stdout.print(dice.randint(1, 6), dice.randint(1, 6), dice.seed)

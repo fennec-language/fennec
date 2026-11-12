@@ -693,6 +693,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
+        || !checked.method_calls.is_empty()
         || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
@@ -734,9 +735,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
             if let Some(zero) = checked.array_zeros.get(&span) {
                 fennec_syntax::visit::filled_array(expr, zero);
             }
-            if checked.not_equals.contains(&span) {
-                fennec_syntax::visit::not_of_equals(expr);
-            }
+            operators_written(expr, checked, span);
             if let Some(shown) = checked.generator_types.get(&span) {
                 fennec_syntax::visit::name_generator_type(expr, shown);
             }
@@ -765,6 +764,17 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// What the checker found an operator or builtin calls written in: `a != b` as `not (a == b)`
+/// on a type with its own `def ==`, and `len(x)` and `abs(x)` as `x.len()` and `x.abs()`.
+fn operators_written(expr: &mut Expr, checked: &Checked, span: (u32, u32)) {
+    if checked.not_equals.contains(&span) {
+        fennec_syntax::visit::not_of_equals(expr);
+    }
+    if checked.method_calls.contains(&span) {
+        fennec_syntax::visit::method_of_call(expr);
+    }
 }
 
 /// Writes each function named where one failing more ways goes as an arrow calling it, as
@@ -945,6 +955,8 @@ pub struct Checked {
     saved_types: BTreeSet<Type>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
+    /// The calls `len(x)` and `abs(x)`, which become `x.len()` and `x.abs()`.
+    method_calls: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     optional_steps: BTreeSet<(u32, u32)>,

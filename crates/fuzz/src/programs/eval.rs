@@ -12,6 +12,7 @@
 
 use std::fmt::Write as _;
 
+use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, KEYS,
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -633,6 +634,83 @@ fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// What a `Read` step does: prints, or keeps an item by a name of its own.
+enum Read {
+    Printed(String),
+    Kept(i64, i64),
+}
+
+/// What a `Read` step's loop over `value`, as `read_written` writes it, does.
+fn read_shown(value: &Kept, how: Reading, n: i64) -> Option<Read> {
+    let points = match value {
+        Kept::Table(points) | Kept::Entries(points) | Kept::Ledger(points, _) => points,
+        Kept::Rooms(rooms) => {
+            let summed = |counts: &Vec<(String, i64)>| {
+                counts.iter().try_fold(0_i64, |total, (_, count)| total.checked_add(*count))
+            };
+            let length = |label: &String| i64::try_from(label.chars().count()).ok();
+            let mut total = 0_i64;
+            if how == Reading::Broken {
+                for (counts, label) in rooms {
+                    if summed(counts)? > n {
+                        break;
+                    }
+                    total = total.checked_add(length(label)?)?;
+                }
+                return Some(Read::Printed(format!("broke {total}\n")));
+            }
+            for (counts, label) in rooms {
+                total = total.checked_add(summed(counts)?)?.checked_add(length(label)?)?;
+            }
+            return Some(Read::Printed(format!("read {total}\n")));
+        }
+        _ => return None,
+    };
+    let point = |(x, y): &(i64, i64)| format!("Point(x={x}, y={y})");
+    Some(match how {
+        Reading::Summed => {
+            let mut total = 0_i64;
+            for (x, y) in points {
+                total = total.checked_add(x.checked_mul(3)?.checked_add(*y)?)?;
+            }
+            Read::Printed(format!("read {total}\n"))
+        }
+        Reading::Kept => {
+            let last = points.iter().rev().find(|(x, _)| *x >= n).copied().unwrap_or((0, 0));
+            Read::Kept(last.0, last.1)
+        }
+        Reading::Replaced => {
+            let mut lines = String::new();
+            for (x, y) in points {
+                let _ = writeln!(lines, "item {x} {y}");
+            }
+            Read::Printed(lines)
+        }
+        Reading::Broken => {
+            let mut total = 0_i64;
+            for (x, y) in points {
+                if *x > n {
+                    break;
+                }
+                total = total.checked_add(y.checked_add(1)?)?;
+            }
+            Read::Printed(format!("broke {total}\n"))
+        }
+        Reading::Returned => {
+            let found = points.iter().find(|(x, _)| *x > n).copied().unwrap_or((-1, -1));
+            Read::Printed(format!("first {}\n", point(&found)))
+        }
+        Reading::Failed => {
+            let got = if points.iter().any(|(x, _)| *x > n) {
+                -1
+            } else {
+                points.iter().try_fold(0_i64, |total, (_, y)| total.checked_add(*y))?
+            };
+            Read::Printed(format!("refused {got}\n"))
+        }
+    })
 }
 
 /// What `walk_written`'s line prints for `value`.
@@ -1902,6 +1980,13 @@ impl Machine {
                     let given = kept.get(from).ok_or(Stop::Unsure)?;
                     let sums: Option<Vec<i64>> = (0..3).map(|i| handed(given, i)).collect();
                     let _ = writeln!(self.out, "sums {}", shown(&Value::Ints(sums.ok_or(Stop::Unsure)?)));
+                }
+                Alias::Read { from, how, n } => {
+                    let read = read_shown(kept.get(from).ok_or(Stop::Unsure)?, how, n).ok_or(Stop::Unsure)?;
+                    match read {
+                        Read::Printed(line) => self.out.push_str(&line),
+                        Read::Kept(x, y) => kept.push(Kept::Point(x, y)),
+                    }
                 }
                 Alias::Drained { from, at, n } => {
                     let mut last = kept.get(from).cloned().ok_or(Stop::Unsure)?;

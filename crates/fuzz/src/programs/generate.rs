@@ -13,6 +13,7 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
+use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -1091,6 +1092,33 @@ impl Writer<'_> {
                     Writing::Long,
                 ],
             };
+            // A table read by a loop that borrows each item from its slot.
+            if matches!(kind, Held::Table | Held::Entries | Held::Ledger | Held::Rooms) && self.choice(3) == 0
+            {
+                // A ledger's table can't be replaced while it's looped over, since that changes
+                // the ledger.
+                let ways: &[Reading] = if kind == Held::Rooms {
+                    &[Reading::Summed, Reading::Broken]
+                } else if kind == Held::Ledger {
+                    &[Reading::Summed, Reading::Kept, Reading::Broken, Reading::Returned, Reading::Failed]
+                } else {
+                    &[
+                        Reading::Summed,
+                        Reading::Kept,
+                        Reading::Replaced,
+                        Reading::Broken,
+                        Reading::Returned,
+                        Reading::Failed,
+                    ]
+                };
+                let how = ways.get(self.choice(ways.len())).copied().unwrap_or(Reading::Summed);
+                let n = i64::from(self.byte() % 30) - 5;
+                steps.push(Alias::Read { from, how, n });
+                if how == Reading::Kept {
+                    held.push(Held::Point);
+                }
+                continue;
+            }
             // Any collection can be handed to tasks, each changing a copy of its own.
             if !matches!(kind, Held::Point | Held::Text) && !self.threadless && self.choice(5) == 0 {
                 steps.push(Alias::Tasked { from });

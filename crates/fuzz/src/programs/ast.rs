@@ -451,10 +451,12 @@ impl Aliasing {
                     held.push(held.get(from).and_then(|from| from.part()).unwrap_or(Held::Numbers));
                 }
                 Alias::Built { .. } => held.push(Held::Holder),
+                Alias::Read { how: Reading::Kept, .. } => held.push(Held::Point),
                 Alias::Written { .. }
                 | Alias::Tasked { .. }
                 | Alias::Walked { .. }
-                | Alias::Drained { .. } => {}
+                | Alias::Drained { .. }
+                | Alias::Read { .. } => {}
             }
         }
         held
@@ -529,10 +531,32 @@ pub(crate) enum Alias {
     /// `spare{s} = from`, then `kept{n} = Holder(items=spare{s}, tag=n)`: a struct literal taking
     /// a list nothing reads again.
     Built { from: usize, n: i64 },
+    /// A `for item in table` loop that only reads, each item borrowed from its slot, over a
+    /// `Table`, a ledger's table field or the rooms, done as `how` with `n`. `Reading::Kept`
+    /// makes a name: the last item read with an `x` of `n` or more.
+    Read { from: usize, how: Reading, n: i64 },
     /// `mut last{s} = from`, its key `at` set to a fresh value made from `n`, then
     /// `print(last{s}.values())` as the dict's last use, so the walk is all that holds what it
     /// gives back once the dict is gone.
     Drained { from: usize, at: usize, n: i64 },
+}
+
+/// How a `Read` step's loop reads a table's items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reading {
+    /// Each item's fields summed.
+    Summed,
+    /// The last item with an `x` of `n` or more kept by another name, printed at the end.
+    Kept,
+    /// The table replaced, on the first item, by a copy of it held apart, which frees the block
+    /// being read; each item read is printed after.
+    Replaced,
+    /// `break` at the first item whose `x` is over `n`.
+    Broken,
+    /// `first_over{id}(table, n)`: the first item whose `x` is over `n`, returned from its loop.
+    Returned,
+    /// `refused_over{id}(table, n)`: the `y`s summed, failing at the first `x` over `n`.
+    Failed,
 }
 
 /// How an `Aliased` step changes a name, each meaning what it says for the kinds that take it.

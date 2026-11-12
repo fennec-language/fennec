@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
-    KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, RefPlace, STARTING, Stmt, StreamMap,
-    StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
+    KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
+    StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 
 /// What every program starts with, for its body to use.
@@ -676,7 +676,10 @@ fn aliased_written(aliasing: &Aliasing) -> String {
     let held = aliasing.names();
     let changed: Vec<usize> = steps
         .iter()
-        .filter_map(|step| if let Alias::Written { to, .. } = step { Some(*to) } else { None })
+        .filter_map(|step| match step {
+            Alias::Written { to, .. } | Alias::Read { from: to, how: Reading::Replaced, .. } => Some(*to),
+            _ => None,
+        })
         .collect();
     let mutable =
         |n: usize| if n == TABLE || n == LEDGER || n == ROOMS || changed.contains(&n) { "mut " } else { "" };
@@ -689,6 +692,20 @@ fn aliased_written(aliasing: &Aliasing) -> String {
         let _ = write!(
             out,
             "def poked{id}(ref items: list[int], n: int):\n    items.append(n)\n    items[0] += n\n    return\n\n"
+        );
+    }
+    if steps.iter().any(|step| matches!(step, Alias::Read { how: Reading::Returned, .. })) {
+        let _ = write!(
+            out,
+            "def first_over{id}(table: Table[Point], n: int) -> Point?:\n    for point in table:\n        if point.x > n:\n            \
+             return point\n    return None\n\n"
+        );
+    }
+    if steps.iter().any(|step| matches!(step, Alias::Read { how: Reading::Failed, .. })) {
+        let _ = write!(
+            out,
+            "def refused_over{id}(table: Table[Point], n: int) -> int fails Refused:\n    mut total = 0\n    for point in table:\n        \
+             if point.x > n:\n            fail Refused(code=point.x)\n        total += point.y\n    return total\n\n"
         );
     }
     let mut handed: Vec<&str> = Vec::new();
@@ -790,6 +807,22 @@ fn aliased_written(aliasing: &Aliasing) -> String {
                     held.get(from).copied().unwrap_or(Held::Counts),
                 ));
             }
+            Alias::Read { from, how, n } => {
+                let kind = held.get(from).copied().unwrap_or(Held::Table);
+                let name = alias_name(from);
+                let table = if kind == Held::Ledger { format!("{name}.points") } else { name };
+                if how == Reading::Kept {
+                    let kept = alias_name(made);
+                    made += 1;
+                    let _ = write!(
+                        out,
+                        "    mut {kept} = Point(x=0, y=0)\n    for point in {table}:\n        if point.x >= {n}:\n            \
+                         {kept} = point\n"
+                    );
+                } else {
+                    out.push_str(&read_written(*id, &table, kind == Held::Rooms, how, n, s));
+                }
+            }
             Alias::Drained { from, at, n } => {
                 let fresh = fresh_written(held.get(from).copied().unwrap_or(Held::Counts), n);
                 let _ = writeln!(
@@ -838,6 +871,40 @@ fn entry_written(at: usize) -> &'static str {
 
 fn room_written(at: usize) -> &'static str {
     if at == 0 { "room_a" } else { "room_b" }
+}
+
+/// A `Read` step's loop over `table`, a table of rooms when `rooms`, read as `how`, as step `s`
+/// of `aliased{id}`. `Reading::Kept` is written where it makes its name.
+fn read_written(id: usize, table: &str, rooms: bool, how: Reading, n: i64, s: usize) -> String {
+    match (rooms, how) {
+        (true, Reading::Broken) => format!(
+            "    mut total{s} = 0\n    for room in {table}:\n        if sum(room.counts.values()) > {n}:\n            break\n        \
+             total{s} += len(room.label)\n    stdout.print(\"broke\", total{s})\n"
+        ),
+        (true, _) => format!(
+            "    mut total{s} = 0\n    for room in {table}:\n        total{s} += sum(room.counts.values()) + len(room.label)\n    \
+             stdout.print(\"read\", total{s})\n"
+        ),
+        (false, Reading::Replaced) => format!(
+            "    mut spare{s} = {table}\n    for ref point in spare{s}:\n        point.y += 0\n    mut swapped{s} = False\n    \
+             for point in {table}:\n        if not swapped{s}:\n            {table} = spare{s}\n            swapped{s} = True\n        \
+             stdout.print(\"item\", point.x, point.y)\n"
+        ),
+        (false, Reading::Broken) => format!(
+            "    mut total{s} = 0\n    for point in {table}:\n        if point.x > {n}:\n            break\n        total{s} += \
+             point.y + 1\n    stdout.print(\"broke\", total{s})\n"
+        ),
+        (false, Reading::Returned) => format!(
+            "    found{s} = first_over{id}({table}, n={n}) else Point(x=-1, y=-1)\n    stdout.print(\"first\", found{s})\n"
+        ),
+        (false, Reading::Failed) => format!(
+            "    got{s} = refused_over{id}({table}, n={n}) except Refused(): -1\n    stdout.print(\"refused\", got{s})\n"
+        ),
+        (false, _) => format!(
+            "    mut total{s} = 0\n    for point in {table}:\n        total{s} += point.x * 3 + point.y\n    \
+             stdout.print(\"read\", total{s})\n"
+        ),
+    }
 }
 
 /// A fresh value for a dict holding `held`, made from `n`.

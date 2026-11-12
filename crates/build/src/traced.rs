@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn what_it_ran_and_what_that_relies_on_change_it() {
         let before = key(SOURCE, &["ran"]);
-        assert_ne!(key(&SOURCE.replace("    p.x\n", "    p.x + 0\n"), &["ran"]), before, "the function");
+        assert_ne!(key(&SOURCE.replace("    return p.x\n", "    return p.x + 0\n"), &["ran"]), before, "the function");
         assert_ne!(key(&SOURCE.replace("x: int", "x: int = 1"), &["ran"]), before, "a type it uses");
         assert_ne!(key(&SOURCE.replace("LIMIT: int = 1", "LIMIT: int = 2"), &["ran"]), before, "a constant");
         assert_ne!(key(SOURCE, &["ran", "other"]), before, "taking another path");

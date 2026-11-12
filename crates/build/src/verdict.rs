@@ -241,12 +241,12 @@ mod tests {
     fn what_can_reach_further_gives_up() {
         for (from, to, what) in [
             ("a: int", "a: float", "a parameter"),
-            ("-> int:\n    a", "-> float:\n    a", "a return type"),
+            ("-> int:\n    return a", "-> float:\n    return a", "a return type"),
             ("x: int", "x: float", "a field"),
             ("LIMIT = 1", "LIMIT = 2", "a constant"),
             ("def f(", "def renamed(", "a name"),
             ("a + 1", "a + other()?", "a body that can now fail"),
-            ("a + 1", "fail Oops()", "a body that can now fail"),
+            ("return a + 1", "fail Oops()", "a body that can now fail"),
             ("test \"t\"", "test \"t2\"", "a test's name"),
         ] {
             assert_eq!(changed(&SOURCE.replace(from, to)), None, "{what}");

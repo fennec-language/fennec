@@ -620,8 +620,11 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
                 threads::forget_ending(&state.heap);
             }
             aot::report_sites(&state.heap.sites);
-            let leftovers =
-                Leftovers { temps: state.temps.len(), boxes: state.heap.live(), counts: state.heap.counts };
+            let leftovers = Leftovers {
+                temps: state.temps.len(),
+                boxes: state.heap.leftover(),
+                counts: state.heap.counts,
+            };
             let finished = (state.output.0.take(), state.failure.take(), leftovers);
             LAST_TRACE.set(std::mem::take(&mut state.trace));
             if leave {

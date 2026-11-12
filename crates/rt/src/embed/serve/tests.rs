@@ -1,6 +1,7 @@
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use mio::net::TcpListener;
@@ -256,18 +257,14 @@ fn stopping_a_server_cancels_its_parked_connections() {
 #[test]
 fn a_wait_that_cant_park_blocks_its_thread_and_is_counted() {
     let (listener, address) = listener();
+    let before = super::blocked_waits();
     let client = std::thread::spawn(move || {
         let mut stream = std::net::TcpStream::connect(address).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
+        // Sent only once the read below has blocked, so it can't find the line there already.
+        wait_until("the read to block", || super::blocked_waits() > before);
         stream.write_all(b"late\n").unwrap();
     });
-    let accepted = loop {
-        match listener.accept() {
-            Ok((stream, _)) => break stream,
-            Err(_) => std::thread::sleep(Duration::from_millis(5)),
-        }
-    };
-    let before = super::blocked_waits();
+    let accepted = accepted(&listener);
     // Not on an I/O worker, so not a task: the read blocks this thread.
     let conn = Conn::new(accepted);
     assert_eq!(conn.read_line(Some(Duration::from_secs(10))), Ok(Some(b"late".to_vec())));
@@ -309,10 +306,10 @@ impl Resident {
 #[ignore = "a measurement, run on request"]
 fn measure_memory_per_parked_connection() {
     let count: usize = std::env::var("FENNEC_CONNECTIONS").ok().and_then(|n| n.parse().ok()).unwrap_or(1_000);
-    let parked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let parked = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&parked);
     let waiting: Handler = Arc::new(move |conn: Conn| {
-        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        counted.fetch_add(1, Ordering::Relaxed);
         match conn.read_line(None) {
             Err(Failure::Cancelled) => 0,
             _ => 1,
@@ -323,14 +320,23 @@ fn measure_memory_per_parked_connection() {
     let before = resident.now();
     let served = run(1, &waiting, move |address| {
         // macOS keeps only 128 connections waiting to be accepted, so a refused one tries again.
-        let connect = || loop {
-            match std::net::TcpStream::connect(address) {
-                Ok(stream) => break stream,
-                Err(_) => std::thread::sleep(Duration::from_millis(1)),
+        let connect = || {
+            let started = std::time::Instant::now();
+            loop {
+                match std::net::TcpStream::connect(address) {
+                    Ok(stream) => break stream,
+                    Err(error) => {
+                        assert!(
+                            started.elapsed() < Duration::from_secs(60),
+                            "couldn't connect for a minute: {error}"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
             }
         };
         let streams: Vec<_> = (0..count).map(|_| connect()).collect();
-        while parked.load(std::sync::atomic::Ordering::Relaxed) < count {
+        while parked.load(Ordering::Relaxed) < count {
             std::thread::sleep(Duration::from_millis(10));
         }
         let after = resident.now();
@@ -480,9 +486,9 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
 
 /// Answers each request with its line, except every tenth, which crashes on purpose.
 fn crashes_every_tenth() -> Handler {
-    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::new(AtomicUsize::new(0));
     Arc::new(move |conn: Conn| {
-        let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let n = count.fetch_add(1, Ordering::SeqCst) + 1;
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
         if n.is_multiple_of(10) {
             return 1;
@@ -522,13 +528,39 @@ fn a_round_that_crashes_ends_only_itself_and_the_server_answers_the_other_nine()
     assert_eq!((served.connections, served.failed), (30, 3));
 }
 
+/// The next connection `listener` takes, which a client has made or is making. Only a listener with
+/// none waiting yet is asked again: any other error fails the test, as does a minute with none.
+fn accepted(listener: &TcpListener) -> mio::net::TcpStream {
+    let started = std::time::Instant::now();
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(started.elapsed() < Duration::from_secs(60), "no connection came for a minute");
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("the listener failed to accept: {error}"),
+        }
+    }
+}
+
+/// Waits until `done`, however long the machine takes to get there, as a test that must reach a
+/// state before going on does. Only a test that would otherwise hang gives up, after a minute.
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(started.elapsed() < Duration::from_secs(60), "waited a minute for {what}");
+        std::thread::yield_now();
+    }
+}
+
 /// Serves with `handler` while `clients` runs, until the server ends by itself, as a round's
 /// `break` or failure ends it. If it hasn't 10 s after the clients finish, it's stopped, and the
 /// result says so, so a server that doesn't end fails its test rather than hang it.
 fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send + 'static) -> (Served, bool) {
     let (listener, address) = listener();
     let ended = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    let (watching, had_to_stop) = (Arc::clone(&ended), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let (watching, had_to_stop) = (Arc::clone(&ended), Arc::new(AtomicBool::new(false)));
     let stopped = Arc::clone(&had_to_stop);
     let (sent, ran) = std::sync::mpsc::channel();
     let started = move |stopper: Stopper| {
@@ -540,7 +572,7 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
                 .wait_timeout_while(done, Duration::from_secs(10), |done| !*done)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !*done && waited.timed_out() {
-                stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+                stopped.store(true, Ordering::SeqCst);
                 stopper.stop();
             }
             let _ = sent.send(went);
@@ -553,13 +585,15 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
     }
-    (served, had_to_stop.load(std::sync::atomic::Ordering::SeqCst))
+    (served, had_to_stop.load(Ordering::SeqCst))
 }
 
 /// Echoes the line it's sent, ending its round with what the line asks: "break", "fail" or
 /// nothing.
-fn ends_as_asked() -> Handler {
-    Arc::new(|conn: Conn| {
+fn ends_as_asked(started: &Arc<AtomicUsize>) -> Handler {
+    let started = Arc::clone(started);
+    Arc::new(move |conn: Conn| {
+        started.fetch_add(1, Ordering::SeqCst);
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
         let how = match line.as_slice() {
             b"break" => super::ROUND_BROKE,
@@ -574,11 +608,13 @@ fn ends_as_asked() -> Handler {
 
 #[test]
 fn a_break_stops_taking_connections_and_the_rounds_running_finish() {
-    let (served, had_to_stop) = run_until_it_ends(&ends_as_asked(), |address| {
+    let started = Arc::new(AtomicUsize::new(0));
+    let rounds = Arc::clone(&started);
+    let (served, had_to_stop) = run_until_it_ends(&ends_as_asked(&started), move |address| {
         // A round that's running when another breaks, still waiting for its line.
         let mut running = std::net::TcpStream::connect(address).unwrap();
         running.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
+        wait_until("the first round to start", || rounds.load(Ordering::SeqCst) > 0);
         assert_eq!(ask(address, "break").as_deref(), Some("break\n"));
         running.write_all(b"still served\n").unwrap();
         let mut back = String::new();
@@ -591,11 +627,13 @@ fn a_break_stops_taking_connections_and_the_rounds_running_finish() {
 
 #[test]
 fn a_round_that_fails_stops_the_server_and_cuts_the_others_short() {
-    let (served, had_to_stop) = run_until_it_ends(&ends_as_asked(), |address| {
+    let started = Arc::new(AtomicUsize::new(0));
+    let rounds = Arc::clone(&started);
+    let (served, had_to_stop) = run_until_it_ends(&ends_as_asked(&started), move |address| {
         // A round waiting for a line it never gets.
         let waiting = std::net::TcpStream::connect(address).unwrap();
         waiting.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
+        wait_until("the waiting round to start", || rounds.load(Ordering::SeqCst) > 0);
         assert_eq!(ask(address, "fail").as_deref(), Some("fail\n"));
         let mut back = String::new();
         let read = BufReader::new(waiting).read_line(&mut back).unwrap_or(0);
@@ -605,20 +643,20 @@ fn a_round_that_fails_stops_the_server_and_cuts_the_others_short() {
     assert_eq!(served.connections, 2);
 }
 
-static STOP_SPIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STOP_SPIN: AtomicBool = AtomicBool::new(false);
 
 /// A round that's sent "spin" computes, ticking every few thousand turns as native code does,
 /// until it's told to stop; any other line is answered "pong" at once.
-fn spins_or_pongs() -> Handler {
-    Arc::new(|conn: Conn| {
+fn spins_or_pongs(spinning: &Arc<AtomicBool>) -> Handler {
+    let spinning = Arc::clone(spinning);
+    Arc::new(move |conn: Conn| {
         let line = conn.read_line(None).ok().flatten().unwrap_or_default();
         if line == b"spin" {
+            spinning.store(true, Ordering::SeqCst);
             let started = std::time::Instant::now();
             let mut x = 1_u64;
             let mut turns = 0_u64;
-            while !STOP_SPIN.load(std::sync::atomic::Ordering::SeqCst)
-                && started.elapsed() < Duration::from_secs(20)
-            {
+            while !STOP_SPIN.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(20) {
                 x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 turns += 1;
                 if turns.is_multiple_of(4096) {
@@ -636,17 +674,20 @@ fn spins_or_pongs() -> Handler {
 /// another connection that arrives while it spins is still answered.
 #[test]
 fn a_round_that_never_waits_makes_way_for_a_connection_that_arrives_meanwhile() {
-    STOP_SPIN.store(false, std::sync::atomic::Ordering::SeqCst);
-    run(1, &spins_or_pongs(), |address| {
+    STOP_SPIN.store(false, Ordering::SeqCst);
+    let spinning = Arc::new(AtomicBool::new(false));
+    let spun = Arc::clone(&spinning);
+    run(1, &spins_or_pongs(&spinning), move |address| {
         let mut spinner = std::net::TcpStream::connect(address).unwrap();
         spinner.write_all(b"spin\n").unwrap();
-        std::thread::sleep(Duration::from_millis(50));
+        // The ping comes only once the round spins, so it's answered while it does.
+        wait_until("the round to spin", || spun.load(Ordering::SeqCst));
         let mut pinger = std::net::TcpStream::connect(address).unwrap();
         pinger.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         pinger.write_all(b"ping\n").unwrap();
         let mut back = String::new();
         let answered = BufReader::new(pinger).read_line(&mut back);
-        STOP_SPIN.store(true, std::sync::atomic::Ordering::SeqCst);
+        STOP_SPIN.store(true, Ordering::SeqCst);
         let mut spun = String::new();
         BufReader::new(spinner).read_line(&mut spun).unwrap();
         assert!(answered.is_ok(), "the ping wasn't answered while the round spun: {answered:?}");
@@ -787,12 +828,7 @@ fn conn_sent(sent: Vec<u8>) -> Conn {
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         let _ = stream.write_all(&sent);
     });
-    let accepted = loop {
-        match listener.accept() {
-            Ok((stream, _)) => break stream,
-            Err(_) => std::thread::sleep(Duration::from_millis(5)),
-        }
-    };
+    let accepted = accepted(&listener);
     drop(client);
     Conn::new(accepted)
 }
@@ -824,12 +860,7 @@ fn a_line_with_no_carriage_return_fails_when_one_is_asked_for() {
 fn a_write_nobody_reads_times_out() {
     let (listener, address) = listener();
     let client = std::net::TcpStream::connect(address).unwrap();
-    let accepted = loop {
-        match listener.accept() {
-            Ok((stream, _)) => break stream,
-            Err(_) => std::thread::sleep(Duration::from_millis(5)),
-        }
-    };
+    let accepted = accepted(&listener);
     let conn = Conn::new(accepted);
     let started = std::time::Instant::now();
     let wrote = conn.write_within(&vec![b'x'; 64 << 20], Some(Duration::from_millis(200)));

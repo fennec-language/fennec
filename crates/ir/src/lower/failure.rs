@@ -257,7 +257,7 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    /// The block of an `else`, which `else as failure:` runs with what failed. It leaves, or its
+    /// The block of an `except`, which `except failure:` runs with what failed. It leaves, or its
     /// last line goes where `tail` says.
     fn else_block(&mut self, default: &Expr, value: &Operand, tail: Tail, span: Span) -> Lowered<()> {
         let Some((failure, block)) = default.else_block() else {

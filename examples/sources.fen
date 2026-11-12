@@ -1,5 +1,5 @@
 # A `with` source gives back `with T`: setup above its `lend`, cleanup below, and
-# `lend value else:` for when the caller's block fails. The cleanup runs however the block
+# `lend value except:` for when the caller's block fails. The cleanup runs however the block
 # ends well, by `return`, `break` or falling off its end, and the end of the block is the
 # finish: cleanup that fails is the `with` statement failing.
 error PayError:

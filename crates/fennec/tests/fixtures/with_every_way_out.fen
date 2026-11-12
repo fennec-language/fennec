@@ -1,7 +1,7 @@
 ## Every way out of a `with` block runs its source's cleanup, innermost first when several are
 ## left at once. A success-style way out (the block's end, `return`, `break`, `continue`, an `else`
 ## that does one of those) runs the code after `lend`; a failure-style one (`fail`, `?`, an `else`
-## that fails, a crash) runs `lend x else:`. Ways out from inside an `else` once ran neither.
+## that fails, a crash) runs `lend x except:`. Ways out from inside an `else` once ran neither.
 error Missing:
     what: str
 

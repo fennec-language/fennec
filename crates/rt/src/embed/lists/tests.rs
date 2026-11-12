@@ -252,3 +252,14 @@ fn a_powers_fast_paths_are_exact() {
     // Any other power is `pow`'s.
     assert_eq!(super::float_power(1.5, 2.7).to_bits(), libm::pow(1.5, 2.7).to_bits());
 }
+
+/// A list native code changes that this thread can't find stops the program as a bug, rather than
+/// going on as if it were changed, which dropped what a task pushed to a constant it couldn't see.
+#[test]
+#[should_panic(expected = "a list native code changed isn't one this thread can find")]
+fn a_list_this_thread_cant_find_stops_rather_than_drops_what_was_added() {
+    begin();
+    // No block of this thread's is at an address this odd. Asked through what `fennec_list_unshare`
+    // and the rest call, as a panic can't leave an `extern "C"` function.
+    let _ = with(|state| super::grow_in(state, 8 * 1_234_567 + 8, 0));
+}

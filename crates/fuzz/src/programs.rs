@@ -519,6 +519,35 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
+    /// A generator over `parallel(xs)` is made every way an item can be worked out, and read every
+    /// way a stream is: a loop, one that breaks, `sum` and a list comprehension.
+    #[test]
+    fn it_reads_streams_every_way() {
+        let ways = [
+            " + ",
+            "100 // (item - ",
+            "ys[item] for item in parallel(xs)",
+            "        if seen == ",
+            "sum(y for y in stream)",
+            "[y + 1 for y in stream]",
+        ];
+        let mut found = [0_usize; 6];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            for streamed in source.split("\ndef streamed").skip(1) {
+                let streamed = streamed.split("\n\n").next().unwrap_or_default();
+                assert!(streamed.contains(" for item in parallel(xs))"), "{streamed}");
+                for (count, way) in found.iter_mut().zip(ways) {
+                    *count += usize::from(streamed.contains(way));
+                }
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
     /// A loop's int is at least 0 on its first turn and changes sign later, every way: stepped
     /// down past 0, flipped each turn, and reset below 0 partway through.
     #[test]

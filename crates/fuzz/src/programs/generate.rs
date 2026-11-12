@@ -28,9 +28,9 @@ const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = true;
 const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 
 /// Whether random programs read a generator over `parallel(xs)`, which runs as the runtime's
-/// ordered stream once the LLVM lane's #1479 lands. Off until then; on main today it runs in
-/// order, which the switch leaves alone, so that the inputs kept so far write what they did.
-const PARALLEL_STREAMS: bool = false;
+/// ordered stream since #1479. Turned off, no input reads the byte that picks it, so the shape
+/// can be taken out without changing what any other input writes.
+const PARALLEL_STREAMS: bool = true;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.

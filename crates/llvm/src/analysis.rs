@@ -2281,10 +2281,14 @@ fn find_slot_borrows(function: &Function, known: &mut Analysis) {
         for inst in &block.insts {
             let InstKind::Builtin { dest: Some(dest), name, args, .. } = &inst.kind else { continue };
             let [Operand::Local(from), Operand::Local(slot)] = args.as_slice() else { continue };
+            // A `Table` read from a field is read again each time round and let go of: borrowing
+            // from it would keep that read, an owner of the `Table`, until the item's last use,
+            // and a change to the `Table` after the loop would then copy it.
             if name != "Table.at_slot"
                 || known.writes.get(dest.0) != Some(&1)
                 || known.taken.contains(&dest.0)
                 || known.borrowed.contains(&dest.0)
+                || known.field_of(*from).is_some()
             {
                 continue;
             }

@@ -2497,7 +2497,39 @@ pub(crate) mod tests {
             let (port, server) = serving();
             let got =
                 handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
-            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate isn't for `fennec.example`");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
+
+        /// A clock two centuries on, when the tests' certificate has expired.
+        #[derive(Debug)]
+        struct Later;
+
+        impl rustls::time_provider::TimeProvider for Later {
+            fn current_time(&self) -> Option<rustls::pki_types::UnixTime> {
+                // 2200-01-01, past the certificate's end in 2126.
+                Some(rustls::pki_types::UnixTime::since_unix_epoch(Duration::from_hours(2_016_144)))
+            }
+        }
+
+        /// A certificate past its end is refused, however trusted its authority, saying so.
+        #[test]
+        fn an_expired_certificate_is_refused() {
+            let (port, server) = serving();
+            let mut roots = RootCertStore::empty();
+            for certificate in CertificateDer::pem_slice_iter(CA) {
+                roots.add(certificate.unwrap()).unwrap();
+            }
+            let config = ClientConfig::builder_with_details(provider(), Arc::new(Later))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate has expired");
             drop(got);
             assert!(server.join().unwrap().is_err());
         }
@@ -2512,7 +2544,8 @@ pub(crate) mod tests {
                 .with_root_certificates(RootCertStore::empty())
                 .with_no_client_auth();
             let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
-            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate isn't from an authority this system trusts");
             drop(got);
             assert!(server.join().unwrap().is_err());
         }

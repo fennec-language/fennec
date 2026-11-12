@@ -2268,7 +2268,7 @@ fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::
     if !ready() {
         return Ok(());
     }
-    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(ref self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
+    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(ref self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    return Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
     for (name, body) in [
         (
             "item",
@@ -3923,8 +3923,8 @@ def main(stdout: Stdout):
     for k in range(10):
         acc = mix(acc, b=u8(k))
     stdout.print(acc, int(acc) + 1000, u16(pixel) * 200, small / 7)
-    bytes: list[u8] = [1, 2, 255]
-    stdout.print(bytes, bytes[2] == 255, i32(low) * 1000, 3 * i32(low) < 0)
+    octets: list[u8] = [1, 2, 255]
+    stdout.print(octets, octets[2] == 255, i32(low) * 1000, 3 * i32(low) < 0)
 ",
     )?;
     assert_eq!(
@@ -4324,7 +4324,8 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
             continue
         stdout.print(\"fit\", n)
     small = u8.parse(\"250\") except InvalidValue(): u8(0)
-    stdout.print(small + 5, i16.from(40000) else i16(-1))
+    sized = i16.from(40000) except InvalidValue(): i16(-1)
+    stdout.print(small + 5, sized)
 ",
     )?;
     assert_eq!(
@@ -6306,7 +6307,8 @@ struct Held[T]:
     value: T
 
 def holding[T, E](make: () -> T fails E) -> with Held[T] fails Nope:
-    value = make() else fail Nope(why="no")
+    value = make() except why:
+        fail Nope(why="no")
     lend Held[T](value=value) except:
         pass
 
@@ -6349,8 +6351,8 @@ def main(stdout: Stdout) fails Crashed:
     Ok(())
 }
 
-/// `with src else fail E` on a source whose body has an `x else fail` and a `with launch(...)?`:
-/// both fail with `E` once it's written in, and the launch stays one.
+/// A source whose body has an `x else fail` and a `with launch(...)?` fails with its own error,
+/// and a source over it passes that up with `?`: the launch stays one.
 #[test]
 fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -6363,25 +6365,22 @@ fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Re
 error Outer:
     why: str
 
-error Inner:
-    why: str
-
 def work():
     pass
 
 def given(bad: bool) -> int?:
     return None if bad else 1
 
-def inner_source(bad: bool) -> with int fails Inner | Crashed:
-    first = given(bad) else fail Inner(why="none")
+def inner_source(bad: bool) -> with int fails Outer | Crashed:
+    first = given(bad) else fail Outer(why="the inner source failed")
     with launch(() => work())?:
         lend first
 
-def outer_source(bad: bool) -> with int fails Outer:
-    with inner_source(bad) else fail Outer(why="the inner source failed") as n:
+def outer_source(bad: bool) -> with int fails Outer | Crashed:
+    with inner_source(bad)? as n:
         lend n + 1
 
-def run(bad: bool, stdout: Stdout) fails Outer:
+def run(bad: bool, stdout: Stdout) fails Outer | Crashed:
     with outer_source(bad)? as n:
         stdout.print("got", n)
 
@@ -6531,9 +6530,9 @@ def main(stdout: Stdout) fails Boom:
     Ok(())
 }
 
-/// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
-/// or while finishing. A source can wrap another this way and say only its own error, and the
-/// block's own failures pass up as they are.
+/// A source wrapping another says only its own error when the other fails with it: the failure
+/// is replaced inside the source, and the wrapper passes it up with `?`, while opening, as here,
+/// or while finishing.
 #[test]
 fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
     if !ready() {
@@ -6541,19 +6540,16 @@ fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
     }
     let printed = printed_by(
         "with_else_fail",
-        "error First:
-    Broke(why: str)
-
-error Second:
+        "error Second:
     Lost(why: str)
 
-def inner(fine: bool) -> with int fails First:
-    if not fine: fail .Broke(why=\"inner\")
+def inner(fine: bool) -> with int fails Second:
+    if not fine: fail .Lost(why=\"outer\")
     lend 1 except:
         pass
 
 def outer(fine: bool) -> with int fails Second:
-    with inner(fine) else fail .Lost(why=\"outer\") as held:
+    with inner(fine)? as held:
         lend held + 1 except:
             pass
 
@@ -9304,7 +9300,7 @@ def main(stdout: Stdout):
     // The whole message, as it points at the generator and says what to do.
     same_as_pinned(
         "twice",
-        "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut sum = 0\n    for n in numbers:\n        sum += n\n    return sum\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
+        "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut subtotal = 0\n    for n in numbers:\n        subtotal += n\n    return subtotal\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
     )?;
     same_message_as_pinned(
         "expect",
@@ -9421,10 +9417,10 @@ def main(stdout: Stdout):
     mut failed = 0
     mut failed_many = 0
     for at in range(rounds):
-        got = round(at) else -1
+        got = round(at) except Refused(): -1
         if got < 0:
             failed += 1
-        made = many(at) else -1
+        made = many(at) except Refused(): -1
         if made < 0:
             failed_many += 1
     stdout.print(failed, failed_many)
@@ -9607,7 +9603,7 @@ fn failing_partway() -> String {
         lines
     });
     format!(
-        "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    total\n"
+        "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    return total\n"
     )
 }
 
@@ -9633,7 +9629,7 @@ fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Resul
         total += picked + written;
     }
     let source = format!(
-        "def at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+        "def at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    return total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
     );
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let dir = folder("huge_function")?;
@@ -9680,7 +9676,7 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
         total += line + written;
     }
     let source = format!(
-        "def twice[T](value: T) -> list[T]:\n    return [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+        "def twice[T](value: T) -> list[T]:\n    return [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    return total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
     );
     let dir = folder("huge_generic")?;
     let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
@@ -10278,10 +10274,10 @@ fn enumerates_match_what_was_pinned() -> std::io::Result<()> {
         return Ok(());
     }
     let source = r#"def total(names: list[str]) -> int:
-    mut sum = 0
+    mut subtotal = 0
     for at, name in enumerate(names):
-        sum += at * len(name)
-    return sum
+        subtotal += at * len(name)
+    return subtotal
 
 def main(stdout: Stdout):
     names = ["fox", "kit", "den"]
@@ -11211,9 +11207,14 @@ def work(fs: Fs, order: shared Order, at: int) -> int fails IoError:
         held.finished(at)
     return at
 
+## What a round answered, or -1 when it fails.
+def answered_by(fs: Fs, order: shared Order, at: int) -> int:
+    done = work(fs, order, at) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): -1
+    return done
+
 def main(stdout: Stdout, fs: Fs):
     shared order = Order()
-    answered = [work(fs, order, at) else -1 for at in parallel([0, 1, 2, 3])]
+    answered = [answered_by(fs, order, at) for at in parallel([0, 1, 2, 3])]
     lock order as held:
         stdout.print(answered, held.done[3])
 ";
@@ -11625,10 +11626,15 @@ def round(db: sqlite.Database, at: int) -> int fails SqlError:
     seen = db.query[int](t"select count(*) from items")?
     return seen[0]
 
+## A round's count, or -2 when it fails.
+def counted(db: sqlite.Database, at: int) -> int:
+    count = round(db, at) except .Constraint() | .Busy() | .Column() | .Failed(): -2
+    return count
+
 def rounds(fs: Fs, stdout: Stdout) fails SqlError:
     with sqlite.open(fs, "rounds.db")? as db:
         _ = db.execute(t"create table items (round integer, item integer)")?
-        counts = [round(db, at) else -2 for at in parallel(range(32))]
+        counts = [counted(db, at) for at in parallel(range(32))]
         stdout.print(min(counts) >= 20, max(counts) == 640)
         stdout.print(db.query[int](t"select count(*) from items")?, db.query[int](t"select count(distinct round) from items")?)
 
@@ -11796,9 +11802,10 @@ def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
     who = address.split("@")[0]
     place = address.split("@")[1]
     rest = place.split(":")[1]
+    port = int(rest.split("/")[0]) except InvalidValue(): 5432
     server = Server(
         host=place.split(":")[0],
-        port=int(rest.split("/")[0]) else 5432,
+        port=port,
         user=who.split(":")[0],
         database=rest.split("/")[1],
         secret=Secret.of(who.split(":")[1]),
@@ -13431,10 +13438,10 @@ def crashing(stdout: Stdout) fails Closed | Crashed | Timeout:
         pass
 
 def counts(inbox: Inbox[int], stdout: Stdout):
-    mut sum = 0
+    mut received = 0
     for n in inbox:
-        sum += n
-    stdout.print(\"sum\", sum)
+        received += n
+    stdout.print(\"sum\", received)
 
 def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
     with launch((inbox) => audio(inbox, stdout)?, stop_after=5s, inbox_size=4)? as sounds:
@@ -13945,9 +13952,11 @@ def main(stdout: Stdout):
     got_value = json.loads[Path](text) except ParseError(): Path(steps=[], at=(0, (0, 0)))
     stdout.print(got_value)
     orders = [Order.Hold, Order.Move(to=(2, 3))]
-    stdout.print(json.dumps(orders), (json.loads[list[Order]](json.dumps(orders)) else []) == orders)
+    orders_back = json.loads[list[Order]](json.dumps(orders)) except ParseError(): []
+    stdout.print(json.dumps(orders), orders_back == orders)
     corners = {(0, 0): \"start\", (3, 4): \"end\"}
-    stdout.print(json.dumps(corners), (json.loads[dict[(int, int), str]](json.dumps(corners)) else {}) == corners)
+    corners_back = json.loads[dict[(int, int), str]](json.dumps(corners)) except ParseError(): {}
+    stdout.print(json.dumps(corners), corners_back == corners)
     mut by_side = SortedMap[(int, int), str]()
     by_side[(2, 0)] = \"b\"
     by_side[(1, 0)] = \"a\"
@@ -14022,11 +14031,14 @@ def main(stdout: Stdout):
     marks: list[(Spot, int?)] = [(Spot(x=1), counted(2)), (Spot(x=3), counted(0))]
     text = json.dumps(marks)
     stdout.print(text)
-    stdout.print((json.loads[list[(Spot, int?)]](text) else []) == marks)
+    marks_back = json.loads[list[(Spot, int?)]](text) except ParseError(): []
+    stdout.print(marks_back == marks)
     held = shapes.Held(pair=(Spot(x=5), (counted(0), \"a\")))
     saved = json.dumps(held)
-    stdout.print(saved, (json.loads[shapes.Held](saved) else held) == held)
-    stdout.print((pack.loads[shapes.Held](pack.dumps(held)) else shapes.Held(pair=(Spot(x=0), (counted(1), \"\")))) == held)
+    held_back = json.loads[shapes.Held](saved) except ParseError(): held
+    stdout.print(saved, held_back == held)
+    packed_back = pack.loads[shapes.Held](pack.dumps(held)) except ParseError(): shapes.Held(pair=(Spot(x=0), (counted(1), \"\")))
+    stdout.print(packed_back == held)
 ",
     )?;
     let executable = dir.join("marks");
@@ -14880,7 +14892,7 @@ fn a_response_cant_make_the_client_hold_without_end() -> std::io::Result<()> {
         Ok(())
     });
     let source = format!(
-        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    answer = net.get(\"http://127.0.0.1:{port}/\", timeout=10s) else:\n        return \"refused\"\n    return answer.text()\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
+        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    answer = net.get(\"http://127.0.0.1:{port}/\", timeout=10s) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other():\n        return \"refused\"\n    return answer.text()\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
     );
     let printed = printed_by("client_holds", &source)?;
     server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
@@ -15092,7 +15104,7 @@ fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> 
     std::os::unix::fs::symlink(place.join("outside"), place.join("inside/door"))?;
     let folder = place.to_string_lossy().into_owned();
     let source = format!(
-        "def read_out(fs: Fs, path: str) -> str:\n    text = fs.read_text(path) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():\n        return \"refused\"\n    return text\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\") else:\n        stdout.print(\"refused\")\n        return\n    stdout.print(\"wrote\")\n"
+        "def read_out(fs: Fs, path: str) -> str:\n    text = fs.read_text(path) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():\n        return \"refused\"\n    return text\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():\n        stdout.print(\"refused\")\n        return\n    stdout.print(\"wrote\")\n"
     );
     let printed = printed_by("fs_only_link", &source)?;
     let escaped = place.join("outside/new.txt").exists();
@@ -18103,7 +18115,7 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     let print_after = "\n\ndef main(stdout: Stdout):\n    stdout.print(\"before\")\n";
     same_as_pinned(
         "overflow",
-        &format!("def f(n: int) -> int:\n    n * 9223372036854775807{print_after}    stdout.print(f(3))\n"),
+        &format!("def f(n: int) -> int:\n    return n * 9223372036854775807{print_after}    stdout.print(f(3))\n"),
     )?;
     same_as_pinned(
         "zero",

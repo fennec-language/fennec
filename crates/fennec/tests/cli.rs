@@ -708,9 +708,13 @@ fn fs_reads_and_writes_bytes() {
     let program = r#"
 def main(stdout: Stdout, fs: Fs):
     fs.write_bytes("save.bin", bytes([0, 1, 254, 255]))?
-    stdout.print(fs.read_bytes("save.bin")?, fs.read_text("save.bin") else "not text")
+    saved = fs.read_bytes("save.bin")?
+    text = fs.read_text("save.bin") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): "not text"
+    stdout.print(saved, text)
     fs.write_text("note.txt", "hé")?
-    stdout.print(fs.read_bytes("note.txt")?, fs.read_bytes("missing.bin") else bytes())
+    note = fs.read_bytes("note.txt")?
+    missing = fs.read_bytes("missing.bin") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): bytes()
+    stdout.print(note, missing)
 "#;
     std::fs::write(dir.join("main.fen"), program).unwrap();
     let output = fennec_in(&dir, &["run", "main.fen"], "").unwrap();
@@ -2101,12 +2105,11 @@ def main(stdout: Stdout):
     stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), len(many), light == Light.Off)
     stdout.print(shown(warm), maybe() == Color.Red)
     dialled = dial(0) except why:
-        case Closed:
-            \"closed\"
-        case _:
-            \"other\"
+        case Closed: \"closed\"
+        case .NotFound(): \"other\"
     stdout.print(dialled)
-    stdout.print(unsaid() else \"failed\")
+    unsaid_value = unsaid() except .NotFound() | .Closed: \"failed\"
+    stdout.print(unsaid_value)
 ";
 
 /// What `CASES_AFTER` prints, as pinned.
@@ -2342,9 +2345,9 @@ fn fix_moves_idmap_to_table() {
 // The migration's own tests, whose programs are in the old forms on purpose.
 // fennec-migrate: off
 /// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
-/// and a def's last value as what it returns): plain `fennec fix` leaves them, `fennec fix
-/// --migrate` writes `except` and `return` for them, a second run finds nothing more, and the
-/// program prints what it did before.
+/// and a def's last value as what it returns) is refused, and its rewrite is the fix: plain
+/// `fennec fix` and `fennec fix --migrate` both write `except` and `return` for them, a second run
+/// finds nothing more, and the program prints what it did.
 #[test]
 fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -2354,22 +2357,24 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     let program = dir.join("forms.fen");
     let path = program.to_string_lossy().into_owned();
     std::fs::write(&program, &old).unwrap();
-    let before = fennec(&["run", &path], "").unwrap();
+    let refused = fennec(&["run", &path], "").unwrap();
     let plain = fennec(&["fix", &path], "").unwrap();
-    let untouched = std::fs::read_to_string(&program).unwrap();
+    let plainly = std::fs::read_to_string(&program).unwrap();
+    std::fs::write(&program, &old).unwrap();
     let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let again = fennec(&["fix", "--migrate", &path], "").unwrap();
     let rewritten = std::fs::read_to_string(&program).unwrap();
     let after = fennec(&["run", &path], "").unwrap();
+    assert!(!refused.status.success());
+    assert!(text(&refused.stderr).contains("`lend x except:` now"), "{}", text(&refused.stderr));
     assert!(plain.status.success(), "{}", text(&plain.stderr));
-    assert_eq!(untouched, old);
+    assert_eq!(plainly, migrated);
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     assert_eq!(written, migrated);
     assert!(again.status.success(), "{}", text(&again.stderr));
     assert_eq!(rewritten, migrated);
     assert!(after.status.success(), "{}", text(&after.stderr));
-    assert_eq!(text(&after.stdout), text(&before.stdout));
     assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
 }
 
@@ -2806,8 +2811,8 @@ fn write_physics_and_maths(dir: &Path) -> std::io::Result<()> {
                  export error TooHeavy:\n    Over(by: int)\n\n\
                  export interface Weighed:\n    def weight(self) -> int\n\n\
                  export def total[T: Weighed](items: list[T]) -> int fails TooHeavy:\n    \
-                 mut sum: int = 0\n    for item in items:\n        sum += item.weight()\n    \
-                 if sum > 100:\n        fail .Over(by=sum - 100)\n    return sum\n\n\
+                 mut subtotal: int = 0\n    for item in items:\n        subtotal += item.weight()\n    \
+                 if subtotal > 100:\n        fail .Over(by=subtotal - 100)\n    return subtotal\n\n\
                  export def describe(kind: Kind) -> str:\n    match kind:\n        \
                  case .Solid:\n            return \"solid\"\n        case .Liquid(depth=d):\n            return f\"liquid {d}\"\n\n\
                  def helper() -> int:\n    return LIMIT\n\n\
@@ -3323,8 +3328,8 @@ fn a_hot_function_and_what_it_calls_cant_allocate() {
 fn a_hot_function_keeps_no_checks() {
     let dir = scratch("hot-checks").unwrap();
     let program = dir.join("hot.fen");
-    let source = "@hot\ndef total(xs: list[float], at: int) -> float:\n    mut sum = 0.0\n    for x in xs:\n        \
-                  sum += x\n    return sum + xs[at]\n\ndef main(stdout: Stdout):\n    stdout.print(total([1.0, 2.0], 1))\n";
+    let source = "@hot\ndef total(xs: list[float], at: int) -> float:\n    mut running = 0.0\n    for x in xs:\n        \
+                  running += x\n    return running + xs[at]\n\ndef main(stdout: Stdout):\n    stdout.print(total([1.0, 2.0], 1))\n";
     std::fs::write(&program, source).unwrap();
     let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
     let printed = text(&output.stderr);

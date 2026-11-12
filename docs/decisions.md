@@ -1036,7 +1036,7 @@ def weather(net: Net, city: str) -> Weather fails NetError:
         fail NetError.Status(response.status)
     return json.loads[Weather](response.text())?
 ```
-- `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=` and `timeout=` work on every call.
+- `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=`, `timeout=` and `most_body=`, the most a response's body can be, 64 MB unless given, work on every call.
 - A `Response` has `status`, `headers` and `body`, plus `text()`, `ok()` for a 2xx status, and `json[T]()`. A 404 is a response, not an error, since what it means is the caller's to say.
 - Redirects are followed, up to 10. TLS checks certificates, and there's no option to stop it: a test uses the fake instead.
 

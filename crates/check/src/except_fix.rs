@@ -282,10 +282,18 @@ fn hoisted(
             if stmt.span.in_prelude() != library {
                 continue;
             }
-            let (StmtKind::Expr(value) | StmtKind::Return(Some(value)) | StmtKind::Assign { value, .. }) =
-                &stmt.kind
-            else {
-                continue;
+            // What runs once, before anything else of the statement: its value, a loop's
+            // iterable, or the first condition of an `if`.
+            let value = match &stmt.kind {
+                StmtKind::Expr(value) | StmtKind::Return(Some(value)) | StmtKind::Assign { value, .. } => {
+                    value
+                }
+                StmtKind::For { iter, .. } => iter,
+                StmtKind::If { branches, .. } => match branches.first() {
+                    Some((cond, _)) => cond,
+                    None => continue,
+                },
+                _ => continue,
             };
             if let Some(fix) = hoist_in(stmt, value, (types, signatures), sources, &mut taken) {
                 found.push(fix);
@@ -806,10 +814,23 @@ fn by_hand(span: Span) -> bool {
 
 /// Each `else` on a call that can fail, `else as why:` among them.
 fn elses_on_failures(module: &Module, checked: &crate::Checked) -> Vec<Diagnostic> {
+    // `with source() else fail E as x:` gives the block's failure its own, a form 2026-11-11
+    // didn't settle a new way to write, so it stays for now.
+    let mut sources = HashSet::new();
+    for body in bodies_of(module) {
+        let mut stmts = Vec::new();
+        statements(body, &mut stmts);
+        for stmt in stmts {
+            if let StmtKind::With { value, .. } = &stmt.kind {
+                sources.insert((value.span.start, value.span.end));
+            }
+        }
+    }
     let mut failing = HashSet::new();
     fennec_syntax::read::exprs(module, &mut |expr| {
         if let ExprKind::Else { value, except: false, .. } = &expr.kind
             && by_hand(expr.span)
+            && !sources.contains(&(expr.span.start, expr.span.end))
         {
             failing.insert((value.span.start, value.span.end));
         }
@@ -840,6 +861,27 @@ fn elses_on_failures(module: &Module, checked: &crate::Checked) -> Vec<Diagnosti
         );
     });
     found
+}
+
+/// The body of each function, method and test in a module, those written inside them included.
+fn bodies_of(module: &Module) -> Vec<&[Stmt]> {
+    let mut defs = Vec::new();
+    let mut bodies: Vec<&[Stmt]> = Vec::new();
+    for item in &module.items {
+        match item {
+            Item::Function(def) => defs.push(def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => defs.extend(&def.methods),
+            Item::Extend(extension) => defs.extend(&extension.methods),
+            Item::Test(test) => bodies.push(&test.body),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for def in defs {
+        nested(def, &mut all);
+    }
+    bodies.extend(all.iter().map(|def| def.body.as_slice()));
+    bodies
 }
 
 /// Each `lend x else:`, and each `def`'s value on its last line without `return`.
@@ -999,6 +1041,20 @@ mod tests {
         );
         assert!(twice.contains("    load_value = load(n) except .Empty: 0\n    load_value2 = load(n + 1) except .Empty: 1\n    return (load_value) + (load_value2)\n"), "{twice}");
         assert!(twice.contains("stdout.print(both(2), shout(stdout), load(3) else 0)"), "{twice}");
+    }
+
+    /// A loop's iterable runs once, before the loop: its `else` on a failing call goes on a line
+    /// before it.
+    #[test]
+    fn an_else_a_loop_goes_over_goes_on_a_line_before_it() {
+        let source = "error Bad:\n    Empty\n\n\
+            def load(n: int) -> list[int] fails Bad:\n    if n == 1: fail .Empty\n    return [n]\n\n\
+            def main(stdout: Stdout):\n    for found in load(2) else []:\n        stdout.print(found)\n";
+        let migrated = migrated(source);
+        assert!(
+            migrated.contains("    load_value = load(2) except .Empty: []\n    for found in load_value:\n"),
+            "{migrated}"
+        );
     }
 
     /// A def's last value gets `return`, and a def that gives nothing is left as it is.

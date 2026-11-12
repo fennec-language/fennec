@@ -653,10 +653,10 @@ fn a_method_of_an_interface_can_say_how_it_fails() {
     let fits = "struct Counter:\n    at = 0\n\n    def next(ref self) -> int fails Bad:\n        self.at += 1\n        return self.at\n\n";
     let text = format!(
         "{READS}{fits}def two(ref source: Reads) -> int fails Bad:\n    return source.next()? + source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut counter = Counter()\n    stdout.print(two(ref counter) else 0)\n"
+         def main(stdout: Stdout):\n    mut counter = Counter()\n    counted = two(ref counter) except Bad(): 0\n    stdout.print(counted)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
-    // What it gives back is a result, so `?` or `else` has to say what happens.
+    // What it gives back can fail, so `?` or `except` has to say what happens.
     let text = format!("{READS}{fits}def one(ref source: Reads) -> int:\n    return source.next()\n");
     assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
     let text = "interface Reads:\n    def next(ref self) -> int fails Nope\n";
@@ -668,7 +668,7 @@ fn a_type_has_to_fail_as_its_interfaces_method_says() {
     let text = format!(
         "{READS}struct Sure:\n    def next(ref self) -> int:\n        return 1\n\n\
          def two(ref source: Reads) -> int fails Bad:\n    return source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut sure = Sure()\n    stdout.print(two(ref sure) else 0)\n"
+         def main(stdout: Stdout):\n    mut sure = Sure()\n    counted = two(ref sure) except Bad(): 0\n    stdout.print(counted)\n"
     );
     let found = problems(&text);
     assert_eq!(found.len(), 1, "{found:?}");

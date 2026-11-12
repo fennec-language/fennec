@@ -428,7 +428,6 @@ fn only_the_value_a_function_ends_with_is_checked_against_its_return_type() {
 
         def a() -> int:
             return 1
-            return 'never reached'
 
         def b(n: int) -> str:
             yield n

@@ -810,6 +810,6 @@ fn what_can_fail_is_never_a_plain_value() {
     let module = fennec_syntax::parse(&passing).unwrap();
     let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
     let fixed = fennec_syntax::apply_fixes(&passing, 0, &diagnostics).unwrap();
-    assert!(fixed.contains("    str(half(n)?)\n"), "{fixed}");
+    assert!(fixed.contains("    return str(half(n)?)\n"), "{fixed}");
     assert_eq!(crate::problems_as_written(&fixed), Vec::<String>::new());
 }

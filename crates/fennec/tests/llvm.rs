@@ -19,12 +19,18 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
-    if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+    if llvm_expected() {
         let missing = tools.as_ref().err().map_or("", String::as_str);
         assert!(tools.is_ok(), "FENNEC_EXPECT_LLVM is set, but {missing}");
         assert!(runtime, "FENNEC_EXPECT_LLVM is set, but the runtime library didn't build");
     }
     tools.is_ok() && runtime
+}
+
+/// Whether `FENNEC_EXPECT_LLVM` says LLVM is the backend that has to work here, as CI's Linux and
+/// Windows test jobs say, so what's missing fails a test rather than skipping it.
+pub(crate) fn llvm_expected() -> bool {
+    std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty())
 }
 
 /// A folder of its own, emptied when the test is done.
@@ -1756,13 +1762,12 @@ fn changing_a_list_in_a_shared_value_in_a_task_copies_nothing() -> std::io::Resu
     Ok(())
 }
 
-/// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
-/// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
-/// a note of each in the lock's rollback log, but these change what a note of one place can't put
-/// back, so the log keeps the list as it was, and the change copies it. `insert(0, x)` takes time
-/// in proportion to the list's length anyway.
+/// Changes to a list in a `shared` value under its lock that copy nothing: an `insert`, made in place
+/// and noted in the lock's rollback log for a crash to take out again, and a change inside one of
+/// its items, like a list in a struct in it. That one still copies: reaching the item, the log
+/// holds it as it was, so a list in it has a second owner, and changing it copies it.
 #[test]
-#[ignore = "a crash puts back only appends and pops from notes; an insert, or a change inside an item, under a `lock ... as ref` copies the list"]
+#[ignore = "a change inside an item of a list under a `lock ... as ref` copies what it changes: the log holds the item, so a list in it is shared (#1469); an insert is made in place"]
 fn changes_inside_a_list_in_a_shared_value_copy_nothing() -> std::io::Result<()> {
     if !ready() {
         return Ok(());

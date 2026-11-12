@@ -21,7 +21,6 @@
 //! except a parameter nothing writes, which the caller lends. A copy from a local nothing else
 //! reads takes over its owner, and a list with other owners is copied before it changes. A
 //! failure ends the program, so the way out on failing releases nothing.
-
 #![expect(
     clippy::similar_names,
     clippy::too_many_lines,

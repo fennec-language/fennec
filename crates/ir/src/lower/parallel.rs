@@ -100,7 +100,7 @@ fn named_in(runs: &Runs<'_>) -> (Vec<String>, Type) {
             visit::in_stmts(&mut body.to_vec(), &mut record);
             Type::Unit
         }
-        Runs::Each(elem, _) => {
+        Runs::Each(elem, _) | Runs::Chunk(elem, _) => {
             visit::in_expr(&mut (*elem).clone(), &mut record);
             Type::Unit
         }
@@ -150,6 +150,9 @@ enum Runs<'e> {
     Body(&'e [Stmt], bool),
     /// An expression whose value goes into a new list of this type of item.
     Each(&'e Expr, Type),
+    /// The same for a stream's chunk: the list the runtime gives is the range's own, so position
+    /// `from + i` goes at `i`.
+    Chunk(&'e Expr, Type),
     /// An expression whose values are added up, of this type.
     Sum(&'e Expr, Type),
 }
@@ -458,6 +461,147 @@ impl Lowering<'_> {
         }))
     }
 
+    /// `(f(x) for x in parallel(xs))`, lifted when the backend asks for it: a generator of its own
+    /// that starts the runtime's stream of the items made in parallel (`parallel.stream`), and
+    /// yields each chunk's items in order as `parallel.stream_next` gives them, which holds the
+    /// workers to a window ahead of it. It ends the stream (`parallel.stream_end`) when the chunks
+    /// run out, and when it's let go before then, which lets the chunks running finish and starts
+    /// no more. A chunk that failed ends it in the backend, before the failure passes up. Like a
+    /// list, it isn't lifted with an `if` or an item that can fail: then it runs in order.
+    pub(super) fn parallel_stream(
+        &mut self,
+        expr: &Expr,
+        (elem, _): (&Expr, Option<&Expr>),
+        (names, iter): (&[String], &Expr),
+    ) -> Option<Lowered<Operand>> {
+        if !self.streams(expr) {
+            return None;
+        }
+        let [name] = names else { return None };
+        let (items, item) = self.parallel_list(iter)?;
+        let ty = self.type_at(expr.span)?;
+        let Type::Iterator(each) = &ty else { return None };
+        let each = (**each).clone();
+        let runs = Runs::Chunk(elem, each.clone());
+        let span = expr.span;
+        let lifted = self.lift(name, (items, item), (&runs, None), span);
+        Some(lifted.and_then(|(list, range)| self.stream_generator(&ty, &each, (list, range), span)))
+    }
+
+    /// Whether `expr` is a generator expression lowered as a stream: over `parallel(xs)` of a
+    /// list, with one name, no `if`, and an item that can't fail, when the backend lifts
+    /// `parallel`. Such a stage isn't fused into the loop reading it, which would run it in order.
+    pub(super) fn streams(&self, expr: &Expr) -> bool {
+        let ExprKind::Comprehension {
+            kind: fennec_syntax::CompKind::Generator, elem, names, iter, cond, ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        self.context.options.outline_parallel
+            && names.len() == 1
+            && cond.is_none()
+            && !expr_tries(elem)
+            && self.parallel_list(iter).is_some()
+            && matches!(self.type_at(expr.span), Some(Type::Iterator(_)))
+    }
+
+    /// The generator a stream is read through, given the list and the range function's closure,
+    /// which it keeps until it ends the stream, as the runtime asks.
+    fn stream_generator(
+        &mut self,
+        ty: &Type,
+        each: &Type,
+        (list, range): (Operand, Operand),
+        span: Span,
+    ) -> Lowered<Operand> {
+        const RANGE: &str = "\0parallel.range";
+        let (Operand::Local(list_local), Operand::Local(range_local)) = (&list, &range) else {
+            return Err("a stream's list and range aren't locals".to_owned());
+        };
+        let key = format!("{}.stream@{}", self.name, span.start);
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        lifted.begin_generator(each.clone());
+        let held = lifted.declare(LIST, self.local_type(*list_local));
+        let ranged = lifted.declare(RANGE, self.local_type(*range_local));
+        lifted.stream_body((held, ranged), each, span)?;
+        lifted.end_function(span)?;
+        self.lifted.extend(lifted.finish_generator(&[held, ranged], ty, span)?);
+        let dest = self.temporary(ty.clone());
+        self.emit(InstKind::Call { dest: Some(dest), function: key, args: vec![list, range] }, span);
+        Ok(Operand::Local(dest))
+    }
+
+    /// What a stream's generator does: starts the stream, then takes each chunk in turn and
+    /// yields its items, asking after each whether it's been let go.
+    fn stream_body(&mut self, (held, ranged): (LocalId, LocalId), each: &Type, span: Span) -> Lowered<()> {
+        let builtin = |dest: Option<LocalId>, name: &str, args: Vec<Operand>| InstKind::Builtin {
+            dest,
+            name: name.to_owned(),
+            args,
+            changes: false,
+        };
+        let stream = self.temporary(Type::Int);
+        let started = vec![Operand::Local(held), Operand::Local(ranged)];
+        self.emit(builtin(Some(stream), "parallel.stream", started), span);
+        let chunk_ty = Type::List(Box::new(each.clone()));
+        let (next_chunk, read_chunk, ran_out) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Jump(next_chunk));
+        self.current = next_chunk;
+        let next = self.temporary(Type::Optional(Box::new(chunk_ty.clone())));
+        self.emit(builtin(Some(next), "parallel.stream_next", vec![Operand::Local(stream)]), span);
+        let none = self.temporary(Type::Bool);
+        self.emit(InstKind::IsNone { dest: none, value: Operand::Local(next) }, span);
+        self.finish(crate::Terminator::Branch {
+            cond: Operand::Local(none),
+            then: ran_out,
+            otherwise: read_chunk,
+        });
+        self.current = read_chunk;
+        let chunk = self.temporary(chunk_ty);
+        self.emit(InstKind::GetSome { dest: chunk, value: Operand::Local(next) }, span);
+        let (length, at) = (self.temporary(Type::Int), self.temporary(Type::Int));
+        self.emit(builtin(Some(length), "list.len", vec![Operand::Local(chunk)]), span);
+        self.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
+        let (test, read_item) = (self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Jump(test));
+        self.current = test;
+        let more = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(at), Operand::Local(length));
+        self.emit(InstKind::Binary { dest: more, op: BinOp::Lt, lhs, rhs }, span);
+        self.finish(crate::Terminator::Branch {
+            cond: Operand::Local(more),
+            then: read_item,
+            otherwise: next_chunk,
+        });
+        self.current = read_item;
+        let item = self.temporary(each.clone());
+        let read =
+            InstKind::GetIndex { dest: item, object: Operand::Local(chunk), index: Operand::Local(at) };
+        self.emit(read, span);
+        self.yield_operand(Operand::Local(item));
+        let let_go = self.temporary(Type::Bool);
+        self.abandoning(let_go, span)?;
+        let (leaving, staying) = (self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Branch {
+            cond: Operand::Local(let_go),
+            then: leaving,
+            otherwise: staying,
+        });
+        self.current = leaving;
+        self.emit(builtin(None, "parallel.stream_end", vec![Operand::Local(stream)]), span);
+        self.leave(None, span)?;
+        self.current = staying;
+        let (lhs, rhs) = (Operand::Local(at), Operand::Int(1));
+        self.emit(InstKind::Binary { dest: at, op: BinOp::Add, lhs, rhs }, span);
+        self.finish(crate::Terminator::Jump(test));
+        self.current = ran_out;
+        self.emit(builtin(None, "parallel.stream_end", vec![Operand::Local(stream)]), span);
+        Ok(())
+    }
+
     /// After a `parallel` comprehension whose items can fail: the failure a range handed over
     /// passes up, as a `?` would, when the call made no list.
     fn pass_up_range_failure(&mut self, made: LocalId, error: &Type, span: Span) -> Lowered<()> {
@@ -573,7 +717,7 @@ impl Lowering<'_> {
         let (from, to) = (lifted.declare(FROM, Type::Int), lifted.declare(TO, Type::Int));
         let mut params = vec![Type::Int, Type::Int];
         let out = match runs {
-            Runs::Each(_, each) => {
+            Runs::Each(_, each) | Runs::Chunk(_, each) => {
                 let out_ty = Type::List(Box::new(each.clone()));
                 params.push(out_ty.clone());
                 Some(lifted.declare(OUT, out_ty))
@@ -647,6 +791,17 @@ impl Lowering<'_> {
                 self.counting(counting, span, |lowering| {
                     let at = lowering.at()?;
                     lowering.put("parallel.put", (out, at), name, Some(elem), span)
+                })
+            }
+            Runs::Chunk(elem, _) => {
+                let out = out.ok_or("a stream's range has nowhere to put its items")?;
+                let counting = each(Operand::Local(from));
+                self.counting(counting, span, |lowering| {
+                    let at = lowering.at()?;
+                    let within = lowering.temporary(Type::Int);
+                    let (lhs, rhs) = (Operand::Local(at), Operand::Local(from));
+                    lowering.emit(InstKind::Binary { dest: within, op: BinOp::Sub, lhs, rhs }, span);
+                    lowering.put("parallel.put", (out, within), name, Some(elem), span)
                 })
             }
             Runs::Sum(elem, ty) => {

@@ -258,6 +258,14 @@ impl Lowering<'_> {
 
     /// `for names in iter: body` with no generator, if `iter` is a stage that fuses.
     pub(super) fn expanded(&self, names: &[String], iter: &Expr, body: &[Stmt]) -> Option<fuse::Expansion> {
+        // A stage over `parallel(xs)` is read as a stream, made in parallel, not fused in order.
+        let mut stage = iter;
+        while let ExprKind::Comprehension { kind: CompKind::Generator, iter: inner, .. } = &stage.kind {
+            if self.streams(stage) {
+                return None;
+            }
+            stage = inner;
+        }
         let generator = |key: &str| {
             let copying = self.copied.iter().any(|(copied, ..)| copied == key);
             let base = self.context.base_key(key);

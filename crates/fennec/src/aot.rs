@@ -434,6 +434,15 @@ fn root_hash(
         .into_iter()
         .chain(release.then(|| runtime_bitcode(runtime, statically)).flatten());
     for path in library {
+        // Which library, by its name, and the build of Fennec it's from, as its stamp says, so the
+        // same library keys the same program on every machine and in every folder. The name tells
+        // the runtime with threads from the one without, which one build of Fennec makes both of.
+        // One from before stamps goes by where it is, how big and when it changed.
+        if let Some(build) = stamp_of(&path) {
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            hasher.update(format!("library {name} built from {build}\n").as_bytes());
+            continue;
+        }
         let metadata = std::fs::metadata(&path).ok();
         let changed = metadata
             .as_ref()
@@ -567,6 +576,65 @@ fn emitted_as_written(
     Ok(Emitted { lowered, units, shared, layouts })
 }
 
+/// The sources a release build carries, to show a failure in, named the same wherever the program
+/// was built, so two release builds of one program are the same bytes, as a signed release has to
+/// be to check by building it again. A dev build keeps the names as they were loaded, so a failure
+/// in a program run by its whole path shows that whole path, as a person running it wants. A name written as a path from where
+/// the command ran, as `examples/game.fen` or `src/main.fen`, is the same on every machine, and
+/// stays. One written from the root of the disk, as a kit built by its whole path or a dependency
+/// in the store is, says where the builder keeps things, and is named instead: a file of the kit
+/// from the kit's folder, as `src/main.fen`; a stored dependency from the store's `kits/`, which
+/// names each by its hash; any other file by its own name. Only names change, in the same order,
+/// so every place in the program still points where it did.
+fn portable_sources(program: &fennec_kit::Program) -> fennec_syntax::Sources {
+    let root = program
+        .kit_src
+        .as_ref()
+        .and_then(|(src, _)| src.parent())
+        .and_then(|root| std::fs::canonicalize(root).ok());
+    let mut portable = fennec_syntax::Sources::new();
+    for (shown, text) in program.sources.files() {
+        portable.add(portable_name(shown, root.as_deref()), text);
+    }
+    portable
+}
+
+/// What [`portable_sources`] names one file shown as `shown`.
+fn portable_name(shown: &str, root: Option<&Path>) -> String {
+    let path = Path::new(shown);
+    if !path.is_absolute() {
+        return shown.to_owned();
+    }
+    let Ok(real) = std::fs::canonicalize(path) else { return shown.to_owned() };
+    let slashed = |parts: &[std::path::Component<'_>]| {
+        parts.iter().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+    };
+    if let Some(inside) = root.and_then(|root| real.strip_prefix(root).ok()) {
+        return slashed(&inside.components().collect::<Vec<_>>());
+    }
+    let parts: Vec<std::path::Component<'_>> = real.components().collect();
+    let stored = parts.windows(2).position(|pair| {
+        let [kits, hash] = pair else { return false };
+        let hash = hash.as_os_str().to_string_lossy();
+        kits.as_os_str() == "kits" && hash.len() == 64 && hash.bytes().all(|digit| digit.is_ascii_hexdigit())
+    });
+    if let Some(from) = stored.and_then(|at| parts.get(at..)) {
+        return slashed(from);
+    }
+    // A kit named by a path from this one, as `tools = { path = "../tools" }`, from the kit's
+    // folder, as its `kit.toml` names it: `../tools/src/lib.fen`.
+    if let Some(root) = root {
+        let theirs: Vec<std::path::Component<'_>> = root.components().collect();
+        let shared = parts.iter().zip(&theirs).take_while(|(ours, theirs)| ours == theirs).count();
+        if shared > 1 {
+            let up = theirs.len() - shared;
+            let rest = slashed(parts.get(shared..).unwrap_or_default());
+            return format!("{}{rest}", "../".repeat(up));
+        }
+    }
+    real.file_name().map_or_else(|| shown.to_owned(), |name| name.to_string_lossy().into_owned())
+}
+
 /// Lowers what the program reaches and compiles it.
 fn llvm_objects(
     program: &fennec_kit::Program,
@@ -582,7 +650,7 @@ fn llvm_objects(
     let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
-            sources: program.sources.clone(),
+            sources: if release { portable_sources(program) } else { program.sources.clone() },
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
         }

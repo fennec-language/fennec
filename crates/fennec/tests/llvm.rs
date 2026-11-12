@@ -17668,6 +17668,121 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
+/// made alone before the item is taken. A copy kept as a local, as a field of a copied struct,
+/// by a caller passing it as `ref`, and by another task, of items holding a dict and of plain
+/// ones, and through `units[id]`: each keeps what it had.
+#[test]
+fn a_table_copied_before_its_items_change_keeps_them() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("table_copied_before")?;
+    std::fs::write(dir.join("table_copied_before.fen"), TABLE_COPIED_BEFORE)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "table_copied_before", how)?;
+        assert_eq!(
+            printed,
+            "local 0 0\nlocal 1 1\nlocal 2 2\nchanged 100 7\nchanged 101 7\nchanged 102 7\nplain 0 0\nplain 1 1\nplain 2 2\nfield 0 0\nfield 1 1\nfield 2 2\nparam 0 0\nparam 1 1\nparam 2 2\ntask 0 0\ntask 1 1\ntask 2 2\nafter 100 7\nafter 101 7\nafter 102 7\nby id 0 0\nby id 1 1\nby id 2 2\nby id changed 100 7\nby id changed 101 7\nby id changed 102 7\n",
+            "{how:?}"
+        );
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TABLE_COPIED_BEFORE: &str = r#"from std.collections import Id, Table
+from std.concurrent import Closed, Crashed, Inbox
+
+struct Heavy:
+    x: int
+    bag: dict[str, int]
+
+struct Plain:
+    x: int
+    y: int
+
+struct World:
+    units: Table[Heavy]
+
+def heavy_table() -> Table[Heavy]:
+    mut table = Table[Heavy]()
+    for i in range(3):
+        _ = table.add(Heavy(x=i, bag={"gold": i}))
+    return table
+
+def bump(ref units: Table[Heavy]):
+    for ref item in units:
+        item.x += 100
+        item.bag["gold"] = 7
+    return
+
+def bump_world(ref world: World):
+    for ref item in world.units:
+        item.x += 100
+        item.bag["gold"] = 7
+    return
+
+def show(stdout: Stdout, name: str, units: Table[Heavy]):
+    for item in units:
+        stdout.print(name, item.x, item.bag["gold"])
+    return
+
+def holder(inbox: Inbox[int], kept: Table[Heavy], stdout: Stdout):
+    for _ in inbox:
+        show(stdout, "task", kept)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    # A local copied before the loop.
+    mut table = heavy_table()
+    backup = table
+    for ref item in table:
+        item.x += 100
+        item.bag["gold"] = 7
+    show(stdout, "local", backup)
+    show(stdout, "changed", table)
+    # Plain items, the same.
+    mut plain = Table[Plain]()
+    for i in range(3):
+        _ = plain.add(Plain(x=i, y=i))
+    plain_backup = plain
+    for ref item in plain:
+        item.x += 100
+    for item in plain_backup:
+        stdout.print("plain", item.x, item.y)
+    # A field of a struct that was copied.
+    mut world = World(units=heavy_table())
+    world_backup = world
+    bump_world(ref world)
+    show(stdout, "field", world_backup.units)
+    # Behind a `ref` parameter, the caller keeping a copy.
+    mut units = heavy_table()
+    kept = units
+    bump(ref units)
+    show(stdout, "param", kept)
+    # A copy another task holds while the loop runs.
+    mut shared_out = heavy_table()
+    held = shared_out
+    with launch((inbox) => holder(inbox, held, stdout))? as go:
+        bump(ref shared_out)
+        go.send(1)?
+    show(stdout, "after", shared_out)
+    # Changed through `units[id]`, a copy kept first.
+    mut by_id = Table[Heavy]()
+    mut ids = list[Id[Heavy]]()
+    for i in range(3):
+        ids.append(by_id.add(Heavy(x=i, bag={"gold": i})))
+    by_id_backup = by_id
+    for id in ids:
+        by_id[id].x += 100
+        by_id[id].bag["gold"] = 7
+    show(stdout, "by id", by_id_backup)
+    show(stdout, "by id changed", by_id)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

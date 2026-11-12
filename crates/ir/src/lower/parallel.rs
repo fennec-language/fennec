@@ -717,7 +717,6 @@ fn served_connection(task: &mut Lowering<'_>, handle: LocalId, connection: Type,
         InstKind::Builtin { dest: Some(peer), name: "parallel.peer".to_owned(), args: asked, changes: false },
         span,
     );
-    // Its label, which it prints as, counted by the runtime as it's made.
     let label = task.temporary(Type::Int);
     task.emit(
         InstKind::Builtin {

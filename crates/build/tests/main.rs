@@ -147,9 +147,14 @@ fn snapshots_are_stored_and_read_back() {
     assert_eq!(Snapshot::from_text("  0000 def stray\n"), None);
 
     let runs = home.join("cache").join(fennec_build::FOLDER).join("runs");
-    let stored = std::fs::read_dir(runs).unwrap().next().unwrap().unwrap().path();
-    let text = std::fs::read_to_string(&stored).unwrap();
-    std::fs::write(&stored, text.replacen("fennec snapshot", "fennec snapshot 9.9.9 was", 1)).unwrap();
+    let stored = std::fs::read_dir(runs).unwrap().next().unwrap().unwrap().file_name();
+    let stored = stored.to_string_lossy();
+    // Written whole, as another version would, so what's ignored is the version and not a torn entry.
+    let cache = fennec_build::Cache::new(&home);
+    let text = String::from_utf8(cache.read("runs", &stored).unwrap()).unwrap();
+    cache
+        .write("runs", &stored, text.replacen("fennec snapshot", "fennec snapshot 9.9.9 was", 1).as_bytes())
+        .unwrap();
     assert_eq!(load(&home, &program), Snapshot::default(), "another version's snapshot is ignored");
     std::fs::remove_dir_all(&home).unwrap();
 }

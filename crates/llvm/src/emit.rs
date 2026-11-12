@@ -1904,6 +1904,39 @@ impl Emit<'_, '_, '_> {
         value
     }
 
+    /// Whether the instruction being written multiplies two ints proven not negative (see `signs`).
+    fn operands_not_negative(&self) -> bool {
+        self.module
+            .whole
+            .non_negative
+            .get(self.function.name.as_str())
+            .is_some_and(|found| found.contains(&self.at))
+    }
+
+    /// A product of two ints proven not negative, which overflows when it passes `i64::MAX`: an
+    /// unsigned multiply says when it passes `u64::MAX`, and the product's top bit when it's past
+    /// `i64::MAX` short of that. That's the check Rust makes on a `usize`, one multiply fewer than
+    /// a signed one, which works the product out twice. A build that checks proofs checks that
+    /// neither is negative.
+    fn checked_not_negative_product(&mut self, a: &str, b: &str, span: Span) -> String {
+        if self.checks_proofs() {
+            let (either, negative) = (self.temp(), self.temp());
+            self.line(&format!("{either} = or i64 {a}, {b}"));
+            self.line(&format!("{negative} = icmp slt i64 {either}, 0"));
+            self.proof_held(&negative, "a product's ints aren't negative", span);
+        }
+        self.declare("declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)");
+        let (pair, value, wrapped, past, bad) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{pair} = call {{ i64, i1 }} @llvm.umul.with.overflow.i64(i64 {a}, i64 {b})"));
+        self.line(&format!("{wrapped} = extractvalue {{ i64, i1 }} {pair}, 1"));
+        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        self.line(&format!("{past} = icmp slt i64 {value}, 0"));
+        self.line(&format!("{bad} = or i1 {wrapped}, {past}"));
+        self.fail_if(&bad, OVERFLOW, span);
+        value
+    }
+
     fn checked(&mut self, name: &str, a: &str, b: &str, span: Span) -> String {
         let intrinsic = format!("@llvm.{name}.with.overflow.i64");
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
@@ -2078,6 +2111,7 @@ impl Emit<'_, '_, '_> {
             }
             BinOp::Add => self.checked("sadd", a, b, span),
             BinOp::Sub => self.checked("ssub", a, b, span),
+            BinOp::Mul if self.operands_not_negative() => self.checked_not_negative_product(a, b, span),
             BinOp::Mul => self.checked("smul", a, b, span),
             BinOp::FloorDiv | BinOp::Mod => self.division(op, (a, b), rhs, span),
             BinOp::Div => {
@@ -3756,6 +3790,21 @@ def main(stdout: Stdout):
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
         assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
         assert!(text.len() > plain.len());
+        Ok(())
+    }
+
+    /// A product of two ints proven not negative is checked as an unsigned one, as Rust checks a
+    /// `usize`'s. One whose ints may be negative keeps the signed check.
+    #[test]
+    fn only_a_product_of_ints_that_arent_negative_checks_unsigned() -> Result<(), String> {
+        let source = "def area(w: int, h: int) -> int:\n    return w * h\n\ndef scaled(x: int) -> int:\n    return x * 3\n\ndef main(stdout: Stdout):\n    for i in range(5):\n        stdout.print(area(i, h=i + 1))\n    stdout.print(scaled(-4))\n    return\n";
+        let area = text_of(source, "area")?;
+        assert!(area.contains("@llvm.umul.with.overflow.i64(") && !area.contains("@llvm.smul"), "{area}");
+        let scaled = text_of(source, "scaled")?;
+        assert!(
+            scaled.contains("@llvm.smul.with.overflow.i64(") && !scaled.contains("@llvm.umul"),
+            "{scaled}"
+        );
         Ok(())
     }
 

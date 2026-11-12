@@ -240,7 +240,7 @@ mod tests {
                 .count();
             let (units, _, _) = crate::emit(&program)?;
             let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
-            let emitted = ["sadd", "ssub", "smul"]
+            let emitted = ["sadd", "ssub", "smul", "umul"]
                 .iter()
                 .map(|op| text.matches(&format!("call {{ i64, i1 }} @llvm.{op}.with.overflow.i64(")).count())
                 .sum::<usize>();

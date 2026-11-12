@@ -15,8 +15,8 @@
 
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Held, Leave,
-    Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming, TABLE,
-    TYPES, Turn, Turning, Ty, Via, Writing,
+    Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming, TYPES,
+    Turn, Turning, Ty, Via, Writing,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -1004,7 +1004,7 @@ impl Writer<'_> {
         let base = i64::from(self.byte() % 20);
         let mut held: Vec<Held> = STARTING.iter().map(|(_, held)| *held).collect();
         let mut steps = Vec::new();
-        for _ in 0..4 + self.choice(9) {
+        for _ in 0..6 + self.choice(13) {
             let from = self.choice(held.len());
             let kind = held.get(from).copied().unwrap_or(Held::Numbers);
             let roll = self.choice(5);
@@ -1013,9 +1013,8 @@ impl Writer<'_> {
                 held.push(kind);
                 continue;
             }
-            // A copy's items are read by place or key, and only the starting table's by `Id`.
+            // A copy of a table keeps its tag, so the starting `Id`s find items in copies too.
             if roll == 1
-                && (kind != Held::Table || from == TABLE)
                 && let Some(part) = kind.part()
             {
                 steps.push(Alias::Part { from, at: self.choice(2) });
@@ -1027,17 +1026,23 @@ impl Writer<'_> {
                 Held::Holders => {
                     &[Writing::ForRef, Writing::Field, Writing::Append, Writing::PutBack, Writing::Method]
                 }
+                Held::Keepers => {
+                    &[Writing::Field, Writing::Append, Writing::Set, Writing::PutBack, Writing::Method]
+                }
                 Held::Holder => &[Writing::Field, Writing::Append, Writing::Method],
                 Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append],
                 Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method],
-                Held::Table if from == TABLE => {
-                    &[Writing::ForRef, Writing::Field, Writing::PutBack, Writing::Method]
+                Held::Table | Held::Entries => {
+                    &[Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
-                Held::Table => &[Writing::ForRef],
+                Held::Ledger => {
+                    &[Writing::Field, Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
+                }
                 Held::Point => &[Writing::Field, Writing::Method],
                 Held::Text => &[Writing::Joined, Writing::Added],
             };
-            if kind == Held::Numbers && !self.threadless && self.choice(5) == 0 {
+            // Any collection can be handed to tasks, each changing a copy of its own.
+            if !matches!(kind, Held::Point | Held::Text) && !self.threadless && self.choice(5) == 0 {
                 steps.push(Alias::Tasked { from });
                 continue;
             }

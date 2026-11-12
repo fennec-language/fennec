@@ -365,32 +365,44 @@ pub(crate) enum Held {
     Table,
     Point,
     Text,
+    /// `dict[str, Holder]`: plain structs holding lists, as a dict's values.
+    Keepers,
+    /// `Ledger{id}`: a struct holding a `Table[Point]` and a count.
+    Ledger,
+    /// A `Ledger`'s table taken out whole, its items found by the ledger's `Id`s.
+    Entries,
 }
 
 impl Held {
-    /// What a part of it holds: an item, a value at a key, or a `Holder`'s list.
+    /// What a part of it holds: an item, a value at a key, or a field holding a collection.
     pub(crate) const fn part(self) -> Option<Held> {
         match self {
-            Held::Holders => Some(Held::Holder),
+            Held::Holders | Held::Keepers => Some(Held::Holder),
             Held::Holder | Held::Lists => Some(Held::Numbers),
-            Held::Spots | Held::Table => Some(Held::Point),
+            Held::Spots | Held::Table | Held::Entries => Some(Held::Point),
+            Held::Ledger => Some(Held::Entries),
             Held::Numbers | Held::Point | Held::Text => None,
         }
     }
 }
 
 /// The names every `Aliased` function starts with, in order, and what each holds.
-pub(crate) const STARTING: [(&str, Held); 6] = [
+pub(crate) const STARTING: [(&str, Held); 8] = [
     ("numbers", Held::Numbers),
     ("holders", Held::Holders),
     ("lists", Held::Lists),
     ("spots", Held::Spots),
     ("table", Held::Table),
     ("text", Held::Text),
+    ("keepers", Held::Keepers),
+    ("ledger", Held::Ledger),
 ];
 
-/// Where `STARTING`'s table is: the one name whose items are read by their `Id`s.
+/// Where `STARTING`'s table is, whose `Id`s, `first_id` and `second_id`, its copies share.
 pub(crate) const TABLE: usize = 4;
+
+/// Where `STARTING`'s ledger is, whose table's `Id`s are `entry_a` and `entry_b`.
+pub(crate) const LEDGER: usize = 7;
 
 /// The keys of an `Aliased` function's dicts, and so the places of its lists' first items, each
 /// list starting with two items and never losing one.
@@ -439,6 +451,11 @@ pub(crate) enum Kept {
     Table(Vec<(i64, i64)>),
     Point(i64, i64),
     Text(String),
+    /// Each key's `Holder`, in `KEYS`' order.
+    Keepers(Vec<(Vec<i64>, i64)>),
+    /// Its table's points, `entry_a`'s first, and its count.
+    Ledger(Vec<(i64, i64)>, i64),
+    Entries(Vec<(i64, i64)>),
 }
 
 /// The name of an `Aliased` function's `n`th name: a starting one's, or `kept1` on for copies.
@@ -455,6 +472,8 @@ pub(crate) fn starting(base: i64) -> Vec<Kept> {
         Kept::Spots(vec![(base, base + 1), (base + 2, base + 3)]),
         Kept::Table(vec![(base, 0), (base + 1, 0)]),
         Kept::Text(format!("t{base}")),
+        Kept::Keepers(vec![(vec![base + 1, base + 2], base + 3), (vec![base + 4, base + 5], base + 6)]),
+        Kept::Ledger(vec![(base + 2, 0), (base + 3, 0)], base),
     ]
 }
 
@@ -467,8 +486,8 @@ pub(crate) enum Alias {
     Part { from: usize, at: usize },
     /// A change to `to`, at place, key or `Id` `at` where it takes one, by `n`.
     Written { to: usize, how: Writing, at: usize, n: i64 },
-    /// `[counted{id}(from, n=i) for i in parallel(range(3))]`, each task changing its own copy of
-    /// the list it's handed, printed.
+    /// `[handed{id}_{kind}(from, n=i) for i in parallel(range(3))]`, each task changing its own
+    /// copy of what it's handed and giving back a number made from it, printed.
     Tasked { from: usize },
 }
 

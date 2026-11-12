@@ -13,9 +13,9 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, KEYS, Kept, Leave,
-    Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming, TABLE, Turn, Turning,
-    Writing, XS, YS, alias_name, starting,
+    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, KEYS, Kept, LEDGER,
+    Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming, TABLE, Turn,
+    Turning, Writing, XS, YS, alias_name, starting,
 };
 
 /// A value while the program runs.
@@ -476,29 +476,35 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
                 items.push(n);
             }
         }
-        (Kept::Holders(holders), Writing::Field) => holders.get_mut(at)?.1 = n,
-        (Kept::Holders(holders), Writing::Append) => holders.get_mut(at)?.0.push(n),
-        (Kept::Holders(holders), Writing::PutBack) => {
+        (Kept::Holders(holders) | Kept::Keepers(holders), Writing::Field) => holders.get_mut(at)?.1 = n,
+        (Kept::Holders(holders) | Kept::Keepers(holders), Writing::Append) => holders.get_mut(at)?.0.push(n),
+        (Kept::Keepers(holders), Writing::Set) => *holders.get_mut(at)?.0.first_mut()? = n,
+        (Kept::Holders(holders) | Kept::Keepers(holders), Writing::PutBack) => {
             let (items, tag) = holders.get_mut(at)?;
             *tag = tag.checked_add(n)?;
             items.push(n);
         }
         (Kept::Holders(holders), _) => holders.get_mut(at)?.0.extend([n, n]),
+        (Kept::Keepers(holders), _) => holders.get_mut(at)?.0.push(n),
         (Kept::Holder(_, tag), Writing::Field) => *tag = n,
         (Kept::Holder(items, _), _) => items.push(n),
         (Kept::Lists(lists), Writing::Set) => *lists.get_mut(at)?.first_mut()? = n,
         (Kept::Lists(lists), _) => lists.get_mut(at)?.push(n),
         (Kept::Spots(points), Writing::PutBack) => points.get_mut(at)?.1 = n,
-        (Kept::Table(points), Writing::Field) => points.get_mut(at)?.0 = n,
-        (Kept::Table(points), Writing::PutBack) => {
+        (Kept::Ledger(_, count), Writing::Field) => *count = count.checked_add(n)?,
+        (Kept::Table(points) | Kept::Ledger(points, _) | Kept::Entries(points), Writing::Set) => {
+            points.get_mut(at)?.0 = n;
+        }
+        (Kept::Table(points) | Kept::Ledger(points, _) | Kept::Entries(points), Writing::PutBack) => {
             let (_, y) = points.get_mut(at)?;
             *y = y.checked_add(n)?;
         }
-        (Kept::Spots(points), _) | (Kept::Table(points), Writing::Method) => {
+        (Kept::Spots(points), _)
+        | (Kept::Table(points) | Kept::Ledger(points, _) | Kept::Entries(points), Writing::Method) => {
             let (x, _) = points.get_mut(at)?;
             *x = x.checked_add(n)?;
         }
-        (Kept::Table(points), _) => {
+        (Kept::Table(points) | Kept::Ledger(points, _) | Kept::Entries(points), _) => {
             for (x, _) in points {
                 *x = x.checked_add(n)?;
             }
@@ -515,29 +521,84 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
     Some(())
 }
 
-/// How `stdout.print` writes an `Aliased` function's value.
-fn kept_shown(value: &Kept) -> String {
+/// What `handed{id}_{kind}(given, n)` gives back: what it works out from its own copy of
+/// `given` after changing it, as the task's body in `source.rs` does.
+fn handed(given: &Kept, n: i64) -> Option<i64> {
+    let mut mine = given.clone();
+    let length = |items: &[i64]| i64::try_from(items.len()).ok();
+    match &mut mine {
+        Kept::Numbers(items) => {
+            items.push(n);
+            *items.first_mut()? = n;
+            items.iter().try_fold(0_i64, |total, item| total.checked_add(*item))
+        }
+        Kept::Holders(holders) | Kept::Keepers(holders) => {
+            holders.first_mut()?.0.push(n);
+            holders.get_mut(1)?.1 = n;
+            length(&holders.first()?.0)?.checked_add(holders.get(1)?.1)
+        }
+        Kept::Holder(items, tag) => {
+            items.push(n);
+            *tag = tag.checked_add(n)?;
+            length(items)?.checked_add(*tag)
+        }
+        Kept::Lists(lists) => {
+            lists.first_mut()?.push(n);
+            *lists.get_mut(1)?.first_mut()? = n;
+            length(lists.first()?)?.checked_add(*lists.get(1)?.first()?)
+        }
+        Kept::Spots(points) => {
+            for (x, _) in points.iter_mut() {
+                *x = x.checked_add(n)?;
+            }
+            points.first()?.0.checked_add(points.get(1)?.0)
+        }
+        Kept::Ledger(points, count) => {
+            *count = count.checked_add(1)?;
+            let mut total = *count;
+            for (x, _) in points {
+                *x = x.checked_add(n)?;
+                total = total.checked_add(*x)?;
+            }
+            Some(total)
+        }
+        Kept::Table(points) | Kept::Entries(points) => {
+            let mut total = 0_i64;
+            for (x, _) in points {
+                *x = x.checked_add(n)?;
+                total = total.checked_add(*x)?;
+            }
+            Some(total)
+        }
+        Kept::Point(..) | Kept::Text(_) => None,
+    }
+}
+
+/// How `stdout.print` writes a value of `aliased{id}`.
+fn kept_shown(id: usize, value: &Kept) -> String {
     let point = |(x, y): &(i64, i64)| format!("Point(x={x}, y={y})");
+    let table = |points: &[(i64, i64)]| {
+        let points: Vec<String> = points.iter().map(point).collect();
+        format!("Table([{}])", points.join(", "))
+    };
+    let pairs = |shown: Vec<String>| {
+        let pairs: Vec<String> =
+            KEYS.iter().zip(shown).map(|(key, value)| format!("\"{key}\": {value}")).collect();
+        format!("{{{}}}", pairs.join(", "))
+    };
+    let holder = |(items, tag): &(Vec<i64>, i64)| shown(&Value::Holder(items.clone(), *tag));
     match value {
         Kept::Numbers(items) => shown(&Value::Ints(items.clone())),
         Kept::Holders(holders) => {
-            let holders: Vec<String> =
-                holders.iter().map(|(items, tag)| shown(&Value::Holder(items.clone(), *tag))).collect();
+            let holders: Vec<String> = holders.iter().map(holder).collect();
             format!("[{}]", holders.join(", "))
         }
-        Kept::Holder(items, tag) => shown(&Value::Holder(items.clone(), *tag)),
-        Kept::Lists(lists) => shown(&Value::Lists(
-            KEYS.iter().zip(lists).map(|(key, items)| ((*key).to_owned(), items.clone())).collect(),
-        )),
-        Kept::Spots(points) => {
-            let pairs: Vec<String> =
-                KEYS.iter().zip(points).map(|(key, at)| format!("\"{key}\": {}", point(at))).collect();
-            format!("{{{}}}", pairs.join(", "))
-        }
-        Kept::Table(points) => {
-            let points: Vec<String> = points.iter().map(point).collect();
-            format!("Table([{}])", points.join(", "))
-        }
+        Kept::Holder(items, tag) => holder(&(items.clone(), *tag)),
+        Kept::Lists(lists) => pairs(lists.iter().map(|items| shown(&Value::Ints(items.clone()))).collect()),
+        Kept::Spots(points) => pairs(points.iter().map(point).collect()),
+        Kept::Keepers(holders) => pairs(holders.iter().map(holder).collect()),
+        Kept::Table(points) | Kept::Entries(points) => table(points),
+        Kept::Ledger(points, count) => format!("Ledger{id}(points={}, count={count})", table(points)),
         Kept::Point(x, y) => point(&(*x, *y)),
         Kept::Text(text) => text.clone(),
     }
@@ -1598,14 +1659,15 @@ impl Machine {
                 }
                 Alias::Part { from, at } => {
                     let part = match kept.get(from).ok_or(Stop::Unsure)? {
-                        Kept::Holders(holders) => {
+                        Kept::Holders(holders) | Kept::Keepers(holders) => {
                             holders.get(at).map(|(items, tag)| Kept::Holder(items.clone(), *tag))
                         }
                         Kept::Holder(items, _) => Some(Kept::Numbers(items.clone())),
                         Kept::Lists(lists) => lists.get(at).map(|items| Kept::Numbers(items.clone())),
-                        Kept::Spots(points) | Kept::Table(points) => {
+                        Kept::Spots(points) | Kept::Table(points) | Kept::Entries(points) => {
                             points.get(at).map(|&(x, y)| Kept::Point(x, y))
                         }
+                        Kept::Ledger(points, _) => Some(Kept::Entries(points.clone())),
                         Kept::Numbers(_) | Kept::Point(..) | Kept::Text(_) => None,
                     };
                     kept.push(part.ok_or(Stop::Unsure)?);
@@ -1614,31 +1676,24 @@ impl Machine {
                     changed(kept.get_mut(to).ok_or(Stop::Unsure)?, how, at, n).ok_or(Stop::Unsure)?;
                 }
                 Alias::Tasked { from } => {
-                    let Some(Kept::Numbers(items)) = kept.get(from) else {
-                        return Err(Stop::Unsure);
-                    };
-                    let mut sums = Vec::new();
-                    for i in 0..3 {
-                        let mut mine = items.clone();
-                        mine.push(i);
-                        *mine.first_mut().ok_or(Stop::Unsure)? = i;
-                        sums.push(
-                            mine.iter()
-                                .try_fold(0_i64, |total, item| total.checked_add(*item))
-                                .ok_or(Stop::Unsure)?,
-                        );
-                    }
-                    let _ = writeln!(self.out, "sums {}", shown(&Value::Ints(sums)));
+                    let given = kept.get(from).ok_or(Stop::Unsure)?;
+                    let sums: Option<Vec<i64>> = (0..3).map(|i| handed(given, i)).collect();
+                    let _ = writeln!(self.out, "sums {}", shown(&Value::Ints(sums.ok_or(Stop::Unsure)?)));
                 }
             }
         }
-        let Some(Kept::Table(points)) = kept.get(TABLE) else {
-            return Err(Stop::Unsure);
+        let points = |at: usize| match kept.get(at) {
+            Some(Kept::Table(points) | Kept::Ledger(points, _)) => {
+                let points: Vec<String> =
+                    points.iter().map(|(x, y)| format!("Point(x={x}, y={y})")).collect();
+                Ok(points.join(" "))
+            }
+            _ => Err(Stop::Unsure),
         };
-        let ids: Vec<String> = points.iter().map(|(x, y)| format!("Point(x={x}, y={y})")).collect();
-        let _ = writeln!(self.out, "ids {}", ids.join(" "));
+        let _ = writeln!(self.out, "ids {}", points(TABLE)?);
+        let _ = writeln!(self.out, "entries {}", points(LEDGER)?);
         for (n, value) in kept.iter().enumerate() {
-            let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(value));
+            let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(aliasing.id, value));
         }
         Ok(())
     }

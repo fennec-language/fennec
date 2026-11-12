@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Held, KEYS, Kept,
-    Leave, Nested, Op, Place, Program, RefPlace, STARTING, Stmt, StreamMap, StreamRead, Streaming, TABLE,
-    Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
+    LEDGER, Leave, Nested, Op, Place, Program, RefPlace, STARTING, Stmt, StreamMap, StreamRead, Streaming,
+    TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 
 /// What every program starts with, for its body to use.
@@ -577,8 +577,56 @@ fn ints_written(items: &[i64]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// `aliased{id}`, the function an `Aliased` calls, after the helpers it uses: copies made, each
-/// name changed by its steps, then every name printed.
+/// A `Holder` as Fennec writes one.
+fn holder_written((items, tag): &(Vec<i64>, i64)) -> String {
+    format!("Holder(items={}, tag={tag})", ints_written(items))
+}
+
+/// The type an `Aliased` task is handed, for what it holds, and the name its helper ends with.
+const fn handed_type(held: Held) -> (&'static str, &'static str) {
+    match held {
+        Held::Numbers => ("list[int]", "numbers"),
+        Held::Holders => ("list[Holder]", "holders"),
+        Held::Holder => ("Holder", "holder"),
+        Held::Lists => ("dict[str, list[int]]", "lists"),
+        Held::Spots => ("dict[str, Point]", "spots"),
+        Held::Keepers => ("dict[str, Holder]", "keepers"),
+        Held::Ledger => ("", "ledger"),
+        Held::Table | Held::Entries | Held::Point | Held::Text => ("Table[Point]", "table"),
+    }
+}
+
+/// What a task handed `mine`, as `held` holds it, does to its own copy, then what it gives back.
+fn handed_body(held: Held) -> &'static str {
+    match held {
+        Held::Numbers => "    mine.append(n)\n    mine[0] = n\n    return sum(mine)\n",
+        Held::Holders => {
+            "    mine[0].items.append(n)\n    mine[1].tag = n\n    return len(mine[0].items) + mine[1].tag\n"
+        }
+        Held::Holder => {
+            "    mine.items.append(n)\n    mine.tag += n\n    return len(mine.items) + mine.tag\n"
+        }
+        Held::Lists => {
+            "    mine[\"a\"].append(n)\n    mine[\"b\"][0] = n\n    return len(mine[\"a\"]) + mine[\"b\"][0]\n"
+        }
+        Held::Spots => {
+            "    mine[\"a\"].x += n\n    mine[\"b\"].moved(n)\n    return mine[\"a\"].x + mine[\"b\"].x\n"
+        }
+        Held::Keepers => {
+            "    mine[\"a\"].items.append(n)\n    mine[\"b\"].tag = n\n    return len(mine[\"a\"].items) + mine[\"b\"].tag\n"
+        }
+        Held::Ledger => {
+            "    for ref point in mine.points:\n        point.x += n\n    mine.count += 1\n    \
+             return mine.count + sum(point.x for point in mine.points)\n"
+        }
+        Held::Table | Held::Entries | Held::Point | Held::Text => {
+            "    for ref point in mine:\n        point.x += n\n    return sum(point.x for point in mine)\n"
+        }
+    }
+}
+
+/// `aliased{id}`, the function an `Aliased` calls, after the struct and helpers it uses: copies
+/// made, each name changed by its steps, then every name printed.
 fn aliased_written(aliasing: &Aliasing) -> String {
     let Aliasing { id, base, steps } = aliasing;
     let held = aliasing.names();
@@ -586,49 +634,47 @@ fn aliased_written(aliasing: &Aliasing) -> String {
         .iter()
         .filter_map(|step| if let Alias::Written { to, .. } = step { Some(*to) } else { None })
         .collect();
-    let mutable = |n: usize| if n == TABLE || changed.contains(&n) { "mut " } else { "" };
-    let mut out = String::new();
+    let mutable = |n: usize| if n == TABLE || n == LEDGER || changed.contains(&n) { "mut " } else { "" };
+    let mut out = format!("struct Ledger{id}:\n    points: Table[Point]\n    count: int\n\n");
     if steps.iter().any(|step| matches!(step, Alias::Written { how: Writing::Ref, .. })) {
         let _ = write!(
             out,
             "def poked{id}(ref items: list[int], n: int):\n    items.append(n)\n    items[0] += n\n    return\n\n"
         );
     }
-    if steps.iter().any(|step| matches!(step, Alias::Tasked { .. })) {
-        let _ = write!(
-            out,
-            "def counted{id}(items: list[int], n: int) -> int:\n    mut mine = items\n    mine.append(n)\n    \
-             mine[0] = n\n    return sum(mine)\n\n"
-        );
+    let mut handed: Vec<&str> = Vec::new();
+    for step in steps {
+        if let Alias::Tasked { from } = step {
+            let kind = held.get(*from).copied().unwrap_or(Held::Numbers);
+            let (ty, suffix) = handed_type(kind);
+            if !handed.contains(&suffix) {
+                handed.push(suffix);
+                let ty = if ty.is_empty() { format!("Ledger{id}") } else { ty.to_owned() };
+                let _ = write!(
+                    out,
+                    "def handed{id}_{suffix}(given: {ty}, n: int) -> int:\n    mut mine = given\n{}\n",
+                    handed_body(kind)
+                );
+            }
+        }
     }
     let _ = writeln!(out, "def aliased{id}(stdout: Stdout):");
     for (n, value) in starting(*base).iter().enumerate() {
         let name = alias_name(n);
+        let pairs = |written: Vec<String>| {
+            let pairs: Vec<String> =
+                KEYS.iter().zip(written).map(|(key, value)| format!("\"{key}\": {value}")).collect();
+            format!("{{{}}}", pairs.join(", "))
+        };
         let written = match value {
             Kept::Numbers(items) => ints_written(items),
             Kept::Holders(holders) => {
-                let holders: Vec<String> = holders
-                    .iter()
-                    .map(|(items, tag)| format!("Holder(items={}, tag={tag})", ints_written(items)))
-                    .collect();
+                let holders: Vec<String> = holders.iter().map(holder_written).collect();
                 format!("[{}]", holders.join(", "))
             }
-            Kept::Lists(lists) => {
-                let pairs: Vec<String> = KEYS
-                    .iter()
-                    .zip(lists)
-                    .map(|(key, items)| format!("\"{key}\": {}", ints_written(items)))
-                    .collect();
-                format!("{{{}}}", pairs.join(", "))
-            }
-            Kept::Spots(spots) => {
-                let pairs: Vec<String> = KEYS
-                    .iter()
-                    .zip(spots)
-                    .map(|(key, (x, y))| format!("\"{key}\": Point(x={x}, y={y})"))
-                    .collect();
-                format!("{{{}}}", pairs.join(", "))
-            }
+            Kept::Lists(lists) => pairs(lists.iter().map(|items| ints_written(items)).collect()),
+            Kept::Spots(spots) => pairs(spots.iter().map(|(x, y)| format!("Point(x={x}, y={y})")).collect()),
+            Kept::Keepers(holders) => pairs(holders.iter().map(holder_written).collect()),
             Kept::Table(points) => {
                 let _ = writeln!(out, "    mut {name} = Table[Point]()");
                 for (point, (x, y)) in ["first_id", "second_id"].iter().zip(points) {
@@ -636,7 +682,14 @@ fn aliased_written(aliasing: &Aliasing) -> String {
                 }
                 continue;
             }
-            Kept::Holder(..) | Kept::Point(..) => continue,
+            Kept::Ledger(points, count) => {
+                let _ = writeln!(out, "    mut {name} = Ledger{id}(points=Table[Point](), count={count})");
+                for (entry, (x, y)) in ["entry_a", "entry_b"].iter().zip(points) {
+                    let _ = writeln!(out, "    {entry} = {name}.points.add(Point(x={x}, y={y}))");
+                }
+                continue;
+            }
+            Kept::Holder(..) | Kept::Point(..) | Kept::Entries(_) => continue,
             Kept::Text(text) => format!("\"{text}\""),
         };
         let _ = writeln!(out, "    {}{name} = {written}", mutable(n));
@@ -658,15 +711,18 @@ fn aliased_written(aliasing: &Aliasing) -> String {
                 out.push_str(&written_change(*id, &alias_name(to), kind, (how, at, n), s));
             }
             Alias::Tasked { from } => {
+                let (_, suffix) = handed_type(held.get(from).copied().unwrap_or(Held::Numbers));
                 let _ = writeln!(
                     out,
-                    "    sums{s} = [counted{id}({}, n=i) for i in parallel(range(3))]\n    stdout.print(\"sums\", sums{s})",
+                    "    sums{s} = [handed{id}_{suffix}({}, n=i) for i in parallel(range(3))]\n    \
+                     stdout.print(\"sums\", sums{s})",
                     alias_name(from)
                 );
             }
         }
     }
     let _ = writeln!(out, "    stdout.print(\"ids\", table[first_id], table[second_id])");
+    let _ = writeln!(out, "    stdout.print(\"entries\", ledger.points[entry_a], ledger.points[entry_b])");
     for n in 0..made {
         let _ = writeln!(out, "    stdout.print(\"{0}\", {0})", alias_name(n));
     }
@@ -675,12 +731,14 @@ fn aliased_written(aliasing: &Aliasing) -> String {
 }
 
 /// A part of `from`, which holds `held`: its item `at`, its value at key `at`, its point with
-/// `Id` `at`, or a `Holder`'s list.
+/// `Id` `at`, or a field holding a collection.
 fn part_written(from: &str, held: Option<Held>, at: usize) -> String {
     match held {
         Some(Held::Holders) => format!("{from}[{at}]"),
         Some(Held::Holder) => format!("{from}.items"),
+        Some(Held::Ledger) => format!("{from}.points"),
         Some(Held::Table) => format!("{from}[{}]", id_written(at)),
+        Some(Held::Entries) => format!("{from}[{}]", entry_written(at)),
         _ => format!("{from}[\"{}\"]", key_written(at)),
     }
 }
@@ -693,10 +751,19 @@ fn id_written(at: usize) -> &'static str {
     if at == 0 { "first_id" } else { "second_id" }
 }
 
+fn entry_written(at: usize) -> &'static str {
+    if at == 0 { "entry_a" } else { "entry_b" }
+}
+
 /// What a `Written` step writes, changing `to`, which holds `held`, as step `s` of `aliased{id}`.
 fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize, i64), s: usize) -> String {
     let key = key_written(at);
-    let point = id_written(at);
+    // A table's items by `Id`: the starting table's, or the ledger's.
+    let (table, point) = match held {
+        Held::Ledger => (format!("{to}.points"), entry_written(at)),
+        Held::Entries => (to.to_owned(), entry_written(at)),
+        _ => (to.to_owned(), id_written(at)),
+    };
     match (held, how) {
         (Held::Numbers, Writing::Append) => format!("    {to}.append({n})\n"),
         (Held::Numbers, Writing::Set) => format!("    {to}[{at}] = {n}\n"),
@@ -712,6 +779,14 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
              {to}[{at}] = taken{s}\n"
         ),
         (Held::Holders, _) => format!("    {to}[{at}].grown_by([{n}, {n}])\n"),
+        (Held::Keepers, Writing::Field) => format!("    {to}[\"{key}\"].tag = {n}\n"),
+        (Held::Keepers, Writing::Append) => format!("    {to}[\"{key}\"].items.append({n})\n"),
+        (Held::Keepers, Writing::Set) => format!("    {to}[\"{key}\"].items[0] = {n}\n"),
+        (Held::Keepers, Writing::PutBack) => format!(
+            "    mut taken{s} = {to}[\"{key}\"]\n    taken{s}.tag += {n}\n    taken{s}.items.append({n})\n    \
+             {to}[\"{key}\"] = taken{s}\n"
+        ),
+        (Held::Keepers, _) => format!("    {to}[\"{key}\"].grown_by([{n}])\n"),
         (Held::Holder, Writing::Field) => format!("    {to}.tag = {n}\n"),
         (Held::Holder, Writing::Append) => format!("    {to}.items.append({n})\n"),
         (Held::Holder, _) => format!("    {to}.grown_by([{n}])\n"),
@@ -725,12 +800,19 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
             "    mut taken{s} = {to}[\"{key}\"]\n    taken{s}.y = {n}\n    {to}[\"{key}\"] = taken{s}\n"
         ),
         (Held::Spots, _) => format!("    {to}[\"{key}\"].moved({n})\n"),
-        (Held::Table, Writing::Field) => format!("    {to}[{point}].x = {n}\n"),
-        (Held::Table, Writing::PutBack) => {
-            format!("    mut taken{s} = {to}[{point}]\n    taken{s}.y += {n}\n    {to}[{point}] = taken{s}\n")
+        (Held::Ledger, Writing::Field) => format!("    {to}.count += {n}\n"),
+        (Held::Table | Held::Ledger | Held::Entries, Writing::Set) => {
+            format!("    {table}[{point}].x = {n}\n")
         }
-        (Held::Table, Writing::Method) => format!("    {to}[{point}].moved({n})\n"),
-        (Held::Table, _) => format!("    for ref point in {to}:\n        point.x += {n}\n"),
+        (Held::Table | Held::Ledger | Held::Entries, Writing::PutBack) => format!(
+            "    mut taken{s} = {table}[{point}]\n    taken{s}.y += {n}\n    {table}[{point}] = taken{s}\n"
+        ),
+        (Held::Table | Held::Ledger | Held::Entries, Writing::Method) => {
+            format!("    {table}[{point}].moved({n})\n")
+        }
+        (Held::Table | Held::Ledger | Held::Entries, _) => {
+            format!("    for ref point in {table}:\n        point.x += {n}\n")
+        }
         (Held::Point, Writing::Field) => format!("    {to}.x = {n}\n"),
         (Held::Point, _) => format!("    {to}.moved({n})\n"),
         (Held::Text, Writing::Added) => format!("    {to} += \"q{n}\"\n"),

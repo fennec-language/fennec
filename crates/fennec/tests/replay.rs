@@ -26,11 +26,14 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
 type Outcome = (String, String, Option<i32>);
 
 fn outcome(ran: &Output) -> Outcome {
-    (
-        String::from_utf8_lossy(&ran.stdout).into_owned(),
-        String::from_utf8_lossy(&ran.stderr).into_owned(),
-        ran.status.code(),
-    )
+    let mut said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    // A program a signal stopped has no exit code, so which signal goes with what it said: a run
+    // killed with nothing printed is otherwise only `None`, which says nothing of why.
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&ran.status) {
+        let _ = std::fmt::Write::write_fmt(&mut said, format_args!("[stopped by signal {signal}]"));
+    }
+    (String::from_utf8_lossy(&ran.stdout).into_owned(), said, ran.status.code())
 }
 
 /// Records a run of `program` with `input` on its standard input, then replays it, giving back both

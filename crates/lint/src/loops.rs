@@ -247,13 +247,23 @@ fn steady(expr: &Expr, never_changed: &dyn Fn(&str) -> bool) -> bool {
     match &expr.kind {
         ExprKind::Int(_) => true,
         ExprKind::Name(name) => never_changed(name),
-        ExprKind::Call { callee, args } if args.is_empty() => match &callee.kind {
-            ExprKind::Attr { object, name, .. } if name == "len" => {
-                matches!(&object.kind, ExprKind::Name(object) if never_changed(object))
-            }
-            _ => false,
-        },
+        ExprKind::Call { .. } => length_of(expr).is_some_and(never_changed),
         _ => false,
+    }
+}
+
+/// The name whose length an expression is: `xs` in `len(xs)`, or in `xs.len()`, as code written
+/// before `len` was a builtin has it.
+fn length_of(expr: &Expr) -> Option<&str> {
+    let ExprKind::Call { callee, args } = &expr.kind else { return None };
+    let measured = match (&callee.kind, args.as_slice()) {
+        (ExprKind::Name(called), [arg]) if called == "len" && arg.name.is_none() && !arg.is_mut => &arg.value,
+        (ExprKind::Attr { object, name, .. }, []) if name == "len" => object,
+        _ => return None,
+    };
+    match &measured.kind {
+        ExprKind::Name(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -342,22 +352,21 @@ fn item_name(list: &str) -> String {
     }
 }
 
-/// `for i in range(xs.len()):` where `i` is only used as `xs[i]`, as `for x in xs:`.
+/// `for i in range(len(xs)):`, or `range(xs.len())`, where `i` is only used as `xs[i]`, as
+/// `for x in xs:`.
 fn range_len(stmt: &Stmt, function: &FnDef, sources: &Sources) -> Option<Lint> {
     let StmtKind::For { names, is_mut: false, iter, body } = &stmt.kind else { return None };
     let [index] = names.as_slice() else { return None };
     let ExprKind::Call { callee, args } = &iter.kind else { return None };
     let (ExprKind::Name(called), [arg]) = (&callee.kind, args.as_slice()) else { return None };
-    let ExprKind::Call { callee: length, args: none } = &arg.value.kind else { return None };
-    let ExprKind::Attr { object, name: len, .. } = &length.kind else { return None };
-    let ExprKind::Name(list) = &object.kind else { return None };
+    let list = length_of(&arg.value)?;
     let uses = indexes(body, list, index);
     let only_indexes = !uses.is_empty() && uses.len() == count(&names_in(body), index);
     let item = item_name(list);
-    let usable = called == "range" && len == "len" && none.is_empty() && arg.name.is_none() && only_indexes;
+    let usable = called == "range" && arg.name.is_none() && only_indexes;
     if !usable
         || !is_list_or_str(list, function)
-        || changed(&without_header(&function.body, stmt.span)).contains(list.as_str())
+        || changed(&without_header(&function.body, stmt.span)).contains(list)
     {
         return None;
     }

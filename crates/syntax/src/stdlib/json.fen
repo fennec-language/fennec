@@ -2,6 +2,7 @@ from std import base64
 from std.collections import Id
 from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_size, type_name
 from std.io import Reader, Writer, read_all
+from std.string import cut_input, quoted_input
 
 ## How field names are spelled in JSON, set with `names=`. `.SnakeCase` writes them as the
 ## program does. The keys of a dict are written as they are.
@@ -810,7 +811,7 @@ struct JsonReader:
             n = int(key) else:
                 if not self._explain: fail no_reason()
                 fail ParseError(
-                    message=f"{self._where()} has the key \"{key}\", which isn't an int",
+                    message=f"{self._where()} has the key \"{cut_input(key)}\", which isn't an int",
                     line=0,
                     column=0,
                 )
@@ -1084,7 +1085,9 @@ struct JsonReader:
             self._in_key = False
             if self._space() != 58: fail no_reason()
             if self._explain:
-                self._path.append(f"[{text_part(self._source, self._key_start(start), self._at)}]")
+                self._path.append(
+                    f"[{cut_input(text_part(self._source, self._key_start(start), self._at))}]",
+                )
             self._at += 1
             value = V.deserialize(ref self)?
             if self._explain:
@@ -1451,7 +1454,7 @@ struct JsonReader:
         if not self._explain: return no_reason()
         key = self.text() else return no_reason()
         ParseError(
-            message=f"`{owner}` has no field \"{key}\", but {self._where()} has one",
+            message=f"`{owner}` has no field \"{cut_input(key)}\", but {self._where()} has one",
             line=0,
             column=0,
         )
@@ -1601,7 +1604,7 @@ struct JsonReader:
         word = text_part(self._source, start, at)
         if word != "true" and word != "false" and word != "null":
             fail self._bad(
-                f"`{word}` isn't a JSON value; the words JSON knows are true, false and null",
+                f"{quoted_input(word)} isn't a JSON value; the words JSON knows are true, false and null",
             )
         self._at = at
 
@@ -1732,7 +1735,10 @@ struct JsonReader:
                 fail self._bad(f"expected a digit in the exponent, but found {self._next_char()}")
         if not is_float:
             number = text_part(self._source, start, self._at)
-            _ = int(number) else fail self._bad_at(f"`{number}` is too big for an int", start)
+            _ = int(number) else fail self._bad_at(
+                f"{quoted_input(number)} is too big for an int",
+                start,
+            )
 
     def _digits(ref self):
         mut b = text_byte(self._source, self._at)

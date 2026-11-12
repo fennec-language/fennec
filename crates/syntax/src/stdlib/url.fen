@@ -3,6 +3,8 @@
 # escapes URLs use for bytes they can't hold as they are, and `encode_query` and `decode_query`
 # write and read a query's `name=value` pairs as HTML forms send them, with `+` for a space.
 
+from std.string import cut_input, quoted_input
+
 ## A URL taken apart. `path`, `query` and `fragment` hold their text with its escapes read,
 ## and printing a `Url` writes it back with what needs escaping escaped. A part that wasn't
 ## given is "", with `port` 0 when none was given, and a URL with no `scheme` or `host`, like
@@ -67,7 +69,7 @@ export def parse(text: str) -> Url fails InvalidValue:
     for c in text:
         if c == " " or c.code() < 32 or c.code() == 127:
             fail InvalidValue(
-                message=f"`{text}` isn't a URL: it can't hold a space or a control character",
+                message=f"{quoted_input(text)} isn't a URL: it can't hold a space or a control character",
             )
     mut rest = text
     mut found = Url()
@@ -125,20 +127,23 @@ def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
     if authority.startswith("["):
         close = authority.find("]")
         if close is None:
-            fail InvalidValue(message=f"`{text}` isn't a URL: its IPv6 address has no `]`")
+            fail InvalidValue(
+                message=f"{quoted_input(text)} isn't a URL: its IPv6 address has no `]`",
+            )
         host = authority[1:close]
         # Only an IPv6 address goes in brackets: a name there would be connected to as a name,
         # past a check that took it for an address.
-        if host == "": fail InvalidValue(message=f"`{text}` isn't a URL: its brackets are empty")
+        if host == "":
+            fail InvalidValue(message=f"{quoted_input(text)} isn't a URL: its brackets are empty")
         if not is_ipv6(host):
             fail InvalidValue(
-                message=f"`{text}` isn't a URL: `{host}` in brackets isn't an IPv6 address",
+                message=f"{quoted_input(text)} isn't a URL: `{cut_input(host)}` in brackets isn't an IPv6 address",
             )
         after = authority[close + 1:]
         if after != "":
             if not after.startswith(":"):
                 fail InvalidValue(
-                    message=f"`{text}` isn't a URL: `{after}` follows its IPv6 address",
+                    message=f"{quoted_input(text)} isn't a URL: `{cut_input(after)}` follows its IPv6 address",
                 )
             port_text = after[1:]
     else:
@@ -150,19 +155,19 @@ def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
         for refused in ["@", "%", "\\", "[", "]"]:
             if host.find(refused) is not None:
                 fail InvalidValue(
-                    message=f"`{text}` isn't a URL: its host can't hold `@`, `%`, `\\`, `[` or `]`",
+                    message=f"{quoted_input(text)} isn't a URL: its host can't hold `@`, `%`, `\\`, `[` or `]`",
                 )
         # The most a name may be, as DNS has it.
         if host.len() > 253:
             fail InvalidValue(
-                message=f"`{text}` isn't a URL: its host is longer than 253 characters",
+                message=f"{quoted_input(text)} isn't a URL: its host is longer than 253 characters",
             )
         host = host.lower()
     if port_text == "": return (host, 0)
     port = int(port_text) else 0
     if not port_text.isdigit() or port < 1 or port > 65_535:
         fail InvalidValue(
-            message=f"`{text}` isn't a URL: its port `{port_text}` isn't from 1 to 65535",
+            message=f"{quoted_input(text)} isn't a URL: its port `{cut_input(port_text)}` isn't from 1 to 65535",
         )
     (host, port)
 

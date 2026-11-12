@@ -220,7 +220,7 @@ impl Parser {
         let cond = self.expr()?;
         if self.at_fails() {
             return Err(Diagnostic::new("`fails` checks a failure only in `assert`", self.span()).with_help(
-                "to act on a failure, handle it with `else as why:`, and tell failures apart with `match why:` in its block",
+                "to act on a failure, handle it with `except why:`, and tell failures apart with `case` arms under it",
             ));
         }
         self.expect_p(Punct::Colon)?;

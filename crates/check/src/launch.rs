@@ -254,9 +254,9 @@ fn source_text(launch: &Launch) -> Option<(String, Option<String>)> {
         Some(format!("def launched__({params}) -> with {lends} fails {fails}:")),
         channel("    channel__made = intrinsics.channel_new(inbox_size)"),
         Some("    started__made = intrinsics.launch(task__placeholder)".to_owned()),
-        // Above the `lend`, since its `else:` is written in at each place the block can fail.
+        // Above the `lend`, since its `except:` is written in at each place the block can fail.
         Some("    mut cut__made = 0".to_owned()),
-        Some(format!("    lend {lent} else:")),
+        Some(format!("    lend {lent} except:")),
         channel("        intrinsics.channel_close(channel__made)"),
         Some(format!("        _ = intrinsics.launch_end[{ended}](started__made, -1, True, ref cut__made)")),
         channel("        intrinsics.channel_free(channel__made)"),
@@ -286,11 +286,11 @@ fn with_task(def: &mut fennec_syntax::FnDef, launch: &Launch, message: Option<&s
     let mut called = body.as_ref().clone();
     if let (Some(inbox), Some(message)) = (params.first(), message) {
         let made = fennec_syntax::parse_prelude(&format!(
-            "def inbox__made(channel__made: int) -> Inbox[{message}]:\n    Inbox[{message}](_channel=channel__made)\n"
+            "def inbox__made(channel__made: int) -> Inbox[{message}]:\n    return Inbox[{message}](_channel=channel__made)\n"
         ))
         .ok()?;
         let Some(Item::Function(maker)) = made.items.into_iter().next() else { return None };
-        let Some(fennec_syntax::StmtKind::Expr(inbox_made)) =
+        let Some(fennec_syntax::StmtKind::Return(Some(inbox_made))) =
             maker.body.into_iter().next().map(|stmt| stmt.kind)
         else {
             return None;

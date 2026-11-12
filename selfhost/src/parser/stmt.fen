@@ -225,7 +225,7 @@ extend Parser:
             fail Diagnostic(
                 message="`fails` checks a failure only in `assert`",
                 span=self.span(),
-                help="to act on a failure, handle it with `else as why:`, and tell failures apart with `match why:` in its block",
+                help="to act on a failure, handle it with `except why:`, and tell failures apart with `case` arms under it",
             )
         _ = self.expect_punct(":")?
         (cond, self.block()?)

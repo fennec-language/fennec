@@ -748,7 +748,7 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
         [
             "`Err` is gone: a function fails with `fail error` @ Err(Bad(\"small\"))",
             "`Ok` is gone: a value is given as it is @ Ok(n - 1)",
-            "`Ok` and `Err` are gone: a failure is handled with `else as why:` @ case Ok(value): str(value)\n",
+            "`Ok` and `Err` are gone: a failure is handled with `except why:` @ case Ok(value): str(value)\n",
             "`Result` is gone: what can fail says so with `fails` @ Result[int, Bad]",
         ]
     );
@@ -768,7 +768,7 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
 fn failure_of_is_only_for_tests() {
     let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n";
     let said = "`failure_of` is only for tests @ failure_of(() => half(-1)?)";
-    let help = "outside a test, name a failure where it happens with `x = f() else as why:`; a test checks one with `assert f() fails Oops()`";
+    let help = "outside a test, name a failure where it happens with `x = f() except why:`; a test checks one with `assert f() fails Oops()`";
     let in_main =
         format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)?))\n");
     assert_eq!(problems(&in_main), [said]);

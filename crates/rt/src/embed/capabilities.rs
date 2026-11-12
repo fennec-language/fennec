@@ -360,6 +360,10 @@ fn native_method(
         (Capability::Env, "get", [Value::Str(name)]) => Ok(crate::env::variable(name)),
         (Capability::Env, "all", []) => Ok(crate::env::variables()),
         (Capability::Stderr, _, _) => {
+            // A task or range a test started writes into the test's capture.
+            if let Some(capture) = super::capture_given() {
+                return crate::stderr::faked(&capture, method, args, at);
+            }
             // What's been printed to standard output comes out first, so the two read in order.
             super::write_kept_output();
             crate::stderr::written(method, args, at)

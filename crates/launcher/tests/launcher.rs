@@ -597,6 +597,39 @@ mod launcher {
         assert!(mirror.latest().unwrap_err().contains("signed by 0 of"));
         std::fs::write(dir.join("dist/latest"), "0.4.3\n").unwrap();
         assert_eq!(mirror.latest().unwrap(), "0.4.3");
+        // A mirror can't roll a kit back by naming an older release the latest, signed as it is.
+        release(&dir.join("dist"), "0.4.1", &pair);
+        std::fs::write(dir.join("dist/latest"), "0.4.1\n").unwrap();
+        let back = launcher.update(&kit, true).unwrap_err();
+        assert!(back.contains("0.4.1, is older than the 0.4.3"), "{back}");
+        assert!(std::fs::read_to_string(kit.join("kit.toml")).unwrap().contains("fennec = \"0.4.3\"\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An archive bigger than its signed manifest says isn't read whole, and a toolchain in a folder
+    /// others can write to isn't run, as anyone could have put it there.
+    #[test]
+    #[cfg(unix)]
+    fn an_archive_too_big_or_a_toolchain_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("bounded");
+        let (pair, public) = key();
+        release(&dir.join("dist"), "0.4.2", &pair);
+        let archive = dir.join(format!("dist/v0.4.2/fennec-v0.4.2-{TARGET}.tar.gz"));
+        let mut bigger = std::fs::read(&archive).unwrap();
+        bigger.extend_from_slice(b"and more besides");
+        std::fs::write(&archive, bigger).unwrap();
+        let kit = kit(&dir, "0.4.2");
+        let refused = launcher(&dir, &public).toolchain_for(&kit).unwrap_err();
+        assert!(refused.contains("bigger than the"), "{refused}");
+        let home = dir.join("home");
+        installed(&home, "0.4.3");
+        let folder = home.join("toolchains/0.4.3");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let (_, why, code) = run_in(&dir, &home, &["--offline", "+0.4.3", "run"]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("where others could write to it"), "{why}");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

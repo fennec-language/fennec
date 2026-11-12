@@ -326,6 +326,16 @@ impl Launcher {
             }
             return self.install(version, pin);
         };
+        // A toolchain is run as it's found, as one installed another way is, and the pin in
+        // kit.lock is what holds a kit to its own. But not from a folder others can write to,
+        // where anyone could have put one: as Fennec's cache, it has to be its user's alone.
+        let manifest_at = self.folder(version).join("manifest");
+        if !fennec_dist::trusted(&self.folder(version)) || !fennec_dist::trusted(&manifest_at) {
+            return Err(format!(
+                "the Fennec {version} installed is where others could write to it, so it isn't run: {}",
+                self.folder(version).display()
+            ));
+        }
         let hash = fennec_blake3::hash(&manifest);
         match pin {
             Some(pin) if pin != hash => Err(format!(
@@ -394,6 +404,13 @@ impl Launcher {
         let pin = kit::pinned(&lock)?;
         if latest {
             let newest = self.latest()?;
+            // A mirror can't roll a kit back to an older release, with bugs since fixed, by calling
+            // it the latest.
+            if kit::plain_version(&version) && older(&newest, &version) {
+                return Err(format!(
+                    "the newest release the mirror names, {newest}, is older than the {version} kit.toml asks for already"
+                ));
+            }
             if newest != version {
                 fennec_dist::write_kit_file(&root.join("kit.toml"), &kit::asking_for(&manifest, &newest))?;
                 version = newest;
@@ -409,6 +426,22 @@ impl Launcher {
             Some(_) => format!("kit.lock: Fennec {version}, as its release is now\n"),
             None => format!("kit.lock: Fennec {version}\n"),
         })
+    }
+
+    /// Reads one of a release's files that its signed manifest says how big is, taking in no more:
+    /// an archive.
+    fn fetch_at_most(&self, version: &str, file: &str, most: u64) -> Result<Vec<u8>, String> {
+        let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
+        if dist.starts_with("https://") || dist.starts_with("http://") {
+            return web::fetch_at_most(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), most);
+        }
+        let path = Path::new(dist).join(format!("v{version}")).join(file);
+        let size =
+            std::fs::metadata(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))?.len();
+        if size > most {
+            return Err(format!("{} is bigger than the {most} bytes its manifest says", path.display()));
+        }
+        std::fs::read(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))
     }
 
     /// Reads one of a release's files.
@@ -452,7 +485,7 @@ impl Launcher {
         let archive = manifest
             .archive(&self.target)
             .ok_or_else(|| format!("Fennec {version} has no release for {}", self.target))?;
-        let bytes = self.fetch(version, &archive.file)?;
+        let bytes = self.fetch_at_most(version, &archive.file, archive.size)?;
         archive.check(&bytes)?;
         let entries = if let Some(top) = archive.file.strip_suffix(".tar.gz") {
             unpack::tar_gz(&bytes, top)?
@@ -495,4 +528,11 @@ impl Launcher {
 /// The name of the `fennec` command on this platform.
 fn fennec_file() -> String {
     format!("fennec{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// Whether version `a` comes before `b`, both plain, as `0.4.2` before `0.4.10`.
+fn older(a: &str, b: &str) -> bool {
+    let parts =
+        |version: &str| -> Vec<u64> { version.split('.').filter_map(|part| part.parse().ok()).collect() };
+    parts(a) < parts(b)
 }

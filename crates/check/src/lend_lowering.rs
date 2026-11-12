@@ -964,7 +964,7 @@ struct Caller<'n> {
 fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
     for at in 0..body.len() {
         let Some(stmt) = body.get_mut(at) else { return false };
-        if let StmtKind::Lend { value, otherwise } = &stmt.kind {
+        if let StmtKind::Lend { value, otherwise, .. } = &stmt.kind {
             let Some(written) = with_block(value.clone(), &otherwise.clone()) else { return false };
             body.splice(at..=at, written);
             return true;

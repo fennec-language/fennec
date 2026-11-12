@@ -167,7 +167,7 @@ fn tails<'s>(body: &'s [Stmt], found: &mut Vec<&'s Stmt>) {
 
 /// `lend x else:` as `lend x except:`.
 fn lend_except(stmt: &Stmt, sources: &Sources) -> Option<Diagnostic> {
-    let StmtKind::Lend { value, otherwise } = &stmt.kind else { return None };
+    let StmtKind::Lend { value, otherwise, .. } = &stmt.kind else { return None };
     if otherwise.is_empty() {
         return None;
     }
@@ -659,4 +659,128 @@ mod tests {
             def main(stdout: Stdout):\n    shown(stdout)\n";
         assert_eq!(migrated(source), source.replace("    1 + 1", "    return 1 + 1"));
     }
+}
+
+/// The names a local can't take: the builtins and the built-in types, and `case`, which starts an
+/// arm under `except why:`.
+const RESERVED: [&str; 29] = [
+    "len",
+    "abs",
+    "sum",
+    "sorted",
+    "min",
+    "max",
+    "range",
+    "enumerate",
+    "zip",
+    "int",
+    "float",
+    "bool",
+    "str",
+    "bytes",
+    "list",
+    "dict",
+    "set",
+    "array",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "f32",
+    "f64",
+    "case",
+];
+
+/// The forms of before 2026-11-11 that a program checked as it was written still has, refused
+/// with what to write: `else` on a call that can fail, `else as why:` among them, `lend x else:`, a
+/// `def`'s value on its last line without `return`, and a local named after a builtin. `checked`
+/// is what checking `module` found, before anything was written in. `fennec fix` makes the
+/// rewrites `fennec fix --migrate` does, which these point at.
+pub(crate) fn old_forms(module: &Module, checked: &crate::Checked) -> Vec<Diagnostic> {
+    let by_hand =
+        |span: Span| !span.in_prelude() && !crate::lend_lowering::written_in(span) && span.start < span.end;
+    let mut found = Vec::new();
+    let mut failing = HashSet::new();
+    fennec_syntax::read::exprs(module, &mut |expr| {
+        if let ExprKind::Else { value, except: false, .. } = &expr.kind
+            && by_hand(expr.span)
+        {
+            failing.insert((value.span.start, value.span.end));
+        }
+    });
+    if !failing.is_empty() {
+        let fails: HashSet<(u32, u32)> = checked
+            .types
+            .functions
+            .values()
+            .flat_map(|body| body.exprs())
+            .filter(|(span, ty)| failing.contains(&(span.start, span.end)) && matches!(ty, Type::Result(..)))
+            .map(|(span, _)| (span.start, span.end))
+            .collect();
+        fennec_syntax::read::exprs(module, &mut |expr| {
+            let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
+            if !fails.contains(&(value.span.start, value.span.end)) {
+                return;
+            }
+            let word = Span { start: value.span.end, end: default.span.start.max(value.span.end) };
+            found.push(
+                Diagnostic::new("a failure is handled with `except` now: `else` is for a value that's missing", word)
+                    .with_help(
+                        "write `x = f() except why:` and use `why`, or name what it handles, as `x = f() except Missing(): 0`; `fennec fix` makes this change",
+                    ),
+            );
+        });
+    }
+    let mut defs = Vec::new();
+    for item in &module.items {
+        match item {
+            Item::Function(def) => defs.push(def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => defs.extend(&def.methods),
+            Item::Extend(extension) => defs.extend(&extension.methods),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for def in defs {
+        nested(def, &mut all);
+    }
+    let mut bodies: Vec<&[Stmt]> =
+        all.iter().filter(|def| by_hand(def.span)).map(|def| def.body.as_slice()).collect();
+    bodies.extend(module.items.iter().filter_map(|item| match item {
+        Item::Test(test) if by_hand(test.span) => Some(test.body.as_slice()),
+        _ => None,
+    }));
+    for def in all.iter().filter(|def| by_hand(def.span)) {
+        found.extend(def_return(def));
+    }
+    for body in bodies {
+        let mut stmts = Vec::new();
+        statements(body, &mut stmts);
+        for stmt in stmts {
+            if let StmtKind::Lend { otherwise, except: false, .. } = &stmt.kind
+                && !otherwise.is_empty()
+                && by_hand(stmt.span)
+            {
+                found.push(
+                    Diagnostic::new("a `with` source's cleanup is written `lend x except:` now", stmt.span)
+                        .with_help("write `except` for `else`; `fennec fix` makes this change"),
+                );
+            }
+        }
+    }
+    for (span, name, _) in checked.types.functions.values().flat_map(|body| body.names()) {
+        if RESERVED.contains(&name) && by_hand(span) {
+            found.push(
+                Diagnostic::new(format!("`{name}` is a builtin's name, which a local can't take"), span)
+                    .with_help("name it for what it holds, as `count` or `items`"),
+            );
+        }
+    }
+    found.sort_by_key(|diagnostic| (diagnostic.span.start, diagnostic.span.end));
+    found.dedup_by_key(|diagnostic| (diagnostic.span.start, diagnostic.span.end));
+    found
 }

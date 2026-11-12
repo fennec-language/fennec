@@ -50,6 +50,8 @@ pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
             lints.extend(fennec_lint::self_compares(&program.module, &program.sources));
             let mut diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
             diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
+            // `x.len()` as `len(x)`, the one rewrite of 2026-11-11 a program that checks can still use.
+            diagnostics.extend(fennec_check::migration_fixes(&program.module, &program.sources));
             let changed = program.sources.fixed(&diagnostics);
             if changed.is_empty() {
                 return ExitCode::SUCCESS;
@@ -63,6 +65,8 @@ pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
         fennec_check::add_pattern_fixes(&mut diagnostics, &program.sources);
         fennec_check::add_capability_fixes(&mut diagnostics, &program.module, &program.sources);
         diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
+        // A form of before 2026-11-11 is refused: its rewrite is the fix.
+        diagnostics.extend(fennec_check::migration_fixes(&program.module, &program.sources));
         let changed = program.sources.fixed(&diagnostics);
         if changed.is_empty() {
             eprint!("{}", program.sources.render_all(&diagnostics));
@@ -108,7 +112,8 @@ fn migrate_forms(path: &str) -> ExitCode {
                 continue;
             }
         };
-        let (checks, diagnostics) = match fennec_check::check(&program.module) {
+        // Typed as written, old forms and all, which `check` refuses.
+        let (checks, diagnostics) = match fennec_check::check_typed(&program.module) {
             Ok(_) => (true, fennec_check::migration_fixes(&program.module, &program.sources)),
             Err(_) if first => return migrate_syntax(path),
             Err(problems) => (false, problems),

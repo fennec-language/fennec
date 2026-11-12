@@ -2,4 +2,4 @@
 FIRST = embed_file("first.bin")
 
 def size() -> int:
-    FIRST.len()
+    return len(FIRST)

@@ -3,13 +3,34 @@
 ## (the most a header holds), 24, a long one, and one with characters past ASCII.
 def main(stdout: Stdout):
     long = "a string far too long to be held in a header of its own"
-    items = ["", "eight by", "twenty-three bytes here", "twenty-four bytes, here!", long, "café", "x"]
-    asked = ["", "eight by", "twenty-three bytes here", "twenty-four bytes, here!", long, "café", "x"]
+    items = [
+        "",
+        "eight by",
+        "twenty-three bytes here",
+        "twenty-four bytes, here!",
+        long,
+        "café",
+        "x",
+    ]
+    asked = [
+        "",
+        "eight by",
+        "twenty-three bytes here",
+        "twenty-four bytes, here!",
+        long,
+        "café",
+        "x",
+    ]
     for text in asked:
         made = f"{text}"
         stdout.print(text in items, made in items, items.index(made) else -1, f"{text}?" in items)
-    stdout.print("eight bz" in items, "twenty-three bytes hera" in items, "cafe" in items, "y" in items)
+    stdout.print(
+        "eight bz" in items,
+        "twenty-three bytes hera" in items,
+        "cafe" in items,
+        "y" in items,
+    )
     mut kept = list(items)
     kept.remove(f"{long}")
     kept.remove("x")
-    stdout.print(kept.len(), long in kept, "x" in kept, "café" in kept)
+    stdout.print(len(kept), long in kept, "x" in kept, "café" in kept)

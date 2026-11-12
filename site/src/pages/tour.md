@@ -858,7 +858,7 @@ export struct Score:
     _best = 0
 
 export def best(scores: list[Score]) -> int:
-    max(score.points for score in scores)
+    return max(score.points for score in scores)
 ```
 
 - A `_name` field or method is hidden from everything but its type's own methods. Tests get no special access.
@@ -903,7 +903,7 @@ struct Settings:
 
 def main(stdout: Stdout):
     text = json.dumps(Settings())
-    loaded = json.loads[Settings](text) else Settings()
+    loaded = json.loads[Settings](text) except ParseError(): Settings()
     stdout.print(text, loaded)
 ```
 

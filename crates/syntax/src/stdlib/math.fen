@@ -19,58 +19,58 @@ export struct Vec2:
     y = 0.0
 
     def zero() -> Vec2:
-        Vec2()
+        return Vec2()
 
     def +(self, other: Vec2) -> Vec2:
-        Vec2(x=self.x + other.x, y=self.y + other.y)
+        return Vec2(x=self.x + other.x, y=self.y + other.y)
 
     def -(self, other: Vec2) -> Vec2:
-        Vec2(x=self.x - other.x, y=self.y - other.y)
+        return Vec2(x=self.x - other.x, y=self.y - other.y)
 
     ## Every part times `scale`.
     def *(self, scale: float) -> Vec2:
-        Vec2(x=self.x * scale, y=self.y * scale)
+        return Vec2(x=self.x * scale, y=self.y * scale)
 
     ## Each part times the same part of `other`.
     def mul(self, other: Vec2) -> Vec2:
-        Vec2(x=self.x * other.x, y=self.y * other.y)
+        return Vec2(x=self.x * other.x, y=self.y * other.y)
 
     ## The vector pointing the other way.
     def negated(self) -> Vec2:
-        Vec2(x=-self.x, y=-self.y)
+        return Vec2(x=-self.x, y=-self.y)
 
     def dot(self, other: Vec2) -> float:
-        self.x * other.x + self.y * other.y
+        return self.x * other.x + self.y * other.y
 
     def length_squared(self) -> float:
-        self.dot(self)
+        return self.dot(self)
 
     def length(self) -> float:
-        math.sqrt(self.dot(self))
+        return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
     def normalize(self) -> Vec2:
         length = self.length()
         if length == 0.0: return Vec2()
-        self * (1.0 / length)
+        return self * (1.0 / length)
 
     def distance(self, other: Vec2) -> float:
-        (self - other).length()
+        return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
     def lerp(self, other: Vec2, amount: float) -> Vec2:
-        self * (1.0 - amount) + other * amount
+        return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
     def min(self, other: Vec2) -> Vec2:
-        Vec2(x=min(self.x, other.x), y=min(self.y, other.y))
+        return Vec2(x=min(self.x, other.x), y=min(self.y, other.y))
 
     ## The larger of each part.
     def max(self, other: Vec2) -> Vec2:
-        Vec2(x=max(self.x, other.x), y=max(self.y, other.y))
+        return Vec2(x=max(self.x, other.x), y=max(self.y, other.y))
 
     def abs(self) -> Vec2:
-        Vec2(x=self.x.abs(), y=self.y.abs())
+        return Vec2(x=abs(self.x), y=abs(self.y))
 
 ## A 3D vector, or a point in 3D.
 export struct Vec3:
@@ -79,70 +79,70 @@ export struct Vec3:
     z = 0.0
 
     def zero() -> Vec3:
-        Vec3()
+        return Vec3()
 
     def +(self, other: Vec3) -> Vec3:
-        Vec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
+        return Vec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
 
     def -(self, other: Vec3) -> Vec3:
-        Vec3(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z)
+        return Vec3(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z)
 
     ## Every part times `scale`.
     def *(self, scale: float) -> Vec3:
-        Vec3(x=self.x * scale, y=self.y * scale, z=self.z * scale)
+        return Vec3(x=self.x * scale, y=self.y * scale, z=self.z * scale)
 
     ## Each part times the same part of `other`.
     def mul(self, other: Vec3) -> Vec3:
-        Vec3(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z)
+        return Vec3(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z)
 
     ## The vector pointing the other way.
     def negated(self) -> Vec3:
-        Vec3(x=-self.x, y=-self.y, z=-self.z)
+        return Vec3(x=-self.x, y=-self.y, z=-self.z)
 
     def dot(self, other: Vec3) -> float:
-        self.x * other.x + self.y * other.y + self.z * other.z
+        return self.x * other.x + self.y * other.y + self.z * other.z
 
     ## The vector at right angles to both, by the right-hand rule.
     def cross(self, other: Vec3) -> Vec3:
-        Vec3(
+        return Vec3(
             x=self.y * other.z - other.y * self.z,
             y=self.z * other.x - other.z * self.x,
             z=self.x * other.y - other.x * self.y,
         )
 
     def length_squared(self) -> float:
-        self.dot(self)
+        return self.dot(self)
 
     def length(self) -> float:
-        math.sqrt(self.dot(self))
+        return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
     def normalize(self) -> Vec3:
         length = self.length()
         if length == 0.0: return Vec3()
-        self * (1.0 / length)
+        return self * (1.0 / length)
 
     def distance(self, other: Vec3) -> float:
-        (self - other).length()
+        return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
     def lerp(self, other: Vec3, amount: float) -> Vec3:
-        self * (1.0 - amount) + other * amount
+        return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
     def min(self, other: Vec3) -> Vec3:
-        Vec3(x=min(self.x, other.x), y=min(self.y, other.y), z=min(self.z, other.z))
+        return Vec3(x=min(self.x, other.x), y=min(self.y, other.y), z=min(self.z, other.z))
 
     ## The larger of each part.
     def max(self, other: Vec3) -> Vec3:
-        Vec3(x=max(self.x, other.x), y=max(self.y, other.y), z=max(self.z, other.z))
+        return Vec3(x=max(self.x, other.x), y=max(self.y, other.y), z=max(self.z, other.z))
 
     def abs(self) -> Vec3:
-        Vec3(x=self.x.abs(), y=self.y.abs(), z=self.z.abs())
+        return Vec3(x=abs(self.x), y=abs(self.y), z=abs(self.z))
 
     ## This vector with a fourth part, `w`: 1 for a point and 0 for a direction.
     def extend(self, w: float) -> Vec4:
-        Vec4(x=self.x, y=self.y, z=self.z, w=w)
+        return Vec4(x=self.x, y=self.y, z=self.z, w=w)
 
 ## A 4D vector: a point or direction in 3D with its `w`, or a column of a `Mat4`.
 export struct Vec4:
@@ -152,51 +152,51 @@ export struct Vec4:
     w = 0.0
 
     def zero() -> Vec4:
-        Vec4()
+        return Vec4()
 
     def +(self, other: Vec4) -> Vec4:
-        Vec4(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
+        return Vec4(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
 
     def -(self, other: Vec4) -> Vec4:
-        Vec4(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z, w=self.w - other.w)
+        return Vec4(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z, w=self.w - other.w)
 
     ## Every part times `scale`.
     def *(self, scale: float) -> Vec4:
-        Vec4(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
+        return Vec4(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
 
     ## Each part times the same part of `other`.
     def mul(self, other: Vec4) -> Vec4:
-        Vec4(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z, w=self.w * other.w)
+        return Vec4(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z, w=self.w * other.w)
 
     ## The vector pointing the other way.
     def negated(self) -> Vec4:
-        Vec4(x=-self.x, y=-self.y, z=-self.z, w=-self.w)
+        return Vec4(x=-self.x, y=-self.y, z=-self.z, w=-self.w)
 
     def dot(self, other: Vec4) -> float:
-        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+        return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
 
     def length_squared(self) -> float:
-        self.dot(self)
+        return self.dot(self)
 
     def length(self) -> float:
-        math.sqrt(self.dot(self))
+        return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
     def normalize(self) -> Vec4:
         length = self.length()
         if length == 0.0: return Vec4()
-        self * (1.0 / length)
+        return self * (1.0 / length)
 
     def distance(self, other: Vec4) -> float:
-        (self - other).length()
+        return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
     def lerp(self, other: Vec4, amount: float) -> Vec4:
-        self * (1.0 - amount) + other * amount
+        return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
     def min(self, other: Vec4) -> Vec4:
-        Vec4(
+        return Vec4(
             x=min(self.x, other.x),
             y=min(self.y, other.y),
             z=min(self.z, other.z),
@@ -205,7 +205,7 @@ export struct Vec4:
 
     ## The larger of each part.
     def max(self, other: Vec4) -> Vec4:
-        Vec4(
+        return Vec4(
             x=max(self.x, other.x),
             y=max(self.y, other.y),
             z=max(self.z, other.z),
@@ -213,11 +213,11 @@ export struct Vec4:
         )
 
     def abs(self) -> Vec4:
-        Vec4(x=self.x.abs(), y=self.y.abs(), z=self.z.abs(), w=self.w.abs())
+        return Vec4(x=abs(self.x), y=abs(self.y), z=abs(self.z), w=abs(self.w))
 
     ## The first three parts.
     def xyz(self) -> Vec3:
-        Vec3(x=self.x, y=self.y, z=self.z)
+        return Vec3(x=self.x, y=self.y, z=self.z)
 
 ## A rotation in 3D, as a unit quaternion. `Quat()` turns nothing.
 export struct Quat:
@@ -227,35 +227,35 @@ export struct Quat:
     w = 1.0
 
     def identity() -> Quat:
-        Quat()
+        return Quat()
 
     ## A turn of `angle` radians about `axis`, which has length 1: counterclockwise, looking from
     ## the axis's tip back toward where it starts.
     def from_axis_angle(axis: Vec3, angle: float) -> Quat:
         half = angle * 0.5
         turned = axis * math.sin(half)
-        Quat(x=turned.x, y=turned.y, z=turned.z, w=math.cos(half))
+        return Quat(x=turned.x, y=turned.y, z=turned.z, w=math.cos(half))
 
     def from_rotation_x(angle: float) -> Quat:
         half = angle * 0.5
-        Quat(x=math.sin(half), w=math.cos(half))
+        return Quat(x=math.sin(half), w=math.cos(half))
 
     def from_rotation_y(angle: float) -> Quat:
         half = angle * 0.5
-        Quat(y=math.sin(half), w=math.cos(half))
+        return Quat(y=math.sin(half), w=math.cos(half))
 
     def from_rotation_z(angle: float) -> Quat:
         half = angle * 0.5
-        Quat(z=math.sin(half), w=math.cos(half))
+        return Quat(z=math.sin(half), w=math.cos(half))
 
     ## Turning by `roll` about Z, then `pitch` about X, then `yaw` about Y, as a camera or a
     ## character turns.
     def from_euler(yaw: float, pitch: float, roll: float) -> Quat:
-        Quat.from_rotation_y(yaw) * Quat.from_rotation_x(pitch) * Quat.from_rotation_z(roll)
+        return Quat.from_rotation_y(yaw) * Quat.from_rotation_x(pitch) * Quat.from_rotation_z(roll)
 
     ## Turning by `other`, then by this.
     def *(self, other: Quat) -> Quat:
-        Quat(
+        return Quat(
             x=self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
             y=self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
             z=self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
@@ -267,33 +267,33 @@ export struct Quat:
         axis = Vec3(x=self.x, y=self.y, z=self.z)
         squared = axis.dot(axis)
         stretched = point * (self.w * self.w - squared) + axis * (point.dot(axis) * 2.0)
-        stretched + axis.cross(point) * (self.w * 2.0)
+        return stretched + axis.cross(point) * (self.w * 2.0)
 
     def dot(self, other: Quat) -> float:
-        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+        return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
 
     def length(self) -> float:
-        math.sqrt(self.dot(self))
+        return math.sqrt(self.dot(self))
 
     ## The same rotation with length 1, which rounding drifts from after many turns.
     def normalize(self) -> Quat:
         length = self.length()
         if length == 0.0: return Quat()
-        self._scaled(1.0 / length)
+        return self._scaled(1.0 / length)
 
     ## The same turn the other way.
     def conjugate(self) -> Quat:
-        Quat(x=-self.x, y=-self.y, z=-self.z, w=self.w)
+        return Quat(x=-self.x, y=-self.y, z=-self.z, w=self.w)
 
     ## The rotation that undoes this one, which for a unit quaternion is its conjugate.
     def inverse(self) -> Quat:
-        self.conjugate()
+        return self.conjugate()
 
     ## Part of the way from this rotation to `other`, the short way round, along a straight line
     ## made unit length again: quicker than `slerp`, but not at an even speed.
     def lerp(self, other: Quat, amount: float) -> Quat:
         if self.dot(other) < 0.0: return self._between(other._scaled(-1.0), amount)
-        self._between(other, amount)
+        return self._between(other, amount)
 
     ## Part of the way from this rotation to `other`, the short way round, at an even speed.
     def slerp(self, other: Quat, amount: float) -> Quat:
@@ -307,16 +307,16 @@ export struct Quat:
         angle = math.acos(min(max(cosine, -1.0), 1.0))
         start = math.sin(angle * (1.0 - amount))
         end = math.sin(angle * amount)
-        self._scaled(start)._plus(toward._scaled(end))._scaled(1.0 / math.sin(angle))
+        return self._scaled(start)._plus(toward._scaled(end))._scaled(1.0 / math.sin(angle))
 
     def _scaled(self, scale: float) -> Quat:
-        Quat(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
+        return Quat(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
 
     def _plus(self, other: Quat) -> Quat:
-        Quat(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
+        return Quat(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
 
     def _between(self, other: Quat, amount: float) -> Quat:
-        self._scaled(1.0 - amount)._plus(other._scaled(amount)).normalize()
+        return self._scaled(1.0 - amount)._plus(other._scaled(amount)).normalize()
 
 ## A 3x3 matrix, by its columns: a rotation and scale in 3D, or a 2D transform. `Mat3()` is the
 ## identity.
@@ -326,7 +326,7 @@ export struct Mat3:
     z_axis = Vec3(z=1.0)
 
     def identity() -> Mat3:
-        Mat3()
+        return Mat3()
 
     ## The rotation `rotation` makes.
     def from_quat(rotation: Quat) -> Mat3:
@@ -342,7 +342,7 @@ export struct Mat3:
         wx = rotation.w * x2
         wy = rotation.w * y2
         wz = rotation.w * z2
-        Mat3(
+        return Mat3(
             x_axis=Vec3(x=1.0 - (yy + zz), y=xy + wz, z=xz - wy),
             y_axis=Vec3(x=xy - wz, y=1.0 - (xx + zz), z=yz + wx),
             z_axis=Vec3(x=xz + wy, y=yz - wx, z=1.0 - (xx + yy)),
@@ -350,7 +350,7 @@ export struct Mat3:
 
     ## `other` first, then this.
     def *(self, other: Mat3) -> Mat3:
-        Mat3(
+        return Mat3(
             x_axis=self.mul_vec3(other.x_axis),
             y_axis=self.mul_vec3(other.y_axis),
             z_axis=self.mul_vec3(other.z_axis),
@@ -358,18 +358,18 @@ export struct Mat3:
 
     ## This matrix times the column `vector`.
     def mul_vec3(self, vector: Vec3) -> Vec3:
-        self.x_axis * vector.x + self.y_axis * vector.y + self.z_axis * vector.z
+        return self.x_axis * vector.x + self.y_axis * vector.y + self.z_axis * vector.z
 
     ## Rows made columns.
     def transpose(self) -> Mat3:
-        Mat3(
+        return Mat3(
             x_axis=Vec3(x=self.x_axis.x, y=self.y_axis.x, z=self.z_axis.x),
             y_axis=Vec3(x=self.x_axis.y, y=self.y_axis.y, z=self.z_axis.y),
             z_axis=Vec3(x=self.x_axis.z, y=self.y_axis.z, z=self.z_axis.z),
         )
 
     def determinant(self) -> float:
-        self.x_axis.dot(self.y_axis.cross(self.z_axis))
+        return self.x_axis.dot(self.y_axis.cross(self.z_axis))
 
     ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
     def inverse(self) -> Mat3?:
@@ -379,7 +379,7 @@ export struct Mat3:
         determinant = self.x_axis.dot(first)
         if determinant == 0.0: return None
         scale = 1.0 / determinant
-        Mat3(x_axis=first * scale, y_axis=second * scale, z_axis=third * scale).transpose()
+        return Mat3(x_axis=first * scale, y_axis=second * scale, z_axis=third * scale).transpose()
 
 ## A 4x4 matrix, by its columns: a transform in 3D, a camera's view or a projection. `Mat4()` is
 ## the identity.
@@ -390,16 +390,16 @@ export struct Mat4:
     w_axis = Vec4(w=1.0)
 
     def identity() -> Mat4:
-        Mat4()
+        return Mat4()
 
     ## Moving by `offset`.
     def translation(offset: Vec3) -> Mat4:
-        Mat4(w_axis=offset.extend(1.0))
+        return Mat4(w_axis=offset.extend(1.0))
 
     ## The rotation `rotation` makes.
     def rotation(rotation: Quat) -> Mat4:
         turned = Mat3.from_quat(rotation)
-        Mat4(
+        return Mat4(
             x_axis=turned.x_axis.extend(0.0),
             y_axis=turned.y_axis.extend(0.0),
             z_axis=turned.z_axis.extend(0.0),
@@ -407,12 +407,12 @@ export struct Mat4:
 
     ## Stretching by `factors` along each axis.
     def scaling(factors: Vec3) -> Mat4:
-        Mat4(x_axis=Vec4(x=factors.x), y_axis=Vec4(y=factors.y), z_axis=Vec4(z=factors.z))
+        return Mat4(x_axis=Vec4(x=factors.x), y_axis=Vec4(y=factors.y), z_axis=Vec4(z=factors.z))
 
     ## Scaling, then rotating, then moving: how a model is placed in a scene.
     def from_scale_rotation_translation(scale: Vec3, rotation: Quat, translation: Vec3) -> Mat4:
         turned = Mat3.from_quat(rotation)
-        Mat4(
+        return Mat4(
             x_axis=turned.x_axis.extend(0.0) * scale.x,
             y_axis=turned.y_axis.extend(0.0) * scale.y,
             z_axis=turned.z_axis.extend(0.0) * scale.z,
@@ -424,7 +424,7 @@ export struct Mat4:
         forward = (target - eye).normalize()
         side = forward.cross(up).normalize()
         upward = side.cross(forward)
-        Mat4(
+        return Mat4(
             x_axis=Vec4(x=side.x, y=upward.x, z=-forward.x),
             y_axis=Vec4(x=side.y, y=upward.y, z=-forward.y),
             z_axis=Vec4(x=side.z, y=upward.z, z=-forward.z),
@@ -437,7 +437,7 @@ export struct Mat4:
         half = 0.5 * fov_y
         height = math.cos(half) / math.sin(half)
         depth = far / (near - far)
-        Mat4(
+        return Mat4(
             x_axis=Vec4(x=height / aspect),
             y_axis=Vec4(y=height),
             z_axis=Vec4(z=depth, w=-1.0),
@@ -446,7 +446,7 @@ export struct Mat4:
 
     ## `other` first, then this.
     def *(self, other: Mat4) -> Mat4:
-        Mat4(
+        return Mat4(
             x_axis=self.mul_vec4(other.x_axis),
             y_axis=self.mul_vec4(other.y_axis),
             z_axis=self.mul_vec4(other.z_axis),
@@ -456,20 +456,20 @@ export struct Mat4:
     ## This matrix times the column `vector`.
     def mul_vec4(self, vector: Vec4) -> Vec4:
         first = self.x_axis * vector.x + self.y_axis * vector.y
-        first + self.z_axis * vector.z + self.w_axis * vector.w
+        return first + self.z_axis * vector.z + self.w_axis * vector.w
 
     ## Where `point` goes: moved, turned and scaled, with no divide by `w`.
     def transform_point(self, point: Vec3) -> Vec3:
         turned = self.z_axis * point.z + (self.y_axis * point.y + self.x_axis * point.x)
-        (self.w_axis + turned).xyz()
+        return (self.w_axis + turned).xyz()
 
     ## Where the direction `vector` points: turned and scaled, but not moved.
     def transform_vector(self, vector: Vec3) -> Vec3:
-        (self.z_axis * vector.z + (self.y_axis * vector.y + self.x_axis * vector.x)).xyz()
+        return (self.z_axis * vector.z + (self.y_axis * vector.y + self.x_axis * vector.x)).xyz()
 
     ## Rows made columns.
     def transpose(self) -> Mat4:
-        Mat4(
+        return Mat4(
             x_axis=Vec4(x=self.x_axis.x, y=self.y_axis.x, z=self.z_axis.x, w=self.w_axis.x),
             y_axis=Vec4(x=self.x_axis.y, y=self.y_axis.y, z=self.z_axis.y, w=self.w_axis.y),
             z_axis=Vec4(x=self.x_axis.z, y=self.y_axis.z, z=self.z_axis.z, w=self.w_axis.z),
@@ -491,7 +491,7 @@ export struct Mat4:
         along_y = first.y * (second.x * zw - second.z * xw + second.w * xz)
         along_z = first.z * (second.x * yw - second.y * xw + second.w * xy)
         along_w = first.w * (second.x * yz - second.y * xz + second.z * xy)
-        along_x - along_y + along_z - along_w
+        return along_x - along_y + along_z - along_w
 
     ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
     def inverse(self) -> Mat4?:
@@ -538,7 +538,7 @@ export struct Mat4:
         determinant = products.x + products.y + products.z + products.w
         if determinant == 0.0: return None
         scale = 1.0 / determinant
-        Mat4(
+        return Mat4(
             x_axis=column0 * scale,
             y_axis=column1 * scale,
             z_axis=column2 * scale,
@@ -553,7 +553,7 @@ export struct Mat4:
 ## other, so the compiler can do them at once with no change to the order. `sum` is the way to
 ## call it.
 def fixed_sum(items: list[float], start = 0.0) -> float:
-    n = items.len()
+    n = len(items)
     mut a0 = 0.0
     mut a1 = 0.0
     mut a2 = 0.0
@@ -589,13 +589,13 @@ def fixed_sum(items: list[float], start = 0.0) -> float:
         a5 += items[at + 5]
     if left > 6:
         a6 += items[at + 6]
-    start + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
+    return start + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
 
 ## The sum of `a[at] * b[at]` at each place, added in the order `sum` adds floats in, so it's
 ## `sum(a[at] * b[at] for at in range(a.len()))` to the bit. `a` and `b` have to be the same length.
 export def dot(a: list[float], b: list[float]) -> float:
-    assert a.len() == b.len()
-    n = a.len()
+    assert len(a) == len(b)
+    n = len(a)
     mut a0 = 0.0
     mut a1 = 0.0
     mut a2 = 0.0
@@ -632,8 +632,8 @@ export def dot(a: list[float], b: list[float]) -> float:
     if left > 6:
         a6 += a[at + 6] * b[at + 6]
     # Added to 0.0 last, as `sum` adds its start.
-    0.0 + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
+    return 0.0 + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
 
 ## The value `amount` of the way from `start` to `end`: `lerp(0.0, 10.0, 0.5)` is `5.0`.
 export def lerp(start: float, end: float, amount: float) -> float:
-    start + (end - start) * amount
+    return start + (end - start) * amount

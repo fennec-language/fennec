@@ -1,4 +1,4 @@
-source ddbea13cd9f78665c5129fb23c516a527c94305f36eaf6b09d383bd374479001
+source 7a719a1cd74a1efd6c315d1769cc17062f20d950031080d31b42e5409e3bc02c
 code 0
 stdout 109
 select <str ash> where score > <int 10> order by score

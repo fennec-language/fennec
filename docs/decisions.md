@@ -1640,7 +1640,19 @@ These are default lints, and the Den requires them.
 **Updates are always explicit.** `kit.lock` pins every dependency by hash, and nothing changes without `fennec update`. It shows each update's semantic diff and any capability it newly asks for, and a new capability needs your approval. No version range ever resolves silently.
 *Why:* What builds today builds the same tomorrow, and every change to a dependency is one you saw.
 
-**An update that asks for more capabilities stops until you approve it.** `kit.lock` records the capabilities each dependency receives. A logging kit that starts asking for `Net` doesn't install until you say so. The same goes for an update that adds `unsafe` code.
+**A dependency gets only the capabilities its line in `kit.toml` grants, with `gets`.** `http = { ..., gets = ["Net"] }` reads "http gets Net", and a line without `gets` reads "this kit gets nothing". Chris locked it on 2026-11-12, from Fable 5.2's package review.
+- No `gets` means nothing, and `gets = []` is an error whose fix takes it out, so there's one way to write nothing.
+- Entries are capability types as code writes them: `"Fs"`, `"Net"`, `"Clock"`.
+- No tool, fix or error help ever writes `gets`. What a dependency gets is a person's decision, and an error about it says so and fixes nothing. `fennec fix` once handed a pinned kit the program's `Fs`, by the fix its own error offered.
+- It's checked at every hand-over between kits. The handing kit's line for the receiver has to list every capability the value it hands holds. A kit can hand on only what it holds, so the main kit's lines bound the whole tree, and each `kit.toml` speaks only for its own kit's dependencies.
+- `kit.lock` records `holds`: `gets` is what a person wrote, and `holds` is what the compiler saw.
+- It goes on the dependency's line, not in a `[grants]` table, so a kit and what it gets are one line in a diff, and removing a kit can't leave a grant behind. TOML's long form, `[dependencies.http]`, takes the same key.
+- Narrowing comes later with no redesign: an entry may be a table from the type to how it's narrowed, in the narrowing method's own words, as `{ Fs = { only = "saves/" } }` or `{ Net = { client = true, hosts = ["api.example.com"] } }`. A plain `"Fs"` keeps meaning the whole thing. Since narrowing happens at run time and gives back the same type, the check asks that the value is narrowed where it's handed over, written out, as `saves.load(fs.only("saves/"))`.
+- Not built yet. It's built before the Den opens, after the security holes the package review found, as a record per kit in the compiler of what each holds.
+
+*Why:* Capabilities limit what a dependency can do only if something says what each one may hold. Written by a person, beside the line that brings the kit in, it's reviewed where the kit is, and no tool mending a red build can widen it.
+
+**An update that asks for more capabilities stops until you approve it.** `kit.lock` records the capabilities each dependency receives, as `holds`. A logging kit that starts asking for `Net` doesn't install until you say so. The same goes for an update that adds `unsafe` code.
 *Why:* A trusted package turning malicious in an update is the attack that hit event-stream and ua-parser-js.
 
 **Capabilities can be narrowed.** `main` hands each kit only the part it needs:

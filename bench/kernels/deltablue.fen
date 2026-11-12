@@ -42,25 +42,25 @@ struct Constraint:
     def unary(self) -> bool:
         match self.kind:
             case .Stay | .Edit:
-                True
+                return True
             case _:
-                False
+                return False
 
     def is_input(self) -> bool:
         match self.kind:
             case .Edit:
-                True
+                return True
             case _:
-                False
+                return False
 
     def satisfied(self) -> bool:
-        self.direction != UNDECIDED
+        return self.direction != UNDECIDED
 
     def output(self) -> int:
-        self.first if self.unary() or self.direction == BACKWARD else self.second
+        return self.first if self.unary() or self.direction == BACKWARD else self.second
 
     def input(self) -> int:
-        self.second if self.direction == BACKWARD else self.first
+        return self.second if self.direction == BACKWARD else self.first
 
 struct Planner:
     variables: list[Variable]
@@ -69,18 +69,18 @@ struct Planner:
 
     def variable(ref self, value: int) -> int:
         self.variables.append(Variable(value=value, constraints=[]))
-        self.variables.len() - 1
+        return len(self.variables) - 1
 
     def new_mark(ref self) -> int:
         self.current_mark += 1
-        self.current_mark
+        return self.current_mark
 
     def add(ref self, constraint: Constraint) -> int:
         self.constraints.append(constraint)
-        at = self.constraints.len() - 1
+        at = len(self.constraints) - 1
         self.add_to_graph(at)
         self.incremental_add(at)
-        at
+        return at
 
     def add_to_graph(ref self, at: int):
         c = self.constraints[at]
@@ -136,7 +136,7 @@ struct Planner:
         c = self.constraints[at]
         if c.unary(): return True
         input = self.variables[c.input()]
-        input.mark == mark or input.stay or input.determined_by == NONE
+        return input.mark == mark or input.stay or input.determined_by == NONE
 
     def recalculate(ref self, at: int):
         c = self.constraints[at]
@@ -184,7 +184,7 @@ struct Planner:
         self.variables[out].determined_by = at
         self.add_propagate(at, mark=mark)
         self.variables[out].mark = mark
-        overridden
+        return overridden
 
     def incremental_add(ref self, at: int):
         mark = self.new_mark()
@@ -237,7 +237,7 @@ struct Planner:
                 if other != determining and self.constraints[other].satisfied():
                     self.recalculate(other)
                     todo.append(self.constraints[other].output())
-        unsatisfied
+        return unsatisfied
 
     def plan_from(ref self, sources: list[int]) -> list[int]:
         mark = self.new_mark()
@@ -250,7 +250,7 @@ struct Planner:
                 plan.append(next)
                 self.variables[out].mark = mark
                 self.consuming(out, ref todo)
-        plan
+        return plan
 
     def run_plan(ref self, plan: list[int]):
         for at in plan:
@@ -282,8 +282,8 @@ def chain_test(size: int) -> int:
         planner.run_plan(plan)
         total += planner.variables[last].value
     planner.destroy(edit)
-    if planner.constraints.len() == 0: return 0
-    total
+    if len(planner.constraints) == 0: return 0
+    return total
 
 ## Pairs of variables related by a scale and an offset, changed from each end.
 def projection_test(size: int) -> int:
@@ -318,7 +318,7 @@ def projection_test(size: int) -> int:
     planner.change(offset, value=2000)
     for target in targets:
         total += planner.variables[target].value
-    total
+    return total
 
 def main(stdout: Stdout):
     mut total = 0

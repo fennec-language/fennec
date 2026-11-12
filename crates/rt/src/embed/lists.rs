@@ -130,7 +130,9 @@ fn marked_grow(
 /// one owner. A marked one stays as it is, and its log holds the item, for a crash to put back; any
 /// other shared list is copied.
 pub extern "C" fn pop_unshare(list: i64) -> i64 {
-    with(|state| marked_pop(state, list).or_else(|| grow_in(state, list, 0)).unwrap_or(list))
+    super::made_with("fennec_list_pop_unshare", |state| {
+        marked_pop(state, list).or_else(|| grow_in(state, list, 0)).unwrap_or(list)
+    })
 }
 
 fn marked_pop(state: &mut State, list: i64) -> Option<i64> {
@@ -362,7 +364,7 @@ pub(super) fn items(block: &[u64], stride: usize) -> &[u64] {
 
 /// A new list owned once of `count` items of a kind, all zero, for native code to fill.
 pub extern "C" fn new(element: i64, count: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_new", |state| {
         let Some((at, stride)) = item_words(state, element) else { return 0 };
         let count = usize::try_from(count).unwrap_or(0);
         // A fresh block is already zero, so only the header is written.
@@ -377,7 +379,7 @@ pub extern "C" fn new(element: i64, count: i64) -> i64 {
 /// A new empty list owned once, with room for `room` items, for a loop that knows about how
 /// many it will add. A long list's memory isn't touched until it's used.
 pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_with_room", |state| {
         let Some((at, stride)) = item_words(state, element) else { return 0 };
         let room = usize::try_from(room).unwrap_or(0);
         let block = build(state, at, stride, &[], room);
@@ -389,13 +391,15 @@ pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
 /// native code to fill: the same block when it had one owner and room, or else a copy
 /// with room to double.
 pub extern "C" fn grow(list: i64) -> i64 {
-    with(|state| marked_append(state, list, 1).or_else(|| grow_in(state, list, 1)).unwrap_or(list))
+    super::made_with("fennec_list_grow", |state| {
+        marked_append(state, list, 1).or_else(|| grow_in(state, list, 1)).unwrap_or(list)
+    })
 }
 
 /// Takes over a list's owner and gives back a block only that owner holds, copying the
 /// list if anything else shares it.
 pub extern "C" fn unshare(list: i64) -> i64 {
-    with(|state| grow_in(state, list, 0).unwrap_or(list))
+    super::made_with("fennec_list_unshare", |state| grow_in(state, list, 0).unwrap_or(list))
 }
 
 fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
@@ -545,7 +549,7 @@ fn text_places(mut order: Vec<(&[u64], u64, usize)>) -> Vec<usize> {
 
 /// A new list owned once of a list of numbers' or strings' items in order.
 pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_sorted", |state| {
         let list = u64::try_from(list).unwrap_or(0);
         if (kind == SORT_INTS || kind == SORT_U64S)
             && let Some(sorted) = sorted_ints(state, list, kind)
@@ -722,7 +726,7 @@ pub extern "C" fn sorted_by_keys_with(list: i64, keys: i64, compare: extern "C" 
 /// A new list owned once of a list's items in the order of their keys, a list as long as it.
 /// Items with the same key stay in the order they were in.
 pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_sorted_by", |state| {
         let list = u64::try_from(list).unwrap_or(0);
         let keys = u64::try_from(keys).ok().and_then(|keys| state.heap.block(keys)).unwrap_or_default();
         // Strings' keys held as headers, three words each, ordered by their text.
@@ -832,10 +836,15 @@ pub extern "C" fn clear(list: i64) {
         let Some(block) = state.heap.block(address) else { return };
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();
-        let old = items(block, stride).to_vec();
-        release_items(state, &element, &old);
+        let used = items(block, stride).len();
+        // Items that hold nothing, like ints, have nothing to let go of, so they aren't copied out
+        // to be: the words are only zeroed, as a list's room is kept.
+        if super::heap::holds_blocks(&element) {
+            let old = items(block, stride).to_vec();
+            release_items(state, &element, &old);
+        }
         if let Some(block) = state.heap.block_mut(address) {
-            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + old.len()).unwrap_or_default().fill(0);
+            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + used).unwrap_or_default().fill(0);
             if let Some(length) = block.get_mut(2) {
                 *length = 0;
             }
@@ -992,13 +1001,15 @@ pub extern "C" fn contains(list: i64, word: i64) -> i8 {
 /// `buffer.reserve(room)`: takes over a list's owner and gives back one only that owner holds,
 /// with room for at least `room` items, the same block when it had one owner and the room.
 pub extern "C" fn reserve(list: i64, room: i64) -> i64 {
-    with(|state| grow_to(state, list, 0, usize::try_from(room).unwrap_or(0)).unwrap_or(list))
+    super::made_with("fennec_list_reserve", |state| {
+        grow_to(state, list, 0, usize::try_from(room).unwrap_or(0)).unwrap_or(list)
+    })
 }
 
 /// `buffer.truncate(length)`: takes over a list's owner and gives back one only that owner
 /// holds with no more than `length` items, letting go of the rest. Its room stays.
 pub extern "C" fn truncate(list: i64, length: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_truncate", |state| {
         let address = grow_in(state, list, 0).unwrap_or(list);
         let at = u64::try_from(address).unwrap_or(0);
         let kept = usize::try_from(length).unwrap_or(0);
@@ -1025,7 +1036,7 @@ pub extern "C" fn truncate(list: i64, length: i64) -> i64 {
 /// `buffer.extend(other)`: takes over a list's owner and gives back one only that owner holds
 /// with `other`'s items after its own, the same kind of item, each held once more.
 pub extern "C" fn extend(list: i64, other: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_extend", |state| {
         let Some(more) = u64::try_from(other).ok().and_then(|other| state.heap.block(other)) else {
             return list;
         };
@@ -1064,7 +1075,7 @@ pub extern "C" fn pop_empty(start: i64, end: i64) {
 /// A new list owned once of a list's items from one place to another, where a missing end is
 /// `i64::MIN`. Places from the end count back, and places past either end stop there.
 pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_list_slice", |state| {
         let address = u64::try_from(list).unwrap_or(0);
         let Some(block) = state.heap.block(address) else { return 0 };
         let Some(element) = element_of(state, block) else { return 0 };

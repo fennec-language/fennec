@@ -1,0 +1,65 @@
+# CSV from outside can be built to make a reader slow, hold too much or say too much. `std.csv`
+# reads each character once, so a huge field, a million rows, a field of nothing but doubled
+# quotes or a row of nothing but commas each read in time that grows with their size. Text that
+# isn't CSV fails with a `ParseError` that says where, not what: it never quotes the input back.
+from std import csv
+
+## What reading `text` fails with, in words, or "read" if it doesn't.
+def why_not(text: str) -> str:
+    _ = csv.loads(text) except why:
+        return why.message
+    return "read"
+
+## What reading `text` as records fails with, in words, or "read" if it doesn't.
+def records_why(text: str) -> str:
+    _ = csv.records(text) except why:
+        return why.message
+    return "read"
+
+test "a huge field reads whole"():
+    rows = csv.loads("a," + "x" * 1_000_000 + ",b\n")?
+    assert len(rows) == 1
+    assert len(rows[0][1]) == 1_000_000
+    assert rows[0][2] == "b"
+
+test "many rows, many fields and many doubled quotes read"():
+    assert len(csv.loads("a,b\n" * 100_000)?) == 100_000
+    assert len(csv.loads("," * 100_000 + "\n")?[0]) == 100_001
+    # A field of nothing but doubled quotes is half as many quotes.
+    quoted = csv.loads("\"" + "\"\"" * 250_000 + "\"\n")?
+    assert quoted[0][0] == "\"" * 250_000
+    header = ",".join([f"c{i}" for i in range(50_000)])
+    wide = csv.records(header + "\n" + "," * 49_999 + "\n")?
+    assert len(wide[0]) == 50_000
+
+test "a quote left open at the end of a long file fails where it opened"():
+    assert (
+        why_not("a,b\n" * 100_000 + "\"never ends")
+        == "this quote never ends at line 100001, column 1"
+    )
+    # A quote opened at the start swallows the rest, and still says where it opened.
+    assert why_not("\"" + "a,b\n" * 100_000) == "this quote never ends at line 1, column 1"
+
+test "a failure says where, never what the input was"():
+    long = "x" * 100_000
+    said = why_not(long + "\"" + long)
+    assert said == "a quote in a field needs the whole field in quotes at line 1, column 100001"
+    said_after = why_not("\"a\"" + long)
+    assert said_after == "a field can't go on after its closing quote at line 1, column 4"
+    assert (
+        records_why("a,a\n1,2\n") == "the first row has the same name twice at line 1, column 1"
+    )
+
+test "line endings of every kind, a byte order mark and odd characters read as they are"():
+    assert csv.loads("﻿a,b\r\nc,d\re,f\n")? == [["a", "b"], ["c", "d"], ["e", "f"]]
+    # Only the first byte order mark is taken off; a second is the field's own.
+    assert csv.loads("﻿﻿a")? == [["﻿a"]]
+    assert csv.loads("a\x00b,\x1e\n")? == [["a\x00b", "\x1e"]]
+    assert len(csv.loads("\n\n\r\n\n")?) == 0
+    assert (
+        why_not("a,b\n\"c\"d\n")
+        == "a field can't go on after its closing quote at line 2, column 4"
+    )
+
+def main(stdout: Stdout):
+    stdout.print(why_not("a,b\n\"never ends"))

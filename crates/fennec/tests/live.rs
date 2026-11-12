@@ -179,6 +179,11 @@ fn settled(server: &Server) -> String {
             return last;
         }
     }
+    // A count that never settles is a server that never went idle: a leak, or a request stuck.
+    assert!(
+        started.elapsed() < crate::executables::WALL_DEADLINE,
+        "the server never went idle and stayed so:\n{last}"
+    );
     last
 }
 

@@ -206,10 +206,10 @@ def through_all(cells: list[shared Cell]):
         held.add(1)
 
 def plain(n: int) -> int:
-    n + 1
+    return n + 1
 
 def apply(work: (int) -> int) -> int:
-    work(1)
+    return work(1)
 ";
 
 fn in_a_lock(body: &str) -> Vec<String> {
@@ -261,7 +261,7 @@ fn what_takes_no_other_lock_goes_on_as_before_under_a_lock() {
     let empty: [&str; 0] = [];
     for body in [
         "locked.count += apply(n => n + 1)",
-        "numbers = [1]\nlocked.count += numbers.len()",
+        "numbers = [1]\nlocked.count += len(numbers)",
         "locked.count += plain(1)",
         // Making a value that holds it hands it to no call.
         "holder = Holder(cell=one)\nlocked.count += 1",
@@ -321,15 +321,15 @@ fn a_shared_value_is_reached_only_in_a_lock() {
 /// used as what a `with` takes, and the block's name is what it lends.
 #[test]
 fn a_with_source_lends_once_to_a_with_block() {
-    let errors = "error Oops:\n    why: str\n\ndef risky() -> int fails Oops:\n    1\n\n";
+    let errors = "error Oops:\n    why: str\n\ndef risky() -> int fails Oops:\n    return 1\n\n";
     let empty: [&str; 0] = [];
     let good = format!(
-        "{errors}def opened(name: str) -> with str fails Oops:\n    _ = risky()?\n    lend name + \"!\" else:\n        pass\n\ndef sized(name: str) -> int fails Oops:\n    with opened(name)? as text:\n        return text.len()\n    0\n"
+        "{errors}def opened(name: str) -> with str fails Oops:\n    _ = risky()?\n    lend name + \"!\" except:\n        pass\n\ndef sized(name: str) -> int fails Oops:\n    with opened(name)? as text:\n        return len(text)\n    return 0\n"
     );
     assert_eq!(problems(&good), empty);
     // A last line after a block that always returns still takes the return type.
     let after = format!(
-        "{errors}def opened(name: str) -> with str fails Oops:\n    lend name\n\ndef named(name: str) -> list[str] fails Oops:\n    with opened(name)? as text:\n        return [text]\n    []\n"
+        "{errors}def opened(name: str) -> with str fails Oops:\n    lend name\n\ndef named(name: str) -> list[str] fails Oops:\n    with opened(name)? as text:\n        return [text]\n    return []\n"
     );
     assert_eq!(problems(&after), empty);
     let found = |body: &str| -> Vec<String> {
@@ -376,7 +376,7 @@ fn a_with_source_lends_once_to_a_with_block() {
 /// expected type would say which enum it's from.
 #[test]
 fn a_failing_else_with_a_leading_dot_case_is_written_in() {
-    let source = "error Shut:\n    Stuck(name: str)\n    Jammed\n\ndef opened(name: str) -> with str fails Shut:\n    lend name else:\n        fail .Stuck(name=name)\n\ndef single() fails Shut:\n    with opened(\"single\")? as door:\n        fail .Jammed\n\ndef main(stdout: Stdout):\n    single() else as why:\n        stdout.print(\"failed\", why, why.notes())\n        return\n    stdout.print(\"worked\")\n";
+    let source = "error Shut:\n    Stuck(name: str)\n    Jammed\n\ndef opened(name: str) -> with str fails Shut:\n    lend name except:\n        fail .Stuck(name=name)\n\ndef single() fails Shut:\n    with opened(\"single\")? as door:\n        fail .Jammed\n\ndef main(stdout: Stdout):\n    single() except why:\n        stdout.print(\"failed\", why, why.notes())\n        return\n    stdout.print(\"worked\")\n";
     let mut module = fennec_syntax::parse(source).unwrap();
     let resolved = fennec_check::check_and_resolve(&mut module);
     assert!(resolved.is_ok(), "{:?}", resolved.err());

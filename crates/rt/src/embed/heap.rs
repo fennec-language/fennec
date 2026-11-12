@@ -96,6 +96,9 @@ pub(crate) struct Heap {
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far, counted only when something will read it.
     pub(super) counts: Counts,
+    /// On a worker that counts, where it keeps `counts` for the run's report to read: a worker's
+    /// heap is its own thread's, which the report on the main thread can't see.
+    shared_counts: Option<std::sync::Arc<std::sync::Mutex<Counts>>>,
     /// Whether `counts` is kept: under `FENNEC_COUNTS`, which reports it, after `count_allocations`,
     /// and in tests.
     counting: bool,
@@ -146,6 +149,21 @@ pub(super) enum Freed {
     Kept,
     /// Back to the allocator.
     GivenBack,
+}
+
+/// Every worker's counts, kept for as long as the run, whether its thread has ended or is still
+/// running, as a server's or a pool's do, so a run's report holds what its tasks cost too.
+static WORKER_COUNTS: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<Counts>>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// What every worker that counts has cost so far, all together.
+pub(super) fn worker_counts() -> Counts {
+    let slots = WORKER_COUNTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut all = Counts::default();
+    for slot in slots.iter() {
+        all.add(&slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    }
+    all
 }
 
 /// Whether heaps made from now on count what they allocate, for a caller that reads `Counts`
@@ -258,6 +276,15 @@ impl Counts {
     fn allocated(&mut self, bytes: u64) {
         self.allocations += 1;
         self.allocated_bytes += bytes;
+    }
+
+    /// Adds `other`'s counts to these, the largest copy being the larger of the two.
+    pub(super) fn add(&mut self, other: &Counts) {
+        self.allocations += other.allocations;
+        self.allocated_bytes += other.allocated_bytes;
+        self.copies += other.copies;
+        self.copied_bytes += other.copied_bytes;
+        self.largest_copy = self.largest_copy.max(other.largest_copy);
     }
 
     /// Notes that a shared value of `words` words was copied.
@@ -516,7 +543,22 @@ impl Heap {
             heap.insert(block);
         }
         heap.counts = Counts::default();
+        if counting && owner_bits != 0 {
+            let slot = std::sync::Arc::new(std::sync::Mutex::new(Counts::default()));
+            WORKER_COUNTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(std::sync::Arc::clone(&slot));
+            heap.shared_counts = Some(slot);
+        }
         heap
+    }
+
+    /// Keeps a worker's counts where the run's report reads them.
+    fn publish_counts(&self) {
+        if let Some(slot) = &self.shared_counts {
+            *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.counts;
+        }
     }
 
     /// Takes blocks made after the run started that live for the rest of it, like an
@@ -528,6 +570,7 @@ impl Heap {
             self.insert(block);
         }
         self.counts = counts;
+        self.publish_counts();
         // They stay this thread's for the whole run, so a range never hands them over.
         self.made.truncate(made);
     }
@@ -610,6 +653,15 @@ impl Heap {
         self.blocks.sizes()
     }
 
+    /// How many blocks are left that a run could still have freed: what a run that ends with any
+    /// left has leaked. Blocks kept for the whole run aren't among them, whenever they were made:
+    /// `live` leaves out only those made as it starts.
+    pub(crate) fn leftover(&self) -> usize {
+        self.blocks.freeable()
+    }
+
+    /// How many blocks are live but those made as it started, for tests.
+    #[cfg(test)]
     pub(crate) fn live(&self) -> usize {
         self.blocks.len().saturating_sub(self.statics)
     }
@@ -637,6 +689,7 @@ impl Heap {
     #[inline(never)]
     fn count_allocated(&mut self, bytes: u64) {
         self.counts.allocated(bytes);
+        self.publish_counts();
         if let Some(site) = self.site {
             self.sites.entry(site).or_default().allocated(bytes);
         }
@@ -645,6 +698,7 @@ impl Heap {
     /// Notes that a shared value of `words` words was copied.
     pub(super) fn copied(&mut self, words: usize) {
         self.counts.copied(words);
+        self.publish_counts();
         if let Some(site) = self.site {
             self.sites.entry(site).or_default().copied(words);
         }
@@ -735,6 +789,7 @@ impl Heap {
             self.insert(block);
         }
         self.counts = counts;
+        self.publish_counts();
     }
 
     /// Takes over blocks another thread's heap handed over, as this thread's own.
@@ -1376,7 +1431,7 @@ pub extern "C" fn new_tag() -> i64 {
 
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_alloc", |state| {
         let at = usize::try_from(shape).ok();
         let Some(words) = at.and_then(|at| state.heap.sizes.get(at).copied()).or_else(|| {
             at.and_then(|at| state.tables.shapes.get(at)).map(|element| HEADER_WORDS + element.words())
@@ -1395,7 +1450,7 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 /// A copy of a shared block for one owner to change: owned once, sharing its boxed
 /// fields. The block copied loses that owner.
 pub extern "C" fn unshare(address: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_unshare", |state| {
         let address = u64::try_from(address).unwrap_or(0);
         let Some(block) = state.heap.block(address) else {
             not_native(address, "copy, to change");
@@ -1934,4 +1989,30 @@ pub(super) fn text_address(state: &mut State, text: &str) -> i64 {
         return i64::try_from(*address).unwrap_or(0);
     }
     text_from_bytes(state, text.as_bytes(), text.chars().count())
+}
+
+#[cfg(test)]
+mod worker_counts_tests {
+    /// A counted allocation on a worker reaches what the run reports, while the worker is still
+    /// running, as a server's are when the program ends, and once it's ended.
+    #[test]
+    fn a_workers_counts_reach_the_report() {
+        let before = super::worker_counts().allocated_bytes;
+        let (counted, wait) = std::sync::mpsc::channel();
+        let (go_on, told) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            super::super::threads::take_index();
+            let mut heap = super::Heap::new(Vec::new());
+            heap.allocated(12_345);
+            counted.send(()).unwrap();
+            told.recv().unwrap();
+            heap.allocated(1_000);
+        });
+        wait.recv().unwrap();
+        // Other tests' workers may count meanwhile, so this one's are at least what's there.
+        assert!(super::worker_counts().allocated_bytes >= before + 12_345);
+        go_on.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(super::worker_counts().allocated_bytes >= before + 13_345);
+    }
 }

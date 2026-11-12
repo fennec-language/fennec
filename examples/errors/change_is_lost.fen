@@ -3,7 +3,7 @@ struct Unit:
     health = 10
 
 def find(units: list[Unit], at: int) -> Unit:
-    units[at]
+    return units[at]
 
 def main(stdout: Stdout):
     units = [Unit()]

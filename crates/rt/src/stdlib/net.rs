@@ -48,6 +48,9 @@ struct Stream {
     /// Whether anything's been read since it last wrote: before anything has, a read is waiting
     /// for a next message, which a server draining ends.
     read_since_write: AtomicBool,
+    /// Whether a read is waiting for the first byte of a next message, with nothing of one taken
+    /// in: only then does a server stopping end the read, as only then is it between messages.
+    awaiting_a_message: AtomicBool,
     /// The label a server's connection prints as, taken as the server accepted it, so connections
     /// are numbered in the order they came, whichever task serving one starts first. A client's is
     /// 0 here, as it's labelled as it's made.
@@ -65,12 +68,25 @@ enum Reading {
     Tls(Box<dyn SecureStream>),
 }
 
+impl Reading {
+    /// Whether it holds bytes taken from the socket that haven't been read yet: a message started.
+    fn holds_unread(&self) -> bool {
+        match self {
+            Reading::Plain(plain) => !plain.buffer().is_empty(),
+            Reading::Tls(secured) => secured.holds_unread(),
+        }
+    }
+}
+
 /// A connection with TLS over it, read and written as a plain one is. Only the TLS module makes
 /// one, so a program that never asks for TLS links none of it.
 pub(crate) trait SecureStream: BufRead + Write + Send {
     /// The socket it reads through. It's a copy of the connection's own, and on Windows a copy
     /// keeps its own timeouts, so a read's timeout goes on this one.
     fn socket(&self) -> &TcpStream;
+
+    /// Whether it holds bytes read from the socket that haven't been read from it yet.
+    fn holds_unread(&self) -> bool;
 }
 
 /// What a TLS session reads from and writes to: a socket that doesn't block.
@@ -823,18 +839,23 @@ fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, St
 /// An answer as a `Response`.
 fn answer_value(answer: http::Answer) -> Value {
     // A dict has each name once: a header sent again adds to the one there, as HTTP says it can.
+    // Each name's place is found by its hash, so many headers are joined in time that grows with
+    // how many there are.
     let mut joined: Vec<(String, String)> = Vec::new();
+    let mut places: HashMap<&str, usize> = HashMap::new();
     let mut cookies = Vec::new();
     for (name, value) in &answer.headers {
         if name == "set-cookie" {
             cookies.push(Value::str(value));
         }
-        match joined.iter_mut().find(|(seen, _)| seen == name) {
-            Some((_, held)) => {
+        if let Some(&at) = places.get(name.as_str()) {
+            if let Some((_, held)) = joined.get_mut(at) {
                 held.push_str(", ");
                 held.push_str(value);
             }
-            None => joined.push((name.clone(), value.clone())),
+        } else {
+            places.insert(name, joined.len());
+            joined.push((name.clone(), value.clone()));
         }
     }
     let headers: Vec<(Value, Value)> =
@@ -1179,6 +1200,7 @@ fn keep_stream_as(
         writing: Mutex::new(()),
         served,
         read_since_write: AtomicBool::new(false),
+        awaiting_a_message: AtomicBool::new(false),
         label: if served { next_label(0) } else { 0 },
         reads_by: Mutex::new(None),
     };
@@ -1233,7 +1255,8 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
         return Ok(Vec::new());
     }
     let mut data = vec![0; count.min(MOST_READ_AT_ONCE)];
-    let read = reading(&stream, timeout, |reader| reader.read(&mut data))?;
+    let between = !stream.read_since_write.load(Ordering::SeqCst);
+    let read = reading(&stream, timeout, between, |reader| reader.read(&mut data))?;
     data.truncate(read);
     if read > 0 {
         stream.read_since_write.store(true, Ordering::SeqCst);
@@ -1250,9 +1273,10 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
 fn read_line_crlf(handle: i64, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
     let mut line = std::mem::take(&mut *stream.partial_line.lock().unwrap_or_else(PoisonError::into_inner));
+    let between = line.is_empty() && !stream.read_since_write.load(Ordering::SeqCst);
     // What a read cut short by having to wait got is kept in `line`, and the next adds to it. It
     // reads at most what's left of the most a line may hold, and one more to tell it's too long.
-    let read = reading(&stream, timeout, |reader| {
+    let read = reading(&stream, timeout, between, |reader| {
         let left = (MOST_LINE_BYTES + 1).saturating_sub(line.len());
         let mut limited = reader.take(u64::try_from(left).unwrap_or(u64::MAX));
         limited.read_until(b'\n', &mut line)
@@ -1421,9 +1445,12 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
 /// Runs `read` on a connection, plain or through TLS: parked if it has to wait in a task, and
 /// otherwise waiting at most `timeout`. A task holds the connection only while it tries, never
 /// while it waits, so another task can write to it meanwhile.
+/// Reads from `stream` with `read`, which `between` says starts between messages, with nothing of
+/// one taken in since the connection last wrote.
 fn reading<T>(
     stream: &Arc<Stream>,
     timeout: Option<Duration>,
+    between: bool,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
     // A read waits no longer than what's left before the connection's reads have to be done by.
@@ -1458,6 +1485,27 @@ fn reading<T>(
         let blocked = BlockedRead::of(stream);
         if stopped_while_reading() {
             return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+        }
+        // Waiting for a next message's first byte, with none of it in hand, a server's connection
+        // ends when the server's told to stop: it says so before it waits, and a stop that comes
+        // while it waits ends the wait (see `drain_on_stop`). Once a byte has come, the read goes
+        // on to the end of what it reads, as a message partway in is answered.
+        if between && stream.served && !reader.holds_unread() {
+            stream.awaiting_a_message.store(true, Ordering::SeqCst);
+            if PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping() {
+                stream.awaiting_a_message.store(false, Ordering::SeqCst);
+                drop(blocked);
+                return read(&mut std::io::empty()).map_err(|error| Failure::of(&error, timeout));
+            }
+            let first = match &mut *reader {
+                Reading::Plain(plain) => plain.fill_buf().map(|_| ()),
+                Reading::Tls(secured) => secured.fill_buf().map(|_| ()),
+            };
+            stream.awaiting_a_message.store(false, Ordering::SeqCst);
+            if let Err(error) = first {
+                drop(blocked);
+                return Err(Failure::of(&error, timeout));
+            }
         }
         let done = match &mut *reader {
             Reading::Plain(plain) => read(plain),
@@ -1687,8 +1735,12 @@ pub(crate) fn drain_on_stop(server: i64) -> Option<u64> {
     PLAIN_DRAINS.store(true, Ordering::SeqCst);
     let being_served = || SERVING.lock().unwrap_or_else(PoisonError::into_inner).clone();
     Some(crate::signals::on_stop(Box::new(move || {
+        // A read now sees the stop and drains. Said first, as what follows can let the program end.
+        crate::embed::live::stop_taken();
         let _ = TcpStream::connect_timeout(&address, Duration::from_secs(1));
-        if let Some(stream) = being_served().filter(|stream| !stream.read_since_write.load(Ordering::SeqCst))
+        // Only a read waiting for a next message's first byte is ended: one that's taken in any
+        // of a message goes on to the end of it, and its message is answered.
+        if let Some(stream) = being_served().filter(|stream| stream.awaiting_a_message.load(Ordering::SeqCst))
         {
             let _ = stream.socket.shutdown(Shutdown::Read);
         }
@@ -1871,6 +1923,24 @@ pub(crate) mod tests {
 
     use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// A response's headers become a dict with each name once, a name sent again joined to the
+    /// first with `, `, in the order the names first came, however many there are.
+    #[test]
+    fn many_headers_are_joined_by_name() {
+        let mut headers: Vec<(String, String)> =
+            (0..999).map(|n| (format!("x-{n}"), n.to_string())).collect();
+        headers.push(("x-7".to_owned(), "again".to_owned()));
+        headers.push(("set-cookie".to_owned(), "a=1".to_owned()));
+        let answer = super::http::Answer { status: 200, headers, body: Vec::new() };
+        let made = super::answer_value(answer);
+        let Value::Instance(made) = &made else { panic!("not a Response") };
+        let Some(Value::Dict(joined)) = made.field("headers") else { panic!("no headers") };
+        assert_eq!(joined.len(), 1000);
+        let shown = crate::format::repr(&Value::Dict(Rc::clone(joined)));
+        assert!(shown.starts_with("{\"x-0\": \"0\", \"x-1\": \"1\""), "{shown}");
+        assert!(shown.contains("\"x-7\": \"7, again\""), "{shown}");
+    }
 
     /// Native code keeps `tls=` on the method's name.
     #[test]
@@ -2497,7 +2567,39 @@ pub(crate) mod tests {
             let (port, server) = serving();
             let got =
                 handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
-            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate isn't for `fennec.example`");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
+
+        /// A clock two centuries on, when the tests' certificate has expired.
+        #[derive(Debug)]
+        struct Later;
+
+        impl rustls::time_provider::TimeProvider for Later {
+            fn current_time(&self) -> Option<rustls::pki_types::UnixTime> {
+                // 2200-01-01, past the certificate's end in 2126.
+                Some(rustls::pki_types::UnixTime::since_unix_epoch(Duration::from_hours(2_016_144)))
+            }
+        }
+
+        /// A certificate past its end is refused, however trusted its authority, saying so.
+        #[test]
+        fn an_expired_certificate_is_refused() {
+            let (port, server) = serving();
+            let mut roots = RootCertStore::empty();
+            for certificate in CertificateDer::pem_slice_iter(CA) {
+                roots.add(certificate.unwrap()).unwrap();
+            }
+            let config = ClientConfig::builder_with_details(provider(), Arc::new(Later))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate has expired");
             drop(got);
             assert!(server.join().unwrap().is_err());
         }
@@ -2512,7 +2614,8 @@ pub(crate) mod tests {
                 .with_root_certificates(RootCertStore::empty())
                 .with_no_client_auth();
             let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
-            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate isn't from an authority this system trusts");
             drop(got);
             assert!(server.join().unwrap().is_err());
         }

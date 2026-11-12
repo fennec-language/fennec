@@ -7,42 +7,42 @@ from std.concurrent import Crashed, Inbox, Sender, Timeout, channel
 ## `else return`.
 def gives_up(helper: Sender[Sender[int]]) -> int:
     with channel[int](size=1) as reply:
-        helper.send(reply.sender()) else return -1
+        helper.send(reply.sender()) except Closed(): return -1
         answered = reply.receive_within(10ms) except Timeout(): return -2
         got = answered else return -2
         return got
-    -3
+    return -3
 
 ## The same, giving up by `else fail`.
 def fails_out(helper: Sender[Sender[int]]) -> int fails Timeout:
     with channel[int](size=1) as reply:
-        helper.send(reply.sender()) else return -1
+        helper.send(reply.sender()) except Closed(): return -1
         answered = reply.receive_within(10ms)?
         got = answered else fail Timeout(waited=10ms)
         return got
-    -3
+    return -3
 
 ## Takes a sender, waits for the go, which comes once its receiver's block has ended, then sends
 ## on it, and says how that went.
 def answers_late(inbox: Inbox[Sender[int]], said: Sender[str]):
     for reply in inbox:
         _ = inbox.receive() else return
-        reply.send(5) else:
-            said.send("closed") else return
+        reply.send(5) except Closed():
+            said.send("closed") except Closed(): return
             continue
-        said.send("sent") else return
+        said.send("sent") except Closed(): return
 
 def main(stdout: Stdout) fails Crashed:
     with channel[str](size=4) as said, channel[int](size=1) as go:
         told = said.sender()
         with launch((inbox) => answers_late(inbox, told))? as helper:
             stdout.print("gave up", gives_up(helper))
-            helper.send(go.sender()) else:
+            helper.send(go.sender()) except Closed():
                 stdout.print("no helper")
-            _ = fails_out(helper) else as why:
+            _ = fails_out(helper) except Timeout():
                 stdout.print("failed out")
                 0
-            helper.send(go.sender()) else:
+            helper.send(go.sender()) except Closed():
                 stdout.print("no helper")
         for _ in range(2):
             stdout.print(said.receive() else "nothing said")

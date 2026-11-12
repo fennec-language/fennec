@@ -41,17 +41,17 @@ export error NetError:
     def message(self) -> str:
         match self:
             case .NotFound(host):
-                f"there's no host called `{host}`"
+                return f"there's no host called `{host}`"
             case .Refused(host, port):
-                f"`{host}` refused a connection on port {port}"
+                return f"`{host}` refused a connection on port {port}"
             case .TimedOut(after):
-                f"gave up after {after.as_seconds()}s"
+                return f"gave up after {after.as_seconds()}s"
             case .Closed:
-                "the other side closed the connection"
+                return "the other side closed the connection"
             case Denied(reason) | Tls(reason) | Other(reason):
-                reason
+                return reason
             case .Status(code):
-                f"the response's status was {code}"
+                return f"the response's status was {code}"
 
 ## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its
 ## `text()`, written in Rust, gives the body as text, with anything that isn't text replaced.
@@ -66,12 +66,12 @@ export struct Response:
 
     ## Whether the status is one of the 200s.
     def ok(self) -> bool:
-        self.status >= 200 and self.status < 300
+        return self.status >= 200 and self.status < 300
 
     ## The body read as JSON into a `T`, as `json.loads[T]` reads text: what an API sent back.
     ## Text that isn't JSON, or doesn't fit `T`, fails with a `ParseError` saying where.
     def json[T: Deserializable](self) -> T fails ParseError:
-        json.native_loads[T](self.text(), names=None, extra=None)?
+        return json.native_loads[T](self.text(), names=None, extra=None)?
 
 ## What a server shows to prove who it is: its certificate chain and its private key, as the text
 ## of their PEM files. The program reads those with its own `Fs`, so no file access is hidden in
@@ -112,11 +112,11 @@ export shared Connection:
     ## This connection as a `Writer`, from `std.io`, for code written for any stream. A failure
     ## of the network comes through as an `IoError`, with the network's own words in a note.
     def writer(self) -> ConnectionWriter:
-        ConnectionWriter(_conn=self)
+        return ConnectionWriter(_conn=self)
 
     ## This connection as a `Reader`, from `std.io`, buffered as the connection is.
     def reader(self) -> ConnectionReader:
-        ConnectionReader(_conn=self)
+        return ConnectionReader(_conn=self)
 
 ## A connection as a `Writer`, from `conn.writer()`. Each write is sent at once, so `flush` has
 ## nothing to do.
@@ -124,15 +124,15 @@ export struct ConnectionWriter:
     _conn: Connection
 
     def write(self, data: bytes) fails IoError:
-        self._conn.write(data) else as why:
+        self._conn.write(data) except why:
             fail io_failure(why)
 
     def write_text(self, text: str) fails IoError:
-        self._conn.write(text) else as why:
+        self._conn.write(text) except why:
             fail io_failure(why)
 
     def write_line(self, text: str) fails IoError:
-        self._conn.write(text + "\n") else as why:
+        self._conn.write(text + "\n") except why:
             fail io_failure(why)
 
     def flush(self) fails IoError:
@@ -143,11 +143,11 @@ export struct ConnectionReader:
     _conn: Connection
 
     def read_chunk(self, size: int) -> bytes fails IoError:
-        self._conn.read(size) else as why:
+        return self._conn.read(size) except why:
             fail io_failure(why)
 
     def read_line(self) -> str? fails IoError:
-        self._conn.read_line() else as why:
+        return self._conn.read_line() except why:
             fail io_failure(why)
 
     def lines(self) -> Iterator[str] fails IoError:
@@ -160,7 +160,7 @@ export struct ConnectionReader:
 def io_failure(why: NetError) -> IoError:
     mut failure = IoError.Other(reason=why.message())
     failure.add_note(f"the network failed: {why.message()}")
-    failure
+    return failure
 
 ## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
 export struct Packet:
@@ -185,7 +185,8 @@ export shared UdpSocket:
     ## Each packet as it arrives, until the socket is closed or fails.
     def iter(self) -> Iterator[Packet]:
         while True:
-            packet = self.receive() else None
+            packet = self.receive() except .NotFound() | .Refused() | .TimedOut(
+            ) | .Closed | .Denied() | .Tls() | .Status() | .Other(): None
             if packet is None: return
             yield packet
 
@@ -207,7 +208,7 @@ export struct Net:
         timeout = 30s,
     ) -> with Connection fails NetError:
         conn = self._connect(host, port, tls=tls, timeout=timeout)?
-        lend conn else:
+        lend conn except:
             conn.close()
         conn.close()
 
@@ -215,7 +216,7 @@ export struct Net:
     ## and closed when it ends. With `tls=`, each connection is TLS, shown by that certificate.
     def listen(self, port: int, tls: Certificate? = None) -> with Server fails NetError:
         server = listened(self, port=port, tls=tls)?
-        lend server else:
+        lend server except:
             server.close()
         server.close()
 
@@ -223,7 +224,7 @@ export struct Net:
     ## closed when it ends.
     def udp(self, port = 0) -> with UdpSocket fails NetError:
         socket = self._udp(port=port)?
-        lend socket else:
+        lend socket except:
             socket.close()
         socket.close()
 
@@ -244,7 +245,7 @@ export shared Server:
     ## long as it takes, or up to `timeout`.
     def accept(self, timeout: Duration? = None) -> with Connection fails NetError:
         conn = accepted(self, timeout=timeout)?
-        lend conn else:
+        lend conn except:
             conn.close()
         conn.close()
 
@@ -252,7 +253,8 @@ export shared Server:
     ## loop goes on to the next.
     def iter(self) -> Iterator[Connection]:
         while True:
-            conn = accepted(self, timeout=None) else return
+            conn = accepted(self, timeout=None) except .NotFound() | .Refused() | .TimedOut(
+            ) | .Closed | .Denied() | .Tls() | .Status() | .Other(): return
             yield conn
             conn.close()
 
@@ -295,7 +297,7 @@ export struct Request:
 
     ## The body as text, or empty text when it isn't UTF-8.
     def text(self) -> str:
-        self.body.decode() else ""
+        return self.body.decode() except InvalidValue(): ""
 
 ## The most a request's headers may hold, in lines and in bytes, and the most its body may be.
 MOST_HEADERS = 100
@@ -350,7 +352,7 @@ def next_request(connection: Connection, timeout: Duration) -> RequestRead fails
     # The whole request, its head and body, has to come within `timeout`, not each read of it, so
     # a client sending a byte at a time can't hold the connection for longer than that.
     connection._reads_within(timeout)
-    read = read_request(connection, timeout) else as error:
+    read = read_request(connection, timeout) except error:
         match error:
             case .Other(reason):
                 if reason == LONG_LINE:
@@ -360,7 +362,7 @@ def next_request(connection: Connection, timeout: Duration) -> RequestRead fails
             case _:
                 pass
         fail error
-    read
+    return read
 
 ## The next request on a connection.
 def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
@@ -373,12 +375,12 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
         first = connection.read_line(timeout=timeout, crlf=True)? else return .Done
     if first == "": return .Done
     parts = first.split(" ")
-    if parts.len() != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
+    if len(parts) != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     if not is_token(parts[0]) or parts[1] == "" or has_control(parts[1], False):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     mut headers: dict[str, str] = {}
-    mut size = first.len()
+    mut size = len(first)
     mut lines = 0
     while True:
         line = connection.read_line(timeout=timeout, crlf=True)? else return .Bad(
@@ -386,7 +388,7 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
             reason="the headers didn't end",
         )
         if line == "": break
-        size += line.len()
+        size += len(line)
         lines += 1
         if lines > MOST_HEADERS or size > MOST_HEADER_BYTES:
             return .Bad(status=431, reason="the headers are too big")
@@ -411,14 +413,14 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
         written = headers["content-length"]
         if not only_digits(written):
             return .Bad(status=400, reason="the content length isn't a number")
-        length = int(written) else return .Bad(
+        length = int(written) except InvalidValue(): return .Bad(
             status=400,
             reason="the content length isn't a number",
         )
         if length > MOST_BODY: return .Bad(status=413, reason="the body is too big")
-        while body.len() < length:
-            more = connection.read(length - body.len(), timeout=timeout)?
-            if more.len() == 0: return .Bad(status=400, reason="the body ended early")
+        while len(body) < length:
+            more = connection.read(length - len(body), timeout=timeout)?
+            if len(more) == 0: return .Bad(status=400, reason="the body ended early")
             body = body + more
     version = parts[2]
     asked = (headers.get("connection") else "").lower()
@@ -430,7 +432,7 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
     if at is not None:
         path = target[:at]
         query = decode_query(target[at + 1:])
-    .Got(
+    return .Got(
         request=Request(
             method=parts[0],
             path=unquote(path),
@@ -469,14 +471,14 @@ def is_token(text: str) -> bool:
             )
         ):
             return False
-    True
+    return True
 
 ## Whether `text` has a control character in it, which a tab isn't if `tab` says so.
 def has_control(text: str, tab: bool) -> bool:
     for at in range(text_size(text)):
         b = text_byte(text, at)
         if (b < 32 and not (tab and b == 9)) or b == 127: return True
-    False
+    return False
 
 ## Whether `text` is one or more digits and nothing else.
 def only_digits(text: str) -> bool:
@@ -485,7 +487,7 @@ def only_digits(text: str) -> bool:
     for at in range(size):
         b = text_byte(text, at)
         if b < 48 or b > 57: return False
-    True
+    return True
 
 ## Writes a response, saying the connection closes after it when it does. The answer to a `HEAD`
 ## says how long its body is and doesn't send it. A header that can't be written, as a value from
@@ -505,13 +507,13 @@ def write_response(
         lower = name.lower()
         if lower != "content-length" and lower != "connection":
             head += f"{name}: {value}\r\n"
-    head += f"content-length: {response.body.len()}\r\n"
+    head += f"content-length: {len(response.body)}\r\n"
     if not keep:
         head += "connection: close\r\n"
     head += "\r\n"
     # The head and the body in one write, so a small response goes in one packet: written apart,
     # the body waits for the client to acknowledge the head, which it may hold back for 40 ms.
-    if response.body.len() > 0 and not head_only:
+    if len(response.body) > 0 and not head_only:
         connection.write(head.encode() + response.body)?
     else:
         connection.write(head)?
@@ -520,46 +522,46 @@ def write_response(
 def reason_phrase(status: int) -> str:
     match status:
         case 200:
-            "OK"
+            return "OK"
         case 201:
-            "Created"
+            return "Created"
         case 204:
-            "No Content"
+            return "No Content"
         case 301:
-            "Moved Permanently"
+            return "Moved Permanently"
         case 302:
-            "Found"
+            return "Found"
         case 304:
-            "Not Modified"
+            return "Not Modified"
         case 400:
-            "Bad Request"
+            return "Bad Request"
         case 401:
-            "Unauthorized"
+            return "Unauthorized"
         case 403:
-            "Forbidden"
+            return "Forbidden"
         case 404:
-            "Not Found"
+            return "Not Found"
         case 405:
-            "Method Not Allowed"
+            return "Method Not Allowed"
         case 413:
-            "Content Too Large"
+            return "Content Too Large"
         case 431:
-            "Request Header Fields Too Large"
+            return "Request Header Fields Too Large"
         case 500:
-            "Internal Server Error"
+            return "Internal Server Error"
         case 501:
-            "Not Implemented"
+            return "Not Implemented"
         case 503:
-            "Service Unavailable"
+            return "Service Unavailable"
         case _:
-            "Unknown"
+            return "Unknown"
 
 ## The next connection a server takes, waiting up to `timeout` when there's one.
 def accepted(server: Server, timeout: Duration?) -> Connection fails NetError:
     if timeout is None: return server._accept()?
-    server._accept(timeout=timeout)?
+    return server._accept(timeout=timeout)?
 
 ## A server listening on `port`, with TLS when there's a certificate.
 def listened(net: Net, port: int, tls: Certificate?) -> Server fails NetError:
     if tls is None: return net._listen(port)?
-    net._listen(port, tls=tls)?
+    return net._listen(port, tls=tls)?

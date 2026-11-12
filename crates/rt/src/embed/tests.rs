@@ -57,3 +57,66 @@ fn a_held_line_goes_into_the_capture_it_was_printed_for() {
     super::flush_held_line();
     assert_eq!(second.printed(), "second");
 }
+
+/// Whether a launched task writes as it goes is its own run's to say: a run that writes live on
+/// another thread, as an earlier test's may, doesn't change it here, and a task of a run that
+/// writes live passes it on to what it launches.
+#[test]
+fn a_task_writes_as_it_goes_only_when_its_own_run_does() {
+    std::thread::spawn(|| {
+        super::start(super::Tables::default(), crate::Inputs { live: true, ..crate::Inputs::default() });
+        assert!(super::program_writes(), "a live run's tasks write as they go");
+        super::finish();
+    })
+    .join()
+    .unwrap();
+    std::thread::spawn(|| {
+        super::start(super::Tables::default(), crate::Inputs::default());
+        assert!(!super::program_writes(), "another run writing live changes nothing here");
+        let was = super::swap_task_writes(true);
+        assert!(super::program_writes(), "a task that writes as it goes passes it on");
+        super::swap_task_writes(was);
+        super::finish();
+    })
+    .join()
+    .unwrap();
+}
+
+/// A block a runtime function would give native code as 0, no block at all, stops the run as a bug
+/// in Fennec rather than reaching native code, which uses it at once with no check.
+#[test]
+fn a_block_made_as_nothing_is_said_as_a_bug() {
+    assert_eq!(super::made("fennec_list_new", 8), 8);
+    let said = std::panic::catch_unwind(|| super::made("fennec_list_new", 0)).expect_err("0 is said");
+    let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert_eq!(said, "`fennec_list_new` made no block");
+}
+
+/// A header given back where there's nothing else to give, as with no runtime on the thread, is
+/// the empty string's, never one pointing at no block.
+#[test]
+fn a_header_by_default_is_the_empty_strings() {
+    let empty = super::text::Text::default();
+    assert_eq!(super::text::inline_bytes(&empty.words), Some(Vec::new()));
+}
+
+/// What a run leaves that it could have freed is what `FENNEC_COUNTS` says is live: a block kept for
+/// the whole run, like a case with no fields made the first time it's asked for, isn't among it,
+/// however late in the run it was made, and a block nothing let go of is.
+#[test]
+fn only_what_could_have_been_freed_is_left_over() {
+    let shapes = vec![std::rc::Rc::new(crate::packed::Element::Int)];
+    super::start(super::Tables { shapes, ..super::Tables::default() }, crate::Inputs::default());
+    let before = super::with(|state| state.heap.leftover());
+    let mut kept = vec![0_u64; 4].into_boxed_slice();
+    if let Some(count) = kept.first_mut() {
+        *count = super::heap::IMMORTAL;
+    }
+    super::with(|state| state.heap.insert(kept));
+    assert_eq!(super::with(|state| state.heap.leftover()), before, "kept for the run");
+    let forgotten = super::heap::alloc(0);
+    assert_eq!(super::with(|state| state.heap.leftover()), before + 1, "one nothing let go of");
+    super::heap::free(forgotten);
+    assert_eq!(super::with(|state| state.heap.leftover()), before);
+    super::finish();
+}

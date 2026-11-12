@@ -10,7 +10,7 @@ struct Point:
 
 def total(values: list[float]) -> float:
     summed = sum(value for value in values)
-    summed
+    return summed
 
 def main(stdout: Stdout):
     mut scores = [3, 1, 4]
@@ -19,7 +19,7 @@ def main(stdout: Stdout):
     kept = scores
     scores[0] = 9
     scores[-1] += 10
-    stdout.print(scores, kept, scores.len(), scores[-2])
+    stdout.print(scores, kept, len(scores), scores[-2])
 
     mut points = [Point(x=float(i), y=float(i) * 2.0) for i in range(3)]
     for ref point in points:
@@ -27,7 +27,7 @@ def main(stdout: Stdout):
         point.y = -point.y
     points[1].x = 100.0
     points.append(Point(y=7.0))
-    stdout.print(points[0], points[1].x, points[-1], points.len())
+    stdout.print(points[0], points[1].x, points[-1], len(points))
 
     mut weights = [0.5, 1.5, 2.0]
     stdout.print(total(weights))

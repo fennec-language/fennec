@@ -145,7 +145,7 @@ test "a count or a length over the limit fails before anything is made for it"()
 test "a case or a flag that doesn't exist fails, saying which"():
     box = pack.dumps(Shape.Box(width=3, height=4))
     # The case's number is the byte before the two ints.
-    case_at = box.len() - 3
+    case_at = len(box) - 3
     assert pack.loads[Shape](box)? == .Box(width=3, height=4)
     assert (
         why_not(() => pack.loads[Shape](with_byte(box, at=case_at, to=9))?)
@@ -153,7 +153,7 @@ test "a case or a flag that doesn't exist fails, saying which"():
     )
     flag = pack.dumps(True)
     assert (
-        why_not(() => pack.loads[bool](with_byte(flag, at=flag.len() - 1, to=2))?)
+        why_not(() => pack.loads[bool](with_byte(flag, at=len(flag) - 1, to=2))?)
         == "a bool should be 0 or 1, at byte 14"
     )
 
@@ -226,4 +226,4 @@ test "every kind of value reads back as it was"():
         assert pack.loads[float](pack.dumps(ratio))? == ratio
 
 def main(stdout: Stdout):
-    stdout.print(pack.dumps(Point(x=1, y=2)).len())
+    stdout.print(len(pack.dumps(Point(x=1, y=2))))

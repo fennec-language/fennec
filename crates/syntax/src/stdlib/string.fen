@@ -7,13 +7,13 @@ from std.intrinsics import stop
 ## characters)". Text from outside can be as long as it likes, and this way it can't make a
 ## message as long as itself. For std's own messages, not exported.
 def quoted_input(text: str) -> str:
-    if text.len() <= 40: return f"`{text}`"
-    return f"`{text[0:20]}…` ({text.len():,} characters)"
+    if len(text) <= 40: return f"`{text}`"
+    return f"`{text[0:20]}…` ({len(text):,} characters)"
 
 ## `text` as a message names a key or a part of a path from outside: whole, or past 40
 ## characters, its first 20 and `…`.
 def cut_input(text: str) -> str:
-    if text.len() <= 40: return text
+    if len(text) <= 40: return text
     return text[0:20] + "…"
 
 export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
@@ -36,7 +36,7 @@ export def wrap(text: str, width: int) -> list[str]:
     mut line = ""
     for word in text.split():
         mut rest = word
-        while rest.len() > width:
+        while len(rest) > width:
             if line != "":
                 lines.append(line)
                 line = ""
@@ -45,18 +45,18 @@ export def wrap(text: str, width: int) -> list[str]:
         if rest == "": continue
         if line == "":
             line = rest
-        elif line.len() + 1 + rest.len() <= width:
+        elif len(line) + 1 + len(rest) <= width:
             line = line + " " + rest
         else:
             lines.append(line)
             line = rest
     if line != "":
         lines.append(line)
-    lines
+    return lines
 
 ## `text` wrapped to `width`, as `wrap` does it, with its lines joined by line breaks.
 export def fill(text: str, width: int) -> str:
-    "\n".join(wrap(text, width=width))
+    return "\n".join(wrap(text, width=width))
 
 ## `text` with the spaces and tabs every line starts with taken off, so text indented to sit
 ## inside code can be written flush. Lines of only spaces and tabs don't count, and come out
@@ -67,18 +67,18 @@ export def dedent(text: str) -> str:
     mut first = True
     for line in lines:
         if line.strip() == "": continue
-        lead = line[:line.len() - line.lstrip().len()]
+        lead = line[:len(line) - len(line.lstrip())]
         if first:
             common = lead
             first = False
         else:
             mut size = 0
-            while size < lead.len() and size < common.len() and lead[size] == common[size]:
+            while size < len(lead) and size < len(common) and lead[size] == common[size]:
                 size += 1
             common = common[:size]
-    cut = common.len()
-    "\n".join(["" if line.strip() == "" else line[cut:] for line in lines])
+    cut = len(common)
+    return "\n".join(["" if line.strip() == "" else line[cut:] for line in lines])
 
 ## `text` with `prefix` before each line that isn't empty or only spaces and tabs.
 export def indent(text: str, prefix: str) -> str:
-    "\n".join([line if line.strip() == "" else prefix + line for line in text.split("\n")])
+    return "\n".join([line if line.strip() == "" else prefix + line for line in text.split("\n")])

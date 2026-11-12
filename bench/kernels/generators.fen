@@ -5,7 +5,7 @@ struct Row:
     weight: int
 
 def parse(line: str) -> Row:
-    Row(amount=line.len(), weight=line.len() % 7)
+    return Row(amount=len(line), weight=len(line) % 7)
 
 def make_lines(count: int) -> list[str]:
     mut lines: list[str] = []
@@ -16,13 +16,13 @@ def make_lines(count: int) -> list[str]:
             lines.append(f"  item {at} ")
         else:
             lines.append(f"item {at}")
-    lines
+    return lines
 
 def pipeline(src: list[str]) -> int:
     lines = (l.strip() for l in src)
     rows = (parse(l) for l in lines if l != "")
     total = sum(r.amount + r.weight for r in rows)
-    total
+    return total
 
 def count_up(limit: int) -> Iterator[int]:
     mut at = 0
@@ -46,7 +46,7 @@ def running(numbers: Iterator[int], size: int) -> Iterator[int]:
 def first_over(limit: int, over: int) -> int:
     for n in odd_squares(count_up(limit)):
         if n > over: return n
-    0
+    return 0
 
 def main(stdout: Stdout):
     src = make_lines(20_000)

@@ -25,7 +25,7 @@ export struct Stdout:
 
     ## Standard output as a `Writer`, for code written for any stream: `stdout.writer()`.
     def writer(self) -> StdoutWriter:
-        StdoutWriter(_out=self)
+        return StdoutWriter(_out=self)
 
 ## Standard input, given to `main`: what's typed or piped in. Its methods written in Rust are
 ## `read_line()`, the next line or `None` at the end, `read_chunk(size)`, and `lines()`, every
@@ -35,7 +35,7 @@ export struct Stdin:
 
     ## Standard input as a `Reader`, for code written for any stream: `stdin.reader()`.
     def reader(self) -> StdinReader:
-        StdinReader(_in=self)
+        return StdinReader(_in=self)
 
 ## Standard input as a `Reader`, from `stdin.reader()`. It reads through the same buffer as
 ## `Stdin`'s own methods, so nothing's lost between them.
@@ -43,10 +43,10 @@ export struct StdinReader:
     _in: Stdin
 
     def read_chunk(self, size: int) -> bytes fails IoError:
-        self._in.read_chunk(size)?
+        return self._in.read_chunk(size)?
 
     def read_line(self) -> str? fails IoError:
-        self._in.read_line()?
+        return self._in.read_line()?
 
     def lines(self) -> Iterator[str] fails IoError:
         while True:
@@ -69,7 +69,7 @@ export struct StdoutWriter:
 
     ## Writes `data`, which has to be UTF-8 text: standard output takes text.
     def write(self, data: bytes) fails IoError:
-        text = data.decode() else fail .Other(
+        text = data.decode() except InvalidValue(): fail .Other(
             reason="standard output takes text, and these bytes aren't UTF-8",
         )
         self._out.write(text)
@@ -121,7 +121,7 @@ export struct MemoryStream:
     def of(data: bytes) -> MemoryStream:
         mut made = MemoryStream()
         bytes_push_bytes(ref made._data, data)
-        made
+        return made
 
     def write(ref self, data: bytes) fails IoError:
         bytes_push_bytes(ref self._data, data)
@@ -139,42 +139,44 @@ export struct MemoryStream:
 
     def read_chunk(ref self, size: int) -> bytes fails IoError:
         if size < 0: fail .Other(reason=f"can't read {size} bytes")
-        end = min(self._at + size, self._data.len())
+        end = min(self._at + size, len(self._data))
         chunk = self._data[self._at:end]
         self._at = end
-        chunk
+        return chunk
 
     def read_line(ref self) -> str? fails IoError:
-        if self._at >= self._data.len(): return None
+        if self._at >= len(self._data): return None
         mut end = self._at
-        while end < self._data.len() and self._data[end] != 10:
+        while end < len(self._data) and self._data[end] != 10:
             end += 1
         mut line = self._data[self._at:end]
-        self._at = min(end + 1, self._data.len())
-        if line.len() > 0 and line[line.len() - 1] == 13:
-            line = line[:line.len() - 1]
-        line.decode() else fail .Other(reason="a line isn't UTF-8 text")
+        self._at = min(end + 1, len(self._data))
+        if len(line) > 0 and line[len(line) - 1] == 13:
+            line = line[:len(line) - 1]
+        return line.decode() except InvalidValue(): fail .Other(reason="a line isn't UTF-8 text")
 
     ## Each line left, without moving where reading has got to.
     def lines(self) -> Iterator[str] fails IoError:
         mut at = self._at
-        while at < self._data.len():
+        while at < len(self._data):
             mut end = at
-            while end < self._data.len() and self._data[end] != 10:
+            while end < len(self._data) and self._data[end] != 10:
                 end += 1
             mut line = self._data[at:end]
             at = end + 1
-            if line.len() > 0 and line[line.len() - 1] == 13:
-                line = line[:line.len() - 1]
+            if len(line) > 0 and line[len(line) - 1] == 13:
+                line = line[:len(line) - 1]
             yield line.decode() else fail .Other(reason="a line isn't UTF-8 text")
 
     ## Everything written, as bytes.
     def bytes(self) -> bytes:
-        self._data[:]
+        return self._data[:]
 
     ## Everything written, as text.
     def text(self) -> str fails IoError:
-        self._data.decode() else fail .Other(reason="what was written isn't UTF-8 text")
+        return self._data.decode() except InvalidValue(): fail .Other(
+            reason="what was written isn't UTF-8 text",
+        )
 
 ## Everything left in `src`, read a chunk at a time.
 export def read_all[R: Reader](ref src: R) -> bytes fails IoError:
@@ -182,6 +184,6 @@ export def read_all[R: Reader](ref src: R) -> bytes fails IoError:
     while True:
         chunk = src.read_chunk(65536)?
         # Copied to its exact size, as a builder has to be before anything else sees it.
-        if chunk.len() == 0: return all[0:all.len()]
+        if len(chunk) == 0: return all[0:len(all)]
         bytes_push_bytes(ref all, chunk)
-    all
+    return all

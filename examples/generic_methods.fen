@@ -10,16 +10,16 @@ struct Counter:
 
     def next[T](ref self, fallback: T) -> T:
         self.count += 1
-        fallback
+        return fallback
 
 struct Pair[A]:
     first: A
 
     def with_second[B](self, second: B) -> (A, B):
-        (self.first, second)
+        return (self.first, second)
 
 def twice[S: Source](ref src: S) -> (int, str):
-    (src.next[int](1), src.next[str]("two"))
+    return (src.next[int](1), src.next[str]("two"))
 
 def main(stdout: Stdout):
     mut counter = Counter()

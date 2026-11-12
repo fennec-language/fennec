@@ -36,11 +36,11 @@ struct Scoreboard:
         kills = self.kills.get(name) else 0
         damage = self.damage.get(name) else 0
         healing = self.healing.get(name) else 0
-        f"{name}: {kills} kills, {damage} damage, {healing} healed"
+        return f"{name}: {kills} kills, {damage} damage, {healing} healed"
 
 ## The health each team has left, added up across its units at once.
 def health_left(world: World, team: Team) -> int:
-    sum(unit.health for unit in parallel(world.units.values()) if unit.team == team)
+    return sum(unit.health for unit in parallel(world.units.values()) if unit.team == team)
 
 test "the scoreboard adds up by team":
     mut board = Scoreboard()

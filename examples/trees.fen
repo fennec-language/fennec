@@ -12,25 +12,25 @@ enum Expr:
     def size(self) -> int:
         match self:
             case .Add(left_node, right_node):
-                1 + left_node.size() + right_node.size()
+                return 1 + left_node.size() + right_node.size()
             case .Mul(left_node, right_node):
-                1 + left_node.size() + right_node.size()
+                return 1 + left_node.size() + right_node.size()
             case .Neg(inner):
-                1 + inner.size()
+                return 1 + inner.size()
             case .Let(_, value, body):
-                1 + value.size() + body.size()
+                return 1 + value.size() + body.size()
             case _:
-                1
+                return 1
 
 struct Env:
     left_node: int
     right_node: int
 
 def lookup(env: Env, slot: int) -> int:
-    env.left_node if slot == 0 else env.right_node
+    return env.left_node if slot == 0 else env.right_node
 
 def bind(env: Env, slot: int, value: int) -> Env:
-    Env(left_node=value, right_node=env.right_node) if slot == 0 else Env(
+    return Env(left_node=value, right_node=env.right_node) if slot == 0 else Env(
         left_node=env.left_node,
         right_node=value,
     )
@@ -38,40 +38,40 @@ def bind(env: Env, slot: int, value: int) -> Env:
 def eval(expr: Expr, env: Env) -> int:
     match expr:
         case .Num(n):
-            n
+            return n
         case .Var(slot):
-            lookup(env, slot)
+            return lookup(env, slot)
         case .Add(left_node, right_node):
-            eval(left_node, env) + eval(right_node, env)
+            return eval(left_node, env) + eval(right_node, env)
         case .Mul(left_node, right_node):
-            eval(left_node, env) * eval(right_node, env)
+            return eval(left_node, env) * eval(right_node, env)
         case .Neg(inner):
-            -eval(inner, env)
+            return -eval(inner, env)
         case .Let(slot, value, body):
-            eval(body, bind(env, slot=slot, value=eval(value, env)))
+            return eval(body, bind(env, slot=slot, value=eval(value, env)))
 
 def simplify(expr: Expr) -> Expr:
     match expr:
         case .Add(.Num(0), right):
-            simplify(right)
+            return simplify(right)
         case .Add(left, .Num(0)):
-            simplify(left)
+            return simplify(left)
         case .Mul(.Num(1), right):
-            simplify(right)
+            return simplify(right)
         case .Mul(.Num(0), _):
-            .Num(0)
+            return .Num(0)
         case .Neg(.Neg(inner)):
-            simplify(inner)
+            return simplify(inner)
         case .Add(left_node, right_node):
-            .Add(simplify(left_node), right=simplify(right_node))
+            return .Add(simplify(left_node), right=simplify(right_node))
         case .Mul(left_node, right_node):
-            .Mul(simplify(left_node), right=simplify(right_node))
+            return .Mul(simplify(left_node), right=simplify(right_node))
         case .Neg(inner):
-            .Neg(simplify(inner))
+            return .Neg(simplify(inner))
         case .Let(slot, value, body):
-            .Let(slot, value=simplify(value), body=simplify(body))
+            return .Let(slot, value=simplify(value), body=simplify(body))
         case other:
-            other
+            return other
 
 def build(depth: int, seed: int) -> Expr:
     if depth == 0: return Expr.Var(seed % 2) if seed % 4 == 0 else .Num(seed % 10)
@@ -79,15 +79,15 @@ def build(depth: int, seed: int) -> Expr:
     right = build(depth - 1, seed=seed * 7 + 2)
     match seed % 5:
         case 0:
-            .Add(left, right=right)
+            return .Add(left, right=right)
         case 1:
-            .Mul(.Num(1), right=.Add(left, right=.Num(0)))
+            return .Mul(.Num(1), right=.Add(left, right=.Num(0)))
         case 2:
-            .Add(.Neg(.Neg(left)), right=right)
+            return .Add(.Neg(.Neg(left)), right=right)
         case 3:
-            .Let(seed % 2, value=left, body=right)
+            return .Let(seed % 2, value=left, body=right)
         case _:
-            .Mul(left, right=.Neg(right))
+            return .Mul(left, right=.Neg(right))
 
 enum Chain:
     End
@@ -97,7 +97,7 @@ def count_down(n: int) -> Chain:
     mut chain = Chain.End
     for i in range(n):
         chain = .Link(i, chain)
-    chain
+    return chain
 
 def total(chain: Chain) -> int:
     mut summed = 0
@@ -109,7 +109,7 @@ def total(chain: Chain) -> int:
                 at = rest
             case .End:
                 break
-    summed
+    return summed
 
 struct Program:
     name: str

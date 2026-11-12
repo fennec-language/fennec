@@ -6,13 +6,13 @@ struct Row:
 
 def parse(out: Stdout, line: str) -> Row:
     out.print("parse", line)
-    Row(amount=line.len())
+    return Row(amount=len(line))
 
 def upto(out: Stdout, limit: int) -> Iterator[int]:
     out.print("opening")
     for n in range(limit):
         yield n
-    out.print("closing")
+    return out.print("closing")
 
 def odd(numbers: Iterator[int]) -> Iterator[int]:
     for n in numbers:
@@ -32,7 +32,7 @@ def three() -> Iterator[int]:
 
 def noisy(out: Stdout, value: int) -> int:
     out.print("worked out", value)
-    value
+    return value
 
 error TooBig:
     at: int
@@ -49,13 +49,13 @@ def up_to_failure(limit: int) -> int fails TooBig:
     for n in checked(limit)?:
         total += n
         if total > 100: break
-    total
+    return total
 
 def pipeline(out: Stdout, src: list[str]) -> int:
     lines = (text_line.strip() for text_line in src)
     rows = (parse(out, text_line) for text_line in lines if text_line != "")
     total = sum(row.amount for row in rows)
-    total
+    return total
 
 def shadowed(stdout: Stdout):
     # The stage's name for its items isn't the name a loop body means.
@@ -124,7 +124,7 @@ def main(stdout: Stdout):
     worked_out_first(stdout)
 
     for limit in [4, 1000]:
-        total = up_to_failure(limit) else as why:
+        total = up_to_failure(limit) except why:
             stdout.print("failed", why)
             continue
         stdout.print(total)
@@ -132,4 +132,4 @@ def main(stdout: Stdout):
 def first_big() -> int:
     for n in three():
         if n > 1: return n * 10
-    0
+    return 0

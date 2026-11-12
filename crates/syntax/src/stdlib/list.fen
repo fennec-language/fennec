@@ -9,14 +9,14 @@ extend list[T]:
     ## The item at `at`, counting from the end when it's negative as `self[at]` does, or `None`
     ## when there's no item there, where `self[at]` would stop the program.
     def get(self, at: int) -> T?:
-        size = self.len()
+        size = len(self)
         if at >= size or at < -size: return None
-        self[at]
+        return self[at]
 
     ## Reverses the items in place.
     def reverse(ref self):
         mut low = 0
-        mut high = self.len() - 1
+        mut high = len(self) - 1
         while low < high:
             held = self[low]
             self[low] = self[high]
@@ -40,13 +40,13 @@ extend list[T: Eq]:
         for each in self:
             if each == item:
                 found += 1
-        found
+        return found
 
     ## Where `item` first is, or None when it isn't there.
     def index(self, item: T) -> int?:
         for at, each in enumerate(self):
             if each == item: return at
-        None
+        return None
 
 extend list[T: Serializable]:
     def serialize(self, ref out: Serializer):
@@ -54,4 +54,4 @@ extend list[T: Serializable]:
 
 extend list[T: Deserializable]:
     def deserialize(ref src: Deserializer) -> list[T] fails ParseError:
-        src.sequence[T]()?
+        return src.sequence[T]()?

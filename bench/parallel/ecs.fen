@@ -14,7 +14,7 @@ NEAR = 400.0
 
 # A number from 0.0 up to `top` for each `n`, the same on every machine.
 def spread(n: int, top: float) -> float:
-    float((n * 7919 + 104729) % 100003) / 100003.0 * top
+    return float((n * 7919 + 104729) % 100003) / 100003.0 * top
 
 def step(ref units: list[Unit], hazards: list[(float, float)], dt: float):
     for ref unit in parallel(units):

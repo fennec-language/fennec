@@ -2,5 +2,5 @@
 from std import json
 
 def main(stdout: Stdout):
-    endless = float("-inf") else 0.0
+    endless = float("-inf") except InvalidValue(): 0.0
     stdout.print(json.dumps(endless))

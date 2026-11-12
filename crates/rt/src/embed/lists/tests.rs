@@ -253,6 +253,32 @@ fn a_powers_fast_paths_are_exact() {
     assert_eq!(super::float_power(1.5, 2.7).to_bits(), libm::pow(1.5, 2.7).to_bits());
 }
 
+/// Clearing a list of ints keeps its block and its room, with what it held zeroed, so the appends
+/// after it go into the same block: items that hold nothing are only zeroed, not copied out to be
+/// let go of.
+#[test]
+fn a_cleared_list_of_ints_keeps_its_room() {
+    let tables = Tables { elements: vec![Rc::new(Element::Int)], ..Tables::default() };
+    start(tables, crate::Inputs::default());
+    let before = with(|state| state.heap.live());
+    let numbers = super::new(0, 3);
+    let words =
+        |list: i64| with(|state| state.heap.block(list.cast_unsigned()).map(<[u64]>::to_vec)).unwrap();
+    for (at, n) in [7, 8, 9].into_iter().enumerate() {
+        let place = super::LIST_HEADER_WORDS + at;
+        with(|state| state.heap.block_mut(numbers.cast_unsigned()).unwrap()[place] = n);
+    }
+    let room = words(numbers)[3];
+    super::clear(numbers);
+    let cleared = words(numbers);
+    assert_eq!((cleared[2], cleared[3]), (0, room), "no items, and the same room");
+    assert!(cleared[super::LIST_HEADER_WORDS..].iter().all(|word| *word == 0), "what it held is zeroed");
+    assert_eq!(super::grow(numbers), numbers, "an append after it goes into the same block");
+    heap::free(numbers);
+    assert_eq!(with(|state| state.heap.live()), before);
+    finish();
+}
+
 /// A list native code changes that this thread can't find stops the program as a bug, rather than
 /// going on as if it were changed, which dropped what a task pushed to a constant it couldn't see.
 #[test]

@@ -10,10 +10,10 @@ struct Inventory:
 
     ## An inventory holding `items`, each with how many there are.
     def of(items: SortedMap[str, int]) -> Inventory:
-        Inventory(_items=items)
+        return Inventory(_items=items)
 
     def in(self, name: str) -> bool:
-        name in self._items
+        return name in self._items
 
 ## Whole numbers from `low` up to, but not including, `high`.
 struct Span:
@@ -21,7 +21,7 @@ struct Span:
     high: int
 
     def in(self, n: int) -> bool:
-        self.low <= n < self.high
+        return self.low <= n < self.high
 
 test "a type's own in":
     mut stock = SortedMap[str, int]()

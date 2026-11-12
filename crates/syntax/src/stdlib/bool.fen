@@ -4,4 +4,4 @@ extend bool:
         out.bool(self)
 
     def deserialize(ref src: Deserializer) -> bool fails ParseError:
-        src.bool()?
+        return src.bool()?

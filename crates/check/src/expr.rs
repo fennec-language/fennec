@@ -1168,8 +1168,8 @@ impl FnCx<'_> {
             || !matches!(block.last().map(|last| &last.kind), Some(StmtKind::Expr(_)));
         match instead {
             Some(instead) if gives_nothing && !matches!(self.checker.settled(&instead), Type::Unit) => {
-                if let Some(last) = block.last() {
-                    self.error(gives_nothing_or_leaves(&instead, last));
+                if let Some(last) = last_line(block) {
+                    self.error(gives_nothing_or_leaves(&instead, last, except));
                 }
                 Some(instead)
             }
@@ -1325,16 +1325,32 @@ fn mixed_sizes(op: BinOp, left: &Type, right: &Type, span: Span) -> Diagnostic {
         .with_help(convert_help(left))
 }
 
-/// An `else` block that ends without a value or a way out, said with what it has to give and what
-/// its last line is.
-fn gives_nothing_or_leaves(instead: &Type, last: &fennec_syntax::Stmt) -> Diagnostic {
+/// A block's last line: for `except Case():`, whose block is its one case's, that case's last.
+fn last_line(block: &[fennec_syntax::Stmt]) -> Option<&fennec_syntax::Stmt> {
+    match block {
+        [
+            fennec_syntax::Stmt {
+                kind: StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }), ..
+            },
+        ] => match arms.as_slice() {
+            [arm] => arm.body.last(),
+            _ => block.last(),
+        },
+        _ => block.last(),
+    }
+}
+
+/// An `else` or `except` block that ends without a value or a way out, said with what it has to
+/// give and what its last line is.
+fn gives_nothing_or_leaves(instead: &Type, last: &fennec_syntax::Stmt, except: bool) -> Diagnostic {
     let shown = a(instead);
     let wanted = match shown.split_once(' ') {
         Some((word @ ("a" | "an"), name)) => format!("{word} `{name}`"),
         _ => format!("`{shown}`"),
     };
+    let word = if except { "except" } else { "else" };
     let message = format!(
-        "this `else` block must give {wanted} or leave; its last line {} gives nothing",
+        "this `{word}` block must give {wanted} or leave; its last line {} gives nothing",
         line_shown(last)
     );
     Diagnostic::new(message, last.span).with_help("add a value, or `return`, `fail`, `break` or `continue`")

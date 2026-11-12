@@ -81,7 +81,7 @@ test "a key that comes twice fails, naming it, in JSON, TOML and pack alike"():
     )
     # Bytes `std.pack` didn't write can hold a key twice too.
     saved = pack.dumps({"a": 1, "b": 2})
-    twice = saved[0:saved.len() - 2] + "a".encode() + saved[saved.len() - 1:]
+    twice = saved[0:len(saved) - 2] + "a".encode() + saved[len(saved) - 1:]
     assert why_not(() => pack.loads[dict[str, int]](twice)?) == "the data has `a` twice, at byte 25"
 
 test "a number past an int fails as too big, at either end, and never wraps"():

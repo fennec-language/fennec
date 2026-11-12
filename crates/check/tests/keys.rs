@@ -8,7 +8,7 @@ fn in_main(body: &str) -> Vec<String> {
     let text = format!(
         "from std.collections import Deque, SortedMap, SortedSet\n\n\
          struct Box[T]:\n    item: T\n\n\
-         extend Box[T: Eq]:\n    def ==(self, other: Box[T]) -> bool:\n        self.item == other.item\n\n\
+         extend Box[T: Eq]:\n    def ==(self, other: Box[T]) -> bool:\n        return self.item == other.item\n\n\
          struct Holder:\n    set: SortedSet[int]\n\n\
          enum Held:\n    Some(set: SortedSet[int])\n    Nothing\n\n\
          def main(stdout: Stdout):\n    {body}\n"

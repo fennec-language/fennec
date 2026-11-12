@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Output;
 
-const SOURCE: &str = "def used() -> int:\n    41 + 1\n\ndef unused() -> int:\n    2\n\n\
+const SOURCE: &str = "def used() -> int:\n    return 41 + 1\n\ndef unused() -> int:\n    return 2\n\n\
     def main(stdout: Stdout):\n    stdout.print(used())\n";
 
 /// A folder for a program and for Fennec's own files, with `SOURCE` written in it.
@@ -140,7 +140,7 @@ fn a_call_in_a_lends_cleanup_is_reached() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-const TESTED: &str = "def double(x: int) -> int:\n    x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n\n\
+const TESTED: &str = "def double(x: int) -> int:\n    return x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n\n\
     def main(stdout: Stdout):\n    stdout.print(double(21))\n";
 
 #[test]
@@ -313,7 +313,7 @@ fn an_edit_to_an_embedded_file_is_seen_in_a_single_file() {
 fn a_program_with_its_own_embed_function_calls_it() {
     let dir = scratch("embed_own").unwrap();
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
-    let source = "def embed_file(path: str) -> int:\n    path.len()\n\n\
+    let source = "def embed_file(path: str) -> int:\n    return len(path)\n\n\
         def main(stdout: Stdout):\n    stdout.print(embed_file(\"no such file\"))\n";
     std::fs::write(&game, source).unwrap();
     assert_eq!(stdout(&run(&home, &game).unwrap()), "12\n");
@@ -338,7 +338,7 @@ fn an_edit_to_an_embedded_file_runs_the_tests_before_a_run_again() {
 /// one. The linter's `naming-case` keeps examples from doing this, so it's checked here.
 #[test]
 fn a_parameter_named_like_a_constant_is_the_parameter() {
-    let source = "LIMIT = 10\n\ndef shadow(LIMIT: int) -> int:\n    LIMIT + 1\n\n\
+    let source = "LIMIT = 10\n\ndef shadow(LIMIT: int) -> int:\n    return LIMIT + 1\n\n\
                   def main(stdout: Stdout):\n    stdout.print(shadow(1), LIMIT)\n";
     let dir = scratch("shadowed_constant").unwrap();
     let game = dir.join("game.fen");
@@ -363,7 +363,7 @@ fn locking_kit(name: &str) -> std::io::Result<fennec_temp::Temp> {
     std::fs::write(dir.join("kit.toml"), manifest)?;
     std::fs::write(
         dir.join("src/pause.fen"),
-        "def settle(clock: Clock) -> int:\n    _ = clock.now()\n    1\n",
+        "def settle(clock: Clock) -> int:\n    _ = clock.now()\n    return 1\n",
     )?;
     let main = "from pause import settle\n\n\
                 struct Count:\n    n = 0\n\n\
@@ -396,7 +396,7 @@ fn a_body_edit_that_waits_under_another_files_lock_is_refused() {
         let ran = run_untested(&home, &dir).unwrap();
         assert_eq!(stdout(&ran), "1\n", "{}", String::from_utf8_lossy(&ran.stderr));
     }
-    let waits = "def settle(clock: Clock) -> int:\n    clock.sleep(1ms)\n    1\n";
+    let waits = "def settle(clock: Clock) -> int:\n    clock.sleep(1ms)\n    return 1\n";
     std::fs::write(dir.join("src/pause.fen"), waits).unwrap();
     for _ in 0..2 {
         let refused = run_untested(&home, &dir).unwrap();

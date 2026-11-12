@@ -27,9 +27,9 @@ fn the_return_type_chooses_the_enum() {
     let program = "
         def literal(tok: Tok) -> ExprKind?:
             match tok:
-                case .Int(value): .Int(value)
+                case .Int(value): return .Int(value)
                 case .Name(text): return .Name(text)
-                case .Eof: None
+                case .Eof: return None
     ";
     assert_eq!(with_enums(program), Vec::<String>::new());
 }
@@ -39,8 +39,8 @@ fn a_parameter_or_field_chooses_the_enum() {
     let program = "
         def show(kind: ExprKind) -> str:
             match kind:
-                case .Int(value): str(value)
-                case .Name(text): text
+                case .Int(value): return str(value)
+                case .Name(text): return text
 
         def main(stdout: Stdout):
             stdout.print(show(.Int(1)), show(kind=.Name('x')))
@@ -85,7 +85,7 @@ fn with_nothing_expected_a_shared_case_is_ambiguous() {
 fn the_expected_enum_has_to_have_the_case() {
     let program = "
         def eof() -> ExprKind:
-            .Eof
+            return .Eof
     ";
     assert_eq!(with_enums(program), ["`eof` returns an ExprKind, but this is a Tok @ .Eof"]);
 }
@@ -133,7 +133,7 @@ fn a_failure_takes_its_error_from_what_the_function_says() {
                 fail .Closed
 
             def held() -> DialError:
-                .Closed
+                return .Closed
             "
         ),
         Vec::<String>::new()
@@ -167,11 +167,9 @@ fn a_case_names_its_type_only_where_the_type_isnt_one() {
     let said: Vec<String> =
         problems(known).iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect();
     assert_eq!(said, ["the type here is known, so write this case as `.One`"]);
-    let union = "error Shut:\n    Stuck(name: str)\n    Jammed\n\n    def said(self) -> str:\n        \"shut\"\n\n\
+    let union = "error Shut:\n    Stuck(name: str)\n    Jammed\n\n    def said(self) -> str:\n        return \"shut\"\n\n\
         error Late:\n    waited: int\n\ndef run(n: int) fails Shut | Late:\n    if n == 1: fail Late(waited=1)\n\n\
-        def main(stdout: Stdout):\n    run(0) else as why:\n        match why:\n            \
-        case Late(waited=_):\n                stdout.print(1)\n            case Shut.Stuck(name=name):\n                \
-        stdout.print(name)\n            case Shut.Jammed:\n                stdout.print(why)\n        return\n    \
+        def main(stdout: Stdout):\n    run(0) except why:\n        case Late(waited=_):\n            stdout.print(1)\n            return\n        case Shut.Stuck(name=name):\n            stdout.print(name)\n            return\n        case Shut.Jammed:\n            stdout.print(why)\n            return\n    \
         stdout.print(0)\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(union), empty);

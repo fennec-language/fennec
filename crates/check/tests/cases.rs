@@ -22,22 +22,22 @@ fn alternatives_and_guards_check() {
         def size(shape: Shape) -> float:
             match shape:
                 case .Circle(r) | .Square(r) if r > 0.0:
-                    r
+                    return r
                 case .Circle(_) | .Square(_):
-                    0.0
+                    return 0.0
                 case .Line(n) if n > 0:
-                    float(n)
+                    return float(n)
                 case .Line(_) | .Point:
-                    0.0
+                    return 0.0
 
         def name(code: int?) -> str:
             match code:
                 case 1 | 2:
-                    'low'
+                    return 'low'
                 case n if n is not None:
-                    str(n + 1)
+                    return str(n + 1)
                 case _:
-                    'none'
+                    return 'none'
     ";
     assert_eq!(with_shapes(program), Vec::<String>::new());
 }
@@ -48,11 +48,11 @@ fn every_alternative_binds_the_same_names() {
         def size(shape: Shape) -> int:
             match shape:
                 case .Circle(r) | .Point:
-                    1
+                    return 1
                 case .Square(side) | .Line(side):
-                    2
+                    return 2
                 case _:
-                    3
+                    return 3
     ";
     assert_eq!(
         with_shapes(program),
@@ -72,11 +72,11 @@ fn a_guard_is_a_bool_that_changes_nothing() {
         def check(n: int, ref sizes: list[int]) -> int:
             match n:
                 case 0 if n:
-                    0
+                    return 0
                 case 1 if grow(ref sizes) is None:
-                    1
+                    return 1
                 case _:
-                    2
+                    return 2
     ";
     assert_eq!(
         with_shapes(program),
@@ -93,9 +93,9 @@ fn a_guarded_case_handles_nothing() {
         def size(shape: Shape) -> int:
             match shape:
                 case .Circle(r) if r > 1.0:
-                    1
+                    return 1
                 case .Square(_) | .Line(_) | .Point:
-                    2
+                    return 2
     ";
     assert_eq!(with_shapes(program), ["this `match` doesn't handle `Shape.Circle` @ shape"]);
 }

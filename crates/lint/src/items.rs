@@ -214,7 +214,7 @@ mod tests {
             "_",
             "step_1(number)",
             "  a  b\n\nc_d9 ",
-            "def f(x: int) -> int:\n    g(x) + h_2(x)  # f again\n",
+            "def f(x: int) -> int:\n    return g(x) + h_2(x)  # f again\n",
             "\"f\" 'g' f\"{h}\" ## doc f\n",
             "a.b.c,d;e[f]{g}",
             "9lives __init__ x_\t",

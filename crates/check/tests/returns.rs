@@ -51,15 +51,15 @@ fn a_def_that_gives_back_a_value_writes_its_type() {
                 health = 100
 
                 def hurt(self, amount: int) -> Enemy:
-                    Enemy(health=self.health - amount)
+                    return Enemy(health=self.health - amount)
 
                 def +(self, other: Enemy) -> Enemy:
-                    Enemy(health=self.health + other.health)
+                    return Enemy(health=self.health + other.health)
 
             def total(scores: list[int]) -> int:
                 def double(n: int) -> int:
-                    n * 2
-                sum(double(score) for score in scores)
+                    return n * 2
+                return sum(double(score) for score in scores)
 
             def main(stdout: Stdout):
                 stdout.print(total([1, 2]), Enemy().hurt(5))
@@ -118,7 +118,7 @@ fn an_arrow_to_none_is_removed() {
             stdout.print('hi')
 
         def wave(stdout: Stdout) -> nothing:
-            stdout.print('o/')
+            return stdout.print('o/')
     ";
     assert_eq!(
         problems_as_written(program),
@@ -161,7 +161,7 @@ fn a_def_with_no_arrow_gives_back_nothing() {
 fn arrow_functions_never_write_a_return_type() {
     let program = "
         def main(stdout: Stdout):
-            stdout.print(sorted(['bb', 'a'], key=name => name.len()))
+            stdout.print(sorted(['bb', 'a'], key=name => len(name)))
     ";
     assert_eq!(problems_as_written(program), Vec::<String>::new());
 }
@@ -279,7 +279,7 @@ fn a_function_that_says_it_gives_back_a_value_cant_run_off_its_end() {
 
         def word(n: int) -> str fails TooBig:
             if n > 2: fail TooBig(limit=2)
-            \"\"
+            return \"\"
 
         def all(n: int) -> list[str] fails TooBig:
             mut found = []
@@ -313,7 +313,7 @@ fn a_last_line_after_leaving_on_every_path_still_takes_the_return_type() {
                 return [\"a\"]
             else:
                 return [\"b\"]
-            []
+            return []
     ";
     assert_eq!(problems_as_written(fine), Vec::<String>::new());
 }
@@ -325,7 +325,7 @@ fn a_bare_return_cant_stand_for_a_value() {
         def f(n: int) -> int:
             if n > 0:
                 return
-            n
+            return n
     ",
     );
     assert_eq!(problems.len(), 1, "{problems:?}");
@@ -336,8 +336,8 @@ fn a_bare_return_cant_stand_for_a_value() {
 #[test]
 fn a_call_that_changes_something_at_the_end_of_a_def_with_no_arrow_is_a_statement() {
     let text = "struct Board:\n    scores: list[int]\n\n    def add(ref self, score: int) -> int:\n        \
-        self.scores.append(score)\n        self.scores.len()\n\n\
-        def bump(ref items: list[int]) -> int:\n    items.append(1)\n    items.len()\n\n\
+        self.scores.append(score)\n        return len(self.scores)\n\n\
+        def bump(ref items: list[int]) -> int:\n    items.append(1)\n    return len(items)\n\n\
         def record(ref board: Board):\n    board.add(1)\n\n\
         def grow(ref items: list[int]):\n    bump(ref items)\n";
     let empty: [&str; 0] = [];
@@ -346,7 +346,7 @@ fn a_call_that_changes_something_at_the_end_of_a_def_with_no_arrow_is_a_statemen
 
 #[test]
 fn a_value_at_the_end_of_a_def_with_no_arrow_still_needs_its_type() {
-    let text = "def size(items: list[int]):\n    items.len()\n\ndef main(stdout: Stdout):\n    stdout.print(size([1]))\n";
+    let text = "def size(items: list[int]):\n    len(items)\n\ndef main(stdout: Stdout):\n    stdout.print(size([1]))\n";
     assert_eq!(
         problems_as_written(text),
         ["`size` gives back an int, so its return type has to be written @ def size(items: list[int])"]
@@ -359,7 +359,7 @@ fn a_last_match_whose_cases_all_leave_gives_back_what_they_do() {
     assert_eq!(problems_as_written(source), Vec::<String>::new());
     let wrong = "def pick(n: int) -> str:\n    match n:\n        case 0:\n            return 1\n        case _:\n            return \"a\"\n";
     assert_eq!(problems_as_written(wrong).len(), 1, "{:?}", problems_as_written(wrong));
-    let falls = "def pick(n: int) -> str:\n    match n:\n        case 0:\n            return \"a\"\n        case _:\n            n + 1\n";
+    let falls = "def pick(n: int) -> str:\n    match n:\n        case 0:\n            return \"a\"\n        case _:\n            return n + 1\n";
     assert_eq!(problems_as_written(falls).len(), 1, "{:?}", problems_as_written(falls));
 }
 
@@ -368,8 +368,8 @@ fn a_last_match_whose_cases_all_leave_gives_back_what_they_do() {
 /// its end doesn't.
 #[test]
 fn a_last_match_whose_cases_end_in_a_with_that_returns_gives_back_what_they_do() {
-    let source = "struct Session:\n    log: str\n\nstruct Lite:\n    name: str\n\n    def session(self) -> with Session:\n        lend Session(log=\"lite\") else:\n            pass\n\n\
-        def pick(store: Lite, n: int) -> int:\n    match n:\n        case 0:\n            with store.session() as session:\n                return session.log.len()\n        case _:\n            with store.session() as session:\n                if n > 1:\n                    return 2\n                else:\n                    return 3\n";
+    let source = "struct Session:\n    log: str\n\nstruct Lite:\n    name: str\n\n    def session(self) -> with Session:\n        lend Session(log=\"lite\") except:\n            pass\n\n\
+        def pick(store: Lite, n: int) -> int:\n    match n:\n        case 0:\n            with store.session() as session:\n                return len(session.log)\n        case _:\n            with store.session() as session:\n                if n > 1:\n                    return 2\n                else:\n                    return 3\n";
     assert_eq!(problems_as_written(source), Vec::<String>::new());
     let falls = source.replace("                    return 3\n", "                    pass\n");
     assert_eq!(problems_as_written(&falls).len(), 1, "{:?}", problems_as_written(&falls));

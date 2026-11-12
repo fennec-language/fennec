@@ -275,7 +275,7 @@ fn builtins_take_the_right_arguments() {
         _ = sum([1], key=n => n)
         _ = range(1, 2, 3, 4)
         _ = range('a')
-        5.len()
+        len(5)
         zip([1])
         _ = set()
         _ = round(1.5, 2)
@@ -366,16 +366,16 @@ fn values_held_in_names_can_be_called() {
 fn a_named_function_goes_where_its_function_type_is_written() {
     let program = "
         def twice(n: int) -> int:
-            n * 2
+            return n * 2
 
         def add(a: int, b: int) -> int:
-            a + b
+            return a + b
 
         def bump(ref n: int):
             n += 1
 
         def apply(f: (int) -> int, n: int) -> int:
-            f(n)
+            return f(n)
 
         def main(stdout: Stdout):
             step: (int) -> int = twice
@@ -476,7 +476,7 @@ struct Money:
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
 struct Flag:
     on: bool
@@ -485,13 +485,13 @@ struct Worth:
     cents: int
 
     def +(self, other: Worth) -> float:
-        1.5
+        return 1.5
 
 struct Tip:
     cents: int
 
     def +(self, other: int) -> Tip:
-        self
+        return self
 ";
 
 fn sum_problems(call: &str) -> Vec<String> {
@@ -595,13 +595,13 @@ fn sum_of_a_type_parameter_needs_a_start_and_a_bound_with_plus() {
             def name(self) -> str
 
         def total[T: Addable](items: list[T], start: T) -> T:
-            sum(items, start=start)
+            return sum(items, start=start)
 
         def bare[T: Addable](items: list[T]) -> T:
-            sum(items)
+            return sum(items)
 
         def named[T: Named](items: list[T], start: T) -> T:
-            sum(items, start=start)
+            return sum(items, start=start)
     ";
     assert_eq!(
         problems(program),
@@ -652,8 +652,7 @@ fn only_sum_takes_a_start() {
 
 #[test]
 fn a_literal_default_gives_its_type() {
-    let text = "enum Mode:\n    Fast\n    Slow\n\ndef scan(limit=8, ratio=-0.5, name='x', on=True, mode=Mode.Fast) -> str:\n    \
-        f'{limit + 1} {ratio * 2.0} {name.upper()} {not on} {mode}'\n\ndef main(stdout: Stdout):\n    \
+    let text = "enum Mode:\n    Fast\n    Slow\n\ndef scan(limit=8, ratio=-0.5, name='x', on=True, mode=Mode.Fast) -> str:\n    return f'{limit + 1} {ratio * 2.0} {name.upper()} {not on} {mode}'\n\ndef main(stdout: Stdout):\n    \
         stdout.print(scan(limit=2, mode=.Slow))\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(text), empty);
@@ -663,13 +662,13 @@ fn a_literal_default_gives_its_type() {
 
 #[test]
 fn writing_the_type_a_literal_default_gives_is_an_error() {
-    let text = "def scan(limit: int = 8, label: str? = None, items = list[int]()) -> int:\n    limit\n";
+    let text = "def scan(limit: int = 8, label: str? = None, items = list[int]()) -> int:\n    return limit\n";
     assert_eq!(problems(text), ["`limit` takes its type from its default, so `: int` isn't needed @ int"]);
 }
 
 #[test]
 fn a_default_that_isnt_a_literal_needs_its_type() {
-    let text = "def scan(items=[], nothing=None) -> int:\n    1\n";
+    let text = "def scan(items=[], nothing=None) -> int:\n    return 1\n";
     assert_eq!(
         problems(text),
         [

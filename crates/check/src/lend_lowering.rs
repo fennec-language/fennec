@@ -2083,7 +2083,7 @@ mod tests {
     #[test]
     fn a_pass_that_writes_nothing_in_says_so() {
         let source = "error Boom:\n    pass\n\n\
-            def opened(n: int) -> with int fails Boom:\n    lend n else:\n        pass\n\n\
+            def opened(n: int) -> with int fails Boom:\n    lend n except:\n        pass\n\n\
             def main(stdout: Stdout) fails Boom:\n    with opened(1)? as first:\n        stdout.print(first)\n";
         let mut module = fennec_syntax::parse(source).unwrap();
         let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();

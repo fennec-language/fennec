@@ -20,7 +20,7 @@ struct Fighter:
 
     ## A line about this fighter.
     def describe(self) -> str:
-        f\"{self.name}: {self.health}\"
+        return f\"{self.name}: {self.health}\"
 
 ## How much a hit does,
 ## doubled.
@@ -28,7 +28,7 @@ def hit(
     fighter: Fighter,
     power: int,
 ) -> int:
-    power * 2 + fighter.health // 100
+    return power * 2 + fighter.health // 100
 ";
 
 /// An editor talking to a session, with a kit on disk.
@@ -297,7 +297,7 @@ fn codes(diagnostics: &[Json]) -> Vec<&str> {
 fn lints_and_copies_show_with_their_rules_and_fixes() {
     let mut editor = Editor::new("lints").unwrap();
     let text = "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
-                held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n";
+                held = items\n    items.append(2)\n    stdout.print(len(held), len(items), one())\n";
     let published = editor.open("src/main.fen", text);
     let in_main = for_file(&published, "main.fen").unwrap();
     assert_eq!(codes(in_main), ["needless-pass", "copies"], "{:?}", messages(in_main));
@@ -374,8 +374,8 @@ fn members_are_found_while_the_program_has_mistakes() {
 
 #[test]
 fn a_parameter_typed_by_an_interface_shows_the_interface() {
-    let text = "interface Shape:\n    def area(self) -> float\n\nstruct Square:\n    def area(self) -> float:\n        1.0\n\n\
-                def total(shape: Shape) -> float:\n    held = shape\n    held.area()\n\n\
+    let text = "interface Shape:\n    def area(self) -> float\n\nstruct Square:\n    def area(self) -> float:\n        return 1.0\n\n\
+                def total(shape: Shape) -> float:\n    held = shape\n    return held.area()\n\n\
                 def main(stdout: Stdout):\n    stdout.print(total(Square()))\n";
     let mut editor = Editor::new("interface_params").unwrap();
     editor.open("src/main.fen", text);
@@ -453,8 +453,8 @@ fn requests_after_shutdown_are_refused_and_exit_ends_the_session() {
 #[test]
 fn names_bound_in_a_case_are_found_from_its_guard_and_body() {
     let mut editor = Editor::new("cases").unwrap();
-    let text = "def size(value: int) -> str:\n    match value:\n        case 1 | 2:\n            \"small\"\n        \
-        case count if count > 9:\n            f\"{count} is big\"\n        case _:\n            \"medium\"\n\n\
+    let text = "def size(value: int) -> str:\n    match value:\n        case 1 | 2:\n            return \"small\"\n        \
+        case count if count > 9:\n            return f\"{count} is big\"\n        case _:\n            return \"medium\"\n\n\
         def main(stdout: Stdout):\n    stdout.print(size(12))\n";
     let published = editor.open("src/main.fen", text);
     assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
@@ -511,10 +511,10 @@ fn names_under_except_are_found_shown_and_offered() {
 fn definitions_of_arguments_cases_capabilities_parameters_and_modules() {
     let mut editor = Editor::new("named").unwrap();
     let text = "import combat\n\nenum Shape:\n    Dot\n    Line(length: int)\n\n\
-        struct Point:\n    x: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by)\n\n\
-        def scaled(value: int, times: int) -> int:\n    value * times\n\n\
-        def first[T](items: list[T]) -> T:\n    items[0]\n\n\
-        def size_of(shape: Shape) -> int:\n    match shape:\n        case .Line(length): length\n        case .Dot: 0\n\n\
+        struct Point:\n    x: int\n\n    def moved(self, by: int) -> Point:\n        return Point(x=self.x + by)\n\n\
+        def scaled(value: int, times: int) -> int:\n    return value * times\n\n\
+        def first[T](items: list[T]) -> T:\n    return items[0]\n\n\
+        def size_of(shape: Shape) -> int:\n    match shape:\n        case .Line(length): return length\n        case .Dot: return 0\n\n\
         def main(stdout: Stdout):\n    point = Point(x=1)\n    \
         stdout.print(scaled(2, times=3), point.moved(by=2).x, size_of(.Line(length=4)), first([n for n in [1]]))\n    \
         stdout.print(combat.hit(combat.Fighter(name=\"Kit\"), 3))\n\n\

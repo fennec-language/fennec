@@ -659,26 +659,26 @@ def walk(nodes: list[Node], start: int) -> int:
     while at != NONE:
         seen += 1
         at = nodes[at].next
-    seen
+    return seen
 
 def last_of(nodes: list[Node], at: int) -> int:
-    nodes[at].next
+    return nodes[at].next
 
 def down(xs: list[int]) -> int:
-    mut i = xs.len() - 1
+    mut i = len(xs) - 1
     mut total = 0
     while i >= 0:
         total += xs[i]
         i -= 1
-    total
+    return total
 
 def down_too_far(xs: list[int]) -> int:
-    mut i = xs.len() - 1
+    mut i = len(xs) - 1
     mut total = 0
     while i > -3:
         total += xs[i]
         i -= 1
-    total
+    return total
 
 def main(stdout: Stdout):
     nodes = [Node(next=1), Node(next=NONE)]
@@ -704,7 +704,7 @@ struct Cursor:
     at: int
 
 def pick(xs: list[int], cursor: Cursor) -> int:
-    xs[cursor.at]
+    return xs[cursor.at]
 
 def main(stdout: Stdout):
     xs = [10, 20, 30]

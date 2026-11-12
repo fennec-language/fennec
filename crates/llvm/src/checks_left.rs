@@ -234,9 +234,9 @@ mod tests {
     #[test]
     fn the_overflow_checks_reported_are_the_ones_emitted() -> Result<(), String> {
         for body in [
-            "def go(xs: list[int]) -> int:\n    mut total = 0\n    for i in range(xs.len()):\n        total += xs[i] * 3 - i\n    total\n",
-            "def go(n: int) -> int:\n    mut total = 0\n    for i in range(n):\n        total += i * i\n    total + n - 1\n",
-            "def go(a: int, b: int) -> int:\n    if a > 0 and a < 100 and b > 0 and b < 100:\n        return a * b + a - b\n    a + b\n",
+            "def go(xs: list[int]) -> int:\n    mut total = 0\n    for i in range(len(xs)):\n        total += xs[i] * 3 - i\n    return total\n",
+            "def go(n: int) -> int:\n    mut total = 0\n    for i in range(n):\n        total += i * i\n    return total + n - 1\n",
+            "def go(a: int, b: int) -> int:\n    if a > 0 and a < 100 and b > 0 and b < 100:\n        return a * b + a - b\n    return a + b\n",
         ] {
             let program = lowered(body)?;
             let reported = checks_left(&program)
@@ -259,10 +259,10 @@ mod tests {
     #[test]
     fn the_index_checks_reported_are_the_ones_emitted() -> Result<(), String> {
         for body in [
-            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    sum\n",
+            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    return sum\n",
             "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
-            "def go(xs: list[int], at: int) -> int:\n    mut total = xs[at]\n    for i in range(xs.len()):\n        total += xs[i] - xs[-1]\n    total\n",
-            "def go(xs: list[int], at: int) -> int:\n    xs[at] + xs[at] * 2\n",
+            "def go(xs: list[int], at: int) -> int:\n    mut total = xs[at]\n    for i in range(len(xs)):\n        total += xs[i] - xs[-1]\n    return total\n",
+            "def go(xs: list[int], at: int) -> int:\n    return xs[at] + xs[at] * 2\n",
         ] {
             let program = lowered(body)?;
             let reported = checks_left(&program)
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn a_loop_over_a_list_s_positions_keeps_only_its_sum_s_check() -> Result<(), String> {
         let found = kept(
-            "def go(xs: list[int]) -> int:\n    mut total = 0\n    for i in range(xs.len()):\n        total += xs[i]\n    total\n",
+            "def go(xs: list[int]) -> int:\n    mut total = 0\n    for i in range(len(xs)):\n        total += xs[i]\n    return total\n",
         )?;
         assert_eq!(found, [(CheckKind::Overflow, "total += xs[i]".to_owned())]);
         Ok(())
@@ -292,10 +292,10 @@ mod tests {
     #[test]
     fn a_loop_over_a_list_s_items_keeps_no_index_check() -> Result<(), String> {
         for body in [
-            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    sum\n",
+            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    return sum\n",
             "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
-            "struct World:\n    xs: list[float]\n\ndef go(world: World) -> float:\n    mut sum = 0.0\n    for x in world.xs:\n        sum += x\n    sum\n",
-            "def go(xs: list[float]) -> float:\n    mut best = 0.0\n    for x in xs:\n        if x > 9.0:\n            break\n        best = x\n    best\n",
+            "struct World:\n    xs: list[float]\n\ndef go(world: World) -> float:\n    mut sum = 0.0\n    for x in world.xs:\n        sum += x\n    return sum\n",
+            "def go(xs: list[float]) -> float:\n    mut best = 0.0\n    for x in xs:\n        if x > 9.0:\n            break\n        best = x\n    return best\n",
         ] {
             let found = kept(body)?;
             assert!(!found.iter().any(|(what, _)| *what == CheckKind::Bounds), "{body}{found:?}");
@@ -308,7 +308,7 @@ mod tests {
     /// they're in range. A read past what the guard covers, `items[at + 4]`, keeps its check.
     #[test]
     fn a_guard_taking_k_items_a_turn_covers_their_reads() -> Result<(), String> {
-        let covered = "def go(items: list[float]) -> float:\n    n = items.len()\n    mut a = 0.0\n    mut b = 0.0\n    mut at = 0\n    while at + 4 <= n:\n        a += items[at] + items[at + 1]\n        b += items[at + 2] + items[at + 3]\n        at += 4\n    a + b\n";
+        let covered = "def go(items: list[float]) -> float:\n    n = len(items)\n    mut a = 0.0\n    mut b = 0.0\n    mut at = 0\n    while at + 4 <= n:\n        a += items[at] + items[at + 1]\n        b += items[at + 2] + items[at + 3]\n        at += 4\n    return a + b\n";
         let found = kept(covered)?;
         assert!(!found.iter().any(|(what, _)| *what == CheckKind::Bounds), "{found:?}");
         let overflows = found.iter().filter(|(what, _)| *what == CheckKind::Overflow).count();
@@ -323,7 +323,7 @@ mod tests {
     /// An index read twice is checked once, until something could change the list or the index.
     #[test]
     fn an_index_read_twice_keeps_one_check() -> Result<(), String> {
-        let found = kept("def go(xs: list[int], at: int) -> int:\n    xs[at] + xs[at] * 2\n")?;
+        let found = kept("def go(xs: list[int], at: int) -> int:\n    return xs[at] + xs[at] * 2\n")?;
         let bounds = found.iter().filter(|(what, _)| *what == CheckKind::Bounds).count();
         assert_eq!(bounds, 1, "{found:?}");
         Ok(())
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn a_match_is_no_check_but_a_builtin_s_is() -> Result<(), String> {
         let found = kept(
-            "enum Shape:\n    Round\n    Square\n\ndef half(x: int) -> int:\n    x // 2\n\ndef go(x: float, n: int, shape: Shape) -> int:\n    match shape:\n        case .Round:\n            int(x) | half(n)\n        case .Square:\n            n\n",
+            "enum Shape:\n    Round\n    Square\n\ndef half(x: int) -> int:\n    return x // 2\n\ndef go(x: float, n: int, shape: Shape) -> int:\n    match shape:\n        case .Round:\n            return int(x) | half(n)\n        case .Square:\n            return n\n",
         )?;
         assert_eq!(found, [(CheckKind::Builtin("int".to_owned()), "int(x)".to_owned())]);
         Ok(())
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn a_seed_kept_below_its_modulus_steps_without_a_check() -> Result<(), String> {
         let found = overflows(
-            "def go(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed\n    total\n",
+            "def go(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed\n    return total\n",
         )?;
         assert_eq!(found, ["total += seed"], "{found:?}");
         Ok(())
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn a_seed_also_written_from_anything_keeps_its_checks() -> Result<(), String> {
         let found = overflows(
-            "def go(n: int, start: int) -> int:\n    mut seed = start\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n    seed\n",
+            "def go(n: int, start: int) -> int:\n    mut seed = start\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n    return seed\n",
         )?;
         assert!(found.iter().any(|on| on.contains("seed * 3877")), "{found:?}");
         Ok(())
@@ -375,8 +375,8 @@ mod tests {
     #[test]
     fn a_step_under_a_comparison_keeps_no_check() -> Result<(), String> {
         for body in [
-            "def go(n: int) -> int:\n    mut low = 0\n    mut high = n\n    while low < high:\n        low += 1\n        high -= 1\n    low\n",
-            "def go(limit: int, x: float) -> int:\n    mut count = 0\n    while count < limit and x * float(count) <= 4.0:\n        count += 1\n    count\n",
+            "def go(n: int) -> int:\n    mut low = 0\n    mut high = n\n    while low < high:\n        low += 1\n        high -= 1\n    return low\n",
+            "def go(limit: int, x: float) -> int:\n    mut count = 0\n    while count < limit and x * float(count) <= 4.0:\n        count += 1\n    return count\n",
         ] {
             assert_eq!(overflows(body)?, Vec::<String>::new(), "{body}");
         }
@@ -389,10 +389,10 @@ mod tests {
     #[test]
     fn a_step_the_comparison_doesn_t_bound_keeps_its_check() -> Result<(), String> {
         for body in [
-            "def go(n: int) -> int:\n    mut x = 0\n    while x < n:\n        x += 2\n    x\n",
-            "def go(n: int) -> int:\n    mut x = 0\n    while x <= n:\n        x += 1\n    x\n",
-            "def go(n: int, m: int) -> int:\n    mut x = 0\n    while x < n:\n        x = m\n        x += 1\n    x\n",
-            "def go(n: int, m: int) -> int:\n    mut x = m\n    if x < n:\n        x += 1\n    x += 1\n    x\n",
+            "def go(n: int) -> int:\n    mut x = 0\n    while x < n:\n        x += 2\n    return x\n",
+            "def go(n: int) -> int:\n    mut x = 0\n    while x <= n:\n        x += 1\n    return x\n",
+            "def go(n: int, m: int) -> int:\n    mut x = 0\n    while x < n:\n        x = m\n        x += 1\n    return x\n",
+            "def go(n: int, m: int) -> int:\n    mut x = m\n    if x < n:\n        x += 1\n    x += 1\n    return x\n",
         ] {
             assert!(!overflows(body)?.is_empty(), "{body}");
         }
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn divisions_and_shifts_keep_what_a_constant_doesn_t_settle() -> Result<(), String> {
         let found = kept(
-            "def go(a: int, b: int, f: float) -> float:\n    c = a // 2 + a % 7 + (a << 3)\n    d = a // b\n    e = a << b\n    float(c + d + e) / f + f / 2.0\n",
+            "def go(a: int, b: int, f: float) -> float:\n    c = a // 2 + a % 7 + (a << 3)\n    d = a // b\n    e = a << b\n    return float(c + d + e) / f + f / 2.0\n",
         )?;
         let has = |what: CheckKind, on: &str| found.contains(&(what, on.to_owned()));
         assert!(has(CheckKind::DivideByZero, "a // b"), "{found:?}");
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn an_index_from_anywhere_and_a_key_keep_their_checks() -> Result<(), String> {
         let found = kept(
-            "def go(xs: list[int], at: int, names: dict[str, int], fixed: array[int, 4]) -> int:\n    xs[at] + names[\"a\"] + fixed[2] + fixed[at]\n",
+            "def go(xs: list[int], at: int, names: dict[str, int], fixed: array[int, 4]) -> int:\n    return xs[at] + names[\"a\"] + fixed[2] + fixed[at]\n",
         )?;
         let has = |what: CheckKind, on: &str| found.contains(&(what, on.to_owned()));
         assert!(has(CheckKind::Bounds, "xs[at]"), "{found:?}");
@@ -431,7 +431,7 @@ mod tests {
     /// A helper given positions in a list, and a count stepped once a turn of a loop over one,
     /// keeps only its product's check: its sums can't overflow, and what it divides by can't be
     /// 0. The step of the count needs no check either.
-    const HELPER: &str = "def go(i: int, j: int) -> float:\n    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef row(v: list[float], i: int) -> float:\n    mut total = 0.0\n    mut j = 0\n    for x in v:\n        total += go(i, j=j) * x\n        j += 1\n    return total\n\ndef main(stdout: Stdout):\n    v = [1.0, 2.0]\n    stdout.print([row(v, i) for i in range(v.len())])\n    return\n";
+    const HELPER: &str = "def go(i: int, j: int) -> float:\n    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef row(v: list[float], i: int) -> float:\n    mut total = 0.0\n    mut j = 0\n    for x in v:\n        total += go(i, j=j) * x\n        j += 1\n    return total\n\ndef main(stdout: Stdout):\n    v = [1.0, 2.0]\n    stdout.print([row(v, i) for i in range(len(v))])\n    return\n";
 
     #[test]
     fn a_helper_given_positions_keeps_only_its_products_check() -> Result<(), String> {
@@ -452,7 +452,7 @@ mod tests {
         assert!(kept(&through)?.len() > whole, "{:?}", kept(&through)?);
         let given = HELPER.replace(
             "    v = [1.0, 2.0]\n",
-            "    v = [1.0, 2.0]\n    stdout.print(go(v.len() - 9223372036854775807, j=0))\n",
+            "    v = [1.0, 2.0]\n    stdout.print(go(len(v) - 9223372036854775807, j=0))\n",
         );
         assert!(kept(&given)?.len() > whole, "{:?}", kept(&given)?);
         Ok(())
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(kept(once)?, []);
         let twice = "def go(v: list[int]) -> int:\n    mut j = 0\n    for x in v:\n        for y in v:\n            j += 1\n    return j\n";
         assert_eq!(kept(twice)?.len(), 1, "{:?}", kept(twice)?);
-        let again = "def go(v: list[int]) -> int:\n    mut j = 0\n    while v.len() > 0:\n        for x in v:\n            j += 1\n    return j\n";
+        let again = "def go(v: list[int]) -> int:\n    mut j = 0\n    while len(v) > 0:\n        for x in v:\n            j += 1\n    return j\n";
         assert_eq!(kept(again)?.len(), 1, "{:?}", kept(again)?);
         let set = "def go(v: list[int], k: int) -> int:\n    mut j = 0\n    for x in v:\n        j += 1\n        if x > 3:\n            j = k\n    return j\n";
         assert_eq!(kept(set)?.len(), 1, "{:?}", kept(set)?);

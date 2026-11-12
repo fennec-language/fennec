@@ -6,13 +6,13 @@ const SHAPES: &str = "struct Circle:
     radius: float
 
     def area(self) -> float:
-        self.radius
+        return self.radius
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side
+        return self.side
 
 struct Dot:
     at: int
@@ -51,7 +51,7 @@ fn is_narrows_a_union_to_one_type_and_the_rest() {
     let body = "n: int | str = 3\nif n is int:\n    stdout.print(n + 1)\n";
     assert_eq!(with_shapes(body), empty);
     assert_eq!(
-        problems(&format!("{SHAPES}def radius(s: Shape) -> float:\n    s.radius\n")),
+        problems(&format!("{SHAPES}def radius(s: Shape) -> float:\n    return s.radius\n")),
         ["a Circle | Square has no field `radius` @ s.radius"]
     );
     assert_eq!(
@@ -64,9 +64,9 @@ fn is_narrows_a_union_to_one_type_and_the_rest() {
 fn a_union_has_a_method_every_member_has() {
     let empty: [&str; 0] = [];
     assert_eq!(with_shapes("s: Shape = Circle(radius=1.0)\nstdout.print(s.area())\n"), empty);
-    assert_eq!(problems(&format!("{SHAPES}def area(s: Shape) -> float:\n    s.area()\n")), empty);
+    assert_eq!(problems(&format!("{SHAPES}def area(s: Shape) -> float:\n    return s.area()\n")), empty);
     assert_eq!(
-        problems(&format!("{SHAPES}def area(s: Circle | Dot) -> float:\n    s.area()\n")),
+        problems(&format!("{SHAPES}def area(s: Circle | Dot) -> float:\n    return s.area()\n")),
         ["a Dot has no method `area`, so a Circle | Dot doesn't either @ s.area()"]
     );
 }
@@ -81,7 +81,7 @@ fn a_match_case_narrows_its_subject_to_the_member_it_names() {
     );
     assert_eq!(problems(&narrowed), empty);
     let outside = format!(
-        "{SHAPES}def size(s: Shape) -> float:\n    match s:\n        case Circle(radius=_):\n            pass\n        case Square(side=_):\n            pass\n    s.radius\n"
+        "{SHAPES}def size(s: Shape) -> float:\n    match s:\n        case Circle(radius=_):\n            pass\n        case Square(side=_):\n            pass\n    return s.radius\n"
     );
     assert_eq!(problems(&outside).len(), 1, "{:?}", problems(&outside));
 }
@@ -91,17 +91,17 @@ fn a_match_case_narrows_its_subject_to_the_member_it_names() {
 /// field, which `is` doesn't narrow, it's refused, with a fix that names it first.
 #[test]
 fn a_with_source_on_a_union_runs_the_member_it_holds() {
-    let store = "error Nope:\n    why: str\n\nstruct Transaction:\n    log: str\n\nstruct Lite:\n    name: str\n\n    def transaction(self) -> with Transaction fails Nope:\n        lend Transaction(log=\"lite\") else:\n            pass\n\nstruct Postgres:\n    host: str\n\n    def transaction(self) -> with Transaction fails Nope:\n        lend Transaction(log=\"pg\") else:\n            pass\n\ntype Store = Lite | Postgres\n\nstruct Holder:\n    db: Store\n\n";
+    let store = "error Nope:\n    why: str\n\nstruct Transaction:\n    log: str\n\nstruct Lite:\n    name: str\n\n    def transaction(self) -> with Transaction fails Nope:\n        lend Transaction(log=\"lite\") except:\n            pass\n\nstruct Postgres:\n    host: str\n\n    def transaction(self) -> with Transaction fails Nope:\n        lend Transaction(log=\"pg\") except:\n            pass\n\ntype Store = Lite | Postgres\n\nstruct Holder:\n    db: Store\n\n";
     let direct = format!(
-        "{store}def used(store: Store) -> str fails Nope:\n    with store.transaction()? as tx:\n        return tx.log\n    \"\"\n"
+        "{store}def used(store: Store) -> str fails Nope:\n    with store.transaction()? as tx:\n        return tx.log\n    return \"\"\n"
     );
     assert_eq!(problems(&direct), Vec::<String>::new());
     let matched = format!(
-        "{store}def used(store: Store) -> str fails Nope:\n    match store:\n        case Lite(name=_):\n            with store.transaction()? as tx:\n                return tx.log\n        case Postgres(host=_):\n            return \"pg\"\n    \"\"\n"
+        "{store}def used(store: Store) -> str fails Nope:\n    match store:\n        case Lite(name=_):\n            with store.transaction()? as tx:\n                return tx.log\n        case Postgres(host=_):\n            return \"pg\"\n    return \"\"\n"
     );
     assert_eq!(problems(&matched), Vec::<String>::new());
     let field = format!(
-        "{store}def used(holder: Holder) -> str fails Nope:\n    with holder.db.transaction()? as tx:\n        return tx.log\n    \"\"\n"
+        "{store}def used(holder: Holder) -> str fails Nope:\n    with holder.db.transaction()? as tx:\n        return tx.log\n    return \"\"\n"
     );
     let said = "`transaction` is a `with` source each type in a Lite | Postgres has, called on what `is` can't narrow @ holder.db.transaction()";
     assert_eq!(problems(&field), [said]);
@@ -111,27 +111,27 @@ fn a_with_source_on_a_union_runs_the_member_it_holds() {
 #[test]
 fn a_match_over_a_union_handles_each_member() {
     let empty: [&str; 0] = [];
-    let both = "def name(s: Shape) -> str:\n    match s:\n        case Circle(radius): \"c\"\n        case Square(side): \"s\"\n";
+    let both = "def name(s: Shape) -> str:\n    match s:\n        case Circle(radius): return \"c\"\n        case Square(side): return \"s\"\n";
     assert_eq!(problems(&format!("{SHAPES}{both}")), empty);
-    let one = "def name(s: Shape) -> str:\n    match s:\n        case Circle(radius): \"c\"\n";
+    let one = "def name(s: Shape) -> str:\n    match s:\n        case Circle(radius): return \"c\"\n";
     assert_eq!(problems(&format!("{SHAPES}{one}")), ["this `match` doesn't handle `Square` @ s"]);
-    let rest = "def name(s: Shape) -> str:\n    match s:\n        case Circle(radius): \"c\"\n        case _: \"other\"\n";
+    let rest = "def name(s: Shape) -> str:\n    match s:\n        case Circle(radius): return \"c\"\n        case _: return \"other\"\n";
     assert_eq!(problems(&format!("{SHAPES}{rest}")), empty);
 }
 
 #[test]
 fn a_union_has_no_none_no_member_twice_and_no_type_parameter() {
     assert_eq!(
-        helps("def f(x: str | None) -> int:\n    1\n"),
+        helps("def f(x: str | None) -> int:\n    return 1\n"),
         ["write `str?`: an optional says it can be missing"]
     );
     assert_eq!(
-        helps("struct A:\n    n: int\n\nstruct B:\n    n: int\n\ndef f(x: A | B | None) -> int:\n    1\n"),
+        helps("struct A:\n    n: int\n\nstruct B:\n    n: int\n\ndef f(x: A | B | None) -> int:\n    return 1\n"),
         ["write `(A | B)?`: an optional says it can be missing"]
     );
-    assert_eq!(problems("def f(x: int | int) -> int:\n    1\n"), ["`int` is in this union twice @ int"]);
+    assert_eq!(problems("def f(x: int | int) -> int:\n    return 1\n"), ["`int` is in this union twice @ int"]);
     assert_eq!(
-        problems("def f[T](x: T | int) -> int:\n    1\n"),
+        problems("def f[T](x: T | int) -> int:\n    return 1\n"),
         ["`T` is a type parameter, which can't be part of a union @ T"]
     );
 }
@@ -148,7 +148,7 @@ fn a_union_is_a_key_when_each_type_in_it_is() {
 #[test]
 fn a_union_fits_an_interface_every_type_in_it_fits() {
     let empty: [&str; 0] = [];
-    let interface = "interface HasArea:\n    def area(self) -> float\n\ndef total[T: HasArea](items: list[T]) -> float:\n    sum(item.area() for item in items)\n\n";
+    let interface = "interface HasArea:\n    def area(self) -> float\n\ndef total[T: HasArea](items: list[T]) -> float:\n    return sum(item.area() for item in items)\n\n";
     let fits = format!(
         "{SHAPES}{interface}def main(stdout: Stdout):\n    shapes: list[Shape] = [Circle(radius=1.0)]\n    stdout.print(total(shapes))\n"
     );

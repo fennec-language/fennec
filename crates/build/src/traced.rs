@@ -243,8 +243,8 @@ mod tests {
     }
 
     const SOURCE: &str = "LIMIT: int = 1\n\nstruct Point:\n    x: int\n\n\
-        def ran(p: Point) -> int:\n    if p.x > LIMIT:\n        return other()\n    p.x\n\n\
-        def other() -> int:\n    1\n\ntest \"t\":\n    assert ran(Point(x=1)) == 1\n";
+        def ran(p: Point) -> int:\n    if p.x > LIMIT:\n        return other()\n    return p.x\n\n\
+        def other() -> int:\n    return 1\n\ntest \"t\":\n    assert ran(Point(x=1)) == 1\n";
 
     #[test]
     fn a_function_it_didnt_run_changes_nothing_unless_its_name_comes_or_goes() {

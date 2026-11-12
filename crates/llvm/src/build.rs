@@ -637,7 +637,7 @@ mod tests {
             ));
         }
         format!(
-            "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+            "def at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
         )
     }
 

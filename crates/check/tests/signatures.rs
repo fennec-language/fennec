@@ -26,7 +26,7 @@ fn return_types_come_from_the_last_expression_and_returns() {
         ("def f(n: int):\n    while True:\n        return n\n", Type::Int),
         ("def f(n: int):\n    while True:\n        if n > 0:\n            break\n    'done'\n", Type::Str),
         ("def f(n: int):\n    for i in [n]:\n        yield i\n", Type::Iterator(Box::new(Type::Int))),
-        ("def f(n: float) -> float:\n    n * 1.0\n", Type::Float),
+        ("def f(n: float) -> float:\n    return n * 1.0\n", Type::Float),
         ("def f(n: int):\n    [n] + [n]\n", list(Type::Int)),
         ("def f(n: int):\n    'x' if n > 0 else None\n", optional(Type::Str)),
         ("def f(n: int):\n    x = [1].index(n)\n    x else 0\n", Type::Int),
@@ -99,7 +99,7 @@ fn functions_that_can_fail_return_results() {
             a(n)?
 
         def e(n: int) -> int:
-            a(n)?
+            return a(n)?
 
         def g(n: int):
             fail Oops('always')
@@ -279,7 +279,7 @@ fn recursive_functions_give_back_what_their_arrow_says() {
             fib(n - 1) + fib(n - 2)
 
         def fact(n: int) -> int:
-            1 if n <= 1 else n * fact(n - 1)
+            return 1 if n <= 1 else n * fact(n - 1)
     ";
     assert_eq!(
         crate::problems_as_written(program),
@@ -306,15 +306,15 @@ fn written_return_types_are_checked() {
         def a(n: int) -> str:
             if n > 0:
                 return n
-            'ok'
+            return 'ok'
 
         def b(n: int) -> int:
-            [1].index(n)
+            return [1].index(n)
 
         def c(n: int) -> int?:
             if n > 0:
                 return None
-            n
+            return n
 
         def d(n: int) -> int:
             if n > 0:
@@ -330,7 +330,7 @@ fn written_return_types_are_checked() {
         problems(program),
         ["`a` returns a str, but this is an int @ n", "this might be None @ [1].index(n)",]
     );
-    assert_eq!(helps("def a(n: int) -> str:\n    n\n"), ["return a str, or change the return type"]);
+    assert_eq!(helps("def a(n: int) -> str:\n    return n\n"), ["return a str, or change the return type"]);
 }
 
 #[test]
@@ -371,12 +371,12 @@ fn values_from_several_places_combine() {
         def c(n: int) -> int?:
             if n > 0:
                 return a(n)?
-            b(n)?
+            return b(n)?
 
         def d(n: int) -> int:
             if n > 1:
                 fail Oops('x')
-            a(n)?
+            return a(n)?
     ";
     let both = Type::Errors(vec!["Oops".to_owned(), "Other".to_owned()]);
     assert_eq!(returns(program, "c"), Ok(result(optional(Type::Int), both)));
@@ -428,18 +428,18 @@ fn only_the_value_a_function_ends_with_is_checked_against_its_return_type() {
 
         def a() -> int:
             return 1
-            'never reached'
+            return 'never reached'
 
         def b(n: int) -> str:
             yield n
             return n
 
         def c(n: int) -> int:
-            risky(n)
+            return risky(n)
 
         def d(n: int) -> int:
             x = risky(n)?
-            risky(x)?
+            return risky(x)?
     ";
     assert_eq!(problems(program), ["this is the result of something that can fail @ risky(n)"]);
 }

@@ -10,24 +10,24 @@ const PROGRAM: &str = "struct Money:
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
     def shown(self) -> str:
-        f\"{self.cents}\"
+        return f\"{self.cents}\"
 
 enum Shape:
     Circle(radius: float)
     Square(side: float)
 
 def double(x: int) -> int:
-    x * 2
+    return x * 2
 
 def area(shape: Shape) -> float:
     match shape:
         case .Circle(radius):
-            3.0 * radius * radius
+            return 3.0 * radius * radius
         case .Square(side):
-            side * side
+            return side * side
 
 test \"doubling\":
     assert double(2) == 4
@@ -68,8 +68,8 @@ fn every_test_has_a_key() {
 #[test]
 fn layout_and_comments_change_no_key() {
     let moved = PROGRAM.replace(
-        "def double(x: int) -> int:\n    x * 2\n",
-        "# Twice x.\ndef double(x: int) -> int:\n\n    x * 2\n",
+        "def double(x: int) -> int:\n    return x * 2\n",
+        "# Twice x.\ndef double(x: int) -> int:\n\n    return x * 2\n",
     );
     assert_eq!(affected(PROGRAM, &moved), Vec::<String>::new());
 }
@@ -79,10 +79,10 @@ const LOCALS: &str = "def total(items: list[int]) -> int:
     mut sum = 0
     for item in items:
         sum += item
-    sum
+    return sum
 
 def shown(pairs: list[(str, int)]) -> list[str]:
-    [f\"{name}={count}\" for name, count in pairs if count > 0]
+    return [f\"{name}={count}\" for name, count in pairs if count > 0]
 
 test \"adds\":
     values = [1, 2, -4]
@@ -137,7 +137,7 @@ fn renaming_a_local_affects_no_test() {
 #[test]
 fn renaming_a_parameter_or_swapping_locals_still_counts() {
     assert_eq!(affected(LOCALS, &LOCALS.replace("items", "numbers")), ["adds"]);
-    let source = "def f() -> int:\n    a = 5\n    b = 2\n    a - b\n\ntest \"t\":\n    assert f() == 3\n";
+    let source = "def f() -> int:\n    a = 5\n    b = 2\n    return a - b\n\ntest \"t\":\n    assert f() == 3\n";
     assert_eq!(affected(source, &source.replace("a - b", "b - a")), ["t"]);
 }
 

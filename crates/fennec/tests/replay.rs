@@ -217,8 +217,8 @@ def main(net: Net, stdout: Stdout) fails NetError:
             if line == \"stop\":
                 break
             lock total as ref held:
-                held.add(line.len())
-            conn.write(f\"{line.len()}\\n\")?
+                held.add(len(line))
+            conn.write(f\"{len(line)}\\n\")?
     lock total as held:
         stdout.print(held.bytes)
 ";
@@ -315,7 +315,7 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
 const STOPPING_SERVER: &str = "from std.net import Request, Response
 
 def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
+    return Response(status=200, body=request.path.encode())
 
 def main(net: Net, signals: Signals, stdout: Stdout):
     with net.listen(0)? as server:
@@ -431,7 +431,7 @@ def main(stdout: Stdout) fails Crashed:
         with launch(() => takes(order, \"b\"))?:
             pass
     lock order as held:
-        stdout.print(held.seen.len(), \"\".join(held.seen))
+        stdout.print(len(held.seen), \"\".join(held.seen))
 ";
 
 /// Ranges of a `parallel` call taking turns at one `shared` value.
@@ -441,13 +441,13 @@ const RANGES_ONE_LOCK: &str = "struct Order:
 def visit(order: shared Order, at: int) -> int:
     lock order as ref held:
         held.seen.append(at)
-    at
+    return at
 
 def main(stdout: Stdout):
     shared order = Order()
     done = [visit(order, at) for at in parallel(range(32))]
     lock order as held:
-        stdout.print(done.len(), held.seen)
+        stdout.print(len(done), held.seen)
 ";
 
 /// Tasks contending for one `shared` value take its lock in the order the recording did, however

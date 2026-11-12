@@ -57,7 +57,7 @@ fn checks_kept(checks: &[fennec_llvm::CheckLeft], reach: &fennec_ir::HotReach) -
                 CheckKind::Overflow | CheckKind::FloatDivideByZero => return None,
                 CheckKind::Bounds => (
                     "this index may be outside what it indexes, so it keeps its bounds check".to_owned(),
-                    "index with a loop's count over the length, as in `for i in range(items.len())`",
+                    "index with a loop's count over the length, as in `for i in range(len(items))`",
                 ),
                 CheckKind::MissingKey => (
                     "this key may be missing, so it keeps its check".to_owned(),

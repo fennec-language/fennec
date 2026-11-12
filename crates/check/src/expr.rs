@@ -753,7 +753,7 @@ impl FnCx<'_> {
             (UnaryOp::Not, _) => {
                 self.error(
                     Diagnostic::new(format!("`not` needs a bool, but this is {}", article(&ty.kind())), span)
-                        .with_help("Fennec has no truthiness: compare explicitly, like `items.len() == 0`"),
+                        .with_help("Fennec has no truthiness: compare explicitly, like `len(items) == 0`"),
                 );
                 Type::Bool
             }
@@ -1361,7 +1361,7 @@ fn swallows_failure(written: Span, inner: &Type) -> Diagnostic {
     let end = Span { start: written.end, end: written.end };
     Diagnostic::new("this can fail as well as give `None`, and a plain `else` would handle both", written)
         .with_help(format!(
-            "pass the failure up with `?` first, so `else` handles the `None`, or handle the failure with `else as why:`, whose block gives {}",
+            "pass the failure up with `?` first, so `else` handles the `None`, or handle the failure with `except why:`, whose block gives {}",
             a(inner)
         ))
         .with_hint("pass the failure up", end, "?")

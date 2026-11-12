@@ -195,6 +195,8 @@ pub struct Conn {
     /// Whether anything's been read since it last wrote: a read before anything has is waiting
     /// for a next message, not partway through one.
     read_since_write: Cell<bool>,
+    /// When every read has to be done by, and how long that was, once `reads_within` is called.
+    reads_by: Cell<Option<(Instant, Duration)>>,
 }
 
 /// How long a connection has to finish its TLS handshake.
@@ -220,6 +222,7 @@ impl Conn {
             tls: RefCell::new(None),
             draining: None,
             read_since_write: Cell::new(false),
+            reads_by: Cell::new(None),
         }
     }
 
@@ -295,9 +298,25 @@ impl Conn {
         }
     }
 
+    /// Has every read from now on done within `after`, however long each is given.
+    pub fn reads_within(&self, after: Duration) {
+        self.reads_by.set(Some((Instant::now() + after, after)));
+    }
+
+    /// How long a read given `timeout` waits: no longer than what's left before every read has to
+    /// be done by.
+    fn read_until(&self, timeout: Option<Duration>) -> Until {
+        match self.reads_by.get() {
+            Some((by, whole)) if timeout.is_none_or(|timeout| Instant::now() + timeout > by) => {
+                Until { timeout: Some(whole), deadline: Some(by) }
+            }
+            _ => Until::after(timeout),
+        }
+    }
+
     /// Up to `count` bytes, empty at the end.
     pub fn read(&self, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
-        let until = Until::after(timeout);
+        let until = self.read_until(timeout);
         {
             let mut ahead = self.ahead.borrow_mut();
             if !ahead.is_empty() {
@@ -328,7 +347,7 @@ impl Conn {
     /// `read_line`, which with `crlf` fails on a line ended by a bare `\n`.
     pub fn read_line_crlf(&self, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
         let most = crate::stdlib::net::MOST_LINE_BYTES;
-        let until = Until::after(timeout);
+        let until = self.read_until(timeout);
         // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
         // once however slowly the line comes.
         let mut looked = 0;
@@ -849,7 +868,11 @@ impl Io {
         let Some(mut here) = self.servers.remove(&id) else { return };
         self.waiting.retain(|_, (task, ..)| !here.tasks.contains(task));
         self.ready.retain(|(task, _)| !here.tasks.contains(task));
-        for task in here.tasks.drain() {
+        // In the order the tasks started, not the set's, so their cleanups run the same way each
+        // time.
+        let mut tasks: Vec<TaskId> = here.tasks.drain().collect();
+        tasks.sort_unstable();
+        for task in tasks {
             self.owners.remove(&task);
             let _ = self.with_own_temporaries(task, |io| io.scheduler.cancel(task));
             self.temporaries.remove(&task);
@@ -1068,7 +1091,9 @@ impl Io {
     /// next message are woken, to end, before it drains as `break` does.
     fn drain_stopping(&mut self, id: u64) {
         if let Some(here) = self.servers.get(&id) {
-            let idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
+            let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
+            // In the order they parked, not the set's.
+            idle.sort_unstable();
             for token in idle {
                 let parked = self.waiting.get(&token).map(|(task, ..)| *task);
                 if let Some(task) = parked.filter(|task| here.tasks.contains(task)) {
@@ -1184,19 +1209,25 @@ impl Io {
                 self.ready.push_back((task, Wake::Ready(READY)));
             }
         }
-        let now = Instant::now();
-        let expired: Vec<usize> = self
-            .waiting
-            .iter()
-            .filter(|(_, (_, _, deadline))| deadline.is_some_and(|deadline| deadline <= now))
-            .map(|(token, _)| *token)
-            .collect();
-        for token in expired {
+        for token in timed_out(&self.waiting, Instant::now()) {
             if let Some((task, ..)) = self.waiting.remove(&token) {
                 self.ready.push_back((task, Wake::Ready(TIMED_OUT)));
             }
         }
     }
+}
+
+/// The waits whose deadlines have passed by `now`, soonest first and, at the same deadline, in the
+/// order they parked, rather than the map's: tasks sleeping as long wake in the order they slept.
+fn timed_out(waiting: &HashMap<usize, (TaskId, Interest, Option<Instant>)>, now: Instant) -> Vec<usize> {
+    let mut due: Vec<(Instant, usize)> = waiting
+        .iter()
+        .filter_map(|(token, (_, _, deadline))| {
+            deadline.filter(|deadline| *deadline <= now).map(|at| (at, *token))
+        })
+        .collect();
+    due.sort_unstable();
+    due.into_iter().map(|(_, token)| token).collect()
 }
 
 /// Waits for each worker to leave a server. A task parks meanwhile, looking again now and then, as

@@ -25,7 +25,8 @@ def parse_all(texts: list[str]) -> list[int]:
     mut found = []
     for text in texts:
         # A failure counts as missing too.
-        found.append(int(text) else continue)
+        number = int(text) except InvalidValue(): continue
+        found.append(number)
     return found
 
 def first_small(rows: list[list[str]]) -> str:

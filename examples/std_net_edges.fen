@@ -137,13 +137,18 @@ def received(net: Net, timeout: Duration?) -> str fails NetError:
             _ = socket.receive(timeout=timeout)?
     return "received"
 
+## Bytes as text, or "?" when they aren't UTF-8.
+def text_or_mark(data: bytes) -> str:
+    text = data.decode() except InvalidValue(): "?"
+    return text
+
 ## Each packet's data that a socket's loop gives, sent two at a time.
 def looped(net: Net) -> list[str] fails NetError:
     with net.udp(port=9011)? as socket:
         with net.udp()? as other:
             other.send_to("a", "localhost:9011")?
             other.send_to("b", "localhost:9011")?
-        return [packet.data.decode() else "?" for packet in socket]
+        return [text_or_mark(packet.data) for packet in socket]
     return []
 
 test "a test's socket with no packet waiting gives up at once, so its loop ends"(net: Net):

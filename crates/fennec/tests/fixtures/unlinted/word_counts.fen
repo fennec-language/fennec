@@ -7,10 +7,10 @@ def tally(words: list[str]) -> dict[str, int]:
     return counts
 
 def total(counts: dict[str, int]) -> int:
-    mut sum = 0
+    mut subtotal = 0
     for word in counts:
-        sum += counts[word]
-    return sum
+        subtotal += counts[word]
+    return subtotal
 
 def bump(ref counts: dict[str, int], word: str):
     counts[word] = (counts.get(word) else 0) + 1

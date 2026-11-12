@@ -92,7 +92,8 @@ test "text that isn't CSV says where":
 def main(stdout: Stdout):
     records = csv.records(SCORES) except ParseError(): []
     for record in records:
-        stdout.print(record["name"], int(record["score"]) else 0)
+        score = int(record["score"]) except InvalidValue(): 0
+        stdout.print(record["name"], score)
     loads_value = csv.loads("a,b\n1,2\n") except ParseError(): []
     stdout.print(loads_value)
     dumps_value = csv.dumps([["name", "note"], ["ash", "likes, commas"]]) except InvalidValue(): ""

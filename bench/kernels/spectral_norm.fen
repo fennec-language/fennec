@@ -9,10 +9,10 @@ def times(v: list[float], transpose: bool) -> list[float]:
     n = len(v)
     mut out = [0.0 for _ in range(n)]
     for i in range(n):
-        mut sum = 0.0
+        mut total = 0.0
         for j in range(n):
-            sum += (a(j, j=i) if transpose else a(i, j=j)) * v[j]
-        out[i] = sum
+            total += (a(j, j=i) if transpose else a(i, j=j)) * v[j]
+        out[i] = total
     return out
 
 def times_transposed(v: list[float]) -> list[float]:

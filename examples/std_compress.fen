@@ -64,4 +64,5 @@ test "any bytes come back as they were" for numbers: list[int]:
 def main(stdout: Stdout):
     save = "{\"level\": 3, \"score\": 120} " * 100
     small = packed_save(save)
-    stdout.print(len(save), len(small), (compress.gunzip(small) else bytes([])) == save.encode())
+    unpacked = compress.gunzip(small) except InvalidValue(): bytes([])
+    stdout.print(len(save), len(small), unpacked == save.encode())

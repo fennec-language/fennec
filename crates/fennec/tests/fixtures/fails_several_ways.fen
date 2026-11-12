@@ -38,6 +38,11 @@ def said(table: dict[str, str], key: str) -> str:
             return f"{value}>{limit}"
     return f"ok {value}"
 
+## A level, or -1 for text that isn't one.
+def level_or_minus_one(text: str) -> int:
+    found = level(text) except .NotANumber() | .Empty | .TooBig(): -1
+    return found
+
 def through(read: (str) -> int fails ParseError | RangeError, text: str) -> int fails ParseError | RangeError:
     return read(text)?
 
@@ -45,9 +50,9 @@ def main(stdout: Stdout):
     table = {"a": "3", "b": "x", "c": "", "d": "12"}
     for key in ["a", "b", "c", "d", "e"]:
         stdout.print(said(table, key))
-    results = [level(text) else -1 for text in ["1", "q", "99"]]
-    kept = [level(text) else -1 for text in ["5", "", "50"]]
-    stdout.print(len(results), len(kept), [level(t) else -1 for t in ["8", "z", "10"]])
+    results = [level_or_minus_one(text) for text in ["1", "q", "99"]]
+    kept = [level_or_minus_one(text) for text in ["5", "", "50"]]
+    stdout.print(len(results), len(kept), [level_or_minus_one(t) for t in ["8", "z", "10"]])
     through_value = through(level, "6") except .NotANumber() | .Empty | .TooBig(): 0
     through_value2 = through(level, "") except .NotANumber() | .Empty | .TooBig(): 0
     through_value3 = through(text => level(text)?, "77") except .NotANumber() | .Empty | .TooBig(): 0

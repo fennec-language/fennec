@@ -49,7 +49,8 @@ export def respond(
                 lock notes as current:
                     return answer(request, status=200, text=json.dumps(current.find(words)))
             case "POST":
-                draft = json.loads[Draft](request.body.decode() else "") except why:
+                body = request.body.decode() except InvalidValue(): ""
+                draft = json.loads[Draft](body) except why:
                     return problem(request, status=400, message=why.message)
                 now = clock.time()
                 note = Note(
@@ -78,7 +79,8 @@ export def respond(
         case "GET":
             return answer(request, status=200, text=json.dumps(found))
         case "PUT":
-            draft = json.loads[Draft](request.body.decode() else "") except why:
+            body = request.body.decode() except InvalidValue(): ""
+            draft = json.loads[Draft](body) except why:
                 return problem(request, status=400, message=why.message)
             changed = copy(found, title=draft.title, body=draft.body, changed=clock.time())
             lock notes as ref current:

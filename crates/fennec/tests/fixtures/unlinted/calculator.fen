@@ -30,8 +30,8 @@ def run(calc: Calc, arg: int) -> int:
             return run(a, arg) * run(b, arg)
         case .Clamp(Range(-50, high), inner):
             return min(max(run(inner, arg), -50), high)
-        case .Clamp(range, inner):
-            return min(max(run(inner, arg), range.low), range.high)
+        case .Clamp(bounds, inner):
+            return min(max(run(inner, arg), bounds.low), bounds.high)
 
 def fold(calc: Calc) -> Calc:
     match calc:
@@ -45,8 +45,8 @@ def fold(calc: Calc) -> Calc:
             return .Op(sign, left=fold(a), right=fold(b))
         case .Times(a, b):
             return .Times(fold(a), right=fold(b))
-        case .Clamp(range, inner):
-            return .Clamp(range, fold(inner))
+        case .Clamp(bounds, inner):
+            return .Clamp(bounds, fold(inner))
         case other:
             return other
 

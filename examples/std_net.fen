@@ -16,6 +16,16 @@ def line_of(conn: Connection) -> str fails NetError:
     return conn.read_line()? else ""
 
 ## Every line a connection is sent, until the other side is done.
+## A connection's lines, or none at all when it fails.
+def lines_or_empty(conn: Connection) -> list[str]:
+    lines = lines_of(conn) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): []
+    return lines
+
+## Bytes as text, or "" when they aren't UTF-8.
+def text_of(data: bytes) -> str:
+    text = data.decode() except InvalidValue(): ""
+    return text
+
 def lines_of(conn: Connection) -> list[str] fails NetError:
     return list(conn.lines()?)
 
@@ -65,7 +75,7 @@ test "a server gives each connection its own task"(net: Net):
             with net.connect("localhost", 9000)? as client:
                 client.write(f"{name}\n")?
         # In a test, a server's loop ends once no connection is waiting.
-        heard = [lines_of(conn) else [] for conn in parallel(server)]
+        heard = [lines_or_empty(conn) for conn in parallel(server)]
         assert heard == [["ash"], ["kit"]]
 
 test "bytes go as they are"(net: Net):
@@ -106,7 +116,7 @@ test "a receive with nothing waiting gives up, and a loop over a socket ends"(ne
         socket.send_to("one", f"localhost:{socket.port}")?
         socket.send_to("two", f"localhost:{socket.port}")?
         # In a test, nothing more can come once none is waiting, so the loop ends.
-        heard = [packet.data.decode() else "" for packet in socket]
+        heard = [text_of(packet.data) for packet in socket]
         assert heard == ["one", "two"]
 
 test "a connection closed here says so when it's written to"(net: Net):

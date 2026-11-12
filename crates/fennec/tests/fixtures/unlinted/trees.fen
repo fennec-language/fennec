@@ -97,16 +97,16 @@ def count_down(n: int) -> Chain:
     return chain
 
 def total(chain: Chain) -> int:
-    mut sum = 0
+    mut subtotal = 0
     mut at = chain
     while True:
         match at:
             case .Link(value, rest):
-                sum += value
+                subtotal += value
                 at = rest
             case .End:
                 break
-    return sum
+    return subtotal
 
 struct Program:
     name: str

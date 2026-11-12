@@ -27,7 +27,8 @@ def else_return(stdout: Stdout) -> int:
 
 def else_return_deeper(stdout: Stdout) -> int:
     with lent(stdout, "else return in a line") as one:
-        stdout.print(maybe(one + 1) else return -2)
+        found = maybe(one + 1) except Missing(): return -2
+        stdout.print(found)
     return 0
 
 def else_fail(stdout: Stdout) -> int fails Missing:

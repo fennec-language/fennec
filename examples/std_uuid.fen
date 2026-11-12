@@ -56,7 +56,8 @@ test "a UUID saves as its text"():
 
 def main(stdout: Stdout, entropy: Entropy, clock: Clock):
     made = uuid.v4(entropy)
-    stdout.print(made.version(), len(str(made)), (Uuid.parse(str(made)) else Uuid()) == made)
+    parsed = Uuid.parse(str(made)) except InvalidValue(): Uuid()
+    stdout.print(made.version(), len(str(made)), parsed == made)
     ordered = uuid.v7(entropy, clock)
     stdout.print(ordered.version(), len(str(ordered)))
     parse_value = Uuid.parse("0F8FAD5B-D9CB-469F-A165-70867728950E") except InvalidValue(): Uuid()

@@ -4,6 +4,11 @@
 from std.postgres import PgMessage, PgReader, password, startup, terminate
 
 ## A server's message: its type, its length, then its body.
+## A cell's text, or "" for bytes that aren't UTF-8.
+def text_of(cell: bytes) -> str:
+    text = cell.decode() except InvalidValue(): ""
+    return text
+
 def sent(kind: str, body: list[int]) -> list[int]:
     size = len(body) + 4
     return [kind.encode()[0], (size >> 24) & 255, (size >> 16) & 255, (size >> 8) & 255, size & 255] + body
@@ -28,7 +33,7 @@ def shown(message: PgMessage) -> str:
         case .Columns(names=names, types=types):
             return f"columns {names} of types {types}"
         case .Row(cells=cells, present=present):
-            texts = [cell.decode() else "" for cell in cells]
+            texts = [text_of(cell) for cell in cells]
             return f"row {texts}, there: {present}"
         case .Done(tag=tag):
             return f"done: {tag}"

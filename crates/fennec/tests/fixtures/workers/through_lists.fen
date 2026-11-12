@@ -18,16 +18,16 @@ def total(tree: Tree) -> int:
         case .Named(name, value):
             return value + len(name)
         case .Many(items):
-            mut sum = 0
+            mut subtotal = 0
             for item in items:
-                sum += total(item)
-            return sum
+                subtotal += total(item)
+            return subtotal
 
 def total_of(trees: list[Tree]) -> int:
-    mut sum = 0
+    mut subtotal = 0
     for tree in trees:
-        sum += total(tree)
-    return sum
+        subtotal += total(tree)
+    return subtotal
 
 def grown(tree: Tree, n: int) -> Tree:
     match tree:

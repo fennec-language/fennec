@@ -19,12 +19,18 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
-    if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+    if llvm_expected() {
         let missing = tools.as_ref().err().map_or("", String::as_str);
         assert!(tools.is_ok(), "FENNEC_EXPECT_LLVM is set, but {missing}");
         assert!(runtime, "FENNEC_EXPECT_LLVM is set, but the runtime library didn't build");
     }
     tools.is_ok() && runtime
+}
+
+/// Whether `FENNEC_EXPECT_LLVM` says LLVM is the backend that has to work here, as CI's Linux and
+/// Windows test jobs say, so what's missing fails a test rather than skipping it.
+pub(crate) fn llvm_expected() -> bool {
+    std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty())
 }
 
 /// A folder of its own, emptied when the test is done.

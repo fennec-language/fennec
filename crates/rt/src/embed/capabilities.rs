@@ -452,7 +452,7 @@ fn wait(nanos: i64) {
     std::thread::sleep(length);
 }
 
-/// `args.len()`.
+/// `len(args)`.
 pub extern "C" fn args_len() -> i64 {
     with(|state| i64::try_from(state.arguments.len()).unwrap_or(i64::MAX))
 }

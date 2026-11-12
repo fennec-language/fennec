@@ -2705,10 +2705,12 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             _ => None,
         });
         let Some(list) = appended else { continue };
+        // Only a list made here, which has one owner. A constant list is one block every reader
+        // shares and nothing frees, so appending to it with no count check would write into it.
         let made_here = block
             .insts
             .iter()
-            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } if dest.0 == list && items.is_empty()));
+            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
             let zeros_counted = fills_with_zeros(function, block, (header, body), list, known);
             let zeros = zeros_counted.is_some();

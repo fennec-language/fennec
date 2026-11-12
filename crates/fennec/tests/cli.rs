@@ -2538,6 +2538,38 @@ fn committed_to_git(repository: &Path) -> std::io::Result<String> {
     git(&["rev-parse", "HEAD"])
 }
 
+/// A kit in group-writable folders, as a umask of 002 makes them, is the user's own and checks.
+/// In a folder anyone can write to, `fennec check` and `fennec update` stop and say the `chmod`
+/// that fixes it, rather than saying there's no kit.toml with one right there.
+#[test]
+#[cfg(unix)]
+fn a_kit_in_group_writable_folders_checks_and_one_anyone_can_write_says_why() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = scratch("kit-group").unwrap();
+    let kit = dir.join("game");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(kit.join("kit.toml"), "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(kit.join("src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n    return\n")
+        .unwrap();
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    for (path, bits) in [(&kit, 0o775), (&kit.join("src"), 0o775), (&kit.join("kit.toml"), 0o664)] {
+        mode(path, bits);
+    }
+    let checked = fennec_in(&kit.join("src"), &["check"], "").unwrap();
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    mode(&kit, 0o777);
+    let fix = format!("`chmod o-w {}` fixes it", std::fs::canonicalize(&kit).unwrap().display());
+    for args in [&["check"][..], &["update"]] {
+        let refused = fennec_in(&kit.join("src"), args, "").unwrap();
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success() && said.contains(&fix), "{args:?}: {said}");
+    }
+    mode(&kit, 0o755);
+}
+
 /// A kit fetched from git can't name another by `file://`: it could carry a bare repository and
 /// name it, or point at any repository of the user's, and have it fetched into the build. The
 /// real `fennec` refuses it, naming the kit and the address, however the tests' own library calls

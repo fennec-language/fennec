@@ -2961,6 +2961,96 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A program or kit handed nothing can't reach the standard library's internals: `std.intrinsics`
+/// turns a number into a pointer, so reaching it would make "a kit does I/O only with what it's
+/// handed" false. Every way of writing the import is refused, in a program and in a dependency,
+/// by the module it reaches rather than how it's spelled, and so is an `@intrinsic` of its own.
+#[test]
+fn a_program_or_kit_handed_nothing_cant_reach_std_internals() {
+    let dir = scratch("std-internals").unwrap();
+    let uses = |module: &str| {
+        format!(
+            "def main(stdout: Stdout):\n    channel = {module}.channel_new(1)\n    stdout.print(channel)\n"
+        )
+    };
+    let refused = "`std.intrinsics` is for the standard library";
+    let programs = [
+        format!("from std import intrinsics\n\n{}", uses("intrinsics")),
+        format!("from std import intrinsics as inner\n\n{}", uses("inner")),
+        format!("from std import json, intrinsics\n\n{}", uses("intrinsics")),
+        format!("from std import intrinsics, json\n\n{}", uses("intrinsics")),
+        format!("import std.intrinsics\n\n{}", uses("std.intrinsics")),
+        format!("import std.intrinsics as inner\n\n{}", uses("inner")),
+        "from std.intrinsics import channel_new\n\ndef main(stdout: Stdout):\n    stdout.print(channel_new(1))\n"
+            .to_owned(),
+        "from std.intrinsics import channel_new as made\n\ndef main(stdout: Stdout):\n    stdout.print(made(1))\n"
+            .to_owned(),
+    ];
+    for (at, source) in programs.iter().enumerate() {
+        let program = dir.join(format!("reach_{at}.fen"));
+        std::fs::write(&program, source).unwrap();
+        // `run` checks as `check` does: once is enough to show it does.
+        let commands: &[&str] = if at == 0 { &["check", "run"] } else { &["check"] };
+        for &command in commands {
+            let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
+            assert!(!output.status.success(), "{command} {source}");
+            assert!(text(&output.stderr).contains(refused), "{command} {source}: {}", text(&output.stderr));
+            assert!(text(&output.stdout).is_empty(), "{command} {source}: {}", text(&output.stdout));
+        }
+    }
+    // The other names of a list are still imported, so the refusal is the only error.
+    let listed = dir.join("listed.fen");
+    std::fs::write(
+        &listed,
+        "from std import json, intrinsics\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n",
+    )
+    .unwrap();
+    let output = fennec(&["check", listed.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stderr).matches("error:").count(), 1, "{}", text(&output.stderr));
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
+    let own = dir.join("own_intrinsic.fen");
+    std::fs::write(&own, "@intrinsic\ndef channel_new(size: int) -> int\n\ndef main(stdout: Stdout):\n    stdout.print(channel_new(1))\n").unwrap();
+    let output = fennec(&["check", own.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&output.stderr).contains("only the standard library has `@intrinsic` functions"),
+        "{}",
+        text(&output.stderr)
+    );
+
+    // A dependency that writes the import is refused too, though the program never names it.
+    write_kit(
+        &dir.join("helper"),
+        "helper",
+        "",
+        &[(
+            "lib.fen",
+            "from std import intrinsics\n\nexport def size() -> int:\n    return intrinsics.channel_new(1)\n",
+        )],
+    )
+    .unwrap();
+    let game = dir.join("game");
+    write_kit(
+        &game,
+        "game",
+        "[dependencies]\nhelper = { path = \"../helper\" }\n",
+        &[("main.fen", "from helper import size\n\ndef main(stdout: Stdout):\n    stdout.print(size())\n")],
+    )
+    .unwrap();
+    for command in ["check", "build"] {
+        let output = crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}");
+        assert!(text(&output.stderr).contains(refused), "{command}: {}", text(&output.stderr));
+        assert!(text(&output.stderr).contains("lib.fen"), "{command}: {}", text(&output.stderr));
+        assert!(text(&output.stdout).is_empty(), "{command}: {}", text(&output.stdout));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// An `extend` has to be in the kit that declares the type. Another kit's extension would change
 /// what that kit's own code does with it: a small kit gave `b.Amount` an `==` that's always true,
 /// and `b`'s own comparison ran it. Refused in a dependency extending another dependency's type or

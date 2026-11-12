@@ -5993,6 +5993,64 @@ def main(stdout: Stdout):
     )
 }
 
+/// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,
+/// gives back what was pushed in a launched task as it does on the main thread, after the main
+/// thread has read the constant over and over. Each read there once took the constant's count down,
+/// below the mark the first launch shares never-freed blocks by, so the task's push was lost.
+#[test]
+fn a_constant_field_pushed_to_in_a_task_keeps_what_was_pushed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "constant_field_in_task",
+        r#"from std.concurrent import Crashed
+
+error Oops:
+    why: str
+
+NOTHING = list[(str, int)]()
+
+struct Holder:
+    items = NOTHING
+
+    def push(ref self, n: int):
+        self.items.append(("x", n))
+
+    def top(ref self) -> int fails Oops:
+        last = self.items.pop() else fail Oops(why="empty")
+        return last[1]
+
+def whole() -> int fails Oops:
+    mut holder = Holder()
+    holder.push(7)
+    return holder.top()? * 10 + NOTHING.len()
+
+def reads() -> int:
+    mut total = 0
+    for _ in range(50):
+        total += NOTHING.len()
+    return total
+
+## Called only on the main thread, so its code counts the constant there.
+def main_reads() -> int:
+    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+
+def in_task(stdout: Stdout) fails Oops:
+    stdout.print("task:", whole()?, reads())
+
+def main(stdout: Stdout) fails Oops | Crashed:
+    # Kept to say after the task, which prints first.
+    before = reads() + main_reads()
+    first = whole()?
+    with launch(() => in_task(stdout)?)?:
+        pass
+    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+"#,
+        "task: 70 0\nmain: 0 70 after: 70 0\n",
+    )
+}
+
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
 /// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
 /// refused when it's built, saying why, rather than failing at line 1 when it's run.

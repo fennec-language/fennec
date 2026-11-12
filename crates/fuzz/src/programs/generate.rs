@@ -996,8 +996,9 @@ impl Writer<'_> {
     }
 
     /// Copies of collections and of their parts, each name then changed through the ways of
-    /// writing in place its kind takes, and all of them printed. Every write reaches only the name
-    /// it's written to, so a write that reaches a copy too shows in what's printed.
+    /// writing in place its kind takes, walked, handed to tasks, and all of them printed. Every
+    /// write reaches only the name it's written to, so a write that reaches a copy too shows in
+    /// what's printed.
     fn aliasing(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
@@ -1007,7 +1008,7 @@ impl Writer<'_> {
         for _ in 0..6 + self.choice(13) {
             let from = self.choice(held.len());
             let kind = held.get(from).copied().unwrap_or(Held::Numbers);
-            let roll = self.choice(5);
+            let roll = self.choice(6);
             if roll == 0 {
                 steps.push(Alias::Copied { from });
                 held.push(kind);
@@ -1021,17 +1022,33 @@ impl Writer<'_> {
                 held.push(part);
                 continue;
             }
+            if roll == 2 && kind.walked() {
+                steps.push(Alias::Walked { from });
+                continue;
+            }
+            if roll == 2 && kind == Held::Numbers {
+                steps.push(Alias::Built { from, n: i64::from(self.byte() % 19) - 9 });
+                held.push(Held::Holder);
+                continue;
+            }
             let ways: &[Writing] = match kind {
                 Held::Numbers => &[Writing::Append, Writing::Set, Writing::ForRef, Writing::Ref],
                 Held::Holders => {
                     &[Writing::ForRef, Writing::Field, Writing::Append, Writing::PutBack, Writing::Method]
                 }
-                Held::Keepers => {
-                    &[Writing::Field, Writing::Append, Writing::Set, Writing::PutBack, Writing::Method]
-                }
+                Held::Keepers => &[
+                    Writing::Field,
+                    Writing::Append,
+                    Writing::Set,
+                    Writing::PutBack,
+                    Writing::Method,
+                    Writing::Removed,
+                ],
                 Held::Holder => &[Writing::Field, Writing::Append, Writing::Method],
-                Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append],
-                Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method],
+                Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append, Writing::Removed],
+                Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method, Writing::Removed],
+                Held::Counts => &[Writing::Field, Writing::Set, Writing::Removed],
+                Held::Rooms => &[Writing::ForRef, Writing::Set, Writing::Field, Writing::PutBack],
                 Held::Table | Held::Entries => {
                     &[Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
@@ -1039,7 +1056,7 @@ impl Writer<'_> {
                     &[Writing::Field, Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
                 Held::Point => &[Writing::Field, Writing::Method],
-                Held::Text => &[Writing::Joined, Writing::Added],
+                Held::Text => &[Writing::Joined, Writing::Added, Writing::Formatted],
             };
             // Any collection can be handed to tasks, each changing a copy of its own.
             if !matches!(kind, Held::Point | Held::Text) && !self.threadless && self.choice(5) == 0 {

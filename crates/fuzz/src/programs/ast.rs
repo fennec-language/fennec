@@ -371,6 +371,10 @@ pub(crate) enum Held {
     Ledger,
     /// A `Ledger`'s table taken out whole, its items found by the ledger's `Id`s.
     Entries,
+    /// `dict[str, int]`.
+    Counts,
+    /// `Table[Room{id}]`: items each holding a dict of counts and a label.
+    Rooms,
 }
 
 impl Held {
@@ -381,13 +385,19 @@ impl Held {
             Held::Holder | Held::Lists => Some(Held::Numbers),
             Held::Spots | Held::Table | Held::Entries => Some(Held::Point),
             Held::Ledger => Some(Held::Entries),
-            Held::Numbers | Held::Point | Held::Text => None,
+            Held::Rooms => Some(Held::Counts),
+            Held::Numbers | Held::Point | Held::Text | Held::Counts => None,
         }
+    }
+
+    /// Whether it's a dict, or a table of items holding dicts, that a walk reads.
+    pub(crate) const fn walked(self) -> bool {
+        matches!(self, Held::Lists | Held::Spots | Held::Keepers | Held::Counts | Held::Rooms)
     }
 }
 
 /// The names every `Aliased` function starts with, in order, and what each holds.
-pub(crate) const STARTING: [(&str, Held); 8] = [
+pub(crate) const STARTING: [(&str, Held); 10] = [
     ("numbers", Held::Numbers),
     ("holders", Held::Holders),
     ("lists", Held::Lists),
@@ -396,6 +406,8 @@ pub(crate) const STARTING: [(&str, Held); 8] = [
     ("text", Held::Text),
     ("keepers", Held::Keepers),
     ("ledger", Held::Ledger),
+    ("counts", Held::Counts),
+    ("rooms", Held::Rooms),
 ];
 
 /// Where `STARTING`'s table is, whose `Id`s, `first_id` and `second_id`, its copies share.
@@ -404,8 +416,12 @@ pub(crate) const TABLE: usize = 4;
 /// Where `STARTING`'s ledger is, whose table's `Id`s are `entry_a` and `entry_b`.
 pub(crate) const LEDGER: usize = 7;
 
-/// The keys of an `Aliased` function's dicts, and so the places of its lists' first items, each
-/// list starting with two items and never losing one.
+/// Where `STARTING`'s rooms are, whose `Id`s are `room_a` and `room_b`.
+pub(crate) const ROOMS: usize = 9;
+
+/// The keys of an `Aliased` function's dicts. Each is always there but while a `Removed` step
+/// walks what's left, which then puts it back, last. Each list starts with two items and never
+/// loses one.
 pub(crate) const KEYS: [&str; 2] = ["a", "b"];
 
 /// An `Aliased` function: names starting as copies of others' values or parts, changed through
@@ -429,33 +445,12 @@ impl Aliasing {
                 Alias::Part { from, .. } => {
                     held.push(held.get(from).and_then(|from| from.part()).unwrap_or(Held::Numbers));
                 }
-                Alias::Written { .. } | Alias::Tasked { .. } => {}
+                Alias::Built { .. } => held.push(Held::Holder),
+                Alias::Written { .. } | Alias::Tasked { .. } | Alias::Walked { .. } => {}
             }
         }
         held
     }
-}
-
-/// A value an `Aliased` function holds, as the reference evaluator keeps it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Kept {
-    Numbers(Vec<i64>),
-    /// Each `Holder`'s items and tag.
-    Holders(Vec<(Vec<i64>, i64)>),
-    Holder(Vec<i64>, i64),
-    /// Each key's list, in `KEYS`' order.
-    Lists(Vec<Vec<i64>>),
-    /// Each key's point, in `KEYS`' order.
-    Spots(Vec<(i64, i64)>),
-    /// Each point, the first with `first_id` and the second with `second_id`.
-    Table(Vec<(i64, i64)>),
-    Point(i64, i64),
-    Text(String),
-    /// Each key's `Holder`, in `KEYS`' order.
-    Keepers(Vec<(Vec<i64>, i64)>),
-    /// Its table's points, `entry_a`'s first, and its count.
-    Ledger(Vec<(i64, i64)>, i64),
-    Entries(Vec<(i64, i64)>),
 }
 
 /// The name of an `Aliased` function's `n`th name: a starting one's, or `kept1` on for copies.
@@ -463,17 +458,48 @@ pub(crate) fn alias_name(n: usize) -> String {
     STARTING.get(n).map_or_else(|| format!("kept{}", n + 1 - STARTING.len()), |(name, _)| (*name).to_owned())
 }
 
+/// A value an `Aliased` function holds, as the reference evaluator keeps it. A dict's entries
+/// are in the order their keys went in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Kept {
+    Numbers(Vec<i64>),
+    /// Each `Holder`'s items and tag.
+    Holders(Vec<(Vec<i64>, i64)>),
+    Holder(Vec<i64>, i64),
+    Lists(Vec<(String, Vec<i64>)>),
+    Spots(Vec<(String, (i64, i64))>),
+    /// Each point, the first with `first_id` and the second with `second_id`.
+    Table(Vec<(i64, i64)>),
+    Point(i64, i64),
+    Text(String),
+    Keepers(Vec<(String, (Vec<i64>, i64))>),
+    /// Its table's points, `entry_a`'s first, and its count.
+    Ledger(Vec<(i64, i64)>, i64),
+    Entries(Vec<(i64, i64)>),
+    Counts(Vec<(String, i64)>),
+    /// Each room's counts and label, `room_a`'s first.
+    Rooms(Vec<(Vec<(String, i64)>, String)>),
+}
+
 /// What `STARTING`'s names hold at first, made from `base`.
 pub(crate) fn starting(base: i64) -> Vec<Kept> {
+    let keyed = |values: [i64; 2]| -> Vec<(String, i64)> {
+        KEYS.iter().zip(values).map(|(key, value)| ((*key).to_owned(), value)).collect()
+    };
     vec![
         Kept::Numbers(vec![base, base + 1]),
         Kept::Holders(vec![(vec![base + 2, base + 3], base + 4), (vec![base + 5, base + 6], base + 7)]),
-        Kept::Lists(vec![vec![base, base + 8], vec![base + 9, base + 1]]),
-        Kept::Spots(vec![(base, base + 1), (base + 2, base + 3)]),
+        Kept::Lists(vec![("a".to_owned(), vec![base, base + 8]), ("b".to_owned(), vec![base + 9, base + 1])]),
+        Kept::Spots(vec![("a".to_owned(), (base, base + 1)), ("b".to_owned(), (base + 2, base + 3))]),
         Kept::Table(vec![(base, 0), (base + 1, 0)]),
         Kept::Text(format!("t{base}")),
-        Kept::Keepers(vec![(vec![base + 1, base + 2], base + 3), (vec![base + 4, base + 5], base + 6)]),
+        Kept::Keepers(vec![
+            ("a".to_owned(), (vec![base + 1, base + 2], base + 3)),
+            ("b".to_owned(), (vec![base + 4, base + 5], base + 6)),
+        ]),
         Kept::Ledger(vec![(base + 2, 0), (base + 3, 0)], base),
+        Kept::Counts(keyed([base, base + 1])),
+        Kept::Rooms(vec![(keyed([base, 1]), "r".to_owned()), (keyed([2, base]), "s".to_owned())]),
     ]
 }
 
@@ -482,13 +508,19 @@ pub(crate) fn starting(base: i64) -> Vec<Kept> {
 pub(crate) enum Alias {
     /// `kept{n} = from`, a copy of a whole value.
     Copied { from: usize },
-    /// `kept{n} = from[at]`, by place, key or `Id`, or `from.items` of a `Holder`.
+    /// `kept{n} = from[at]`, by place, key or `Id`, or a field holding a collection.
     Part { from: usize, at: usize },
     /// A change to `to`, at place, key or `Id` `at` where it takes one, by `n`.
     Written { to: usize, how: Writing, at: usize, n: i64 },
     /// `[handed{id}_{kind}(from, n=i) for i in parallel(range(3))]`, each task changing its own
     /// copy of what it's handed and giving back a number made from it, printed.
     Tasked { from: usize },
+    /// A dict's `values()`, `keys()` and `items()` walked, or each room's dict in a table of
+    /// them, printed.
+    Walked { from: usize },
+    /// `spare{s} = from`, then `kept{n} = Holder(items=spare{s}, tag=n)`: a struct literal taking
+    /// a list nothing reads again.
+    Built { from: usize, n: i64 },
 }
 
 /// How an `Aliased` step changes a name, each meaning what it says for the kinds that take it.
@@ -512,6 +544,10 @@ pub(crate) enum Writing {
     Joined,
     /// `to += piece`.
     Added,
+    /// `to = f"{to}piece"`.
+    Formatted,
+    /// `_ = to.remove(key)`, a walk of what's left, then the key put back with a new value.
+    Removed,
 }
 
 /// How a `Streamed` stream is read.

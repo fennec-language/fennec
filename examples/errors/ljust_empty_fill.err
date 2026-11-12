@@ -1,0 +1,7 @@
+error: a fill has to be at least one character, to pad text with
+ --> examples/errors/ljust_empty_fill.fen:4:18
+  |
+4 |     stdout.print("ab".ljust(5, fill="") + "|")
+  |                  ^^^^^^^^^^^^^^^^^^^^^^
+  = in `main`
+  = called from the standard library

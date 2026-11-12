@@ -37,6 +37,10 @@ workspace = true
 # and each thread's queue of blocks to free. Programs with no tasks link a runtime without
 # them, so they pay nothing (decisions.md: "Programs with no tasks compile the check away").
 threads = ["dep:crossbeam-deque", "dep:fennec-parked", "dep:mio"]
+# For the fuzzer only, which calls the runtime with made-up values on purpose: a block it can't make
+# for one comes back as 0 rather than stopping the process. A runtime that ships is built without
+# it, so it has no way to give native code 0 for a block at all.
+made-up-inputs = []
 # For AddressSanitizer runs only: a freed block is given back at once rather than kept for
 # reuse, so ASan poisons it and holds it in quarantine, and native code that touches it fails.
 sanitize = []

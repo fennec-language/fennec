@@ -230,11 +230,7 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
     }
     let source = match (get("git"), get("commit"), get("folder"), get("path")) {
         (Some(url), Some(commit), folder, None) => {
-            if url.is_empty()
-                || url.starts_with('-')
-                || url.contains("::")
-                || url.contains(char::is_whitespace)
-            {
+            if !known_address(&url) {
                 return Err((
                     format!("`{url}` isn't a git repository's address"),
                     "give it as `https://...`, `ssh://...` or `git@host:path`".to_owned(),
@@ -349,4 +345,52 @@ fn strip_comment(line: &str) -> &str {
 fn string(value: &str) -> Option<String> {
     let inner = value.strip_prefix('"')?.strip_suffix('"')?;
     if inner.contains(['"', '\\']) { None } else { Some(inner.to_owned()) }
+}
+
+/// Whether a git address is one of the kinds a dependency may have: `https://`, `ssh://`,
+/// `user@host:path`, or `file://` for a repository on this machine. Any other `scheme://` would
+/// have git run a program named for it, `git-remote-<scheme>`, from wherever the `PATH` finds one.
+fn known_address(url: &str) -> bool {
+    if url.is_empty() || url.starts_with('-') || url.contains("::") || url.contains(char::is_whitespace) {
+        return false;
+    }
+    if let Some((scheme, _)) = url.split_once("://") {
+        return matches!(scheme, "https" | "ssh" | "file");
+    }
+    // `user@host:path`, as `git@github.com:owner/kit.git`: a user, a host and a path, with no `/`
+    // before the `:`, which would make it a local path instead.
+    url.split_once(':').is_some_and(|(before, _)| before.contains('@') && !before.contains('/'))
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::known_address;
+
+    /// A dependency's git address is `https://`, `ssh://`, `user@host:path`, or `file://` for a
+    /// repository on this machine. Any other scheme would have git run a helper named for it from
+    /// the `PATH`, and a plain local path, a leading `-` or a `::` transport is refused.
+    #[test]
+    fn a_dependency_by_a_local_path_or_an_unknown_scheme_is_refused() {
+        for taken in [
+            "https://github.com/owner/kit.git",
+            "ssh://git@github.com/owner/kit.git",
+            "git@github.com:owner/kit.git",
+            "file:///home/me/kits/physics",
+        ] {
+            assert!(known_address(taken), "{taken}");
+        }
+        for refused in [
+            "evil://host/kit",
+            "http://example.com/kit.git",
+            "ext::sh -c touch% /tmp/pwned",
+            "-upload-pack=touch",
+            "../physics",
+            "/home/me/kits/physics",
+            "C:/kits/physics",
+            "./a@b:c",
+            "",
+        ] {
+            assert!(!known_address(refused), "{refused}");
+        }
+    }
 }

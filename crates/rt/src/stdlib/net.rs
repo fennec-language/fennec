@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,10 @@ struct Stream {
     /// Whether anything's been read since it last wrote: before anything has, a read is waiting
     /// for a next message, which a server draining ends.
     read_since_write: AtomicBool,
+    /// The label a server's connection prints as, taken as the server accepted it, so connections
+    /// are numbered in the order they came, whichever task serving one starts first. A client's is
+    /// 0 here, as it's labelled as it's made.
+    label: i64,
     /// When every read from now on has to be done by, and how long that was from when it was
     /// set: a server gives a request's head and body one, so a client sending a byte at a time
     /// can't hold a connection open for longer than a request may take.
@@ -168,6 +172,8 @@ pub(crate) struct Fake {
     answers: BTreeMap<String, Value>,
     /// Each request sent, as its method and URL.
     requests: Vec<String>,
+    /// The label of each connection a server accepted, taken as it accepted it.
+    labels: BTreeMap<i64, i64>,
 }
 
 impl Fake {
@@ -246,11 +252,22 @@ impl Fake {
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
-            ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
+            ("Server", "_accept", []) => {
+                let accepted = self.accept(handle);
+                let made = accepted.map(|(connection, peer)| {
+                    let label = self.labels.get(&connection).copied().unwrap_or(0);
+                    with_label(connection_made((connection, peer)), label)
+                });
+                return Ok(made_or_failed(made));
+            }
             // A test's server never drains: its connections are taken one at a time. And a test's
             // connection never waits, so it has no time to run out of.
             ("Server", "_stop_on", _) | ("Connection", "_reads_within", [_]) => return Ok(Value::Unit),
             ("Connection", "draining", []) => return Ok(Value::Bool(false)),
+            // The label of a connection a task serving it makes its `Connection` with.
+            ("Connection", "_label", []) => {
+                return Ok(Value::Int(self.labels.get(&handle).copied().unwrap_or(0)));
+            }
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -393,11 +410,13 @@ impl Fake {
     pub(crate) fn accept(&mut self, handle: i64) -> Result<(i64, String), Failure> {
         let fake = self;
         let Some((port, waiting)) = fake.servers.get_mut(&handle) else { return Err(closed_here()) };
-        waiting.pop_front().ok_or_else(|| {
+        let accepted = waiting.pop_front().ok_or_else(|| {
             Failure::Other(format!(
                 "no connection is waiting for the test's fake server on port {port}, and none can come while a test waits"
             ))
-        })
+        })?;
+        fake.labels.insert(accepted.0, next_label(0));
+        Ok(accepted)
     }
 
     /// A read of `count` bytes in a test that's given `timeout=`, which gives up as `or_timed_out`
@@ -677,8 +696,9 @@ pub(crate) fn real_connection(
             close(handle);
             return Ok(Value::Unit);
         }
-        // What a task serving a connection makes its `Connection` from.
+        // What a task serving a connection makes its `Connection` from: its peer, and its label.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
+        ("_label", []) => return Ok(Value::Int(stream(handle).map_or(0, |stream| stream.label))),
         // Has every read from now on done within `after`.
         ("_reads_within", [after]) => {
             let after = duration_of(after, span)?;
@@ -926,15 +946,61 @@ pub(crate) fn trimmed_line_value(line: Option<&[u8]>) -> Value {
 }
 
 fn connection_made((connection, peer): (i64, String)) -> Made {
-    ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))])
+    let made = ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))]);
+    with_label(made, stream(connection).map_or(0, |stream| stream.label))
+}
+
+/// A connection with the label it was given as its server accepted it. One with none yet, 0, gets
+/// the next as it's made.
+fn with_label((type_name, mut fields): Made, label: i64) -> Made {
+    if label > 0 {
+        fields.push(("_label", Value::Int(label)));
+    }
+    (type_name, fields)
 }
 
 fn packet_value((data, sender): (Vec<u8>, String)) -> Value {
     Value::made("Packet", vec![("data", Value::Bytes(Rc::from(data))), ("sender", Value::str(&sender))])
 }
 
+/// The labels the program has given its connections, servers and UDP sockets, each counted on
+/// its own. A value's label is what it prints as, `Connection(#3)`. Its handle is random, so that
+/// nothing could guess it, and printing it would show a different number every run.
+static LABELS: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+
+/// Starts the labels from 1 again, for a test, so what it prints doesn't depend on the tests that
+/// ran before it.
+pub(crate) fn labels_start_over() {
+    for count in &LABELS {
+        count.store(0, Ordering::Relaxed);
+    }
+}
+
+/// A network value with its label: the next of its kind's.
+fn labelled((type_name, mut fields): Made) -> Made {
+    let kind = match type_name {
+        "Connection" => 0,
+        "Server" => 1,
+        "UdpSocket" => 2,
+        _ => return (type_name, fields),
+    };
+    if fields.iter().any(|(name, _)| *name == "_label") {
+        return (type_name, fields);
+    }
+    fields.push(("_label", Value::Int(next_label(kind))));
+    (type_name, fields)
+}
+
+/// The next label of the kind numbered `kind`: 0 for connections, 1 servers, 2 UDP sockets.
+pub(crate) fn next_label(kind: usize) -> i64 {
+    LABELS.get(kind).map_or(0, |count| count.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 fn made_or_failed(found: Result<Made, Failure>) -> Value {
-    done_or_failed(found.map(|(type_name, fields)| Value::made(type_name, fields)))
+    done_or_failed(found.map(|made| {
+        let (type_name, fields) = labelled(made);
+        Value::made(type_name, fields)
+    }))
 }
 
 pub(crate) fn done_or_failed(done: Result<Value, Failure>) -> Value {
@@ -1107,6 +1173,7 @@ fn keep_stream_as(
         writing: Mutex::new(()),
         served,
         read_since_write: AtomicBool::new(false),
+        label: if served { next_label(0) } else { 0 },
         reads_by: Mutex::new(None),
     };
     Ok(open(|open| {

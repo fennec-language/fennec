@@ -607,7 +607,7 @@ C is called only through the standard library and first-party kits, whose bindin
 
 ## Untrusted code
 
-Den tests and agents' snippets are compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless they're granted. No program runs untrusted code inside itself. Not built yet.
+Fennec has no sandbox for untrusted code: don't run code you don't trust, and don't add dependencies you don't understand. Capabilities limit what any dependency can do, with no `unsafe` and no C outside std and first-party kits, but that's no licence to run code nobody has read. The Den scans, lints and reports each kit's capabilities, and never runs a kit's code. No program loads and runs code at run time.
 
 ## Capabilities
 

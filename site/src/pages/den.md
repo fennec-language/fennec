@@ -22,7 +22,7 @@ The audit scales with what a kit can touch:
 
 ## Publishing
 
-`fennec publish` opens your browser, you tap Touch ID or Face ID, and the source is uploaded with its signed hash. The Den then runs the kit's formatting, lints and tests in a sandbox, and shows what changed in its capabilities and API.
+`fennec publish` opens your browser, you tap Touch ID or Face ID, and the source is uploaded with its signed hash. The Den then checks the kit's formatting and lints, scans its source, and shows what changed in its capabilities and API. It never runs a kit's code, its tests included: authors run their own tests, and a CI badge can show the results.
 
 Accounts use passkeys only, with no passwords and no recovery by email.
 

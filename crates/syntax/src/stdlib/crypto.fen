@@ -8,49 +8,49 @@ def blake3_of_str_chunks(chunks: Iterator[str]) -> str:
     handle = crypto._start("blake3")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def blake3_of_str_list(chunks: list[str]) -> str:
     handle = crypto._start("blake3")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def blake3_of_bytes_chunks(chunks: Iterator[bytes]) -> str:
     handle = crypto._start("blake3")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def blake3_of_bytes_list(chunks: list[bytes]) -> str:
     handle = crypto._start("blake3")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def sha256_of_str_chunks(chunks: Iterator[str]) -> str:
     handle = crypto._start("sha256")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def sha256_of_str_list(chunks: list[str]) -> str:
     handle = crypto._start("sha256")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def sha256_of_bytes_chunks(chunks: Iterator[bytes]) -> str:
     handle = crypto._start("sha256")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 def sha256_of_bytes_list(chunks: list[bytes]) -> str:
     handle = crypto._start("sha256")
     for chunk in chunks:
         crypto._add(handle, chunk)
-    crypto._end(handle)
+    return crypto._end(handle)
 
 ## Something that has to stay secret, like a password, a token or a key: `Secret[str]` or
 ## `Secret[bytes]`. Printing one, putting it in an f-string, making text of it with `str()`, and
@@ -67,17 +67,17 @@ export struct Secret[T]:
 
     ## A secret holding `value`.
     def of(value: T) -> Secret[T]:
-        Secret(_value=value)
+        return Secret(_value=value)
 
     ## What it holds, to use where it's needed, like a request's header. The name says a secret
     ## is being read, here and nowhere else.
     def expose_secret(self) -> T:
-        self._value
+        return self._value
 
     ## Two secrets are equal when what they hold is, compared in time that depends only on
     ## their lengths, as `equal` compares, so how long it takes never says where they differ.
     def ==(self, other: Secret[T]) -> bool:
-        crypto.equal(self._value, other._value)
+        return crypto.equal(self._value, other._value)
 
     ## However it's printed, as through a generic function's `T`, it shows only that it's there.
     def str(self, ref out: StrWriter):

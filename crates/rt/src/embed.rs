@@ -29,6 +29,21 @@ pub mod layout;
 pub mod lists;
 #[cfg(any(test, feature = "threads"))]
 pub(crate) mod live;
+
+/// Without threads, a runtime counts nothing for `FENNEC_LIVE_REPORT`: its one line is whether a
+/// server has taken a stop the program was asked for (see `live` in the threads build).
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) mod live {
+    /// A server has taken a stop the program was asked for, and is draining: written to the report,
+    /// if it's asked for, as `stopping 1`, once.
+    pub(crate) fn stop_taken() {
+        let Some(path) = std::env::var_os("FENNEC_LIVE_REPORT").map(std::path::PathBuf::from) else { return };
+        let writing = path.with_extension("writing");
+        if std::fs::write(&writing, "stopping 1\n").is_ok() {
+            let _ = std::fs::rename(&writing, &path);
+        }
+    }
+}
 pub mod notes;
 pub mod numbers;
 pub mod objects;
@@ -201,9 +216,6 @@ impl Tables {
 #[derive(Clone, Default)]
 struct Output(Rc<RefCell<Vec<u8>>>, bool);
 
-/// Whether the program writes its output as it goes, rather than keeping it for a host.
-static PROGRAM_WRITES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 thread_local! {
     /// Whether what's running here is a launched task of a program that writes as it goes. A
     /// `parallel` range's output is kept to come out whole, but tasks talk to each other, and what
@@ -211,10 +223,13 @@ thread_local! {
     static TASK_WRITES: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Whether a launched task's printing is written as it goes.
+/// Whether a task launched from here writes as it goes: as what launches it does, whether that's a
+/// runtime writing its output live or a task that was launched to. A run's own, so one run writing
+/// live doesn't change how another's tasks print, as tests running one after another in a process
+/// would see.
 #[cfg(any(test, feature = "threads"))]
 pub(in crate::embed) fn program_writes() -> bool {
-    PROGRAM_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+    TASK_WRITES.get() || OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| output.1))
 }
 
 /// Says whether what's about to run here writes as it goes, giving back what was.
@@ -247,9 +262,25 @@ fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
     })
 }
 
-/// What live runs have written, in tests, in the order they wrote it.
+/// What live runs have written, in tests, in the order they wrote it. Every test's runs write here,
+/// so a test reads only what was written since it started (`written_since`).
 #[cfg(test)]
 static WRITTEN: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+/// Where what live runs write has got to, for a test to read only what's written after it
+/// (`written_since`).
+#[cfg(test)]
+pub(in crate::embed) fn written_mark() -> usize {
+    WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+}
+
+/// What live runs have written since `mark`, as text: a test's, along with whatever other tests
+/// running at the same time wrote, which it tells apart by what it looks for.
+#[cfg(test)]
+pub(in crate::embed) fn written_since(mark: usize) -> String {
+    let written = WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(written.get(mark..).unwrap_or_default()).into_owned()
+}
 
 #[cfg(test)]
 fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
@@ -540,9 +571,6 @@ fn capability(kind: i64) -> Capability {
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
     let output = Output(Rc::default(), live);
-    if live {
-        PROGRAM_WRITES.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
     OUTPUT.set(Some(output.clone()));
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
@@ -620,8 +648,11 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
                 threads::forget_ending(&state.heap);
             }
             aot::report_sites(&state.heap.sites);
-            let leftovers =
-                Leftovers { temps: state.temps.len(), boxes: state.heap.live(), counts: state.heap.counts };
+            let leftovers = Leftovers {
+                temps: state.temps.len(),
+                boxes: state.heap.leftover(),
+                counts: state.heap.counts,
+            };
             let finished = (state.output.0.take(), state.failure.take(), leftovers);
             LAST_TRACE.set(std::mem::take(&mut state.trace));
             if leave {
@@ -719,24 +750,36 @@ fn report_failure() {
 /// at all, only a bug in Fennec gives: an input generated code shouldn't pass, or no runtime on the
 /// thread. So it stops the program saying so, rather than giving native code address 0 to read.
 pub(in crate::embed) fn made(what: &str, address: i64) -> i64 {
-    if address == 0 && !MADE_UP_INPUTS.get() {
+    if address == 0 && !made_up_inputs() {
         heap::runtime_bug(&format!("`{what}` made no block"));
     }
     address
 }
 
+#[cfg(feature = "made-up-inputs")]
 thread_local! {
     /// Whether what calls the runtime on this thread passes it made-up values on purpose, as the
     /// fuzzer does to show they can't make it follow an address it didn't give out: then a block
     /// it can't make for one is given back as 0, which the caller drops, rather than stopping the
-    /// process it runs in. Native code never passes one, and can't set this.
+    /// process it runs in. Only a runtime built with the `made-up-inputs` feature, as the fuzzer's
+    /// is, has this: native code never passes a made-up value, and can't set it.
     static MADE_UP_INPUTS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Says that what calls the runtime on this thread passes it made-up values on purpose, as a
 /// fuzzer does (see `MADE_UP_INPUTS`).
+#[cfg(feature = "made-up-inputs")]
 pub fn takes_made_up_inputs(on: bool) {
     MADE_UP_INPUTS.set(on);
+}
+
+/// Whether what calls the runtime here passes it made-up values on purpose: never, in a runtime
+/// built without the `made-up-inputs` feature, as one that ships is.
+fn made_up_inputs() -> bool {
+    #[cfg(feature = "made-up-inputs")]
+    return MADE_UP_INPUTS.get();
+    #[cfg(not(feature = "made-up-inputs"))]
+    false
 }
 
 /// [`with`], for a runtime function that gives native code a block: see [`made`].

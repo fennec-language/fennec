@@ -1,7 +1,7 @@
 import physics
 
 def slow(body: physics.Body) -> float:
-    physics.drag()
+    return physics.drag()
 
 def stop(body: engine.Body):
     pass

@@ -25,7 +25,7 @@ def total(bank: shared Bank) -> int:
     for account in accounts_of(bank):
         lock account as held:
             found += held.total
-    found
+    return found
 
 def main(stdout: Stdout):
     shared first = Account(total=1)

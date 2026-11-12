@@ -15,7 +15,12 @@ PAREN = Tok.Punct("(")
 def main(stdout: Stdout):
     long = "a name long enough to need a block of its own"
     tokens = [
-        Tok.Name("x"), Tok.Punct("("), Tok.Name(long), Tok.Parts([1, 2]), Tok.Float(0.0), Tok.Eof,
+        Tok.Name("x"),
+        Tok.Punct("("),
+        Tok.Name(long),
+        Tok.Parts([1, 2]),
+        Tok.Float(0.0),
+        Tok.Eof,
         Tok.Wrapped(.Name("x")),
     ]
     for token in tokens:
@@ -29,8 +34,4 @@ def main(stdout: Stdout):
             token == .Wrapped(.Name("x")),
             token == token,
         )
-    stdout.print(
-        tokens[1] == PAREN,
-        PAREN == .Punct("("),
-        PAREN != .Name("("),
-    )
+    stdout.print(tokens[1] == PAREN, PAREN == .Punct("("), PAREN != .Name("("))

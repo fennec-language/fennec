@@ -68,7 +68,7 @@ fn stmt<'a>(stmt: &'a Stmt, change: &mut dyn FnMut(&'a Expr)) {
         | StmtKind::Yield(value)
         | StmtKind::Assert(value)
         | StmtKind::Return(Some(value)) => expr(value, change),
-        StmtKind::Lend { value, otherwise } => {
+        StmtKind::Lend { value, otherwise, .. } => {
             expr(value, change);
             stmts(otherwise, change);
         }
@@ -199,27 +199,27 @@ mod tests {
     /// have to get into, is reached by both, in the same order.
     #[test]
     fn reading_reaches_what_changing_reaches() {
-        let source = "struct S:\n    a: int = 1 + 2\n    def m(self) -> int:\n        self.a\n\n\
+        let source = "struct S:\n    a: int = 1 + 2\n    def m(self) -> int:\n        return self.a\n\n\
             enum E:\n    A(x: int = 3)\n\n\
             interface I:\n    def go(self) -> int\n\n\
-            extend S:\n    def n(self) -> int:\n        5\n\n\
+            extend S:\n    def n(self) -> int:\n        return 5\n\n\
             LIMIT: int = 6\n\n\
             test \"t\":\n    assert 7 == 7\n\n\
             def f(xs: list[int]) -> int fails E:\n    \
-            def inner() -> int:\n        8\n    \
+            def inner() -> int:\n        return 8\n    \
             y = [x for x in xs if x > 0]\n    \
             z = {1: 2}\n    \
             g = a => a + 1\n    \
             w = f\"{y} {z}\"\n    \
-            if xs[0] > 1:\n        return xs[1:2].len()\n    elif not xs:\n        pass\n    else:\n        pass\n    \
+            if xs[0] > 1:\n        return len(xs[1:2])\n    elif not xs:\n        pass\n    else:\n        pass\n    \
             while xs:\n        break\n    \
             for x in xs:\n        continue\n    \
-            with open(1) as h:\n        lend h else:\n            pass\n    \
+            with open(1) as h:\n        lend h except:\n            pass\n    \
             v = 1 if xs else 2\n    \
             t = (1, 2)\n    \
             u = g(3)? \n    \
             match u:\n        case 1 | 2 if u > 0:\n            fail .A(x=1)\n        case _:\n            yield 2\n    \
-            q = xs.get(0) else 1\n    q\n";
+            q = xs.get(0) else 1\n    return q\n";
         let module = crate::parse(source).unwrap();
         let modules = crate::prelude_modules().unwrap().iter().chain([&module]);
         let mut reached = 0;

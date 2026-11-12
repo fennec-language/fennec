@@ -1,5 +1,5 @@
 def grid(cells = []) -> int:
-    cells.len()
+    return len(cells)
 
 def main(stdout: Stdout):
     stdout.print(grid())

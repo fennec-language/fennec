@@ -2,6 +2,6 @@ def main(stdout: Stdout):
     words = [f"text long enough to be held in a block of its own, {n}" for n in range(50_000)]
     stdout.print("before")
     for word in parallel(words):
-        stdout.print("first", word, word.len())
-        stdout.print("second", word, word.len())
+        stdout.print("first", word, len(word))
+        stdout.print("second", word, len(word))
     stdout.print("after")

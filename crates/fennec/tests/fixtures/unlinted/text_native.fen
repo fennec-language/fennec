@@ -5,7 +5,7 @@ struct Point:
     y: float
 
 def label(n: int) -> str:
-    f"n={n}"
+    return f"n={n}"
 
 def main(stdout: Stdout):
     name = "fox"
@@ -14,7 +14,7 @@ def main(stdout: Stdout):
     stdout.print(f"{3.14159:.2f} {1234567:,} {name}", f"{{braces}} {2 ** 10}")
     stdout.print(f"{[1, 2]} {Point(x=1, y=2.0)} {(1, 2)} {{}}", f"{label(4)}{label(5)}")
     stdout.print(str(5), str(-5), str(2.5), str(True), str(name), str([1]), str(Point(x=0, y=0.5)))
-    stdout.print(label(10).len(), str(12345).len(), f"é{name}é".len())
+    stdout.print(len(label(10)), len(str(12345)), len(f"é{name}é"))
 
     mut built = ""
     for i in range(30):
@@ -43,7 +43,7 @@ def main(stdout: Stdout):
     )
     words = ["a", "b", "c"]
     part = words[1:]
-    stdout.print(part, words, part[0], words[1:][1].len())
+    stdout.print(part, words, part[0], len(words[1:][1]))
     points = [Point(x=1, y=1.0), Point(x=2, y=2.0)]
     stdout.print(points[1:][0].x, points[:1])
     mut changing = numbers[2:]
@@ -79,8 +79,8 @@ def main(stdout: Stdout):
         long[:0],
         long[20:],
         long[-3:],
-        long[9:9].len(),
-        long[3:11].len(),
+        len(long[9:9]),
+        len(long[3:11]),
     )
     stdout.print(
         long[3:11] == "defghijk",

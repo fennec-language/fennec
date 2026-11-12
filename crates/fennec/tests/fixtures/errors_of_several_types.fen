@@ -13,45 +13,45 @@ error Held:
 
 def short(n: int) -> int fails Short:
     if n > 1: fail Short(why="too big")
-    n
+    return n
 
 def coded(n: int) -> int fails Coded:
     if n > 1: fail Coded(code=n)
-    n
+    return n
 
 def held(n: int) -> int fails Held:
     if n > 1: fail Held(items=[n, n], table={"k": n})
-    n
+    return n
 
 def short_or_coded(n: int) -> int fails Coded | Short:
     first = short(n)?
     second = coded(n + 1)?
-    first + second
+    return first + second
 
 def any_of_three(n: int) -> int fails Coded | Held | Short:
     first = short_or_coded(n)?
     second = held(n + 2)?
-    first + second
+    return first + second
 
 def by_return(n: int) -> int fails Coded | Short:
     if n > 5: return short(n)?
-    coded(n)?
+    return coded(n)?
 
 def by_copy(n: int) -> str:
     if n > 0:
-        value = short_or_coded(n) else as error:
+        value = short_or_coded(n) except error:
             return f"{error}"
         return f"{value}"
-    value = short(n) else as error:
+    value = short(n) except error:
         return f"{error}"
-    f"{value}"
+    return f"{value}"
 
 def in_a_loop(n: int) -> int fails Coded | Held | Short:
     for step in range(3):
         value = short_or_coded(n + step)?
         if value > 100: return held(value)?
     if n > 9: return coded(n)?
-    n
+    return n
 
 def check_short(n: int) fails Short:
     if n > 1: fail Short(why="no")
@@ -65,7 +65,7 @@ def nothing_back(n: int) fails Coded | Short:
 
 ## Prints what a call gave, or what it failed with.
 def shown(stdout: Stdout, run: () -> int fails Coded | Held | Short):
-    value = run() else as error:
+    value = run() except error:
         stdout.print(error)
         return
     stdout.print(value)
@@ -73,19 +73,19 @@ def shown(stdout: Stdout, run: () -> int fails Coded | Held | Short):
 def main(stdout: Stdout):
     for n in [-1, 0, 1, 2]:
         shown(stdout, () => any_of_three(n)?)
-        stdout.print(by_return(n) else -1, by_copy(n))
+        by_return_value = by_return(n) except Coded() | Short(): -1
+        stdout.print(by_return_value, by_copy(n))
     for n in [0, 1, 2]:
-        value = short_or_coded(n) else as why:
-            match why:
-                case Short(why):
-                    stdout.print(f"short {why}")
-                    continue
-                case Coded(code):
-                    stdout.print(f"coded {code}")
-                    continue
+        value = short_or_coded(n) except why:
+            case Short(why):
+                stdout.print(f"short {why}")
+                continue
+            case Coded(code):
+                stdout.print(f"coded {code}")
+                continue
         stdout.print(value)
     for n in [-5, -4, 0, 1, 20]:
-        value = in_a_loop(n) else as error:
+        value = in_a_loop(n) except error:
             stdout.print(error)
             stdout.print(f"{error}")
             stdout.print([error])
@@ -93,9 +93,9 @@ def main(stdout: Stdout):
             stdout.print(kept)
             continue
         stdout.print(value)
-    nothing_back(2) else as failure:
+    nothing_back(2) except failure:
         stdout.print(failure)
-    value = by_return(6) else as error:
+    value = by_return(6) except error:
         stdout.print(error)
         return
     stdout.print(value)

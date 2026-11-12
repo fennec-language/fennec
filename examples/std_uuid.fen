@@ -8,7 +8,7 @@ from std.uuid import Uuid
 
 ## A new order's id: time-ordered, so orders list in the order they came in.
 def order_id(entropy: Entropy, clock: Clock) -> str:
-    str(uuid.v7(entropy, clock))
+    return str(uuid.v7(entropy, clock))
 
 test "a v4 is random but for its version and variant"(entropy: Entropy):
     made = uuid.v4(entropy)
@@ -56,7 +56,9 @@ test "a UUID saves as its text"():
 
 def main(stdout: Stdout, entropy: Entropy, clock: Clock):
     made = uuid.v4(entropy)
-    stdout.print(made.version(), str(made).len(), (Uuid.parse(str(made)) else Uuid()) == made)
+    parsed = Uuid.parse(str(made)) except InvalidValue(): Uuid()
+    stdout.print(made.version(), len(str(made)), parsed == made)
     ordered = uuid.v7(entropy, clock)
-    stdout.print(ordered.version(), str(ordered).len())
-    stdout.print(Uuid.parse("0F8FAD5B-D9CB-469F-A165-70867728950E") else Uuid())
+    stdout.print(ordered.version(), len(str(ordered)))
+    parse_value = Uuid.parse("0F8FAD5B-D9CB-469F-A165-70867728950E") except InvalidValue(): Uuid()
+    stdout.print(parse_value)

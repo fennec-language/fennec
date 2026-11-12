@@ -24,6 +24,6 @@ test "what a launched task prints is the test's to read"(stdout: Stdout):
 test "what a parallel loop's bodies print is the test's to read, wherever they ran"(stdout: Stdout):
     looped(stdout, [n for n in range(40)])
     lines = stdout.sorted_lines()
-    assert lines.len() == 41
+    assert len(lines) == 41
     assert "item 0" in lines and "item 39" in lines
     assert stdout.captured().endswith("after\n")

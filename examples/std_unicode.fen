@@ -7,7 +7,7 @@ from std import unicode
 ## Whether two names are the same, however they're written: in any case, and with accents
 ## made of one character or of a letter and a mark.
 def same_name(first: str, second: str) -> bool:
-    unicode.casefold(unicode.nfkc(first)) == unicode.casefold(unicode.nfkc(second))
+    return unicode.casefold(unicode.nfkc(first)) == unicode.casefold(unicode.nfkc(second))
 
 ## How many letters text has, by Unicode's categories.
 def letters(text: str) -> int:
@@ -15,7 +15,7 @@ def letters(text: str) -> int:
     for character in text:
         if unicode.category(character).startswith("L"):
             count += 1
-    count
+    return count
 
 test "the four forms"():
     composed = "é"

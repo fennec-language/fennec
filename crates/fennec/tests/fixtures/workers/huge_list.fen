@@ -7,4 +7,4 @@ struct Point:
 def main(stdout: Stdout):
     limit = 1 << 62
     points = [Point(first=at, second=2, third=3, fourth=4) for at in range(limit)]
-    stdout.print(points.len())
+    stdout.print(len(points))

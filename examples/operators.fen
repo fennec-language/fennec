@@ -2,10 +2,10 @@ struct Money:
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
     def <(self, other: Money) -> bool:
-        self.cents < other.cents
+        return self.cents < other.cents
 
 struct Grid:
     width: int
@@ -13,7 +13,7 @@ struct Grid:
 
     def [](self, at: (int, int)) -> int:
         x, y = at
-        self.cells[y * self.width + x]
+        return self.cells[y * self.width + x]
 
     def []=(ref self, at: (int, int), value: int):
         x, y = at

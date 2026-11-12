@@ -42,12 +42,13 @@ pub(crate) fn fmt(args: &[&str]) -> ExitCode {
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
-/// The kit `dir` is in: the nearest folder at or above it with a `kit.toml`, written relative
-/// to `dir`, like `../..`.
+/// The kit `dir` is in: the nearest folder at or above it with a `kit.toml`, reached only through
+/// folders that are trusted, written relative to `dir`, like `../..`. With none it trusts, `fmt`
+/// formats only what's under `dir`.
 fn kit_root(dir: &Path) -> Option<PathBuf> {
     let absolute = std::fs::canonicalize(dir).ok()?;
-    let (levels, _) =
-        absolute.ancestors().enumerate().find(|(_, folder)| folder.join("kit.toml").is_file())?;
+    let found = fennec_dist::kit_root(&absolute).ok()??;
+    let (levels, _) = absolute.ancestors().enumerate().find(|(_, folder)| *folder == found)?;
     if levels == 0 {
         return Some(dir.to_path_buf());
     }

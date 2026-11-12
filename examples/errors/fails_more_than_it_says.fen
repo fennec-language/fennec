@@ -11,7 +11,7 @@ def disk(path: str) -> int fails DiskError:
     fail .Gone(path)
 
 def load(path: str) -> int fails ParseError | RangeError:
-    disk(path)?
+    return disk(path)?
 
 def main(stdout: Stdout):
     stdout.print(load("a") else 0)

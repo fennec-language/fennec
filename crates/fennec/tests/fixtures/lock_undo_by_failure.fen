@@ -17,9 +17,8 @@ struct Random:
 
     def below(ref self, limit: int) -> int:
         self.state = (self.state * 1103515245 + 12345) % 2147483648
-        if limit <= 0:
-            return 0
-        (self.state // 65536) % limit
+        if limit <= 0: return 0
+        return (self.state // 65536) % limit
 
 ## One random change to both lists, as a method changes a shared value's fields through `ref`. With
 ## `boom`, it crashes once the change is made.
@@ -36,21 +35,21 @@ def change(
         words.append(f"w{random.below(100)}")
         numbers.append(random.below(100))
     elif what == 1:
-        if words.len() > 0:
+        if len(words) > 0:
             _ = words.pop()
-        if numbers.len() > 0:
+        if len(numbers) > 0:
             _ = numbers.pop()
     elif what == 2:
         words.extend([f"e{random.below(10)}", "x"])
         numbers.extend([random.below(10)])
     elif what == 3:
-        words.insert(random.below(words.len() + 1), "i")
-        numbers.insert(random.below(numbers.len() + 1), 7)
+        words.insert(random.below(len(words) + 1), "i")
+        numbers.insert(random.below(len(numbers) + 1), 7)
     elif what == 4:
-        if words.len() > 0:
-            words[random.below(words.len())] = f"s{random.below(10)}"
-        if numbers.len() > 0:
-            numbers[random.below(numbers.len())] = random.below(1000)
+        if len(words) > 0:
+            words[random.below(len(words))] = f"s{random.below(10)}"
+        if len(numbers) > 0:
+            numbers[random.below(len(numbers))] = random.below(1000)
     elif what == 5:
         if random.below(4) == 0:
             words.clear()
@@ -62,9 +61,9 @@ def change(
         for _ in range(random.below(5)):
             words.append("loop")
             numbers.append(1)
-            if numbers.len() > 3:
+            if len(numbers) > 3:
                 _ = numbers.pop()
-    if words.len() > 60:
+    if len(words) > 60:
         words.clear()
     # And a change to each dict: a key put, new or not, or one taken out, so that what's put back
     # is in the order it was.
@@ -80,8 +79,7 @@ def change(
             _ = names.pop(number)
     else:
         names[number] = f"a name long enough to be held in a block of its own, {random.below(100)}"
-    if boom:
-        fail Boom(step=words.len())
+    if boom: fail Boom(step=len(words))
 
 ## A case's changes under the lock, failing at step `crash_at` when it's one of them: inside the
 ## change at that step, or just before it, by turns.
@@ -89,17 +87,18 @@ def changed(holder: shared Holder, seed: int, steps: int, crash_at: int) fails B
     mut random = Random(state=seed)
     lock holder as ref held:
         for step in range(steps):
-            if step == crash_at and seed % 2 == 0:
-                fail Boom(step=step)
+            if step == crash_at and seed % 2 == 0: fail Boom(step=step)
             if random.below(3) == 0:
                 # Straight on the held value, not through a call.
                 held.words.append("direct")
                 held.numbers.append(random.below(9))
-                if held.words.len() > 1:
+                if len(held.words) > 1:
                     _ = held.words.pop()
-                held.numbers[random.below(held.numbers.len())] = random.below(9)
+                held.numbers[random.below(len(held.numbers))] = random.below(9)
                 held.counts[f"d{random.below(4)}"] = random.below(9)
-                held.names[random.below(4)] = "direct, and long enough to be held in a block of its own"
+                held.names[
+                    random.below(4)
+                ] = "direct, and long enough to be held in a block of its own"
                 if "d0" in held.counts:
                     _ = held.counts.pop("d0")
             change(
@@ -125,17 +124,18 @@ def modeled(
         if random.below(3) == 0:
             words.append("direct")
             numbers.append(random.below(9))
-            if words.len() > 1:
+            if len(words) > 1:
                 _ = words.pop()
-            numbers[random.below(numbers.len())] = random.below(9)
+            numbers[random.below(len(numbers))] = random.below(9)
             counts[f"d{random.below(4)}"] = random.below(9)
             names[random.below(4)] = "direct, and long enough to be held in a block of its own"
             if "d0" in counts:
                 _ = counts.pop("d0")
-        change(ref words, ref numbers, ref counts, ref names, ref random, boom=False) else return
+        change(ref words, ref numbers, ref counts, ref names, ref random, boom=False) except Boom(
+        ): return
 
 def ran(holder: shared Holder, seed: int, steps: int, crash_at: int) -> bool:
-    _ = changed(holder, seed=seed, steps=steps, crash_at=crash_at) else:
+    _ = changed(holder, seed=seed, steps=steps, crash_at=crash_at) except Boom():
         return False
     return True
 
@@ -169,7 +169,12 @@ def main(stdout: Stdout):
                 wrong += 1
                 if wrong < 4:
                     stdout.print("case", trial, held.words, words, held.numbers, numbers)
-                    stdout.print(held.counts.items(), counts.items(), held.names.items(), names.items())
+                    stdout.print(
+                        held.counts.items(),
+                        counts.items(),
+                        held.names.items(),
+                        names.items(),
+                    )
                 # Back in step with what the shared value holds, to find the next.
                 words = list(held.words)
                 numbers = list(held.numbers)

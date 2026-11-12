@@ -17,10 +17,10 @@ fn empty_collections_take_their_type_from_later_use() {
         seen.add(1)
         mut grid = []
         grid.append([1.5])
-        stdout.print(names[0].upper(), scores['Ash'] + 1, seen.len(), grid[0][0] * 2.0)
+        stdout.print(names[0].upper(), scores['Ash'] + 1, len(seen), grid[0][0] * 2.0)
     ";
     assert_eq!(in_main(program), Vec::<String>::new());
-    let program = "def f(n: int) -> list[str]:\n    if n > 0:\n        return []\n    ['a']\n";
+    let program = "def f(n: int) -> list[str]:\n    if n > 0:\n        return []\n    return ['a']\n";
     assert_eq!(returns(program, "f"), Ok(list(Type::Str)));
     let program = "def take(items: list[int]):\n    pass\n\ndef main(stdout: Stdout):\n    take([])\n";
     assert_eq!(problems(program), Vec::<String>::new());
@@ -29,7 +29,7 @@ fn empty_collections_take_their_type_from_later_use() {
 #[test]
 fn empty_collections_nothing_settles_need_their_type_written() {
     assert_eq!(
-        in_main("mut names = []\nstdout.print(names.len())\nscores = {}\nseen = set()"),
+        in_main("mut names = []\nstdout.print(len(names))\nscores = {}\nseen = set()"),
         [
             "can't tell what this empty list holds @ []",
             "can't tell what this empty dict holds @ {}",
@@ -127,7 +127,7 @@ fn values_from_several_places_have_to_fit_together() {
 fn a_bare_return_drops_the_value_of_the_last_line() {
     let program = "
         def f(items: list[int]):
-            if items.len() == 0:
+            if len(items) == 0:
                 return
             items.index(1)
     ";
@@ -208,10 +208,10 @@ fn methods_of_built_in_values_check_their_arguments() {
 #[test]
 fn builtins_check_what_they_are_given() {
     assert_eq!(
-        in_main("stdout.print(sum(['a']), 'a'.abs(), int([1]), range(1.5), round(1.5, 'a'))"),
+        in_main("stdout.print(sum(['a']), abs('a'), int([1]), range(1.5), round(1.5, 'a'))"),
         [
             "`sum` of `str` needs a starting value: sum(..., start=\"\") @ sum([\"a\"])",
-            "a str has no method `abs` @ \"a\".abs()",
+            "a str has no method `abs` @ abs(\"a\")",
             "`int` converts a number or text, not a list[int] @ [1]",
             "`range` takes one to three ints @ range(1.5)",
             "`round` takes a number, but this is a float @ round(1.5, \"a\")",
@@ -229,7 +229,7 @@ fn arrow_functions_are_passed_straight_to_what_calls_them() {
         in_main("double = n => n * 2\nstdout.print(double(2))"),
         ["can't tell the type of `n` @ n => n * 2"]
     );
-    assert_eq!(in_main("stdout.print(sorted(['a'], key=name => name.len()))"), Vec::<String>::new());
+    assert_eq!(in_main("stdout.print(sorted(['a'], key=name => len(name)))"), Vec::<String>::new());
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn only_functions_can_be_called() {
 fn question_mark_passes_errors_up_not_none() {
     let program = "
         def find(n: int) -> str?:
-            None
+            return None
 
         def f(n: int):
             name = find(n)?
@@ -296,11 +296,13 @@ fn several_errors_make_one_of_them() {
             name
 
         def main(stdout: Stdout):
-            name = challenge(1, 'Kit') else as why:
-                match why:
-                    case NotFound(missing): stdout.print(missing)
-                    case TooWeak(level): stdout.print(level + 1)
-                return
+            name = challenge(1, 'Kit') except why:
+                case NotFound(missing):
+                    stdout.print(missing)
+                    return
+                case TooWeak(level):
+                    stdout.print(level + 1)
+                    return
             stdout.print(name)
             assert challenge(1, '') fails TooWeak(level=1)
     ";
@@ -370,17 +372,17 @@ fn functions_that_call_each_other_share_their_errors() {
                 fail TooLow(n)
             if n == 0:
                 return True
-            odd(n - 1)?
+            return odd(n - 1)?
 
         def odd(n: int) -> bool:
             if n > 100:
                 fail TooHigh(n)
             if n == 0:
                 return False
-            even(n - 1)?
+            return even(n - 1)?
 
         def check(n: int) -> bool:
-            even(n)?
+            return even(n)?
     ";
     let both = Type::Errors(vec!["TooHigh".to_owned(), "TooLow".to_owned()]);
     for function in ["even", "odd", "check"] {

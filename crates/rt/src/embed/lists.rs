@@ -836,10 +836,15 @@ pub extern "C" fn clear(list: i64) {
         let Some(block) = state.heap.block(address) else { return };
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();
-        let old = items(block, stride).to_vec();
-        release_items(state, &element, &old);
+        let used = items(block, stride).len();
+        // Items that hold nothing, like ints, have nothing to let go of, so they aren't copied out
+        // to be: the words are only zeroed, as a list's room is kept.
+        if super::heap::holds_blocks(&element) {
+            let old = items(block, stride).to_vec();
+            release_items(state, &element, &old);
+        }
         if let Some(block) = state.heap.block_mut(address) {
-            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + old.len()).unwrap_or_default().fill(0);
+            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + used).unwrap_or_default().fill(0);
             if let Some(length) = block.get_mut(2) {
                 *length = 0;
             }

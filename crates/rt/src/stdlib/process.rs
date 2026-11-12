@@ -6,8 +6,8 @@
 
 use std::io::Read as _;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
@@ -238,10 +238,20 @@ fn failed(program: &str, case: &str, fields: Vec<(&str, Value)>) -> Value {
     Value::Err(Rc::new(Value::made_case("ProcessError", case, all)))
 }
 
+/// How long the readers of a program's outputs are given once it's been stopped, before what
+/// they've read is taken as all there is: a program it started that got out of its process group
+/// can hold the pipes open for as long as it likes.
+const GRACE: Duration = Duration::from_millis(500);
+
 /// Runs `command`, writing `input` to its standard input on a thread of its own and reading each
 /// of its outputs on another, so none waits on the rest. It's stopped once `timeout` has passed,
 /// or one of its outputs has more than `most` bytes. A program that stops reading early leaves
 /// the rest of its input unwritten, which isn't an error.
+///
+/// On Unix it runs in a process group of its own, and stopping it kills the group, so what it
+/// started, as `sh -c` and `make` do, is stopped with it rather than holding the pipes and running
+/// on. The timeout covers the outputs too: a program that ends while something it started still
+/// holds them hasn't finished until they close.
 fn run_limited(
     mut command: std::process::Command,
     input: Option<Vec<u8>>,
@@ -252,54 +262,110 @@ fn run_limited(
     use std::process::Stdio;
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn()?;
-    let writer = child.stdin.take().zip(input).map(|(mut stdin, input)| {
+    // Never waited for: a program that stops reading leaves it to fail on a closed pipe.
+    if let Some((mut stdin, input)) = child.stdin.take().zip(input) {
         std::thread::spawn(move || {
             let _ = stdin.write_all(&input);
-        })
-    });
+        });
+    }
     let over = Arc::new(AtomicBool::new(false));
-    let read_kept = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-        let over = Arc::clone(&over);
-        std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            if let Some(pipe) = pipe {
-                // One byte past the most, to tell it went past.
-                let limit = u64::try_from(most).unwrap_or(u64::MAX).saturating_add(1);
-                let _ = pipe.take(limit).read_to_end(&mut kept);
-            }
-            if kept.len() > most {
-                over.store(true, Ordering::SeqCst);
-            }
-            kept
-        })
-    };
-    let stdout = read_kept(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
-    let stderr = read_kept(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+    let (finished, read_all) = std::sync::mpsc::channel::<()>();
+    let stdout = read_kept(child.stdout.take().map(|pipe| Box::new(pipe) as Pipe), most, &over, &finished);
+    let stderr = read_kept(child.stderr.take().map(|pipe| Box::new(pipe) as Pipe), most, &over, &finished);
+    drop(finished);
     let deadline = Instant::now() + timeout;
-    let ended = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
+    let mut status = None;
+    let mut readers_done = 0;
+    let stopped = loop {
+        if status.is_none() {
+            status = child.try_wait()?;
+        }
+        while read_all.try_recv().is_ok() {
+            readers_done += 1;
         }
         if over.load(Ordering::SeqCst) || Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
+            break true;
+        }
+        if status.is_some() && readers_done == 2 {
+            break false;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
-    if let Some(writer) = writer {
-        let _ = writer.join();
+    if stopped {
+        stop(&mut child);
+        let given = Instant::now() + GRACE;
+        while readers_done < 2 {
+            let left = given.saturating_duration_since(Instant::now());
+            if left.is_zero() || read_all.recv_timeout(left).is_err() {
+                break;
+            }
+            readers_done += 1;
+        }
     }
+    let taken = |kept: &Arc<Mutex<Vec<u8>>>| {
+        std::mem::take(&mut *kept.lock().unwrap_or_else(PoisonError::into_inner))
+    };
+    let (stdout, stderr) = (taken(&stdout), taken(&stderr));
     if over.load(Ordering::SeqCst) {
         return Ok(Ending::TooMuchOutput);
     }
-    Ok(match ended {
-        Some(status) => Ending::Done(std::process::Output { status, stdout, stderr }),
-        None => Ending::TimedOut,
+    Ok(match status {
+        Some(status) if !stopped => Ending::Done(std::process::Output { status, stdout, stderr }),
+        _ => Ending::TimedOut,
     })
+}
+
+/// One of a program's outputs.
+type Pipe = Box<dyn std::io::Read + Send>;
+
+/// Reads `pipe` on a thread of its own, keeping at most one byte past `most`, and setting `over`
+/// once it's past. What it's read so far is kept where it can be taken without waiting for it to
+/// end, and `finished` hears when it has.
+fn read_kept(
+    pipe: Option<Pipe>,
+    most: usize,
+    over: &Arc<AtomicBool>,
+    finished: &std::sync::mpsc::Sender<()>,
+) -> Arc<Mutex<Vec<u8>>> {
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let (held, over, finished) = (Arc::clone(&kept), Arc::clone(over), finished.clone());
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut chunk = vec![0; 64 * 1024];
+            loop {
+                let read = match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                let mut kept = held.lock().unwrap_or_else(PoisonError::into_inner);
+                // One byte past the most, to tell it went past.
+                let room = (most + 1).saturating_sub(kept.len());
+                kept.extend_from_slice(chunk.get(..read.min(room)).unwrap_or_default());
+                if kept.len() > most {
+                    over.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        }
+        let _ = finished.send(());
+    });
+    kept
+}
+
+/// Stops a program and, on Unix, everything in its process group, which is what it started.
+fn stop(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let group = rustix::process::Pid::from_child(child);
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// A failed result holding a `ProcessError`.
@@ -333,6 +399,45 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
         let shown = said(&ran);
         assert!(shown.contains("ProcessError.TimedOut") && shown.contains("program=\"sleep\""), "{shown}");
+    }
+
+    /// A program that starts another, as `sh -c` does, is stopped with what it started at its
+    /// timeout: what it started held the pipes, so the run went on until that ended, and it ran
+    /// on afterwards.
+    #[test]
+    fn what_a_program_started_is_stopped_with_it() {
+        let folder = std::env::temp_dir().join(format!("fennec-process-group-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let noted = folder.join("pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", noted.display());
+        let options = Options { timeout: Some(Duration::from_millis(500)), ..Options::default() };
+        let started = Instant::now();
+        let ran = run_program("sh", &["-c".to_owned(), script], &options);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(said(&ran).contains("ProcessError.TimedOut"), "{}", said(&ran));
+        // The `sleep` it started is gone too, once the system has taken the kill.
+        let pid = std::fs::read_to_string(&noted).unwrap().trim().to_owned();
+        let gone = (0..200).any(|_| {
+            let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
+            if alive {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            !alive
+        });
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert!(gone, "the `sleep` the program started outlived it");
+    }
+
+    /// A program that ends while something it started still holds its outputs hasn't finished:
+    /// the timeout covers the outputs closing too.
+    #[test]
+    fn a_program_whose_outputs_stay_open_after_it_ends_is_stopped_at_its_timeout() {
+        let options = Options { timeout: Some(Duration::from_millis(500)), ..Options::default() };
+        let started = Instant::now();
+        let ran = run_program("sh", &["-c".to_owned(), "sleep 30 &".to_owned()], &options);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(said(&ran).contains("ProcessError.TimedOut"), "{}", said(&ran));
     }
 
     /// A program that writes without end is stopped once it's written more than may be kept,

@@ -2245,9 +2245,9 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
     find_put_back_takes(function, known);
 }
 
-/// `mut item = items[key]`, changed, then `items[key] = item`, for a list or a `Table`: the item
+/// `mut item = items[key]`, changed, then `items[key] = item`, for a list, a `Table` or a dict: the item
 /// is taken out rather than copied, as a `for ref` item is, when it goes back by the same key on
-/// every way on and nothing reads the list or `Table` meanwhile. The IR reads it into a temporary
+/// every way on and nothing reads the collection meanwhile. The IR reads it into a temporary
 /// copied into the name, so both are taken: the copy only hands it over.
 fn find_put_back_takes(function: &Function, known: &mut Analysis) {
     for (start, block) in function.blocks.iter().enumerate() {
@@ -2262,7 +2262,7 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             };
             let kept = matches!(
                 function.locals.get(from.0).map(|local| &local.ty),
-                Some(Type::List(_) | Type::Table(_))
+                Some(Type::List(_) | Type::Table(_) | Type::Dict(..))
             );
             if !kept
                 || copied != read

@@ -17921,6 +17921,100 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// The same for a dict's value: a plain struct, a struct holding a dict, and a list. Each goes
+/// back into its own entry, from a dict, and a value's own block, made alone first, so copies of
+/// the dict kept before keep what they had, and a failure between loses the change. Growing a
+/// list held in a dict this way used to copy the whole list each time, which made it quadratic:
+/// now only the copies kept are copied.
+#[test]
+fn a_dict_value_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("dict_value_put_back")?;
+    std::fs::write(dir.join("dict_value_put_back.fen"), DICT_VALUE_PUT_BACK)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "dict_value_put_back", how)?;
+        assert_eq!(printed, "301 3 302 305 301 44851\n1 2 5 1\nrefused no\n1\n", "{how:?}");
+        assert!(count(&counts, "copies") < Some(20) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const DICT_VALUE_PUT_BACK: &str = r#"error Refused:
+    why: str
+
+struct Plain:
+    x: int
+    y: int
+
+struct Heavy:
+    x: int
+    bag: dict[str, int]
+
+def bump_plain(ref d: dict[str, Plain], key: str):
+    mut item = d[key]
+    item.x += 1
+    d[key] = item
+    return
+
+def bump_heavy(ref d: dict[str, Heavy], key: str):
+    mut item = d[key]
+    item.x += 1
+    item.bag["n"] = (item.bag.get("n") else 0) + 1
+    d[key] = item
+    return
+
+def grow(ref d: dict[str, list[int]], key: str, n: int):
+    mut items = d[key]
+    items.append(n)
+    d[key] = items
+    return
+
+def checked(n: int) -> int fails Refused:
+    if n > 5: fail Refused(why="no")
+    return n
+
+def bump_checked(ref d: dict[str, Heavy], key: str, n: int) fails Refused:
+    mut item = d[key]
+    item.x += 1
+    item.x += checked(n)?
+    d[key] = item
+    return
+
+def main(stdout: Stdout):
+    mut plain = {"a": Plain(x=1, y=2), "b": Plain(x=3, y=4)}
+    mut heavy = {"a": Heavy(x=1, bag={"n": 0}), "b": Heavy(x=2, bag={"n": 5})}
+    mut lists = {"a": [1], "b": [2]}
+    kept_plain = plain
+    kept_heavy = heavy
+    kept_lists = lists
+    for n in range(300):
+        bump_plain(ref plain, "a")
+        bump_heavy(ref heavy, "b")
+        grow(ref lists, "a", n)
+    stdout.print(
+        plain["a"].x,
+        plain["b"].x,
+        heavy["b"].x,
+        heavy["b"].bag["n"],
+        len(lists["a"]),
+        sum(lists["a"]),
+    )
+    stdout.print(
+        kept_plain["a"].x,
+        kept_heavy["b"].x,
+        kept_heavy["b"].bag["n"],
+        len(kept_lists["a"]),
+    )
+    bump_checked(ref heavy, "a", n=9) except why:
+        case Refused(why):
+            stdout.print("refused", why)
+    stdout.print(heavy["a"].x)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

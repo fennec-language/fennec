@@ -1923,6 +1923,9 @@ impl Emit<'_, '_, '_> {
         }
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
+            if matches!(value, Operand::Local(local) if self.known.is_taken(*local)) {
+                return self.dict_put_back(&place, (key, value_word), index, value, span);
+            }
             // A lookup on this dict, or on a local read from this field holding it: where it
             // found the key, or for a slice where it found the value.
             let same_dict = |dict: LocalId| match path {

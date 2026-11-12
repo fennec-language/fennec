@@ -789,6 +789,19 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        // A value taken out to change and put back comes from a dict that's alone, so the change
+        // can't show through another copy of it.
+        let taken = self.known.is_taken(dest).then(|| self.known.item_home(dest).cloned()).flatten();
+        let taking = taken.is_some();
+        let alone;
+        let dict = match taken {
+            Some((root, path)) => {
+                let place = self.place_of(root, &path)?;
+                alone = self.alone_at(&place, "fennec_unshare");
+                alone.as_str()
+            }
+            None => dict,
+        };
         let key = self.key_value(key, key_word)?;
         let entry = self.find(dict, key_word, &key);
         let missing = self.temp();
@@ -818,8 +831,56 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        let value_at = self.value_place(&value_kind, &value_at);
+        // A struct held in a block of its own, taken out: the block is made alone too, since a
+        // copy of the dict shares it, and what it holds is changed through it.
+        let value_at = if taking && value_kind.in_memory() {
+            let block = self.alone_at(&value_at, "fennec_unshare");
+            self.offset(&block, crate::lists::FIELDS_OFFSET)
+        } else {
+            self.value_place(&value_kind, &value_at)
+        };
         self.read_into(dest, &value_kind, &value_at, "")
+    }
+
+    /// A value taken out of a dict to change, going back under the key it came from: the dict
+    /// is alone and still has the key, as nothing has touched it since, so the value goes back
+    /// into its entry with nothing let go of. The entry's searched for again, and a key that
+    /// isn't there stops the program rather than being added.
+    pub(crate) fn dict_put_back(
+        &mut self,
+        place: &str,
+        (key_word, value_word): (Word, Word),
+        key: &Operand,
+        value: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        let key = self.key_value(key, key_word)?;
+        let (held, _) = self.operand(value)?;
+        let dict = self.temp();
+        self.line(&format!("{dict} = load ptr, ptr {place}"));
+        let entry = self.find(&dict, key_word, &key);
+        let missing = self.temp();
+        let (gone, found) = (self.label("gone"), self.label("home"));
+        self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+        self.line(&format!("br i1 {missing}, label %{gone}, label %{found}, !prof !0"));
+        self.start_block(&gone);
+        self.stop("a value taken out of a dict to change went back to a key that isn't there", span);
+        self.start_block(&found);
+        let value_at = self.temp();
+        self.line(&format!(
+            "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
+            entry_value(key_word)
+        ));
+        if value_kind.in_memory() {
+            let at = self.value_place(&value_kind, &value_at);
+            self.store_field(&value_kind, &held, &at, "");
+        } else if value_kind.counted() {
+            self.line(&format!("store ptr {held}, ptr {value_at}"));
+        } else if value_kind != Kind::Unit {
+            self.store_field(&value_kind, &held, &value_at, "");
+        }
+        Ok(())
     }
 
     /// Where a value is, from where a dict keeps it: a plain struct or enum is in a block.

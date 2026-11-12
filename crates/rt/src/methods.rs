@@ -10,7 +10,7 @@ pub(crate) fn no_method(value: &Value, method: &str, span: Span) -> Diagnostic {
         if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
     let diagnostic = Diagnostic::new(format!("{article} {name} has no method `{method}`"), span);
     match method {
-        "length" | "size" | "count" => diagnostic.with_help("use `.len()`"),
+        "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
         "push" | "add" => diagnostic.with_help("use `append`"),
         "trim" => diagnostic.with_help("use `strip()`"),
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),

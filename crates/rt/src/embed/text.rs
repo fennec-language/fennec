@@ -169,7 +169,7 @@ pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
 }
 
 /// A header's bytes where they are: in its own words when it's inline, and in its block otherwise.
-fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
+pub(super) fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
     match block_of(words) {
         Some(address) => super::strings::bytes_in_block(state, address.cast_signed()),
         None => (&words[..], usize::from(tag(words) & !INLINE).min(INLINE_BYTES)),

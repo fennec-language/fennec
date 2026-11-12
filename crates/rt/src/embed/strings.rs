@@ -1056,10 +1056,24 @@ pub extern "C" fn split_header(
     end: i64,
 ) -> i64 {
     attempt(|state: &mut State| {
-        let whole = super::text::text_of(state, &[t0, t1, t2]);
-        let between = (s0, s1, s2) != (0, 0, 0);
-        let between = between.then(|| super::text::text_of(state, &[s0, s1, s2]));
-        split_into(state, &whole, between.as_deref(), span(start, end))
+        // Both copied out into bytes kept for them, with no `String` made of either.
+        let (mut text, mut between) = (READ.take(), READ_PART.take());
+        let separated = (s0, s1, s2) != (0, 0, 0);
+        copy_words(super::text::bytes_of(state, &[t0, t1, t2]), &mut text);
+        if separated {
+            copy_words(super::text::bytes_of(state, &[s0, s1, s2]), &mut between);
+        } else {
+            between.clear();
+        }
+        let split = match (std::str::from_utf8(&text), std::str::from_utf8(&between)) {
+            (Ok(whole), Ok(between)) => {
+                split_into(state, whole, separated.then_some(between), span(start, end))
+            }
+            _ => Err(lost(start, end)),
+        };
+        READ.set(text);
+        READ_PART.set(between);
+        split
     })
 }
 

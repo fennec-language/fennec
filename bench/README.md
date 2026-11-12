@@ -23,6 +23,7 @@ cargo build --release -p fennec -p fennec-bench
 | Shared state under a lock | `locks`, a counter and a dict changed under `lock ... as ref` in a loop |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
+| A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |
 
 These are what languages have historically been judged on: most of the Computer Language Benchmarks Game, and `richards` and `deltablue` from Are We Fast Yet. **The suite is locked.** Each target records a hash of its kernel and twin, and a run fails if they've changed, or if a kernel has come or gone. Changing one means pinning it again, and the pull request has to say why. The fix for a slow kernel goes in the compiler.
 

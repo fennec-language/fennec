@@ -124,7 +124,13 @@ fn copy_text(state: &State, address: i64, words: &mut Vec<u64>) -> Option<(usize
 }
 
 /// `grow` with the bytes added already copied out of their block.
-fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_chars: u64) -> Option<i64> {
+pub(super) fn grow_by(
+    state: &mut State,
+    text: i64,
+    added: &[u64],
+    extra: usize,
+    extra_chars: u64,
+) -> Option<i64> {
     let at = u64::try_from(text).ok()?;
     let block = state.heap.block(at)?;
     let (length, chars) = (usize::try_from(*block.get(2)?).ok()?, *block.get(3)?);

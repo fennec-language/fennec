@@ -479,7 +479,7 @@ pub extern "C" fn args_item(index: i64, start: i64, end: i64) -> i64 {
 
 /// A new list of the arguments, for `for arg in args`.
 pub extern "C" fn args_list(element: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_args_list", |state| {
         let arguments = state.arguments.clone();
         let strings: Vec<&str> = arguments.iter().map(String::as_str).collect();
         super::lists::list_of_strings(state, element, &strings)

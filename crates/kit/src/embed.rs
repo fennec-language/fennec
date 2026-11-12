@@ -139,10 +139,11 @@ impl Place<'_> {
             return (real(root), true);
         }
         let own = real(folder);
-        // Reached only through folders nobody else can write to: see `fennec_dist::kit_root`.
+        // Reached only through folders that are trusted: see `fennec_dist::kit_root`. One that
+        // isn't trusted leaves the file's own folder, the narrower edge; loading says why.
         match fennec_dist::kit_root(&own) {
-            Some(kit) => (kit, true),
-            None => (own, false),
+            Ok(Some(kit)) => (kit, true),
+            Ok(None) | Err(_) => (own, false),
         }
     }
 

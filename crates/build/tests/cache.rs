@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use fennec_build::{Cache, Cleanup, FOLDER};
+use fennec_build::{Cache, Cleanup, FOLDER, set_time};
 
 /// A fresh Fennec folder for one test.
 fn home(name: &str) -> std::io::Result<fennec_temp::Temp> {
@@ -29,17 +29,7 @@ fn entry(path: &Path, size: usize, age: u64) -> std::io::Result<()> {
 
 /// Makes a folder look last changed `age` seconds ago.
 fn age_folder(folder: &Path, age: u64) -> std::io::Result<()> {
-    let mut options = File::options();
-    options.read(true);
-    // Windows opens a folder only when asked for its backup semantics, and changes its times
-    // only through a handle that may write its attributes.
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // FILE_WRITE_ATTRIBUTES and FILE_FLAG_BACKUP_SEMANTICS.
-        options.read(false).access_mode(0x0100).custom_flags(0x0200_0000);
-    }
-    options.open(folder)?.set_modified(SystemTime::now() - Duration::from_secs(age))
+    set_time(folder, SystemTime::now() - Duration::from_secs(age))
 }
 
 fn modified(path: &Path) -> std::io::Result<SystemTime> {
@@ -53,7 +43,7 @@ fn entries_are_written_whole_and_reading_marks_them_used() {
     cache.write("runs", "a.txt", b"hello").unwrap();
     let path = cache.path("runs", "a.txt");
     assert_eq!(path, home.join("cache").join(FOLDER).join("runs").join("a.txt"));
-    File::open(&path).unwrap().set_modified(SystemTime::now() - Duration::from_secs(3_600)).unwrap();
+    set_time(&path, SystemTime::now() - Duration::from_secs(3_600)).unwrap();
     let before = modified(&path).unwrap();
     assert_eq!(cache.read("runs", "a.txt").as_deref(), Some(&b"hello"[..]));
     assert!(modified(&path).unwrap() > before, "reading should mark the entry as used");
@@ -266,10 +256,7 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
     let old = fennec_build::KEPT_RECENT.as_secs() + 600;
     entry(&cache.path("llvm", "just stored"), 100, 5).unwrap();
     cache.write("llvm", "used", &[0; 68]).unwrap();
-    File::open(cache.path("llvm", "used"))
-        .unwrap()
-        .set_modified(SystemTime::now() - Duration::from_secs(old))
-        .unwrap();
+    set_time(&cache.path("llvm", "used"), SystemTime::now() - Duration::from_secs(old)).unwrap();
     assert!(cache.read("llvm", "used").is_some());
     entry(&cache.path("llvm", "old"), 100, old).unwrap();
     let program = home.join("launched");
@@ -278,7 +265,7 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
     entry(&cache.path("llvm", "spare"), 0, 0).unwrap();
     let kept = cache.path("programs", "root");
     // Kept long ago, read-only, then put out for a run now.
-    File::open(&kept).unwrap().set_modified(SystemTime::now() - Duration::from_secs(old)).unwrap();
+    set_time(&kept, SystemTime::now() - Duration::from_secs(old)).unwrap();
     let run = home.join("work").join("fennec-run-1");
     std::fs::create_dir_all(run.parent().unwrap()).unwrap();
     assert!(cache.link_out("programs", "root", &run).unwrap());
@@ -296,7 +283,7 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
     assert!(kept.exists() && run.exists());
     // Long unused, it still stays while the run has it put out, and goes once it doesn't.
     let long_ago = SystemTime::now() - Duration::from_secs(old);
-    File::open(&kept).unwrap().set_modified(long_ago).unwrap();
+    set_time(&kept, long_ago).unwrap();
     cache.cleanup(0).unwrap();
     assert!(kept.exists(), "a program a run has put out stays");
     std::fs::remove_file(&run).unwrap();

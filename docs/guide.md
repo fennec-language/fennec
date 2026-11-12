@@ -436,6 +436,10 @@ test "a hash names its content" for text: str:
 
 Builds go through LLVM a function at a time and are cached, so an edit rebuilds only what changed. Where LLVM can't build something yet, `fennec run` and `fennec build` say why.
 
+A build is the same bytes every time, wherever it's built:
+- **A `--release` build** is the same bytes in any folder, on any machine, at any time, as a release you hand out has to be for anyone to check it by building it again. The files it shows a failure in are named from the kit, as `src/main.fen`, never from the folders you keep it in.
+- **A dev build** is the same bytes built again in the same folder, at any time. It shows a failure at the path you gave, whole path and all, which is what you, or an agent reading the failure, want on your own machine.
+
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:

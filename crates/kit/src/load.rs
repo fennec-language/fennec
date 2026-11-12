@@ -107,7 +107,7 @@ pub(crate) fn file(
 
 /// Loads a kit from its folder or any folder inside it.
 pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -> Result<Program, Problems> {
-    let Some((root, shown_root)) = find_root(dir, shown_as) else {
+    let Some((root, shown_root)) = find_root(dir, shown_as).map_err(|why| refused(&why))? else {
         return Err(Problems::unplaced(format!(
             "error: there's no kit.toml in {shown_as} or any folder above it\n  = help: `fennec new <name>` starts a kit, and `fennec run <file.fen>` runs a single file\n"
         )));
@@ -144,7 +144,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
 /// Whether a program loaded from the kit at `dir` has every one of the kit's own modules, as
 /// `kit` shows them.
 pub(crate) fn holds_every_file(program: &Program, dir: &Path, shown_as: &str) -> bool {
-    let Some((root, shown_root)) = find_root(dir, shown_as) else { return false };
+    let Ok(Some((root, shown_root))) = find_root(dir, shown_as) else { return false };
     let mut modules = Vec::new();
     find_modules(&root.join("src"), &mut Vec::new(), &mut modules);
     let loaded: HashSet<&str> = program.sources.files().map(|(shown, _)| shown).collect();
@@ -180,7 +180,7 @@ pub(crate) fn kit_texts(dir: &Path) -> Option<Vec<(String, String)>> {
 
 /// Where each file of a kit is, by module name, with the manifest as `kit.toml`.
 pub(crate) fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
-    let (root, _) = find_root(dir, ".")?;
+    let (root, _) = find_root(dir, ".").ok()??;
     let src = root.join("src");
     let mut modules = Vec::new();
     find_modules(&src, &mut Vec::new(), &mut modules);
@@ -261,7 +261,7 @@ fn some_of_a_kit(
     overlay: &Overlay,
     doc_examples: bool,
 ) -> Result<Program, Problems> {
-    let Some((root, shown_root)) = find_root(dir, shown_as) else {
+    let Some((root, shown_root)) = find_root(dir, shown_as).map_err(|why| refused(&why))? else {
         return Err(Problems::unplaced("error: this isn't in a kit\n".to_owned()));
     };
     let manifest = read_manifest(&root, &shown_root)?;
@@ -279,22 +279,30 @@ fn some_of_a_kit(
     loader.finish(Some(manifest))
 }
 
+/// Why a `kit.toml` that's there isn't taken, as the command's error.
+fn refused(why: &str) -> Problems {
+    Problems::unplaced(format!("error: {why}\n"))
+}
+
 /// The nearest folder at or above `dir` with a `kit.toml`, and how messages show it: by
-/// trimming `shown_as` when it names that folder, and as an absolute path when it doesn't.
-fn find_root(dir: &Path, shown_as: &str) -> Option<(PathBuf, String)> {
-    let absolute = std::fs::canonicalize(dir).ok()?;
-    // Reached only through folders nobody else can write to: see `fennec_dist::kit_root`.
-    let found = fennec_dist::kit_root(&absolute)?;
-    let (levels, root) = absolute.ancestors().enumerate().find(|(_, folder)| *folder == found)?;
+/// trimming `shown_as` when it names that folder, and as an absolute path when it doesn't. An
+/// error says why a `kit.toml` that's there isn't trusted.
+fn find_root(dir: &Path, shown_as: &str) -> Result<Option<(PathBuf, String)>, String> {
+    let Ok(absolute) = std::fs::canonicalize(dir) else { return Ok(None) };
+    // Reached only through folders that are trusted: see `fennec_dist::kit_root`.
+    let Some(found) = fennec_dist::kit_root(&absolute)? else { return Ok(None) };
+    let Some((levels, root)) = absolute.ancestors().enumerate().find(|(_, folder)| *folder == found) else {
+        return Ok(None);
+    };
     let mut shown = PathBuf::from(shown_as);
     for _ in 0..levels {
         // Going up from `.` or `..` isn't trimming a name, so show the absolute path.
         if !matches!(shown.components().next_back(), Some(Component::Normal(_))) {
-            return Some((root.to_path_buf(), folder_prefix(Some(root))));
+            return Ok(Some((root.to_path_buf(), folder_prefix(Some(root)))));
         }
         shown.pop();
     }
-    Some((root.to_path_buf(), folder_prefix(Some(&shown))))
+    Ok(Some((root.to_path_buf(), folder_prefix(Some(&shown)))))
 }
 
 /// How a folder is shown before the files in it: `games/arena/`, or nothing for `.`.

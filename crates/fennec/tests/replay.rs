@@ -26,13 +26,14 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
 type Outcome = (String, String, Option<i32>);
 
 fn outcome(ran: &Output) -> Outcome {
-    let mut said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
     // A program a signal stopped has no exit code, so which signal goes with what it said: a run
     // killed with nothing printed is otherwise only `None`, which says nothing of why.
     #[cfg(unix)]
-    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&ran.status) {
-        let _ = std::fmt::Write::write_fmt(&mut said, format_args!("[stopped by signal {signal}]"));
-    }
+    let said = match std::os::unix::process::ExitStatusExt::signal(&ran.status) {
+        Some(signal) => format!("{said}[stopped by signal {signal}]"),
+        None => said,
+    };
     (String::from_utf8_lossy(&ran.stdout).into_owned(), said, ran.status.code())
 }
 
@@ -354,6 +355,7 @@ fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<
     let mut record = std::process::Command::new(&executable)
         .env("FENNEC_RECORD", &log)
         .env("FENNEC_THREADS", "4")
+        .env("FENNEC_LIVE_REPORT", dir.join("live"))
         .stdout(std::process::Stdio::piped())
         .spawn()?;
     let mut out =
@@ -374,7 +376,8 @@ fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<
     partway.write_all(b"GET /b HTTP/1.1\r\n")?;
     let mut stuck = connect()?;
     stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
-    std::thread::sleep(Duration::from_millis(300));
+    // The server has taken all three before it's asked to stop, as its live count says.
+    crate::llvm::serving(&dir.join("live"), 3);
     let sent = std::process::Command::new("kill").args(["-TERM", &record.id().to_string()]).status()?;
     assert!(sent.success(), "couldn't send SIGTERM");
     let mut rest = Vec::new();

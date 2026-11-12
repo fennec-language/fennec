@@ -679,6 +679,10 @@ pub(crate) mod tls {
         fn socket(&self) -> &TcpStream {
             &self.0.get_ref().sock
         }
+
+        fn holds_unread(&self) -> bool {
+            !self.0.buffer().is_empty()
+        }
     }
 
     impl<C> Write for Buffered<C>

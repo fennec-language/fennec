@@ -47,7 +47,7 @@ pub extern "C" fn parse_float(text: i64, bits: &mut i64) -> i64 {
 /// A new string saying text isn't a number: an int if `int` isn't 0, or else a float. The text
 /// comes from outside, so past 40 characters only its first 20 are quoted, then how long it was.
 pub extern "C" fn not_a_number(text: i64, int: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_not_a_number", |state| {
         let what = if int == 0 { "a float" } else { "an int" };
         let message = format!("{} isn't {what}", quoted_input(&text_of(state, text)));
         text_address(state, &message)

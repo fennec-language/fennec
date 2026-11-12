@@ -42,6 +42,9 @@ pub struct Program {
     pub dependency_files: HashSet<String>,
 }
 
+/// What a problem in a dependency's files says in place of a fix.
+pub const IN_A_DEPENDENCY: &str = "this is in a kit this one depends on, which no tool changes: the kit changed or is broken, and it isn't handed more than it had without a reason. Move its pin with `fennec update` to a commit where it isn't, or tell its author";
+
 /// A file `embed` read, and what it held then.
 #[derive(Clone, Debug)]
 pub struct Embedded {
@@ -68,6 +71,37 @@ impl Program {
     #[must_use]
     pub fn is_own(&self, span: fennec_syntax::Span) -> bool {
         self.sources.file_at(span).is_none_or(|(file, ..)| !self.dependency_files.contains(file))
+    }
+
+    /// Makes each problem in a dependency's files one with no fix, saying the kit changed or is
+    /// broken, and drops any fix that would change a dependency's file. A tool never changes
+    /// another kit: `fennec fix` once handed a pinned kit the program's `Fs`, by the fix the error
+    /// itself offered, and left the store unlike its pin.
+    pub fn no_fixes_in_dependencies(&self, diagnostics: &mut [Diagnostic]) {
+        for diagnostic in diagnostics {
+            if !self.is_own(diagnostic.span) {
+                diagnostic.fixes.clear();
+                diagnostic.hint = None;
+                diagnostic.help = Some(IN_A_DEPENDENCY.to_owned());
+            } else if diagnostic.fixes.iter().any(|edit| !self.is_own(edit.span)) {
+                diagnostic.fixes.clear();
+            }
+        }
+    }
+
+    /// The problems as a command shows them, with those in a dependency's files offering no fix:
+    /// see `no_fixes_in_dependencies`.
+    #[must_use]
+    pub fn render(&self, diagnostics: &[Diagnostic]) -> String {
+        let mut told = diagnostics.to_vec();
+        self.no_fixes_in_dependencies(&mut told);
+        self.sources.render_all(&told)
+    }
+
+    /// The changed files a tool may write: this kit's own, never a dependency's.
+    #[must_use]
+    pub fn own_changes(&self, changed: Vec<(String, String)>) -> Vec<(String, String)> {
+        changed.into_iter().filter(|(file, _)| !self.dependency_files.contains(file)).collect()
     }
 
     /// The file of the kit that gives a type this method with `extend`, which this program didn't

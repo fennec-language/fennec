@@ -622,6 +622,18 @@ fn arms_under(
     for (at, arm) in arms.iter().enumerate() {
         let end = arms.get(at + 1).map_or(matched.span.end, |next| next.span.start);
         let mut written = text.get(Span { start: arm.span.start, end })?.trim_end().to_owned();
+        let line = text.get(Span { start: text.base, end: arm.span.start })?;
+        let body_indent = format!("{}    ", line.rsplit('\n').next().unwrap_or_default());
+        // A body on the case's own line, `case X: f()`, goes on a line of its own, so lines can
+        // follow it.
+        if let Some(first) = arm.body.first()
+            && let Some(between) = text.get(Span { start: arm.span.start, end: first.span.start })
+            && !between.contains('\n')
+        {
+            let head = written.get(..between.len())?.trim_end().to_owned();
+            let tail = written.get(between.len()..)?.to_owned();
+            written = format!("{head}\n{body_indent}{tail}");
+        }
         if matches!(arm.pattern, fennec_syntax::Pattern::Wildcard)
             && arm.guard.is_none()
             && !arm.body.iter().any(|stmt| crate::except::stmt_uses(stmt, name))
@@ -639,10 +651,8 @@ fn arms_under(
         // `error` given `why` first.
         if let fennec_syntax::Pattern::Bind(other) = &arm.pattern
             && arm.guard.is_none()
-            && let Some(first) = arm.body.first()
+            && !arm.body.is_empty()
         {
-            let line = text.get(Span { start: text.base, end: first.span.start })?;
-            let body_indent = line.rsplit('\n').next().unwrap_or_default();
             let named = format!("case {other}:");
             if written.starts_with(&named) {
                 written = written.replacen(&named, &format!("case _:\n{body_indent}{other} = {name}"), 1);
@@ -1057,6 +1067,23 @@ mod tests {
         let migrated = migrated(source);
         assert!(
             migrated.contains("    load_value = load(2) except .Empty: []\n    for found in load_value:\n"),
+            "{migrated}"
+        );
+    }
+
+    /// A case whose body is on its own line, `case .Long(size): stdout.print(size)`, gets a
+    /// block once the lines after the `match` are added to it.
+    #[test]
+    fn a_case_on_one_line_becomes_a_block_when_lines_follow_it() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout):\n    got = load(n) else as why:\n        match why:\n            \
+            case .Long(size): stdout.print(size)\n            case .Empty: stdout.print(\"empty\")\n        return\n    \
+            stdout.print(got)\n\n\
+            def main(stdout: Stdout):\n    shown(1, stdout)\n";
+        let migrated = migrated(source);
+        assert!(
+            migrated.contains("    got = load(n) except why:\n        case .Long(size):\n            stdout.print(size)\n            return\n        case .Empty:\n            stdout.print(\"empty\")\n            return\n"),
             "{migrated}"
         );
     }

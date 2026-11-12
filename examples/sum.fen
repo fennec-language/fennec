@@ -8,13 +8,13 @@ struct Money:
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
 struct Item:
     price: Money
 
 def total[T: Addable](items: list[T], start: T) -> T:
-    sum(items, start=start)
+    return sum(items, start=start)
 
 def main(stdout: Stdout):
     no_floats: list[float] = []

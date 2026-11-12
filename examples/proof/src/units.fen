@@ -13,16 +13,16 @@ enum Team:
     def other(self) -> Team:
         match self:
             case .Red:
-                .Blue
+                return .Blue
             case .Blue:
-                .Red
+                return .Red
 
     def name(self) -> str:
         match self:
             case .Red:
-                "red"
+                return "red"
             case .Blue:
-                "blue"
+                return "blue"
 
 enum Kind:
     Soldier
@@ -33,38 +33,38 @@ enum Kind:
     def reach(self) -> int:
         match self:
             case .Soldier:
-                1
+                return 1
             case .Archer:
-                4
+                return 4
             case .Medic:
-                1
+                return 1
 
     def power(self) -> int:
         match self:
             case .Soldier:
-                12
+                return 12
             case .Archer:
-                7
+                return 7
             case .Medic:
-                9
+                return 9
 
     def most_health(self) -> int:
         match self:
             case .Soldier:
-                60
+                return 60
             case .Archer:
-                35
+                return 35
             case .Medic:
-                40
+                return 40
 
     def name(self) -> str:
         match self:
             case .Soldier:
-                "soldier"
+                return "soldier"
             case .Archer:
-                "archer"
+                return "archer"
             case .Medic:
-                "medic"
+                return "medic"
 
 struct Item:
     name: str
@@ -89,13 +89,13 @@ struct Unit:
     kills = 0
 
     def alive(self) -> bool:
-        self.health > 0
+        return self.health > 0
 
     def power(self) -> int:
-        self.kind.power() + sum(item.sharpens for item in self.items)
+        return self.kind.power() + sum(item.sharpens for item in self.items)
 
     def describe(self) -> str:
-        f"{self.name} ({self.team.name()} {self.kind.name()}, {self.health} hp at {self.at})"
+        return f"{self.name} ({self.team.name()} {self.kind.name()}, {self.health} hp at {self.at})"
 
 struct Squad:
     name: str
@@ -115,7 +115,7 @@ struct World:
     def spawn(ref self, name: str, team: Team, kind: Kind, at: (int, int)) -> Id[Unit]:
         assert self.field.walkable(at)
         unit = Unit(name=name, team=team, kind=kind, at=at, health=kind.most_health())
-        self.units.add(unit)
+        return self.units.add(unit)
 
     ## Puts `members` in a squad led by the first of them, heading for `rally`.
     def form_squad(ref self, name: str, members: list[Id[Unit]], rally: (int, int)) -> Id[Squad]:
@@ -128,24 +128,24 @@ struct World:
             self.units[member].squad = squad
             if member != leader:
                 self.units[member].following = leader
-        squad
+        return squad
 
     ## The units still standing on `team`.
     def team_ids(self, team: Team) -> list[Id[Unit]]:
-        [id for id, unit in self.units.items() if unit.team == team]
+        return [id for id, unit in self.units.items() if unit.team == team]
 
     ## Where every unit stands, so others walk round them.
     def occupied(self) -> set[(int, int)]:
-        {unit.at for unit in self.units.values()}
+        return {unit.at for unit in self.units.values()}
 
     ## The unit standing at `at`, if any.
     def unit_at(self, at: (int, int)) -> Id[Unit]?:
         for id, unit in self.units.items():
             if unit.at == at: return id
-        None
+        return None
 
     def alive_count(self, team: Team) -> int:
-        self.team_ids(team).len()
+        return len(self.team_ids(team))
 
 test "a squad's members follow its leader":
     mut world = World(field=map.Map.drawn(["....", "...."]))

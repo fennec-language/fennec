@@ -1,5 +1,5 @@
-from std.net import NetError, Connection
 from std.concurrent import Crashed
+from std.net import Connection, NetError
 
 def beside(conn: Connection, clock: Clock, stdout: Stdout) fails NetError:
     clock.sleep(50ms)

@@ -50,8 +50,8 @@ pub(crate) fn update(path: &str) -> ExitCode {
 fn lock_layouts(root: &Path) -> Result<String, String> {
     let shown = root.to_string_lossy();
     let mut program = fennec_kit::load(root, &shown, fennec_kit::Entry::Main)?;
-    let signatures = fennec_check::check_and_resolve(&mut program.module)
-        .map_err(|problems| program.sources.render_all(&problems))?;
+    let signatures =
+        fennec_check::check_and_resolve(&mut program.module).map_err(|problems| program.render(&problems))?;
     let lowered = fennec_ir::lower(&program.module, &signatures);
     if lowered.layouts.is_empty() {
         return Ok(String::new());

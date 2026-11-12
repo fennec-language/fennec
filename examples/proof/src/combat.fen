@@ -89,7 +89,7 @@ def leave_squad(ref world: World, ref board: Scoreboard, squad_id: Id[Squad], go
     if squad is None: return
     members = [member for member in squad.members if member != gone]
     world.squads[squad_id].members = members
-    if members.len() == 0:
+    if len(members) == 0:
         _ = world.squads.remove(squad_id)
         board.note(world.tick, f"squad {squad.name} is gone")
         return
@@ -118,7 +118,7 @@ test "an attack takes health and can kill":
     assert world.units[ash].kills == 1
     assert board.line(.Red) == "red: 1 kills, 10 damage, 0 healed"
     bury(ref world, ref board)
-    assert world.units.get(vex) is None and world.units.len() == 1
+    assert world.units.get(vex) is None and len(world.units) == 1
 
 test "a new leader takes over when the old one falls":
     mut world = World(field=map.Map.drawn(["...."]))

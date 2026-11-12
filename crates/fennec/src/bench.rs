@@ -58,7 +58,7 @@ pub(crate) fn bench(path: &str) -> ExitCode {
     };
     keep_benches(&mut program.module, None);
     if let Err(diagnostics) = fennec_check::check_and_resolve(&mut program.module) {
-        eprint!("{}", program.sources.render_all(&diagnostics));
+        eprint!("{}", program.render(&diagnostics));
         return ExitCode::FAILURE;
     }
     let names = bench_names(&program.module);

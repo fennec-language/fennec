@@ -13,26 +13,26 @@ struct Circle:
     radius: float
 
     def area(self) -> float:
-        PI * self.radius * self.radius  # Circle is a Shape because it has area() and name()
+        return PI * self.radius * self.radius  # Circle is a Shape because it has area() and name()
 
     def name(self) -> str:
-        "circle"
+        return "circle"
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
     def name(self) -> str:
-        "square"
+        return "square"
 
 def total_area[T: Shape](shapes: list[T]) -> float:
-    sum(shape.area() for shape in shapes)
+    return sum(shape.area() for shape in shapes)
 
 def first[T, U](pairs: list[(T, U)]) -> T:
     item, _ = pairs[0]
-    item
+    return item
 
 def main(stdout: Stdout):
     stdout.print(f"{total_area([Circle(radius=1.0), Circle(radius=2.0)]):.2f}")

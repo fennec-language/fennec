@@ -9,7 +9,7 @@ enum Light:
     Green
 
     def default() -> Light:
-        .Red
+        return .Red
 
 enum Coin:
     Heads
@@ -19,13 +19,13 @@ struct Money:
     cents: int
 
     def <(self, other: Money) -> bool:
-        self.cents < other.cents
+        return self.cents < other.cents
 
     def /(self, parts: int) -> Money:
-        Money(cents=self.cents // parts)
+        return Money(cents=self.cents // parts)
 
     def %(self, parts: int) -> Money:
-        Money(cents=self.cents % parts)
+        return Money(cents=self.cents % parts)
 
 struct Score:
     value: int where value >= 0
@@ -34,21 +34,21 @@ struct Player:
     name: str
 
     def greet(self) -> str:
-        f"hi, {self.name}"
+        return f"hi, {self.name}"
 
 def find(name: str) -> Player?:
     if name == "Kit": return Player(name="Kit")
-    None
+    return None
 
 def parse(text: str) -> int fails NotANumber:
     if not text.isdigit(): fail NotANumber(text=text)
-    int(text) else 0
+    return int(text) except InvalidValue(): 0
 
 def call(make: () -> int) -> int:
-    make()
+    return make()
 
 def combine(join: (int, int) -> int, left_value: int, right_value: int) -> int:
-    join(left_value, right_value)
+    return join(left_value, right_value)
 
 def main(stdout: Stdout):
     # A named constructor that takes nothing can be used without parentheses.
@@ -64,7 +64,7 @@ def main(stdout: Stdout):
 
     # `where` rules: literals are checked as the program is read; anything else can fail.
     for value in [5, -1]:
-        score = Score(value=value) else as why:
+        score = Score(value=value) except why:
             stdout.print(why)
             continue
         stdout.print(score)
@@ -89,8 +89,9 @@ def main(stdout: Stdout):
     stdout.print({"a": 1}, {1, 2}, [1], (1,))
 
     # A function can return a result it made itself.
-    _ = parse("twelve") else as why:
-        stdout.print(parse("12") else -1, why)
+    _ = parse("twelve") except why:
+        parse_value = parse("12") except NotANumber(): -1
+        stdout.print(parse_value, why)
         -1
 
     # `and` and `or` stop as soon as they know the answer.
@@ -103,4 +104,4 @@ def main(stdout: Stdout):
     kit = enemies.add("kit")
     stdout.print(enemies.get(ash), enemies[kit])
 
-    stdout.print(SoaList[int](), SoaList[int]().len())
+    stdout.print(SoaList[int](), len(SoaList[int]()))

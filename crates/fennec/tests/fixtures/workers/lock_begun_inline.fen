@@ -13,8 +13,7 @@ struct Tally:
 def alone(tally: shared Tally, step: int, failing: bool) fails Boom:
     lock tally as ref held:
         held.count += step
-        if failing:
-            fail Boom(step=step)
+        if failing: fail Boom(step=step)
 
 ## Two locks taken together: the first begins in native code, and the second asks the runtime,
 ## which makes the first one's log before its own.
@@ -23,8 +22,7 @@ def together(first: shared Tally, second: shared Tally, step: int, failing: bool
         one.count += 1
         two.count += 10
         one.names.append("kept")
-        if failing:
-            fail Boom(step=step)
+        if failing: fail Boom(step=step)
 
 def crashing(tally: shared Tally, at: int):
     lock tally as ref held:
@@ -41,16 +39,16 @@ def main(stdout: Stdout):
     shared second = Tally()
     mut failed = 0
     for step in range(1, 31):
-        _ = alone(first, step=step, failing=step % 4 == 0) else:
+        _ = alone(first, step=step, failing=step % 4 == 0) except Boom():
             failed += 1
     for step in range(9):
-        _ = together(first, second=second, step=step, failing=step % 3 == 1) else:
+        _ = together(first, second=second, step=step, failing=step % 3 == 1) except Boom():
             failed += 1
     for at in [0, 1]:
-        _ = launched(second, at=at) else:
+        _ = launched(second, at=at) except Crashed():
             stdout.print("crashed", at)
     for step in range(1, 5):
-        _ = alone(second, step=step, failing=step == 2) else:
+        _ = alone(second, step=step, failing=step == 2) except Boom():
             failed += 1
     lock first, second as one, two:
-        stdout.print(failed, one.count, one.names.len(), two.count)
+        stdout.print(failed, one.count, len(one.names), two.count)

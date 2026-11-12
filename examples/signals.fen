@@ -8,7 +8,7 @@ def run_until_stopped(signals: Signals, frames: int) -> int:
     mut ran = 0
     while not signals.stopping() and ran < frames:
         ran += 1
-    ran
+    return ran
 
 test "a loop runs until it's asked to stop"(signals: Signals):
     assert run_until_stopped(signals, frames=3) == 3

@@ -720,6 +720,28 @@ mod tests {
         finish();
     }
 
+    /// A constant kept on the main thread is let go of there more often than it's taken, as code
+    /// that runs only on the main thread counts it and code that may run on a worker doesn't. It
+    /// still lives, still reads as never freed by its count, and is still among the blocks every
+    /// thread can read once a task starts: one that fell below the mark stayed in this thread's
+    /// table, where a task's push to a struct field holding it was lost.
+    #[test]
+    fn a_constant_let_go_of_more_than_taken_still_lives_and_is_shared() {
+        let elements = vec![Rc::new(Element::Int)];
+        start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
+        let kept = crate::embed::lists::new(0, 0);
+        super::super::constant_kept(kept);
+        let at = kept.cast_unsigned();
+        for _ in 0..1_000 {
+            with(|state| super::super::release(state, at));
+        }
+        let count = with(|state| state.heap.block(at).and_then(|block| block.first().copied())).unwrap();
+        assert!(count >= super::super::IMMORTAL, "its count fell to {count}");
+        with(super::super::share_statics);
+        assert!(super::super::shared_static(at), "a task can't read it");
+        finish();
+    }
+
     /// A block that's never freed, as a shared enum case's is, made in this thread's table.
     fn never_freed() -> u64 {
         let elements = vec![Rc::new(Element::Int)];

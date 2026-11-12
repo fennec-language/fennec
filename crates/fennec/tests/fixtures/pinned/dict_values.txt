@@ -1,4 +1,4 @@
-source d75a30896fa8f32041b78429a559d40ec2d5d57294d63bda04eaf426318155bd
+source f9ac564195f4413b7b3b2e8119a188485ce5e79f69a25b399e5fd4c7e604d1bc
 code 0
 stdout 512
 {"a": [9], "b": [], "c": [3]} {"a": [1, 2], "b": [], "c": [3]} [9] 2 3

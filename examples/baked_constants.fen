@@ -12,5 +12,5 @@ CORNERS = [Point(x=float(at // 2), y=float(at % 2)) for at in range(4)]
 SQUARES = {n: n * n for n in range(5)}
 
 def main(stdout: Stdout):
-    stdout.print(SINE.len(), SINE[256], SINE[512] < 0.000001)
+    stdout.print(len(SINE), SINE[256], SINE[512] < 0.000001)
     stdout.print(CORNERS[3], SQUARES[4])

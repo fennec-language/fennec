@@ -6,7 +6,7 @@ from std import string
 
 ## A table's row: the name padded on the left, the score on the right.
 def row(name: str, score: int) -> str:
-    name.ljust(10, fill=".") + str(score).rjust(6)
+    return name.ljust(10, fill=".") + str(score).rjust(6)
 
 test "padding goes on the side it says"():
     assert "ab".ljust(4, fill=".") == "ab.." and "7".rjust(3) == "  7"
@@ -41,8 +41,8 @@ test "dedent and indent go both ways"():
 
 test "the sets of characters are Python's"():
     assert string.ASCII_LETTERS == string.ASCII_LOWERCASE + string.ASCII_UPPERCASE
-    assert string.DIGITS.len() == 10 and string.HEX_DIGITS.len() == 22
-    assert string.PUNCTUATION.len() == 32 and string.WHITESPACE.len() == 6
+    assert len(string.DIGITS) == 10 and len(string.HEX_DIGITS) == 22
+    assert len(string.PUNCTUATION) == 32 and len(string.WHITESPACE) == 6
 
 def main(stdout: Stdout):
     for name, score in [("fox", 120), ("badger", 7)]:

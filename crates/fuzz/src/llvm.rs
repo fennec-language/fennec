@@ -143,8 +143,9 @@ fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, St
 }
 
 /// A program built with `fennec build --llvm`, and `--release` when asked, then run: what it
-/// printed, the first line it said on standard error, and whether it succeeded. A build that
-/// fails gives what `fennec` said, whatever the reason, for programs that should always build.
+/// printed, the line it said on standard error that says why it stopped, and whether it
+/// succeeded. A build that fails gives what `fennec` said, whatever the reason, for programs that
+/// should always build.
 pub(crate) fn built_and_run(
     source: &str,
     name: &str,
@@ -169,10 +170,16 @@ pub(crate) fn built_and_run(
         return Err(format!("it didn't build {how}:\n{}", String::from_utf8_lossy(&built.stderr)));
     }
     let (printed, said, succeeded) = ran(&executable, &[], &work)?;
-    // The first line, or the first that says what a watching build caught, which a sanitizer's
-    // report doesn't start with.
+    Ok((printed, cut(&said), succeeded))
+}
+
+/// The line of what a program said that says why it stopped: the first that says what a
+/// watching build caught, which a sanitizer's report doesn't start with, or else the last
+/// `error:`, since a task that crashed and was handled says its own first, or else the first.
+fn cut(said: &str) -> String {
     let caught = said.lines().find(|line| CAUGHT.iter().any(|what| line.contains(what)));
-    Ok((printed, caught.or_else(|| said.lines().next()).unwrap_or_default().to_owned(), succeeded))
+    let stopped = || said.lines().rev().find(|line| line.starts_with("error: "));
+    caught.or_else(stopped).or_else(|| said.lines().next()).unwrap_or_default().to_owned()
 }
 
 /// What a build that watches itself says when it catches something: a false proof, memory the
@@ -185,8 +192,7 @@ pub(crate) fn ran_again_on(name: &str, threads: usize) -> Result<(Vec<u8>, Strin
     let work = work().join(name);
     let (printed, said, succeeded) =
         ran_on(&work.join("program"), &[], &work, MOST_KILOBYTES, Some(threads))?;
-    let caught = said.lines().find(|line| CAUGHT.iter().any(|what| line.contains(what)));
-    Ok((printed, caught.or_else(|| said.lines().next()).unwrap_or_default().to_owned(), succeeded))
+    Ok((printed, cut(&said), succeeded))
 }
 
 /// The executable `built_and_run` last made under `name`.

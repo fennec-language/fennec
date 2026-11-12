@@ -32,14 +32,14 @@ struct Parts:
     items: list[Part]
 
     def [](self, at: int) -> Part:
-        self.items[at]
+        return self.items[at]
 
 struct Slots:
     items: list[Part]
     total = 0
 
     def [](self, at: int) -> Part:
-        self.items[at]
+        return self.items[at]
 
     def []=(ref self, at: int, value: Part):
         self.items[at] = value
@@ -73,7 +73,7 @@ struct Grid:
     cells: list[int]
 
     def [](self, at: int) -> int:
-        self.cells[at]
+        return self.cells[at]
 
     def []=(ref self, at: int, value: int):
         self.cells[at] = value
@@ -498,7 +498,7 @@ fn a_name_that_hides_a_mut_one_says_so() {
 #[test]
 fn a_generator_cant_change_whats_around_it() {
     let empty: [&str; 0] = [];
-    let bump = "def bump(ref k: int) -> int:\n    k += 1\n    k\n";
+    let bump = "def bump(ref k: int) -> int:\n    k += 1\n    return k\n";
     let told = |name: &str, at: &str| {
         vec![format!("a generator kept for later can't change `{name}`, which is defined outside it @ {at}")]
     };
@@ -522,7 +522,7 @@ fn a_generator_cant_change_whats_around_it() {
         crate::in_main_after(bump, method),
         ["this generator changes `xs`, a name around it @ xs.pop()"]
     );
-    let own = "xs = [[1], [2]]\nstdout.print(sum(inner.len() for inner in xs))\n";
+    let own = "xs = [[1], [2]]\nstdout.print(sum(len(inner) for inner in xs))\n";
     assert_eq!(crate::in_main_after(bump, own), empty);
     let read = "k = 1\ng = (k + x for x in range(3))\nstdout.print(list(g))\n";
     assert_eq!(crate::in_main_after(bump, read), empty);

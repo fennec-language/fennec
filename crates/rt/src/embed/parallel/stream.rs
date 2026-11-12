@@ -229,6 +229,9 @@ pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i
         done: Condvar::new(),
     });
     if window > 0 {
+        // What the reader printed before the stream comes out before anything its chunks print,
+        // as for a range: a worker writes its chunk's output as soon as the chunk is done.
+        super::super::write_kept_output();
         (0..ahead).for_each(|at| stream.start(at));
     }
     let number = NEXT.get();

@@ -2270,6 +2270,98 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
     }
     find_slot_takes(function, known);
     find_put_back_takes(function, known);
+    find_slot_borrows(function, known);
+}
+
+/// `for item in table` whose body only looks inside the item, reading its fields, while nothing
+/// in the loop changes the `Table`: the item is borrowed from its slot rather than given an owner
+/// of its own and let go of again each time round.
+fn find_slot_borrows(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for inst in &block.insts {
+            let InstKind::Builtin { dest: Some(dest), name, args, .. } = &inst.kind else { continue };
+            let [Operand::Local(from), Operand::Local(slot)] = args.as_slice() else { continue };
+            if name != "Table.at_slot"
+                || known.writes.get(dest.0) != Some(&1)
+                || known.taken.contains(&dest.0)
+                || known.borrowed.contains(&dest.0)
+            {
+                continue;
+            }
+            // The loop counting the slots: its blocks, from the test of its count.
+            let Some(count) = function.counts.iter().find(|count| count.count == *slot) else { continue };
+            let header = function.blocks.iter().position(|held| {
+                let Terminator::Branch { cond: Operand::Local(cond), .. } = &held.end else { return false };
+                held.insts.iter().any(|test| {
+                    matches!(&test.kind, InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(lhs), rhs: Operand::Local(stop) }
+                        if dest == cond && lhs == slot && *stop == count.stop)
+                })
+            });
+            let Some(header) = header else { continue };
+            let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|held| &held.end)
+            else {
+                continue;
+            };
+            let body = loop_blocks(function, header, then.0);
+            if !body.contains(&start) {
+                continue;
+            }
+            // What the `Table` is read from: itself, what it was copied from, or the local a field
+            // of which it is, however many steps back.
+            let mut sources = vec![*from];
+            let mut at = 0;
+            while let Some(held) = sources.get(at).copied() {
+                at += 1;
+                if sources.len() > 8 {
+                    break;
+                }
+                if let Some((root, _)) = known.field_of(held) {
+                    sources.push(*root);
+                }
+                for copied in function.blocks.iter().flat_map(|block| &block.insts) {
+                    if let InstKind::Copy { dest, value: Operand::Local(source) } = &copied.kind
+                        && *dest == held
+                        && !sources.contains(source)
+                    {
+                        sources.push(*source);
+                    }
+                }
+            }
+            let insts = || body.iter().filter_map(|at| function.blocks.get(*at)).flat_map(|held| &held.insts);
+            let changes_it = insts().any(|later| {
+                sources.iter().any(|source| {
+                    let held = Operand::Local(*source);
+                    match &later.kind {
+                        InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => {
+                            object == source
+                        }
+                        InstKind::Builtin { args, changes: true, .. } => args.first() == Some(&held),
+                        InstKind::Call { args, .. } => args.contains(&held),
+                        _ => false,
+                    }
+                })
+            });
+            // Every read of the item, anywhere, only looks inside it.
+            let only_looked_at = function.blocks.iter().flat_map(|held| &held.insts).all(|other| {
+                let mut reads = false;
+                visit(&other.kind, |operand| reads |= *operand == Operand::Local(*dest), |_| {});
+                !reads || only_looks(&other.kind, *dest)
+            }) && function.blocks.iter().all(|held| !reads_in_end(&held.end, *dest));
+            if !changes_it && only_looked_at {
+                known.borrowed.insert(dest.0);
+            }
+        }
+    }
+}
+
+/// Whether a block's way out reads a local.
+fn reads_in_end(end: &Terminator, local: LocalId) -> bool {
+    match end {
+        Terminator::Return(Some(value)) | Terminator::Branch { cond: value, .. } => {
+            *value == Operand::Local(local)
+        }
+        _ => false,
+    }
 }
 
 /// `mut item = items[key]`, changed, then `items[key] = item`, for a list, a `Table` or a dict: the item

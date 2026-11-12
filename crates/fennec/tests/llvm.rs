@@ -19223,6 +19223,65 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A loop over a `Table` that only reads its items' fields borrows each from its slot, rather than
+/// giving it an owner and letting go again each time round, when nothing in the loop changes the
+/// `Table`. One that keeps the item, as `held.append(unit)` does, gives it an owner: the item kept
+/// stays as it was when the `Table`'s is changed after. Through a parameter, a local and a field.
+#[test]
+fn a_tables_items_only_read_in_a_loop_are_borrowed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("table_items_borrowed")?;
+    std::fs::write(dir.join("table_items_borrowed.fen"), TABLE_ITEMS_BORROWED)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "table_items_borrowed", how)?;
+        assert_eq!(printed, "259000 2450 u1 changed 50 0\n", "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TABLE_ITEMS_BORROWED: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    name: str
+
+struct World:
+    units: Table[Unit]
+
+def total(units: Table[Unit]) -> int:
+    mut sum_hp = 0
+    for unit in units:
+        sum_hp += unit.hp + len(unit.name) + (unit.bag.get("g") else 0)
+    return sum_hp
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for n in range(50):
+        ids.append(units.add(Unit(hp=n, bag={"g": n}, name=f"u{n}")))
+    mut t = 0
+    for _ in range(100):
+        t += total(units)
+    kept = list[Unit]()
+    mut seen = 0
+    for unit in units:
+        seen += unit.hp
+    mut world = World(units=units)
+    for unit in world.units:
+        seen += unit.hp
+    mut held = list[Unit]()
+    for unit in units:
+        held.append(unit)
+    units[ids[1]].name = "changed"
+    stdout.print(t, seen, held[1].name, units[ids[1]].name, len(held), len(kept))
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

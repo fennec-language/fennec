@@ -970,6 +970,18 @@ impl<'a> Lowering<'a> {
                 Ok(Operand::Local(dest))
             }
             ExprKind::Call { callee, args } => {
+                // `len(x)` and `abs(x)` call `x`'s own method, which the checker writes in when it
+                // resolves a module: one lowered as it was checked reads them so too.
+                if let ExprKind::Name(name) = &callee.kind
+                    && matches!(name.as_str(), "len" | "abs")
+                    && let [arg] = args.as_slice()
+                    && arg.name.is_none()
+                    && !arg.is_mut
+                {
+                    let mut method = expr.clone();
+                    fennec_syntax::visit::method_of_call(&mut method);
+                    return self.expr(&method);
+                }
                 if let Some(type_name) = self.constructs(callee, span) {
                     return self.make(&type_name, args, span);
                 }

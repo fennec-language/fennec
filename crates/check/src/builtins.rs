@@ -281,7 +281,9 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Clock", "now") => reads(&[], Type::named("Instant")),
         ("Clock", "time") => reads(&[], Type::named("Time")),
         ("Args", "len") | ("Entropy", "seed") => reads(&[], Type::Int),
-        ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
+        // A test's printed lines, sorted, since tasks print in no fixed order; and standard
+        // input's lines.
+        ("Stdout", "sorted_lines") | ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         // The next line without its ending, `None` at the end, and up to `size` bytes, empty at
         // the end: what makes `Stdin` a `Reader`.
         ("Stdin", "read_line") => reads(&[], Type::result(Type::optional(Type::Str), Type::named("IoError"))),
@@ -296,7 +298,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
 fn test_only(ty: &Type, name: &str) -> Option<&'static str> {
     let Type::Named(owner) = ty else { return None };
     Some(match (owner.as_str(), name) {
-        ("Stdout", "captured") => {
+        ("Stdout", "captured" | "sorted_lines") => {
             "only a test's own body can read what it printed, from the `Stdout` it received"
         }
         ("Net", "script" | "requests") => {

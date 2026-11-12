@@ -356,6 +356,10 @@ pub(crate) fn summarized<'p>(
         functions.iter().map(|(name, function)| (*name, vec![Vec::new(); function.params])).collect();
     loop {
         let mut more = Vec::new();
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "a function's own entries come in its blocks' order from the last round's summaries, and they're only searched"
+        )]
         for (name, function) in functions {
             let Some(known) = analyses.get(name) else { continue };
             let mut hit = Vec::new();
@@ -416,6 +420,7 @@ pub(crate) fn needed<'p>(
     analyses: &HashMap<&'p str, Analysis>,
 ) -> HashMap<&'p str, Vec<FieldPath>> {
     let mut needs: HashMap<&str, HashSet<FieldPath>> = HashMap::new();
+    #[expect(clippy::iter_over_hash_type, reason = "each function's needs go into its own set")]
     for (name, function) in functions {
         let Some(known) = analyses.get(name) else { continue };
         let mut found = HashSet::new();
@@ -445,10 +450,18 @@ pub(crate) fn needed<'p>(
     // What a callee needs of a parameter, its caller needs of what it passes there.
     loop {
         let mut more = Vec::new();
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "a round reads what the last one left and only adds to sets, so it settles the same in any order"
+        )]
         for (name, function) in functions {
             for inst in function.blocks.iter().flat_map(|block| &block.insts) {
                 let InstKind::Call { function: callee, args, .. } = &inst.kind else { continue };
                 let Some(theirs) = needs.get(callee.as_str()) else { continue };
+                #[expect(
+                    clippy::iter_over_hash_type,
+                    reason = "what's found goes into a list only added to sets"
+                )]
                 for (param, path) in theirs {
                     if let Some(Operand::Local(local)) = args.get(param.0)
                         && function.mut_params.contains(&local.0)
@@ -477,6 +490,7 @@ pub(crate) fn needed<'p>(
     for function in &program.constants {
         other_ways.insert(function.name.as_str());
     }
+    #[expect(clippy::iter_over_hash_type, reason = "what's found goes into a set")]
     for (name, function) in functions {
         let Some(known) = analyses.get(name) else { continue };
         for inst in function.blocks.iter().flat_map(|block| &block.insts) {
@@ -608,6 +622,10 @@ pub(crate) fn coming_in(
     if !one_way_in {
         return Vec::new();
     }
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "each block only drops paths, so what's left is the same in any order"
+    )]
     for block in &returns {
         let Some(insts) = function.blocks.get(*block).map(|block| &block.insts) else { continue };
         for inst in insts {

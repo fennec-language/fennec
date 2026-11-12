@@ -2,11 +2,14 @@
 //! formats around it, written here with nothing borrowed. Compressing finds repeats with hash
 //! chains, and writes each block as whichever of stored, fixed codes or codes made for it is
 //! shortest, those kept to 15 bits by package-merge. Reading takes all three kinds of block,
-//! fails on anything else, never panics, and stops past `MOST_OUT` bytes, so a small input
-//! can't make it fill memory.
+//! fails on anything else, never panics, and stops past the most it's given, 64 MiB unless
+//! `most=` says otherwise, so a small input can't make it fill memory.
 
-/// The most a read gives back: 1 GiB.
-pub(crate) const MOST_OUT: usize = 1 << 30;
+/// The most a read gives back unless it's told otherwise: 64 MiB.
+pub(crate) const MOST_READ: usize = 64 << 20;
+
+/// What a read fails with past the most it was given, which `std.compress` says in its own words.
+pub(crate) const PAST_MOST: &str = "it holds more than the most it was given";
 
 const WINDOW: usize = 32_768;
 const MIN_MATCH: usize = 3;
@@ -197,7 +200,12 @@ fn dynamic_decoders(bits: &mut Bits<'_>) -> Result<(Decoder, Decoder), String> {
 }
 
 /// Reads one block's codes into `out`, up to its end.
-fn read_codes(bits: &mut Bits<'_>, codes: &(Decoder, Decoder), out: &mut Vec<u8>) -> Result<(), String> {
+fn read_codes(
+    bits: &mut Bits<'_>,
+    codes: &(Decoder, Decoder),
+    out: &mut Vec<u8>,
+    most: usize,
+) -> Result<(), String> {
     let (literals, distances) = codes;
     loop {
         let symbol = literals.read(bits)?;
@@ -223,14 +231,14 @@ fn read_codes(bits: &mut Bits<'_>, codes: &(Decoder, Decoder), out: &mut Vec<u8>
                 out.push(byte);
             }
         }
-        if out.len() > MOST_OUT {
-            return Err(format!("it holds more than {MOST_OUT} bytes"));
+        if out.len() > most {
+            return Err(PAST_MOST.to_owned());
         }
     }
 }
 
-/// The bytes raw DEFLATE data holds, and where in `data` it ends.
-pub(crate) fn inflate(data: &[u8]) -> Result<(Vec<u8>, usize), String> {
+/// The bytes raw DEFLATE data holds, and where in `data` it ends, failing past `most` bytes.
+pub(crate) fn inflate(data: &[u8], most: usize) -> Result<(Vec<u8>, usize), String> {
     let mut bits = Bits { data, at: 0, held: 0, count: 0 };
     let mut out: Vec<u8> = Vec::new();
     loop {
@@ -243,19 +251,22 @@ pub(crate) fn inflate(data: &[u8]) -> Result<(Vec<u8>, usize), String> {
                 if size != !check & 0xFFFF {
                     return Err("a stored block's length doesn't match its check".to_owned());
                 }
+                if usize::try_from(size).unwrap_or(usize::MAX) > most.saturating_sub(out.len()) {
+                    return Err(PAST_MOST.to_owned());
+                }
                 for _ in 0..size {
                     out.push(u8::try_from(bits.take(8)?).unwrap_or(0));
                 }
             }
-            1 => read_codes(&mut bits, &fixed_decoders()?, &mut out)?,
+            1 => read_codes(&mut bits, &fixed_decoders()?, &mut out, most)?,
             2 => {
                 let codes = dynamic_decoders(&mut bits)?;
-                read_codes(&mut bits, &codes, &mut out)?;
+                read_codes(&mut bits, &codes, &mut out, most)?;
             }
             _ => return Err("a block's kind isn't one".to_owned()),
         }
-        if out.len() > MOST_OUT {
-            return Err(format!("it holds more than {MOST_OUT} bytes"));
+        if out.len() > most {
+            return Err(PAST_MOST.to_owned());
         }
         if last {
             break;
@@ -745,7 +756,7 @@ fn word_at(data: &[u8], at: usize) -> Option<[u8; 4]> {
     data.get(at..at + 4).and_then(|four| four.try_into().ok())
 }
 
-pub(crate) fn unzlib(data: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn unzlib(data: &[u8], most: usize) -> Result<Vec<u8>, String> {
     let (&method, &flags) = (data.first().ok_or("it's empty")?, data.get(1).ok_or("it ends in its header")?);
     if method & 0x0F != 8 || (u16::from(method) << 8 | u16::from(flags)) % 31 != 0 {
         return Err("it doesn't start as zlib data does".to_owned());
@@ -753,7 +764,7 @@ pub(crate) fn unzlib(data: &[u8]) -> Result<Vec<u8>, String> {
     if flags & 0x20 != 0 {
         return Err("it needs a preset dictionary, which this doesn't take".to_owned());
     }
-    let (out, used) = inflate(data.get(2..).unwrap_or_default())?;
+    let (out, used) = inflate(data.get(2..).unwrap_or_default(), most)?;
     let check = word_at(data, 2 + used).ok_or("it ends before its check")?;
     if u32::from_be_bytes(check) != adler32(&out) {
         return Err("its check doesn't match what it holds".to_owned());
@@ -804,8 +815,9 @@ fn gzip_start(member: &[u8]) -> Result<usize, String> {
     Ok(place)
 }
 
-/// The bytes gzip data holds, every member one after another, as `gunzip` gives them.
-pub(crate) fn gunzip(data: &[u8]) -> Result<Vec<u8>, String> {
+/// The bytes gzip data holds, every member one after another, as `gunzip` gives them, failing
+/// past `most` bytes in all.
+pub(crate) fn gunzip(data: &[u8], most: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut at = 0;
     loop {
@@ -818,7 +830,7 @@ pub(crate) fn gunzip(data: &[u8]) -> Result<Vec<u8>, String> {
             });
         }
         let place = gzip_start(rest)?;
-        let (held, used) = inflate(rest.get(place..).ok_or("it ends in its header")?)?;
+        let (held, used) = inflate(rest.get(place..).ok_or("it ends in its header")?, most - out.len())?;
         let sum = word_at(rest, place + used).ok_or("it ends before its check")?;
         let size = word_at(rest, place + used + 4).ok_or("it ends before its check")?;
         if u32::from_le_bytes(sum) != crc32(&held) {
@@ -828,8 +840,8 @@ pub(crate) fn gunzip(data: &[u8]) -> Result<Vec<u8>, String> {
             return Err("its length doesn't match what it holds".to_owned());
         }
         out.extend(held);
-        if out.len() > MOST_OUT {
-            return Err(format!("it holds more than {MOST_OUT} bytes"));
+        if out.len() > most {
+            return Err(PAST_MOST.to_owned());
         }
         at += place + used + 8;
         if at >= data.len() {
@@ -840,7 +852,7 @@ pub(crate) fn gunzip(data: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc32, deflate, gunzip, gzip, inflate, unzlib, zlib};
+    use super::{MOST_READ, PAST_MOST, crc32, deflate, gunzip, gzip, inflate, unzlib, zlib};
 
     fn samples() -> Vec<Vec<u8>> {
         let mut seed = 0x2545_f491_u64;
@@ -868,13 +880,13 @@ mod tests {
             for level in 0..=9 {
                 let packed = deflate(&data, level);
                 assert_eq!(
-                    inflate(&packed).map(|(out, _)| out).as_deref(),
+                    inflate(&packed, MOST_READ).map(|(out, _)| out).as_deref(),
                     Ok(&data[..]),
                     "level {level}, {} bytes",
                     data.len()
                 );
-                assert_eq!(unzlib(&zlib(&data, level)).as_deref(), Ok(&data[..]));
-                assert_eq!(gunzip(&gzip(&data, level)).as_deref(), Ok(&data[..]));
+                assert_eq!(unzlib(&zlib(&data, level), MOST_READ).as_deref(), Ok(&data[..]));
+                assert_eq!(gunzip(&gzip(&data, level), MOST_READ).as_deref(), Ok(&data[..]));
             }
         }
     }
@@ -900,10 +912,30 @@ mod tests {
                     *byte ^= u8::try_from((seed >> 8) & 0xFF).unwrap_or(1) | 1;
                 }
             }
-            let _ = inflate(&data);
-            let _ = gunzip(&data);
-            let _ = unzlib(&data);
+            let _ = inflate(&data, MOST_READ);
+            let _ = gunzip(&data, MOST_READ);
+            let _ = unzlib(&data, MOST_READ);
         }
+    }
+
+    /// A gzip bomb: a megabyte of zeros is a kilobyte or so, and `gunzip` reads members one after
+    /// another, so 65 of them give back 65 MiB from about 65 KiB, past the most unless told
+    /// otherwise.
+    #[test]
+    fn a_bomb_stops_at_the_most_it_was_given() {
+        let zeros = vec![0; 1 << 20];
+        let member = gzip(&zeros, 9);
+        assert!(member.len() < 4096, "{}", member.len());
+        assert_eq!(gunzip(&member.repeat(65), MOST_READ), Err(PAST_MOST.to_owned()));
+        assert_eq!(gunzip(&member.repeat(64), MOST_READ).map(|out| out.len()), Ok(64 << 20));
+        // One stream past the most it's given, however it's wrapped.
+        let most = 64 * 1024;
+        assert_eq!(inflate(&deflate(&zeros, 9), most).err(), Some(PAST_MOST.to_owned()));
+        assert_eq!(unzlib(&zlib(&zeros, 9), most), Err(PAST_MOST.to_owned()));
+        assert_eq!(gunzip(&member, most), Err(PAST_MOST.to_owned()));
+        // A stored block that would pass the most is refused before it's read.
+        assert_eq!(inflate(&deflate(&[7; 70_000], 0), most).err(), Some(PAST_MOST.to_owned()));
+        assert_eq!(inflate(&deflate(&[7; 60_000], 0), most).map(|(out, _)| out.len()), Ok(60_000));
     }
 
     #[test]
@@ -918,14 +950,17 @@ mod tests {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         // zlib.compress(b"hello") from Python.
         assert_eq!(
-            unzlib(&[0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x06, 0x2c, 0x02, 0x15])
-                .as_deref(),
+            unzlib(
+                &[0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x06, 0x2c, 0x02, 0x15],
+                MOST_READ
+            )
+            .as_deref(),
             Ok(&b"hello"[..])
         );
-        assert!(gunzip(b"not gzip at all").is_err());
+        assert!(gunzip(b"not gzip at all", MOST_READ).is_err());
         let mut broken = gzip(b"fennec", 6);
         let last = broken.len() - 6;
         broken[last] ^= 1;
-        assert_eq!(gunzip(&broken), Err("its check doesn't match what it holds".to_owned()));
+        assert_eq!(gunzip(&broken, MOST_READ), Err("its check doesn't match what it holds".to_owned()));
     }
 }

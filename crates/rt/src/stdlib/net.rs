@@ -562,7 +562,7 @@ fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     }
 }
 
-fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
+pub(crate) fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
     if let Value::Instance(duration) = value
         && let Some(Value::Int(nanos)) = duration.field("nanos")
     {
@@ -679,7 +679,7 @@ pub(crate) fn real_connection(
         }
         // What a task serving a connection makes its `Connection` from.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
-        // Its server's draining, when it was told to `stop_on` signals and one has come.
+        // Has every read from now on done within `after`.
         ("_reads_within", [after]) => {
             let after = duration_of(after, span)?;
             if let Ok(stream) = stream(handle) {
@@ -688,6 +688,7 @@ pub(crate) fn real_connection(
             }
             return Ok(Value::Unit);
         }
+        // Its server's draining, when it was told to `stop_on` signals and one has come.
         ("draining", []) => {
             let draining = PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping();
             return Ok(Value::Bool(draining && stream(handle).is_ok_and(|stream| stream.served)));

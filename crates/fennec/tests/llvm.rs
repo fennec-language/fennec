@@ -11809,6 +11809,66 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
+/// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
+#[test]
+fn a_native_server_cuts_off_a_request_sent_a_byte_at_a_time() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=1s)
+";
+    let dir = folder("http_server_trickle")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+    let mut trickle = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    trickle.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+    trickle.write_all(b"POST /slow HTTP/1.1\r\nContent-Length: 1000\r\n\r\n")?;
+    // A byte of the body each tenth of a second, each well within the timeout, for up to 20
+    // seconds: with only each read timed, each read gets its byte and this never ends.
+    let started = std::time::Instant::now();
+    let mut heard = Vec::new();
+    let mut closed = false;
+    while started.elapsed() < std::time::Duration::from_secs(20) {
+        if trickle.write_all(b"x").is_err() {
+            closed = true;
+            break;
+        }
+        let mut buffer = [0; 512];
+        match trickle.read(&mut buffer) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(read) => heard.extend_from_slice(&buffer[..read]),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => {
+                closed = true;
+                break;
+            }
+        }
+    }
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(closed, "the server still held a request sent a byte at a time after 20 seconds");
+    assert!(!String::from_utf8_lossy(&heard).contains("200 OK"), "{}", String::from_utf8_lossy(&heard));
+    Ok(())
+}
+
 /// How many writes a run asked of its connections, from what it said under `FENNEC_COUNTS`.
 fn connection_writes(said: &str) -> Option<u64> {
     let line = said.lines().find(|line| line.starts_with("copies "))?;

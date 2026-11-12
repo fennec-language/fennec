@@ -436,6 +436,35 @@ fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
     }
 }
 
+/// Each line a test and its tasks print reaches the test's capture whole. A `print` arrives in
+/// pieces, and before the fix, pieces of a task's line and the test's own mixed in most runs of
+/// this fixture: 42 of 50 at 4 threads and 30 of 50 at 1 thread, both stressed. So three runs at
+/// each nearly always catch it.
+#[test]
+fn every_line_a_test_and_its_tasks_print_reaches_it_whole() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4"] {
+        for run in 0..3 {
+            let output = crate::executables::fennec_command()
+                .args(["test", "crates/fennec/tests/fixtures/whole_lines_into_tests.fen"])
+                .current_dir(repo())
+                .env("FENNEC_NO_CACHE", "1")
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .output()
+                .unwrap();
+            assert_eq!(
+                text(&output.stdout),
+                "2 passed, 0 failed\n",
+                "{threads} threads, run {run}: {}",
+                text(&output.stderr)
+            );
+        }
+    }
+}
+
 /// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
 /// failed one says what really happened: what it failed with instead, or what it gave.
 #[test]

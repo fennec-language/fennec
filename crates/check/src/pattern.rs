@@ -60,6 +60,7 @@ impl FnCx<'_> {
             self.note_undotted_case(&arm.pattern, &ty, arm.span);
             let left = self.without_taken(&ty, &taken);
             self.bind_pattern(&arm.pattern, &left, arm.span);
+            self.narrow_to_left(subject, arm, (&ty, &left));
             if arm.guard.is_none() {
                 taken.extend(self.error_taken(&arm.pattern, &ty));
             }
@@ -103,6 +104,22 @@ impl FnCx<'_> {
         let Some(path) = crate::stmt::path(subject) else { return };
         if let Pattern::Variant { name, dotted: false, .. } = pattern {
             self.narrow_members(&[(path, name.clone(), true)]);
+        }
+    }
+
+    /// `case _:` after cases that took all of every error of a union but one: the subject holds
+    /// that one inside it, as a `case name:` there would, so `except why:`'s `case _:` reads
+    /// `why` as the error left.
+    fn narrow_to_left(&mut self, subject: &Expr, arm: &MatchArm, (ty, left): (&Type, &Type)) {
+        if !matches!(arm.pattern, Pattern::Wildcard) || arm.guard.is_some() {
+            return;
+        }
+        let (Type::Named(_), Type::Errors(_)) = (left, self.checker.settled(ty)) else { return };
+        // The arm's end puts back what the subject held before it.
+        if let Some(path) = crate::stmt::path(subject)
+            && let Some(binding) = self.binding_mut(&path)
+        {
+            binding.ty = left.clone();
         }
     }
 

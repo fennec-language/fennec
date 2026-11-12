@@ -23,6 +23,7 @@ const RANGES: [&str; 3] = ["parallel.for", "parallel.map", "parallel.sum"];
 /// The functions that can run as a parked task: each round of a server, and what it reaches.
 pub(crate) fn tasks<'p>(functions: &HashMap<&'p str, &'p Function>) -> HashSet<&'p str> {
     let mut waiting: Vec<&'p str> = Vec::new();
+    #[expect(clippy::iter_over_hash_type, reason = "it starts a walk whose result is a set")]
     for function in functions.values() {
         let made = made_closures(function);
         for inst in function.blocks.iter().flat_map(|block| &block.insts) {

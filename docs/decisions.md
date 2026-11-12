@@ -1518,7 +1518,7 @@ test "saves the score"(fs: Fs, clock: Clock):
     save_score(fs, clock, 120)?
     assert fs.read_text("score.txt")? == "120"
 ```
-The fakes are an in-memory `Fs`, a fixed `Clock`, an `Entropy` with fixed output, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI. The Den only ever uses fakes.
+The fakes are an in-memory `Fs`, a fixed `Clock`, an `Entropy` with fixed output, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI.
 *Why:* Tests are fast and give the same result every run, and they can't touch the machine unless someone asks. The same signature as `main` means nothing new to learn.
 
 **Benchmarks are `bench "name":` blocks,** written next to the code they measure, like `test` blocks, and left out of release builds.
@@ -1592,7 +1592,7 @@ These are default lints, and the Den requires them.
 
 **The Den keeps every kit's source permanently.** Installing never touches the git host. Versions are immutable: a bad one can be yanked, never deleted or replaced. Because everything is keyed by its hash, anyone can mirror the Den, and the hashes in `kit.lock` prove a mirror served the real thing.
 
-**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, compiled to WebAssembly and run in Wasmtime, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
+**The Den scans, lints and reports, and never runs a kit's code.** It re-runs formatting and lints, scans the source, and shows a diff of the kit's capabilities and API against the previous version. It runs no tests and builds none of the kit's programs: kit authors run their own tests, and CI badges can show the results. Kits have no build scripts, so publishing or installing one runs nothing. Native kits, which in v1 only the Fennec project can publish, are tested under sanitizers in the project's own CI. Chris decided this on 2026-11-11, under Untrusted code: nothing runs code nobody has read. This replaces running each kit's tests in Wasmtime.
 
 **An existing AI model reviews each release's diff,** and its findings are shown. There's no custom fine-tuned model.
 
@@ -1610,7 +1610,7 @@ These are default lints, and the Den requires them.
 
 **Each version has a size cap,** around 10 MB of source, and publishing is rate-limited.
 
-**Later, breaking dependents is caught before release.** v1 defers this. Before a new version is published, the Den runs the tests of the kits that depend on it directly against that version, within a compute budget, and reports which ones break.
+**Later, breaking dependents is caught before release.** v1 defers this. Before a new version is published, the Den checks the kits that depend on it directly against that version's API, without running them, and reports which ones would break.
 *Why:* An author learns "this release breaks 14 kits" before releasing it, not from bug reports.
 
 **The Den can be searched by type,** through `fennec search` and its website.

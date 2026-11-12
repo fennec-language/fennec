@@ -934,8 +934,8 @@ mod tests {
         assert_eq!(unzlib(&zlib(&zeros, 9), most), Err(PAST_MOST.to_owned()));
         assert_eq!(gunzip(&member, most), Err(PAST_MOST.to_owned()));
         // A stored block that would pass the most is refused before it's read.
-        assert_eq!(inflate(&deflate(&[7; 70_000], 0), most).err(), Some(PAST_MOST.to_owned()));
-        assert_eq!(inflate(&deflate(&[7; 60_000], 0), most).map(|(out, _)| out.len()), Ok(60_000));
+        assert_eq!(inflate(&deflate(&vec![7; 70_000], 0), most).err(), Some(PAST_MOST.to_owned()));
+        assert_eq!(inflate(&deflate(&vec![7; 60_000], 0), most).map(|(out, _)| out.len()), Ok(60_000));
     }
 
     #[test]

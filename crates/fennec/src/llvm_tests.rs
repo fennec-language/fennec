@@ -223,6 +223,27 @@ fn functions_in(source: &str, start: u32) -> Option<Vec<FnDef>> {
             {
                 inner.kind = ExprKind::Name(real);
             }
+            // What's written here is never checked, so `len(x)` is written in as `x.len()` here,
+            // as the checker's round writes it in for everything it checks.
+            if let ExprKind::Call { callee, args } = &mut inner.kind
+                && matches!(&callee.kind, ExprKind::Name(called) if called == "len")
+                && let [only] = args.as_mut_slice()
+                && only.name.is_none()
+                && !only.is_mut
+            {
+                let at = only.value.span;
+                let measured = std::mem::replace(&mut only.value, Expr { kind: ExprKind::None, span: at });
+                let span = callee.span;
+                **callee = Expr {
+                    kind: ExprKind::Attr {
+                        object: Box::new(measured),
+                        name: "len".to_owned(),
+                        optional: false,
+                    },
+                    span,
+                };
+                args.clear();
+            }
         });
         functions.push(function);
     }

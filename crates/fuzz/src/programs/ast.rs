@@ -324,6 +324,42 @@ pub(crate) struct Turning {
     pub(crate) reset_to: i64,
 }
 
+/// A `Streamed` stream: `stream = (f(item) for item in parallel(xs))` over `items`, where `f` is
+/// `map`, read by `read`. The runtime runs it as an ordered stream: items worked out on several
+/// threads, read in order, a failure cutting it short where it's read.
+#[derive(Clone, Debug)]
+pub(crate) struct Streaming {
+    pub(crate) id: usize,
+    pub(crate) items: Vec<i64>,
+    pub(crate) map: StreamMap,
+    pub(crate) read: StreamRead,
+}
+
+/// What a `Streamed` stream works out from each item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamMap {
+    /// `item * by + plus`, which can't fail.
+    Scaled(i64, i64),
+    /// `100 // (item - zero)`, which divides by zero at an item equal to `zero`.
+    Divided(i64),
+    /// `ys[item]`, of `YS`, which is out of range at an item of 4 or more.
+    Indexed,
+}
+
+/// The list a `StreamMap::Indexed` stream indexes.
+pub(crate) const YS: [i64; 4] = [10, 20, 30, 40];
+
+/// How a `Streamed` stream is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamRead {
+    /// A `for` loop printing each, breaking after the `n`th when it's given.
+    Loop(Option<i64>),
+    /// `sum(y for y in stream)`.
+    Sum,
+    /// `[y + 1 for y in stream]`.
+    Listed,
+}
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -588,6 +624,8 @@ pub(crate) enum Stmt {
     /// to each end of `int`, so a proof that it's never negative, made from the first turn alone,
     /// shows: from -4 to 3 all of those hold, and past them the program stops.
     Turned(Turning),
+    /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
+    Streamed(Streaming),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

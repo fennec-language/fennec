@@ -1,0 +1,227 @@
+# A game server's tick, shaped like an MMO's hot loop. A world of entities in a `Table`, each
+# with a position, a velocity, health and an inventory dict. Each tick reads the players'
+# commands from a channel another task fills, moves everyone, files them in a grid, works out
+# what neighbours within range do to each other's health with `parallel` over the grid's cells,
+# put together in a fixed order, and packs a snapshot of what changed with `std.pack`. Everything
+# comes from one seed, so the checksum is the same on any number of threads.
+
+from std import pack
+from std.collections import Id, Table
+from std.concurrent import Closed, Crashed, Sender, channel
+
+ENTITIES = 10_000
+TICKS = 100
+COMMANDS = 64
+SIZE = 2048
+CELL = 32
+SIDE = 64
+RANGE = 1024
+ITEMS = ["gold", "arrow", "potion", "bone", "herb", "gem", "scroll", "key"]
+
+struct Entity:
+    number: int
+    x: int
+    y: int
+    vx: int
+    vy: int
+    health: int
+    inventory: dict[str, int]
+    changed: bool
+
+# What a client is sent about an entity that changed.
+struct Snap:
+    number: int
+    x: int
+    y: int
+    health: int
+    carried: int
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Give(who: int, item: int, count: int)
+    Heal(who: int, amount: int)
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# The players: every tick's commands, sent in order from their own task.
+def players(out: Sender[Command], seed: int) fails Closed:
+    mut state = seed
+    for _ in range(TICKS * COMMANDS):
+        state = next(state)
+        who = below(state, top=ENTITIES)
+        state = next(state)
+        kind = below(state, top=3)
+        state = next(state)
+        a = below(state, top=17)
+        state = next(state)
+        b = below(state, top=17)
+        if kind == 0:
+            out.send(.Move(who=who, vx=a - 8, vy=b - 8))?
+        elif kind == 1:
+            out.send(.Give(who=who, item=a % ITEMS.len(), count=b + 1))?
+        else:
+            out.send(.Heal(who=who, amount=a))?
+    return
+
+def apply(ref entities: Table[Entity], ids: list[Id[Entity]], command: Command):
+    match command:
+        case .Move(who, vx, vy):
+            entities[ids[who]].vx = vx
+            entities[ids[who]].vy = vy
+        case .Give(who, item, count):
+            name = ITEMS[item]
+            entities[ids[who]].inventory[name] = (
+                (entities[ids[who]].inventory.get(name) else 0) + count
+            )
+            entities[ids[who]].changed = True
+        case .Heal(who, amount):
+            entities[ids[who]].health = min(100, entities[ids[who]].health + amount)
+            entities[ids[who]].changed = True
+    return
+
+# Moves one axis, bouncing off the world's edges.
+def moved(at: int, speed: int) -> (int, int):
+    there = at + speed
+    if there < 0: return (-there, -speed)
+    if there >= SIZE: return (2 * (SIZE - 1) - there, -speed)
+    return (there, speed)
+
+def integrate(ref entities: Table[Entity]):
+    for ref entity in entities:
+        entity.changed = False
+        if entity.vx != 0 or entity.vy != 0:
+            x, vx = moved(entity.x, speed=entity.vx)
+            y, vy = moved(entity.y, speed=entity.vy)
+            entity.x = x
+            entity.vx = vx
+            entity.y = y
+            entity.vy = vy
+            entity.changed = True
+    return
+
+# What the entities in one cell take from their neighbours within range: damage from other
+# teams, closer hurting more, and a little healing from their own.
+def cell_health(cell: int, cells: list[list[int]], xs: list[int], ys: list[int]) -> list[int]:
+    gx = cell % SIDE
+    gy = cell // SIDE
+    mut changes = list[int]()
+    for me in cells[cell]:
+        mut change = 0
+        for ny in range(max(gy - 1, 0), min(gy + 2, SIDE)):
+            for nx in range(max(gx - 1, 0), min(gx + 2, SIDE)):
+                for other in cells[ny * SIDE + nx]:
+                    dx = xs[other] - xs[me]
+                    dy = ys[other] - ys[me]
+                    near = dx * dx + dy * dy
+                    if other != me and near < RANGE:
+                        if other % 4 == me % 4:
+                            change += 1
+                        else:
+                            change -= 1 + (RANGE - near) // 256
+        changes.append(change)
+    return changes
+
+# One tick after the commands: move, file everyone in the grid, take health in parallel, and
+# pack what changed. Gives the snapshot's checksum.
+def tick(
+    ref entities: Table[Entity],
+    ids: list[Id[Entity]],
+    ref cells: list[list[int]],
+    head: int,
+    turn: int,
+) -> int:
+    integrate(ref entities)
+    for ref cell in cells:
+        cell.clear()
+    mut xs = list[int]()
+    mut ys = list[int]()
+    for entity in entities:
+        xs.append(entity.x)
+        ys.append(entity.y)
+        cells[entity.y // CELL * SIDE + entity.x // CELL].append(entity.number)
+    changes = [
+        cell_health(cell, cells=cells, xs=xs, ys=ys) for cell in parallel(range(SIDE * SIDE))
+    ]
+    for cell in range(SIDE * SIDE):
+        for at, me in enumerate(cells[cell]):
+            change = changes[cell][at]
+            if change != 0:
+                mut entity = entities[ids[me]]
+                entity.health = min(100, entity.health + change)
+                if entity.health <= 0:
+                    # Dies, drops half its gold, and comes back somewhere else.
+                    gold = entity.inventory.get("gold") else 0
+                    entity.inventory["gold"] = gold // 2
+                    entity.inventory["bone"] = (entity.inventory.get("bone") else 0) + 1
+                    entity.health = 100
+                    entity.x = (me * 7_919 + turn * 104_729) % SIZE
+                    entity.y = (me * 104_729 + turn * 7_919) % SIZE
+                entity.changed = True
+                entities[ids[me]] = entity
+    snaps = [
+        Snap(
+            number=entity.number,
+            x=entity.x,
+            y=entity.y,
+            health=entity.health,
+            carried=sum(entity.inventory.values()),
+        ) for entity in entities if entity.changed
+    ]
+    data = pack.dumps(snaps)
+    mut hash = data.len() - head
+    for at in range(head, data.len()):
+        hash = (hash * 31 + data[at]) % 1_000_000_007
+    return hash
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    mut entities = Table[Entity]()
+    mut ids = list[Id[Entity]]()
+    mut state = 42
+    for number in range(ENTITIES):
+        state = next(state)
+        x = below(state, top=SIZE)
+        state = next(state)
+        y = below(state, top=SIZE)
+        state = next(state)
+        speed = below(state, top=9) - 4 if number % 4 == 0 else 0
+        ids.append(
+            entities.add(
+                Entity(
+                    number=number,
+                    x=x,
+                    y=y,
+                    vx=speed,
+                    vy=-speed,
+                    health=100,
+                    inventory={"gold": number % 50},
+                    changed=False,
+                ),
+            ),
+        )
+    mut cells = [list[int]() for _ in range(SIDE * SIDE)]
+    # The header `pack` writes before the snapshot itself, the same every tick.
+    head = pack.dumps(list[Snap]()).len() - 1
+    mut checksum = 0
+    with channel[Command](size=64) as commands:
+        sender = commands.sender()
+        with launch(() => players(sender, seed=7)?)?:
+            for turn in range(TICKS):
+                for _ in range(COMMANDS):
+                    command = commands.receive() else break
+                    apply(ref entities, ids, command)
+                checksum = (
+                    (checksum * 7 + tick(ref entities, ids, ref cells, head, turn)) % 1_000_000_007
+                )
+    mut health = 0
+    mut carried = 0
+    for entity in entities:
+        health += entity.health
+        carried += sum(entity.inventory.values()) * (entity.number % 7 + 1)
+    stdout.print(checksum, health, carried)
+    return

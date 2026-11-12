@@ -1,5 +1,6 @@
 # A pool's edges: a size it can't have, a first value handed to it, values borrowed and given back
-# by hand, as a library's own `with` source does, and a value that fails to open after the first.
+# by hand, as a library's own `with` source does, a value that fails to open after the first, and
+# opening or resetting one that crashes, which fails only the borrower and never hangs the pool.
 from std.concurrent import Crashed, Pool, PoolError, pool
 from std.time import Duration
 
@@ -42,6 +43,41 @@ def allow(tally: shared Tally, most: int):
 def opens(tally: shared Tally) -> int:
     lock tally as counts:
         counts.opened
+
+## A new link, crashing when it's the second, as a bug in opening one would. The count is taken
+## before the crash, since a crash inside a `lock` puts back what it changed.
+def opened_or_crashing(tally: shared Tally) -> Link fails Refused:
+    mut number = 0
+    lock tally as ref counts:
+        counts.opened += 1
+        number = counts.opened
+    if number == 2:
+        bad = [number]
+        _ = bad[number + 5]
+    return Link(number=number)
+
+## A pretend connection whose reset crashes, as a bug in a library's would.
+struct Brittle:
+    number: int
+
+    def reset(self) -> bool:
+        bad = [self.number]
+        return bad[self.number + 5] == 0
+
+    def close(self):
+        pass
+
+## A new brittle link, numbered by how many have been opened.
+def opened_brittle(tally: shared Tally) -> Brittle fails Refused:
+    lock tally as ref counts:
+        counts.opened += 1
+        return Brittle(number=counts.opened)
+
+## The number of the brittle link `borrowed()` gives, given back as failed, so it's reset.
+def failed_with(links: Pool[Brittle]) -> int fails PoolError:
+    lent = links.borrowed(wait=5s)?
+    lent.give_back(False)
+    return lent.value.number
 
 ## A pool of `size` links, never used.
 def sized(size: int) fails PoolError | Crashed:
@@ -101,6 +137,23 @@ test "a value that fails to open later fails its borrower, and opens for the nex
             assert borrowed_number(links, wait=5s) fails PoolError.Open(reason="no more links")
             allow(count, most=2)
             assert borrowed_number(links, wait=5s)? == 2
+
+test "a value whose opening crashes fails its borrower, and opens for the next"():
+    shared count = Tally()
+    with pool[Link, Refused](open=() => opened_or_crashing(count)?, size=2)? as links:
+        with links.take()? as first:
+            assert first.number == 1
+            assert borrowed_number(links, wait=5s) fails PoolError.Open(
+                reason="opening one crashed",
+            )
+            assert borrowed_number(links, wait=5s)? == 3
+
+test "a value whose reset crashes is replaced"():
+    shared count = Tally()
+    with pool[Brittle, Refused](open=() => opened_brittle(count)?, size=1)? as links:
+        assert failed_with(links)? == 1
+        assert failed_with(links)? == 2
+    assert opens(count) == 2
 
 def main(stdout: Stdout):
     sized(0) else as why:

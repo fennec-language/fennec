@@ -439,6 +439,25 @@ struct Lowering<'a> {
     retyped: Vec<(Span, Type)>,
 }
 
+/// What `name = value` adds to `name`'s text, when `value` is `name + piece` or an f-string that
+/// starts with `name` as it is: the piece, or the rest of the f-string.
+fn grown_by(name: &str, value: &Expr) -> Option<Expr> {
+    match &value.kind {
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } if matches!(&lhs.kind, ExprKind::Name(held) if held == name) => {
+            Some((**rhs).clone())
+        }
+        ExprKind::FStr(parts) => match parts.split_first() {
+            Some((fennec_syntax::FStrPart::Expr { expr, spec: None }, rest))
+                if !rest.is_empty() && matches!(&expr.kind, ExprKind::Name(held) if held == name) =>
+            {
+                Some(Expr { kind: ExprKind::FStr(rest.to_vec()), span: value.span })
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl<'a> Lowering<'a> {
     fn new(
         instance: &generics::FunctionInstance,
@@ -762,6 +781,16 @@ impl<'a> Lowering<'a> {
         }
         if op.is_none() && !declares && self.replaces_its_source(target, value, span)? {
             return Ok(());
+        }
+        // `text = text + piece` and `text = f"{text}..."` make the same text `text += ...` does,
+        // so they're that: the text grows where it is, rather than being copied into a new one.
+        if op.is_none()
+            && !declares
+            && let ExprKind::Name(name) = &target.kind
+            && self.lookup(name).is_some_and(|held| self.local_type(held) == Type::Str)
+            && let Some(piece) = grown_by(name, value)
+        {
+            return self.assign(target, (Some(BinOp::Add), false), &piece, span);
         }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);

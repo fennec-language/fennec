@@ -18377,6 +18377,59 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// `text = text + piece` and `text = f"{text}..."` grow the text where it is, as `text += piece`
+/// does, rather than copying it into a new one each time, which made building a text that way
+/// quadratic. A copy kept first keeps what it had, and adding a text to itself doubles it.
+#[test]
+fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("text_grown")?;
+    std::fs::write(dir.join("text_grown.fen"), TEXT_GROWN)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "text_grown", how)?;
+        assert_eq!(printed, TEXT_GROWN_PRINTS, "{how:?}");
+        assert!(
+            count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TEXT_GROWN_PRINTS: &str = r#"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
+"#;
+
+const TEXT_GROWN: &str = r#"def main(stdout: Stdout):
+    mut text = ""
+    for n in range(2000):
+        text = text + "ab"
+    mut formatted = "x"
+    for n in range(2000):
+        formatted = f"{formatted}{n % 10},"
+    kept = text
+    text = text + "!"
+    mut doubled = "ab"
+    for _ in range(5):
+        doubled = doubled + doubled
+    mut spaced = "a"
+    for n in range(3):
+        spaced = f"{spaced} {n * 1000:,}"
+    stdout.print(
+        len(text),
+        len(kept),
+        text[-3:],
+        len(formatted),
+        formatted[0:12],
+        doubled[0:6],
+        len(doubled),
+        spaced,
+    )
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

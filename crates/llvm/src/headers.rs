@@ -763,7 +763,6 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {total}, ptr {made_length_at}"));
         self.line(&format!("store i64 {all_chars}, ptr {made_chars_at}"));
         self.release(block);
-        self.leave_if_failed();
         made
     }
 

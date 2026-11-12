@@ -443,8 +443,7 @@ struct Lowering<'a> {
 fn root_name(target: &Expr) -> Option<&str> {
     match &target.kind {
         ExprKind::Name(name) => Some(name),
-        ExprKind::Attr { object, optional: false, .. } => root_name(object),
-        ExprKind::Index { object, .. } => root_name(object),
+        ExprKind::Attr { object, optional: false, .. } | ExprKind::Index { object, .. } => root_name(object),
         _ => None,
     }
 }

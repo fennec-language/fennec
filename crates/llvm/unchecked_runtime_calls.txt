@@ -19,7 +19,7 @@ fennec_constant_kept unchecked 0
 fennec_dict_popped unchecked 0
 fennec_error_of unchecked 0
 fennec_free in-cant-fail 16
-fennec_free unchecked 560
+fennec_free unchecked 605
 fennec_input unchecked 0
 fennec_list_contains unchecked 0
 fennec_native_freed in-cant-fail 0
@@ -35,6 +35,7 @@ fennec_parse_int unchecked 0
 fennec_regex_groups unchecked 1
 fennec_regex_is_valid unchecked 3
 fennec_str_compare in-cant-fail 1
+fennec_str_find unchecked 0
 fennec_text_contains unchecked 0
 fennec_trace_allocated in-cant-fail 0
 fennec_trace_allocated unchecked 0

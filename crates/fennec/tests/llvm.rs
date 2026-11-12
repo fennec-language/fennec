@@ -2442,6 +2442,72 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What every call gives a helper is known in it: `go`'s sums are proven from positions and a
+/// count stepped once a turn, and a build checking proofs checks what it's given on the way in.
+/// `shifted` is given both ends of int across its calls, so its sum keeps its check, and fails.
+#[test]
+fn what_every_call_gives_a_helper_is_known_in_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def go(i: int, j: int) -> float:
+    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)
+
+def row(v: list[float], i: int) -> float:
+    mut total = 0.0
+    mut j = 0
+    for x in v:
+        total += go(i, j=j) * x
+        j += 1
+    return total
+
+def shifted(a: int, b: int) -> int:
+    return a + b
+
+def counted(v: list[int]) -> int:
+    mut seen = 0
+    for x in v:
+        seen += 2
+    return seen - 1
+
+def main(stdout: Stdout):
+    v = [1.0, 2.0, 3.0]
+    rows = [row(v, i) for i in range(v.len())]
+    stdout.print(f"{rows[0] + rows[1] + rows[2]:.6f}")
+    stdout.print(shifted(3, b=4), shifted(-9, b=2), counted([5, 6, 7]))
+    big = 9223372036854775800
+    stdout.print(shifted(big, b=7))
+    stdout.print(shifted(big, b=8))
+    return
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("given_ranges")?;
+        let (program, executable) = (dir.join("given.fen"), dir.join("given"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "4.477991\n7 -7 5\n9223372036854775807\n",
+            "{how:?}: {err}"
+        );
+        assert!(err.starts_with("error: this calculation overflows an int"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
 #[test]
 fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {

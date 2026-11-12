@@ -1,24 +1,21 @@
 //! `fennec update`: pins a kit's dependencies from git in `kit.lock`, see `fennec-deps`, and
-//! adds the layouts of what the kit saves in `std.pack` to `pack.lock`.
+//! adds the layouts of what the kit saves in `std.pack` to `pack.lock`. `fennec fetch`: fetches
+//! what `kit.lock` pins and this machine hasn't got. They're the only commands that reach the
+//! network: loading a program fetches nothing.
 
 use std::path::Path;
 use std::process::ExitCode;
 
+/// `fennec update` or `fennec fetch`, as `which` names, in the kit around `path`.
+pub(crate) fn named(which: &str, path: &str) -> ExitCode {
+    if which == "fetch" { fetch(path) } else { update(path) }
+}
+
 /// `fennec update`, in the kit around `path`.
 pub(crate) fn update(path: &str) -> ExitCode {
-    // Reached only through folders that are trusted: see `fennec_dist::kit_root`.
-    let found = match fennec_dist::kit_root(Path::new(path)) {
-        Ok(found) => found,
-        Err(why) => {
-            eprintln!("error: {why}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(root) = found else {
-        eprintln!(
-            "error: there's no kit.toml in {path} or any folder above it, so there's nothing to update"
-        );
-        return ExitCode::FAILURE;
+    let root = match kit_around(path, "update") {
+        Ok(root) => root,
+        Err(code) => return code,
     };
     let Some(kits) = fennec_deps::Kits::of_this_machine() else {
         eprintln!("error: there's no home folder to keep fetched kits in; set FENNEC_HOME");
@@ -78,4 +75,46 @@ fn lock_layouts(root: &Path) -> Result<String, String> {
     std::fs::write(&path, text).map_err(|err| format!("couldn't write pack.lock: {err}"))?;
     let what = if added == 1 { "1 layout".to_owned() } else { format!("{added} layouts") };
     Ok(format!("locked {what} in pack.lock\n"))
+}
+
+/// `fennec fetch`, in the kit around `path`: each kit `kit.lock` pins that the store hasn't got, or
+/// holds changed, is fetched, and checked against its pin.
+pub(crate) fn fetch(path: &str) -> ExitCode {
+    let root = match kit_around(path, "fetch") {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let Some(kits) = fennec_deps::Kits::of_this_machine() else {
+        eprintln!("error: there's no home folder to keep fetched kits in; set FENNEC_HOME");
+        return ExitCode::FAILURE;
+    };
+    match kits.ensure(&root) {
+        Ok(found) => {
+            let pinned = found.iter().filter(|kit| kit.pin.is_some()).count();
+            println!("every kit kit.lock pins is on this machine, as pinned: {pinned}");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The kit around `path`, reached only through folders that are trusted: see
+/// `fennec_dist::kit_root`. With none, or one that isn't trusted, it's said, for `doing`.
+fn kit_around(path: &str, doing: &str) -> Result<std::path::PathBuf, ExitCode> {
+    match fennec_dist::kit_root(Path::new(path)) {
+        Ok(Some(root)) => Ok(root),
+        Ok(None) => {
+            eprintln!(
+                "error: there's no kit.toml in {path} or any folder above it, so there's nothing to {doing}"
+            );
+            Err(ExitCode::FAILURE)
+        }
+        Err(why) => {
+            eprintln!("error: {why}");
+            Err(ExitCode::FAILURE)
+        }
+    }
 }

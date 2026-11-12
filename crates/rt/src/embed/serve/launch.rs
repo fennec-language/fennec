@@ -103,6 +103,8 @@ pub extern "C" fn launch(body: TaskBody, env: i64) -> i64 {
 
 /// `launch`, on `pool` unless this is a task on a worker, which launches beside itself.
 pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64) -> i64 {
+    // What this thread printed comes before anything the task prints, as it was printed first.
+    super::super::write_kept_output();
     let here = super::super::parallel::here();
     let beside = here.filter(|_| super::can_park());
     let pool = beside.map_or(pool, |(pool, _)| pool);

@@ -6051,6 +6051,32 @@ def main(stdout: Stdout) fails Oops | Crashed:
     )
 }
 
+/// What the main thread printed before a launch comes out before what the task prints, on its own
+/// output, as it was printed first: the main thread's kept output is written as the task starts.
+#[test]
+fn what_was_printed_before_a_launch_comes_out_before_the_task_s() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "printed_before_launch",
+        r#"from std.concurrent import Crashed
+
+def tasked(stdout: Stdout):
+    stdout.print("task")
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    stdout.print("before")
+    with launch(() => tasked(stdout))?:
+        pass
+    stdout.print("after")
+    return
+"#,
+        "before\ntask\nafter\n",
+    )
+}
+
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
 /// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
 /// refused when it's built, saying why, rather than failing at line 1 when it's run.

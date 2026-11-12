@@ -22,7 +22,7 @@ It does the three steps below in order, and stops at the first that fails, with 
    merge that conflicts is undone, so your branch is as it was: merge `main` yourself, resolve it,
    commit, and run it again.
 2. It runs the gate, `.github/scripts/gate.sh`. That checks formatting, runs clippy, checks that the workspace and its tests
-   compile on Linux with every warning an error, in a Linux container through `docker`, runs every test and
+   compile on Linux with every warning an error, in a Linux container through `docker`, and for Windows, with MinGW-w64's C compiler (`brew install mingw-w64`), runs every test and
    every example and kit, and builds every example as x86-64 under Rosetta. It stops at the first failure and
    prints that step's output. A test program that uses more than a minute of CPU, runs for ten minutes or holds
    more than 4 GB is stopped, and the gate says which. A busy machine can't stop one that isn't stuck. It takes four to five minutes when the build is warm.

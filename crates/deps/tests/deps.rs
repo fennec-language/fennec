@@ -171,6 +171,44 @@ mod deps {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Loading a program never fetches: a kit kit.lock pins that isn't here says to run
+    /// `fennec fetch`, which fetches it. And a kit in the store whose files changed after it was
+    /// fetched, as a tool editing it would leave it, isn't the one pinned: loading refuses it, naming
+    /// it, and `fennec fetch` or `fennec update` fetches it again whole.
+    #[test]
+    fn loading_fetches_nothing_and_a_kit_changed_in_the_store_is_refused() {
+        let dir = folder("changed");
+        let (repository, commit) = physics(&dir);
+        let root = game(&dir, &from_git("physics", &repository, &commit));
+        let home = dir.join("home");
+        Kits::new(&home, false).update(&root).unwrap();
+        let loading = Kits::new(&home, false).for_loading();
+        let found = loading.ensure(&root).unwrap();
+        let stored = found[0].folder.join("src/lib.fen");
+        let pinned = std::fs::read_to_string(&stored).unwrap();
+        std::fs::write(&stored, pinned.replace("9.8", "1.0")).unwrap();
+        let changed = loading.ensure(&root).unwrap_err();
+        assert!(
+            changed.contains("the kit `physics` kept at") && changed.contains("isn't what kit.lock pins"),
+            "{changed}"
+        );
+        assert!(changed.contains("`fennec fetch` fetches it again"), "{changed}");
+        // Fetching puts it back whole, and loading takes it.
+        Kits::new(&home, false).ensure(&root).unwrap();
+        assert_eq!(std::fs::read_to_string(&stored).unwrap(), pinned);
+        assert_eq!(loading.ensure(&root).unwrap().len(), 1);
+        // So does `fennec update`, with kit.lock already pinning it.
+        std::fs::write(&stored, "changed\n").unwrap();
+        Kits::new(&home, false).update(&root).unwrap();
+        assert_eq!(std::fs::read_to_string(&stored).unwrap(), pinned);
+        // A kit that isn't here at all isn't fetched by loading.
+        std::fs::remove_dir_all(home.join("kits")).unwrap();
+        let missing = loading.ensure(&root).unwrap_err();
+        assert!(missing.contains("isn't on this machine yet: `fennec fetch` fetches every kit"), "{missing}");
+        assert!(!home.join("kits").exists(), "loading fetched a kit");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn offline_a_kit_in_the_store_is_used_and_a_missing_one_is_an_error() {
         let dir = folder("offline");
@@ -238,6 +276,62 @@ mod deps {
         let said = Kits::new(&dir.join("home"), false).update(&root).unwrap_err();
         assert!(said.contains("has a link at src/secret.fen, and a kit's files can't be links"), "{said}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A kit whose files come to more than the store takes is refused from git's listing, before
+    /// any of them is read: a dependency with a huge file can't take the machine's memory.
+    #[test]
+    fn a_dependency_too_big_is_refused_before_its_read() {
+        let dir = folder("too-big");
+        let (repository, _) = physics(&dir);
+        let commit = commit(&repository, &[("src/huge.fen", &"# padding\n".repeat(1000))]);
+        let root = game(&dir, &from_git("physics", &repository, &commit));
+        let said = Kits::new(&dir.join("home"), false).with_most_bytes(5000).update(&root).unwrap_err();
+        assert!(
+            said.contains("has more under `src` than a kit may, 5000 bytes, so none of it is read"),
+            "{said}"
+        );
+        assert!(!dir.join("home/kits").exists(), "a kit too big was kept");
+        // Within what it may come to, it's fetched.
+        Kits::new(&dir.join("home"), false).update(&root).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two files whose names differ only by case, or whose folders do, are refused: git keeps both,
+    /// but a Mac or Windows keeps one, and the same pin would build different code there.
+    #[test]
+    fn names_that_differ_only_by_case_are_refused() {
+        for (one, other) in
+            [("src/Shapes.fen", "src/shapes.fen"), ("src/Shapes/box.fen", "src/shapes/ball.fen")]
+        {
+            let dir = folder("case");
+            let (repository, _) = physics(&dir);
+            // Into git's index by hash, since a Mac's disk can't hold both.
+            let blob = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let blob = String::from_utf8_lossy(&blob.stdout).trim().to_owned();
+            for path in [one, other] {
+                git(&repository, &["update-index", "--add", "--cacheinfo", &format!("100644,{blob},{path}")]);
+            }
+            git(&repository, &["commit", "--quiet", "-m", "both"]);
+            let commit = git(&repository, &["rev-parse", "HEAD"]);
+            let root = game(&dir, &from_git("physics", &repository, &commit));
+            let said = Kits::new(&dir.join("home"), false).update(&root).unwrap_err();
+            let (folded_one, folded_other) =
+                if one.contains("/box") { ("src/Shapes", "src/shapes") } else { (one, other) };
+            assert!(
+                said.contains(&format!(
+                    "has both {folded_one} and {folded_other}, which differ only by case"
+                )),
+                "{said}"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]

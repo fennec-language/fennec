@@ -124,7 +124,13 @@ fn copy_text(state: &State, address: i64, words: &mut Vec<u64>) -> Option<(usize
 }
 
 /// `grow` with the bytes added already copied out of their block.
-fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_chars: u64) -> Option<i64> {
+pub(super) fn grow_by(
+    state: &mut State,
+    text: i64,
+    added: &[u64],
+    extra: usize,
+    extra_chars: u64,
+) -> Option<i64> {
     let at = u64::try_from(text).ok()?;
     let block = state.heap.block(at)?;
     let (length, chars) = (usize::try_from(*block.get(2)?).ok()?, *block.get(3)?);
@@ -1448,6 +1454,63 @@ mod sized_tests {
         assert_eq!(bits, 42);
         for wrong in ["-1", "18446744073709551616", "1.5", ""] {
             assert_eq!(numbers::parse_u64(string(wrong), &mut bits), 0, "{wrong:?}");
+        }
+        finish();
+    }
+
+    /// `int`, `u64` and `float` read text as Rust's own `trim` then `parse` do, whether it's short
+    /// ASCII read where it is or anything else: every kind of whitespace around it, signs, too big,
+    /// not a number, and the edge of what's read in place.
+    #[test]
+    fn numbers_parse_as_rusts_own_trim_and_parse_do() {
+        begin();
+        let long_spaces = " ".repeat(38);
+        let texts = [
+            "42".to_owned(),
+            " -7 ".to_owned(),
+            "\t\n\u{b}\u{c}\r 12 \r\n".to_owned(),
+            "\u{a0}5\u{a0}".to_owned(),
+            "+3".to_owned(),
+            "9223372036854775807".to_owned(),
+            "9223372036854775808".to_owned(),
+            "-9223372036854775808".to_owned(),
+            "18446744073709551615".to_owned(),
+            "1.5".to_owned(),
+            " 2.5e3 ".to_owned(),
+            "nan".to_owned(),
+            String::new(),
+            "   ".to_owned(),
+            "4 2".to_owned(),
+            format!("{long_spaces}17"),
+            format!("{long_spaces}171"),
+            "\u{65e5}".to_owned(),
+        ];
+        for text in &texts {
+            let address = string(text);
+            let mut bits = 0;
+            let int = numbers::parse_int(address, &mut bits);
+            assert_eq!(
+                (int, if int == 1 { Some(bits) } else { None }),
+                match text.trim().parse::<i64>() {
+                    Ok(n) => (1, Some(n)),
+                    Err(_) => (0, None),
+                },
+                "int {text:?}"
+            );
+            let unsigned = numbers::parse_u64(address, &mut bits);
+            assert_eq!(unsigned == 1, text.trim().parse::<u64>().is_ok(), "u64 {text:?}");
+            if let Ok(n) = text.trim().parse::<u64>() {
+                assert_eq!(bits.cast_unsigned(), n);
+            }
+            let float = numbers::parse_float(address, &mut bits);
+            match text.trim().parse::<f64>() {
+                Ok(n) => assert_eq!(
+                    (float, f64::from_bits(bits.cast_unsigned()).to_bits()),
+                    (1, n.to_bits()),
+                    "float {text:?}"
+                ),
+                Err(_) => assert_eq!(float, 0, "float {text:?}"),
+            }
         }
         finish();
     }

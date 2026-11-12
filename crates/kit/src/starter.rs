@@ -53,8 +53,26 @@ def main(stdout: Stdout):
 ";
 
 const GREETING: &str = "def greet(name: str) -> str:
-    f\"Hello from {name}!\"
+    return f\"Hello from {name}!\"
 
 test \"greeting names who it greets\":
     assert greet(\"fox\") == \"Hello from fox!\"
 ";
+
+#[cfg(test)]
+mod tests {
+    /// What `fennec new` writes checks as Fennec of 2026-11-11, with nothing the migration would
+    /// rewrite: it's the first Fennec a new kit's author, or an AI, reads and copies.
+    #[test]
+    fn the_starter_is_in_the_new_forms() {
+        let text =
+            format!("{}\n{}", super::GREETING, super::MAIN.replace("from greeting import greet\n", ""));
+        let mut sources = fennec_syntax::Sources::new();
+        let base = sources.add("starter.fen", &text);
+        let module = fennec_syntax::parse_at(&text, base).unwrap();
+        assert!(fennec_check::check(&module).is_ok(), "{text}");
+        let old: Vec<String> =
+            fennec_check::migration_fixes(&module, &sources).into_iter().map(|found| found.message).collect();
+        assert!(old.is_empty(), "{old:?}");
+    }
+}

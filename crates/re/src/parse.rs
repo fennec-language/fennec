@@ -89,11 +89,17 @@ struct Parser {
     chars: Vec<char>,
     pos: usize,
     groups: usize,
+    /// How many groups the parser is inside now.
+    depth: usize,
 }
+
+/// How deeply groups may nest. Parsing a group and compiling it each recurse once a level, so
+/// deeper would run the stack out, ending the process with a signal rather than failing.
+const MOST_DEEP: usize = 250;
 
 /// Parses a pattern, giving back its tree and how many groups capture.
 pub(crate) fn parse(pattern: &str) -> Result<(Node, usize), Error> {
-    let mut parser = Parser { chars: pattern.chars().collect(), pos: 0, groups: 0 };
+    let mut parser = Parser { chars: pattern.chars().collect(), pos: 0, groups: 0, depth: 0 };
     let node = parser.alternation()?;
     match parser.peek() {
         Some(')') => Err(parser.error("this `)` has no `(` before it")),
@@ -248,6 +254,10 @@ impl Parser {
     }
 
     fn group(&mut self, start: usize) -> Result<Node, Error> {
+        if self.depth >= MOST_DEEP {
+            return Err(Self::error_at(&format!("groups nest more than {MOST_DEEP} deep"), start));
+        }
+        self.depth += 1;
         let number = if self.peek() == Some('?') {
             if self.peek_at(1) != Some(':') {
                 return Err(self.error("the only group extension so far is `(?:...)`"));
@@ -262,6 +272,7 @@ impl Parser {
         if !self.eat(')') {
             return Err(Self::error_at("this `(` is never closed", start));
         }
+        self.depth -= 1;
         Ok(Node::Group(number, Box::new(inner)))
     }
 

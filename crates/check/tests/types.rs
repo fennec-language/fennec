@@ -53,10 +53,10 @@ fn truthiness_hints_say_what_to_write() {
     assert_eq!(
         helps(program),
         [
-            "Fennec has no truthiness: write `x.len() > 0`",
+            "Fennec has no truthiness: write `len(x) > 0`",
             "Fennec has no truthiness: write `x is None` or `x is not None`",
             "Fennec has no truthiness: compare explicitly, like `count > 0`",
-            "Fennec has no truthiness: compare explicitly, like `items.len() == 0`",
+            "Fennec has no truthiness: compare explicitly, like `len(items) == 0`",
         ]
     );
 }

@@ -67,12 +67,12 @@ def streamed(data: bytes) -> int:
     mut read = 0
     mut values = Unpacker.of(data)
     while read < 1000:
-        found = values.next[Scene]() else as _:
+        found = values.next[Scene]() except ParseError():
             return -1 - read
         if found is None:
             return read
         read += 1
-    read
+    return read
 
 ";
 
@@ -84,20 +84,20 @@ pub(crate) fn reader() -> String {
         let _ = write!(
             source,
             "def read_as_{n}(data: bytes, longer: bytes, shorter: bytes) -> str:\n    \
-             value = pack.loads[{ty}](data{limits}) else:\n        return \"err\"\n    \
-             back: {ty}? = pack.loads[{ty}](pack.dumps(value){limits}) else None\n    \
+             value = pack.loads[{ty}](data{limits}) except ParseError():\n        return \"err\"\n    \
+             back: {ty}? = pack.loads[{ty}](pack.dumps(value){limits}) except ParseError(): None\n    \
              same = back is not None and back == value\n    \
-             grown_back: {ty}? = pack.loads[{ty}](longer{limits}) else None\n    \
+             grown_back: {ty}? = pack.loads[{ty}](longer{limits}) except ParseError(): None\n    \
              grown = \"ok\" if grown_back is not None else \"err\"\n    \
-             cut_back: {ty}? = pack.loads[{ty}](shorter{limits}) else None\n    \
+             cut_back: {ty}? = pack.loads[{ty}](shorter{limits}) except ParseError(): None\n    \
              cut = \"ok\" if cut_back is not None else \"err\"\n    \
-             f\"ok {{same}} {{grown}} {{cut}}\"\n\n",
+             return f\"ok {{same}} {{grown}} {{cut}}\"\n\n",
         );
     }
     source.push_str(
         "def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    data = fs.read_bytes(args[0])?\n    \
-         longer = data + bytes([0])\n    mut shorter = data\n    if data.len() > 0:\n        \
-         shorter = data[0:data.len() - 1]\n",
+         longer = data + bytes([0])\n    mut shorter = data\n    if len(data) > 0:\n        \
+         shorter = data[0:len(data) - 1]\n",
     );
     for n in 0..TYPES.len() {
         let _ = writeln!(source, "    stdout.print(read_as_{n}(data, longer=longer, shorter=shorter))");

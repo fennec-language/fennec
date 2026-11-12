@@ -205,7 +205,7 @@ fn ways_out(body: &[Stmt], name: &str, mut used: bool) -> Result<bool, Span> {
 
 /// Whether a statement reads `name` into something that goes somewhere. Throwing it away with
 /// `_ =` doesn't count.
-fn stmt_uses(stmt: &Stmt, name: &str) -> bool {
+pub(crate) fn stmt_uses(stmt: &Stmt, name: &str) -> bool {
     if let StmtKind::Assign { target: Expr { kind: ExprKind::Name(target), .. }, .. } = &stmt.kind
         && target.starts_with('_')
     {

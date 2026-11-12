@@ -522,6 +522,10 @@ impl Emit<'_, '_, '_> {
                 let (handle, _) = self.operand(&Operand::Local(*conn))?;
                 self.socket_method(dest, &handle, "Connection.peer", &[], span)
             }
+            ("parallel.label", [Operand::Local(conn)]) => {
+                let (handle, _) = self.operand(&Operand::Local(*conn))?;
+                self.socket_method(dest, &handle, "Connection._label", &[], span)
+            }
             ("parallel.map", [list, range]) => {
                 self.parallel_map(dest.ok_or("a map keeps nothing")?, list, range)
             }

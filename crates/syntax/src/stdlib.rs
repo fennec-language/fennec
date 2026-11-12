@@ -94,6 +94,32 @@ pub fn prelude_files() -> impl Iterator<Item = (&'static str, &'static str)> {
     CORE.into_iter().chain(modules)
 }
 
+/// Where each file of the standard library starts in the spans: past `Span::PRELUDE`, one after
+/// another in the order `prelude_files` gives them, with a byte between, so a span names its file.
+fn prelude_bases() -> &'static [(&'static str, &'static str, u32)] {
+    static BASES: std::sync::OnceLock<Vec<(&'static str, &'static str, u32)>> = std::sync::OnceLock::new();
+    BASES.get_or_init(|| {
+        let mut base = crate::Span::PRELUDE;
+        prelude_files()
+            .map(|(name, text)| {
+                let at = base;
+                base = base.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX)).saturating_add(1);
+                (name, text, at)
+            })
+            .collect()
+    })
+}
+
+/// The standard library file a span is in: its name, like `math`, its text, and where its spans
+/// start.
+#[must_use]
+pub fn prelude_file_at(span: crate::Span) -> Option<(&'static str, &'static str, u32)> {
+    prelude_bases().iter().copied().find(|(_, text, base)| {
+        let end = base.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX));
+        (*base..=end).contains(&span.start)
+    })
+}
+
 /// The standard library written in Fennec, loaded before every program by the type checker and
 /// the compiler: the core, then each module's code.
 pub fn prelude() -> impl Iterator<Item = &'static str> {
@@ -174,7 +200,9 @@ pub fn core_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
     let made = CORE_RUN.get_or_init(|| {
         let mut core = Vec::new();
         for (name, source) in CORE {
-            core.push(parse_module(name, source)?);
+            let mut module = parse_module(name, source)?;
+            qualify_core_imports(&mut module)?;
+            core.push(module);
         }
         let interfaces = crate::visit::interface_names(&core);
         for module in &mut core {
@@ -272,7 +300,9 @@ fn is_typed_empty(expr: &crate::Expr) -> bool {
 fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
     let mut parsed = Vec::new();
     for (name, source) in CORE {
-        parsed.push(parse_module(name, source)?);
+        let mut module = parse_module(name, source)?;
+        qualify_core_imports(&mut module)?;
+        parsed.push(module);
     }
     let mut modules = Vec::new();
     for module in MODULES.iter().filter(|module| !module.source.is_empty()) {
@@ -291,8 +321,10 @@ fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
 /// Parses one file of the standard library. A mistake in one says which file and line, since it
 /// can't be shown against a program's own lines.
 fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagnostic> {
-    let mut module = crate::parser::parse_prelude(source).map_err(|problem| {
-        let at = problem.span.start.saturating_sub(crate::Span::PRELUDE) as usize;
+    let base =
+        prelude_bases().iter().find(|(file, ..)| *file == name).map_or(crate::Span::PRELUDE, |at| at.2);
+    let mut module = crate::parser::parse_prelude_at(source, base).map_err(|problem| {
+        let at = problem.span.start.saturating_sub(base) as usize;
         let line = source.get(..at).map_or(1, |before| before.matches('\n').count() + 1);
         let message = format!("the standard library's `{name}.fen`, line {line}: {}", problem.message);
         crate::Diagnostic { message, ..problem }
@@ -339,22 +371,77 @@ fn qualify_functions(modules: &mut [(&'static str, crate::Module)]) {
                 }
             }
         }
-        // A function's own parameter or local of the same name shadows the module's function.
-        crate::visit::exprs_in_scope_mut(module, &mut |expr, bound: &HashSet<String>| {
-            let function = match &expr.kind {
-                ExprKind::Name(found) if bound.contains(found) => None,
-                ExprKind::Name(found) => names.get(found).cloned(),
-                ExprKind::Attr { object, name, optional: false } => crate::dotted(object)
-                    .and_then(|alias| aliases.get(&alias))
-                    .map(|module| format!("{module}.{name}"))
-                    .filter(|function| all.contains(function)),
-                _ => None,
-            };
-            if let Some(function) = function {
-                expr.kind = ExprKind::Name(function);
-            }
-        });
+        name_functions(module, (&names, &aliases), &|function| all.contains(function));
     }
+}
+
+/// Writes each call in `module` to a standard library function by the name `qualify_functions`
+/// gives it: a name `names` maps, or `alias.function` for a module imported as `alias`, which
+/// `aliases` maps, when `is_function` says the module has it. A function's own parameter or local
+/// of the same name shadows the module's function.
+fn name_functions(
+    module: &mut crate::Module,
+    (names, aliases): (&HashMap<String, String>, &HashMap<String, &'static str>),
+    is_function: &dyn Fn(&str) -> bool,
+) {
+    crate::visit::exprs_in_scope_mut(module, &mut |expr, bound: &HashSet<String>| {
+        let function = match &expr.kind {
+            ExprKind::Name(found) if bound.contains(found) => None,
+            ExprKind::Name(found) => names.get(found).cloned(),
+            ExprKind::Attr { object, name, optional: false } => crate::dotted(object)
+                .and_then(|alias| aliases.get(&alias))
+                .map(|module| format!("{module}.{name}"))
+                .filter(|function| is_function(function)),
+            _ => None,
+        };
+        if let Some(function) = function {
+            expr.kind = ExprKind::Name(function);
+        }
+    });
+}
+
+/// A core file's imports from the standard library's modules, as str.fen's
+/// `from std.intrinsics import stop`, named as `qualify_functions` names them in a module that
+/// imports them: `intrinsics.stop`. A core file's own functions keep their names, since nothing
+/// shares them, so only what it imports is named. The modules it imports from are parsed for
+/// their functions' names.
+fn qualify_core_imports(module: &mut crate::Module) -> Result<(), crate::Diagnostic> {
+    let imported = imported_modules(module);
+    if imported.is_empty() {
+        return Ok(());
+    }
+    let mut functions = HashSet::new();
+    for name in imported {
+        let Some(from) = MODULES.iter().find(|from| from.name == name && !from.source.is_empty()) else {
+            continue;
+        };
+        for item in parse_module(from.name, from.source)?.items {
+            if let Item::Function(def) = item {
+                functions.insert(format!("{}.{}", from.name, def.name));
+            }
+        }
+    }
+    let mut names = HashMap::new();
+    let mut aliases = HashMap::new();
+    let imports = module.items.iter().filter_map(|item| match item {
+        Item::Import(import) => crate::std_import(import).ok(),
+        _ => None,
+    });
+    for imported in imports.flatten() {
+        match imported {
+            Imported::Module { alias, module } => {
+                aliases.insert(alias, module);
+            }
+            Imported::Name { name, alias, module } => {
+                let function = format!("{module}.{name}");
+                if functions.contains(&function) {
+                    names.insert(alias, function);
+                }
+            }
+        }
+    }
+    name_functions(module, (&names, &aliases), &|function| functions.contains(function));
+    Ok(())
 }
 
 /// Standard library types a program gets values of without naming them, by the method
@@ -365,6 +452,26 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// Each file of the standard library has its own range of spans, so a span names the file it's
+    /// in and reads its own text, which `fennec fix --migrate --std` writes back by.
+    #[test]
+    fn each_library_file_has_its_own_spans() {
+        let files: Vec<(&str, &str)> = super::prelude_files().collect();
+        for (module, (name, text)) in super::prelude_modules().unwrap().iter().zip(&files) {
+            let Some(span) = module.items.iter().find_map(|item| match item {
+                crate::Item::Function(def) => Some(def.span),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let (found, found_text, base) = super::prelude_file_at(span).unwrap();
+            assert_eq!((found, found_text), (*name, *text));
+            let start = usize::try_from(span.start - base).unwrap();
+            let written = text.get(start..).unwrap_or_default();
+            assert!(written.starts_with("def") || written.starts_with('@'), "{name}: {written}");
+        }
+    }
+
     /// Each type the standard library extends has its Fennec methods in one file only: a
     /// built-in type's own, like `int.fen` for `int`, or the file that declares it.
     #[test]
@@ -390,6 +497,32 @@ mod tests {
             assert_eq!(found.get(builtin).copied(), Some(builtin), "{builtin}");
         }
         assert_eq!(found.get("Optional").copied(), Some("optional"));
+    }
+
+    /// A core file's import from a module, as `from std.intrinsics import stop`, is named as that
+    /// module's function is everywhere else, `intrinsics.stop`, so the engines find it. A local
+    /// of the same name still shadows it, and the core file's own functions keep their names.
+    #[test]
+    fn a_core_files_import_names_the_modules_function() {
+        let source = "from std.intrinsics import stop\n\n\
+            def padded(fill: str) -> str:\n    if fill == \"\": stop(\"empty\")\n    return fill\n\n\
+            def shadowed(stop: int) -> int:\n    return stop\n";
+        let mut module = super::parse_module("str", source).unwrap();
+        super::qualify_core_imports(&mut module).unwrap();
+        let named = |function: &str| -> Vec<String> {
+            let mut found = Vec::new();
+            let mut module = module.clone();
+            module.items.retain(|item| matches!(item, crate::Item::Function(def) if def.name == function));
+            crate::visit::exprs_mut(&mut module, &mut |expr| {
+                if let crate::ExprKind::Name(name) = &expr.kind {
+                    found.push(name.clone());
+                }
+            });
+            found
+        };
+        assert!(named("padded").contains(&"intrinsics.stop".to_owned()), "{:?}", named("padded"));
+        assert!(!named("padded").contains(&"stop".to_owned()));
+        assert_eq!(named("shadowed"), ["stop"]);
     }
 
     /// A module's own functions are qualified where they're named, apart from where a

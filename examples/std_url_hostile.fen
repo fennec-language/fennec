@@ -1,0 +1,75 @@
+# A URL from outside can be built to fool whatever reads it next, so `url.parse` refuses what
+# two readers could take for different hosts: a name in brackets, which is connected to as a
+# name past a check that took it for an address; brackets, `@`, `%` or `\` in a host; a port
+# that isn't one; and a space or a control character anywhere. What's merely long or odd reads,
+# without making a run of it.
+from std import url
+
+## Why `text` isn't a URL, or "parsed" if it is.
+def why_not(text: str) -> str:
+    _ = url.parse(text) except why:
+        return why.message
+    return "parsed"
+
+## The host and port `text` parses to.
+def where(text: str) -> str:
+    found = url.parse(text) except why:
+        return why.message
+    return f"{found.host} {found.port} {found.address()}"
+
+test "only an IPv6 address goes in brackets"():
+    assert where("http://[::1]:8080/") == "::1 8080 [::1]:8080"
+    assert where("http://[::ffff:1.2.3.4]/") == "::ffff:1.2.3.4 0 [::ffff:1.2.3.4]"
+    assert (
+        why_not("http://[example.com]/")
+        == "`http://[example.com]/` isn't a URL: `example.com` in brackets isn't an IPv6 address"
+    )
+    assert why_not("http://[]/") == "`http://[]/` isn't a URL: its brackets are empty"
+    assert (
+        why_not("http://[1.2.3.4]/")
+        == "`http://[1.2.3.4]/` isn't a URL: `1.2.3.4` in brackets isn't an IPv6 address"
+    )
+    assert why_not("http://[::1/") == "`http://[::1/` isn't a URL: its IPv6 address has no `]`"
+    assert why_not("http://[::1]x/") == "`http://[::1]x/` isn't a URL: `x` follows its IPv6 address"
+
+test "a host can't hold what would make it another host to the next reader"():
+    said = "its host can't hold `@`, `%`, `\\`, `[` or `]`"
+    for text in [
+        "http://a@b@c/",
+        "http://h%41/",
+        "http://h\\evil.com/",
+        "http://[a@b]/",
+        "http://a]b/",
+    ]:
+        assert why_not(text) == f"`{text}` isn't a URL: {said}"
+    long = "http://" + "a" * 254 + "/"
+    assert why_not(long).endswith("isn't a URL: its host is longer than 253 characters")
+    assert where("http://" + "a" * 253 + "/").startswith("a" * 253)
+
+test "a port is from 1 to 65535, written in digits"():
+    for port in ["0", "65536", "-1", "ab", "99999999999999999999", "+80"]:
+        text = f"http://h:{port}/"
+        assert why_not(text) == f"`{text}` isn't a URL: its port `{port}` isn't from 1 to 65535"
+    assert where("http://h:65535/") == "h 65535 h:65535"
+    # An empty port is none.
+    assert where("http://h:/") == "h 0 h"
+
+test "a space or a control character is refused anywhere"():
+    for text in ["http://h/a b", "http://h/a\x00b", "http://h/a\tb", "http://h/?a=\nb"]:
+        assert why_not(text).endswith("isn't a URL: it can't hold a space or a control character")
+
+test "what's merely long, deep or odd reads, as its escapes are"():
+    deep = url.parse("http://h/" + "a/" * 100_000)?
+    assert deep.path.len() == 200_001
+    many = url.parse("http://h/?" + "k=v&" * 50_000)?
+    assert many.query == {"k": "v"}
+    # An escape that isn't one is left as it's written, as Python leaves it.
+    odd = url.parse("http://h/%zz%")?
+    assert odd.path == "/%zz%"
+    assert url.unquote("%") == "%"
+    assert url.unquote("%e9") == "%e9"
+    # A path's dots are its own business: `parse` doesn't take them away.
+    assert url.parse("http://h/../../etc")?.path == "/../../etc"
+
+def main(stdout: Stdout):
+    stdout.print(where("http://[::1]:8080/"))

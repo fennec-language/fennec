@@ -763,6 +763,21 @@ impl Emit<'_, '_, '_> {
         header
     }
 
+    /// In a build that checks proofs, the lines that check a string block's cursor is inside it,
+    /// where `%kept_char` and `%kept_byte` are what it holds, `%chars` is the block's count and
+    /// `%text` the block. The helpers take the cursor's byte as an offset into the text, so a
+    /// wrong one would read past it rather than stop. Every writer of a block keeps it right.
+    fn cursor_checked(&mut self) -> String {
+        use fennec_rt::embed::layout::TEXT_BYTES;
+        if !self.checks_proofs() {
+            return String::new();
+        }
+        let said = self.proof_symbol("a string's cursor is inside it");
+        format!(
+            "  %cursor_said = load ptr, ptr {said}\n  %cursor_bytes_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}\n  %cursor_bytes = load i64, ptr %cursor_bytes_at\n  %char_past = icmp ugt i64 %kept_char, %chars\n  %byte_past = icmp ugt i64 %kept_byte, %cursor_bytes\n  %cursor_wrong = or i1 %char_past, %byte_past\n  call void @fen_proof_held(i1 %cursor_wrong, ptr %cursor_said, i64 0, i64 0)\n"
+        )
+    }
+
     /// Defines `@fen_char_place(text, at)`: where character `at` of a string's block starts, in
     /// bytes, counting from the end if `at` is negative, or -1 if there's no such character. A
     /// parser reads the character at the block's cursor, the one before it or the one after it,
@@ -773,6 +788,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn char_place_helper(&mut self) {
         use fennec_rt::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
         self.char_walk_helper();
+        let checked = self.cursor_checked();
         self.declare("declare i8 @llvm.ctlz.i8(i8, i1)");
         self.module.add_helper(
             "fen_char_place",
@@ -788,7 +804,7 @@ near:
   %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
   %kept_char = and i64 %cursor, 4294967295
   %kept_byte = lshr i64 %cursor, 32
-  %again = icmp eq i64 %at, %kept_char
+{checked}  %again = icmp eq i64 %at, %kept_char
   br i1 %again, label %done, label %back_or_not
 back_or_not:
   %before = add i64 %kept_char, -1
@@ -843,6 +859,7 @@ done:
     pub(crate) fn char_read_helper(&mut self) {
         use fennec_rt::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
         self.char_walk_helper();
+        let checked = self.cursor_checked();
         self.declare("declare i8 @llvm.ctlz.i8(i8, i1)");
         self.module.add_helper(
             "fen_char_read",
@@ -859,7 +876,7 @@ near:
   %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
   %kept_char = and i64 %cursor, 4294967295
   %kept_byte = lshr i64 %cursor, 32
-  %again = icmp eq i64 %at, %kept_char
+{checked}  %again = icmp eq i64 %at, %kept_char
   br i1 %again, label %advance, label %back_or_not
 back_or_not:
   %before = add i64 %kept_char, -1
@@ -912,6 +929,7 @@ done:
     /// each character.
     fn char_walk_helper(&mut self) {
         use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
+        let checked = self.cursor_checked();
         self.module.add_helper(
             "fen_char_walk",
             format!(
@@ -933,7 +951,7 @@ find:
   %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
   %kept_char = and i64 %cursor, 4294967295
   %kept_byte = lshr i64 %cursor, 32
-  %kept_ahead = icmp ugt i64 %kept_char, %want
+{checked}  %kept_ahead = icmp ugt i64 %kept_char, %want
   %kept_up = sub i64 %kept_char, %want
   %kept_down = sub i64 %want, %kept_char
   %kept_far = select i1 %kept_ahead, i64 %kept_up, i64 %kept_down
@@ -1034,8 +1052,8 @@ done:
             (self.offset(&block, TEXT_BYTES.unsigned_abs()), self.offset(&block, TEXT_CHARS.unsigned_abs()));
         let (bytes, chars, ascii, inside, quick) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{bytes} = load i64, ptr {bytes_at}{}", crate::emit::LENGTH_ACCESS));
-        self.line(&format!("{chars} = load i64, ptr {chars_at}{}", crate::emit::LENGTH_ACCESS));
+        self.load_length(&bytes, &bytes_at);
+        self.load_length(&chars, &chars_at);
         self.line(&format!("{ascii} = icmp eq i64 {bytes}, {chars}"));
         self.line(&format!("{inside} = icmp ult i64 {at}, {bytes}"));
         self.line(&format!("{quick} = and i1 {ascii}, {inside}"));
@@ -1621,7 +1639,7 @@ done:
         let (block, at, word) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {block}, i64 {}", offset.unsigned_abs()));
-        self.line(&format!("{word} = load i64, ptr {at}{}", crate::emit::LENGTH_ACCESS));
+        self.load_length(&word, &at);
         let read_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&done);

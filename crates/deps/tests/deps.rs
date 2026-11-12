@@ -289,7 +289,11 @@ mod deps {
             &dir,
             &format!("{}tools = {{ path = \"../tools\" }}\n", from_git("shapes", &shapes, &shapes_commit)),
         );
-        let kits = Kits::new(&dir.join("home"), false);
+        // `shapes`, from git, names `physics` by `file://`, which only these tests may allow: they
+        // can't serve a repository over https or ssh. Without it, that's refused.
+        let refused = Kits::new(&dir.join("home"), false).update(&root).unwrap_err();
+        assert!(refused.contains("`shapes` is from git, and names `physics` at `file://"), "{refused}");
+        let kits = Kits::new(&dir.join("home"), false).with_local_git_chains();
         kits.update(&root).unwrap();
         let pinned = pins(&std::fs::read_to_string(root.join("kit.lock")).unwrap()).unwrap();
         let names: Vec<&str> = pinned.iter().map(|pin| pin.name.as_str()).collect();
@@ -302,6 +306,29 @@ mod deps {
         write(&tools.join("kit.toml"), &kit_toml("tools", &from_git("physics", &physics, &second)));
         let said = kits.update(&root).unwrap_err();
         assert!(said.contains("two kits are named `physics`"), "{said}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A kit fetched from git naming another by an address no dependency may have, like `ext::`,
+    /// is refused, saying which kit and which address.
+    #[test]
+    fn a_kit_from_git_naming_an_unknown_address_is_refused() {
+        let dir = folder("git-ext");
+        let repository = dir.join("engine");
+        let commit = committed(
+            &repository,
+            &[(
+                "kit.toml",
+                &kit_toml(
+                    "engine",
+                    "tools = { git = \"ext::sh -c touch% pwned\", commit = \"0000000000000000000000000000000000000000\" }\n",
+                ),
+            )],
+        );
+        let root = game(&dir, &from_git("engine", &repository, &commit));
+        let said = Kits::new(&dir.join("home"), false).update(&root).unwrap_err();
+        assert!(said.contains("`engine`, which this kit names"), "{said}");
+        assert!(said.contains("`ext::sh -c touch% pwned` isn't a git repository's address"), "{said}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

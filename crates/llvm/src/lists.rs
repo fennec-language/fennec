@@ -7,7 +7,7 @@ use fennec_layout::ListItem;
 use fennec_rt::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS, VALUE_ACCESS};
+use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, VALUE_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::uniqueness::{FieldPath, item_step, list_place};
 
@@ -1330,7 +1330,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn list_length(&mut self, list: &str) -> String {
         let (at, length) = (self.temp(), self.temp());
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {list}, i64 {LIST_LENGTH}"));
-        self.line(&format!("{length} = load i64, ptr {at}{LENGTH_ACCESS}"));
+        self.load_length(&length, &at);
         length
     }
 
@@ -1643,9 +1643,8 @@ impl Emit<'_, '_, '_> {
     /// A block just made alone, either way, has one owner: saying so lets LLVM drop the next
     /// check of it when nothing between could have given it another.
     fn alone_from_now(&mut self, block: &str) {
-        self.declare("declare void @llvm.assume(i1)");
         let one = self.alone(block);
-        self.line(&format!("call void @llvm.assume(i1 {one})"));
+        self.assumed(&one, "a block just made alone has one owner", Span::default());
     }
 
     /// The local's list, ready to change. One nothing else here comes to hold was checked
@@ -2335,7 +2334,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store i64 {longer}, ptr {kept}"));
             } else {
                 let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
-                self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+                self.load_length(&length, &length_at);
                 self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
                 self.line(&format!("store i64 {longer}, ptr {length_at}{HEADER_ACCESS}"));
             }
@@ -2359,7 +2358,7 @@ impl Emit<'_, '_, '_> {
         let (quick, grow, done) = (self.label("quick"), self.label("grow"), self.label("done"));
         self.line(&format!("{list} = load ptr, ptr {slot}"));
         let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
-        self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+        self.load_length(&length, &length_at);
         self.line(&format!("{room_at} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ROOM}"));
         self.line(&format!("{room} = load i64, ptr {room_at}{HEADER_ACCESS}"));
         self.line(&format!("{fits} = icmp ult i64 {length}, {room}"));

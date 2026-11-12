@@ -349,7 +349,7 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
-    /// A source's `lend x else:` cleanup runs on a failure and on a crash, in `main` and in a
+    /// A source's `lend x except:` cleanup runs on a failure and on a crash, in `main` and in a
     /// launched task.
     #[test]
     fn it_cleans_up_after_failures_and_crashes() {
@@ -452,9 +452,9 @@ mod tests {
         }
     }
 
-    /// With `except`, no failure is handled with `else`, and every catch-all `except why:` either
-    /// has a `case` for each error or reads `why`. Checked on the rewrite whether or not the switch
-    /// is on, so it's ready the day `except` parses.
+    /// Programs are written only in the forms locked on 2026-11-11: no failure is handled with
+    /// `else`, every catch-all `except why:` either has a `case` for each error or reads `why`,
+    /// and `len(x)` and `abs(x)` stand where the methods did.
     #[test]
     fn it_handles_failures_with_except() {
         let wanted = [
@@ -471,7 +471,7 @@ mod tests {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
-            let program = source::excepted(&source::source(&generate::program(&bytes)));
+            let program = source::source(&generate::program(&bytes));
             let lines: Vec<&str> = program.lines().collect();
             for (at, line) in lines.iter().enumerate() {
                 let trimmed = line.trim_start();
@@ -499,8 +499,32 @@ mod tests {
             for (count, want) in found.iter_mut().zip(wanted) {
                 *count += usize::from(program.contains(want));
             }
-            if source::EXCEPT_PARSES {
-                assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
+            assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
+            assert!(
+                !program.contains(".len()") && !program.contains(".abs()"),
+                "a method where a builtin goes"
+            );
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
+    /// A loop's int is at least 0 on its first turn and changes sign later, every way: stepped
+    /// down past 0, flipped each turn, and reset below 0 partway through.
+    #[test]
+    fn it_turns_ints_negative_after_the_first_turn() {
+        let ways = ["        at -= ", "        sign = -sign\n", "            n = -"];
+        let mut found = [0_usize; 3];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            for turned in source.split("\ndef turned").skip(1) {
+                let turned = turned.split("\n\n").next().unwrap_or_default();
+                assert!(turned.contains("xs[") && turned.contains("-9223372036854775804 + "), "{turned}");
+                for (count, way) in found.iter_mut().zip(ways) {
+                    *count += usize::from(turned.contains(way));
+                }
             }
         }
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");

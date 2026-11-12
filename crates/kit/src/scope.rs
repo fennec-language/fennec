@@ -23,6 +23,8 @@ struct Part {
     /// What starts its kit's names in the merged module.
     prefix: String,
     exports: HashSet<String>,
+    /// Where the file's last import ends, where another can go.
+    imports_end: Option<Span>,
 }
 
 /// What each file defines, and which file defines each name, by the name the merged module has
@@ -193,6 +195,15 @@ fn gather(files: &[File], errors: &mut Vec<Diagnostic>) -> Kit {
             names,
             prefix: file.prefix.clone(),
             exports: file.exports.clone(),
+            imports_end: file
+                .module
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Import(import) => Some(Span { start: import.span.end, end: import.span.end }),
+                    _ => None,
+                })
+                .max_by_key(|at| at.start),
         });
     }
     kit
@@ -651,19 +662,17 @@ impl Resolver<'_> {
             return;
         }
         if let Some(&owner) = self.kit.owners.get(&self.kit.merged(self.file, name)) {
-            self.errors.push(
-                Diagnostic::new(
-                    format!(
-                        "`{name}` is defined in {}, which this file doesn't import",
-                        self.kit.shown(owner)
-                    ),
-                    span,
-                )
-                .with_help(format!(
-                    "add `from {} import {name}` at the top of this file",
-                    self.kit.name(owner)
-                )),
-            );
+            let import = format!("from {} import {name}", self.kit.name(owner));
+            let mut problem = Diagnostic::new(
+                format!("`{name}` is defined in {}, which this file doesn't import", self.kit.shown(owner)),
+                span,
+            )
+            .with_help(format!("add `{import}` at the top of this file"));
+            // After the file's last import, when it has one.
+            if let Some(at) = self.kit.files.get(self.file).and_then(|part| part.imports_end) {
+                problem = problem.with_fix(at, format!("\n{import}"));
+            }
+            self.errors.push(problem);
         }
     }
 

@@ -229,6 +229,7 @@ pub fn failed_for(text: i64) {
 /// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
 /// by the one before.
 pub fn test_world(fakes: i64) {
+    crate::stdlib::net::labels_start_over();
     with(|state: &mut State| {
         state.world = (fakes != 0 && !real_tests())
             .then(|| Box::new(TestWorld::new(TestCapabilities::Fakes)) as Box<dyn std::any::Any>);

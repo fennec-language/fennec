@@ -810,7 +810,7 @@ impl<'c> FnCx<'c> {
             .map(|binding| binding.origin)
     }
 
-    fn binding_mut(&mut self, name: &str) -> Option<&mut Binding> {
+    pub(crate) fn binding_mut(&mut self, name: &str) -> Option<&mut Binding> {
         self.scopes
             .iter_mut()
             .rev()

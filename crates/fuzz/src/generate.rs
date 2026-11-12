@@ -68,8 +68,8 @@ def twice[T](value: T) -> list[T]:
     return [value, value]
 
 def at_or_zero(items: list[int], at: int) -> int:
-    if items.len() == 0: return 0
-    return items[at % items.len()]
+    if len(items) == 0: return 0
+    return items[at % len(items)]
 
 ";
 
@@ -141,7 +141,7 @@ impl Writer<'_> {
                 format!("({} {} {})", self.int(next), self.word(&["//", "%"]), self.int(next))
             }
             5 => format!("({} {} {})", self.int(next), self.word(&["//", "%"]), 1 + self.choice(9)),
-            6 => format!("{}.len()", self.of(Kind::Ints, next)),
+            6 => format!("len({})", self.of(Kind::Ints, next)),
             7 if self.risky => format!("{}[{}]", self.of(Kind::Ints, next), self.int(next)),
             7 => format!("at_or_zero({}, {})", self.of(Kind::Ints, next), self.int(next)),
             8 => {
@@ -289,9 +289,9 @@ impl Writer<'_> {
                 let change = match self.choice(3) {
                     0 => format!("{list}.append({value})"),
                     1 if self.risky => format!("{list}[{}] = {value}", self.int(2)),
-                    1 => format!("if {list}.len() > 0: {list}[{} % {list}.len()] = {value}", self.int(2)),
+                    1 => format!("if len({list}) > 0: {list}[{} % len({list})] = {value}", self.int(2)),
                     _ if self.risky => format!("_ = {list}.pop()"),
-                    _ => format!("if {list}.len() > 0: _ = {list}.pop()"),
+                    _ => format!("if len({list}) > 0: _ = {list}.pop()"),
                 };
                 self.line(indent, &change);
             }
@@ -346,13 +346,29 @@ pub(crate) fn printing_plainly(bytes: &[u8]) -> String {
 /// program the same however the header changes, so its pinned output still holds.
 const MOST_MAIN: usize = (1 << 14) - 779;
 
+/// How long `main` is, as it was measured when it wrote `x.len()`: each `len(x)` counts a byte
+/// longer, so a kept input writes the same program, and its pinned output still holds.
+fn main_length(main: &str) -> usize {
+    let lens = main
+        .match_indices("len(")
+        .filter(|(at, _)| {
+            main.get(..*at)
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+        .count();
+    main.len() + lens
+}
+
 fn written(bytes: &[u8], plainly: bool) -> String {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
     let source = HEADER.to_owned();
     let mut writer = Writer { bytes: bytes.iter(), source, names: Vec::new(), made: 0, risky, plainly };
     writer.line(0, "def main(stdout: Stdout):");
-    while writer.bytes.len() > 0 && writer.source.len() < HEADER.len() + MOST_MAIN {
+    while writer.bytes.len() > 0
+        && main_length(writer.source.get(HEADER.len()..).unwrap_or_default()) < MOST_MAIN
+    {
         writer.statement(1);
     }
     writer.print_changeable(1, 0);

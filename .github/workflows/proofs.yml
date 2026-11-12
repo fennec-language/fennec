@@ -4,8 +4,12 @@ name: Proofs
 # proved the check can't fail (an index inside its list, an add that can't overflow, a divisor
 # that can't be zero, a list with one owner, room for a loop's appends) is written anyway, as an
 # assertion that the proof held. A program that stops with "proof broken" has found a false proof:
-# the compiler left out a check that could fail, which is the worst kind of bug it can have. No
-# pull request waits on this.
+# the compiler left out a check that could fail, which is the worst kind of bug it can have. Once
+# `fennec` takes `FENNEC_STRIP_FACTS`, everything is built again with the facts handed to LLVM
+# stripped, and must print the same. Every example, kit, fixture and 50 random programs also run with
+# another hash seed, more threads and load, and recorded and replayed, and must print the same each
+# way (`.github/scripts/determinism.sh`). The night's report is kept as `nightly-report`, which
+# `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -22,7 +26,7 @@ jobs:
   proofs:
     name: Every proof checked
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 300
     permissions:
       contents: read
       issues: write
@@ -38,52 +42,21 @@ jobs:
           cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
           cargo build --release --locked -p fennec-runtime --features threads --target-dir target/threads
           cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
-      - name: Run every example LLVM takes, both ways it builds
-        id: examples
-        run: |
-          built=0
-          broken=0
-          for program in examples/*.fen; do
-            for how in dev release; do
-              release=()
-              [ "$how" = release ] && release=(--release)
-              .github/scripts/within.sh 300 ./target/release/fennec build "${release[@]}" "$program" -o checked > /dev/null 2> built.txt || continue
-              built=$((built + 1))
-              .github/scripts/within.sh 120 ./checked > printed.txt 2> said.txt || true
-              if grep -q "proof broken" said.txt; then
-                echo "::error::$program built in $how broke a proof"; cat said.txt; broken=1
-              fi
-            done
-          done
-          echo "$built builds ran checking proofs"
-          [ "$built" -ge 40 ] || { echo "::error::only $built builds ran"; broken=1; }
-          exit "$broken"
-      - name: Run every benchmark kernel, both ways it builds
-        id: kernels
-        if: always()
-        run: |
-          broken=0
-          for kernel in bench/kernels/*.fen; do
-            for how in dev release; do
-              release=()
-              [ "$how" = release ] && release=(--release)
-              if ! .github/scripts/within.sh 300 ./target/release/fennec build "${release[@]}" "$kernel" -o "$PWD/checked" > /dev/null 2> built.txt; then
-                echo "::error::$kernel didn't build in $how"; cat built.txt; broken=1; continue
-              fi
-              ran=0
-              (cd bench/kernels && ../../.github/scripts/within.sh 300 ../../checked > /dev/null 2> ../../said.txt) || ran=$?
-              if grep -q "proof broken" said.txt; then
-                echo "::error::$kernel built in $how broke a proof"; cat said.txt; broken=1
-              elif [ "$ran" != 0 ]; then
-                echo "::error::$kernel built in $how failed"; cat said.txt; broken=1
-              fi
-            done
-          done
-          exit "$broken"
+      - name: Build and run every example, kit and kernel, both ways
+        id: builds
+        run: .github/scripts/nightly-proofs.sh target/release/fennec report.md
       - name: Fuzz programs built through LLVM
         id: fuzz
         if: always()
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed "$GITHUB_RUN_ID" --seconds 1200 --found found | tee fuzz.txt
+      - name: Fuzz random programs for an hour, against what they should print
+        id: programs
+        if: always()
+        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 3600 --stuck 180 --found found | tee programs.txt
+      - name: Run every program four ways, which must print the same
+        id: determinism
+        if: always()
+        run: .github/scripts/determinism.sh target/release/fennec report.md 50
       - name: Run every test
         id: tests
         if: always()
@@ -97,6 +70,34 @@ jobs:
             exit 1
           fi
           exit "$status"
+      - name: Write the night's report
+        if: always()
+        env:
+          BUILDS: ${{ steps.builds.outcome }}
+          FUZZ: ${{ steps.fuzz.outcome }}
+          PROGRAMS: ${{ steps.programs.outcome }}
+          DETERMINISM: ${{ steps.determinism.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          {
+            echo "# Proofs, $(date -u +%Y-%m-%d), $(git rev-parse --short HEAD)"
+            echo
+            echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Tests: $TESTS."
+            echo
+            [ -f report.md ] && cat report.md
+            echo
+            echo "## Fuzzing"
+            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt 2>/dev/null | sed 's/^/- /'
+          } > nightly.md
+          cat nightly.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-report
+          path: nightly.md
       - name: Keep what was found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -110,16 +111,10 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-          EXAMPLES: ${{ steps.examples.outcome }}
-          KERNELS: ${{ steps.kernels.outcome }}
-          FUZZ: ${{ steps.fuzz.outcome }}
-          TESTS: ${{ steps.tests.outcome }}
         run: |
           {
-            echo "The nightly run checking proofs failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            cat nightly.md
             echo
-            echo "Examples: $EXAMPLES. Kernels: $KERNELS. Fuzzing: $FUZZ. Tests: $TESTS."
-            echo
-            echo "A program stopping with \"proof broken\" means the compiler left out a check that could fail. What fuzzing found and the tests' output are in the run's artifact."
+            echo "A program stopping with \"proof broken\" means the compiler left out a check that could fail. One printing otherwise with facts stripped means a fact handed to LLVM is wrong. One printing otherwise with another seed, thread count or load, or when replayed, isn't deterministic. What fuzzing found and the tests' output are in the run's artifact."
           } > issue.md
           gh issue create --title "A proof the compiler made broke" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"

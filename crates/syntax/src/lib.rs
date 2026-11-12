@@ -35,6 +35,6 @@ pub use sources::{Sources, Trace};
 pub use span::Span;
 pub use stdlib::{
     KeptPrelude, core_to_run, given, keep_prelude_in, module_providing, module_to_run, prelude,
-    prelude_files, prelude_modules, prelude_to_run,
+    prelude_file_at, prelude_files, prelude_modules, prelude_to_run,
 };
 pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

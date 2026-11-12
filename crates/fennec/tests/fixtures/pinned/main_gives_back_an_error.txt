@@ -1,10 +1,12 @@
-source 95a11bb04f055c17ad2ccf83121db532ca609ea3c8a2d3e0bffd32623ba0778f
+source c29fa24eb5f16609c218d53f34e69f14d1df24babce539c8c75add9f7d30b3de
 code 1
 stdout 6
 first
-stderr 177
+stderr 253
 error: `main` failed: InvalidValue(message="\"twelve\" isn't an int")
- --> <dir>/main_gives_back_an_error.fen:4:1
+ --> <dir>/main_gives_back_an_error.fen:2:12
   |
-4 | def main(stdout: Stdout):
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
+2 |     return int(text)?
+  |            ^^^^^^^^^^
+  = in `number`
+  = called from `main` at <dir>/main_gives_back_an_error.fen:6:18

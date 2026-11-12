@@ -11,7 +11,7 @@ def roll(ref rng: Random, count: int, sides: int) -> int:
     mut total = 0
     for _ in range(count):
         total += rng.randint(1, high=sides)
-    total
+    return total
 
 test "the same seed gives the same numbers" for seed: int:
     mut a = Random(seed=seed)

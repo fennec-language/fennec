@@ -1,7 +1,7 @@
 error: `size` needs a `T` to call it on
-  --> examples/errors/interface_method_on_type.fen:11:5
+  --> examples/errors/interface_method_on_type.fen:11:12
    |
-11 |     T.size()
-   |     ^^^^^^^^
+11 |     return T.size()
+   |            ^^^^^^^^
    |
    = help: call it on a value of type `T`, as `value.size(...)`

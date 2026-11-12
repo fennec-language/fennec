@@ -12,52 +12,52 @@ struct Token:
     line: int
 
 def is_digit(char: str) -> bool:
-    char >= "0" and char <= "9"
+    return char >= "0" and char <= "9"
 
 def is_letter(char: str) -> bool:
-    (char >= "a" and char <= "z") or (char >= "A" and char <= "Z") or char == "_"
+    return (char >= "a" and char <= "z") or (char >= "A" and char <= "Z") or char == "_"
 
 def digit(char: str) -> int:
     match char:
         case "0":
-            0
+            return 0
         case "1":
-            1
+            return 1
         case "2":
-            2
+            return 2
         case "3":
-            3
+            return 3
         case "4":
-            4
+            return 4
         case "5":
-            5
+            return 5
         case "6":
-            6
+            return 6
         case "7":
-            7
+            return 7
         case "8":
-            8
+            return 8
         case _:
-            9
+            return 9
 
 def describe(token: Token) -> str:
     match token.tok:
         case .Name("def"):
-            "keyword def"
+            return "keyword def"
         case .Name(text):
-            "name " + text
+            return "name " + text
         case .Number(value):
-            f"number {value}"
+            return f"number {value}"
         case .Symbol(text):
-            "op " + text
+            return "op " + text
         case .Text(body):
-            f"text {body} ({body.len()} chars)"
+            return f"text {body} ({len(body)} chars)"
 
 def tokenize(source: str) -> list[Token]:
     mut tokens = []
     mut at = 0
     mut line = 1
-    while at < source.len():
+    while at < len(source):
         char = source[at]
         if char == "\n":
             line += 1
@@ -66,19 +66,19 @@ def tokenize(source: str) -> list[Token]:
             at += 1
         elif is_digit(char):
             mut value = 0
-            while at < source.len() and is_digit(source[at]):
+            while at < len(source) and is_digit(source[at]):
                 value = value * 10 + digit(source[at])
                 at += 1
             tokens.append(Token(tok=.Number(value), line=line))
         elif is_letter(char):
             start = at
-            while at < source.len() and (is_letter(source[at]) or is_digit(source[at])):
+            while at < len(source) and (is_letter(source[at]) or is_digit(source[at])):
                 at += 1
             tokens.append(Token(tok=.Name(source[start:at]), line=line))
         elif char == "\"":
             start = at + 1
             at += 1
-            while at < source.len() and source[at] != "\"":
+            while at < len(source) and source[at] != "\"":
                 at += 1
             tokens.append(Token(tok=.Text(source[start:at]), line=line))
             at += 1
@@ -90,17 +90,17 @@ def tokenize(source: str) -> list[Token]:
             else:
                 tokens.append(Token(tok=.Symbol(char), line=line))
                 at += 1
-    tokens
+    return tokens
 
 def main(stdout: Stdout):
     source = "def area(r) -> float:\n    3 * r * r == 12 <= x_1\nprint(\"héllo wörld\", \"\")"
     tokens = tokenize(source)
     for token in tokens:
         stdout.print(token.line, describe(token))
-    stdout.print(tokens.len(), source.len(), source[-3:], source[100:], source[-1], source[4])
+    stdout.print(len(tokens), len(source), source[-3:], source[100:], source[-1], source[4])
 
     word = "naïve"
-    stdout.print(word.len(), word[2], word[-1], word[1:4], word + "!", "ï" in word, "x" not in word)
+    stdout.print(len(word), word[2], word[-1], word[1:4], word + "!", "ï" in word, "x" not in word)
     stdout.print(
         "abc" < "abd",
         "b" > "abc",
@@ -112,4 +112,4 @@ def main(stdout: Stdout):
     )
     kept = word
     joined = kept + kept
-    stdout.print(joined, joined.len(), joined[5:], kept == word)
+    stdout.print(joined, len(joined), joined[5:], kept == word)

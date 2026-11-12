@@ -148,7 +148,7 @@ fn functions_types_builtins_and_constants_exist_everywhere() {
             x = 0
 
         def main(stdout: Stdout):
-            stdout.print(later(), double(2), Point(), [1].len(), PI, sqrt(2.0), zip([1], [2]))
+            stdout.print(later(), double(2), Point(), len([1]), PI, sqrt(2.0), zip([1], [2]))
             stdout.print(Point.x if False else 0)
 
         def later():
@@ -224,7 +224,7 @@ fn nested_functions_see_the_names_before_them() {
 fn arrow_function_parameters_exist_inside_them() {
     let program = "
         names = ['a']
-        stdout.print(sorted(names, key=name => name.len()), max(names, key=(name) => size))
+        stdout.print(sorted(names, key=name => len(name)), max(names, key=(name) => size))
     ";
     assert_eq!(in_main(program), ["`size` doesn't exist @ size"]);
 }
@@ -268,14 +268,14 @@ fn extensions_add_methods_to_the_programs_own_types() {
             x = 0
 
             def moved(self) -> Point:
-                Point(x=self.x + 1)
+                return Point(x=self.x + 1)
 
             def moved(self) -> Point:
-                self
+                return self
 
         extend Point:
             def far(self) -> int:
-                self.moved().x + 'a'
+                return self.moved().x + 'a'
 
         interface Shape:
             def area(self) -> float
@@ -321,7 +321,7 @@ fn a_generic_types_extension_names_its_parameters_and_bounds_make_it_conditional
 
         extend Box[T: Eq]:
             def holds(self, item: T) -> bool:
-                self.item == item
+                return self.item == item
 
         extend Box[T: Enemy]:
             pass
@@ -352,13 +352,13 @@ const ACCOUNT: &str = "struct Account:
         self._balance += amount
 
     def _audit(self) -> bool:
-        self._balance >= 0
+        return self._balance >= 0
 
     def same(self, other: Account) -> bool:
-        other._balance == self._balance and self._audit()
+        return other._balance == self._balance and self._audit()
 
     def opened(owner: str, start: int) -> Account:
-        Account(owner=owner, _balance=start)
+        return Account(owner=owner, _balance=start)
 
 ";
 
@@ -392,7 +392,9 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
         [format!("{private} @ case Account(owner, balance): stdout.print(balance)\n")]
     );
     assert_eq!(
-        problems(&format!("{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        self._balance\n")),
+        problems(&format!(
+            "{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        return self._balance\n"
+        )),
         [format!("{private} @ self._balance")]
     );
 }
@@ -408,7 +410,7 @@ fn a_private_field_with_no_default_needs_a_named_constructor() {
     _audit = list[str]()
 
     def open(owner: str, id: int) -> Account:
-        Account(_id=id, owner=owner)
+        return Account(_id=id, owner=owner)
 
 struct Counter:
     step: int
@@ -432,7 +434,7 @@ struct Counter:
         )),
         ["use `Account.open(...)`"]
     );
-    let sealed = "struct Sealed:\n    _key: str\n\n    def key(self) -> str:\n        self._key\n";
+    let sealed = "struct Sealed:\n    _key: str\n\n    def key(self) -> str:\n        return self._key\n";
     assert_eq!(
         problems(sealed),
         [
@@ -445,14 +447,15 @@ struct Counter:
 fn a_type_another_std_module_imports_still_needs_its_own_import() {
     // `std.net` imports `Duration` for its own use, and that doesn't make it a program's.
     assert_eq!(
-        problems("def wait(pause: Duration) -> int:\n    1\n"),
+        problems("def wait(pause: Duration) -> int:\n    return 1\n"),
         ["`Duration` doesn't exist @ Duration"]
     );
     assert_eq!(
-        helps("def wait(pause: Duration) -> int:\n    1\n"),
+        helps("def wait(pause: Duration) -> int:\n    return 1\n"),
         ["import it from std.time, like `from std.time import Duration`"]
     );
-    let imported = "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    pause.nanos\n";
+    let imported =
+        "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    return pause.nanos\n";
     assert_eq!(problems(imported), Vec::<String>::new());
 }
 
@@ -463,17 +466,17 @@ fn a_type_another_std_module_imports_still_needs_its_own_import() {
 fn a_value_nobody_uses_is_an_error() {
     let empty: [&str; 0] = [];
     assert_eq!(
-        in_main("xs = [3, 1]\nsorted(xs)\nxs.len()\nstdout.print(xs)\n"),
+        in_main("xs = [3, 1]\nsorted(xs)\nlen(xs)\nstdout.print(xs)\n"),
         [
             "this gives back a list[int], and nothing uses it @ sorted(xs)",
-            "this gives back an int, and nothing uses it @ xs.len()",
+            "this gives back an int, and nothing uses it @ len(xs)",
         ]
     );
     assert_eq!(
         in_main("mut xs = [3, 1]\n_ = sorted(xs)\nxs.sort()\nxs.append(2)\nstdout.print(xs)\n"),
         empty
     );
-    assert_eq!(problems("def last(xs: list[int]) -> int:\n    xs.len()\n"), empty);
+    assert_eq!(problems("def last(xs: list[int]) -> int:\n    return len(xs)\n"), empty);
     assert_eq!(
         in_main("mut xs = [1]\nfor x in [1, 2]:\n    xs.pop()\nstdout.print(xs)\n"),
         ["this gives back an int?, and nothing uses it @ xs.pop()"]
@@ -493,7 +496,7 @@ fn each_underscore_throws_away_what_its_given_whatever_its_type() {
 /// function, a type, an interface, an alias or a constant. A field's or method's `_` is fine.
 #[test]
 fn a_top_level_name_doesnt_start_with_an_underscore() {
-    let source = "_LIMIT = 3\n\nstruct _Box:\n    _size = 1\n\n    def _grown(self) -> int:\n        self._size + _LIMIT\n\ninterface _Sized:\n    def size(self) -> int\n\ntype _Count = int\n\ndef _helper() -> _Box:\n    _Box()\n\ndef main(stdout: Stdout):\n    stdout.print(_helper()._size)\n";
+    let source = "_LIMIT = 3\n\nstruct _Box:\n    _size = 1\n\n    def _grown(self) -> int:\n        return self._size + _LIMIT\n\ninterface _Sized:\n    def size(self) -> int\n\ntype _Count = int\n\ndef _helper() -> _Box:\n    return _Box()\n\ndef main(stdout: Stdout):\n    stdout.print(_helper()._size)\n";
     let found = problems(source);
     let named: Vec<&str> = found.iter().filter_map(|problem| problem.split('`').nth(1)).collect();
     assert_eq!(named, ["_LIMIT", "_Box", "_Sized", "_Count", "_helper", "_size"], "{found:?}");
@@ -535,16 +538,16 @@ fn an_operator_is_defined_once_for_each_type_on_its_right() {
             value: float
 
             def /(self, other: float) -> Meters:
-                Meters(value=self.value / other)
+                return Meters(value=self.value / other)
 
             def /(self, other: Meters) -> float:
-                self.value / other.value
+                return self.value / other.value
 
             def /(self, other: Meters) -> int:
-                1
+                return 1
 
             def half(self) -> Meters:
-                self / 2.0
+                return self / 2.0
 
         def main(stdout: Stdout):
             ratio: float = Meters(value=6.0) / Meters(value=3.0)

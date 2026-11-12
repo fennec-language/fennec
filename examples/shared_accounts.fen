@@ -10,14 +10,14 @@ struct Account:
         self.total += amount
 
     def balance(self) -> int:
-        self.total
+        return self.total
 
 def transfer(source: shared Account, target: shared Account, amount: int) -> bool:
     lock source, target as ref paying, ref paid:
         if paying.total < amount: return False
         paying.total -= amount
         paid.add(amount)
-    True
+    return True
 
 def main(stdout: Stdout):
     shared savings = Account(total=100)

@@ -9,20 +9,19 @@ error LoadError:
 
 def amount(value: float, line: int) -> float fails LoadError:
     if value < 0.0: fail .BadRow(line)
-    value
+    return value
 
 def total(rows: list[float]) -> float fails LoadError:
-    if rows.len() == 0: fail .Missing("rows")
-    sum([amount(value, line + 1)? for line, value in enumerate(rows)])
+    if len(rows) == 0: fail .Missing("rows")
+    return sum([amount(value, line + 1)? for line, value in enumerate(rows)])
 
 def report(rows: list[float]) -> str:
-    found = total(rows) else as why:
-        match why:
-            case .BadRow(line):
-                return f"row {line} is negative"
-            case .Missing(name):
-                return f"no {name}"
-    f"total {found}"
+    found = total(rows) except why:
+        case .BadRow(line):
+            return f"row {line} is negative"
+        case .Missing(name):
+            return f"no {name}"
+    return f"total {found}"
 
 def main(stdout: Stdout):
     stdout.print(report([1.5, 2.25]))

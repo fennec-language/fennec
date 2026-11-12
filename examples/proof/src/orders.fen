@@ -23,7 +23,7 @@ struct Decision:
 
 ## Steps between two cells, going only across and down.
 def gap(a: (int, int), b: (int, int)) -> int:
-    map.distance(a, b=b)
+    return map.distance(a, b=b)
 
 ## Whether `target` still stands and is still worth going after.
 def still_good(world: World, actor: Unit, target: Id[Unit]?) -> bool:
@@ -32,7 +32,7 @@ def still_good(world: World, actor: Unit, target: Id[Unit]?) -> bool:
     if found is None: return False
     if actor.kind == .Medic:
         return found.team == actor.team and found.health < found.kind.most_health()
-    found.team != actor.team
+    return found.team != actor.team
 
 ## The nearest enemy, or for a medic, the most hurt friend nearby.
 def choose_target(world: World, id: Id[Unit], actor: Unit) -> Id[Unit]?:
@@ -52,7 +52,7 @@ def choose_target(world: World, id: Id[Unit], actor: Unit) -> Id[Unit]?:
         if score < best_score:
             best = other_id
             best_score = score
-    best
+    return best
 
 ## Where to walk when there's nobody to go after: behind the leader, or to the squad's rally.
 def destination(world: World, actor: Unit) -> (int, int)?:
@@ -64,7 +64,7 @@ def destination(world: World, actor: Unit) -> (int, int)?:
     if squad is not None:
         found = world.squads.get(squad)
         if found is not None: return found.rally
-    None
+    return None
 
 ## The next step towards `goal`, keeping the path it has when that still leads there.
 def walk(world: World, actor: Unit, goal: (int, int), blocked: set[(int, int)]) -> (
@@ -72,16 +72,16 @@ def walk(world: World, actor: Unit, goal: (int, int), blocked: set[(int, int)]) 
     list[(int, int)],
 ):
     mut path = actor.path
-    still_leads = path.len() > 0 and path[-1] == goal and path[0] not in blocked
+    still_leads = len(path) > 0 and path[-1] == goal and path[0] not in blocked
     if not still_leads:
         found = world.field.path(actor.at, goal=goal, blocked=blocked)
         if found is None: return (Action.Wait, [])
         path = found
-    if path.len() == 0: return (Action.Wait, [])
+    if len(path) == 0: return (Action.Wait, [])
     next = path[0]
     # Someone may be standing on the goal itself; stop next to them.
     if next in blocked: return (Action.Wait, [])
-    (Action.Step(to=next), path[1:])
+    return (Action.Step(to=next), path[1:])
 
 def decide(world: World, id: Id[Unit], blocked: set[(int, int)]) -> Decision:
     actor = world.units[id]
@@ -100,12 +100,12 @@ def decide(world: World, id: Id[Unit], blocked: set[(int, int)]) -> Decision:
     if goal is None or gap(actor.at, b=goal) <= 1:
         return Decision(actor=id, action=.Wait, target=None)
     action, path = walk(world, actor, goal, blocked)
-    Decision(actor=id, action=action, target=None, path=path)
+    return Decision(actor=id, action=action, target=None, path=path)
 
 ## Every unit's decision for this tick, worked out together, in the order units were made.
 def decide_all(world: World) -> list[Decision]:
     blocked = world.occupied()
-    [decide(world, id, blocked) for id in parallel(world.units.ids())]
+    return [decide(world, id, blocked) for id in parallel(world.units.ids())]
 
 test "a soldier goes after the nearest enemy":
     mut world = World(field=map.Map.drawn([".....", "....."]))

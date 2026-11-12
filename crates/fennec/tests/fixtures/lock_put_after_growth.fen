@@ -48,7 +48,7 @@ def plain(stdout: Stdout):
     b.counts[138] = 138
     b.counts[139] = 139
     b.counts[1] = x + 5
-    stdout.print("plain", b.counts[1], b.counts.len())
+    stdout.print("plain", b.counts[1], len(b.counts))
 
 def locked(stdout: Stdout):
     shared box = Box(counts={1: 1})
@@ -96,7 +96,7 @@ def locked(stdout: Stdout):
         held.counts[139] = 139
         held.counts[1] = x + 5
     lock box as held:
-        stdout.print("locked", held.counts[1], held.counts.len())
+        stdout.print("locked", held.counts[1], len(held.counts))
 
 def locked_dict(stdout: Stdout):
     shared counts = {1: 1}
@@ -144,7 +144,7 @@ def locked_dict(stdout: Stdout):
         held[139] = 139
         held[1] = x + 5
     lock counts as held:
-        stdout.print("locked dict", held[1], held.len())
+        stdout.print("locked dict", held[1], len(held))
 
 def main(stdout: Stdout):
     plain(stdout)

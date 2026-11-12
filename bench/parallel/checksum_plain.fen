@@ -4,7 +4,7 @@ def stirred(n: int) -> int:
     mut x = n % 2_147_483_646 + 1
     for _ in range(100):
         x = x * 48_271 % 2_147_483_647
-    x % 1_000
+    return x % 1_000
 
 def main(stdout: Stdout):
     stdout.print(sum(stirred(n) for n in range(2_000_000)))

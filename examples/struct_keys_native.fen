@@ -28,7 +28,7 @@ def main(stdout: Stdout):
         cell = Cell(x=i % 7, y=i % 5)
         seen[cell] = (seen.get(cell) else 0) + 1
     stdout.print(
-        seen.len(),
+        len(seen),
         seen[Cell(x=0, y=0)],
         Cell(x=1, y=1) in seen,
         Cell(x=9, y=9) in seen,
@@ -37,7 +37,7 @@ def main(stdout: Stdout):
     stdout.print((seen.get(Cell(x=9, y=9)) else -1), (seen.get(Cell(x=2, y=3)) else -1))
 
     literal = {Cell(x=1, y=2): "a", Cell(x=3, y=4): "b", Cell(x=1, y=2): "c"}
-    stdout.print(literal, literal[Cell(x=1, y=2)], literal.len())
+    stdout.print(literal, literal[Cell(x=1, y=2)], len(literal))
     mut total = sum(key.x + key.y for key in literal)
     for key, word in literal.items():
         stdout.print(key.x, key, word)
@@ -49,8 +49,8 @@ def main(stdout: Stdout):
     seen[Cell(x=100, y=100)] = 1
     seen[Cell(x=0, y=0)] = 0
     stdout.print(
-        kept.len(),
-        seen.len(),
+        len(kept),
+        len(seen),
         kept[Cell(x=0, y=0)],
         seen[Cell(x=0, y=0)],
         kept == seen,
@@ -74,7 +74,7 @@ def main(stdout: Stdout):
         dirs[Dir.Far(steps=3)],
         Dir.East in dirs,
         Dir.Far(steps=4) in dirs,
-        dirs.len(),
+        len(dirs),
     )
 
     mut marks = {Cell(x=1, y=1), Cell(x=2, y=2), Cell(x=1, y=1)}
@@ -82,9 +82,9 @@ def main(stdout: Stdout):
     marks.discard(Cell(x=2, y=2))
     marks.discard(Cell(x=9, y=9))
     marks.remove(Cell(x=3, y=3))
-    stdout.print(marks, marks.len(), Cell(x=1, y=1) in marks, Cell(x=3, y=3) in marks)
+    stdout.print(marks, len(marks), Cell(x=1, y=1) in marks, Cell(x=3, y=3) in marks)
     made = {Cell(x=i % 3, y=0) for i in range(10)}
-    stdout.print(made.len(), sorted([cell.x for cell in made]))
+    stdout.print(len(made), sorted([cell.x for cell in made]))
 
     mut grid = Grid(seen={}, marks={Cell(x=0, y=0)})
     visit(ref grid, Cell(x=1, y=0))
@@ -96,4 +96,4 @@ def main(stdout: Stdout):
     mut large: dict[Cell, int] = {}
     for i in range(5000):
         large[Cell(x=i, y=i * 2)] = i
-    stdout.print(large.len(), large[Cell(x=4999, y=9998)], Cell(x=1, y=1) in large)
+    stdout.print(len(large), large[Cell(x=4999, y=9998)], Cell(x=1, y=1) in large)

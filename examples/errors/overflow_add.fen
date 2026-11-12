@@ -1,5 +1,5 @@
 def next_id(last: int) -> int:
-    last + 1
+    return last + 1
 
 def main(stdout: Stdout):
     stdout.print(next_id(41))

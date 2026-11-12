@@ -2,80 +2,101 @@
 ## `fennec dev tokens` and `fennec dev tree` print, so the two front ends can be compared
 ## line by line. Mirrors `crates/syntax/src/dump.rs` and `dump/tree.rs`.
 
-from span import Span, Diagnostic
-from token import FPart, Tok
+from ast import Annotation, Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp
+from check.checker import check
 from lexer import lex
 from parser import parse
-from check.checker import check
-from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from span import Diagnostic, Span
+from token import FPart, Tok
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
-    tokens = lex(source, 0) else as diagnostic:
+    tokens = lex(source, 0) except diagnostic:
         return dump_error(diagnostic)
-    "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
+    return "".join(
+        f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens
+    )
 
 ## What the checker finds in `source`, checked against the standard library's modules:
 ## every diagnostic, or the parse error that stopped it first. Nothing when it checks.
 def dump_check(source: str, library: list[Module]) -> str:
-    module = parse(source) else as diagnostic:
+    module = parse(source) except diagnostic:
         return dump_error(diagnostic)
-    "".join(dump_error(diagnostic) for diagnostic in check(module, library))
+    return "".join(dump_error(diagnostic) for diagnostic in check(module, library))
 
 ## A diagnostic as the dumps show it: its span and message, then its help on a second line.
 def dump_error(diagnostic: Diagnostic) -> str:
     span = diagnostic.span
     text = f"error {span.start}..{span.end} {diagnostic.message}\n"
     help = diagnostic.help
-    if help is None:
-        return text
-    text + f"help {help}\n"
+    if help is None: return text
+    return text + f"help {help}\n"
 
 def describe_tok(tok: Tok) -> str:
     match tok:
-        case .Name(text): f"name {text}"
-        case .Int(value): f"int {value}"
-        case .Float(value): f"float {value}"
-        case .Duration(nanos): f"duration {nanos}"
-        case .Str(text): f"str {quoted(text)}"
-        case .FStr(parts): "fstr " + " | ".join([describe_fpart(part) for part in parts])
-        case .TStr(parts): "tstr " + " | ".join([describe_fpart(part) for part in parts])
-        case .Keyword(word): f"keyword {word}"
-        case .Punct(text): f"punct {text}"
-        case .Newline: "newline"
-        case .Indent: "indent"
-        case .Dedent: "dedent"
-        case .Eof: "eof"
+        case .Name(text):
+            return f"name {text}"
+        case .Int(value):
+            return f"int {value}"
+        case .Float(value):
+            return f"float {value}"
+        case .Duration(nanos):
+            return f"duration {nanos}"
+        case .Str(text):
+            return f"str {quoted(text)}"
+        case .FStr(parts):
+            return "fstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .TStr(parts):
+            return "tstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .Keyword(word):
+            return f"keyword {word}"
+        case .Punct(text):
+            return f"punct {text}"
+        case .Newline:
+            return "newline"
+        case .Indent:
+            return "indent"
+        case .Dedent:
+            return "dedent"
+        case .Eof:
+            return "eof"
 
 def describe_fpart(part: FPart) -> str:
     match part:
-        case .Text(text): f"text {quoted(text)}"
+        case .Text(text):
+            return f"text {quoted(text)}"
         case .Code(source, offset, spec):
-            if spec is None:
-                return f"expr {offset} {quoted(source)}"
-            f"expr {offset} {quoted(source)} spec {quoted(spec)}"
+            if spec is None: return f"expr {offset} {quoted(source)}"
+            return f"expr {offset} {quoted(source)} spec {quoted(spec)}"
 
 ## A string in double quotes, with backslashes, quotes and line breaks escaped.
 def quoted(text: str) -> str:
     mut out = "\""
     for c in text:
         out += match c:
-            case "\\": "\\\\"
-            case "\"": "\\\""
-            case "\n": "\\n"
-            case "\t": "\\t"
-            case "\r": "\\r"
-            case "\0": "\\0"
-            case _: c
-    out + "\""
+            case "\\":
+                "\\\\"
+            case "\"":
+                "\\\""
+            case "\n":
+                "\\n"
+            case "\t":
+                "\\t"
+            case "\r":
+                "\\r"
+            case "\0":
+                "\\0"
+            case _:
+                c
+    return out + "\""
 
 ## The syntax tree of `source`, one node per line, or the error that stopped the parser.
 def dump_tree(source: str) -> str:
-    module = parse(source) else as diagnostic:
+    module = parse(source) except diagnostic:
         return dump_error(diagnostic)
     mut tree = Tree()
     tree.write_module(module)
-    "".join(line + "\n" for line in tree.lines)
+    return "".join(line + "\n" for line in tree.lines)
 
 ## The syntax tree as indented text: one node per line, its children two spaces deeper, and
 ## its span at the end as `@start..end`.
@@ -109,10 +130,14 @@ struct Tree:
 
     def write_item(ref self, item: Item):
         match item:
-            case .Function(function): self.write_function(function)
-            case .Struct(type_def): self.write_type_def("shared" if type_def.shared else "struct", type_def)
-            case .Enum(type_def): self.write_type_def("enum", type_def)
-            case .Error(type_def): self.write_type_def("error", type_def)
+            case .Function(function):
+                self.write_function(function)
+            case .Struct(type_def):
+                self.write_type_def("shared" if type_def.shared else "struct", type_def)
+            case .Enum(type_def):
+                self.write_type_def("enum", type_def)
+            case .Error(type_def):
+                self.write_type_def("error", type_def)
             case .Interface(interface):
                 self.open(f"interface {interface.name}", interface.span)
                 for method in interface.methods:
@@ -138,7 +163,7 @@ struct Tree:
                 mut label = "import " + ".".join(imported.module)
                 if imported.alias is not None:
                     label += " as " + imported.alias
-                if imported.names.len() > 0:
+                if len(imported.names) > 0:
                     label += ": " + ", ".join(bound_names(imported))
                 self.spanned(label, imported.span)
             case .Test(test):
@@ -229,8 +254,7 @@ struct Tree:
 
     ## A line saying what `expr` is for, with `expr` under it, when there is one.
     def labelled(ref self, label: str, expr: Expr?):
-        if expr is None:
-            return
+        if expr is None: return
         self.open(label, None)
         self.write_expr(expr)
         self.close()
@@ -301,7 +325,9 @@ struct Tree:
             case .With(value, names, body, lock):
                 mut label = "lock" if lock else "with"
                 for at, held in enumerate(names):
-                    label += (" as " if at == 0 else ", ") + ("mut " if held.is_mut else "") + held.name
+                    label += (
+                        (" as " if at == 0 else ", ") + ("mut " if held.is_mut else "") + held.name
+                    )
                 self.open(label, span)
                 self.write_expr(value)
                 self.write_stmts(body)
@@ -326,23 +352,35 @@ struct Tree:
     def write_expr(ref self, expr: Expr):
         span = expr.span
         match expr.kind:
-            case .Int(value): self.spanned(f"int {value}", span)
-            case .Float(value): self.spanned(f"float {value}", span)
-            case .Duration(nanos): self.spanned(f"duration {nanos}", span)
-            case .Bytes(data): self.spanned(f"bytes {data.len()}", span)
-            case .Str(text): self.spanned(f"str {quoted(text)}", span)
-            case .Bool(value): self.spanned(f"bool {value}", span)
-            case .Nothing: self.spanned("none", span)
-            case .Name(name): self.spanned(f"name {name}", span)
-            case .Variant(name): self.spanned(f"variant {name}", span)
+            case .Int(value):
+                self.spanned(f"int {value}", span)
+            case .Float(value):
+                self.spanned(f"float {value}", span)
+            case .Duration(nanos):
+                self.spanned(f"duration {nanos}", span)
+            case .Bytes(data):
+                self.spanned(f"bytes {len(data)}", span)
+            case .Str(text):
+                self.spanned(f"str {quoted(text)}", span)
+            case .Bool(value):
+                self.spanned(f"bool {value}", span)
+            case .Nothing:
+                self.spanned("none", span)
+            case .Name(name):
+                self.spanned(f"name {name}", span)
+            case .Variant(name):
+                self.spanned(f"variant {name}", span)
             case .FStr(parts):
                 self.open("fstr", span)
                 for part in parts:
                     self.write_fstring_part(part)
                 self.close()
-            case .List(items): self.group("list", span, items)
-            case .Tuple(items): self.group("tuple", span, items)
-            case .Set(items): self.group("set", span, items)
+            case .List(items):
+                self.group("list", span, items)
+            case .Tuple(items):
+                self.group("tuple", span, items)
+            case .Set(items):
+                self.group("set", span, items)
             case .Dict(pairs):
                 self.open("dict", span)
                 for key, value in pairs:
@@ -358,7 +396,8 @@ struct Tree:
                 self.labelled("in", iter)
                 self.labelled("if", cond)
                 self.close()
-            case _: self.write_compound(expr)
+            case _:
+                self.write_compound(expr)
 
     ## A node holding a list of expressions.
     def group(ref self, label: str, span: Span, items: list[Expr]):
@@ -368,7 +407,8 @@ struct Tree:
 
     def write_fstring_part(ref self, part: FStrPart):
         match part:
-            case .Text(text): self.line(f"text {quoted(text)}")
+            case .Text(text):
+                self.line(f"text {quoted(text)}")
             case .Code(expr, spec):
                 self.labelled("code" if spec is None else f"code spec {quoted(spec)}", expr)
 
@@ -417,7 +457,8 @@ struct Tree:
                 self.write_expr(subject)
                 for arm in arms:
                     self.write_arm(arm)
-            case _: return
+            case _:
+                return
         self.close()
 
     def write_arg(ref self, arg: Arg):
@@ -438,15 +479,21 @@ struct Tree:
 
     def write_pattern(ref self, pattern: Pattern):
         match pattern:
-            case .Wildcard: self.line("pattern _")
-            case .Bind(name): self.line(f"pattern bind {name}")
-            case .RefBind(name): self.line(f"pattern bind ref {name}")
-            case .Literal(expr): self.labelled("pattern literal", expr)
+            case .Wildcard:
+                self.line("pattern _")
+            case .Bind(name):
+                self.line(f"pattern bind {name}")
+            case .RefBind(name):
+                self.line(f"pattern bind ref {name}")
+            case .Literal(expr):
+                self.labelled("pattern literal", expr)
             case .Variant(name, dotted, args, fields):
-                by = "" if fields.len() == 0 else " by " + ", ".join(fields)
+                by = "" if len(fields) == 0 else " by " + ", ".join(fields)
                 self.write_patterns("pattern " + ("." if dotted else "") + name + by, args)
-            case .Tuple(items): self.write_patterns("pattern tuple", items)
-            case .Or(alternatives): self.write_patterns("pattern or", alternatives)
+            case .Tuple(items):
+                self.write_patterns("pattern tuple", items)
+            case .Or(alternatives):
+                self.write_patterns("pattern or", alternatives)
 
     def write_patterns(ref self, label: str, patterns: list[Pattern]):
         self.open(label, None)
@@ -456,19 +503,23 @@ struct Tree:
 
 def comprehension_kind(kind: CompKind) -> str:
     match kind:
-        case .List: "list"
-        case .Generator: "generator"
-        case .Set: "set"
-        case .Dict: "dict"
+        case .List:
+            return "list"
+        case .Generator:
+            return "generator"
+        case .Set:
+            return "set"
+        case .Dict:
+            return "dict"
 
 ## Each imported name, written `name as alias` when `as` renames it.
 def bound_names(imported: Import) -> list[str]:
     mut shown = []
-    for at in range(imported.names.len()):
+    for at in range(len(imported.names)):
         name = imported.names[at]
         alias = imported.aliases[at]
         if alias is not None and alias != name:
             shown.append(name + " as " + alias)
         else:
             shown.append(name)
-    shown
+    return shown

@@ -3,32 +3,32 @@
 
 def main(stdout: Stdout):
     mut squares = Buffer[int](capacity=2)
-    stdout.print(squares.len(), squares.capacity())
+    stdout.print(len(squares), squares.capacity())
     for i in range(5):
         squares.push(i * i)
     # Pushing into a full buffer doubles what it held.
-    stdout.print(squares.len(), squares.capacity(), squares[4])
+    stdout.print(len(squares), squares.capacity(), squares[4])
     squares[0] = 100
-    stdout.print(squares.pop(), squares.len())
+    stdout.print(squares.pop(), len(squares))
     squares.reserve(20)
     stdout.print(squares.capacity())
     squares.truncate(2)
-    stdout.print(squares.len(), squares.capacity())
+    stdout.print(len(squares), squares.capacity())
     for square in squares:
         stdout.print(square)
     mut names = Buffer[str]()
     names.push("fox")
     names.push("fennec")
-    stdout.print(names[1], names.len(), names.capacity())
+    stdout.print(names[1], len(names), names.capacity())
     mut more = Buffer[int]()
     more.push(7)
     more.push(8)
     squares.extend(more)
     squares.insert(0, 5)
-    stdout.print(squares.remove(1), squares.len(), squares.capacity())
+    stdout.print(squares.remove(1), len(squares), squares.capacity())
     stdout.print(squares[0], squares[3])
     # Extending grows once, by the same rule, for all the items added.
     mut both = Buffer[int]()
     both.extend(squares)
     both.extend(squares)
-    stdout.print(both.len(), both.capacity())
+    stdout.print(len(both), both.capacity())

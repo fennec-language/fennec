@@ -8,7 +8,7 @@ struct Span:
 
     ## The smallest span covering both this one and `other`.
     def to(self, other: Span) -> Span:
-        Span(start=min(self.start, other.start), end=max(self.end, other.end))
+        return Span(start=min(self.start, other.start), end=max(self.end, other.end))
 
 ## A problem in a Fennec program: what's wrong, where, and how to fix it.
 error Diagnostic:

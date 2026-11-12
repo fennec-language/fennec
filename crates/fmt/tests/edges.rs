@@ -151,8 +151,8 @@ fn a_long_assignment_wraps_its_value_in_parentheses() {
 #[test]
 fn long_operator_parameters_get_a_trailing_comma() {
     check(
-        "struct Money:\n    cents: int\n\n    def -(self_with_a_rather_long_parameter_name: MoneyWithAVeryLongTypeName) -> MoneyAgainWithALongName:\n        self\n",
-        "struct Money:\n    cents: int\n\n    def -(\n        self_with_a_rather_long_parameter_name: MoneyWithAVeryLongTypeName,\n    ) -> MoneyAgainWithALongName:\n        self\n",
+        "struct Money:\n    cents: int\n\n    def -(self_with_a_rather_long_parameter_name: MoneyWithAVeryLongTypeName) -> MoneyAgainWithALongName:\n        return self\n",
+        "struct Money:\n    cents: int\n\n    def -(\n        self_with_a_rather_long_parameter_name: MoneyWithAVeryLongTypeName,\n    ) -> MoneyAgainWithALongName:\n        return self\n",
     );
 }
 

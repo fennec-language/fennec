@@ -10,27 +10,27 @@ extend set[T: Hashable]:
     def union(self, other: set[T]) -> set[T]:
         mut found = set(self)
         found.update(other)
-        found
+        return found
 
     ## The items in both sets.
     def intersection(self, other: set[T]) -> set[T]:
-        {item for item in self if item in other}
+        return {item for item in self if item in other}
 
     ## The items of this set that aren't in `other`.
     def difference(self, other: set[T]) -> set[T]:
-        {item for item in self if item not in other}
+        return {item for item in self if item not in other}
 
     ## Whether every item is in `other`.
     def is_subset(self, other: set[T]) -> bool:
-        all(item in other for item in self)
+        return all(item in other for item in self)
 
     ## Whether every item of `other` is in this set.
     def is_superset(self, other: set[T]) -> bool:
-        other.is_subset(self)
+        return other.is_subset(self)
 
     ## Whether the sets have no items in common.
     def is_disjoint(self, other: set[T]) -> bool:
-        not any(item in other for item in self)
+        return not any(item in other for item in self)
 
 extend set[T: Hashable & Serializable]:
     def serialize(self, ref out: Serializer):
@@ -41,4 +41,4 @@ extend set[T: Hashable & Deserializable]:
         mut found = set[T]()
         for item in src.sequence[T]()?:
             found.add(item)
-        found
+        return found

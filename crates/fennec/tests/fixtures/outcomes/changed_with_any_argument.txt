@@ -1,4 +1,4 @@
-source 770e3e20929685a5eb8caad0ddacf6a4dec67ec547ef1ba3c6498fcb80a02c0d
+source 88e11faa4434b253dd8cb68c4cd920c82ab2ecb4e210e28f2aa5c90f842d83a1
 code 1
 stdout 290
 [1, 0, 2, 7, 0, 0, 2, 2, 7, 1, 4, 11, 6, 2, 0, 6, 6, 9, 1, 8, 20, 12, 4, 0, 10, 10, 15, 1, 18, 29, 27, 9] [0, -1, 2, -3, 4, -5, 9] {0: 0, 1: 0, 2: 1, 3: 0, 4: 1} abababa

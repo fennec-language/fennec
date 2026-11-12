@@ -2,7 +2,7 @@
 
 def noisy(out: Stdout, what: str, value: int) -> int:
     out.print(what)
-    value
+    return value
 
 def main(stdout: Stdout):
     mut xs = [10, 20, 30]

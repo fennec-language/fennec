@@ -9,7 +9,7 @@ def iterations(cr: float, ci: float, limit: int) -> int:
         if zr2 + zi2 > 4.0: return i
         zi = 2.0 * zr * zi + ci
         zr = zr2 - zi2 + cr
-    limit
+    return limit
 
 def main(stdout: Stdout):
     size = 400

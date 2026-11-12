@@ -1,5 +1,5 @@
-from std.net import NetError
 from std.concurrent import Crashed
+from std.net import NetError
 
 def serve(net: Net, greeting: str, names: list[str], stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
@@ -7,8 +7,7 @@ def serve(net: Net, greeting: str, names: list[str], stdout: Stdout) fails NetEr
         for conn in parallel(server):
             line = conn.read_line()? else ""
             conn.write(f"{greeting} {line}, {names[0]} and {names[1]} say hi\n")?
-            if line == "last":
-                break
+            if line == "last": break
     stdout.print("the server ended")
 
 def main(net: Net, stdout: Stdout) fails NetError | Crashed:

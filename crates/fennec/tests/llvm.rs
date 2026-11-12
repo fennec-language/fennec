@@ -17881,6 +17881,207 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A slice as a dict's key, set, read with `get`, tested with `in`, popped and added to a set,
+/// for values of every kind a dict holds: a string, an int, a float, a bool, a list, a struct, a
+/// struct holding a list, and a dict. Each does what the same key does made another way, by an
+/// f-string, in either build. A string value used to be stored by a slice key as if it were a
+/// block, which LLVM refused, as `names[line[:colon]] = line[colon + 2:]` in a parse of headers.
+#[test]
+fn a_slice_as_a_key_works_for_every_kind_of_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("slice_keys_every_value")?;
+    let ran = |name: &str, source: &str, how: &[&str]| -> std::io::Result<(String, String)> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let mut args = vec!["build"];
+        args.extend_from_slice(how);
+        let (program, output) =
+            (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+        args.extend([program.as_str(), "-o", output.as_str()]);
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let run = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        assert!(run.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&run.stderr));
+        Ok((
+            String::from_utf8_lossy(&run.stdout).into_owned(),
+            String::from_utf8_lossy(&run.stderr).into_owned(),
+        ))
+    };
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (sliced, counts) = ran("sliced", SLICED_KEYS, how)?;
+        let (made, _) = ran("made", MADE_KEYS, how)?;
+        assert_eq!(sliced, made, "{how:?}");
+        assert!(
+            counts.lines().any(|line| line.starts_with("copies ") && line.ends_with(" live 0")),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const SLICED_KEYS: &str = r#"struct Point:
+    x: int
+    y: int
+
+struct Holder:
+    items: list[int]
+
+def main(stdout: Stdout):
+    lines = ["ab: one", "cd: two", "ab: three", "ef: four"]
+    mut texts = dict[str, str]()
+    mut counts = dict[str, int]()
+    mut floats = dict[str, float]()
+    mut flags = dict[str, bool]()
+    mut lists = dict[str, list[str]]()
+    mut points = dict[str, Point]()
+    mut holders = dict[str, Holder]()
+    mut nested = dict[str, dict[str, int]]()
+    mut seen = set[str]()
+    for line in lines:
+        colon = line.find(":") else 0
+        texts[line[:colon]] = line[colon + 2:]
+        counts[line[:colon]] = (counts.get(line[:colon]) else 0) + 1
+        floats[line[:colon]] = 0.5
+        flags[line[:colon]] = line[:colon] in counts
+        lists[line[:colon]] = [line[colon + 2:]]
+        points[line[:colon]] = Point(x=colon, y=len(line))
+        holders[line[:colon]] = Holder(items=[colon])
+        nested[line[:colon]] = {"n": colon}
+        seen.add(line[:colon])
+        stdout.print(
+            texts.get(line[:colon]) else "-",
+            line[:colon] in texts,
+            line[:colon] in seen,
+            counts[line[:colon]],
+        )
+    first = lines[0]
+    gone = texts.pop(first[0:2])
+    stdout.print(gone, texts, counts, floats, flags, lists)
+    stdout.print(
+        [(k, p.x, p.y) for k, p in points.items()],
+        [len(holders[k].items) for k in sorted(holders.keys())],
+    )
+    stdout.print(nested, sorted(seen), first[0:2] in seen, first[0:2] in texts)
+    seen.discard(first[0:2])
+    stdout.print(sorted(seen))
+    return
+"#;
+
+const MADE_KEYS: &str = r#"struct Point:
+    x: int
+    y: int
+
+struct Holder:
+    items: list[int]
+
+def main(stdout: Stdout):
+    lines = ["ab: one", "cd: two", "ab: three", "ef: four"]
+    mut texts = dict[str, str]()
+    mut counts = dict[str, int]()
+    mut floats = dict[str, float]()
+    mut flags = dict[str, bool]()
+    mut lists = dict[str, list[str]]()
+    mut points = dict[str, Point]()
+    mut holders = dict[str, Holder]()
+    mut nested = dict[str, dict[str, int]]()
+    mut seen = set[str]()
+    for line in lines:
+        colon = line.find(":") else 0
+        texts[f"{line[:colon]}"] = line[colon + 2:]
+        counts[f"{line[:colon]}"] = (counts.get(f"{line[:colon]}") else 0) + 1
+        floats[f"{line[:colon]}"] = 0.5
+        flags[f"{line[:colon]}"] = f"{line[:colon]}" in counts
+        lists[f"{line[:colon]}"] = [line[colon + 2:]]
+        points[f"{line[:colon]}"] = Point(x=colon, y=len(line))
+        holders[f"{line[:colon]}"] = Holder(items=[colon])
+        nested[f"{line[:colon]}"] = {"n": colon}
+        seen.add(f"{line[:colon]}")
+        stdout.print(
+            texts.get(f"{line[:colon]}") else "-",
+            f"{line[:colon]}" in texts,
+            f"{line[:colon]}" in seen,
+            counts[f"{line[:colon]}"],
+        )
+    first = lines[0]
+    gone = texts.pop(first[0:2])
+    stdout.print(gone, texts, counts, floats, flags, lists)
+    stdout.print(
+        [(k, p.x, p.y) for k, p in points.items()],
+        [len(holders[k].items) for k in sorted(holders.keys())],
+    )
+    stdout.print(nested, sorted(seen), first[0:2] in seen, first[0:2] in texts)
+    seen.discard(first[0:2])
+    stdout.print(sorted(seen))
+    return
+"#;
+
+/// A struct kept in place that holds a list, read out of a dict by `values()` or `items()`, or out
+/// of a list by `enumerate` or `zip`, is copied with an owner of its own for what it holds. The
+/// copy used to share the list with no owner of its own, so it read freed memory once the dict
+/// let the list go: the first value's list read as `None`, and printing them could crash.
+#[test]
+fn a_struct_copied_out_of_a_dict_owns_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("struct_values_owned")?;
+    let program = dir.join("struct_values_owned.fen");
+    std::fs::write(&program, STRUCT_VALUES_OWNED)?;
+    let executable = dir.join("struct_values_owned");
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let mut args = vec!["build"];
+        args.extend_from_slice(how);
+        let (source, output) =
+            (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+        args.extend([source.as_str(), "-o", output.as_str()]);
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        assert!(ran.status.success(), "{how:?}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), STRUCT_VALUES_PRINT, "{how:?}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(
+            said.lines().any(|line| line.starts_with("copies ") && line.ends_with(" live 0")),
+            "{how:?}: {said}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const STRUCT_VALUES_PRINT: &str = r"[7] [7] [[7], [7]]
+[7] [[7], [7]]
+[7]
+[7] [7]
+[Holder(items=[1, 2], n=2)]
+";
+
+const STRUCT_VALUES_OWNED: &str = r#"struct Holder:
+    items: list[int]
+    n: int
+
+def main(stdout: Stdout):
+    mut h = dict[str, Holder]()
+    for line in ["ab", "cd"]:
+        h[line] = Holder(items=[7], n=1)
+    vals = h.values()
+    stdout.print(vals[0].items, vals[1].items, [x.items for x in h.values()])
+    pairs = h.items()
+    stdout.print(pairs[0][1].items, [p[1].items for p in pairs])
+    numbered = enumerate(vals)
+    stdout.print(numbered[1][1].items)
+    zipped = zip(vals, vals)
+    stdout.print(zipped[0][0].items, zipped[1][1].items)
+    mut by_int = dict[int, Holder]()
+    by_int[0] = Holder(items=[1, 2], n=2)
+    stdout.print(by_int.values())
+    return
+"#;
+
 /// All of `std.crypto`, of text and of bytes.
 #[test]
 fn crypto_matches_what_was_pinned() -> std::io::Result<()> {

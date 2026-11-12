@@ -137,6 +137,21 @@ pub(crate) fn copies(path: &str) -> ExitCode {
         println!("{file}:{line}:{column} in `{}`{hot}: {}", finding.function, finding.message());
         println!("    {}", text.trim());
     }
+    // What the native code copies that the model above can't see: an item read out of where it
+    // is, changed and put back, with nothing showing its place isn't read meanwhile.
+    for copy in fennec_llvm::copies_made(&lowered) {
+        if copy.span.in_prelude()
+            || findings.iter().any(|finding| finding.span == copy.span && finding.function == copy.function)
+        {
+            continue;
+        }
+        let (file, line, column, text) = program.sources.locate(copy.span).unwrap_or(("?", 0, 0, ""));
+        println!(
+            "{file}:{line}:{column} in `{}`: what this reads out of `{}` is copied to change it, since `{}` may be read before it goes back",
+            copy.function, copy.from, copy.from
+        );
+        println!("    {}", text.trim());
+    }
     for skipped in &lowered.not_lowered {
         println!("not looked at: `{}`, since {}", skipped.function, skipped.why);
     }

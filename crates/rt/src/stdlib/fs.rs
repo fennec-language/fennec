@@ -54,7 +54,11 @@ impl Written {
             Written::Path { target, .. } => sync_folder(target),
             Written::Beneath { folder, target, .. } => {
                 let parent = target.parent().filter(|parent| !parent.as_os_str().is_empty());
-                folder.open_dir(parent.unwrap_or(Path::new(".")))?.into_std_file().sync_all()
+                // Opened to read, beneath the folder as any path is: a handle `open_dir` gives is
+                // only for finding names on Linux (`O_PATH`), which `fsync` refuses with EBADF.
+                let mut reading = cap_std::fs::OpenOptions::new();
+                reading.read(true);
+                folder.open_with(parent.unwrap_or(Path::new(".")), &reading)?.into_std().sync_all()
             }
         }
     }

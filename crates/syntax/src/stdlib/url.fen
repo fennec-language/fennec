@@ -63,8 +63,8 @@ export struct Url:
 
 ## The parts of `text`, an absolute URL like `https://example.com/a?b=1` or a relative one like
 ## `/a?b=1`. Text that can't be a URL fails with an `InvalidValue` saying why: a space or a
-## control character in it, a port that isn't a number from 1 to 65535, or an IPv6 address
-## with no `]`.
+## control character in it, a `\` before its query, a port that isn't a number from 1 to 65535,
+## or an IPv6 address with no `]`.
 export def parse(text: str) -> Url fails InvalidValue:
     for c in text:
         if c == " " or c.code() < 32 or c.code() == 127:
@@ -82,6 +82,12 @@ export def parse(text: str) -> Url fails InvalidValue:
         raw_query = rest[at_question + 1:]
         found = copy(found, query=decode_query(raw_query), _raw_query=raw_query)
         rest = rest[:at_question]
+    # A browser reads `\` as `/`, so `http://evil.com\@good.com/` would be evil.com to it and
+    # good.com here, and `/\evil.com` another site to it and a path here.
+    if rest.find("\\") is not None:
+        fail InvalidValue(
+            message=f"{quoted_input(text)} isn't a URL: it can't hold `\\` before its query, since a browser reads it as `/`",
+        )
     colon = rest.find(":")
     slash = rest.find("/") else rest.len()
     if colon is not None and colon < slash and colon > 0 and is_scheme(rest[:colon]):

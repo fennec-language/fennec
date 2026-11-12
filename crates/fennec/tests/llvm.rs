@@ -18566,6 +18566,31 @@ fn string_methods_the_runtime_runs_match_what_was_pinned() -> std::io::Result<()
     )
 }
 
+/// `find` hands the runtime its text and part as their headers, inline or in a block, and gives
+/// back where the part starts in characters: an empty part, two-byte characters before it, the
+/// whole text, and a part that isn't there.
+#[test]
+fn a_find_reads_its_text_and_part_however_they_are_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "find_headers",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a: b", "café: au lait", "a header line long enough for a block: its value", "été, then a long tail past twenty-three bytes: été"]
+    parts = ["", ": ", "a", "é", "été", "its value", "a header line long enough for a block: its value", "absent"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            at = text.find(part) else -1
+            said.append(str(at))
+        stdout.print(" ".join(said))
+    return
+"#,
+        "0 -1 -1 -1 -1 -1 -1 -1\n0 1 0 -1 -1 -1 -1 -1\n0 4 1 3 -1 -1 -1 -1\n0 37 0 -1 -1 39 0 -1\n0 45 10 0 0 -1 -1 -1\n",
+    )
+}
+
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.
 #[test]
 fn strings_let_go_of_match_what_was_pinned() -> std::io::Result<()> {

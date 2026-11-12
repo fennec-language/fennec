@@ -1606,11 +1606,25 @@ tagged:
                 self.assign(dest.ok_or("no result")?, &new)
             }
             "str.find" => {
-                let text = self.block_operand(first.ok_or("no argument")?, made)?;
-                let part = self.block_operand(args.get(1).ok_or("no argument")?, made)?;
-                self.declare("declare i64 @fennec_str_find(ptr, ptr) nounwind");
                 let at = self.temp();
-                self.line(&format!("{at} = call i64 @fennec_str_find(ptr {text}, ptr {part})"));
+                if self.headers() {
+                    // Both go as their headers' words, so neither is made a block first.
+                    let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                    let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                    let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+                    let [p0, p1, p2] = [0, 1, 2].map(|at| self.header_word(&part, at));
+                    self.declare(
+                        "declare i64 @fennec_str_find_header(i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    self.line(&format!(
+                        "{at} = call i64 @fennec_str_find_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {p0}, i64 {p1}, i64 {p2})"
+                    ));
+                } else {
+                    let text = self.block_operand(first.ok_or("no argument")?, made)?;
+                    let part = self.block_operand(args.get(1).ok_or("no argument")?, made)?;
+                    self.declare("declare i64 @fennec_str_find(ptr, ptr) nounwind");
+                    self.line(&format!("{at} = call i64 @fennec_str_find(ptr {text}, ptr {part})"));
+                }
                 // -1 when it isn't there, which is `None`.
                 let dest = dest.ok_or("no result")?;
                 let kind = self.kind_of(dest)?.clone();

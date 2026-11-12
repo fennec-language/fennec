@@ -2508,6 +2508,44 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A program whose code is handed every kind of fact runs the same built with them, with them
+/// stripped (`FENNEC_STRIP_FACTS=1`), and checking proofs, which checks the facts it can.
+#[test]
+fn facts_stripped_or_checked_run_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + seen.len()\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(xs.len())\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for (setting, on) in
+            [("FENNEC_STRIP_FACTS", "0"), ("FENNEC_STRIP_FACTS", "1"), ("FENNEC_CHECK_PROOFS", "1")]
+        {
+            let dir = folder("facts_stripped")?;
+            let (program, executable) = (dir.join("facts.fen"), dir.join("facts"));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env(setting, on)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5 [1, 2, 2] 5\n",
+                "{how:?} {setting}={on}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {

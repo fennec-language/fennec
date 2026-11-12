@@ -10,7 +10,7 @@
 use fennec_ir::{LocalId, Operand};
 use fennec_syntax::Span;
 
-use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
+use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::Kind;
 use crate::lists::{FIELDS_OFFSET, list_item};
 
@@ -158,7 +158,7 @@ impl Emit<'_, '_, '_> {
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{list} = load ptr, ptr {place}"));
         let (length_at, room_at) = (self.offset(&list, 16), self.offset(&list, 24));
-        self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+        self.load_length(&length, &length_at);
         self.line(&format!("{room} = load i64, ptr {room_at}{HEADER_ACCESS}"));
         let alone = self.alone(&list);
         self.line(&format!("{fits} = icmp ult i64 {length}, {room}"));

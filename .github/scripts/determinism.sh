@@ -5,8 +5,8 @@
 #
 #   seed 1, 1 thread               the first run
 #   seed 2, many threads, loaded   another hash seed, more workers, and every core kept busy
-#   recorded                       `FENNEC_RECORD`: its outside inputs written to a log
-#   replayed                       `FENNEC_REPLAY`: run again from that log
+#   recorded                       `fennec run --record`: its outside inputs written to a log
+#   replayed                       `fennec replay`: run again from that log
 #
 # The tests of each example and kit run twice as well, on 1 thread and on many, loaded, and must
 # say the same. A program whose output is meant to vary, like one printing the time, is named in
@@ -80,16 +80,26 @@ differs() {
   } >> "$report"
   different=1
 }
-# Checks one built program four ways, against its first run.
+# Runs `fennec` with the arguments after `$1`, keeping what it printed and how it exited as `$1`,
+# as `run` does.
+fennec_run() {
+  local kept=$1 code=0
+  shift
+  "$within" 300 "$fennec" "$@" < /dev/null > "$kept" 2> "$kept.said" || code=$?
+  echo "exit $code" >> "$kept"
+}
+# Checks one program, `$1`, built as `$2`, four ways, against its first run. `fennec run --record`
+# starts the log the program writes its inputs to, and `fennec replay` runs it from that log.
 check() {
-  local name=$1 executable=$2 folder=$3
+  local name=$1 executable=$2 folder=$3 source=$4
   checked=$((checked + 1))
   run "$executable" "$folder" "$work/first" FENNEC_HASH_SEED=1 FENNEC_THREADS=1
   load
   run "$executable" "$folder" "$work/loaded" FENNEC_HASH_SEED=2 FENNEC_THREADS="$many"
   unload
-  run "$executable" "$folder" "$work/recorded" FENNEC_RECORD="$work/log"
-  run "$executable" "$folder" "$work/replayed" FENNEC_REPLAY="$work/log"
+  rm -f "$work/log"
+  fennec_run "$work/recorded" run --record "$work/log" "$source"
+  fennec_run "$work/replayed" replay "$work/log"
   local how
   how=$(named "$name")
   if [ "$how" != varies ]; then
@@ -107,7 +117,7 @@ built() {
   # shellcheck disable=SC2254
   case "$program" in ${NIGHTLY_ONLY:-*}) ;; *) return ;; esac
   "$within" 300 "$fennec" build "$program" -o "$work/program" > /dev/null 2> "$work/built.txt" || return
-  check "$program" "$work/program" "$folder"
+  check "$program" "$work/program" "$folder" "$program"
 }
 # Runs the tests of `$1` on 1 thread and on many, loaded, which must say the same.
 tested() {
@@ -115,9 +125,10 @@ tested() {
   # shellcheck disable=SC2254
   case "$program" in ${NIGHTLY_ONLY:-*}) ;; *) return ;; esac
   local one=0 loaded=0
-  FENNEC_THREADS=1 "$within" 300 "$fennec" test "$program" < /dev/null > "$work/tests-one" 2>&1 || one=$?
+  # With no cache, so the second run tests again rather than reusing the first's results.
+  FENNEC_NO_CACHE=1 FENNEC_THREADS=1 "$within" 300 "$fennec" test "$program" < /dev/null > "$work/tests-one" 2>&1 || one=$?
   load
-  FENNEC_THREADS=$many "$within" 300 "$fennec" test "$program" < /dev/null > "$work/tests-loaded" 2>&1 || loaded=$?
+  FENNEC_NO_CACHE=1 FENNEC_THREADS=$many "$within" 300 "$fennec" test "$program" < /dev/null > "$work/tests-loaded" 2>&1 || loaded=$?
   unload
   echo "exit $one" >> "$work/tests-one"
   echo "exit $loaded" >> "$work/tests-loaded"
@@ -145,7 +156,7 @@ if [ -z "${NIGHTLY_ONLY:-}" ] && [ -x "$fuzz" ]; then
     if "$within" 300 "$fennec" build "$work/random.fen" -o "$work/program" > /dev/null 2>&1; then
       before=$different
       different=0
-      check "random program $n" "$work/program" .
+      check "random program $n" "$work/program" . "$work/random.fen"
       # A random program that ran differently is kept, for the run's artifact to hold.
       if [ "$different" = 1 ]; then
         mkdir -p found/determinism

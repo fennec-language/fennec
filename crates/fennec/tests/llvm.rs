@@ -6051,19 +6051,9 @@ def main(stdout: Stdout) fails Oops | Crashed:
     )
 }
 
-/// A struct field that defaults to a module constant holds that constant's block, which is never
-/// freed and is shared by every reader, so it's never taken as made alone: changing the field
-/// copies it. A list, a dict, a long text and a nested struct's list, on the main thread, in
-/// `parallel` and in a launched task, in both builds, checking proofs and not. The constants
-/// stay as written. The coverage lane's fuzz found a false proof here, before #1531.
-#[test]
-fn a_field_defaulting_to_a_constant_is_shared_however_it_is_changed() -> std::io::Result<()> {
-    if !ready() || !crate::executables::threads_runtime_built() {
-        return Ok(());
-    }
-    let programs = [
-        (
-            r#"from std.concurrent import Crashed
+/// The coverage lane's repro: a struct whose fields default to a list, a dict and a list of
+/// pairs that are module constants, changed on the main thread, in `parallel` and in a task.
+const CONSTANT_DEFAULTS: &str = r#"from std.concurrent import Crashed
 
 struct Point:
     x: int
@@ -6131,18 +6121,20 @@ def constants3(stdout: Stdout) fails Crashed:
 def main(stdout: Stdout) fails Crashed:
     constants3(stdout)?
     return
-"#,
-            r#"2 1 0 12
+"#;
+
+/// What [`CONSTANT_DEFAULTS`] prints.
+const CONSTANT_DEFAULTS_PRINTED: &str = r#"2 1 0 12
 main 1 0 {"a": 12, "n": 1} [12, 13, 1] [1, 13, 1] Point(x=13, y=1) {"a": 12, "m": 1} 0 [12, 13] {"a": 12} Point(x=12, y=1)
 parallel 0 0 {"a": 12, "n": 0} [12, 13, 0] [0, 13, 0] Point(x=12, y=1) {"a": 12, "m": 0} 0 [12, 13] {"a": 12} Point(x=12, y=1)
 parallel 1 0 {"a": 12, "n": 1} [12, 13, 1] [1, 13, 1] Point(x=13, y=1) {"a": 12, "m": 1} 0 [12, 13] {"a": 12} Point(x=12, y=1)
 parallel 2 0 {"a": 12, "n": 2} [12, 13, 2] [2, 13, 2] Point(x=14, y=1) {"a": 12, "m": 2} 0 [12, 13] {"a": 12} Point(x=12, y=1)
 task 2 0 {"a": 12, "n": 2} [12, 13, 2] [2, 13, 2] Point(x=14, y=1) {"a": 12, "m": 2} 0 [12, 13] {"a": 12} Point(x=12, y=1)
 after 3 0 {"a": 12, "n": 3} [12, 13, 3] [3, 13, 3] Point(x=15, y=1) {"a": 12, "m": 3} 0 [12, 13] {"a": 12} Point(x=12, y=1) [12, 13] {"a": 12} 0
-"#,
-        ),
-        (
-            r#"from std.concurrent import Crashed
+"#;
+
+/// The same for a dict of lists, a text too long for a header, and a nested struct's list.
+const DEFAULTS_OF_EVERY_KIND: &str = r#"from std.concurrent import Crashed
 
 NAMES = {"a": [1]}
 GREETING = "a text longer than any header holds"
@@ -6190,15 +6182,30 @@ def main(stdout: Stdout) fails Crashed:
             stdout.print("task", text)
     stdout.print("after", used(3), NAMES, GREETING, EMPTY)
     return
-"#,
-            r#"main {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
+"#;
+
+/// What [`DEFAULTS_OF_EVERY_KIND`] prints.
+const DEFAULTS_OF_EVERY_KIND_PRINTED: &str = r#"main {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
 parallel {"a": [1, 0], "b": [0]} a text longer than any header holds! [0] [10] {"a": [1]} a text longer than any header holds []
 parallel {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
 parallel {"a": [1, 2], "b": [2]} a text longer than any header holds! [2] [12] {"a": [1]} a text longer than any header holds []
 task {"a": [1, 2], "b": [2]} a text longer than any header holds! [2] [12] {"a": [1]} a text longer than any header holds []
 after {"a": [1, 3], "b": [3]} a text longer than any header holds! [3] [13] {"a": [1]} a text longer than any header holds [] {"a": [1]} a text longer than any header holds []
-"#,
-        ),
+"#;
+
+/// A struct field that defaults to a module constant holds that constant's block, which is never
+/// freed and is shared by every reader, so it's never taken as made alone: changing the field
+/// copies it. A list, a dict, a long text and a nested struct's list, on the main thread, in
+/// `parallel` and in a launched task, in both builds, checking proofs and not. The constants
+/// stay as written. The coverage lane's fuzz found a false proof here, before #1531.
+#[test]
+fn a_field_defaulting_to_a_constant_is_shared_however_it_is_changed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let programs = [
+        (CONSTANT_DEFAULTS, CONSTANT_DEFAULTS_PRINTED),
+        (DEFAULTS_OF_EVERY_KIND, DEFAULTS_OF_EVERY_KIND_PRINTED),
     ];
     for (source, wanted) in programs {
         for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {

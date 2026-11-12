@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{CAPABILITY_SHAPE, IMMORTAL, read_block, text_address};
+use super::heap::{CAPABILITY_SHAPE, NEVER_FREED_COUNT, read_block, text_address};
 use super::{State, attempt, span, with};
 use crate::limits::{Limited, narrowed};
 use crate::packed::Element;
@@ -49,7 +49,7 @@ fn plain(state: &mut State, kind: i64) -> i64 {
         return address;
     }
     let mut block = state.heap.fresh(WORDS);
-    block.copy_from_slice(&[IMMORTAL, CAPABILITY_SHAPE, u64::try_from(at).unwrap_or(0), 0]);
+    block.copy_from_slice(&[NEVER_FREED_COUNT, CAPABILITY_SHAPE, u64::try_from(at).unwrap_or(0), 0]);
     let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
     // It lives for the rest of the run, like a literal, so it isn't counted as allocated.
     state.heap.adopt(&mut vec![block]);

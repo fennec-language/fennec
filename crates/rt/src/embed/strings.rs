@@ -850,56 +850,76 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     })
 }
 
-/// One of the string methods, run on a string block with string blocks as its arguments.
-fn method(state: &State, address: i64, name: &str, args: &[i64], at: Span) -> Result<Value, Diagnostic> {
-    let lost = || Diagnostic::new("the native code lost a string", at);
-    let whole = text(state, address).ok_or_else(lost)?;
-    let args =
-        args.iter().map(|arg| text(state, *arg).map(|text| Value::str(&text))).collect::<Option<Vec<_>>>();
-    crate::collections::str_method(&whole, name, &args.ok_or_else(lost)?, at)
+thread_local! {
+    /// The bytes a string block's text is copied into to be read as a `str`, kept to save making
+    /// them anew for each call.
+    static READ: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// A string method that gives a string, as a block owned once.
-fn text_method(address: i64, name: &str, args: &[i64]) -> i64 {
-    super::made_with(name, |state| match method(state, address, name, args, Span::default()) {
-        Ok(Value::Str(text)) => text_address(state, &text),
-        _ => 0,
-    })
+/// Runs `with` on a string block's text, copied out a word at a time into bytes kept for it, with
+/// nothing else made: no `String`, no value. None when `address` isn't a string's block.
+fn read_text<R>(state: &mut State, address: i64, with: impl FnOnce(&mut State, &str) -> R) -> Option<R> {
+    let mut bytes = READ.take();
+    bytes.clear();
+    let block = u64::try_from(address).ok().and_then(|at| state.heap.block(at));
+    let block = block.filter(|block| super::heap::is_text(state, block))?;
+    let (length, _) = lengths(block);
+    for word in block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8)) {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
+    let done = std::str::from_utf8(&bytes).ok().map(|text| with(state, text));
+    READ.set(bytes);
+    done
 }
 
 /// `text.upper()`.
 pub extern "C" fn upper(address: i64) -> i64 {
-    text_method(address, "upper", &[])
+    super::made_with("upper", |state| {
+        read_text(state, address, |state, text| text_address(state, &text.to_uppercase())).unwrap_or(0)
+    })
 }
 
 /// `text.lower()`.
 pub extern "C" fn lower(address: i64) -> i64 {
-    text_method(address, "lower", &[])
+    super::made_with("lower", |state| {
+        read_text(state, address, |state, text| text_address(state, &text.to_lowercase())).unwrap_or(0)
+    })
 }
 
 /// `text.replace(old, new)`.
 pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
-    text_method(address, "replace", &[old, new])
+    super::made_with("replace", |state| {
+        let (Some(old), Some(new)) = (text(state, old), text(state, new)) else { return 0 };
+        read_text(state, address, |state, text| text_address(state, &text.replace(old.as_str(), &new)))
+            .unwrap_or(0)
+    })
 }
 
 /// `text.find(part)`: which character `part` first starts at, or -1 when it isn't there.
 pub extern "C" fn find(address: i64, part: i64) -> i64 {
-    with(|state| match method(state, address, "find", &[part], Span::default()) {
-        Ok(Value::Int(at)) => at,
-        _ => -1,
+    with(|state| {
+        let part = text(state, part)?;
+        read_text(state, address, |_, text| {
+            let before = text.find(part.as_str()).and_then(|at| text.get(..at));
+            before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
+        })
     })
+    .unwrap_or(-1)
 }
 
 /// `text.split(separator)`, or `text.split()` when `separator` is 0: a list of str owned
 /// once. An empty separator fails.
 pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
-        let whole = text(state, address).ok_or_else(|| lost(start, end))?;
         let between = match separator {
             0 => None,
             _ => Some(text(state, separator).ok_or_else(|| lost(start, end))?),
         };
-        split_into(state, &whole, between.as_deref(), span(start, end))
+        read_text(state, address, |state, whole| {
+            split_into(state, whole, between.as_deref(), span(start, end))
+        })
+        .ok_or_else(|| lost(start, end))?
     })
 }
 
@@ -1049,6 +1069,33 @@ mod split_tests {
                 items.iter().map(|item| super::text(state, item.cast_signed()).unwrap_or_default()).collect()
             }
         })
+    }
+
+    /// `find`, `replace`, `upper` and `lower`, reading the text where it is, give what Rust's own
+    /// give: characters counted for `find`, wide characters too, and parts that aren't there.
+    #[test]
+    fn find_replace_upper_and_lower_give_what_rusts_own_give() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let read = |address: i64| with(|state| super::text(state, address)).unwrap_or_default();
+        let wholes = ["", "caf\u{e9} au lait, \u{e9}t\u{e9}", "GET /api/orders HTTP/1.1\r\nHost: x\r\n\r\n"];
+        let parts = ["", "a", "\u{e9}t\u{e9}", "\r\n\r\n", "absent", "orders"];
+        for whole in wholes {
+            let address = string(whole);
+            for part in parts {
+                let expected = whole
+                    .find(part)
+                    .map_or(-1, |at| i64::try_from(whole.get(..at).unwrap().chars().count()).unwrap());
+                assert_eq!(super::find(address, string(part)), expected, "{whole:?} {part:?}");
+                for new in ["", "\u{1f98a}"] {
+                    let replaced = super::replace(address, string(part), string(new));
+                    assert_eq!(read(replaced), whole.replace(part, new), "{whole:?} {part:?} {new:?}");
+                }
+            }
+            assert_eq!(read(super::upper(address)), whole.to_uppercase());
+            assert_eq!(read(super::lower(address)), whole.to_lowercase());
+        }
+        finish();
     }
 
     /// An inline header packs its bytes as a block's words do, with its tag in its last byte, and

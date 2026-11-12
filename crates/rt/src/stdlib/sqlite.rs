@@ -196,6 +196,7 @@ mod real {
     /// included, until it's looked at and allowed.
     fn allowed(context: &AuthContext<'_>) -> bool {
         let in_main = context.database_name.is_none_or(|name| name == "main");
+        let in_temp = context.database_name == Some("temp");
         // A plain `VACUUM` builds the database again in a scratch one of no file, `vacuum_...`.
         let in_vacuum = context.database_name.is_some_and(|name| name.starts_with("vacuum_"));
         match context.action {
@@ -208,12 +209,26 @@ mod real {
             | AuthAction::Savepoint { .. }
             | AuthAction::Function { .. }
             | AuthAction::Recursive => true,
-            // Its own tables and their indexes, and changing a table as a migration does. A new
-            // index asks to be built, as `REINDEX` does.
+            // Its own tables, indexes, views and triggers, and changing a table as a migration
+            // does. A new index asks to be built, as `REINDEX` does. None of them can reach a
+            // file, with `ATTACH` refused and the schema not trusted.
             AuthAction::CreateTable { .. } | AuthAction::CreateIndex { .. } => in_main || in_vacuum,
-            AuthAction::DropTable { .. } | AuthAction::DropIndex { .. } | AuthAction::Reindex { .. } => {
-                in_main
-            }
+            AuthAction::DropTable { .. }
+            | AuthAction::DropIndex { .. }
+            | AuthAction::Reindex { .. }
+            | AuthAction::CreateView { .. }
+            | AuthAction::DropView { .. }
+            | AuthAction::CreateTrigger { .. }
+            | AuthAction::DropTrigger { .. } => in_main,
+            // The connection's own temporary tables, their indexes, views and triggers.
+            AuthAction::CreateTempTable { .. }
+            | AuthAction::CreateTempIndex { .. }
+            | AuthAction::CreateTempView { .. }
+            | AuthAction::CreateTempTrigger { .. }
+            | AuthAction::DropTempTable { .. }
+            | AuthAction::DropTempIndex { .. }
+            | AuthAction::DropTempView { .. }
+            | AuthAction::DropTempTrigger { .. } => in_temp,
             AuthAction::AlterTable { database_name, .. } => database_name == "main",
             AuthAction::Pragma { pragma_name, .. } => OWN_PRAGMAS.contains(&pragma_name),
             // A plain `VACUUM` attaches a database of no file, which reaches nothing; one with

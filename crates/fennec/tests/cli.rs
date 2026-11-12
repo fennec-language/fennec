@@ -2400,6 +2400,60 @@ fn committed_to_git(repository: &Path) -> std::io::Result<String> {
     git(&["rev-parse", "HEAD"])
 }
 
+/// A kit fetched from git can't name another by `file://`: it could carry a bare repository and
+/// name it, or point at any repository of the user's, and have it fetched into the build. The
+/// real `fennec` refuses it, naming the kit and the address, however the tests' own library calls
+/// may allow it. The user's own kit naming one by `file://` is fine.
+#[test]
+fn a_kit_from_git_naming_a_file_repository_is_refused() {
+    let dir = scratch("git-file").unwrap();
+    let carried = dir.join("carried");
+    std::fs::create_dir_all(carried.join("src")).unwrap();
+    std::fs::write(carried.join("kit.toml"), "name = \"carried\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(carried.join("src/lib.fen"), "export def one() -> int:\n    return 1\n").unwrap();
+    let carried_commit = committed_to_git(&carried).unwrap();
+    let address = |folder: &Path| {
+        format!("file:///{}", folder.display().to_string().replace('\\', "/").trim_start_matches('/'))
+    };
+    let engine = dir.join("engine");
+    std::fs::create_dir_all(engine.join("src")).unwrap();
+    std::fs::write(
+        engine.join("kit.toml"),
+        format!(
+            "name = \"engine\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\ncarried = {{ git = \"{}\", commit = \"{carried_commit}\" }}\n",
+            address(&carried)
+        ),
+    )
+    .unwrap();
+    std::fs::write(engine.join("src/lib.fen"), "export def two() -> int:\n    return 2\n").unwrap();
+    let engine_commit = committed_to_git(&engine).unwrap();
+    let kit = dir.join("game");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nengine = {{ git = \"{}\", commit = \"{engine_commit}\" }}\n",
+            address(&engine)
+        ),
+    )
+    .unwrap();
+    std::fs::write(kit.join("src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n    return\n")
+        .unwrap();
+    let update = crate::executables::fennec_command()
+        .arg("update")
+        .current_dir(&kit)
+        .env("FENNEC_HOME", dir.join("home"))
+        .env_remove("FENNEC_OFFLINE")
+        .output()
+        .unwrap();
+    assert!(!update.status.success(), "{}", text(&update.stdout));
+    let said = text(&update.stderr);
+    assert!(said.contains("`engine` is from git, and names `carried` at `file:///"), "{said}");
+    assert!(said.contains("a repository on this machine"), "{said}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
 #[test]
 fn fennec_update_pins_a_kit_from_git() {

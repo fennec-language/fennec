@@ -221,12 +221,11 @@ pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
 }
 
 /// `fennec_str_find_header(text, part)`: `text.find(part)` for two headers, which character `part`
-/// first starts at, or -1 when it isn't there.
+/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does.
 pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i64 {
     with(|state| {
-        let (text, part) = (text_of(state, &[t0, t1, t2]), text_of(state, &[p0, p1, p2]));
-        let before = text.find(part.as_str()).and_then(|at| text.get(..at));
-        before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
+        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
+        super::strings::find_in(bytes_of(state, &text), bytes_of(state, &part))
     })
 }
 
@@ -865,6 +864,14 @@ mod tests {
             assert_eq!(super::find_header(t0, t1, t2, p0, p1, p2), at, "{part:?}");
             assert_eq!(super::starts_with(t0, t1, t2, p0, p1, p2), i8::from(starts), "{part:?}");
             assert_eq!(super::ends_with(t0, t1, t2, p0, p1, p2), i8::from(ends), "{part:?}");
+        }
+        // An inline text, its bytes in the header itself, with its tag after them never matched.
+        let [i0, i1, i2] = header("Host: \u{e9}x.com");
+        for (part, at) in
+            [(": ", 4), ("\u{e9}x", 6), ("x.com", 7), ("com\u{80}", -1), ("Host: \u{e9}x.com!", -1)]
+        {
+            let [p0, p1, p2] = header(part);
+            assert_eq!(super::find_header(i0, i1, i2, p0, p1, p2), at, "{part:?}");
         }
         heap::free_text(text);
         if let Some(address) = block_of(&whole) {

@@ -3452,14 +3452,14 @@ fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
     let place = &places[0];
     let mut dev_builds = Vec::new();
     for at in 0..2 {
-        let built = crate::executables::fennec_command()
+        let dev_build = crate::executables::fennec_command()
             .args(["build"])
             .arg(place.join("game"))
             .arg("-o")
             .arg(place.join("dev"))
             .env("FENNEC_HOME", dir.join(format!("dev-home{at}")))
             .output_within()?;
-        assert!(built.status.success(), "{}", text(&built.stderr));
+        assert!(dev_build.status.success(), "{}", text(&dev_build.stderr));
         dev_builds.push(std::fs::read(place.join("dev"))?);
         std::thread::sleep(std::time::Duration::from_secs(1));
     }

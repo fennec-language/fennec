@@ -59,7 +59,7 @@ A function reaches outside itself only through what's in its signature. So `main
 
 ```fennec
 def main(stdout: Stdout, fs: Fs, args: Args):
-    folder = args[0] if args.len() > 0 else "."
+    folder = args[0] if len(args) > 0 else "."
     stdout.print(f"saving {folder}")
 ```
 
@@ -83,39 +83,42 @@ error StoreError:
 
 ## The hash that names `data`: the same bytes always give the same name.
 def name_of(data: bytes) -> str:
-    blake3(data)
+    return blake3(data)
 
 ## Saves `data` in the store under its hash, and gives back the hash.
 def save(fs: Fs, data: bytes) -> str fails IoError:
     hash = name_of(data)
     fs.make_dir(".hoard/objects")?
     fs.write_bytes(f".hoard/objects/{hash}", data)?
-    hash
+    return hash
 
 ## Reads back what `save` stored under `hash`.
 def load(fs: Fs, hash: str) -> bytes fails StoreError:
     path = f".hoard/objects/{hash}"
-    there = fs.exists(path) else fail .Unreadable(path)
+    there = fs.exists(path) except why:
+        fail .Unreadable(path)
     if not there:
         fail .Missing(hash)
-    fs.read_bytes(path) else fail .Unreadable(path)
+    data = fs.read_bytes(path) except why:
+        fail .Unreadable(path)
+    return data
 ```
 
 - `error StoreError:` lists the ways it can fail, each with the data a caller needs.
 - `?` passes a failure up to the caller. It's only for failures, and a function using it must say `fails`.
 - `fail .Missing(hash)` leaves with a failure of your own.
-- `else` gives a default when something fails or is missing, or leaves: `else fail ...`, `else return`, `else continue`.
-- `else as why:` names the failure in a block that leaves, and `match why:` handles each case. There's no `Ok`, `Err` or `Result`: a failure is always handled at the call.
+- `except why:` handles a failure in a block, and `case` arms right under it handle each case. A `fail` inside it carries the failure it replaces along as a note, which counts as using `why`. There's no `Ok`, `Err` or `Result`: a failure is always handled at the call.
+- `else` is only for a missing value: a default, or leaving with `else return`, `else continue` or `else fail ...`.
 
 ```fennec
-data = load(fs, hash) else as why:
-    match why:
-        case .Missing(hash):
-            stdout.print(f"nothing is saved under {hash}")
-        case .Unreadable(path):
-            stdout.print(f"couldn't read {path}")
-    return
-stdout.print(data.len(), "bytes")
+data = load(fs, hash) except why:
+    case .Missing(hash):
+        stdout.print(f"nothing is saved under {hash}")
+        return
+    case .Unreadable(path):
+        stdout.print(f"couldn't read {path}")
+        return
+stdout.print(len(data), "bytes")
 ```
 
 Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away. On a call that can fail, `_ = f()` is a compile error, so handle the failure instead.
@@ -152,15 +155,15 @@ def ignored(fs: Fs) -> list[str] fails IoError:
     with fs.open(".hoardignore")? as file:
         for line in file.lines()?:
             if line != "": found.append(line)
-    found
+    return found
 
 ## How many bytes a file holds, read a chunk at a time.
 def size_of(fs: Fs, path: str) -> int fails IoError:
     mut total = 0
     with fs.open(path)? as file:
         for chunk in file.chunks(65536)?:
-            total += chunk.len()
-    total
+            total += len(chunk)
+    return total
 
 ## A log line that doesn't matter if the power goes, written without waiting for the disk.
 def note(fs: Fs, text: str) fails IoError:
@@ -195,7 +198,7 @@ def hash_of(index: shared dict[str, Entry], path: str) -> str?:
     lock index as entries:
         found = entries.get(path) else return None
         return found.hash
-    None
+    return None
 ```
 
 - `lock x as s:` reads, and `lock x as ref s:` changes. Any way out of the block releases it.
@@ -219,10 +222,10 @@ def snapshot(fs: Fs, folder: str, index: shared dict[str, Entry]) -> int fails I
     hashes = [save(fs, fs.read_bytes(path)?)? for path in parallel(paths)]
     for path, hash in zip(paths, hashes):
         record(index, path=path, hash=hash)
-    paths.len()
+    return len(paths)
 
 def main(stdout: Stdout, fs: Fs, args: Args):
-    folder = args[0] if args.len() > 0 else "."
+    folder = args[0] if len(args) > 0 else "."
     shared index = dict[str, Entry]()
     saved = snapshot(fs, folder, index) else:
         stdout.print(f"couldn't read {folder}")
@@ -249,7 +252,7 @@ def respond(fs: Fs, request: Request) -> Response:
     hash = request.path[9:]
     data = fs.read_bytes(f".hoard/objects/{hash}") else:
         return Response(status=404, body=f"no object {hash}".encode())
-    Response(status=200, headers={"content-type": "application/octet-stream"}, body=data)
+    return Response(status=200, headers={"content-type": "application/octet-stream"}, body=data)
 
 test "a saved object is served"(fs: Fs):
     fs.make_dir(".hoard/objects")?
@@ -321,7 +324,7 @@ def hash_of(fs: Fs, path: str) -> str fails IoError:
     mut hash = ""
     with fs.open(path)? as file:
         hash = blake3(file.chunks(65536)?)
-    hash
+    return hash
 ```
 
 ## Templates and SQLite
@@ -336,13 +339,13 @@ def placeholders(query: Template[SqlValue]) -> str:
     mut sent = ""
     for at, text in enumerate(query.strings):
         sent += text
-        if at < query.values.len():
+        if at < len(query.values):
             sent += "?"
-    sent
+    return sent
 
 ## A column to sort by: the input chooses between texts written here, so it's a `LiteralStr`.
 def order_column(by_size: bool) -> LiteralStr:
-    "size" if by_size else "path"
+    return "size" if by_size else "path"
 
 def main(stdout: Stdout):
     # a path someone else chose is a value, never part of the query's text
@@ -379,7 +382,7 @@ def hash_of(fs: Fs, path: str) -> str? fails SqlError:
     mut found = list[Entry]()
     with sqlite.open(fs, ".hoard/index.db")? as db:
         found = db.query[Entry](t"select path, hash from entries where path = {path}")?
-    found[0].hash if found.len() > 0 else None
+    return found[0].hash if len(found) > 0 else None
 ```
 
 - Each `{}` is bound as a parameter, never pasted into the query's text.
@@ -397,12 +400,11 @@ test "what's saved loads back"(fs: Fs):
     assert load(fs, hash)? == "hello".encode()
 
 test "a hash nothing was saved under is missing"(fs: Fs):
-    _ = load(fs, "nothing") else as why:
-        match why:
-            case .Missing(hash):
-                assert hash == "nothing"
-            case _:
-                assert False
+    _ = load(fs, "nothing") except why:
+        case .Missing(hash):
+            assert hash == "nothing"
+        case _:
+            assert False
         return
     assert False
 ```

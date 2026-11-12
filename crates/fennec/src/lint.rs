@@ -486,7 +486,7 @@ fn linted(path: &str, json: bool) -> ExitCode {
         print!("{}", report::json(&program.sources, &shown));
     } else {
         let diagnostics: Vec<_> = found.iter().map(|lint| lint.diagnostic.clone()).collect();
-        eprint!("{}", program.sources.render_all(&diagnostics));
+        eprint!("{}", program.render(&diagnostics));
         for hint in &hints {
             println!("{}", report::hint_line(&program.sources, &Finding::linted(hint)));
         }

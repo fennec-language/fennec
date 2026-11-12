@@ -120,7 +120,7 @@ pub(crate) fn copies(path: &str) -> ExitCode {
     let checked = match fennec_check::check_and_resolve(&mut program.module) {
         Ok(checked) => checked,
         Err(diagnostics) => {
-            eprint!("{}", program.sources.render_all(&diagnostics));
+            eprint!("{}", program.render(&diagnostics));
             return ExitCode::FAILURE;
         }
     };

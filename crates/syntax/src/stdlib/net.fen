@@ -14,7 +14,7 @@
 
 from std import json
 from std.crypto import Secret
-from std.intrinsics import text_byte, text_size
+from std.intrinsics import bytes_builder, bytes_push_bytes, text_byte, text_size
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -416,10 +416,14 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
             reason="the content length isn't a number",
         )
         if length > MOST_BODY: return .Bad(status=413, reason="the body is too big")
-        while body.len() < length:
-            more = connection.read(length - body.len(), timeout=timeout)?
+        # Each piece goes into a builder with room to grow, so a body read in many pieces is
+        # copied about once, where joining them with `+` copied all of it again for each.
+        mut built = bytes_builder()
+        while built.len() < length:
+            more = connection.read(length - built.len(), timeout=timeout)?
             if more.len() == 0: return .Bad(status=400, reason="the body ended early")
-            body = body + more
+            bytes_push_bytes(ref built, more)
+        body = built[0:built.len()]
     version = parts[2]
     asked = (headers.get("connection") else "").lower()
     keep = asked != "close" if version == "HTTP/1.1" else asked == "keep-alive"

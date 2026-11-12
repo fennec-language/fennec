@@ -18160,6 +18160,131 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A dict's value and a `Table`'s item are places, as a list's item is: `held[key].x += 1`,
+/// `held[key].bag[k] = v`, `held[key].append(v)`, `held[key].tags.append(v)`, `heal(ref
+/// held[key])`, and the same through `units[id]`, each change the value where it is, with the
+/// dict or `Table` and the value's block made alone first. Each used to copy the whole value,
+/// and growing a list held in a dict copied all of it each time, which was quadratic. Now only
+/// the copies kept first are copied, and they keep what they had.
+#[test]
+fn a_dict_value_and_a_table_item_are_places() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("value_places")?;
+    for (name, source, wanted) in [
+        ("dict_value_places", DICT_VALUE_PLACES, "301 301 299 301 44850\n1 1 0 1\n"),
+        ("dict_value_fields", DICT_VALUE_FIELDS, "200 19900 202 0 2\n"),
+        ("table_item_places", TABLE_ITEM_PLACES, "21802 12\n"),
+    ] {
+        std::fs::write(dir.join(format!("{name}.fen")), source)?;
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let (printed, counts) = printed_and_counts(&dir, name, how)?;
+            assert_eq!(printed, wanted, "{name} {how:?}");
+            assert!(
+                count(&counts, "copies") < Some(20) && counts.ends_with(" live 0"),
+                "{name} {how:?}: {counts}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const DICT_VALUE_PLACES: &str = r#"struct Plain:
+    x: int
+    y: int
+
+struct Heavy:
+    x: int
+    bag: dict[str, int]
+
+def plain(ref held: dict[str, Plain], key: str):
+    held[key].x += 1
+    return
+
+def heavy(ref held: dict[str, Heavy], key: str, n: int):
+    held[key].x += 1
+    held[key].bag["gold"] = n
+    return
+
+def grow(ref held: dict[str, list[int]], key: str, n: int):
+    held[key].append(n)
+    return
+
+def main(stdout: Stdout):
+    mut p = {"a": Plain(x=1, y=2)}
+    mut h = {"a": Heavy(x=1, bag={"gold": 0})}
+    mut g = {"a": [0]}
+    kept_p = p
+    kept_h = h
+    kept_g = g
+    for n in range(300):
+        plain(ref p, "a")
+        heavy(ref h, "a", n=n)
+        grow(ref g, "a", n=n)
+    stdout.print(p["a"].x, h["a"].x, h["a"].bag["gold"], len(g["a"]), sum(g["a"]))
+    stdout.print(kept_p["a"].x, kept_h["a"].x, kept_h["a"].bag["gold"], len(kept_g["a"]))
+    return
+"#;
+
+const DICT_VALUE_FIELDS: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+def heal(ref unit: Unit, by: int):
+    unit.hp += by
+    return
+
+def main(stdout: Stdout):
+    mut held = {"a": Unit(hp=1, tags=[]), "b": Unit(hp=2, tags=[])}
+    kept = held
+    for round in range(200):
+        held["a"].tags.append(round)
+        heal(ref held["b"], by=1)
+    stdout.print(
+        len(held["a"].tags),
+        sum(held["a"].tags),
+        held["b"].hp,
+        len(kept["a"].tags),
+        kept["b"].hp,
+    )
+    return
+"#;
+
+const TABLE_ITEM_PLACES: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    tags: list[int]
+
+def heal(ref unit: Unit, by: int):
+    unit.hp += by
+    unit.tags.append(by)
+    return
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for n in range(4):
+        ids.append(units.add(Unit(hp=n, bag={"gold": n}, tags=[])))
+    kept = units
+    for round in range(100):
+        for id in ids:
+            units[id].bag["gold"] = round
+            units[id].tags.append(round)
+            heal(ref units[id], by=1)
+    mut total = 0
+    for unit in units:
+        total += unit.hp + unit.bag["gold"] + len(unit.tags) + sum(unit.tags)
+    mut kept_total = 0
+    for unit in kept:
+        kept_total += unit.hp + unit.bag["gold"] + len(unit.tags)
+    stdout.print(total, kept_total)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

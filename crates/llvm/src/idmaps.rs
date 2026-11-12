@@ -963,6 +963,49 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
 
+    /// `root.table[id].field` or `table[id].field`, taken out to change and put back: the `Table`,
+    /// its items and the item are each made alone first, so the field's one owner is the item it
+    /// goes back to. The item was read at this `Id` just before, so it's still there; a build
+    /// checks it anyway, as a read by `Id` does.
+    pub(crate) fn take_from_table_item(
+        &mut self,
+        dest: LocalId,
+        (root, path, id): (LocalId, &[String], &Operand),
+        field: &str,
+        span: Span,
+    ) -> Result<(), String> {
+        let place = self.place_of(root, path)?;
+        let kind = self.place_kind(root, path)?;
+        let parts = self.parts(&kind)?;
+        let held = parts.held.clone();
+        if !matches!(held, Kind::Boxed(_) | Kind::Struct(_)) {
+            return Err(format!("it takes a field of a {held:?} item, which this backend doesn't take yet"));
+        }
+        let block = self.alone_at(&place, "fennec_unshare");
+        let id = self.id_parts(id)?;
+        let found = self.finds(&block, &parts, &id);
+        let (yes, no) = (self.label("taken"), self.label("stale"));
+        self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
+        self.start_block(&no);
+        self.stop_missing(&block, &parts, &id, span);
+        self.start_block(&yes);
+        let (_, items) = self.part(&block, parts.items, true);
+        let memory = held.memory(self.module.layouts);
+        let at = self.item_address(&items, &memory, &id.0);
+        let (offset, inner) = self.field(&held, field)?;
+        // An item in place: its field is right there in the items, which are alone.
+        if matches!(held, Kind::Struct(_)) {
+            let at = self.offset(&at, offset);
+            let value = self.load_field(&inner, &at, ITEM_ACCESS);
+            return self.assign(dest, &value);
+        }
+        let item = self.alone_at(&at, "fennec_unshare");
+        let fields = self.fields_at(&item, &held);
+        let at = self.offset(&fields, offset);
+        let value = self.load_field(&inner, &at, crate::emit::FIELD_ACCESS);
+        self.assign(dest, &value)
+    }
+
     /// `map[id] = value`, with the map made alone first.
     pub(crate) fn id_map_store(
         &mut self,

@@ -1838,14 +1838,15 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                 }
             }
-            // A dict's value isn't taken out here: it's read out of the dict as it is, with no
-            // making it alone first, so the dict may be another's too, and the value has to own
-            // what it holds to change it. A `Table`'s and an array's items are, by `Id` or
-            // position, as a list's are: each is made alone first.
-            let dict = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::Dict(..)));
-            if matches!(&inst.kind, InstKind::GetIndex { .. }) && dict {
-                continue;
-            }
+            // A list's, an array's, a `Table`'s or a dict's item, by position, `Id` or key: each
+            // is read from what holds it made alone first, and a dict's value from its own block
+            // made alone too. A `Table`'s or a dict's item may be changed by a builtin or a call
+            // given it once too, as `held[key].append(n)` and `heal(ref units[id])` are, which
+            // the IR notes as a changed place only for a list.
+            let by_key = matches!(
+                function.locals.get(source.0).map(|local| &local.ty),
+                Some(Type::Dict(..) | Type::Table(_))
+            );
             if let InstKind::GetIndex { index, .. } = &inst.kind {
                 let home = from_field.get(&source.0).cloned().unwrap_or((source, Vec::new()));
                 for next in later {
@@ -1862,6 +1863,19 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                         }
                         // Something inside it, changed directly, or taken out and changed on the way back.
                         InstKind::SetIndex { object, .. } if *object == dest => {}
+                        InstKind::Builtin { args, changes: true, .. }
+                            if by_key
+                                && args.first() == Some(&Operand::Local(dest))
+                                && !args.iter().skip(1).any(|arg| {
+                                    *arg == Operand::Local(dest) || *arg == Operand::Local(source)
+                                }) => {}
+                        InstKind::Call { function: callee, args, .. }
+                            if by_key
+                                && args.iter().filter(|arg| **arg == Operand::Local(dest)).count() == 1
+                                && changes(callee)
+                                    .iter()
+                                    .any(|at| args.get(*at) == Some(&Operand::Local(dest)))
+                                && !args.contains(&Operand::Local(source)) => {}
                         InstKind::SetIndex { object, path, .. } if *object != home.0 && path.is_empty() => {}
                         other if is_quiet(other) => {}
                         _ => break,
@@ -2123,7 +2137,8 @@ fn settle_place_takes(function: &Function, known: &mut Analysis) {
 /// taken, not copied, when nothing else touches the root meanwhile and the index stays the same.
 fn find_path_takes(function: &Function, known: &mut Analysis) {
     let steady = |operand: &Operand, known: &Analysis| match operand {
-        Operand::Int(_) => true,
+        // A number or a string written out: a list's position, or a dict's key.
+        Operand::Int(_) | Operand::Str(_) => true,
         Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
         _ => false,
     };
@@ -2147,9 +2162,12 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
-            // Only a list's item is in a place this can reach: an array's isn't, and a `Table`'s is
-            // read and put back.
-            if !matches!(function.type_of(&Operand::Local(list)), Some(Type::List(_))) {
+            // A list's item, a `Table`'s or a dict's value is in a place this can reach: an
+            // array's isn't.
+            if !matches!(
+                function.type_of(&Operand::Local(list)),
+                Some(Type::List(_) | Type::Table(_) | Type::Dict(..))
+            ) {
                 continue;
             }
             // The list is a field of the root, or the root itself.

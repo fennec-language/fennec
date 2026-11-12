@@ -883,6 +883,53 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `root.dict[key].field` or `dict[key].field`, taken out to change and put back: the dict
+    /// and the value's block are each made alone first, so the field's one owner is the value it
+    /// goes back to. The key was read just before, so it's there; a build checks it anyway.
+    pub(crate) fn take_from_dict_value(
+        &mut self,
+        dest: LocalId,
+        (root, path, key): (LocalId, &[String], &Operand),
+        field: &str,
+        span: Span,
+    ) -> Result<(), String> {
+        let place = self.place_of(root, path)?;
+        let Kind::Dict(key_word, value_word) = self.place_kind(root, path)? else {
+            return Err("a field of something else's value".to_owned());
+        };
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        if !matches!(value_kind, Kind::Boxed(_) | Kind::Struct(_)) {
+            return Err(format!(
+                "it takes a field of a {value_kind:?} value, which this backend doesn't take yet"
+            ));
+        }
+        let dict = self.alone_at(&place, "fennec_unshare");
+        let key = self.key_value(key, key_word)?;
+        let entry = self.find(&dict, key_word, &key);
+        let missing = self.temp();
+        let (gone, found) = (self.label("gone"), self.label("field"));
+        self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+        self.line(&format!("br i1 {missing}, label %{gone}, label %{found}, !prof !0"));
+        self.start_block(&gone);
+        self.stop(
+            "a field taken out of a dict's value to change was looked for under a key that isn't there",
+            span,
+        );
+        self.start_block(&found);
+        let value_at = self.temp();
+        self.line(&format!(
+            "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
+            entry_value(key_word)
+        ));
+        // Either way the value is a block of its own: a struct's held in place in one.
+        let block = self.alone_at(&value_at, "fennec_unshare");
+        let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+        let (offset, inner) = self.field(&value_kind, field)?;
+        let at = self.offset(&fields, offset);
+        let value = self.load_field(&inner, &at, "");
+        self.assign(dest, &value)
+    }
+
     /// Where a value is, from where a dict keeps it: a plain struct or enum is in a block.
     fn value_place(&mut self, kind: &Kind, at: &str) -> String {
         if !kind.in_memory() {

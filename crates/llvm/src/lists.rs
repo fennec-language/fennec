@@ -347,6 +347,15 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
         if let Some((root, list_path, index)) = self.known.path_home(dest).cloned() {
+            let held = self.place_kind(root, &list_path)?;
+            if self.is_id_map(&held) {
+                let span = self.here_span();
+                return self.take_from_table_item(dest, (root, &list_path, &index), field, span);
+            }
+            if matches!(held, Kind::Dict(..)) {
+                let span = self.here_span();
+                return self.take_from_dict_value(dest, (root, &list_path, &index), field, span);
+            }
             return self.take_from_item(dest, (root, &list_path, &index), field);
         }
         let (base, kind) = self.operand(object)?;

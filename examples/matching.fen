@@ -6,51 +6,51 @@ enum Shape:
 def name_int(n: int) -> str:
     match n:
         case 0:
-            "zero"
+            return "zero"
         case -1:
-            "minus one"
+            return "minus one"
         case _:
-            "something else"
+            return "something else"
 
 def name_float(x: float) -> str:
     match x:
         case 0.5:
-            "a half"
+            return "a half"
         case -0.5:
-            "minus a half"
+            return "minus a half"
         case _:
-            "something else"
+            return "something else"
 
 def name_str(text: str) -> str:
     match text:
         case "fox":
-            "a fox"
+            return "a fox"
         case _:
-            "not a fox"
+            return "not a fox"
 
 def name_bool(flag: bool) -> str:
     match flag:
         case True:
-            "yes"
+            return "yes"
         case False:
-            "no"
+            return "no"
 
 def name_maybe(n: int?) -> str:
     match n:
         case None:
-            "nothing"
+            return "nothing"
         case _:
-            "something"
+            return "something"
 
 def width(shape: Shape) -> str:
     match shape:
         # A pattern can name fewer fields than the case has.
         case .Rect(width):
-            f"{width} wide"
+            return f"{width} wide"
         case .Point:
-            "a point"
+            return "a point"
         case _:
-            "no width"
+            return "no width"
 
 def main(stdout: Stdout):
     stdout.print(

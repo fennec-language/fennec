@@ -473,7 +473,7 @@ fn stmt(stmt: &mut Stmt, change: &mut dyn FnMut(&mut Expr)) {
         | StmtKind::Yield(value)
         | StmtKind::Assert(value)
         | StmtKind::Return(Some(value)) => expr(value, change),
-        StmtKind::Lend { value, otherwise } => {
+        StmtKind::Lend { value, otherwise, .. } => {
             expr(value, change);
             stmts(otherwise, change);
         }

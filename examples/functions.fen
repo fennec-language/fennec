@@ -1,16 +1,16 @@
 def factorial(n: int) -> int:
-    1 if n <= 1 else n * factorial(n - 1)
+    return 1 if n <= 1 else n * factorial(n - 1)
 
 def fibonacci(n: int) -> int:
     if n < 2: return n
-    fibonacci(n - 1) + fibonacci(n - 2)
+    return fibonacci(n - 1) + fibonacci(n - 2)
 
 def apply_damage(ref health: int, amount: int):
     health -= amount
 
 def describe(name: str, health: int) -> str:
     status = "healthy" if health > 50 else "hurt"
-    f"{name} is {status} ({health} HP)"
+    return f"{name} is {status} ({health} HP)"
 
 def main(stdout: Stdout):
     stdout.print(factorial(10))

@@ -6,7 +6,7 @@ from std.url import Url
 
 ## A search link for `words` on `site`.
 def search_link(site: str, words: str) -> str:
-    str(Url(scheme="https", host=site, path="/search", query={"q": words}))
+    return str(Url(scheme="https", host=site, path="/search", query={"q": words}))
 
 test "a URL comes apart into its parts"():
     found = url.parse("HTTPS://fox@Example.COM:8443/den%20map/a?q=red+fox&n=1#top")?
@@ -56,7 +56,7 @@ test "a name given twice keeps its first value, and query_all gives every one"()
     assert found.query == {"tag": "a", "n": "1"}
     assert found.query_all("tag") == ["a", "b", ""]
     assert found.query_all("n") == ["1"]
-    assert found.query_all("missing").len() == 0
+    assert len(found.query_all("missing")) == 0
     assert url.decode_query("a=1&a=2") == {"a": "1"}
     # A query changed since it was read gives what it holds now.
     changed = copy(found, query={"tag": "z"})
@@ -67,6 +67,6 @@ test "any query text comes back as it was" for name: str, value: str:
     assert url.decode_query(url.encode_query({name: value})) == {name: value}
 
 def main(stdout: Stdout):
-    found = url.parse("https://example.com/den%20map?q=red+fox") else Url()
+    found = url.parse("https://example.com/den%20map?q=red+fox") except InvalidValue(): Url()
     stdout.print(found.host, found.path, found.query.get("q") else "")
     stdout.print(search_link("example.com", words="été"))

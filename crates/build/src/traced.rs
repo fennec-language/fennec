@@ -243,8 +243,8 @@ mod tests {
     }
 
     const SOURCE: &str = "LIMIT: int = 1\n\nstruct Point:\n    x: int\n\n\
-        def ran(p: Point) -> int:\n    if p.x > LIMIT:\n        return other()\n    p.x\n\n\
-        def other() -> int:\n    1\n\ntest \"t\":\n    assert ran(Point(x=1)) == 1\n";
+        def ran(p: Point) -> int:\n    if p.x > LIMIT:\n        return other()\n    return p.x\n\n\
+        def other() -> int:\n    return 1\n\ntest \"t\":\n    assert ran(Point(x=1)) == 1\n";
 
     #[test]
     fn a_function_it_didnt_run_changes_nothing_unless_its_name_comes_or_goes() {
@@ -256,7 +256,11 @@ mod tests {
     #[test]
     fn what_it_ran_and_what_that_relies_on_change_it() {
         let before = key(SOURCE, &["ran"]);
-        assert_ne!(key(&SOURCE.replace("    p.x\n", "    p.x + 0\n"), &["ran"]), before, "the function");
+        assert_ne!(
+            key(&SOURCE.replace("    return p.x\n", "    return p.x + 0\n"), &["ran"]),
+            before,
+            "the function"
+        );
         assert_ne!(key(&SOURCE.replace("x: int", "x: int = 1"), &["ran"]), before, "a type it uses");
         assert_ne!(key(&SOURCE.replace("LIMIT: int = 1", "LIMIT: int = 2"), &["ran"]), before, "a constant");
         assert_ne!(key(SOURCE, &["ran", "other"]), before, "taking another path");

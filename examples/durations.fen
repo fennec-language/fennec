@@ -9,7 +9,7 @@ struct Retry:
     wait = 250ms
 
 def total_wait(retry: Retry) -> Duration:
-    retry.wait * retry.times
+    return retry.wait * retry.times
 
 def main(stdout: Stdout):
     frame = 16ms + 667us

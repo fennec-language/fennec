@@ -50,12 +50,14 @@ pub(crate) fn still_fine(mut trial: Module) -> bool {
     !crate::costs::copies_each_round(&fennec_ir::costs(&fennec_ir::lower(&trial, &signatures)))
 }
 
-/// The lint for taking a conversion out, written as its value is.
-fn lint(sources: &Sources, call: Span, value: &Expr, message: &str) -> Option<Lint> {
+/// The lint for taking a conversion out, written as its value is: in brackets where it goes
+/// beside an operator, and as it is where it's a call's argument, as `len(str(a + b))` is.
+fn lint(sources: &Sources, (call, argument): (Span, bool), value: &Expr, message: &str) -> Option<Lint> {
     if !replaceable(sources, value) {
         return None;
     }
-    let fixed = operand(sources, value)?;
+    let fixed =
+        if argument { crate::rewrites::written(sources, value.span)? } else { operand(sources, value)? };
     let diagnostic = Diagnostic::new(format!("{message}: write `{fixed}`"), call).with_fix(call, fixed);
     Some(Lint::new("needless-conversion", diagnostic))
 }
@@ -96,6 +98,13 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
         .map(|(span, ty)| ((span.start, span.end), ty))
         .collect();
     let places = places(module);
+    // The conversions that are a call's argument, where what's left needs no brackets.
+    let mut arguments: HashSet<(u32, u32)> = HashSet::new();
+    fennec_syntax::read::exprs(module, &mut |expr| {
+        if let ExprKind::Call { args, .. } = &expr.kind {
+            arguments.extend(args.iter().map(|arg| (arg.value.span.start, arg.value.span.end)));
+        }
+    });
     let mut found = Vec::new();
     for (name, call, value) in calls {
         if places.contains(&(call.start, call.end)) {
@@ -111,7 +120,8 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
             continue;
         };
         if still_fine(without(module, call)) {
-            found.extend(lint(sources, call, &value, &message));
+            let argument = arguments.contains(&(call.start, call.end));
+            found.extend(lint(sources, (call, argument), &value, &message));
         }
     }
     found

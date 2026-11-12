@@ -15,15 +15,15 @@ struct Person:
 
 ## Where a read goes wrong, as `line:column`, or `read` when it doesn't.
 def where[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return f"{why.line}:{why.column}"
-    "read"
+    return "read"
 
 ## What's wrong with what a read was given, or `read` when nothing is.
 def what[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "read"
+    return "read"
 
 test "an int reads whole, to its limits, and nothing else is one":
     assert json.loads[int](" 42 ")? == 42
@@ -109,9 +109,9 @@ struct MaybeDefaulted:
 
 ## What `run` loads, as text, or why it fails.
 def loaded[T](run: () -> T fails ParseError) -> str:
-    value = run() else as why:
+    value = run() except why:
         return why.message
-    f"{value}"
+    return f"{value}"
 
 test "null is a value, and a default fills only a key that isn't there":
     # A field that isn't optional can't hold null, default or not.
@@ -145,13 +145,12 @@ test "extra=.Ignore skips a key no field has, however deep it goes":
 ## Why loading a `Point` from `text` through a stream fails, or "read" if it doesn't.
 def streamed(text: str) -> str:
     mut src = MemoryStream.of(text.encode())
-    _ = json.load[Point](ref src) else as why:
-        match why:
-            case ParseError(message=message):
-                return message
-            case _:
-                return "it couldn't be read"
-    "read"
+    _ = json.load[Point](ref src) except why:
+        case ParseError(message=message):
+            return message
+        case .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
+            return "it couldn't be read"
+    return "read"
 
 test "json.load from a stream takes extra= as loads does"():
     text = "{\"x\": 1, \"y\": 2, \"z\": [3]}"
@@ -210,6 +209,6 @@ test "nesting deeper than 500 fails rather than running out of stack":
 
 def main(stdout: Stdout):
     # Text that isn't JSON says where it goes wrong.
-    _ = json.loads[Point]("{\"x\": 1,}") else as why:
+    _ = json.loads[Point]("{\"x\": 1,}") except why:
         stdout.print(why.message)
         Point(x=0, y=0)

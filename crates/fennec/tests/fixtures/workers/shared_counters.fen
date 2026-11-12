@@ -11,7 +11,7 @@ struct Counter:
         self.peak = self.peak * 1.0
 
     def seen(self) -> int:
-        self.total
+        return self.total
 
 struct Unit:
     x: int

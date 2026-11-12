@@ -3,7 +3,7 @@ struct Problem:
 
 def check(n: int) -> int:
     if n < 0: fail Problem("negative")
-    n
+    return n
 
 def main(stdout: Stdout):
     stdout.print(check(-1))

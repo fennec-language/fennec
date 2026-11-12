@@ -529,11 +529,11 @@ mod tests {
     /// function's parameter or local of the same name shadows one, as in any program.
     #[test]
     fn a_parameter_or_local_shadows_a_modules_function() {
-        let source = "export def password(text: str) -> str:\n    text\n\n\
-            export def message(kind: int) -> int:\n    kind\n\n\
-            export def started(password: str) -> str:\n    password + password(\"x\")\n\n\
-            export def mac(key: int) -> int:\n    message = key + 1\n    message\n\n\
-            export def plain() -> str:\n    password(\"y\")\n";
+        let source = "export def password(text: str) -> str:\n    return text\n\n\
+            export def message(kind: int) -> int:\n    return kind\n\n\
+            export def started(password: str) -> str:\n    return password + password(\"x\")\n\n\
+            export def mac(key: int) -> int:\n    message = key + 1\n    return message\n\n\
+            export def plain() -> str:\n    return password(\"y\")\n";
         let module = super::parse_module("postgres", source).unwrap();
         let mut set = vec![("postgres", module)];
         super::qualify_functions(&mut set);

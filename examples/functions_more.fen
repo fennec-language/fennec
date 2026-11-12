@@ -9,19 +9,19 @@ struct Score:
 
 def parse_score(text: str) -> Score fails ConfigError | InvalidValue:
     if not text.isdigit(): fail ConfigError(f"\"{text}\" isn't a number")
-    Score(value=int(text)?)?
+    return Score(value=int(text)?)?
 
 def load_scores(lines: list[str]) -> list[Score] fails ConfigError | InvalidValue:
-    [parse_score(line)? for line in lines]
+    return [parse_score(line)? for line in lines]
 
 def read_settings(fs: Fs, path: str) -> str fails SettingsUnreadable:
     text = fs.read_text(path)? from SettingsUnreadable(path)
-    text.strip()
+    return text.strip()
 
 def counter_from(start: int) -> list[int]:
     def next_after(n: int) -> int:
-        n + start
-    [next_after(n) for n in range(3)]
+        return n + start
+    return [next_after(n) for n in range(3)]
 
 def countdown(n: int) -> Iterator[int]:
     mut at = n
@@ -30,17 +30,18 @@ def countdown(n: int) -> Iterator[int]:
         at -= 1
 
 def main(stdout: Stdout, fs: Fs):
-    stdout.print(load_scores(["3", "14", "15"]) else [])
-    _ = load_scores(["3", "x", "15"]) else as why:
+    load_scores_value = load_scores(["3", "14", "15"]) except ConfigError() | InvalidValue(): []
+    stdout.print(load_scores_value)
+    _ = load_scores(["3", "x", "15"]) except why:
         stdout.print(why)
         []
     stdout.print(Score(value=5))
     stdout.print(counter_from(10))
     stdout.print(list(countdown(3)), sum(countdown(4)))
 
-    settings = read_settings(fs, "/no/such/fennec/settings.toml") else as why:
+    settings = read_settings(fs, "/no/such/fennec/settings.toml") except why:
         f"couldn't read {why.path}"
     stdout.print(settings)
 
-    by_length = sorted(["bramble", "kit", "ash"], key=(name) => (name.len(), name))
+    by_length = sorted(["bramble", "kit", "ash"], key=(name) => (len(name), name))
     stdout.print(by_length)

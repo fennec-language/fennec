@@ -6,7 +6,7 @@ struct Pair:
 
     ## Equal when they add up to the same, whichever order the parts are in.
     def ==(self, other: Pair) -> bool:
-        self.left + self.right == other.left + other.right
+        return self.left + self.right == other.left + other.right
 
 struct Plain:
     left: int

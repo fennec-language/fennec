@@ -1278,6 +1278,7 @@ mod tests {
     #[test]
     fn what_a_thread_kept_comes_out_when_it_panics() {
         crate::embed::write_kept_output_on_panic();
+        let mark = crate::embed::written_mark();
         let panicked = std::thread::spawn(|| {
             let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
             start(Tables::default(), inputs);
@@ -1288,7 +1289,6 @@ mod tests {
         })
         .join();
         assert!(panicked.is_err());
-        let written = crate::embed::WRITTEN.lock().unwrap();
-        assert!(String::from_utf8_lossy(&written).contains("printed just before panicking\n"));
+        assert!(crate::embed::written_since(mark).contains("printed just before panicking\n"));
     }
 }

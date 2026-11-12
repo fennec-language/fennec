@@ -1,6 +1,6 @@
 def heal(health: int) -> int:
     health += 10
-    health
+    return health
 
 def main(stdout: Stdout):
     stdout.print(heal(50))

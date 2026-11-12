@@ -4,7 +4,7 @@ struct Player:
 def find(players: list[Player], name: str) -> Player?:
     for player in players:
         if player.name == name: return player
-    None
+    return None
 
 def main(stdout: Stdout):
     players = [Player(name="Ash")]

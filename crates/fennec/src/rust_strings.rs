@@ -174,10 +174,11 @@ fn without_values(program: &str) -> (String, Vec<usize>) {
         if number > 0 {
             out.push('\n');
         }
+        let mut read = String::new();
         let mut rest = line;
         while let Some(c) = rest.chars().next() {
             if let Some(after) = rest.strip_prefix("{{").or_else(|| rest.strip_prefix("}}")) {
-                out.push(c);
+                read.push(c);
                 rest = after;
             } else if let Some(after) = rest.strip_prefix('{')
                 && let Some(close) = after.find('}')
@@ -185,13 +186,25 @@ fn without_values(program: &str) -> (String, Vec<usize>) {
                     inside.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '?' | '#'))
                 })
             {
-                held.push(number);
+                if held.last() != Some(&number) {
+                    held.push(number);
+                }
+                // A value put in where a line starts, as `{FILES}def show`, goes; one inside a
+                // line reads as a value, so the line still parses.
+                if !read.trim().is_empty() {
+                    read.push('0');
+                }
                 rest = after.get(close + 1..).unwrap_or_default();
             } else {
-                out.push(c);
+                read.push(c);
                 rest = rest.get(c.len_utf8()..).unwrap_or_default();
             }
         }
+        // A line that was only a value, as a statement put in, is a statement that does nothing.
+        if held.last() == Some(&number) && read.trim().is_empty() && !line.trim().is_empty() {
+            read.push_str("pass");
+        }
+        out.push_str(&read);
     }
     (out, held)
 }
@@ -377,7 +390,12 @@ fn migrated(src: &str, migrate: &mut dyn FnMut(&str) -> Option<String>) -> Optio
         }
         let (program, ..) = as_program(&literal.text);
         let (program, held) = if literal.format { without_values(&program) } else { (program, Vec::new()) };
-        let new = if program.contains("def ") { migrate(&program) } else { in_a_def(&program, migrate) };
+        // A test's program may write its strings in `'`, which its helper reads as `"`: migrated
+        // as it's read, and written back as it was.
+        let single = program.contains('\'') && !program.contains('"');
+        let readable = if single { program.replace('\'', "\"") } else { program.clone() };
+        let new = if readable.contains("def ") { migrate(&readable) } else { in_a_def(&readable, migrate) };
+        let new = new.map(|new| if single { new.replace('"', "'") } else { new });
         let Some(new) = new.filter(|new| *new != program) else { continue };
         if let Some(found) = edits(&literal, (&program, &held), &new) {
             all.extend(found);
@@ -516,6 +534,20 @@ mod tests {
     }
 
     #[test]
+    fn a_line_that_is_only_a_value_put_in_reads_as_a_statement() {
+        let src =
+            "let p = format!(\"def put(n: int):\\n    {shape}\\n\\ndef two() -> int:\\n    1 + 1\\n\");\n";
+        let mut migrate = |text: &str| -> Option<String> {
+            assert!(text.contains("    pass\n"), "{text}");
+            Some(text.replace("    1 + 1", "    return 1 + 1"))
+        };
+        assert_eq!(
+            migrated(src, &mut migrate).unwrap_or_default(),
+            "let p = format!(\"def put(n: int):\\n    {shape}\\n\\ndef two() -> int:\\n    return 1 + 1\\n\");\n"
+        );
+    }
+
+    #[test]
     fn a_line_with_a_value_put_in_is_left_as_it_is() {
         let src = "let p = format!(\"def two() -> int:\\n    {body}\\n\");\n";
         let mut migrate = |text: &str| -> Option<String> { Some(text.replace("    \n", "    return\n")) };
@@ -529,6 +561,19 @@ mod tests {
         let out = by_hand(&src);
         assert_eq!(out.matches("return 1 + 1").count(), 1, "{out}");
         assert!(out.starts_with(&format!("// fennec-migrate: off\n{program}")), "{out}");
+    }
+
+    #[test]
+    fn a_program_written_in_single_quotes_is_migrated_as_its_test_reads_it() {
+        let src = "let p = \"def name() -> str:\\n    'a' + 'b'\\n\";\n";
+        let mut migrate = |text: &str| -> Option<String> {
+            assert!(!text.contains('\''), "{text}");
+            Some(text.replace("    \"a\"", "    return \"a\""))
+        };
+        assert_eq!(
+            migrated(src, &mut migrate).unwrap_or_default(),
+            "let p = \"def name() -> str:\\n    return 'a' + 'b'\\n\";\n"
+        );
     }
 
     #[test]

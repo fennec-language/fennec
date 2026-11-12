@@ -74,7 +74,7 @@ test "a page prints as its text, already escaped"():
 
 ## `value` as text, printed where only its type parameter is known.
 def shown[T](value: T) -> str:
-    f"{value}"
+    return f"{value}"
 
 test "a secret printed through a generic never shows what it holds"():
     key = Secret.of("hunter2")
@@ -91,7 +91,7 @@ test "a path rebuilt from parts keeps its root, and no parts is the current fold
 ## What `found` matched, or "no match".
 def matched(found: re.Match?) -> str:
     if found is None: return "no match"
-    found.text
+    return found.text
 
 test "fullmatch matches only all of the text, where match takes a start"():
     digits = re.Regex(r"\d+")

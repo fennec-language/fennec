@@ -71,4 +71,4 @@ def main(stdout: Stdout):
         stdout.print(n % 3, n // 3)
 
 def len0() -> int:
-    return "".len()
+    return len("")

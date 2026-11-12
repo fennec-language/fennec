@@ -13739,6 +13739,65 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
+/// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
+/// can write, and the source the checker writes in for a `with launch` and for a channel's type
+/// names it that way too; the library's own `Duration`, which `stop_after` takes, stays the
+/// library's. A channel of one once kept the checker going round until it ran out of memory.
+#[test]
+fn a_program_type_named_like_a_library_type_goes_through_inboxes_and_channels() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "renamed_inbox",
+        r#"from std.concurrent import Closed, Crashed, Inbox, channel
+
+struct Delivery:
+    user: int
+
+struct Match:
+    at: int
+
+enum Duration:
+    Short
+    Long(minutes: int)
+
+def quiet(inbox: Inbox[Delivery], stdout: Stdout):
+    mut total = 0
+    for delivery in inbox:
+        total += delivery.user
+    stdout.print(total)
+    return
+
+def timed(inbox: Inbox[Duration], stdout: Stdout):
+    for length in inbox:
+        match length:
+            case .Short:
+                stdout.print("short")
+            case .Long(minutes):
+                stdout.print("long", minutes)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with launch((inbox) => quiet(inbox, stdout), inbox_size=4)? as first:
+        first.send(Delivery(user=1))?
+        first.send(Delivery(user=2))?
+    with launch((inbox) => timed(inbox, stdout), stop_after=5s, inbox_size=4)? as second:
+        second.send(.Short)?
+        second.send(.Long(minutes=3))?
+    with channel[Delivery](size=4) as deliveries, channel[list[Match]](size=2) as matches:
+        deliveries.send(Delivery(user=5))?
+        matches.send([Match(at=7), Match(at=8)])?
+        delivery = deliveries.receive() else return
+        found = matches.receive() else return
+        stdout.print(delivery.user, len(found), found[1].at)
+    return
+"#,
+        "3\nshort\nlong 3\n5 2 8\n",
+    )
+}
+
 /// What the next test builds: tasks that read an inbox, fail, crash, and are launched in a loop.
 const LAUNCHED: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
 

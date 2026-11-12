@@ -13,19 +13,9 @@ pub(crate) fn named(which: &str, path: &str) -> ExitCode {
 
 /// `fennec update`, in the kit around `path`.
 pub(crate) fn update(path: &str) -> ExitCode {
-    // Reached only through folders that are trusted: see `fennec_dist::kit_root`.
-    let found = match fennec_dist::kit_root(Path::new(path)) {
-        Ok(found) => found,
-        Err(why) => {
-            eprintln!("error: {why}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(root) = found else {
-        eprintln!(
-            "error: there's no kit.toml in {path} or any folder above it, so there's nothing to update"
-        );
-        return ExitCode::FAILURE;
+    let root = match kit_around(path, "update") {
+        Ok(root) => root,
+        Err(code) => return code,
     };
     let Some(kits) = fennec_deps::Kits::of_this_machine() else {
         eprintln!("error: there's no home folder to keep fetched kits in; set FENNEC_HOME");
@@ -90,13 +80,9 @@ fn lock_layouts(root: &Path) -> Result<String, String> {
 /// `fennec fetch`, in the kit around `path`: each kit `kit.lock` pins that the store hasn't got, or
 /// holds changed, is fetched, and checked against its pin.
 pub(crate) fn fetch(path: &str) -> ExitCode {
-    let Some(root) = Path::new(path)
-        .canonicalize()
-        .ok()
-        .and_then(|from| from.ancestors().find(|dir| dir.join("kit.toml").is_file()).map(Path::to_path_buf))
-    else {
-        eprintln!("error: there's no kit.toml in {path} or any folder above it, so there's nothing to fetch");
-        return ExitCode::FAILURE;
+    let root = match kit_around(path, "fetch") {
+        Ok(root) => root,
+        Err(code) => return code,
     };
     let Some(kits) = fennec_deps::Kits::of_this_machine() else {
         eprintln!("error: there's no home folder to keep fetched kits in; set FENNEC_HOME");
@@ -111,6 +97,24 @@ pub(crate) fn fetch(path: &str) -> ExitCode {
         Err(message) => {
             eprintln!("error: {message}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The kit around `path`, reached only through folders that are trusted: see
+/// `fennec_dist::kit_root`. With none, or one that isn't trusted, it's said, for `doing`.
+fn kit_around(path: &str, doing: &str) -> Result<std::path::PathBuf, ExitCode> {
+    match fennec_dist::kit_root(Path::new(path)) {
+        Ok(Some(root)) => Ok(root),
+        Ok(None) => {
+            eprintln!(
+                "error: there's no kit.toml in {path} or any folder above it, so there's nothing to {doing}"
+            );
+            Err(ExitCode::FAILURE)
+        }
+        Err(why) => {
+            eprintln!("error: {why}");
+            Err(ExitCode::FAILURE)
         }
     }
 }

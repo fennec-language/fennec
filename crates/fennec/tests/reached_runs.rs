@@ -77,6 +77,69 @@ fn what_runs_is_what_the_whole_program_does_in_every_example() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// What `main` reaches, cut out of every example and kit, still checks wherever the whole program
+/// does: the cut `fennec run` makes misses nothing the program calls, however it's reached, as from
+/// a `lend`'s cleanup, a parameter's default, an `except` arm, a generator, an arrow function or a
+/// `parallel` loop's body. One it missed would be refused as calling what "doesn't exist".
+#[test]
+fn what_main_reaches_checks_wherever_the_whole_program_does() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut programs: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "fen"))
+        .collect();
+    programs.extend(
+        std::fs::read_dir(root.join("projects"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.join("kit.toml").is_file()),
+    );
+    programs.sort();
+    let mut compared = 0;
+    for path in &programs {
+        let shown = path.to_string_lossy().into_owned();
+        let Ok(program) = fennec_kit::load(path, &shown, fennec_kit::Entry::Main) else { continue };
+        if fennec_check::check(&program.module).is_err() {
+            continue;
+        }
+        let mut cut = fennec_build::what_main_reaches(&program.module);
+        let checked = fennec_check::check_to_build(&mut cut);
+        assert!(checked.is_ok(), "{shown}: the cut misses something: {:?}", checked.err());
+        compared += 1;
+    }
+    assert!(compared > 50, "only {compared} programs were compared");
+}
+
+/// A call in a `lend`'s cleanup, written `except:` or `else:`, is reached: `fennec run` runs the
+/// program `fennec build` builds, rather than refusing it as calling what "doesn't exist".
+#[test]
+fn a_call_in_a_lends_cleanup_is_reached() {
+    let dir = scratch("lend-cleanup").unwrap();
+    for cleanup in ["except", "else"] {
+        let source = format!(
+            "struct Tally:\n    count: int\n\ndef noted(code: int, stdout: Stdout):\n    stdout.print(\"noted\", code)\n\n\
+             def guarded(code: int, stdout: Stdout) -> with Tally:\n    stdout.print(\"open\", code)\n    \
+             lend Tally(count=code) {cleanup}:\n        noted(code, stdout)\n    stdout.print(\"close\", code)\n\n\
+             def main(stdout: Stdout):\n    with guarded(3, stdout) as tally:\n        stdout.print(\"inside\", tally.count)\n"
+        );
+        let game = dir.join("game.fen");
+        std::fs::write(&game, &source).unwrap();
+        for _ in 0..2 {
+            let ran = run(&dir.join("home"), &game).unwrap();
+            assert_eq!(
+                stdout(&ran),
+                "open 3\ninside 3\nclose 3\n",
+                "{cleanup}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 const TESTED: &str = "def double(x: int) -> int:\n    x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n\n\
     def main(stdout: Stdout):\n    stdout.print(double(21))\n";
 

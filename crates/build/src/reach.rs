@@ -272,6 +272,8 @@ impl Uses {
             }
         }
         def.params.iter().filter_map(|param| param.ty.as_ref()).for_each(|ty| self.type_expr(ty));
+        // A parameter's default, which can name a type's case, as `mode: Mode = Mode.fast` does.
+        def.params.iter().filter_map(|param| param.default.as_ref()).for_each(|default| self.expr(default));
         if let Some(ty) = &def.fails {
             self.type_expr(ty);
         }
@@ -302,12 +304,14 @@ impl Uses {
 
     pub(crate) fn stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Expr(expr)
-            | StmtKind::Fail(expr)
-            | StmtKind::Yield(expr)
-            | StmtKind::Assert(expr)
-            | StmtKind::Lend { value: expr, .. } => {
+            StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
                 self.expr(expr);
+            }
+            // What it lends, and its cleanup, `except:` or `else:`, which runs when the caller's
+            // block fails and can call anything a body can.
+            StmtKind::Lend { value, otherwise } => {
+                self.expr(value);
+                self.stmts(otherwise);
             }
             StmtKind::Return(value) => value.iter().for_each(|expr| self.expr(expr)),
             StmtKind::Assign { target, value, ty, .. } => {

@@ -24,9 +24,17 @@ pub const INLINE: u8 = 0x80;
 
 /// A string's header, as the runtime gives one back to native code.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Text {
     pub words: [u64; 3],
+}
+
+/// The empty string's header, inline: what a function giving back a header gives when it has
+/// nothing else to, so native code never reads one pointing at no block.
+impl Default for Text {
+    fn default() -> Text {
+        Text { words: inline(&[]) }
+    }
 }
 
 /// What byte 23 of a header holds.
@@ -138,7 +146,7 @@ pub(super) fn texts(state: &State, words: &[u64]) -> Vec<String> {
 /// that block, with one more owner.
 pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     let words = [a, b, c];
-    with(|state| {
+    super::made_with("fennec_text_block", |state| {
         if let Some(bytes) = inline_bytes(&words) {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             return text_from_bytes(state, text.as_bytes(), text.chars().count());

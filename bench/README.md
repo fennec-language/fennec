@@ -50,6 +50,8 @@ The table also counts the functions in each kernel that LLVM doesn't take yet, f
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
 
+`copies.txt` holds how many copies each kernel's run makes: values changed while something else still held them, so the change went to a copy. A test builds each kernel for release, runs it on one thread under `FENNEC_COUNTS` and keeps the counts exact. They don't move with the machine or its load, so a copy the code generator starts making fails there, however small its cost in time.
+
 Targets come from twins built with overflow checks on, because Fennec always checks and that's the work being compared. The run's last column shows the percentage against the same twins without those checks, from `targets/unchecked/`. It's for reference only: nothing is judged on it.
 
 ## The floor and the ratchet

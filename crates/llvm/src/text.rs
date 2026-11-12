@@ -792,8 +792,22 @@ impl Emit<'_, '_, '_> {
                 }
             }
         }
-        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        let value = self.built_from(&pieces);
         for piece in &pieces {
+            match &piece.owned {
+                Some(Owned::Header(header)) => self.release_text(header),
+                Some(Owned::Block(block)) => self.release(block),
+                None => {}
+            }
+        }
+        self.assign(dest, &value)
+    }
+
+    /// A text made of pieces one after another: inline when it fits in a header, and otherwise
+    /// one block made at its size, each piece copied in once. Nothing given is let go of.
+    fn built_from(&mut self, pieces: &[Piece]) -> String {
+        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        for piece in pieces {
             let (more_bytes, more_chars) = (self.temp(), self.temp());
             self.line(&format!("{more_bytes} = add nuw nsw i64 {bytes}, {}", piece.size));
             self.line(&format!("{more_chars} = add nuw nsw i64 {chars}, {}", piece.chars));
@@ -807,7 +821,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&inline);
         let out = self.place_for_text();
         self.line(&format!("store {} zeroinitializer, ptr {out}", crate::headers::HEADER));
-        self.write_pieces(&out, &pieces, true);
+        self.write_pieces(&out, pieces, true);
         let (tag, byte, tag_at, from_inline) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{tag} = or i64 {bytes}, 128"));
         self.line(&format!("{byte} = trunc i64 {tag} to i8"));
@@ -821,7 +835,7 @@ impl Emit<'_, '_, '_> {
         let made = self.temp();
         self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
         let start = self.offset(&made, TEXT.unsigned_abs());
-        self.write_pieces(&start, &pieces, false);
+        self.write_pieces(&start, pieces, false);
         let (bytes_at, chars_at) =
             (self.offset(&made, TEXT_BYTES.unsigned_abs()), self.offset(&made, TEXT_CHARS.unsigned_abs()));
         self.line(&format!("store i64 {bytes}, ptr {bytes_at}{HEADER_ACCESS}"));
@@ -835,14 +849,22 @@ impl Emit<'_, '_, '_> {
             "{value} = phi {} [ {from_inline}, %{inline_end} ], [ {from_block}, %{block_end} ]",
             crate::headers::HEADER
         ));
-        for piece in &pieces {
-            match &piece.owned {
-                Some(Owned::Header(header)) => self.release_text(header),
-                Some(Owned::Block(block)) => self.release(block),
-                None => {}
-            }
-        }
-        self.assign(dest, &value)
+        value
+    }
+
+    /// `a + b` of texts that won't fit in a header together or aren't both inline: one block made
+    /// at the size of both, each copied in once, with neither boxed first.
+    pub(crate) fn joined_texts(&mut self, texts: &[&str]) -> String {
+        let pieces: Vec<Piece> = texts
+            .iter()
+            .map(|text| Piece {
+                from: self.header_bytes(text),
+                size: self.header_byte_length(text),
+                chars: self.header_chars(text),
+                owned: None,
+            })
+            .collect();
+        self.built_from(&pieces)
     }
 
     /// A literal's bytes, as a constant of the module's.

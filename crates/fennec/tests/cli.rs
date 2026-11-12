@@ -3132,6 +3132,71 @@ fn only_the_kit_that_declares_a_type_extends_it() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A dependency sees its own kit's names, what it imports, and the language's: never the program's.
+/// The program's names have no prefix in the merged module, so a dependency writing one it doesn't
+/// define read the program's private constant and called its private function.
+#[test]
+fn a_dependency_sees_only_its_own_names_what_it_imports_and_the_languages() {
+    let dir = scratch("dependency-names").unwrap();
+    let helper = dir.join("helper");
+    let peeks = "export def peek() -> str:\n    return f\"{API_KEY} {secret_total()}\"\n";
+    write_kit(&helper, "helper", "", &[("lib.fen", peeks)]).unwrap();
+    let game = dir.join("game");
+    let main = "import helper\n\nAPI_KEY = \"hunter2\"\n\nstruct Player:\n    hp: int\n\n\
+                def secret_total() -> int:\n    return 42\n\n\
+                def main(stdout: Stdout):\n    stdout.print(helper.peek())\n";
+    write_kit(&game, "game", "[dependencies]\nhelper = { path = \"../helper\" }\n", &[("main.fen", main)])
+        .unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let refused = |says: &[&str]| {
+        for command in ["check", "build"] {
+            let output = fennec(command);
+            assert!(!output.status.success(), "{command}");
+            let said = text(&output.stderr);
+            for one in says {
+                assert!(said.contains(one), "{command}: {said}");
+            }
+            assert!(said.contains("helper/src/lib.fen"), "{command}: {said}");
+        }
+    };
+    refused(&["`API_KEY` doesn't exist", "`secret_total` doesn't exist"]);
+    // A type of the program's, too.
+    std::fs::write(
+        helper.join("src/lib.fen"),
+        "export def hurt(player: Player) -> int:\n    return player.hp\n",
+    )
+    .unwrap();
+    refused(&["`Player` doesn't exist"]);
+    // The program's own `len` would hide the language's from the dependency: refused, saying so.
+    std::fs::write(helper.join("src/lib.fen"), "export def size() -> int:\n    return len(\"abc\")\n")
+        .unwrap();
+    std::fs::write(
+        game.join("src/main.fen"),
+        "import helper\n\ndef len(text: str) -> int:\n    return 99\n\n\
+         def main(stdout: Stdout):\n    stdout.print(helper.size())\n",
+    )
+    .unwrap();
+    refused(&["`len` here would be the program's own `len`, not the language's"]);
+    // A name the dependency defines itself is its own, though the program has one too.
+    std::fs::write(
+        helper.join("src/lib.fen"),
+        "API_KEY = \"theirs\"\n\nexport def peek() -> str:\n    return f\"{API_KEY} {len(API_KEY)}\"\n",
+    )
+    .unwrap();
+    std::fs::write(game.join("src/main.fen"), main).unwrap();
+    let ran = fennec("run");
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "theirs 6\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A small kit and a folder for Fennec's own files, in a folder that holds both and goes when the
 /// first is dropped.
 fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {
@@ -3528,6 +3593,48 @@ fn a_hot_loop_over_a_table_makes_nothing() {
     assert!(checked.status.success(), "{}", text(&checked.stderr));
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "6\n", "{}", text(&output.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `@hot` refuses an item the native code copies to change: one read out of a list, changed and
+/// put back with the list read in between, so the code generator can't take it out. The same
+/// with nothing read in between, and a `for ref` loop over a `Table` of items holding a dict,
+/// change their items where they are, so they check. `fennec dev copies` lists the copy too.
+/// Before this, `@hot` saw none of these copies, though the program made them.
+#[test]
+fn a_hot_function_refuses_an_item_it_copies_to_change() {
+    let dir = scratch("hot_item_copy").unwrap();
+    let program = dir.join("hot.fen");
+    let types =
+        "from std.collections import Table\n\nstruct Enemy:\n    hp: int\n    bag: dict[str, int]\n\n";
+    let main = "\ndef main(stdout: Stdout):\n    mut enemies = [Enemy(hp=3, bag={\"a\": 1}), Enemy(hp=4, bag={\"a\": 2})]\n    \
+                mut table = Table[Enemy]()\n    _ = table.add(Enemy(hp=5, bag={\"a\": 3}))\n    \
+                step(ref enemies, ref table)\n    stdout.print(enemies[0].hp, enemies[1].hp)\n";
+    let step = |between: &str| {
+        format!(
+            "@hot\ndef step(ref enemies: list[Enemy], ref table: Table[Enemy]):\n    \
+             for ref held in table:\n        held.hp -= 1\n    \
+             for i in range(len(enemies)):\n        mut enemy = enemies[i]\n{between}        enemy.hp -= 1\n        \
+             enemies[i] = enemy\n"
+        )
+    };
+    let copying =
+        format!("{types}{}{main}", step("        for other in enemies:\n            enemy.hp -= other.hp\n"));
+    std::fs::write(&program, &copying).unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(!output.status.success());
+    let refused = "what this reads out of `enemies` is copied to change it in `@hot` `step`";
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
+    std::fs::write(&program, copying.replace("@hot\n", "")).unwrap();
+    let listed = fennec(&["dev", "copies", program.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&listed.stdout).contains("what this reads out of `enemies` is copied to change it"),
+        "{}",
+        text(&listed.stdout)
+    );
+    std::fs::write(&program, format!("{types}{}{main}", step(""))).unwrap();
+    let checked = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

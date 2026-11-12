@@ -6051,6 +6051,192 @@ def main(stdout: Stdout) fails Oops | Crashed:
     )
 }
 
+/// The coverage lane's repro: a struct whose fields default to a list, a dict and a list of
+/// pairs that are module constants, changed on the main thread, in `parallel` and in a task.
+const CONSTANT_DEFAULTS: &str = r#"from std.concurrent import Crashed
+
+struct Point:
+    x: int
+    y: int
+
+    def moved(ref self, by: int):
+        self.x += by
+
+NUMBERS3 = [12, 13]
+COUNTS3 = {"a": 12}
+NOTHING3 = list[(str, int)]()
+SPOT3 = Point(x=12, y=1)
+
+struct Bin3:
+    at = 0
+    items = NOTHING3
+    counts = COUNTS3
+    numbers = NUMBERS3
+
+    def pushed(ref self, n: int):
+        self.items.append(("x", n))
+        self.counts["n"] = n
+        self.numbers.append(n)
+
+    def top(ref self) -> int:
+        last = self.items.pop() else return -1
+        return last[1]
+
+def used3(n: int) -> str:
+    mut bin = Bin3()
+    bin.pushed(n)
+    top = bin.top()
+    mut mine = NUMBERS3
+    mine.append(n)
+    mine[0] = n
+    mut spot = SPOT3
+    spot.moved(n)
+    mut counts = COUNTS3
+    counts["m"] = n
+    return f"{top} {len(bin.items)} {bin.counts} {bin.numbers} {mine} {spot} {counts} {len(NOTHING3)} {NUMBERS3} {COUNTS3} {SPOT3}"
+
+struct Said3:
+    texts: list[str]
+
+def tasked3(said: shared Said3):
+    text = used3(2)
+    lock said as ref held:
+        held.texts.append(text)
+    return
+
+def constants3(stdout: Stdout) fails Crashed:
+    shared said = Said3(texts=list[str]())
+    stdout.print(len(NUMBERS3), len(COUNTS3), len(NOTHING3), SPOT3.x)
+    stdout.print("main", used3(1))
+    for line in [used3(i) for i in parallel(range(3))]:
+        stdout.print("parallel", line)
+    with launch(() => tasked3(said))?:
+        pass
+    lock said as held:
+        for text in held.texts:
+            stdout.print("task", text)
+    stdout.print("after", used3(3), NUMBERS3, COUNTS3, len(NOTHING3))
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    constants3(stdout)?
+    return
+"#;
+
+/// What [`CONSTANT_DEFAULTS`] prints.
+const CONSTANT_DEFAULTS_PRINTED: &str = r#"2 1 0 12
+main 1 0 {"a": 12, "n": 1} [12, 13, 1] [1, 13, 1] Point(x=13, y=1) {"a": 12, "m": 1} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+parallel 0 0 {"a": 12, "n": 0} [12, 13, 0] [0, 13, 0] Point(x=12, y=1) {"a": 12, "m": 0} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+parallel 1 0 {"a": 12, "n": 1} [12, 13, 1] [1, 13, 1] Point(x=13, y=1) {"a": 12, "m": 1} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+parallel 2 0 {"a": 12, "n": 2} [12, 13, 2] [2, 13, 2] Point(x=14, y=1) {"a": 12, "m": 2} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+task 2 0 {"a": 12, "n": 2} [12, 13, 2] [2, 13, 2] Point(x=14, y=1) {"a": 12, "m": 2} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+after 3 0 {"a": 12, "n": 3} [12, 13, 3] [3, 13, 3] Point(x=15, y=1) {"a": 12, "m": 3} 0 [12, 13] {"a": 12} Point(x=12, y=1) [12, 13] {"a": 12} 0
+"#;
+
+/// The same for a dict of lists, a text too long for a header, and a nested struct's list.
+const DEFAULTS_OF_EVERY_KIND: &str = r#"from std.concurrent import Crashed
+
+NAMES = {"a": [1]}
+GREETING = "a text longer than any header holds"
+EMPTY = list[int]()
+
+struct Inner:
+    seen = EMPTY
+
+struct Shelf:
+    names = NAMES
+    text = GREETING
+    inner = Inner()
+
+    def filled(ref self, n: int):
+        self.names["b"] = [n]
+        self.names["a"].append(n)
+        self.text += "!"
+        self.inner.seen.append(n)
+
+def used(n: int) -> str:
+    mut shelf = Shelf()
+    shelf.filled(n)
+    mut again = Shelf()
+    again.inner.seen.append(n + 10)
+    return f"{shelf.names} {shelf.text} {shelf.inner.seen} {again.inner.seen} {NAMES} {GREETING} {EMPTY}"
+
+struct Said:
+    texts: list[str]
+
+def tasked(said: shared Said):
+    text = used(2)
+    lock said as ref held:
+        held.texts.append(text)
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(texts=list[str]())
+    stdout.print("main", used(1))
+    for line in [used(i) for i in parallel(range(3))]:
+        stdout.print("parallel", line)
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        for text in held.texts:
+            stdout.print("task", text)
+    stdout.print("after", used(3), NAMES, GREETING, EMPTY)
+    return
+"#;
+
+/// What [`DEFAULTS_OF_EVERY_KIND`] prints.
+const DEFAULTS_OF_EVERY_KIND_PRINTED: &str = r#"main {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
+parallel {"a": [1, 0], "b": [0]} a text longer than any header holds! [0] [10] {"a": [1]} a text longer than any header holds []
+parallel {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
+parallel {"a": [1, 2], "b": [2]} a text longer than any header holds! [2] [12] {"a": [1]} a text longer than any header holds []
+task {"a": [1, 2], "b": [2]} a text longer than any header holds! [2] [12] {"a": [1]} a text longer than any header holds []
+after {"a": [1, 3], "b": [3]} a text longer than any header holds! [3] [13] {"a": [1]} a text longer than any header holds [] {"a": [1]} a text longer than any header holds []
+"#;
+
+/// A struct field that defaults to a module constant holds that constant's block, which is never
+/// freed and is shared by every reader, so it's never taken as made alone: changing the field
+/// copies it. A list, a dict, a long text and a nested struct's list, on the main thread, in
+/// `parallel` and in a launched task, in both builds, checking proofs and not. The constants
+/// stay as written. The coverage lane's fuzz found a false proof here, before #1531.
+#[test]
+fn a_field_defaulting_to_a_constant_is_shared_however_it_is_changed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let programs = [
+        (CONSTANT_DEFAULTS, CONSTANT_DEFAULTS_PRINTED),
+        (DEFAULTS_OF_EVERY_KIND, DEFAULTS_OF_EVERY_KIND_PRINTED),
+    ];
+    for (source, wanted) in programs {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            for proofs in ["0", "1"] {
+                let dir = folder("constant_defaults")?;
+                let (program, executable) = (dir.join("defaults.fen"), dir.join("defaults"));
+                std::fs::write(&program, source)?;
+                let built = crate::executables::fennec_command()
+                    .arg("build")
+                    .args(how)
+                    .arg(&program)
+                    .arg("-o")
+                    .arg(&executable)
+                    .env("FENNEC_HOME", &dir)
+                    .env("FENNEC_CHECK_PROOFS", proofs)
+                    .output_before(FENNEC_DEADLINE)?;
+                assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+                let ran = Command::new(&executable).output_within()?;
+                std::fs::remove_dir_all(&dir)?;
+                assert_eq!(
+                    String::from_utf8_lossy(&ran.stdout),
+                    wanted,
+                    "{how:?} proofs {proofs}: {}",
+                    String::from_utf8_lossy(&ran.stderr)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What the main thread printed before a launch comes out before what the task prints, on its own
 /// output, as it was printed first: the main thread's kept output is written as the task starts.
 #[test]
@@ -12293,6 +12479,7 @@ fn connection_writes(said: &str) -> Option<u64> {
 }
 
 /// How many bytes a run allocated in all, from what it said under `FENNEC_COUNTS`.
+#[cfg(unix)]
 fn allocated_bytes(said: &str) -> Option<u64> {
     let line = said.lines().find(|line| line.starts_with("copies "))?;
     let mut words = line.split(' ');
@@ -12302,8 +12489,10 @@ fn allocated_bytes(said: &str) -> Option<u64> {
 
 /// A server reads a body that comes in many pieces into one buffer with room to grow, so a 10 MB
 /// upload allocates a few times its size, where joining each piece onto what came before with
-/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed.
+/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed. It stops
+/// the server with SIGTERM, so it runs where there are signals.
 #[test]
+#[cfg(unix)]
 fn a_served_body_read_in_many_pieces_is_copied_about_once() -> std::io::Result<()> {
     use std::io::{BufRead, Read, Write};
     if !ready() {
@@ -17758,6 +17947,1281 @@ def main(stdout: Stdout):
     assert!(count(&counts, "allocations") < Some(40), "{counts}");
     Ok(())
 }
+
+/// Builds `source` with these options and runs it under `FENNEC_COUNTS`: what it printed, and
+/// the line saying what it copied and what it still held at the end.
+fn printed_and_counts(dir: &Path, name: &str, how: &[&str]) -> std::io::Result<(String, String)> {
+    let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+    let (program, output) =
+        (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+    let args: Vec<&str> =
+        ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
+    let built = fennec(&args, dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
+    Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
+}
+
+/// `ref` in a loop never copies, items that hold blocks of their own included: a dict, a list
+/// and a string. A `Table` gone through as a local, a parameter or a field, or by `enumerate`,
+/// a list in a field, an item changed through `units[id]`, and one copied out with `mut`,
+/// changed and put back where it was: each item is taken out, changed where it is and put back,
+/// in either build. Each used to copy the whole item, its dict shared, every time round.
+#[test]
+fn a_ref_loop_over_items_holding_blocks_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("ref_loops_holding_blocks")?;
+    std::fs::write(dir.join("ref_loops_holding_blocks.fen"), REF_LOOPS_HOLDING_BLOCKS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "ref_loops_holding_blocks", how)?;
+        assert_eq!(printed, "24110 1000 3225 2000\n", "{how:?}");
+        assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const REF_LOOPS_HOLDING_BLOCKS: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    name: str
+    hp: int
+    bag: dict[str, int]
+    tags: list[str]
+
+struct World:
+    units = Table[Unit]()
+    queue = list[Unit]()
+
+def heal(ref units: Table[Unit]):
+    for ref unit in units:
+        unit.hp += 1
+        unit.bag["herb"] = (unit.bag.get("herb") else 0) + 1
+    return
+
+def march(ref world: World):
+    for at, ref unit in enumerate(world.units):
+        unit.hp += at
+        unit.tags.append("m")
+        _ = unit.tags.pop()
+    for ref unit in world.queue:
+        unit.hp -= 1
+        unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
+    return
+
+def hurt(ref units: Table[Unit], id: Id[Unit], by: int):
+    mut unit = units[id]
+    unit.hp -= by
+    if unit.hp <= 0:
+        unit.hp = 100
+        unit.bag["bone"] = (unit.bag.get("bone") else 0) + 1
+    units[id] = unit
+    return
+
+def wait(ref queue: list[Unit], at: int):
+    mut unit = queue[at]
+    unit.hp += 1
+    unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
+    queue[at] = unit
+    return
+
+def main(stdout: Stdout):
+    mut world = World()
+    mut ids = list[Id[Unit]]()
+    for n in range(50):
+        ids.append(world.units.add(Unit(name=f"fox{n}", hp=n, bag={"gold": n}, tags=["a"])))
+        world.queue.append(Unit(name=f"kit{n}", hp=n, bag={"gold": n}, tags=["b"]))
+    for _ in range(20):
+        heal(ref world.units)
+        march(ref world)
+        for ref unit in world.units:
+            unit.bag["gold"] = (unit.bag.get("gold") else 0) + 2
+        for id in ids:
+            world.units[id].hp -= 1
+        for at, id in enumerate(ids):
+            hurt(ref world.units, id, by=at % 7)
+            wait(ref world.queue, at)
+    mut hp = 0
+    mut herbs = 0
+    mut gold = 0
+    for unit in world.units:
+        hp += unit.hp
+        herbs += unit.bag.get("herb") else 0
+        gold += unit.bag.get("gold") else 0
+    mut waited = 0
+    for unit in world.queue:
+        hp += unit.hp
+        waited += unit.bag.get("wait") else 0
+    stdout.print(hp, herbs, gold, waited)
+    return
+"#;
+
+/// An item taken out of a `Table` by `for ref` goes back however the loop ends. A failure
+/// halfway keeps what was changed, up to the item that failed, and leaves the rest as they
+/// were. A crash halfway under `lock ... as ref` puts every item back as it was. A copy of
+/// the `Table` made before the loop stays as it was, its items' dicts included.
+#[test]
+fn a_table_left_halfway_through_a_ref_loop_is_whole() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ref_loop_left_halfway")?;
+    std::fs::write(dir.join("ref_loop_left_halfway.fen"), REF_LOOP_LEFT_HALFWAY)?;
+    let rows = "fox0 10 1 0\nfox1 20 1 0\nfox2 30 1 0\nfox3 30 0 0\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "ref_loop_left_halfway", how)?;
+        assert_eq!(printed, format!("too hot at 30\n{rows}before 60 4\ncrashed\n{rows}"), "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const REF_LOOP_LEFT_HALFWAY: &str = r#"from std.collections import Id, Table
+from std.concurrent import Crashed
+
+error TooHot:
+    at: int
+
+struct Unit:
+    name: str
+    hp: int
+    bag: dict[str, int]
+
+struct World:
+    units = Table[Unit]()
+
+def heat(ref units: Table[Unit], limit: int) fails TooHot:
+    for ref unit in units:
+        unit.hp += 10
+        unit.bag["heat"] = (unit.bag.get("heat") else 0) + 1
+        if unit.hp > limit: fail TooHot(at=unit.hp)
+    return
+
+def burn(world: shared World, limit: int):
+    lock world as ref held:
+        for ref unit in held.units:
+            unit.hp += 100
+            unit.bag["burn"] = 1
+            # A crash halfway: the lock puts back everything it changed.
+            assert unit.hp < limit
+    return
+
+def burning(world: shared World) fails Crashed:
+    with launch(() => burn(world, limit=125))?:
+        pass
+    return
+
+def show(stdout: Stdout, units: Table[Unit]):
+    for unit in units:
+        stdout.print(unit.name, unit.hp, unit.bag.get("heat") else 0, unit.bag.get("burn") else 0)
+    return
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    for n in range(4):
+        _ = units.add(Unit(name=f"fox{n}", hp=n * 10, bag={"gold": n}))
+    before = units
+    heat(ref units, limit=25) except why:
+        case TooHot(at):
+            stdout.print("too hot at", at)
+    show(stdout, units)
+    stdout.print("before", sum(unit.hp for unit in before), sum(len(unit.bag) for unit in before))
+    shared world = World(units=units)
+    burning(world) except why:
+        case Crashed():
+            stdout.print("crashed")
+    lock world as held:
+        show(stdout, held.units)
+    return
+"#;
+
+/// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
+/// made alone before the item is taken. A copy kept as a local, as a field of a copied struct,
+/// by a caller passing it as `ref`, and by another task, of items holding a dict and of plain
+/// ones, and through `units[id]`: each keeps what it had.
+#[test]
+fn a_table_copied_before_its_items_change_keeps_them() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("table_copied_before")?;
+    std::fs::write(dir.join("table_copied_before.fen"), TABLE_COPIED_BEFORE)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, _) = printed_and_counts(&dir, "table_copied_before", how)?;
+        assert_eq!(
+            printed,
+            "local 0 0\nlocal 1 1\nlocal 2 2\nchanged 100 7\nchanged 101 7\nchanged 102 7\nplain 0 0\nplain 1 1\nplain 2 2\nfield 0 0\nfield 1 1\nfield 2 2\nparam 0 0\nparam 1 1\nparam 2 2\ntask 0 0\ntask 1 1\ntask 2 2\nafter 100 7\nafter 101 7\nafter 102 7\nby id 0 0\nby id 1 1\nby id 2 2\nby id changed 100 7\nby id changed 101 7\nby id changed 102 7\n",
+            "{how:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TABLE_COPIED_BEFORE: &str = r#"from std.collections import Id, Table
+from std.concurrent import Closed, Crashed, Inbox
+
+struct Heavy:
+    x: int
+    bag: dict[str, int]
+
+struct Plain:
+    x: int
+    y: int
+
+struct World:
+    units: Table[Heavy]
+
+def heavy_table() -> Table[Heavy]:
+    mut table = Table[Heavy]()
+    for i in range(3):
+        _ = table.add(Heavy(x=i, bag={"gold": i}))
+    return table
+
+def bump(ref units: Table[Heavy]):
+    for ref item in units:
+        item.x += 100
+        item.bag["gold"] = 7
+    return
+
+def bump_world(ref world: World):
+    for ref item in world.units:
+        item.x += 100
+        item.bag["gold"] = 7
+    return
+
+def show(stdout: Stdout, name: str, units: Table[Heavy]):
+    for item in units:
+        stdout.print(name, item.x, item.bag["gold"])
+    return
+
+def holder(inbox: Inbox[int], kept: Table[Heavy], stdout: Stdout):
+    for _ in inbox:
+        show(stdout, "task", kept)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    # A local copied before the loop.
+    mut table = heavy_table()
+    backup = table
+    for ref item in table:
+        item.x += 100
+        item.bag["gold"] = 7
+    show(stdout, "local", backup)
+    show(stdout, "changed", table)
+    # Plain items, the same.
+    mut plain = Table[Plain]()
+    for i in range(3):
+        _ = plain.add(Plain(x=i, y=i))
+    plain_backup = plain
+    for ref item in plain:
+        item.x += 100
+    for item in plain_backup:
+        stdout.print("plain", item.x, item.y)
+    # A field of a struct that was copied.
+    mut world = World(units=heavy_table())
+    world_backup = world
+    bump_world(ref world)
+    show(stdout, "field", world_backup.units)
+    # Behind a `ref` parameter, the caller keeping a copy.
+    mut units = heavy_table()
+    kept = units
+    bump(ref units)
+    show(stdout, "param", kept)
+    # A copy another task holds while the loop runs.
+    mut shared_out = heavy_table()
+    held = shared_out
+    with launch((inbox) => holder(inbox, held, stdout))? as go:
+        bump(ref shared_out)
+        go.send(1)?
+    show(stdout, "after", shared_out)
+    # Changed through `units[id]`, a copy kept first.
+    mut by_id = Table[Heavy]()
+    mut ids = list[Id[Heavy]]()
+    for i in range(3):
+        ids.append(by_id.add(Heavy(x=i, bag={"gold": i})))
+    by_id_backup = by_id
+    for id in ids:
+        by_id[id].x += 100
+        by_id[id].bag["gold"] = 7
+    show(stdout, "by id", by_id_backup)
+    show(stdout, "by id changed", by_id)
+    return
+"#;
+
+/// `mut unit = units[id]`, changed, then `units[id] = unit`, for a `Table` and a list, takes the
+/// item out rather than copying it, and still means what a copy means. A copy of the collection
+/// kept first keeps what it had. A failure between taking the item and putting it back loses the
+/// change, as a copy's would be lost, and leaves the item as it was. A crash halfway under
+/// `lock ... as ref` puts back every item.
+#[test]
+fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("copied_out_put_back")?;
+    std::fs::write(dir.join("copied_out_put_back.fen"), COPIED_OUT_PUT_BACK)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "copied_out_put_back", how)?;
+        assert_eq!(
+            printed, "(988, 213) 790\n(950, 190) 190\nrefused too much\n(988, 213)\ncrashed\n(988, 213)\n",
+            "{how:?}"
+        );
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const COPIED_OUT_PUT_BACK: &str = r#"from std.collections import Id, Table
+from std.concurrent import Crashed
+
+error Refused:
+    why: str
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    tags: list[str]
+
+struct World:
+    units = Table[Unit]()
+    queue = list[Unit]()
+
+def hurt(ref units: Table[Unit], id: Id[Unit], by: int):
+    mut unit = units[id]
+    unit.hp -= by
+    if unit.hp <= 0:
+        unit.hp = 100
+        unit.bag["bone"] = (unit.bag.get("bone") else 0) + 1
+    unit.tags.append("hurt")
+    _ = unit.tags.pop()
+    units[id] = unit
+    return
+
+def wait(ref queue: list[Unit], at: int):
+    mut unit = queue[at]
+    unit.hp += 1
+    unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
+    queue[at] = unit
+    return
+
+def checked(by: int) -> int fails Refused:
+    if by > 50: fail Refused(why="too much")
+    return by
+
+# A failure between taking the item and putting it back: the change was made to a copy, so
+# it's lost, and the `Table` keeps the item as it was.
+def hurt_checked(ref units: Table[Unit], id: Id[Unit], by: int) fails Refused:
+    mut unit = units[id]
+    unit.hp -= 1
+    unit.hp -= checked(by)?
+    units[id] = unit
+    return
+
+def burn(world: shared World, ids: list[Id[Unit]]):
+    lock world as ref held:
+        for id in ids:
+            mut unit = held.units[id]
+            unit.hp += 1000
+            unit.bag["burn"] = 1
+            held.units[id] = unit
+            # A crash halfway: the lock puts back everything it changed.
+            assert unit.hp < 1050
+    return
+
+def burning(world: shared World, ids: list[Id[Unit]]) fails Crashed:
+    with launch(() => burn(world, ids))?:
+        pass
+    return
+
+def totals(units: Table[Unit]) -> (int, int):
+    mut hp = 0
+    mut items = 0
+    for unit in units:
+        hp += unit.hp
+        items += sum(unit.bag.values())
+    return (hp, items)
+
+def main(stdout: Stdout):
+    mut world = World()
+    mut ids = list[Id[Unit]]()
+    for n in range(20):
+        ids.append(world.units.add(Unit(hp=n * 5, bag={"gold": n}, tags=["a"])))
+        world.queue.append(Unit(hp=n, bag={"gold": n}, tags=["b"]))
+    kept = world
+    for round in range(30):
+        for at, id in enumerate(ids):
+            hurt(ref world.units, id, by=at % 7 + round % 3)
+            wait(ref world.queue, at)
+    stdout.print(totals(world.units), sum(unit.hp for unit in world.queue))
+    stdout.print(totals(kept.units), sum(unit.hp for unit in kept.queue))
+    hurt_checked(ref world.units, ids[3], by=60) except why:
+        case Refused(why):
+            stdout.print("refused", why)
+    stdout.print(totals(world.units))
+    shared burnt = world
+    burning(burnt, ids) except why:
+        case Crashed():
+            stdout.print("crashed")
+    lock burnt as held:
+        stdout.print(totals(held.units))
+    return
+"#;
+
+/// The same for a dict's value: a plain struct, a struct holding a dict, and a list. Each goes
+/// back into its own entry, from a dict, and a value's own block, made alone first, so copies of
+/// the dict kept before keep what they had, and a failure between loses the change. Growing a
+/// list held in a dict this way used to copy the whole list each time, which made it quadratic:
+/// now only the copies kept are copied.
+#[test]
+fn a_dict_value_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("dict_value_put_back")?;
+    std::fs::write(dir.join("dict_value_put_back.fen"), DICT_VALUE_PUT_BACK)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "dict_value_put_back", how)?;
+        assert_eq!(printed, "301 3 302 305 301 44851\n1 2 5 1\nrefused no\n1\n", "{how:?}");
+        assert!(count(&counts, "copies") < Some(20) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const DICT_VALUE_PUT_BACK: &str = r#"error Refused:
+    why: str
+
+struct Plain:
+    x: int
+    y: int
+
+struct Heavy:
+    x: int
+    bag: dict[str, int]
+
+def bump_plain(ref d: dict[str, Plain], key: str):
+    mut item = d[key]
+    item.x += 1
+    d[key] = item
+    return
+
+def bump_heavy(ref d: dict[str, Heavy], key: str):
+    mut item = d[key]
+    item.x += 1
+    item.bag["n"] = (item.bag.get("n") else 0) + 1
+    d[key] = item
+    return
+
+def grow(ref d: dict[str, list[int]], key: str, n: int):
+    mut items = d[key]
+    items.append(n)
+    d[key] = items
+    return
+
+def checked(n: int) -> int fails Refused:
+    if n > 5: fail Refused(why="no")
+    return n
+
+def bump_checked(ref d: dict[str, Heavy], key: str, n: int) fails Refused:
+    mut item = d[key]
+    item.x += 1
+    item.x += checked(n)?
+    d[key] = item
+    return
+
+def main(stdout: Stdout):
+    mut plain = {"a": Plain(x=1, y=2), "b": Plain(x=3, y=4)}
+    mut heavy = {"a": Heavy(x=1, bag={"n": 0}), "b": Heavy(x=2, bag={"n": 5})}
+    mut lists = {"a": [1], "b": [2]}
+    kept_plain = plain
+    kept_heavy = heavy
+    kept_lists = lists
+    for n in range(300):
+        bump_plain(ref plain, "a")
+        bump_heavy(ref heavy, "b")
+        grow(ref lists, "a", n)
+    stdout.print(
+        plain["a"].x,
+        plain["b"].x,
+        heavy["b"].x,
+        heavy["b"].bag["n"],
+        len(lists["a"]),
+        sum(lists["a"]),
+    )
+    stdout.print(
+        kept_plain["a"].x,
+        kept_heavy["b"].x,
+        kept_heavy["b"].bag["n"],
+        len(kept_lists["a"]),
+    )
+    bump_checked(ref heavy, "a", n=9) except why:
+        case Refused(why):
+            stdout.print("refused", why)
+    stdout.print(heavy["a"].x)
+    return
+"#;
+
+/// An array's `for ref` takes each item out and changes it where it is, as a list's does, for
+/// items holding a dict and a list: going round twenty times copies no more than going round
+/// once, where each time round used to copy every item. A copy of the array kept first, as a
+/// local or in a copied struct, keeps what it had, and a failure halfway keeps the changes up to
+/// the item that failed.
+#[test]
+fn an_arrays_ref_loop_changes_its_items_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("array_ref_loop")?;
+    std::fs::write(dir.join("array_ref_loop.fen"), ARRAY_REF_LOOP)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "array_ref_loop", how)?;
+        assert_eq!(
+            printed,
+            "kept 0 0 1\nkept 1 1 1\nkept 2 2 1\nkept 3 3 1\nbumped 10 100 2\nbumped 11 101 2\nbumped 12 102 2\nbumped 13 103 2\ngrid kept 0 0 1\ngrid kept 1 1 1\ngrid kept 2 2 1\ngrid kept 3 3 1\ngrid 10 100 1\ngrid 11 101 1\ngrid 12 102 1\ngrid 13 103 1\nrefused at 1012\nafter 1010 100 2\nafter 1011 101 2\nafter 1012 102 2\nafter 13 103 2\n",
+            "{how:?}"
+        );
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    let rounds = |times: u32| -> std::io::Result<Option<u64>> {
+        let name = format!("array_rounds_{times}");
+        let source = ARRAY_REF_LOOP.replace(
+            "    bump(ref cells)\n",
+            &format!("    for _ in range({times}):\n        bump(ref cells)\n"),
+        );
+        std::fs::write(dir.join(format!("{name}.fen")), source)?;
+        let (_, counts) = printed_and_counts(&dir, &name, &["--llvm"])?;
+        Ok(count(&counts, "copies"))
+    };
+    let (once, often) = (rounds(1)?, rounds(20)?);
+    assert!(once.is_some() && once == often, "{once:?} against {often:?}");
+    // `cells[at].x += 1`, and an item copied out with `mut` and put back, take it out too: eighty
+    // of each copy only what the items first shared, and what the copy kept first shares.
+    std::fs::write(dir.join("array_item_forms.fen"), ARRAY_ITEM_FORMS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "array_item_forms", how)?;
+        assert_eq!(printed, "8080 86 8\n0 6 4\n", "{how:?}");
+        assert!(count(&counts, "copies") < Some(30) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const ARRAY_ITEM_FORMS: &str = r#"struct Cell:
+    x = 0
+    bag = dict[str, int]()
+
+def poke(ref cells: array[Cell, 4], at: int):
+    cells[at].x += 1
+    cells[at].bag["n"] = (cells[at].bag.get("n") else 0) + 1
+    return
+
+def swap_out(ref cells: array[Cell, 4], at: int):
+    mut cell = cells[at]
+    cell.x += 100
+    cell.bag["m"] = 1
+    cells[at] = cell
+    return
+
+def main(stdout: Stdout):
+    mut cells = array[Cell, 4]()
+    for at in range(4):
+        cells[at].bag["n"] = at
+    kept = cells
+    for _ in range(20):
+        for at in range(4):
+            poke(ref cells, at)
+            swap_out(ref cells, at)
+    stdout.print(
+        sum(cell.x for cell in cells),
+        sum(cell.bag["n"] for cell in cells),
+        sum(len(cell.bag) for cell in cells),
+    )
+    stdout.print(
+        sum(cell.x for cell in kept),
+        sum(cell.bag["n"] for cell in kept),
+        sum(len(cell.bag) for cell in kept),
+    )
+    return
+"#;
+
+const ARRAY_REF_LOOP: &str = r#"error Refused:
+    at: int
+
+struct Cell:
+    x = 0
+    bag = dict[str, int]()
+    tags = list[str]()
+
+struct Grid:
+    cells = array[Cell, 4]()
+
+def fill(ref cells: array[Cell, 4]):
+    for at, ref cell in enumerate(cells):
+        cell.x = at
+        cell.bag["n"] = at
+        cell.tags.append(f"t{at}")
+    return
+
+def bump(ref cells: array[Cell, 4]):
+    for ref cell in cells:
+        cell.x += 10
+        cell.bag["n"] = (cell.bag.get("n") else 0) + 100
+        cell.tags.append("b")
+    return
+
+def bump_grid(ref grid: Grid):
+    for ref cell in grid.cells:
+        cell.x += 10
+        cell.bag["n"] = (cell.bag.get("n") else 0) + 100
+    return
+
+def bump_until(ref cells: array[Cell, 4], limit: int) fails Refused:
+    for ref cell in cells:
+        cell.x += 1000
+        if cell.x > limit: fail Refused(at=cell.x)
+    return
+
+def show(stdout: Stdout, name: str, cells: array[Cell, 4]):
+    for cell in cells:
+        stdout.print(name, cell.x, cell.bag.get("n") else -1, len(cell.tags))
+    return
+
+def main(stdout: Stdout):
+    mut cells = array[Cell, 4]()
+    fill(ref cells)
+    kept = cells
+    bump(ref cells)
+    show(stdout, "kept", kept)
+    show(stdout, "bumped", cells)
+    mut grid = Grid()
+    fill(ref grid.cells)
+    grid_kept = grid
+    bump_grid(ref grid)
+    show(stdout, "grid kept", grid_kept.cells)
+    show(stdout, "grid", grid.cells)
+    bump_until(ref cells, limit=1011) except why:
+        case Refused(at):
+            stdout.print("refused at", at)
+    show(stdout, "after", cells)
+    return
+"#;
+
+/// A dict's value and a `Table`'s item are places, as a list's item is: `held[key].x += 1`,
+/// `held[key].bag[k] = v`, `held[key].append(v)`, `held[key].tags.append(v)`, `heal(ref
+/// held[key])`, and the same through `units[id]`, each change the value where it is, with the
+/// dict or `Table` and the value's block made alone first. Each used to copy the whole value,
+/// and growing a list held in a dict copied all of it each time, which was quadratic. Now only
+/// the copies kept first are copied, and they keep what they had.
+#[test]
+fn a_dict_value_and_a_table_item_are_places() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("value_places")?;
+    for (name, source, wanted) in [
+        ("dict_value_places", DICT_VALUE_PLACES, "301 301 299 301 44850\n1 1 0 1\n"),
+        ("dict_value_fields", DICT_VALUE_FIELDS, "200 19900 202 0 2\n"),
+        ("table_item_places", TABLE_ITEM_PLACES, "21802 12\n"),
+    ] {
+        std::fs::write(dir.join(format!("{name}.fen")), source)?;
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let (printed, counts) = printed_and_counts(&dir, name, how)?;
+            assert_eq!(printed, wanted, "{name} {how:?}");
+            assert!(
+                count(&counts, "copies") < Some(20) && counts.ends_with(" live 0"),
+                "{name} {how:?}: {counts}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const DICT_VALUE_PLACES: &str = r#"struct Plain:
+    x: int
+    y: int
+
+struct Heavy:
+    x: int
+    bag: dict[str, int]
+
+def plain(ref held: dict[str, Plain], key: str):
+    held[key].x += 1
+    return
+
+def heavy(ref held: dict[str, Heavy], key: str, n: int):
+    held[key].x += 1
+    held[key].bag["gold"] = n
+    return
+
+def grow(ref held: dict[str, list[int]], key: str, n: int):
+    held[key].append(n)
+    return
+
+def main(stdout: Stdout):
+    mut p = {"a": Plain(x=1, y=2)}
+    mut h = {"a": Heavy(x=1, bag={"gold": 0})}
+    mut g = {"a": [0]}
+    kept_p = p
+    kept_h = h
+    kept_g = g
+    for n in range(300):
+        plain(ref p, "a")
+        heavy(ref h, "a", n=n)
+        grow(ref g, "a", n=n)
+    stdout.print(p["a"].x, h["a"].x, h["a"].bag["gold"], len(g["a"]), sum(g["a"]))
+    stdout.print(kept_p["a"].x, kept_h["a"].x, kept_h["a"].bag["gold"], len(kept_g["a"]))
+    return
+"#;
+
+const DICT_VALUE_FIELDS: &str = r#"struct Unit:
+    hp: int
+    tags: list[int]
+
+def heal(ref unit: Unit, by: int):
+    unit.hp += by
+    return
+
+def main(stdout: Stdout):
+    mut held = {"a": Unit(hp=1, tags=[]), "b": Unit(hp=2, tags=[])}
+    kept = held
+    for round in range(200):
+        held["a"].tags.append(round)
+        heal(ref held["b"], by=1)
+    stdout.print(
+        len(held["a"].tags),
+        sum(held["a"].tags),
+        held["b"].hp,
+        len(kept["a"].tags),
+        kept["b"].hp,
+    )
+    return
+"#;
+
+const TABLE_ITEM_PLACES: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    tags: list[int]
+
+def heal(ref unit: Unit, by: int):
+    unit.hp += by
+    unit.tags.append(by)
+    return
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for n in range(4):
+        ids.append(units.add(Unit(hp=n, bag={"gold": n}, tags=[])))
+    kept = units
+    for round in range(100):
+        for id in ids:
+            units[id].bag["gold"] = round
+            units[id].tags.append(round)
+            heal(ref units[id], by=1)
+    mut total = 0
+    for unit in units:
+        total += unit.hp + unit.bag["gold"] + len(unit.tags) + sum(unit.tags)
+    mut kept_total = 0
+    for unit in kept:
+        kept_total += unit.hp + unit.bag["gold"] + len(unit.tags)
+    stdout.print(total, kept_total)
+    return
+"#;
+
+/// A dict's `values()`, `keys()` and `items()`, gone through by a `for`, a comprehension or a
+/// `sum`, are read where they are, its entries walked in order past those removed, rather than
+/// made as a list each time: two hundred rounds of each make nothing more than one. `sum` over
+/// one is the loop it stands for. The same goes for a dict reached through an item a loop over
+/// a `Table` reads.
+#[test]
+fn a_dicts_views_are_walked_where_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("dict_views_walked")?;
+    std::fs::write(dir.join("dict_views_walked.fen"), DICT_VIEWS_WALKED)?;
+    std::fs::write(dir.join("dict_in_items.fen"), DICT_IN_ITEMS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "dict_views_walked", how)?;
+        assert_eq!(printed, DICT_VIEWS_PRINT, "{how:?}");
+        assert!(count(&counts, "allocations") < Some(60) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+        let (printed, counts) = printed_and_counts(&dir, "dict_in_items", how)?;
+        assert_eq!(printed, "515000\n", "{how:?}");
+        assert!(count(&counts, "allocations") < Some(400), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const DICT_VIEWS_PRINT: &str = r#"671400 42
+[123, 129, 132, 135, 138, 141, 144]
+["k1", "k2", "k3"] [("k1", 3), ("k2", 6)]
+kitden 12
+0.875 6
+0 []
+"#;
+
+const DICT_VIEWS_WALKED: &str = r#"struct Unit:
+    hp: int
+    name: str
+
+def main(stdout: Stdout):
+    mut d = dict[str, int]()
+    for n in range(50):
+        d[f"k{n}"] = n * 3
+    for n in range(0, 50, 7):
+        _ = d.pop(f"k{n}")
+    mut total = 0
+    for _ in range(200):
+        total += sum(d.values())
+        for key in d.keys():
+            total += len(key)
+        for key, value in d.items():
+            total += len(key) * value % 7
+        for value in d.values():
+            total -= value % 3
+    stdout.print(total, len(d))
+    stdout.print([value for value in d.values() if value > 120])
+    stdout.print([key for key in d.keys()][0:3], [pair for pair in d.items()][0:2])
+    mut units = {"a": Unit(hp=3, name="fox"), "b": Unit(hp=5, name="kit")}
+    _ = units.pop("a")
+    units["c"] = Unit(hp=7, name="den")
+    mut names = ""
+    for unit in units.values():
+        names += unit.name
+    stdout.print(names, sum(unit.hp for unit in units.values()))
+    floats = {1: 0.5, 2: 0.25, 3: 0.125}
+    stdout.print(sum(floats.values()), sum(floats.keys()))
+    empty = dict[str, int]()
+    stdout.print(sum(empty.values()), [k for k in empty.keys()])
+    return
+"#;
+
+const DICT_IN_ITEMS: &str = r#"from std.collections import Table
+
+struct E:
+    n: int
+    inventory: dict[str, int]
+
+def carried(es: Table[E]) -> int:
+    mut total = 0
+    for e in es:
+        total += sum(e.inventory.values())
+    return total
+
+def main(stdout: Stdout):
+    mut es = Table[E]()
+    for n in range(100):
+        _ = es.add(E(n=n, inventory={"gold": n, "arrow": 2}))
+    mut t = 0
+    for _ in range(100):
+        t += carried(es)
+    stdout.print(t)
+    return
+"#;
+
+/// `text = text + piece` and `text = f"{text}..."` grow the text where it is, as `text += piece`
+/// does, rather than copying it into a new one each time, which made building a text that way
+/// quadratic. A copy kept first keeps what it had, and adding a text to itself doubles it.
+#[test]
+fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("text_grown")?;
+    std::fs::write(dir.join("text_grown.fen"), TEXT_GROWN)?;
+    std::fs::write(dir.join("text_chained.fen"), TEXT_CHAINED)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "text_grown", how)?;
+        assert_eq!(printed, TEXT_GROWN_PRINTS, "{how:?}");
+        assert!(
+            count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
+            "{how:?}: {counts}"
+        );
+        // `route = route + "/" + part` grows by each piece in turn, unless a later piece reads the
+        // text itself, which would then see it grown already.
+        let (printed, _) = printed_and_counts(&dir, "text_chained", how)?;
+        assert_eq!(printed, "GET /a!/1!/b!xGET /a!/1!/b! GET /a!/1!/b! ab-ab qq!\n", "{how:?}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
+";
+
+const TEXT_CHAINED: &str = r#"def main(stdout: Stdout):
+    mut route = "GET "
+    for part in ["a", "1", "b"]:
+        route = route + "/" + part + "!"
+    kept = route
+    route = route + "x" + route
+    mut n = 0
+    mut text = "ab"
+    text = f"{text}-{text}"
+    mut other = "q"
+    other = other + f"{other}!"
+    stdout.print(route, kept, text, other)
+    return
+"#;
+
+const TEXT_GROWN: &str = r#"def main(stdout: Stdout):
+    mut text = ""
+    for n in range(2000):
+        text = text + "ab"
+    mut formatted = "x"
+    for n in range(2000):
+        formatted = f"{formatted}{n % 10},"
+    kept = text
+    text = text + "!"
+    mut doubled = "ab"
+    for _ in range(5):
+        doubled = doubled + doubled
+    mut spaced = "a"
+    for n in range(3):
+        spaced = f"{spaced} {n * 1000:,}"
+    stdout.print(
+        len(text),
+        len(kept),
+        text[-3:],
+        len(formatted),
+        formatted[0:12],
+        doubled[0:6],
+        len(doubled),
+        spaced,
+    )
+    return
+"#;
+
+/// A struct made with a list nothing reads again takes the list's owner over, so the list has
+/// one owner and changing it through the struct copies nothing: a list built just for a struct
+/// used to be copied, with its items, the first time anything changed it. A list that's read
+/// again, made with in a loop, or given to two fields keeps its own owner, so it's copied where
+/// it changes, as a copy has to be.
+#[test]
+fn a_struct_made_with_a_list_built_for_it_takes_it_over() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("made_with_a_list")?;
+    std::fs::write(dir.join("made_with_a_list.fen"), MADE_WITH_A_LIST)?;
+    std::fs::write(dir.join("list_built_for_it.fen"), LIST_BUILT_FOR_IT)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "made_with_a_list", how)?;
+        assert_eq!(printed, MADE_WITH_A_LIST_PRINTS, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+        let (printed, counts) = printed_and_counts(&dir, "list_built_for_it", how)?;
+        assert_eq!(printed, "95\n", "{how:?}");
+        assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const MADE_WITH_A_LIST_PRINTS: &str = r"[1, 2, 9] [1, 2, 3]
+[[5, 0], [5, 10, 1], [5, 10, 11, 2]] [5, 10, 11, 12]
+[7, 8] [7] [7]
+[0, 1, 2, 3, 100] [4]
+";
+
+const MADE_WITH_A_LIST: &str = r"struct W:
+    es: list[int]
+    more: list[int]
+
+def build(n: int) -> W:
+    mut made = list[int]()
+    for i in range(n):
+        made.append(i)
+    return W(es=made, more=[n])
+
+def main(stdout: Stdout):
+    mut xs = [1, 2]
+    mut w = W(es=xs, more=[0])
+    xs.append(3)
+    w.es.append(9)
+    stdout.print(w.es, xs)
+    mut kept = list[W]()
+    mut ys = [5]
+    for round in range(3):
+        mut v = W(es=ys, more=[round])
+        v.es.append(round)
+        kept.append(v)
+        ys.append(10 + round)
+    stdout.print([k.es for k in kept], ys)
+    same = [7]
+    mut twice = W(es=same, more=same)
+    twice.es.append(8)
+    stdout.print(twice.es, twice.more, same)
+    mut b = build(4)
+    b.es.append(100)
+    stdout.print(b.es, b.more)
+    return
+";
+
+const LIST_BUILT_FOR_IT: &str = r#"struct E:
+    x: int
+    d: dict[str, int]
+
+struct W:
+    es: list[E]
+
+def bump(ref w: W):
+    for ref e in w.es:
+        e.x += 1
+    return
+
+def main(stdout: Stdout):
+    mut w = W(es=[E(x=i, d={"a": 1}) for i in range(10)])
+    for _ in range(5):
+        bump(ref w)
+    stdout.print(sum(e.x for e in w.es))
+    return
+"#;
+
+/// `a + b` of texts too long to join in a header, or held in blocks, is made as one block at
+/// the size of both, each copied in once, with neither boxed into a block of its own first: a
+/// short text held in its header was copied into a block, joined and let go of. It gives what it
+/// gave, for texts of every length and of characters past ASCII.
+#[test]
+fn texts_joined_past_a_header_are_made_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("texts_joined")?;
+    std::fs::write(dir.join("texts_joined.fen"), TEXTS_JOINED)?;
+    std::fs::write(dir.join("texts_added_in_turn.fen"), TEXTS_ADDED_IN_TURN)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "texts_joined", how)?;
+        assert_eq!(printed, TEXTS_JOINED_PRINT, "{how:?}");
+        // `text += a + b + c` adds each piece in turn, to a name or a field, unless a piece reads
+        // what the text is reached from.
+        let (printed, _) = printed_and_counts(&dir, "texts_added_in_turn", how)?;
+        assert_eq!(printed, "\"a\": <\">\"bb\": <\"> xyzx pqrs [\"\", \"mn\"]\n", "{how:?}");
+        assert!(count(&counts, "allocations") < Some(90) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TEXTS_ADDED_IN_TURN: &str = r#"struct Writer:
+    text = ""
+    parts = ["", ""]
+
+    def field(ref self, name: str):
+        self.text += "\"" + name + "\": "
+        self.text += "<" + self.text[0:1] + ">"
+        return
+
+def main(stdout: Stdout):
+    mut w = Writer()
+    w.field("a")
+    w.field("bb")
+    mut t = "x"
+    t += "y" + "z" + t
+    mut u = "p"
+    u += "q" + ("r" + "s")
+    w.parts[1] += "m" + "n"
+    stdout.print(w.text, t, u, w.parts)
+    return
+"#;
+
+const TEXTS_JOINED_PRINT: &str = r"abab aba string long enough to be held in a block of its own a string long enough to be held in a block of its ownab a string long enough to be held in a block of its owna string long enough to be held in a block of its own
+55 56 é日本é日本 18
+é日本 own 56 12
+165 29aé日
+";
+
+const TEXTS_JOINED: &str = r#"def main(stdout: Stdout):
+    short = "ab"
+    long_one = "a string long enough to be held in a block of its own"
+    wide = "é日本"
+    stdout.print(short + short, short + long_one, long_one + short, long_one + long_one)
+    stdout.print(
+        len(short + long_one),
+        len(wide + long_one),
+        wide + wide,
+        len(wide + wide + wide + wide + wide + wide),
+    )
+    joined = wide + long_one
+    stdout.print(joined[0:3], joined[-3:], len(joined), joined.find("long") else -1)
+    mut parts = list[str]()
+    for n in range(30):
+        parts.append(f"{n}" + long_one[0:n % 7] + wide[0:n % 3])
+    stdout.print(len("".join(parts)), parts[29])
+    return
+"#;
+
+/// `text += piece` with a piece held in its header and no room left in the text's block makes
+/// the joined text natively, in a block with room to double, letting the old text go, as the
+/// runtime grows one: the piece used to be boxed into a block of its own to hand to the runtime,
+/// and let go of again. A copy kept first keeps what it had, and adding a text to itself doubles.
+#[test]
+fn text_grown_past_its_room_takes_no_box() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("text_grown_past_room")?;
+    std::fs::write(dir.join("text_grown_past_room.fen"), TEXT_GROWN_PAST_ROOM)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "text_grown_past_room", how)?;
+        assert_eq!(printed, TEXT_GROWN_PAST_ROOM_PRINT, "{how:?}");
+        assert!(count(&counts, "allocations") < Some(30) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TEXT_GROWN_PAST_ROOM_PRINT: &str = r"132 130 é日本 né HTTP/1.1
+445 7é8é9é -1
+64 !!si
+";
+
+const TEXT_GROWN_PAST_ROOM: &str = r#"def main(stdout: Stdout):
+    long_one = "a string long enough to be held in a block of its own"
+    mut out = f"HTTP/1.1 {200} OK and some more words\r\n"
+    out += "Content-Type: x\r\n"
+    out += f"Content-Length: {len(long_one)}\r\n\r\n"
+    out += long_one
+    out += "é"
+    kept = out
+    out += "日本"
+    stdout.print(len(out), len(kept), out[-3:], kept[-2:], out[0:8])
+    mut built = "start of a text that does not fit in a header"
+    for n in range(200):
+        built += f"{n % 10}é"
+    stdout.print(len(built), built[-6:], built.find("9é9") else -1)
+    mut same = "sixteen chars!!!sixteen chars!!!"
+    same += same
+    stdout.print(len(same), same[30:34])
+    return
+"#;
+
+/// An item copied out with `mut` and put back by a key read again goes back only where it came
+/// from: when what the key is read from changes between, by `swap`, `reverse`, an item set or a
+/// call given it by `ref`, the item is copied, as the source says, rather than taken out. Taking
+/// it out then put it in another item's place and left the first with no list. A `Table`, a list
+/// and a dict, each of the four ways, print what a copy gives.
+#[test]
+fn an_item_put_back_by_a_key_that_moved_is_a_copy() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("put_back_moved_key")?;
+    std::fs::write(dir.join("put_back_moved_key.fen"), PUT_BACK_MOVED_KEY)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "put_back_moved_key", how)?;
+        assert_eq!(printed, PUT_BACK_MOVED_KEY_PRINT, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const PUT_BACK_MOVED_KEY_PRINT: &str = r#"table 0 [(0, [0]), (100, [0, 5]), (2, [2])]
+list 0 [(0, [0]), (100, [0, 7]), (2, [2])]
+dict 0 [("a", 0, [0]), ("b", 100, [0, 9]), ("c", 2, [2])]
+table 1 [(0, [0]), (1, [1]), (100, [0, 5])]
+list 1 [(0, [0]), (1, [1]), (100, [0, 7])]
+dict 1 [("a", 0, [0]), ("b", 1, [1]), ("c", 100, [0, 9])]
+table 2 [(0, [0]), (1, [1]), (100, [0, 5])]
+list 2 [(0, [0]), (1, [1]), (100, [0, 7])]
+dict 2 [("a", 0, [0]), ("b", 1, [1]), ("c", 100, [0, 9])]
+table 3 [(0, [0]), (1, [1]), (100, [0, 5])]
+list 3 [(0, [0]), (1, [1]), (100, [0, 7])]
+dict 3 [("a", 0, [0]), ("b", 1, [1]), ("c", 100, [0, 9])]
+"#;
+
+const PUT_BACK_MOVED_KEY: &str = r#"from std.collections import Id, Table
+
+struct Heavy:
+    x: int
+    names: list[int]
+
+def shuffle(ref keys: list[Id[Heavy]]):
+    keys.reverse()
+    return
+
+def shuffle_at(ref keys: list[int]):
+    keys.reverse()
+    return
+
+def shuffle_names(ref keys: list[str]):
+    keys.reverse()
+    return
+
+def table_case(stdout: Stdout, how: int):
+    mut table = Table[Heavy]()
+    mut ids = list[Id[Heavy]]()
+    for i in range(3):
+        ids.append(table.add(Heavy(x=i, names=[i])))
+    mut item = table[ids[0]]
+    item.x += 100
+    item.names.append(5)
+    if how == 0:
+        ids.swap(0, 1)
+    elif how == 1:
+        ids.reverse()
+    elif how == 2:
+        ids[0] = ids[2]
+    else:
+        shuffle(ref ids)
+    table[ids[0]] = item
+    stdout.print("table", how, [(h.x, h.names) for h in table.values()])
+    return
+
+def list_case(stdout: Stdout, how: int):
+    mut items = [Heavy(x=i, names=[i]) for i in range(3)]
+    mut places = [0, 1, 2]
+    mut item = items[places[0]]
+    item.x += 100
+    item.names.append(7)
+    if how == 0:
+        places.swap(0, 1)
+    elif how == 1:
+        places.reverse()
+    elif how == 2:
+        places[0] = 2
+    else:
+        shuffle_at(ref places)
+    items[places[0]] = item
+    stdout.print("list", how, [(h.x, h.names) for h in items])
+    return
+
+def dict_case(stdout: Stdout, how: int):
+    mut held = {"a": Heavy(x=0, names=[0]), "b": Heavy(x=1, names=[1]), "c": Heavy(x=2, names=[2])}
+    mut keys = ["a", "b", "c"]
+    mut item = held[keys[0]]
+    item.x += 100
+    item.names.append(9)
+    if how == 0:
+        keys.swap(0, 1)
+    elif how == 1:
+        keys.reverse()
+    elif how == 2:
+        keys[0] = "c"
+    else:
+        shuffle_names(ref keys)
+    held[keys[0]] = item
+    stdout.print("dict", how, [(k, held[k].x, held[k].names) for k in sorted(held.keys())])
+    return
+
+def main(stdout: Stdout):
+    for how in range(4):
+        table_case(stdout, how=how)
+        list_case(stdout, how=how)
+        dict_case(stdout, how=how)
+    return
+"#;
 
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {

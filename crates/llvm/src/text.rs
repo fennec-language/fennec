@@ -39,12 +39,18 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a literal's block, filled in when the program starts.
     pub(crate) fn literal(&mut self, text: &str) -> String {
+        let symbol = self.literal_symbol(text);
+        let temp = self.temp();
+        self.line(&format!("{temp} = load ptr, ptr {symbol}, !invariant.load !1"));
+        temp
+    }
+
+    /// The global that holds a literal's block, for code outside a function's own to load.
+    pub(crate) fn literal_symbol(&mut self, text: &str) -> String {
         let name = format!("l_{}", fennec_blake3::hash(text.as_bytes()).to_hex());
         self.declare(&format!("@\"{name}\" = external dso_local global ptr"));
         self.module.shared.literals.insert(name.clone(), text.to_owned());
-        let temp = self.temp();
-        self.line(&format!("{temp} = load ptr, ptr @\"{name}\", !invariant.load !1"));
-        temp
+        format!("@\"{name}\"")
     }
 
     fn print_text(&mut self, text: &str) {

@@ -1113,13 +1113,12 @@ pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> 
 /// A string's text, from its block.
 pub(crate) fn block_text(block: &[u64]) -> String {
     let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-    let bytes: Vec<u8> = block
-        .get(TEXT_HEADER_WORDS..)
-        .unwrap_or_default()
-        .iter()
-        .flat_map(|word| word.to_le_bytes())
-        .take(length)
-        .collect();
+    // Copied a word at a time, then cut to its length.
+    let mut bytes = Vec::with_capacity(length.div_ceil(8) * 8);
+    for word in block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8)) {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
     String::from_utf8(bytes).unwrap_or_default()
 }
 

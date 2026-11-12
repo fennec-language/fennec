@@ -46,7 +46,10 @@ tools = { path = "../tools" }
 ```
 
 - `fennec update` fetches each kit from git that isn't fetched yet and pins it in `kit.lock` by the hash of its files. It says what each moved pin changes, file by file. Nothing else changes `kit.lock`, and a `kit.toml` that names another commit than `kit.lock` pins is an error until you run it.
-- Fetching runs nothing: a kit has no install or build scripts, nothing is checked out, and only `kit.toml` and `src` are taken. A fetched kit is kept in `~/.fennec/kits/`, so the network is only needed for one that isn't there yet, and `--offline` refuses to fetch at all.
+- Fetching runs nothing: a kit has no install or build scripts, nothing is checked out, and only `kit.toml` and `src` are taken. A kit whose files come to more than 256 MiB, or with two names that differ only by case, is refused before any of it is read.
+- Only `fennec update` and `fennec fetch` reach the network. `fennec fetch` gets each kit `kit.lock` pins that this machine hasn't got, as on a fresh clone. Checking, running, testing and the language server fetch nothing, and say to run `fennec fetch` when a kit is missing. `--offline` refuses to fetch at all.
+- A fetched kit is kept in `~/.fennec/kits/`, and checked against its pin each time it's loaded: one whose files changed since, by hand or by a tool, isn't built, and `fennec fetch` gets it again whole.
+- A dependency can't be named `std`, `fennec`, `main`, `lib` or `test`.
 - A kit from a path isn't pinned, since it's work in progress. A kit from git can't name a path.
 
 #### What a dependency gets

@@ -14,8 +14,8 @@
 )]
 
 use super::ast::{
-    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Held, Leave,
-    Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming, TABLE,
+    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
+    Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
 
@@ -39,6 +39,12 @@ const PARALLEL_STREAMS: bool = true;
 /// branches before each merges. Off, no input reads the byte that picks it, so kept inputs still
 /// write what they did.
 const ALIASING: bool = false;
+
+/// Whether random programs read module constants of lists, dicts and structs on the main thread,
+/// then use and change copies of them, through a struct's field defaults too, in launched tasks
+/// and `parallel`'s bodies. Off until the runtime's count fix for never-freed blocks lands;
+/// off, no input reads the byte that picks it.
+const CONSTANTS_IN_TASKS: bool = false;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -598,6 +604,7 @@ impl Writer<'_> {
             26 if PARALLEL_STREAMS && !self.threadless && self.choice(4) == 0 => self.streams(body),
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 => self.change_counts(body),
+            27 if CONSTANTS_IN_TASKS && !self.threadless && self.choice(4) == 0 => self.constants(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
@@ -995,31 +1002,57 @@ impl Writer<'_> {
         body.push(Stmt::Streamed(Streaming { id, items, map, read }));
     }
 
+    /// Module constants read on the main thread `reads` times, then used and changed in copies
+    /// on the main thread, in a launched task and in `parallel`'s bodies, in an order of its own.
+    fn constants(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 20);
+        let reads = i64::from(self.byte() % 4);
+        let main_first = self.choice(2) == 0;
+        let launch_first = self.choice(2) == 0;
+        body.push(Stmt::Constants(Constants { id, base, reads, main_first, launch_first }));
+    }
+
     /// Copies of collections and of their parts, each name then changed through the ways of
-    /// writing in place its kind takes, and all of them printed. Every write reaches only the name
-    /// it's written to, so a write that reaches a copy too shows in what's printed.
+    /// writing in place its kind takes, walked, handed to tasks, and all of them printed. Every
+    /// write reaches only the name it's written to, so a write that reaches a copy too shows in
+    /// what's printed.
     fn aliasing(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
         let base = i64::from(self.byte() % 20);
         let mut held: Vec<Held> = STARTING.iter().map(|(_, held)| *held).collect();
         let mut steps = Vec::new();
-        for _ in 0..4 + self.choice(9) {
+        for _ in 0..6 + self.choice(13) {
             let from = self.choice(held.len());
             let kind = held.get(from).copied().unwrap_or(Held::Numbers);
-            let roll = self.choice(5);
+            let roll = self.choice(6);
             if roll == 0 {
                 steps.push(Alias::Copied { from });
                 held.push(kind);
                 continue;
             }
-            // A copy's items are read by place or key, and only the starting table's by `Id`.
+            // A copy of a table keeps its tag, so the starting `Id`s find items in copies too.
             if roll == 1
-                && (kind != Held::Table || from == TABLE)
                 && let Some(part) = kind.part()
             {
                 steps.push(Alias::Part { from, at: self.choice(2) });
                 held.push(part);
+                continue;
+            }
+            if roll == 2 && kind.keyed() && self.choice(2) == 0 {
+                let (at, n) = (self.choice(2), i64::from(self.byte() % 19) - 9);
+                steps.push(Alias::Drained { from, at, n });
+                continue;
+            }
+            if roll == 2 && kind.walked() {
+                steps.push(Alias::Walked { from });
+                continue;
+            }
+            if roll == 2 && kind == Held::Numbers {
+                steps.push(Alias::Built { from, n: i64::from(self.byte() % 19) - 9 });
+                held.push(Held::Holder);
                 continue;
             }
             let ways: &[Writing] = match kind {
@@ -1027,17 +1060,30 @@ impl Writer<'_> {
                 Held::Holders => {
                     &[Writing::ForRef, Writing::Field, Writing::Append, Writing::PutBack, Writing::Method]
                 }
+                Held::Keepers => &[
+                    Writing::Field,
+                    Writing::Append,
+                    Writing::Set,
+                    Writing::PutBack,
+                    Writing::Method,
+                    Writing::Removed,
+                ],
                 Held::Holder => &[Writing::Field, Writing::Append, Writing::Method],
-                Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append],
-                Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method],
-                Held::Table if from == TABLE => {
-                    &[Writing::ForRef, Writing::Field, Writing::PutBack, Writing::Method]
+                Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append, Writing::Removed],
+                Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method, Writing::Removed],
+                Held::Counts => &[Writing::Field, Writing::Set, Writing::Removed],
+                Held::Rooms => &[Writing::ForRef, Writing::Set, Writing::Field, Writing::PutBack],
+                Held::Table | Held::Entries => {
+                    &[Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
-                Held::Table => &[Writing::ForRef],
+                Held::Ledger => {
+                    &[Writing::Field, Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
+                }
                 Held::Point => &[Writing::Field, Writing::Method],
-                Held::Text => &[Writing::Joined, Writing::Added],
+                Held::Text => &[Writing::Joined, Writing::Added, Writing::Formatted],
             };
-            if kind == Held::Numbers && !self.threadless && self.choice(5) == 0 {
+            // Any collection can be handed to tasks, each changing a copy of its own.
+            if !matches!(kind, Held::Point | Held::Text) && !self.threadless && self.choice(5) == 0 {
                 steps.push(Alias::Tasked { from });
                 continue;
             }

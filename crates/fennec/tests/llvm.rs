@@ -5993,6 +5993,64 @@ def main(stdout: Stdout):
     )
 }
 
+/// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,
+/// gives back what was pushed in a launched task as it does on the main thread, after the main
+/// thread has read the constant over and over. Each read there once took the constant's count down,
+/// below the mark the first launch shares never-freed blocks by, so the task's push was lost.
+#[test]
+fn a_constant_field_pushed_to_in_a_task_keeps_what_was_pushed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "constant_field_in_task",
+        r#"from std.concurrent import Crashed
+
+error Oops:
+    why: str
+
+NOTHING = list[(str, int)]()
+
+struct Holder:
+    items = NOTHING
+
+    def push(ref self, n: int):
+        self.items.append(("x", n))
+
+    def top(ref self) -> int fails Oops:
+        last = self.items.pop() else fail Oops(why="empty")
+        return last[1]
+
+def whole() -> int fails Oops:
+    mut holder = Holder()
+    holder.push(7)
+    return holder.top()? * 10 + NOTHING.len()
+
+def reads() -> int:
+    mut total = 0
+    for _ in range(50):
+        total += NOTHING.len()
+    return total
+
+## Called only on the main thread, so its code counts the constant there.
+def main_reads() -> int:
+    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+
+def in_task(stdout: Stdout) fails Oops:
+    stdout.print("task:", whole()?, reads())
+
+def main(stdout: Stdout) fails Oops | Crashed:
+    # Kept to say after the task, which prints first.
+    before = reads() + main_reads()
+    first = whole()?
+    with launch(() => in_task(stdout)?)?:
+        pass
+    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+"#,
+        "task: 70 0\nmain: 0 70 after: 70 0\n",
+    )
+}
+
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
 /// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
 /// refused when it's built, saying why, rather than failing at line 1 when it's run.
@@ -12206,6 +12264,71 @@ fn connection_writes(said: &str) -> Option<u64> {
     let mut words = line.split(' ');
     words.by_ref().find(|word| *word == "connection_writes")?;
     words.next()?.parse().ok()
+}
+
+/// How many bytes a run allocated in all, from what it said under `FENNEC_COUNTS`.
+fn allocated_bytes(said: &str) -> Option<u64> {
+    let line = said.lines().find(|line| line.starts_with("copies "))?;
+    let mut words = line.split(' ');
+    words.by_ref().find(|word| *word == "allocated_bytes")?;
+    words.next()?.parse().ok()
+}
+
+/// A server reads a body that comes in many pieces into one buffer with room to grow, so a 10 MB
+/// upload allocates a few times its size, where joining each piece onto what came before with
+/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed.
+#[test]
+fn a_served_body_read_in_many_pieces_is_copied_about_once() -> std::io::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("served_body_once")?;
+    let server = built_in(
+        &dir,
+        "serve",
+        r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"{len(request.body)}".encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+"#,
+    )?;
+    let mut serving = Running(
+        Command::new(&server)
+            .env("FENNEC_COUNTS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(serving.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let size = 10_000_000_usize;
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    client.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    client.write_all(
+        format!("POST /up HTTP/1.1\r\ncontent-length: {size}\r\nconnection: close\r\n\r\n").as_bytes(),
+    )?;
+    // In pieces of 16 KiB, so the server reads it in hundreds.
+    for piece in vec![b'x'; size].chunks(16 * 1024) {
+        client.write_all(piece)?;
+    }
+    let mut answer = String::new();
+    client.read_to_string(&mut answer)?;
+    assert!(answer.ends_with("10000000"), "{answer}");
+    terminate(&serving)?;
+    let mut said = String::new();
+    serving.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?.read_to_string(&mut said)?;
+    std::fs::remove_dir_all(&dir)?;
+    let allocated = allocated_bytes(&said).unwrap_or(u64::MAX);
+    assert!(allocated < 8 * 10_000_000, "a 10 MB body allocated {allocated} bytes: {said}");
+    Ok(())
 }
 
 /// `source` built natively in `dir` as `name`.

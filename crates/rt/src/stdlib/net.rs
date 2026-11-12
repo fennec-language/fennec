@@ -48,6 +48,10 @@ struct Stream {
     /// Whether anything's been read since it last wrote: before anything has, a read is waiting
     /// for a next message, which a server draining ends.
     read_since_write: AtomicBool,
+    /// The label a server's connection prints as, taken as the server accepted it, so connections
+    /// are numbered in the order they came, whichever task serving one starts first. A client's is
+    /// 0 here, as it's labelled as it's made.
+    label: i64,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -164,6 +168,8 @@ pub(crate) struct Fake {
     answers: BTreeMap<String, Value>,
     /// Each request sent, as its method and URL.
     requests: Vec<String>,
+    /// The label of each connection a server accepted, taken as it accepted it.
+    labels: BTreeMap<i64, i64>,
 }
 
 impl Fake {
@@ -242,12 +248,21 @@ impl Fake {
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
-            ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
+            ("Server", "_accept", []) => {
+                let accepted = self.accept(handle);
+                let made = accepted.map(|(connection, peer)| {
+                    let label = self.labels.get(&connection).copied().unwrap_or(0);
+                    with_label(connection_made((connection, peer)), label)
+                });
+                return Ok(made_or_failed(made));
+            }
             // A test's server never drains: its connections are taken one at a time.
             ("Server", "_stop_on", _) => return Ok(Value::Unit),
             ("Connection", "draining", []) => return Ok(Value::Bool(false)),
             // The label of a connection a task serving it makes its `Connection` with.
-            ("Connection", "_label", []) => return Ok(Value::Int(next_label(0))),
+            ("Connection", "_label", []) => {
+                return Ok(Value::Int(self.labels.get(&handle).copied().unwrap_or(0)));
+            }
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -390,11 +405,13 @@ impl Fake {
     pub(crate) fn accept(&mut self, handle: i64) -> Result<(i64, String), Failure> {
         let fake = self;
         let Some((port, waiting)) = fake.servers.get_mut(&handle) else { return Err(closed_here()) };
-        waiting.pop_front().ok_or_else(|| {
+        let accepted = waiting.pop_front().ok_or_else(|| {
             Failure::Other(format!(
                 "no connection is waiting for the test's fake server on port {port}, and none can come while a test waits"
             ))
-        })
+        })?;
+        fake.labels.insert(accepted.0, next_label(0));
+        Ok(accepted)
     }
 
     /// A read of `count` bytes in a test that's given `timeout=`, which gives up as `or_timed_out`
@@ -676,7 +693,7 @@ pub(crate) fn real_connection(
         }
         // What a task serving a connection makes its `Connection` from: its peer, and its label.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
-        ("_label", []) => return Ok(Value::Int(next_label(0))),
+        ("_label", []) => return Ok(Value::Int(stream(handle).map_or(0, |stream| stream.label))),
         // Its server's draining, when it was told to `stop_on` signals and one has come.
         ("draining", []) => {
             let draining = PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping();
@@ -915,7 +932,17 @@ pub(crate) fn trimmed_line_value(line: Option<&[u8]>) -> Value {
 }
 
 fn connection_made((connection, peer): (i64, String)) -> Made {
-    ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))])
+    let made = ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))]);
+    with_label(made, stream(connection).map_or(0, |stream| stream.label))
+}
+
+/// A connection with the label it was given as its server accepted it. One with none yet, 0, gets
+/// the next as it's made.
+fn with_label((type_name, mut fields): Made, label: i64) -> Made {
+    if label > 0 {
+        fields.push(("_label", Value::Int(label)));
+    }
+    (type_name, fields)
 }
 
 fn packet_value((data, sender): (Vec<u8>, String)) -> Value {
@@ -943,6 +970,9 @@ fn labelled((type_name, mut fields): Made) -> Made {
         "UdpSocket" => 2,
         _ => return (type_name, fields),
     };
+    if fields.iter().any(|(name, _)| *name == "_label") {
+        return (type_name, fields);
+    }
     fields.push(("_label", Value::Int(next_label(kind))));
     (type_name, fields)
 }
@@ -1129,6 +1159,7 @@ fn keep_stream_as(
         writing: Mutex::new(()),
         served,
         read_since_write: AtomicBool::new(false),
+        label: if served { next_label(0) } else { 0 },
     };
     Ok(open(|open| {
         let handle = fresh_handle(open);

@@ -709,7 +709,8 @@ impl Lowering<'_> {
 }
 
 /// The `Connection` a task serving a connection makes from its handle: with its peer, and its
-/// label, which it prints as, counted by the runtime as it's made.
+/// label, which it prints as. Both only read what the runtime kept as the server accepted it, so
+/// connections are numbered in the order they came, whichever task starts first.
 fn served_connection(task: &mut Lowering<'_>, handle: LocalId, connection: Type, span: Span) -> LocalId {
     let peer = task.temporary(Type::Str);
     let asked = vec![Operand::Local(handle)];

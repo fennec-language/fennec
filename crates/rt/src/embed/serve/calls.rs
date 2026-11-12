@@ -268,7 +268,11 @@ pub(in crate::embed) fn served_call(
             return Some(Ok(Value::str(&peer)));
         }
         // The label a task serving the connection makes its `Connection` with.
-        ("_label", []) => return Some(Ok(Value::Int(crate::stdlib::net::next_label(0)))),
+        ("_label", []) => {
+            let label =
+                CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.label())).unwrap_or_default();
+            return Some(Ok(Value::Int(label)));
+        }
         _ => {
             return Some(Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), at)));
         }

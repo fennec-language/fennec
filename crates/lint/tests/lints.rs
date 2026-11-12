@@ -817,6 +817,39 @@ fn an_if_that_only_gives_back_its_condition_is_its_condition() {
     assert_eq!(rules("def f(a: int) -> bool:\n    if a > 0: return True\n    True\n"), NONE);
 }
 
+/// A write to standard output or error inside a `parallel` loop's body is a hint: its tasks
+/// print in whatever order they get there. It's found however deep in the body, by whatever name
+/// the stream has, once even inside two loops, and never outside one or in a plain loop.
+#[test]
+fn printing_inside_a_parallel_loop_is_a_hint_about_order() {
+    let head = "def main(stdout: Stdout, stderr: Stderr):\n";
+    for body in [
+        "    for x in parallel([1, 2]):\n        stdout.print(x)\n    return\n",
+        "    for x in parallel([1, 2]):\n        if x > 1:\n            stderr.write(f\"{x}\")\n    return\n",
+        "    for x in parallel([1, 2]):\n        for y in parallel([3, 4]):\n            stdout.print(x, y)\n    return\n",
+    ] {
+        let source = format!("{head}{body}");
+        let found = found(&source).unwrap();
+        let hints: Vec<_> = found.iter().filter(|lint| lint.rule == "parallel-print").collect();
+        assert_eq!(hints.len(), 1, "{body}");
+        assert_eq!(hints[0].severity, fennec_lint::Severity::Hint, "{body}");
+        assert!(hints[0].diagnostic.message.contains("no fixed order"), "{}", hints[0].diagnostic.message);
+        let help = hints[0].diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains("for line in (render(x) for x in parallel(xs)): stdout.print(line)"), "{help}");
+    }
+    let renamed =
+        "def main(out: Stdout):\n    for x in parallel([1, 2]):\n        out.print(x)\n    return\n";
+    assert!(all_rules(renamed).contains(&"parallel-print"));
+    for clean in [
+        "    for x in [1, 2]:\n        stdout.print(x)\n    return\n",
+        "    for line in (f\"{x}\" for x in parallel([1, 2])):\n        stdout.print(line)\n    return\n",
+        "    total = sum([x for x in parallel([1, 2])])\n    stdout.print(total)\n    return\n",
+    ] {
+        let source = format!("{head}{clean}");
+        assert!(!all_rules(&source).contains(&"parallel-print"), "{clean}");
+    }
+}
+
 #[test]
 fn a_condition_tested_twice_cant_run_the_second_time() {
     let source = "def f(a: int):\n    if a > 0:\n        g()\n    elif a < 0:\n        h()\n    elif a > 0:\n        i()\n";

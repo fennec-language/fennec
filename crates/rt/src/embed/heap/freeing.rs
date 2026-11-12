@@ -55,11 +55,34 @@ fn free_plain_list(state: &mut State, address: u64) -> bool {
 /// a `shared` value's handle above all, whose count is never queued.
 #[cold]
 #[inline(never)]
-fn free_waiting(state: &mut State) {
+pub(in crate::embed) fn free_waiting(state: &mut State) {
     for waiting in crate::embed::threads::waiting() {
         if usize::try_from(waiting).is_ok_and(|at| state.heap.holds_block(at)) {
             free_block(state, waiting);
+        } else {
+            stray(waiting);
         }
+    }
+}
+
+/// How many blocks other threads gave back to be freed here that this heap didn't hold: each is a
+/// block let go of twice, or by a thread that didn't hold it, upstream. Passing over it keeps this
+/// heap whole, so a run goes on, but it's counted, for `FENNEC_COUNTS` to say.
+static STRAYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many blocks given back to be freed here this heap didn't hold, in the whole process.
+pub(in crate::embed) fn strays() -> u64 {
+    STRAYS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A block given back to be freed here that this heap doesn't hold: counted, and in a debug build,
+/// which tests run, a stop, so the bug upstream is found where it happens.
+fn stray(address: u64) {
+    STRAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if cfg!(debug_assertions) {
+        super::runtime_bug(&format!(
+            "another thread gave back the block at {address:#x} to be freed here, which this heap doesn't hold"
+        ));
     }
 }
 
@@ -610,6 +633,27 @@ mod tests {
         crate::embed::heap::free(block);
         with(|state| assert_eq!(state.heap.live(), before));
         finish();
+    }
+
+    /// A block another thread gives back to be freed here that this heap doesn't hold is said, in
+    /// a test as in a debug build: the next `free` finds it and stops, rather than passing over a
+    /// block let go of twice upstream. It's counted either way.
+    #[test]
+    fn a_block_given_back_here_that_this_heap_doesnt_hold_is_said() {
+        let ran = std::thread::spawn(|| {
+            start(Tables::default(), crate::Inputs::default());
+            let held = with(|state| state.heap.fresh(4));
+            let address = with(|state| u64::try_from(state.heap.insert(held)).unwrap_or(0));
+            // Far past any block this heap made. A `free` frees what waits first, as here, but it's
+            // native code's, and a panic can't leave it.
+            crate::embed::threads::wait_here(address + (1 << 40));
+            with(super::free_waiting);
+        })
+        .join();
+        let said = ran.expect_err("the stray block stops the free that finds it");
+        let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(said.contains("which this heap doesn't hold"), "{said}");
+        assert!(super::strays() >= 1);
     }
 
     /// A block generated code made, handed to the runtime anyway, stops the program saying so,

@@ -229,3 +229,49 @@ def total(grids: list[list[int]]) -> int:
     assert_eq!(names.len(), count, "a function is there twice: {names:?}");
     Ok(())
 }
+
+const STREAMS: &str = "\
+def doubled(x: int) -> int:
+    return x * 2
+
+def total(xs: list[int]) -> int:
+    mut sum = 0
+    for y in (doubled(x) for x in parallel(xs)):
+        sum += y
+    return sum
+
+def kept(xs: list[int]) -> int:
+    mut sum = 0
+    for y in (doubled(x) for x in parallel(xs) if x > 1):
+        sum += y
+    return sum
+
+def main(stdout: Stdout):
+    stdout.print(total([1, 2, 3]), kept([1, 2, 3]))
+    return
+";
+
+/// `(f(x) for x in parallel(xs))` read by a loop is a stream: a generator of its own that starts
+/// the runtime's stream, takes its chunks and ends it, rather than fused into the loop, which
+/// would run it in order. Its range puts each item at its place in the chunk. With an `if` it
+/// runs in order as before, and so does all of it when the backend doesn't lift `parallel`.
+#[test]
+fn a_parallel_generator_expression_is_read_as_a_stream() {
+    let program = lowered(STREAMS, OUTLINED).unwrap();
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    let resume = program
+        .functions
+        .iter()
+        .find(|function| function.name.starts_with("total.stream@") && function.name.ends_with("resume"))
+        .unwrap_or_else(|| panic!("no stream's resume function in {names:?}"));
+    let called = builtins(resume);
+    for wanted in ["parallel.stream", "parallel.stream_next", "parallel.stream_end"] {
+        assert!(called.iter().any(|name| name == wanted), "{wanted} isn't called: {called:?}");
+    }
+    let range = lifted(&program).into_iter().find(|range| range.name.starts_with("total.")).unwrap();
+    assert_eq!(builtins(range), ["parallel.put"]);
+    assert!(!names.iter().any(|name| name.starts_with("kept.stream@")), "{names:?}");
+    let unlifted = Options { outline_parallel: false, ..OUTLINED };
+    let plain = lowered(STREAMS, unlifted).unwrap();
+    assert!(!plain.functions.iter().any(|function| function.name.contains(".stream@")));
+}

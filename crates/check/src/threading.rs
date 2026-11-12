@@ -4,7 +4,7 @@
 //! changes that can't mean anything else, so where a function in the chain is a method, or is
 //! named anywhere but in a plain call, it makes none and the error stays.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The errors about each capability, by its name and type, with the function or test each is in.
 type Asked<'m> = Vec<((String, String), Vec<(usize, Owner<'m>)>)>;
@@ -118,7 +118,7 @@ impl<'m> Kit<'m> {
     /// other naming as one that stops threading.
     fn record(&mut self, owner: Option<Owner<'m>>, found: Vec<(&'m str, Option<&'m Expr>)>) {
         let mut called: HashMap<&str, usize> = HashMap::new();
-        let mut named: HashMap<&str, usize> = HashMap::new();
+        let mut named: BTreeMap<&str, usize> = BTreeMap::new();
         for (name, call) in found {
             match call {
                 Some(call) => {

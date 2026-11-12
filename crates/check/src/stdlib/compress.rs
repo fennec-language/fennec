@@ -1,5 +1,6 @@
 //! `std.compress`: DEFLATE, zlib and gzip. Compressing takes bytes or text and gives bytes;
-//! reading back fails with an `InvalidValue` on data that isn't what it says.
+//! reading back fails with an `InvalidValue` on data that isn't what it says, or that holds more
+//! than `most=` bytes, 64 MB unless given.
 
 use super::{Function, Module, no_checks, no_methods};
 use crate::function::FnCx;
@@ -18,7 +19,7 @@ const fn writes(name: &'static str) -> Function {
 }
 
 const fn reads(name: &'static str) -> Function {
-    Function { name, arity: (1, 1), named: &[], needs_values: true }
+    Function { name, arity: (1, 1), named: &["most"], needs_values: true }
 }
 
 const FUNCTIONS: [Function; 6] = [

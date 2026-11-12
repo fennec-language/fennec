@@ -21,7 +21,6 @@
 //! except a parameter nothing writes, which the caller lends. A copy from a local nothing else
 //! reads takes over its owner, and a list with other owners is copied before it changes. A
 //! failure ends the program, so the way out on failing releases nothing.
-
 #![expect(
     clippy::similar_names,
     clippy::too_many_lines,
@@ -48,6 +47,7 @@ mod dying;
 mod emit;
 mod entry;
 mod facts;
+mod failure_checks;
 mod generators;
 mod headers;
 mod holding;
@@ -82,6 +82,7 @@ pub use emit::{
     trust_native_blocks,
 };
 pub use entry::{Image, entry, tests_entry};
+pub use failure_checks::unchecked_failures;
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_launch, uses_parallel, uses_tls};
 pub use waits::{Waits, Why, may_wait};

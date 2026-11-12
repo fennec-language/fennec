@@ -9,15 +9,15 @@ error Refused:
 def capped(n: int, limit: int) -> int fails Refused:
     if n > limit:
         fail Refused(code=n)
-    n
+    return n
 
 ## Says `text` on `done`, whether or not anything's there to hear it.
 def tell(done: Sender[str], text: str):
-    done.send(text) else:
+    done.send(text) except Closed():
         pass
 
 def lent(done: Sender[str], code: int) -> with int fails Refused:
-    lend code else:
+    lend code except:
         tell(done, text=f"cleanup {code}")
         kept = capped(code, limit=5)?
         for step in range(3):
@@ -32,12 +32,12 @@ def crashes(done: Sender[str], code: int) fails Refused:
         tell(done, text=f"{values[held]}")
 
 def job(done: Sender[str], code: int):
-    crashes(done, code) else:
+    crashes(done, code) except Refused():
         tell(done, text="failed")
 
 ## Runs a job in a task of its own, and says how its task ended.
 def ran(done: Sender[str], code: int) -> str:
-    _ = launched(done, code=code) else:
+    _ = launched(done, code=code) except Crashed():
         return "crashed"
     return "ended"
 

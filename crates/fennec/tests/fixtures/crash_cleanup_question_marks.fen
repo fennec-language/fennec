@@ -8,14 +8,14 @@ error Refused:
 def capped(n: int, limit: int) -> int fails Refused:
     if n > limit:
         fail Refused(code=n)
-    n
+    return n
 
 def check(n: int, limit: int) fails Refused:
     if n > limit:
         fail Refused(code=n)
 
 def guarded(code: int, stdout: Stdout) -> with int fails Refused:
-    lend code else:
+    lend code except:
         stdout.print("cleanup", code)
         kept = capped(code, limit=20)?
         stdout.print("kept", kept)
@@ -24,8 +24,9 @@ def guarded(code: int, stdout: Stdout) -> with int fails Refused:
             if step == code:
                 fail Refused(code=step)
         def inner() -> int fails Refused:
-            capped(code, limit=5)?
-        stdout.print("inner", inner() else -1)
+            return capped(code, limit=5)?
+        inner_value = inner() except Refused(): -1
+        stdout.print("inner", inner_value)
         check(code, limit=3)?
         stdout.print("ended", code)
     stdout.print("released", code)
@@ -36,6 +37,6 @@ def crashes(code: int, stdout: Stdout) fails Refused:
         stdout.print(values[held])
 
 def main(stdout: Stdout, args: Args):
-    code = int(args[0]) else 0
-    crashes(code, stdout) else:
+    code = int(args[0]) except InvalidValue(): 0
+    crashes(code, stdout) except Refused():
         stdout.print("failed")

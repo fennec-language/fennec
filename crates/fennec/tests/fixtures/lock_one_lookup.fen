@@ -12,8 +12,8 @@ struct Table:
 
 ## A key that's different each time it's worked out: 1, 2, 0, 1, ...
 def bump(ref seen: list[int]) -> int:
-    seen.append(seen.len())
-    seen.len() % 3
+    seen.append(len(seen))
+    return len(seen) % 3
 
 def change(table: shared Table, step: int, failing: bool) fails Boom:
     mut seen = list[int]()
@@ -46,14 +46,14 @@ def change(table: shared Table, step: int, failing: bool) fails Boom:
 
 def shown(table: shared Table) -> str:
     lock table as held:
-        f"{held.counts} {held.others}"
+        return f"{held.counts} {held.others}"
 
 def main(stdout: Stdout):
     shared table = Table()
     mut failed = 0
     for step in range(12):
         before = shown(table)
-        _ = change(table, step=step, failing=step % 5 == 4) else:
+        _ = change(table, step=step, failing=step % 5 == 4) except Boom():
             failed += 1
             if shown(table) != before:
                 stdout.print("not put back", step)

@@ -1,5 +1,5 @@
 def double(n: int) -> int:
-    n * 2
+    return n * 2
 
 def main(stdout: Stdout):
     stdout.print(double("4"))

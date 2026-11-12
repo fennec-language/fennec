@@ -15,7 +15,7 @@ def check(module: Module, library: list[Module]) -> list[Diagnostic]:
     checker.program.add(module, False)
     checker.diagnostics += checker.program.problems
     checker.check_all()
-    sorted_diagnostics(checker.diagnostics)
+    return sorted_diagnostics(checker.diagnostics)
 
 struct Checker:
     program: Program = Program()
@@ -96,7 +96,7 @@ struct Checker:
         arrow = function.arrow
         if ret is None or arrow is None:
             return
-        if ret.name in ["None", "nothing"] and ret.args.len() == 0 and not ret.optional:
+        if ret.name in ["None", "nothing"] and len(ret.args) == 0 and not ret.optional:
             self.diagnostics.append(Diagnostic(
                 message=f"`{function.name}` gives back nothing, so it has no arrow",
                 span=arrow.to(ret.span),
@@ -116,14 +116,14 @@ struct Checker:
     def check_param(ref self, written: TypeExpr?, generics: list[str]):
         if written is None:
             return
-        by_itself = written.args.len() == 0 and not written.optional
+        by_itself = len(written.args) == 0 and not written.optional
         if not by_itself or written.name in generics or not self.program.is_interface(written.name):
             self.check_written(written, generics)
 
     def check_written(ref self, written: TypeExpr?, generics: list[str]):
         if written is None:
             return
-        _ = self.program.resolve_in(written, generics) else as problem:
+        _ = self.program.resolve_in(written, generics) except problem:
             self.diagnostics.append(problem)
             return
 
@@ -250,11 +250,11 @@ struct Checker:
             case .Index(written, index):
                 match written.kind:
                     case .Name(name) if name in self.program.types:
-                        given = bracket_types(index).len()
+                        given = len(bracket_types(index))
                         params = self.program.type_params(name)
-                        if given != params.len():
-                            mut takes = f"{params.len()} types"
-                            if params.len() == 1:
+                        if given != len(params):
+                            mut takes = f"{len(params)} types"
+                            if len(params) == 1:
                                 takes = "1 type"
                             listed = ", ".join(params)
                             self.diagnostics.append(
@@ -273,7 +273,7 @@ struct Checker:
             case .Call(callee, args):
                 match callee.kind:
                     case .Name(called) if called == "fields" and called not in self.program.functions:
-                        if args.len() == 1 and args[0].name is None and not args[0].is_mut:
+                        if len(args) == 1 and args[0].name is None and not args[0].is_mut:
                             match args[0].value.kind:
                                 case .Name(of):
                                     if (
@@ -290,20 +290,20 @@ struct Checker:
     def takes_types(self, object: Expr) -> bool:
         match object.kind:
             case .Name(name):
-                name in ["list", "dict", "set"] or name[0] >= "A" and name[0] <= "Z" or name in self.program.functions
-            case .Attr(_, _, _): True
-            case _: False
+                return name in ["list", "dict", "set"] or name[0] >= "A" and name[0] <= "Z" or name in self.program.functions
+            case .Attr(_, _, _): return True
+            case _: return False
 
 def generic_names(generics: list[Generic]) -> list[str]:
-    [generic.name for generic in generics]
+    return [generic.name for generic in generics]
 
 ## Diagnostics in source order, then by message, with exact repeats dropped.
 def sorted_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
     mut unique = []
     for diagnostic in sorted(diagnostics, key=d => (d.span.start, d.message)):
-        if unique.len() == 0 or unique[-1] != diagnostic:
+        if len(unique) == 0 or unique[-1] != diagnostic:
             unique.append(diagnostic)
-    unique
+    return unique
 
 ## The types written in a call's brackets, like `str, int` in `f[str, int]`, or none if what's
 ## there isn't all types.
@@ -311,27 +311,27 @@ def bracket_types(index: Expr) -> list[TypeExpr]:
     match index.kind:
         # `f[str, int]` has two types; `f[(int, int)]` has one, a tuple, whose span starts at
         # its `(` rather than at its first item.
-        case .Tuple(items) if items.len() > 0 and items[0].span.start == index.span.start:
+        case .Tuple(items) if len(items) > 0 and items[0].span.start == index.span.start:
             return as_types(items, sizes=False) else []
         case _: pass
     one = as_type(index)
     if one is None:
         return []
-    [one]
+    return [one]
 
 ## The type a default makes with its type arguments, like `list[Token]` for `list[Token]()`.
 def made_type(default: Expr) -> TypeExpr?:
     match default.kind:
         case .Call(callee, _):
             match callee.kind:
-                case .Index(_, _): as_type(callee)
-                case _: None
-        case _: None
+                case .Index(_, _): return as_type(callee)
+                case _: return None
+        case _: return None
 
 ## An expression read as a type: `Token`, or `list[Token]`, or `dict[str, int]`.
 def as_type(expr: Expr) -> TypeExpr?:
     match expr.kind:
-        case .Name(name): TypeExpr(name=name, args=[], optional=False, span=expr.span)
+        case .Name(name): return TypeExpr(name=name, args=[], optional=False, span=expr.span)
         case .Index(object, index):
             match object.kind:
                 case .Name(name):
@@ -339,7 +339,7 @@ def as_type(expr: Expr) -> TypeExpr?:
                     match index.kind:
                         # `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple,
                         # whose span starts at its `(` rather than at its first item.
-                        case .Tuple(items) if items.len() > 0 and items[0].span.start == index.span.start:
+                        case .Tuple(items) if len(items) > 0 and items[0].span.start == index.span.start:
                             found = as_types(items, sizes=True)
                             if found is None:
                                 return None
@@ -349,22 +349,22 @@ def as_type(expr: Expr) -> TypeExpr?:
                             if found is None:
                                 return None
                             args.append(found)
-                    TypeExpr(name=name, args=args, optional=False, span=expr.span)
-                case _: None
+                    return TypeExpr(name=name, args=args, optional=False, span=expr.span)
+                case _: return None
         case .Tuple(items):
             found = as_types(items, sizes=False)
             if found is None:
                 return None
-            TypeExpr(name="tuple", args=found, optional=False, span=expr.span)
-        case _: None
+            return TypeExpr(name="tuple", args=found, optional=False, span=expr.span)
+        case _: return None
 
 
 ## A type in brackets with others, or a number there: an array's size, `16` in
 ## `array[float, 16]`.
 def as_type_or_size(item: Expr) -> TypeExpr?:
     match item.kind:
-        case .Int(size): TypeExpr(name=f"{size}", args=[], optional=False, span=item.span)
-        case _: as_type(item)
+        case .Int(size): return TypeExpr(name=f"{size}", args=[], optional=False, span=item.span)
+        case _: return as_type(item)
 
 def as_types(items: list[Expr], sizes: bool) -> list[TypeExpr]?:
     mut types = []
@@ -373,4 +373,4 @@ def as_types(items: list[Expr], sizes: bool) -> list[TypeExpr]?:
         if found is None:
             return None
         types.append(found)
-    types
+    return types

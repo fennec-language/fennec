@@ -1,5 +1,5 @@
 def count(text: str, wanted: str, xs: list[int]) -> int:
-    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
+    return sum(1 if text[x] == wanted else 0 for x in parallel(xs))
 
 def main(stdout: Stdout):
     xs = [n for n in range(6_000)]

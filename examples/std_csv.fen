@@ -6,10 +6,10 @@ SCORES = "name,score\nash,12\n\"vex, the third\",7\n"
 
 test "rows come back as written" for rows: list[list[str]]:
     # A row with no fields has no text to come back from, so `dumps` refuses it.
-    written = [row for row in rows if row.len() > 0]
+    written = [row for row in rows if len(row) > 0]
     assert csv.loads(csv.dumps(written)?)? == written
     assert csv.loads(csv.dumps(written, delimiter="\t")?, delimiter="\t")? == written
-    if written.len() < rows.len():
+    if len(written) < len(rows):
         assert problem_of(() => csv.dumps(rows)?) != ""
 
 test "a field can hold anything in quotes":
@@ -58,9 +58,9 @@ test "records use the first row's names":
     assert csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";")? == "b;a\n;1\n"
 
 def problem[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "no problem"
+    return "no problem"
 
 test "text that isn't CSV says where":
     assert problem(() => csv.loads("a,\"b\nc\nd")?) == "this quote never ends at line 1, column 3"
@@ -90,13 +90,15 @@ test "text that isn't CSV says where":
     )
 
 def main(stdout: Stdout):
-    records = csv.records(SCORES) else []
+    records = csv.records(SCORES) except ParseError(): []
     for record in records:
         stdout.print(record["name"], int(record["score"]) else 0)
-    stdout.print(csv.loads("a,b\n1,2\n") else [])
-    stdout.write(csv.dumps([["name", "note"], ["ash", "likes, commas"]]) else "")
+    loads_value = csv.loads("a,b\n1,2\n") except ParseError(): []
+    stdout.print(loads_value)
+    dumps_value = csv.dumps([["name", "note"], ["ash", "likes, commas"]]) except InvalidValue(): ""
+    stdout.write(dumps_value)
 
 def problem_of[T](run: () -> T fails InvalidValue) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    ""
+    return ""

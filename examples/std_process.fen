@@ -9,12 +9,12 @@ from std.process import Output, ProcessError
 def changes(process: Process, tag: str) -> list[str] fails ProcessError:
     found = process.run("git", ["log", "--format=%s", f"{tag}..HEAD"])?
     if not found.ok(): return []
-    [line for line in found.stdout.split("\n") if line != ""]
+    return [line for line in found.stdout.split("\n") if line != ""]
 
 def notes(process: Process, tag: str) -> str:
-    lines = changes(process, tag) else []
-    if lines.len() == 0: return "nothing new"
-    "\n".join([f"- {line}" for line in lines])
+    lines = changes(process, tag) except .NotRun() | .LooksLikeAnOption() | .TimedOut() | .TooMuchOutput(): []
+    if len(lines) == 0: return "nothing new"
+    return "\n".join([f"- {line}" for line in lines])
 
 test "the release notes list each commit"(process: Process):
     process.script("git", Output(stdout="Add Tree\nFix a typo\n"))
@@ -42,14 +42,14 @@ test "a value can't start an argument with a dash, so it can't be read as an opt
 ):
     process.script("git", Output())
     remote = "--upload-pack=evil"
-    _ = process.run(t"git fetch {remote}") else as why:
-        match why:
-            case .LooksLikeAnOption(program=program, expression=expression):
-                assert program == "git"
-                assert expression == "remote"
-            case _:
-                assert False
-        Output()
+    _ = process.run(t"git fetch {remote}") except why:
+        case .LooksLikeAnOption(program=program, expression=expression):
+            assert program == "git"
+            assert expression == "remote"
+            Output()
+        case .NotRun() | .TimedOut() | .TooMuchOutput():
+            assert False
+            Output()
     # Nothing ran.
     assert process.ran() == []
     name = "-rf"
@@ -70,8 +70,8 @@ test "a value inside an argument, or a dash in the template's own text, runs"(pr
 
 ## How many lines of `text` say `word`, as grep counts them.
 def count_lines(process: Process, text: str, word: str) -> int:
-    found = process.run("grep", ["-c", word], input=text, env={"LC_ALL": "C"}) else Output()
-    int(found.stdout.strip()) else 0
+    found = process.run("grep", ["-c", word], input=text, env={"LC_ALL": "C"}) except .NotRun() | .LooksLikeAnOption() | .TimedOut() | .TooMuchOutput(): Output()
+    return int(found.stdout.strip()) except InvalidValue(): 0
 
 test "grep is given the text to read"(process: Process):
     process.script("grep", Output(stdout="2\n"))
@@ -80,7 +80,7 @@ test "grep is given the text to read"(process: Process):
 
 def main(stdout: Stdout, process: Process):
     # A program that isn't installed fails with a `ProcessError` value.
-    _ = process.run("fennec-no-such-program", []) else as why:
+    _ = process.run("fennec-no-such-program", []) except why:
         stdout.print(f"couldn't run {why.program()}")
         return
     stdout.print("ran")

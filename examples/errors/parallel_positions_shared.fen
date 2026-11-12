@@ -3,13 +3,13 @@ struct Pool:
     head = 0
 
     def len(self) -> int:
-        return self.items.len()
+        return len(self.items)
 
     def [](ref self, i: int) -> int:
-        return self.items[(self.head + i) % self.items.len()]
+        return self.items[(self.head + i) % len(self.items)]
 
 def main(stdout: Stdout):
     mut pool = Pool(items=[1])
     for ref item in parallel(pool):
         item += 1
-    stdout.print(pool.len())
+    stdout.print(len(pool))

@@ -14,43 +14,43 @@ struct Points:
 def total(tree: Tree) -> int:
     match tree:
         case .Leaf(value):
-            value
+            return value
         case .Named(name, value):
-            value + name.len()
+            return value + len(name)
         case .Many(items):
             mut sum = 0
             for item in items:
                 sum += total(item)
-            sum
+            return sum
 
 def total_of(trees: list[Tree]) -> int:
     mut sum = 0
     for tree in trees:
         sum += total(tree)
-    sum
+    return sum
 
 def grown(tree: Tree, n: int) -> Tree:
     match tree:
         case .Many(items):
             mut mine = items
             mine.append(Tree.Leaf(value=n))
-            .Many(items=mine)
+            return .Many(items=mine)
         case _:
-            tree
+            return tree
 
 def main(stdout: Stdout):
     long = "a name long enough to be held in a block of its own, not in place"
     shared_tree = Tree.Many(items=[Tree.Leaf(value=1), Tree.Named(name=long, value=2), Tree.Many(items=[Tree.Named(name="short", value=3)])])
     trees = [shared_tree, Tree.Leaf(value=4), shared_tree]
     totals = sorted([total_of(trees) + n for n in parallel(range(32))])
-    stdout.print(totals[0], totals[31], totals.len())
+    stdout.print(totals[0], totals[31], len(totals))
     made = [grown(shared_tree, n) for n in parallel(range(32))]
     stdout.print(sum(total(tree) for tree in made), total(shared_tree))
     boxes = [Box(tree=shared_tree, tag=long), Box(tree=.Leaf(value=9), tag="t")]
-    seen = sorted([total(boxes[n % 2].tree) + boxes[n % 2].tag.len() for n in parallel(range(32))])
+    seen = sorted([total(boxes[n % 2].tree) + len(boxes[n % 2].tag) for n in parallel(range(32))])
     stdout.print(seen[0], seen[31])
     mut owned = [Points(xs=[1, 2], label=long), Points(xs=[3], label="p")]
     for ref held in parallel(owned):
-        held.xs.append(held.label.len())
+        held.xs.append(len(held.label))
     stdout.print(owned)
     stdout.print(trees)

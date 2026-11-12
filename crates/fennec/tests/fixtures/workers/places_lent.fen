@@ -22,24 +22,24 @@ struct Unit:
             self.tags.append(value)
 
 def unit(hp: int) -> Unit:
-    Unit(hp, [hp, hp + 1, hp + 2], Inner([hp]), f"unit {hp} with a name too long to sit inline")
+    return Unit(hp, [hp, hp + 1, hp + 2], Inner([hp]), f"unit {hp} with a name too long to sit inline")
 
 def method_places(captured: list[Unit], at: int) -> int:
     mut copy_of = captured
     copy_of[at % 2].grow(at)
     copy_of[at % 2].inner.grow(at)
     copy_of[at % 2].inner.reset()
-    copy_of[at % 2].tags.len() + copy_of[at % 2].inner.tags.len() + copy_of[at % 2].hp
+    return len(copy_of[at % 2].tags) + len(copy_of[at % 2].inner.tags) + copy_of[at % 2].hp
 
 def builtin_places(captured: list[Unit], at: int) -> int:
     mut copy_of = captured
     copy_of[at % 2].tags.append(copy_of[0].hp)
-    copy_of[at % 2].tags.append(copy_of[at % 2].tags.len())
+    copy_of[at % 2].tags.append(len(copy_of[at % 2].tags))
     copy_of[at % 2].inner.tags.extend(copy_of[1].tags)
     got = copy_of[at % 2].tags.pop() else 0
     copy_of[at % 2].tags.insert(0, got)
     _ = copy_of[1 - at % 2].tags.pop()
-    copy_of[at % 2].tags.len() * 7 + copy_of[at % 2].inner.tags.len() + copy_of[1 - at % 2].tags.len() + got
+    return len(copy_of[at % 2].tags) * 7 + len(copy_of[at % 2].inner.tags) + len(copy_of[1 - at % 2].tags) + got
 
 def given_place(captured: list[Unit], grid: list[list[Unit]], at: int) -> int:
     theirs = captured[1 - at % 2].tags
@@ -52,7 +52,7 @@ def given_place(captured: list[Unit], grid: list[list[Unit]], at: int) -> int:
     rows[at % 2][-1].grow(at)
     rows[at % 2][0].inner.grow(at)
     rows[at % 2][0].inner.tags.extend(first)
-    copy_of[at % 2].tags.len() + rows[at % 2][0].inner.tags.len() + rows[at % 2][-1].hp
+    return len(copy_of[at % 2].tags) + len(rows[at % 2][0].inner.tags) + rows[at % 2][-1].hp
 
 def main(stdout: Stdout):
     captured = [unit(1), unit(2)]

@@ -11,16 +11,16 @@ from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeD
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
-    tokens = lex(source, 0) else as diagnostic:
+    tokens = lex(source, 0) except diagnostic:
         return dump_error(diagnostic)
-    "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
+    return "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
 
 ## What the checker finds in `source`, checked against the standard library's modules:
 ## every diagnostic, or the parse error that stopped it first. Nothing when it checks.
 def dump_check(source: str, library: list[Module]) -> str:
-    module = parse(source) else as diagnostic:
+    module = parse(source) except diagnostic:
         return dump_error(diagnostic)
-    "".join(dump_error(diagnostic) for diagnostic in check(module, library))
+    return "".join(dump_error(diagnostic) for diagnostic in check(module, library))
 
 ## A diagnostic as the dumps show it: its span and message, then its help on a second line.
 def dump_error(diagnostic: Diagnostic) -> str:
@@ -29,31 +29,31 @@ def dump_error(diagnostic: Diagnostic) -> str:
     help = diagnostic.help
     if help is None:
         return text
-    text + f"help {help}\n"
+    return text + f"help {help}\n"
 
 def describe_tok(tok: Tok) -> str:
     match tok:
-        case .Name(text): f"name {text}"
-        case .Int(value): f"int {value}"
-        case .Float(value): f"float {value}"
-        case .Duration(nanos): f"duration {nanos}"
-        case .Str(text): f"str {quoted(text)}"
-        case .FStr(parts): "fstr " + " | ".join([describe_fpart(part) for part in parts])
-        case .TStr(parts): "tstr " + " | ".join([describe_fpart(part) for part in parts])
-        case .Keyword(word): f"keyword {word}"
-        case .Punct(text): f"punct {text}"
-        case .Newline: "newline"
-        case .Indent: "indent"
-        case .Dedent: "dedent"
-        case .Eof: "eof"
+        case .Name(text): return f"name {text}"
+        case .Int(value): return f"int {value}"
+        case .Float(value): return f"float {value}"
+        case .Duration(nanos): return f"duration {nanos}"
+        case .Str(text): return f"str {quoted(text)}"
+        case .FStr(parts): return "fstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .TStr(parts): return "tstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .Keyword(word): return f"keyword {word}"
+        case .Punct(text): return f"punct {text}"
+        case .Newline: return "newline"
+        case .Indent: return "indent"
+        case .Dedent: return "dedent"
+        case .Eof: return "eof"
 
 def describe_fpart(part: FPart) -> str:
     match part:
-        case .Text(text): f"text {quoted(text)}"
+        case .Text(text): return f"text {quoted(text)}"
         case .Code(source, offset, spec):
             if spec is None:
                 return f"expr {offset} {quoted(source)}"
-            f"expr {offset} {quoted(source)} spec {quoted(spec)}"
+            return f"expr {offset} {quoted(source)} spec {quoted(spec)}"
 
 ## A string in double quotes, with backslashes, quotes and line breaks escaped.
 def quoted(text: str) -> str:
@@ -67,15 +67,15 @@ def quoted(text: str) -> str:
             case "\r": "\\r"
             case "\0": "\\0"
             case _: c
-    out + "\""
+    return out + "\""
 
 ## The syntax tree of `source`, one node per line, or the error that stopped the parser.
 def dump_tree(source: str) -> str:
-    module = parse(source) else as diagnostic:
+    module = parse(source) except diagnostic:
         return dump_error(diagnostic)
     mut tree = Tree()
     tree.write_module(module)
-    "".join(line + "\n" for line in tree.lines)
+    return "".join(line + "\n" for line in tree.lines)
 
 ## The syntax tree as indented text: one node per line, its children two spaces deeper, and
 ## its span at the end as `@start..end`.
@@ -138,7 +138,7 @@ struct Tree:
                 mut label = "import " + ".".join(imported.module)
                 if imported.alias is not None:
                     label += " as " + imported.alias
-                if imported.names.len() > 0:
+                if len(imported.names) > 0:
                     label += ": " + ", ".join(bound_names(imported))
                 self.spanned(label, imported.span)
             case .Test(test):
@@ -329,7 +329,7 @@ struct Tree:
             case .Int(value): self.spanned(f"int {value}", span)
             case .Float(value): self.spanned(f"float {value}", span)
             case .Duration(nanos): self.spanned(f"duration {nanos}", span)
-            case .Bytes(data): self.spanned(f"bytes {data.len()}", span)
+            case .Bytes(data): self.spanned(f"bytes {len(data)}", span)
             case .Str(text): self.spanned(f"str {quoted(text)}", span)
             case .Bool(value): self.spanned(f"bool {value}", span)
             case .Nothing: self.spanned("none", span)
@@ -443,7 +443,7 @@ struct Tree:
             case .RefBind(name): self.line(f"pattern bind ref {name}")
             case .Literal(expr): self.labelled("pattern literal", expr)
             case .Variant(name, dotted, args, fields):
-                by = "" if fields.len() == 0 else " by " + ", ".join(fields)
+                by = "" if len(fields) == 0 else " by " + ", ".join(fields)
                 self.write_patterns("pattern " + ("." if dotted else "") + name + by, args)
             case .Tuple(items): self.write_patterns("pattern tuple", items)
             case .Or(alternatives): self.write_patterns("pattern or", alternatives)
@@ -456,19 +456,19 @@ struct Tree:
 
 def comprehension_kind(kind: CompKind) -> str:
     match kind:
-        case .List: "list"
-        case .Generator: "generator"
-        case .Set: "set"
-        case .Dict: "dict"
+        case .List: return "list"
+        case .Generator: return "generator"
+        case .Set: return "set"
+        case .Dict: return "dict"
 
 ## Each imported name, written `name as alias` when `as` renames it.
 def bound_names(imported: Import) -> list[str]:
     mut shown = []
-    for at in range(imported.names.len()):
+    for at in range(len(imported.names)):
         name = imported.names[at]
         alias = imported.aliases[at]
         if alias is not None and alias != name:
             shown.append(name + " as " + alias)
         else:
             shown.append(name)
-    shown
+    return shown

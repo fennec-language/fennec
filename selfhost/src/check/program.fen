@@ -30,14 +30,14 @@ struct FnEntry:
 
 ## How deeply type aliases may refer to each other, which also stops an alias naming itself.
 def alias_depth() -> int:
-    16
+    return 16
 
 ## The interfaces every type that can fits automatically.
 def built_in_interfaces() -> list[str]:
-    ["Eq", "Hashable", "Ordered", "Format"]
+    return ["Eq", "Hashable", "Ordered", "Format"]
 
 def built_in_types() -> list[str]:
-    [
+    return [
         "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "str",
         "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList",
         "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin",
@@ -98,11 +98,11 @@ struct Program:
                     pass
 
     def add_import(ref self, imported: Import):
-        if imported.module.len() == 1 and imported.module[0] == "std":
-            for at in range(imported.names.len()):
+        if len(imported.module) == 1 and imported.module[0] == "std":
+            for at in range(len(imported.names)):
                 self.modules.append(imported.aliases[at] else imported.names[at])
         elif (
-            imported.module.len() == 2 and imported.module[0] == "std" and imported.names.len() == 0
+            len(imported.module) == 2 and imported.module[0] == "std" and len(imported.names) == 0
         ):
             self.modules.append(imported.alias else ".".join(imported.module))
 
@@ -182,20 +182,20 @@ struct Program:
         written = [generic.name for generic in extension.generics]
         mut declared = self.type_params(name)
         if name == "list" or name == "set" or name == "Optional" or name == "Id" or name == "Table":
-            if written.len() == 1: return None
+            if len(written) == 1: return None
             declared = ["T"]
         if name == "dict":
-            if written.len() == 2: return None
+            if len(written) == 2: return None
             declared = ["K", "V"]
         if written == declared: return None
-        if declared.len() == 0:
+        if len(declared) == 0:
             return Diagnostic(
                 message=f"`{name}` isn't generic, so its extension takes no type parameters",
                 span=extension.span,
                 help=f"write `extend {name}:`",
             )
         params = ", ".join(declared)
-        Diagnostic(
+        return Diagnostic(
             message=f"`{name}` is generic, so its extension names its type parameters",
             span=extension.span,
             help=f"write `extend {name}[{params}]:`",
@@ -228,26 +228,26 @@ struct Program:
 
     ## Whether a name is an interface: one the program declares, or a built-in one.
     def is_interface(self, name: str) -> bool:
-        name in self.interfaces or name in built_in_interfaces()
+        return name in self.interfaces or name in built_in_interfaces()
 
     ## A type's type parameters, in order: `T` for `Deque[T]`.
     def type_params(self, name: str) -> list[str]:
         if name not in self.types: return []
-        [generic.name for generic in self.types[name].type_def.generics]
+        return [generic.name for generic in self.types[name].type_def.generics]
 
     ## The type parameters in scope in a function: its type's, then the functions it's
     ## defined in, then its own.
     def generics_of(self, entry: FnEntry) -> list[Generic]:
         mut generics = []
         owner = entry.owner
-        if entry.extension.len() > 0:
+        if len(entry.extension) > 0:
             generics += entry.extension
         elif owner is not None and owner in self.types:
             generics += self.types[owner].type_def.generics
         # In a method, `Self` is the type it belongs to.
         if owner is not None:
             generics.append(Generic(name="Self", bounds=[], span=entry.function.span))
-        generics + entry.inherited + entry.function.generics
+        return generics + entry.inherited + entry.function.generics
 
     ## The types as the standard library's own declarations see them: its own, where a
     ## program's type of the same name replaced one.
@@ -255,11 +255,11 @@ struct Program:
         mut seen = self.types
         for name, info in self.shadowed.items():
             seen[name] = info
-        seen
+        return seen
 
     ## The type a written type means, with these type parameters in scope.
     def resolve_in(self, written: TypeExpr, generics: list[str]) -> Type fails Diagnostic:
-        self.resolve_within(written, generics, alias_depth())?
+        return self.resolve_within(written, generics, alias_depth())?
 
     def resolve_within(self, written: TypeExpr, generics: list[str], depth: int) -> Type fails Diagnostic:
         name = self.through_module(written.name)
@@ -275,24 +275,24 @@ struct Program:
                         pass
             return .Errors(sorted(names))
         # `(str) -> int fails ParseError`: a function that gives back a result.
-        if name == "fails" and written.args.len() == 2:
+        if name == "fails" and len(written.args) == 2:
             returns = self.resolve_within(written.args[0], generics, depth)?
             return .Result(returns, error=self.resolve_within(written.args[1], generics, depth)?)
         # `Result` is gone: what can fail says so with `fails`.
         if name == "Result": fail result_type_gone(written.span)
         # `with Transaction`: what a source lends.
-        if name == "with" and written.args.len() == 1:
+        if name == "with" and len(written.args) == 1:
             lent = self.resolve_within(written.args[0], generics, depth)?
             return .Generic("with", [lent])
         # `shared Scores`: what it holds is any type. Written with nothing in its brackets, it's
         # `shared name = value`, which takes the value's type.
-        if name == "shared" and written.args.len() == 1:
+        if name == "shared" and len(written.args) == 1:
             held = self.resolve_within(written.args[0], generics, depth)?
             return .Generic("shared", [held])
-        if name == "shared" and written.args.len() == 0:
+        if name == "shared" and len(written.args) == 0:
             return .Unknown
         # `ref unit = units[at]`, which takes the place's type.
-        if name == "ref" and written.args.len() == 0:
+        if name == "ref" and len(written.args) == 0:
             return .Unknown
         builtin = name in built_in_types()
         if (
@@ -302,8 +302,8 @@ struct Program:
             and name not in self.aliases
         ):
             fail unknown_type(name, written.span)
-        wanted = self.type_arg_count(name, written.args.len())
-        if written.args.len() != wanted: fail wrong_type_args(written, wanted)
+        wanted = self.type_arg_count(name, len(written.args))
+        if len(written.args) != wanted: fail wrong_type_args(written, wanted)
         mut args = []
         # An array's size is a number, not a type.
         types = written.args[:1] if name == "array" else written.args
@@ -314,7 +314,7 @@ struct Program:
             ty = builtin_type(name, args)
         elif name in generics:
             ty = .Param(name)
-        elif name in self.types and args.len() > 0:
+        elif name in self.types and len(args) > 0:
             ty = .Generic(name, args)
         elif name in self.types:
             ty = .Named(name)
@@ -325,16 +325,16 @@ struct Program:
                     span=written.span,
                 )
             ty = self.resolve_within(self.aliases[name], generics, depth - 1)?
-        optional_type(ty) if written.optional else ty
+        return optional_type(ty) if written.optional else ty
 
     ## `Deque` for `std.collections.Deque` or `collections.Deque`, through an imported module.
     def through_module(self, name: str) -> str:
         parts = name.split(".")
-        if parts.len() < 2: return name
+        if len(parts) < 2: return name
         member = parts[-1]
         path = ".".join(parts[:-1])
         if path in self.modules and member in self.types: return member
-        name
+        return name
 
     ## How many types a type takes in brackets. A tuple takes however many it's given, and
     ## a function type at least its return type.
@@ -343,54 +343,54 @@ struct Program:
         if name in ["list", "set", "SoaList", "Iterator", "Id", "Table"]: return 1
         if name in ["dict", "Result", "array"]: return 2
         if name == "tuple": return given
-        self.type_params(name).len()
+        return len(self.type_params(name))
 
 def builtin_type(name: str, args: list[Type]) -> Type:
     match name:
         case "int":
-            .Int
+            return .Int
         case "float":
-            .Float
+            return .Float
         case "bool":
-            .Bool
+            return .Bool
         case "str":
-            .Str
+            return .Str
         case "bytes":
-            .Bytes
+            return .Bytes
         case "None":
-            .NoneType
+            return .NoneType
         case "nothing":
-            .Unit
+            return .Unit
         case "list":
-            .List(args[0])
+            return .List(args[0])
         case "SoaList":
-            .List(args[0])
+            return .List(args[0])
         # The self-hosted checker has no fixed-size arrays of its own yet, so it reads one as a list.
         case "array":
-            .List(args[0])
+            return .List(args[0])
         # The self-hosted checker has no generators of its own yet, so it reads one as a list.
         case "Iterator":
-            .List(args[0])
+            return .List(args[0])
         case "set":
-            .Set(args[0])
+            return .Set(args[0])
         case "dict":
-            .Dict(args[0], args[1])
+            return .Dict(args[0], args[1])
         case "Result":
-            .Result(args[0], error=args[1])
+            return .Result(args[0], error=args[1])
         case "tuple":
-            .Tuple(args)
+            return .Tuple(args)
         case "->":
-            .Arrow(args[:-1], args[-1])
+            return .Arrow(args[:-1], args[-1])
         case "Id":
-            .Id(args[0])
+            return .Id(args[0])
         case "Table":
-            .Table(args[0])
+            return .Table(args[0])
         case _:
-            .Named(name)
+            return .Named(name)
 
 ## `Result[T, E]` where a type is written, which `fails` has taken the place of.
 def result_type_gone(span: Span) -> Diagnostic:
-    Diagnostic(
+    return Diagnostic(
         message="`Result` is gone: what can fail says so with `fails`",
         span=span,
         help="a function that gives back `T` or fails with `E` says `-> T fails E`; to hand one on, take a function, `run: () -> T fails E`",
@@ -398,7 +398,7 @@ def result_type_gone(span: Span) -> Diagnostic:
 
 ## An interface written where a type goes, as in `list[Shape]`.
 def interface_as_type(name: str, span: Span) -> Diagnostic:
-    Diagnostic(
+    return Diagnostic(
         message=f"`{name}` is an interface, not a type",
         span=span,
         help=f"take a type parameter that fits it, like `def f[T: {name}](items: list[T])`, or use an enum for a mix of types",
@@ -420,7 +420,7 @@ def wrong_type_args(written: TypeExpr, wanted: int) -> Diagnostic:
         message = f"`{name}` needs 1 type in brackets"
     elif wanted > 1:
         message = f"`{name}` needs {wanted} types in brackets"
-    Diagnostic(message=message, span=written.span, help=f"write it like `{example}`")
+    return Diagnostic(message=message, span=written.span, help=f"write it like `{example}`")
 
 def unknown_type(name: str, span: Span) -> Diagnostic:
     mut help = f"declare it, like `struct {name}:`, or check the spelling"
@@ -438,11 +438,11 @@ def unknown_type(name: str, span: Span) -> Diagnostic:
         help = "write `?` after the type, like `Enemy?`"
     elif name == "Self":
         help = "`Self` means the type a method belongs to, so it goes in a method of a type or an interface"
-    Diagnostic(message=f"`{name}` isn't a type", span=span, help=help)
+    return Diagnostic(message=f"`{name}` isn't a type", span=span, help=help)
 
 ## An extension of a type that isn't one of the program's own.
 def not_own(name: str, why: str, extension: Extension) -> Diagnostic:
-    Diagnostic(
+    return Diagnostic(
         message=f"`{name}` {why}, so it can't be extended",
         span=extension.span,
         help=f"an extension adds methods to one of this kit's own types; write a function that takes a `{name}` instead",

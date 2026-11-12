@@ -10,14 +10,14 @@ def main(stdout: Stdout):
     # Each message is its type, then its length: Parse, Bind, Describe, Execute and Sync.
     mut messages = list[str]()
     mut at = 0
-    while at < sent.len():
+    while at < len(sent):
         size = (sent[at + 1] << 24) | (sent[at + 2] << 16) | (sent[at + 3] << 8) | sent[at + 4]
-        kind = bytes([sent[at]]).decode() else ""
+        kind = bytes([sent[at]]).decode() except InvalidValue(): ""
         messages.append(f"{kind} {size}")
         at += 1 + size
     stdout.print(messages)
     # The query's text holds `$1` and `$2`, never the values.
-    whole = sent.decode() else ""
+    whole = sent.decode() except InvalidValue(): ""
     stdout.print("$1" in whole, "$2" in whole, "drop table entries" in whole[0:60])
     # What a server sends back: two columns, text and int8, three rows, one with a null size.
     columns = PgMessage.Columns(names=["path", "size"], types=[25, 20])
@@ -28,7 +28,7 @@ def main(stdout: Stdout):
     ]
     match columns:
         case .Columns(names=names, types=types):
-            made = rows_of(names, types=types, rows=rows) else SqlRows(
+            made = rows_of(names, types=types, rows=rows) except .Constraint() | .Busy() | .Column() | .Failed(): SqlRows(
                 columns=[],
                 kinds=[],
                 at=[],
@@ -50,7 +50,7 @@ def main(stdout: Stdout):
     stdout.print(failure_from_fields({"C": "40P01", "M": "deadlock detected"}).message())
     # A float column can hold what isn't a number, and that isn't a failure.
     nan = PgMessage.Row(cells=["NaN".encode()], present=[True])
-    ratios = rows_of(["ratio"], types=[701], rows=[nan]) else SqlRows(
+    ratios = rows_of(["ratio"], types=[701], rows=[nan]) except .Constraint() | .Busy() | .Column() | .Failed(): SqlRows(
         columns=[],
         kinds=[],
         at=[],

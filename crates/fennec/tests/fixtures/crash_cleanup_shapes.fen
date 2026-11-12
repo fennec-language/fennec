@@ -11,21 +11,23 @@ error Wrapped:
 def capped(n: int, limit: int) -> int fails Refused:
     if n > limit:
         fail Refused(code=n)
-    n
+    return n
 
 def guarded(code: int, stdout: Stdout) -> with int fails Refused | Wrapped:
-    lend code else:
+    lend code except:
         stdout.print("cleanup", code)
         if code == 7:
             stdout.print([0, 0][code])
-        kept = capped(code, limit=20) else as why:
+        kept = capped(code, limit=20) except why:
             fail Wrapped(why=f"{why}")
         stdout.print("kept", kept)
         match kept % 3:
             case 0:
                 def inner() -> int fails Refused:
-                    capped(kept, limit=5)?
-                stdout.print("inner", inner() else -1)
+                    return capped(kept, limit=5)?
+                inner_value = inner() except Refused(): -1
+                inner_value2 = inner() except Refused(): -1
+                stdout.print("inner", inner_value)
             case _:
                 stdout.print("other")
         checked = capped(kept, limit=10)? from Wrapped(why="too big")
@@ -38,6 +40,6 @@ def crashes(code: int, stdout: Stdout) fails Refused | Wrapped:
         stdout.print(values[held])
 
 def main(stdout: Stdout, args: Args):
-    code = int(args[0]) else 0
-    crashes(code, stdout) else:
+    code = int(args[0]) except InvalidValue(): 0
+    crashes(code, stdout) except Refused() | Wrapped():
         stdout.print("failed")

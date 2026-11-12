@@ -5,18 +5,18 @@ from std.process import Output, ProcessError
 
 ## Reads what the version-control tool says, and nothing else.
 def last_commit(git: Process) -> str:
-    found = git.run("git", ["log", "-1", "--format=%s"]) else Output(stdout="")
-    found.stdout.strip()
+    found = git.run("git", ["log", "-1", "--format=%s"]) except .NotRun() | .LooksLikeAnOption() | .TimedOut() | .TooMuchOutput(): Output(stdout="")
+    return found.stdout.strip()
 
 def failure[T](run: () -> T fails ProcessError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message()
-    "ran"
+    return "ran"
 
 def io_failure[T](run: () -> T fails IoError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message()
-    "done"
+    return "done"
 
 test "a narrowed Process runs only what it names"(process: Process):
     process.script("git", Output(stdout="Add Tree\n"))
@@ -41,8 +41,8 @@ test "narrowing again only takes more away"(process: Process):
 
 ## Whether `fs` can't look for `path` at all, as outside what a narrowed `Fs` reaches.
 def cant_look(fs: Fs, path: str) -> bool:
-    _ = fs.exists(path) else return True
-    False
+    _ = fs.exists(path) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): return True
+    return False
 
 test "a narrowed Fs reaches only what's in its folder"(fs: Fs):
     fs.make_dir("saves/slot1")?
@@ -77,6 +77,6 @@ test "narrowing an Fs again stays inside the first folder"(fs: Fs):
 
 def main(stdout: Stdout, process: Process):
     echo = process.only("echo")
-    found = echo.run("echo", ["only echo runs"]) else Output()
+    found = echo.run("echo", ["only echo runs"]) except .NotRun() | .LooksLikeAnOption() | .TimedOut() | .TooMuchOutput(): Output()
     stdout.print(found.stdout.strip())
     stdout.print(failure(() => echo.run("ls", [])?))

@@ -29,9 +29,9 @@ def in_task(big: shared Big, value: int) fails Crashed:
         pass
 
 def worked(big: shared Big, value: int) -> int:
-    change(big, value, refuse=value % 2 == 0) else:
+    change(big, value, refuse=value % 2 == 0) except Refused():
         return 0
-    1
+    return 1
 
 def main(stdout: Stdout):
     shared big = Big(items=[1, 2, 3], table={1: 1}, name="big")
@@ -39,10 +39,10 @@ def main(stdout: Stdout):
     second = worked(big, 4)
     lock big as held:
         stdout.print(first, second, held.items, held.table, held.name)
-    in_task(big, 6) else:
+    in_task(big, 6) except Crashed():
         stdout.print("crashed")
     lock big as held:
         stdout.print(held.items, held.table, held.name)
     kept = sum(worked(big, n) for n in parallel([n for n in range(10, 20)]))
     lock big as held:
-        stdout.print(kept, held.items.len(), held.table.len(), held.name.len())
+        stdout.print(kept, len(held.items), len(held.table), len(held.name))

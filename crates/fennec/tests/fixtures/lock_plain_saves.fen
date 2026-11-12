@@ -56,14 +56,14 @@ def change(many: shared Many, trial: int, failing: bool) fails Boom:
 
 def show(many: shared Many) -> str:
     lock many as held:
-        f"{held.field0} {held.field1} {held.field2} {held.field3} {held.field4} {held.field5} {held.field6} {held.field7} {held.field8} {held.field9} {held.field10} {held.field11} {held.field12} {held.field13} {held.field14} {held.field15} {held.field16} {held.field17} {held.field18} {held.field19} {held.seen}"
+        return f"{held.field0} {held.field1} {held.field2} {held.field3} {held.field4} {held.field5} {held.field6} {held.field7} {held.field8} {held.field9} {held.field10} {held.field11} {held.field12} {held.field13} {held.field14} {held.field15} {held.field16} {held.field17} {held.field18} {held.field19} {held.seen}"
 
 def main(stdout: Stdout):
     shared many = Many()
     mut failed = 0
     for trial in range(30):
         before = show(many)
-        _ = change(many, trial=trial, failing=trial % 3 == 0) else:
+        _ = change(many, trial=trial, failing=trial % 3 == 0) except Boom():
             failed += 1
             if show(many) != before:
                 stdout.print("not put back", trial)

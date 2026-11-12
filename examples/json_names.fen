@@ -14,12 +14,12 @@ struct Player:
     _save_slot = 0
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "loaded"
+    return "loaded"
 
 def ash() -> Player:
-    Player(display_name="Ash", hit_points=12, main_weapon=Weapon(damage_bonus=2, max_range=1.5))
+    return Player(display_name="Ash", hit_points=12, main_weapon=Weapon(damage_bonus=2, max_range=1.5))
 
 test "names are spelled the way the text expects":
     assert (
@@ -71,4 +71,5 @@ test "a field the text leaves out says how it's spelled there":
 def main(stdout: Stdout):
     text = json.dumps(ash(), names=.CamelCase)
     stdout.print(text)
-    stdout.print(json.loads[Player](text, names=.CamelCase) else ash())
+    got_value = json.loads[Player](text, names=.CamelCase) except ParseError(): ash()
+    stdout.print(got_value)

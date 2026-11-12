@@ -13,6 +13,7 @@ import parser.stmt
 import parser.expr
 import parser.pattern
 from dump import dump_tokens, dump_tree, dump_check
+from span import Diagnostic
 
 ## Reads its work from standard input: one `tokens <path>`, `tree <path>` or `check <path>`
 ## line per file to dump. `std <path>` lines name the standard library's sources, which
@@ -27,7 +28,7 @@ def main(stdout: Stdout, fs: Fs, stdin: Stdin):
         path = line[space + 1:]
         source = fs.read_text(path)?
         if mode == "std":
-            module = parse(source) else:
+            module = parse(source) except Diagnostic():
                 continue
             library.append(module)
             continue

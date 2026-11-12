@@ -10,4 +10,4 @@ def main(stdout: Stdout):
     _ = words.pop()
     _, word = (1, "x")
     _, number = ("y", 2)
-    stdout.print(frames.len(), words.len(), word, number)
+    stdout.print(len(frames), len(words), word, number)

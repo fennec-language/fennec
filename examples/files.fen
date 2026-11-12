@@ -12,8 +12,9 @@ def load(fs: Fs, path: str) -> list[int] fails IoError:
     mut found = list[int]()
     with fs.open(path)? as file:
         for line in file.lines()?:
-            found.append(int(line) else 0)
-    found
+            int_value = int(line) except InvalidValue(): 0
+            found.append(int_value)
+    return found
 
 test "a file written is there to read when its block ends"(fs: Fs):
     save(fs, "scores.txt", scores=[120, 95, 300])?
@@ -32,7 +33,7 @@ test "a file can be read in chunks"(fs: Fs):
     mut sizes = list[int]()
     with fs.open("letters.txt")? as file:
         for chunk in file.chunks(3)?:
-            sizes.append(chunk.len())
+            sizes.append(len(chunk))
     assert sizes == [3, 3, 1]
 
 test "a file is for writing or for reading, not both"(fs: Fs):
@@ -48,7 +49,7 @@ test "a file is for writing or for reading, not both"(fs: Fs):
 
 def main(stdout: Stdout, fs: Fs):
     # This file doesn't exist, so opening it fails, and nothing is made.
-    _ = load(fs, "no/such/scores.txt") else:
+    _ = load(fs, "no/such/scores.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
         # What the system says differs from one to another, so it isn't printed here.
         stdout.print("there are no scores to load")
         []

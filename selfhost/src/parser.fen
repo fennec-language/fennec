@@ -11,7 +11,7 @@ from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeD
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module fails Diagnostic:
     mut parser = Parser.over(lex(source, 0)?)
-    parser.module()?
+    return parser.module()?
 
 ## Tokens to a syntax tree, by recursive descent: declarations first, then statements,
 ## expressions, and `match` patterns.
@@ -37,58 +37,58 @@ struct Parser:
     value_at_top = False
 
     def over(tokens: list[Token]) -> Parser:
-        end = tokens[-1].span if tokens.len() > 0 else Span(start=0, end=0)
-        Parser(tokens=tokens, eof=Token(tok=.Eof, span=end), old_mut=[], old_mut_on=[], old_pub=[], old_pub_top=[])
+        end = tokens[-1].span if len(tokens) > 0 else Span(start=0, end=0)
+        return Parser(tokens=tokens, eof=Token(tok=.Eof, span=end), old_mut=[], old_mut_on=[], old_pub=[], old_pub_top=[])
 
     def current(self) -> Token:
-        if self.pos < self.tokens.len():
+        if self.pos < len(self.tokens):
             return self.tokens[self.pos]
-        self.eof
+        return self.eof
 
     def peek(self) -> Tok:
-        self.current().tok
+        return self.current().tok
 
     def peek_at(self, ahead: int) -> Tok:
         at = self.pos + ahead
-        if at < self.tokens.len():
+        if at < len(self.tokens):
             return self.tokens[at].tok
-        self.eof.tok
+        return self.eof.tok
 
     def span(self) -> Span:
-        self.current().span
+        return self.current().span
 
     def prev_span(self) -> Span:
-        if self.pos > 0 and self.pos <= self.tokens.len():
+        if self.pos > 0 and self.pos <= len(self.tokens):
             return self.tokens[self.pos - 1].span
-        self.span()
+        return self.span()
 
     def advance(ref self) -> Token:
         token = self.current()
-        if self.pos < self.tokens.len():
+        if self.pos < len(self.tokens):
             self.pos += 1
-        token
+        return token
 
     def at(self, tok: Tok) -> bool:
-        self.peek() == tok
+        return self.peek() == tok
 
     def at_punct(self, text: str) -> bool:
-        self.peek() == .Punct(text)
+        return self.peek() == .Punct(text)
 
     def at_keyword(self, word: str) -> bool:
-        self.peek() == .Keyword(word)
+        return self.peek() == .Keyword(word)
 
     ## Whether the next token is the soft keyword `word`.
     def at_soft(self, word: str) -> bool:
-        self.peek() == .Name(word)
+        return self.peek() == .Name(word)
 
     def eat(ref self, tok: Tok) -> bool:
         found = self.at(tok)
         if found:
             self.pos += 1
-        found
+        return found
 
     def eat_punct(ref self, text: str) -> bool:
-        self.eat(.Punct(text))
+        return self.eat(.Punct(text))
 
     ## Skips `pub`, the old spelling of `export`, before a declaration or field. On a top-level
     ## name it's `export`, and anywhere else it goes.
@@ -98,7 +98,7 @@ struct Parser:
             self.old_pub.append(span)
             self.old_pub_top.append(top_level)
             return span
-        None
+        return None
 
     ## Skips `export` on a method or field, which comes with its type.
     def eat_export(ref self) -> Span?:
@@ -107,13 +107,13 @@ struct Parser:
         span = self.advance().span
         self.old_pub.append(span)
         self.old_pub_top.append(False)
-        span
+        return span
 
     ## Fails at the first `pub`, saying how many more there are.
     def check_old_pub(self) fails Diagnostic:
-        if self.old_pub.len() == 0:
+        if len(self.old_pub) == 0:
             return
-        others = self.old_pub.len() - 1
+        others = len(self.old_pub) - 1
         more = "" if others == 0 else (" and in 1 other place" if others == 1 else f" and in {others} other places")
         mut top = False
         for at_top in self.old_pub_top:
@@ -125,7 +125,7 @@ struct Parser:
         )
 
     def eat_keyword(ref self, word: str) -> bool:
-        self.eat(.Keyword(word))
+        return self.eat(.Keyword(word))
 
     ## `ref` on `what`: a loop, a parameter, an argument or a `with` name. `mut` there was the old
     ## spelling. It's kept as `ref` so parsing can go on, and the file fails with one error at
@@ -135,14 +135,14 @@ struct Parser:
             self.old_mut.append(self.advance().span)
             self.old_mut_on.append(what)
             return True
-        self.eat_keyword("ref")
+        return self.eat_keyword("ref")
 
     ## Fails at the first `mut` that should be `ref`, saying how many more there are. It comes
     ## before any later mistake, since it's earlier in the file.
     def check_old_mut(self) fails Diagnostic:
-        if self.old_mut.len() == 0:
+        if len(self.old_mut) == 0:
             return
-        others = self.old_mut.len() - 1
+        others = len(self.old_mut) - 1
         more = "" if others == 0 else (" and in 1 other place" if others == 1 else f" and in {others} other places")
         fail Diagnostic(
             message=f"{self.old_mut_on[0]} is written `ref`, not `mut`",
@@ -153,10 +153,10 @@ struct Parser:
     def expect_punct(ref self, text: str) -> Span fails Diagnostic:
         if not self.at_punct(text):
             fail self.unexpected(f"`{text}`")
-        self.advance().span
+        return self.advance().span
 
     def unexpected(self, expected: str) -> Diagnostic:
-        Diagnostic(message=f"expected {expected}, found {describe(self.peek())}", span=self.span())
+        return Diagnostic(message=f"expected {expected}, found {describe(self.peek())}", span=self.span())
 
     def name(ref self, what: str) -> str fails Diagnostic:
         match self.peek():
@@ -175,7 +175,7 @@ struct Parser:
         fail self.unexpected(what)
 
     def reserved(self, word: str) -> Diagnostic:
-        Diagnostic(
+        return Diagnostic(
             message=f"`{word}` is part of Fennec's design but isn't supported yet",
             span=self.span(),
             help="see what's coming at https://fennec-lang.dev/roadmap/",
@@ -204,18 +204,18 @@ struct Parser:
                 pass
             if self.at(.Eof):
                 break
-            item = self.item() else as problem:
+            item = self.item() except problem:
                 self.check_old_mut()?
                 self.check_old_pub()?
                 fail problem
             items.append(item)
         self.check_old_mut()?
         self.check_old_pub()?
-        Module(items=items)
+        return Module(items=items)
 
     def item(ref self) -> Item fails Diagnostic:
         annotations = self.annotations()?
-        if annotations.len() > 0:
+        if len(annotations) > 0:
             _ = self.eat_pub(True)
             _ = self.eat_keyword("export")
             if not self.at_keyword("def"):
@@ -235,7 +235,7 @@ struct Parser:
                     return self.declaration(word)?
             case _: pass
         stmt = self.stmt()?
-        constant(stmt)?
+        return constant(stmt)?
 
     def is_declaration(self, word: str) -> bool:
         if word in ["struct", "shared", "enum", "error", "interface", "extend"]:
@@ -244,49 +244,49 @@ struct Parser:
             return is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("=")
         if word == "test" or word == "bench":
             return is_str(self.peek_at(1))
-        False
+        return False
 
     def declaration(ref self, word: str) -> Item fails Diagnostic:
         start = self.advance().span
         match word:
-            case "struct": .Struct(self.type_def(start, is_enum=False)?)
-            case "shared": .Struct(copy(self.type_def(start, is_enum=False)?, shared=True))
-            case "error": .Error(self.error_def(start)?)
-            case "enum": .Enum(self.type_def(start, is_enum=True)?)
-            case "interface": self.interface(start)?
-            case "extend": self.extension(start)?
+            case "struct": return .Struct(self.type_def(start, is_enum=False)?)
+            case "shared": return .Struct(copy(self.type_def(start, is_enum=False)?, shared=True))
+            case "error": return .Error(self.error_def(start)?)
+            case "enum": return .Enum(self.type_def(start, is_enum=True)?)
+            case "interface": return self.interface(start)?
+            case "extend": return self.extension(start)?
             case "type":
                 name = self.name("a type name")?
                 _ = self.expect_punct("=")?
                 ty = self.type_expr()?
                 span = start.to(self.prev_span())
                 self.end_line()?
-                .TypeAlias(name, ty, span)
-            case _: self.test(start, word == "bench")?
+                return .TypeAlias(name, ty, span)
+            case _: return self.test(start, word == "bench")?
 
     ## Whether the line starts with a case: a name, and then `(` or nothing.
     def at_case(self) -> bool:
         if not is_name(self.peek()):
             return False
         match self.peek_at(1):
-            case .Punct(text): text == "("
-            case .Newline | .Dedent | .Eof: True
-            case _: False
+            case .Punct(text): return text == "("
+            case .Newline | .Dedent | .Eof: return True
+            case _: return False
 
     ## An error: fields, like a struct's, or cases, like an enum's, each failing its own way:
     ## `NotFound(path: str)`. A line that's a name and then `(` or nothing is a case.
     def error_def(ref self, start: Span) -> TypeDef fails Diagnostic:
         type_def = self.type_body(start, is_enum=False, is_error=True)?
-        if type_def.fields.len() > 0 and type_def.cases.len() > 0:
+        if len(type_def.fields) > 0 and len(type_def.cases) > 0:
             fail Diagnostic(
                 message=f"`{type_def.name}` has both fields and cases",
                 span=type_def.fields[0].span,
                 help="an error has fields, like `path: str`, or cases, like `NotFound(path: str)`, not both",
             )
-        type_def
+        return type_def
 
     def type_def(ref self, start: Span, is_enum: bool) -> TypeDef fails Diagnostic:
-        self.type_body(start, is_enum=is_enum, is_error=False)?
+        return self.type_body(start, is_enum=is_enum, is_error=False)?
 
     ## A struct's, enum's or error's name and body. An error's body may have cases.
     def type_body(ref self, start: Span, is_enum: bool, is_error: bool) -> TypeDef fails Diagnostic:
@@ -303,11 +303,11 @@ struct Parser:
             mut annotations = []
             if not is_enum:
                 annotations = self.annotations()?
-            if annotations.len() > 0:
+            if len(annotations) > 0:
                 _ = self.eat_pub(False) else self.eat_export()
             if self.at_keyword("def"):
                 type_def.methods.append(copy(self.function()?, annotations=annotations))
-            elif annotations.len() == 0 and self.eat_keyword("pass"):
+            elif len(annotations) == 0 and self.eat_keyword("pass"):
                 self.end_line()?
             elif is_enum or (is_error and self.at_case()):
                 type_def.cases.append(self.enum_case()?)
@@ -316,7 +316,7 @@ struct Parser:
                 default_comes_last(type_def.fields, field)?
                 type_def.fields.append(copy(field, annotations=annotations))
                 self.end_line()?
-        type_def
+        return type_def
 
     ## The annotations above a field or a `def`, each on its own line.
     def annotations(ref self) -> list[Annotation] fails Diagnostic:
@@ -331,7 +331,7 @@ struct Parser:
             span = start.to(self.prev_span())
             self.end_line()?
             found.append(Annotation(name=name, args=args, span=span))
-        found
+        return found
 
     ## A field's name, which may be any word, keywords included.
     def field_name(ref self, what: str) -> str fails Diagnostic:
@@ -341,7 +341,7 @@ struct Parser:
                     _ = self.advance()
                     return word
             case _: pass
-        self.name(what)?
+        return self.name(what)?
 
     ## `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
     def field(ref self, rules: bool) -> Field fails Diagnostic:
@@ -363,7 +363,7 @@ struct Parser:
                 span=start,
                 help=f"write `{name}: int`, or a default like `{name} = 0`",
             )
-        Field(name=name, ty=ty, default=default, rule=rule, span=start.to(self.prev_span()))
+        return Field(name=name, ty=ty, default=default, rule=rule, span=start.to(self.prev_span()))
 
     def enum_case(ref self) -> Case fails Diagnostic:
         start = self.span()
@@ -379,7 +379,7 @@ struct Parser:
             _ = self.expect_punct(")")?
         span = start.to(self.prev_span())
         self.end_line()?
-        Case(name=name, fields=fields, span=span)
+        return Case(name=name, fields=fields, span=span)
 
     def interface(ref self, start: Span) -> Item fails Diagnostic:
         name = self.name("an interface name")?
@@ -390,7 +390,7 @@ struct Parser:
             if not self.eat_keyword("pass"):
                 methods.append(self.signature()?)
             self.end_line()?
-        .Interface(Interface(name=name, methods=methods, span=start.to(self.prev_span())))
+        return .Interface(Interface(name=name, methods=methods, span=start.to(self.prev_span())))
 
     ## `extend Name:` and its methods. A field is an error: an extension adds methods only.
     def extension(ref self, start: Span) -> Item fails Diagnostic:
@@ -412,7 +412,7 @@ struct Parser:
                     span=self.span(),
                     help=f"declare fields where `{name}` is declared",
                 )
-        .Extend(Extension(name=name, generics=generics, methods=methods, span=span))
+        return .Extend(Extension(name=name, generics=generics, methods=methods, span=span))
 
     def test(ref self, start: Span, bench: bool) -> Item fails Diagnostic:
         mut name = ""
@@ -434,7 +434,7 @@ struct Parser:
         span = start.to(self.prev_span())
         _ = self.expect_punct(":")?
         body = self.block()?
-        .Test(TestDef(name=name, capabilities=capabilities, inputs=inputs, body=body, bench=bench, span=span))
+        return .Test(TestDef(name=name, capabilities=capabilities, inputs=inputs, body=body, bench=bench, span=span))
 
     ## `import a.b`, or `from a.b import x, y`, each maybe renamed with `as`.
     def import_names(ref self) -> Import fails Diagnostic:
@@ -460,13 +460,13 @@ struct Parser:
             alias = self.import_alias()?
         span = start.to(self.prev_span())
         self.end_line()?
-        Import(module=module, names=names, aliases=aliases, alias=alias, span=span)
+        return Import(module=module, names=names, aliases=aliases, alias=alias, span=span)
 
     ## `as name` after something imported, if it's there.
     def import_alias(ref self) -> str? fails Diagnostic:
         if self.eat_keyword("as"):
             return self.name("a name to import it as")?
-        None
+        return None
 
     ## `[T, U: Shape & Eq]` after a function or type name.
     def generic_params(ref self) -> list[Generic] fails Diagnostic:
@@ -485,7 +485,7 @@ struct Parser:
             if not self.eat_punct(","):
                 break
         _ = self.expect_punct("]")?
-        generics
+        return generics
 
     ## `def name(params) -> ret:` and its body, or the signature alone, which only std's
     ## `@intrinsic` functions may be.
@@ -497,7 +497,7 @@ struct Parser:
             return function
         _ = self.expect_punct(":")?
         function.body = self.block()?
-        function
+        return function
 
     ## `def name(params) -> ret`, without a body. Operators, indexing, `in` and `from` are defined as
     ## `def +`, `def []`, `def []=`, `def in` and `def from`.
@@ -535,7 +535,7 @@ struct Parser:
                 break
         _ = self.expect_punct(")")?
         # `def [](ref self, i)` is the `ref` form, which a type can have beside `def [](self, i)`.
-        if name == "[]" and params.len() > 0 and params[0].is_self and params[0].is_mut:
+        if name == "[]" and len(params) > 0 and params[0].is_self and params[0].is_mut:
             name = "[]mut"
         mut ret = None
         mut arrow = None
@@ -552,7 +552,7 @@ struct Parser:
         mut fails = None
         if self.at_fails():
             fails = self.fails_type()?
-        FnDef(
+        return FnDef(
             name=name,
             generics=generics,
             params=params,
@@ -583,7 +583,7 @@ struct Parser:
         mut default = None
         if self.eat_punct("="):
             default = self.param_default(name, is_mut)?
-        Param(name=name, ty=ty, is_mut=is_mut, is_self=False, default=default, span=start.to(self.prev_span()))
+        return Param(name=name, ty=ty, is_mut=is_mut, is_self=False, default=default, span=start.to(self.prev_span()))
 
     ## A parameter's default: a plain value, known without running anything.
     def param_default(ref self, name: str, is_mut: bool) -> Expr fails Diagnostic:
@@ -600,18 +600,18 @@ struct Parser:
                 span=value.span,
                 help="write a number, string, `True`, `False` or `None`, and work anything else out in the function",
             )
-        value
+        return value
 
     ## Whether `fails` comes next. It's a word only after a function's parameters and any
     ## return type.
     def at_fails(self) -> bool:
-        self.peek() == .Name("fails")
+        return self.peek() == .Name("fails")
 
     ## `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
     ## are one written type named `|`.
     def fails_type(ref self) -> TypeExpr fails Diagnostic:
         _ = self.advance()
-        self.type_expr()?
+        return self.type_expr()?
 
     ## A type, or several joined by `|`: a union, like `Circle | Square`, or the errors after
     ## `fails` or in `Result[int, A | B]`. Either is one written type named `|`.
@@ -622,7 +622,7 @@ struct Parser:
         mut members = [first]
         while self.eat_punct("|"):
             members.append(self.member_type()?)
-        TypeExpr(name="|", args=members, optional=False, span=first.span.to(self.prev_span()))
+        return TypeExpr(name="|", args=members, optional=False, span=first.span.to(self.prev_span()))
 
     ## One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
     def member_type(ref self) -> TypeExpr fails Diagnostic:
@@ -651,7 +651,7 @@ struct Parser:
             _ = self.expect_punct(")")?
             # `(Circle | Square)?`: a union in parentheses is the union, so it can be optional, as
             # is `(shared Scores)?`.
-            if args.len() == 1 and (args[0].name == "|" or args[0].name == "shared") and not self.at_punct("->"):
+            if len(args) == 1 and (args[0].name == "|" or args[0].name == "shared") and not self.at_punct("->"):
                 optional = self.eat_punct("?")
                 return copy(args[0], optional=optional, span=start.to(self.prev_span()))
             # `(int, str) -> bool`: a function type, its return type last. One that can fail
@@ -678,50 +678,50 @@ struct Parser:
                 args.append(self.type_expr()?)
             _ = self.expect_punct("]")?
         optional = self.eat_punct("?")
-        TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))
+        return TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))
 
 ## The number a token is, when it can be an array's size in a type.
 def array_size(tok: Tok) -> int?:
     match tok:
-        case .Int(value): value
-        case _: None
+        case .Int(value): return value
+        case _: return None
 
 ## Whether a token is a keyword that can name a field, like `type`.
 def is_field_word(tok: Tok) -> bool:
     match tok:
-        case .Keyword(word): not is_reserved(word)
-        case _: False
+        case .Keyword(word): return not is_reserved(word)
+        case _: return False
 
 def is_name(tok: Tok) -> bool:
     match tok:
-        case .Name(_): True
-        case _: False
+        case .Name(_): return True
+        case _: return False
 
 def is_keyword_tok(tok: Tok) -> bool:
     match tok:
-        case .Keyword(_): True
-        case _: False
+        case .Keyword(_): return True
+        case _: return False
 
 def is_str(tok: Tok) -> bool:
     match tok:
-        case .Str(_): True
-        case _: False
+        case .Str(_): return True
+        case _: return False
 
 ## How an error message names a token.
 def describe(tok: Tok) -> str:
     match tok:
-        case .Name(name): f"`{name}`"
-        case .Int(_): "a number"
-        case .Float(_): "a number"
-        case .Duration(_): "a duration"
-        case .Str(_): "a string"
-        case .FStr(_) | .TStr(_): "a string"
-        case .Keyword(word): f"`{word}`"
-        case .Punct(text): f"`{text}`"
-        case .Newline: "the end of the line"
-        case .Indent: "an indented line"
-        case .Dedent: "the end of the block"
-        case .Eof: "the end of the file"
+        case .Name(name): return f"`{name}`"
+        case .Int(_): return "a number"
+        case .Float(_): return "a number"
+        case .Duration(_): return "a duration"
+        case .Str(_): return "a string"
+        case .FStr(_) | .TStr(_): return "a string"
+        case .Keyword(word): return f"`{word}`"
+        case .Punct(text): return f"`{text}`"
+        case .Newline: return "the end of the line"
+        case .Indent: return "an indented line"
+        case .Dedent: return "the end of the block"
+        case .Eof: return "the end of the file"
 
 ## A statement at the top level of a file, which has to be a constant: `NAME = value`.
 def constant(stmt: Stmt) -> Item fails Diagnostic:
@@ -751,7 +751,7 @@ def default_comes_last(earlier: list[Field], field: Field) fails Diagnostic:
         fail no_default_after_defaults(field.name, field.span)
 
 def no_default_after_defaults(name: str, span: Span) -> Diagnostic:
-    Diagnostic(
+    return Diagnostic(
         message=f"`{name}` has no default, so it has to come before the ones that do",
         span=span,
         help="put the fields and parameters with defaults after all the ones without",

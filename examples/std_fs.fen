@@ -31,17 +31,16 @@ test "what isn't there is no, for exists, and a failure for everything else"(fs:
 
 ## Which case of `IoError` `run` fails with, or "fine" if it doesn't.
 def case_of[T](run: () -> T fails IoError) -> str:
-    _ = run() else as error:
-        match error:
-            case .NotFound():
-                return "NotFound"
-            case .PermissionDenied():
-                return "PermissionDenied"
-            case .AlreadyExists():
-                return "AlreadyExists"
-            case .Other():
-                return "Other"
-    "fine"
+    _ = run() except error:
+        case .NotFound():
+            return "NotFound"
+        case .PermissionDenied():
+            return "PermissionDenied"
+        case .AlreadyExists():
+            return "AlreadyExists"
+        case .Other():
+            return "Other"
+    return "fine"
 
 test "what isn't there fails as NotFound, however it's reached"(fs: Fs):
     assert case_of(() => fs.read_text("missing.txt")?) == "NotFound"
@@ -158,10 +157,10 @@ test "lines of an empty file give nothing"(fs: Fs):
 test "read_chunk gives up to its size, and empty bytes at the end"(fs: Fs):
     fs.write_text("letters.txt", "abcdefghi")?
     with fs.open("letters.txt")? as file:
-        assert file.read_chunk(0)?.len() == 0
+        assert len(file.read_chunk(0)?) == 0
         assert file.read_chunk(5)? == "abcde".encode()
         assert file.read_chunk(100)? == "fghi".encode()
-        assert file.read_chunk(100)?.len() == 0
+        assert len(file.read_chunk(100)?) == 0
 
 ## What a file's `read_chunk(size)` gives for `path`.
 def chunk_of(fs: Fs, path: str, size: int) -> bytes fails IoError:
@@ -199,29 +198,29 @@ test "opening what isn't there, or reading a folder, fails"(fs: Fs):
 
 ## What `run` fails with, in words, or "fine" if it doesn't.
 def why[T](run: () -> T fails IoError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message()
-    "fine"
+    return "fine"
 
 ## Opens `path` to read, then writes to it.
 def write_while_reading(fs: Fs, path: str) -> str fails IoError:
     with fs.open(path)? as file:
         file.write_text("more")?
-    "written"
+    return "written"
 
 ## Makes `path`, then reads from it while it's being made.
 def read_while_making(fs: Fs, path: str) -> bytes fails IoError:
     with fs.create(path)? as file:
         file.write_text("a")?
         return file.read()?
-    bytes([])
+    return bytes([])
 
 ## Opens `path` to read, then flushes and syncs it.
 def flush_while_reading(fs: Fs, path: str) -> str fails IoError:
     with fs.open(path)? as file:
         file.flush()?
         file.sync()?
-    "flushed"
+    return "flushed"
 
 test "a file opened to read can't be written, and one being made can't be read"(fs: Fs):
     fs.write_text("kept.txt", "kept")?
@@ -238,6 +237,6 @@ test "a file opened to read can't be written, and one being made can't be read"(
 
 def main(stdout: Stdout, fs: Fs):
     # A failure is named where it happens, and the program carries on.
-    _ = fs.read_text("no/such/file.txt") else:
+    _ = fs.read_text("no/such/file.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
         stdout.print("there's no such file")
         ""

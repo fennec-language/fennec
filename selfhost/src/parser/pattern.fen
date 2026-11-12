@@ -13,7 +13,7 @@ extend Parser:
         next = self.peek_at(1)
         if next == .Newline or next == .Eof:
             return False
-        next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
+        return next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
 
     def match_expr(ref self) -> Expr fails Diagnostic:
         start = self.advance().span
@@ -21,7 +21,7 @@ extend Parser:
         _ = self.expect_punct(":")?
         self.expect_block_start()?
         arms = self.arms()?
-        Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
+        return Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
 
     ## The `case` arms of an indented block, up to its end: a `match`'s, or those right under
     ## `except why:`.
@@ -37,13 +37,13 @@ extend Parser:
             body = self.block()?
             arms.append(MatchArm(pattern=pattern, guard=guard, body=body, span=arm_start.to(self.prev_span())))
         self.block_ended = True
-        arms
+        return arms
 
     ## `if condition` after a `case`'s pattern, if there is one.
     def guard(ref self) -> Expr? fails Diagnostic:
         if self.eat_keyword("if"):
             return self.expr()?
-        None
+        return None
 
     ## A pattern, or several separated by `|`, any of which matches.
     def pattern(ref self) -> Pattern fails Diagnostic:
@@ -53,7 +53,7 @@ extend Parser:
         mut alternatives = [first]
         while self.eat_punct("|"):
             alternatives.append(self.one_pattern()?)
-        .Or(alternatives)
+        return .Or(alternatives)
 
     def one_pattern(ref self) -> Pattern fails Diagnostic:
         token = self.advance()
@@ -71,10 +71,10 @@ extend Parser:
                 if name[0] >= "A" and name[0] <= "Z":
                     args, fields = self.pattern_args()?
                     return .Variant(name, False, args, fields)
-                .Bind(name)
-            case .Int(value): literal(.Int(value), token.span)
-            case .Float(value): literal(.Float(value), token.span)
-            case .Str(text): literal(.Str(text), token.span)
+                return .Bind(name)
+            case .Int(value): return literal(.Int(value), token.span)
+            case .Float(value): return literal(.Float(value), token.span)
+            case .Str(text): return literal(.Str(text), token.span)
             case .Keyword(word):
                 if word == "True" or word == "False":
                     return literal(.Bool(word == "True"), token.span)
@@ -85,7 +85,7 @@ extend Parser:
                     return .RefBind(self.name("a name after `ref`")?)
                 self.pos -= 1
                 fail self.unexpected("a pattern")
-            case .Punct(text): self.punct_pattern(text, token.span)?
+            case .Punct(text): return self.punct_pattern(text, token.span)?
             case _:
                 self.pos -= 1
                 fail self.unexpected("a pattern")
@@ -123,7 +123,7 @@ extend Parser:
                 named = match self.peek():
                     case .Name(_): self.peek_at(1) == .Punct("=")
                     case _: False
-                if args.len() > 0 and named == (fields.len() == 0):
+                if len(args) > 0 and named == (len(fields) == 0):
                     fail Diagnostic(message="a pattern names every field it matches, or none of them", span=start)
                 if named:
                     field = self.name("a field")?
@@ -135,7 +135,7 @@ extend Parser:
                 if not self.eat_punct(","):
                     break
             _ = self.expect_punct(")")?
-        (args, fields)
+        return (args, fields)
 
 def literal(kind: ExprKind, span: Span) -> Pattern:
-    .Literal(Expr(kind=kind, span=span))
+    return .Literal(Expr(kind=kind, span=span))

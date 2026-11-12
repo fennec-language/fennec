@@ -9,17 +9,17 @@ error Refused:
 def capped(n: int, limit: int) -> int fails Refused:
     if n > limit:
         fail Refused(code=n)
-    n
+    return n
 
 def noted(name: str, value: int, stdout: Stdout) -> int:
     stdout.print("ran", name)
-    value
+    return value
 
 def three(first: int, second: int, third: int) -> int:
-    first * 100 + second * 10 + third
+    return first * 100 + second * 10 + third
 
 def ward(stdout: Stdout) -> with int:
-    lend 0 else:
+    lend 0 except:
         stdout.print("undo")
 
 def outermost(cap: int, stdout: Stdout) -> int fails Refused:
@@ -40,21 +40,21 @@ def pieces(cap: int, stdout: Stdout) -> int fails Refused:
         names = ["left", "mid", "right"]
         stdout.print(f"{noted(names[0], 1, stdout)} {capped(noted(names[1], 2, stdout), limit=cap)?} {noted(names[2], 3, stdout)}")
         items = [noted("first", 1, stdout), capped(noted("second", 2, stdout), limit=cap)?, noted("third", 3, stdout)]
-        return items.len()
+        return len(items)
 
 def plain(cap: int, stdout: Stdout) -> int fails Refused:
-    three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout))
+    return three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout))
 
 def bump(ref count: int) -> int fails Refused:
     count += 10
-    count
+    return count
 
 struct Bag:
     size = 1
 
     def grow(ref self) -> int fails Refused:
         self.size += 10
-        self.size
+        return self.size
 
 ## A name read to a `?`'s left is read before it, though the `?`'s call changes it through `ref`.
 def written(stdout: Stdout) -> int fails Refused:
@@ -70,7 +70,7 @@ def grown(stdout: Stdout) -> int fails Refused:
 
 def plain_grown() -> int fails Refused:
     mut bag = Bag()
-    three(bag.size, second=bag.grow()?, third=bag.size)
+    return three(bag.size, second=bag.grow()?, third=bag.size)
 
 def main(stdout: Stdout):
     for cap in [9, 0]:
@@ -79,10 +79,13 @@ def main(stdout: Stdout):
             stdout.print("shape", which)
             mut ran: int? = None
             ran = match which:
-                case 0: outermost(cap, stdout) else None
-                case 1: nested(cap, stdout) else None
-                case 2: operands(cap, stdout) else None
-                case 3: pieces(cap, stdout) else None
-                case _: plain(cap, stdout) else None
+                case 0: outermost(cap, stdout) except Refused(): None
+                case 1: nested(cap, stdout) except Refused(): None
+                case 2: operands(cap, stdout) except Refused(): None
+                case 3: pieces(cap, stdout) except Refused(): None
+                case _: plain(cap, stdout) except Refused(): None
             stdout.print("gave", ran)
-    stdout.print("read before", written(stdout) else -1, grown(stdout) else -1, plain_grown() else -1)
+    written_value = written(stdout) except Refused(): -1
+    grown_value = grown(stdout) except Refused(): -1
+    plain_grown_value = plain_grown() except Refused(): -1
+    stdout.print("read before", written_value, grown_value, plain_grown_value)

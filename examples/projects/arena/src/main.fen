@@ -5,6 +5,7 @@ from std.math import Vec3
 import combat.damage
 from enemies import Enemy, wave
 import physics
+from combat.damage import Dodged
 
 def main(stdout: Stdout):
     mut enemies = wave(3)
@@ -17,18 +18,18 @@ def main(stdout: Stdout):
         physics.step(ref body, 0.5)
     stdout.print(body.position)
 
-    stdout.print(combat.damage.hit(ref enemies[0], 30) else -1)
+    hit_value = combat.damage.hit(ref enemies[0], 30) except Dodged(): -1
+    stdout.print(hit_value)
     stdout.print(enemies[0].health)
     for amount in [0, 50]:
-        left = combat.damage.hit(ref enemies[3], amount) else as why:
-            match why:
-                case combat.damage.Dodged(name):
-                    stdout.print(f"the {name} dodged")
-                    continue
-                case _:
-                    error = why
-                    stdout.print(f"no luck: {error}")
-                    continue
+        left = combat.damage.hit(ref enemies[3], amount) except why:
+            case combat.damage.Dodged(name):
+                stdout.print(f"the {name} dodged")
+                continue
+            case _:
+                error = why
+                stdout.print(f"no luck: {error}")
+                continue
         stdout.print(f"the boss has {left} left")
 
     stdout.print(sum(enemy.health for enemy in enemies))

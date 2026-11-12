@@ -3,22 +3,22 @@ struct Tag:
     n: int
 
 def shout(word: str) -> str:
-    word + "!"
+    return word + "!"
 
 def over(f: (str) -> str, words: list[str]) -> list[str]:
-    [f(word) for word in parallel(words)]
+    return [f(word) for word in parallel(words)]
 
 def grown(base: list[int], n: int) -> int:
     mut copy = base
     copy.append(n)
-    copy.len()
+    return len(copy)
 
 def main(stdout: Stdout):
     words = [f"a word long enough to be held in a block of its own, {n}" for n in range(20_000)]
     longer = [word + "!" for word in parallel(words)]
     stdout.print(longer[0], longer[19_999], words[7])
     called = [shout(word) for word in parallel(words)]
-    stdout.print(called[1], sum(word.len() for word in parallel(called)))
+    stdout.print(called[1], sum(len(word) for word in parallel(called)))
     same = [word for word in parallel(words)]
     stdout.print(same[3], same[19_998])
     counts = {word: n for n, word in enumerate(words)}
@@ -27,10 +27,10 @@ def main(stdout: Stdout):
     asked = over(word => word + suffix, words)
     stdout.print(asked[11])
     pairs = [[word, word] for word in parallel(words)]
-    stdout.print(pairs[5][1], pairs.len())
+    stdout.print(pairs[5][1], len(pairs))
     base = [1, 2, 3]
     numbers = [n for n in range(20_000)]
-    stdout.print(sum(grown(base, n) for n in parallel(numbers)), base.len())
+    stdout.print(sum(grown(base, n) for n in parallel(numbers)), len(base))
     mut tags = [Tag(f"a name long enough to be held in a block of its own, {n}", n) for n in range(20_000)]
     for ref tag in parallel(tags):
         if tag.n % 2 == 0:

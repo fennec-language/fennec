@@ -19,36 +19,36 @@ enum Calc:
 def run(calc: Calc, arg: int) -> int:
     match calc:
         case .Lit(n):
-            n
+            return n
         case .Arg:
-            arg
+            return arg
         case .Op(.Plus, a, b):
-            run(a, arg) + run(b, arg)
+            return run(a, arg) + run(b, arg)
         case .Op(_, a, b):
-            run(a, arg) - run(b, arg)
+            return run(a, arg) - run(b, arg)
         case .Times(a, b):
-            run(a, arg) * run(b, arg)
+            return run(a, arg) * run(b, arg)
         case .Clamp(Range(-50, high), inner):
-            min(max(run(inner, arg), -50), high)
+            return min(max(run(inner, arg), -50), high)
         case .Clamp(range, inner):
-            min(max(run(inner, arg), range.low), range.high)
+            return min(max(run(inner, arg), range.low), range.high)
 
 def fold(calc: Calc) -> Calc:
     match calc:
         case .Times(.Lit(0), _):
-            .Lit(0)
+            return .Lit(0)
         case .Times(.Lit(1), b):
-            fold(b)
+            return fold(b)
         case .Op(.Plus, .Lit(0), b):
-            fold(b)
+            return fold(b)
         case .Op(sign, a, b):
-            .Op(sign, left=fold(a), right=fold(b))
+            return .Op(sign, left=fold(a), right=fold(b))
         case .Times(a, b):
-            .Times(fold(a), right=fold(b))
+            return .Times(fold(a), right=fold(b))
         case .Clamp(range, inner):
-            .Clamp(range, fold(inner))
+            return .Clamp(range, fold(inner))
         case other:
-            other
+            return other
 
 def grow(depth: int, seed: int) -> Calc:
     if depth == 0: return Calc.Arg if seed % 3 == 0 else .Lit(seed % 7)
@@ -56,17 +56,17 @@ def grow(depth: int, seed: int) -> Calc:
     b = grow(depth - 1, seed=seed * 3 + 2)
     match seed % 6:
         case 0:
-            .Op(.Plus, left=a, right=b)
+            return .Op(.Plus, left=a, right=b)
         case 1:
-            .Op(.Minus, left=.Lit(0), right=b)
+            return .Op(.Minus, left=.Lit(0), right=b)
         case 2:
-            .Times(.Lit(1), right=a)
+            return .Times(.Lit(1), right=a)
         case 3:
-            .Clamp(Range(low=-50, high=50), .Times(a, right=b))
+            return .Clamp(Range(low=-50, high=50), .Times(a, right=b))
         case 4:
-            .Times(.Lit(0), right=a)
+            return .Times(.Lit(0), right=a)
         case _:
-            .Op(.Minus, left=a, right=b)
+            return .Op(.Minus, left=a, right=b)
 
 def main(stdout: Stdout):
     calc = grow(10, seed=1)

@@ -13,34 +13,33 @@ error Missing:
 
 def parse(text: str) -> int fails ParseError:
     if text == "": fail .Empty
-    int(text) else fail .NotANumber(text)
+    return int(text) except InvalidValue(): fail .NotANumber(text)
 
 def in_range(value: int, limit: int) -> int fails RangeError:
     if value > limit: fail .TooBig(value, limit)
-    value
+    return value
 
 def level(text: str) -> int fails ParseError | RangeError:
-    in_range(parse(text)?, limit=9)?
+    return in_range(parse(text)?, limit=9)?
 
 def lookup(table: dict[str, str], key: str) -> int fails Missing | ParseError | RangeError:
     found = table.get(key) else fail Missing(key=key)
-    level(found)?
+    return level(found)?
 
 def said(table: dict[str, str], key: str) -> str:
-    value = lookup(table, key) else as why:
-        match why:
-            case Missing(key):
-                return f"no {key}"
-            case .NotANumber(text):
-                return f"bad {text}"
-            case .Empty:
-                return "empty"
-            case .TooBig(value, limit):
-                return f"{value}>{limit}"
-    f"ok {value}"
+    value = lookup(table, key) except why:
+        case Missing(key):
+            return f"no {key}"
+        case .NotANumber(text):
+            return f"bad {text}"
+        case .Empty:
+            return "empty"
+        case .TooBig(value, limit):
+            return f"{value}>{limit}"
+    return f"ok {value}"
 
 def through(read: (str) -> int fails ParseError | RangeError, text: str) -> int fails ParseError | RangeError:
-    read(text)?
+    return read(text)?
 
 def main(stdout: Stdout):
     table = {"a": "3", "b": "x", "c": "", "d": "12"}
@@ -48,6 +47,9 @@ def main(stdout: Stdout):
         stdout.print(said(table, key))
     results = [level(text) else -1 for text in ["1", "q", "99"]]
     kept = [level(text) else -1 for text in ["5", "", "50"]]
-    stdout.print(results.len(), kept.len(), [level(t) else -1 for t in ["8", "z", "10"]])
-    stdout.print(through(level, "6") else 0, through(level, "") else 0, through(text => level(text)?, "77") else 0)
+    stdout.print(len(results), len(kept), [level(t) else -1 for t in ["8", "z", "10"]])
+    through_value = through(level, "6") except .NotANumber() | .Empty | .TooBig(): 0
+    through_value2 = through(level, "") except .NotANumber() | .Empty | .TooBig(): 0
+    through_value3 = through(text => level(text)?, "77") except .NotANumber() | .Empty | .TooBig(): 0
+    stdout.print(through_value, through_value2, through_value3)
     stdout.print(lookup(table, "d")?)

@@ -21,7 +21,7 @@ def lines_of[R: Reader](ref src: R) -> list[str] fails IoError:
         line = src.read_line()?
         if line is None: return found
         found.append(line)
-    found
+    return found
 
 SCORES = [Score(name="ana", points=3), Score(name="bo", points=5)]
 
@@ -53,7 +53,7 @@ test "read_all gives exactly what's left, equal to the same bytes"():
     _ = stream.read_chunk(10)?
     rest = io.read_all(ref stream)?
     assert rest == big[10:]
-    assert rest.len() == 69990
+    assert len(rest) == 69990
     # Nothing's left after it.
     assert io.read_all(ref stream)? == bytes([])
 

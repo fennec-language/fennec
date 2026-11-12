@@ -8,30 +8,31 @@ error RangeError:
     TooBig(value: int, limit: int)
 
 def parse(text: str) -> int fails ParseError:
-    int(text) else fail .NotANumber(text)
+    return int(text) except InvalidValue(): fail .NotANumber(text)
 
 def in_range(value: int, limit: int) -> int fails RangeError:
     if value > limit: fail .TooBig(value, limit)
-    value
+    return value
 
 def level(text: str) -> int fails ParseError | RangeError:
-    in_range(parse(text)?, limit=9)?
+    return in_range(parse(text)?, limit=9)?
 
 def apply(
     read: (str) -> int fails ParseError | RangeError,
     text: str,
 ) -> int fails ParseError | RangeError:
-    read(text)?
+    return read(text)?
 
 def main(stdout: Stdout):
     for text in ["7", "x7", "42"]:
-        value = level(text) else as why:
-            match why:
-                case .NotANumber(text):
-                    stdout.print(f"{text} isn't a number")
-                    continue
-                case .TooBig(value, limit):
-                    stdout.print(f"{value} is over {limit}")
-                    continue
+        value = level(text) except why:
+            case .NotANumber(text):
+                stdout.print(f"{text} isn't a number")
+                continue
+            case .TooBig(value, limit):
+                stdout.print(f"{value} is over {limit}")
+                continue
         stdout.print(f"level {value}")
-    stdout.print(apply(text => level(text)?, "3") else -1, apply(text => level(text)?, "") else -1)
+    apply_value = apply(text => level(text)?, "3") except .NotANumber() | .TooBig(): -1
+    apply_value2 = apply(text => level(text)?, "") except .NotANumber() | .TooBig(): -1
+    stdout.print(apply_value, apply_value2)

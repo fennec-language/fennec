@@ -24,10 +24,10 @@ def main(stdout: Stdout):
     order = graph.topological_order() else []
     path = graph.shortest_path(from_id=ids[0], to_id=ids[count - 1], cost=length => length) else []
     mut cost = 0.0
-    for step in range(path.len() - 1):
+    for step in range(len(path) - 1):
         mut cheapest = -1.0
         for edge in graph.edges_from(path[step]):
             if edge.to_id == path[step + 1] and (cheapest < 0.0 or edge.value < cheapest):
                 cheapest = edge.value
         cost = cost + cheapest
-    stdout.print(graph.edge_count(), order.len(), path.len(), cost)
+    stdout.print(graph.edge_count(), len(order), len(path), cost)

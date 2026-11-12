@@ -6,7 +6,7 @@ def steps(start: int) -> int:
     while n != 1:
         n = n // 2 if n % 2 == 0 else 3 * n + 1
         count += 1
-    count
+    return count
 
 def main(stdout: Stdout):
     counts = [steps(n) for n in range(1, 1_000_001)]

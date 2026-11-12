@@ -25,4 +25,5 @@ def steps_of(order: Order) -> int:
 
 def main(stdout: Stdout):
     stdout.print(steps_of(named("hold") else .Hold), steps_of(named("move") else .Hold))
-    stdout.print(steps_of(named("fly") else .Move(steps=9)))
+    named_value2 = named("fly") except Unknown(): .Move(steps=9)
+    stdout.print(steps_of(named_value2))

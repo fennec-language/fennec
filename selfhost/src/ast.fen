@@ -45,27 +45,27 @@ struct Generic:
 ## Whether an expression is a plain value written out: a number, string, bool or `None`.
 def is_plain_value(expr: Expr) -> bool:
     match expr.kind:
-        case .Int(_) | .Float(_) | .Duration(_) | .Str(_) | .Bool(_) | .Nothing: True
+        case .Int(_) | .Float(_) | .Duration(_) | .Str(_) | .Bool(_) | .Nothing: return True
         case .Unary(op, operand):
             match operand.kind:
-                case .Int(_) | .Float(_): op == .Neg
-                case _: False
+                case .Int(_) | .Float(_): return op == .Neg
+                case _: return False
         # An enum case, like `Mode.fast`, or an empty collection.
         case .Attr(object, _, optional):
             match object.kind:
-                case .Name(_): not optional
-                case _: False
-        case .List(items): items.len() == 0
-        case .Dict(pairs): pairs.len() == 0
+                case .Name(_): return not optional
+                case _: return False
+        case .List(items): return len(items) == 0
+        case .Dict(pairs): return len(pairs) == 0
         # A type made with its type arguments, like `Packed[int]()`.
         case .Call(callee, args):
             match callee.kind:
                 case .Index(object, _):
                     match object.kind:
-                        case .Name(_): all(not arg.is_mut and is_plain_value(arg.value) for arg in args)
-                        case _: False
-                case _: False
-        case _: False
+                        case .Name(_): return all(not arg.is_mut and is_plain_value(arg.value) for arg in args)
+                        case _: return False
+                case _: return False
+        case _: return False
 
 struct Param:
     name: str
@@ -271,9 +271,9 @@ enum UnaryOp:
 
     def symbol(self) -> str:
         match self:
-            case .Neg: "-"
-            case .Not: "not"
-            case .BitNot: "~"
+            case .Neg: return "-"
+            case .Not: return "not"
+            case .BitNot: return "~"
 
 enum BinOp:
     Add
@@ -303,27 +303,27 @@ enum BinOp:
 
     def symbol(self) -> str:
         match self:
-            case .Add: "+"
-            case .Sub: "-"
-            case .Mul: "*"
-            case .Div: "/"
-            case .FloorDiv: "//"
-            case .Mod: "%"
-            case .Pow: "**"
-            case .Eq: "=="
-            case .NotEq: "!="
-            case .Lt: "<"
-            case .LtEq: "<="
-            case .Gt: ">"
-            case .GtEq: ">="
-            case .And: "and"
-            case .Or: "or"
-            case .In: "in"
-            case .NotIn: "not in"
-            case .Is: "is"
-            case .IsNot: "is not"
-            case .BitAnd: "&"
-            case .BitOr: "|"
-            case .BitXor: "^"
-            case .ShiftLeft: "<<"
-            case .ShiftRight: ">>"
+            case .Add: return "+"
+            case .Sub: return "-"
+            case .Mul: return "*"
+            case .Div: return "/"
+            case .FloorDiv: return "//"
+            case .Mod: return "%"
+            case .Pow: return "**"
+            case .Eq: return "=="
+            case .NotEq: return "!="
+            case .Lt: return "<"
+            case .LtEq: return "<="
+            case .Gt: return ">"
+            case .GtEq: return ">="
+            case .And: return "and"
+            case .Or: return "or"
+            case .In: return "in"
+            case .NotIn: return "not in"
+            case .Is: return "is"
+            case .IsNot: return "is not"
+            case .BitAnd: return "&"
+            case .BitOr: return "|"
+            case .BitXor: return "^"
+            case .ShiftLeft: return "<<"
+            case .ShiftRight: return ">>"

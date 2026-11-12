@@ -16,40 +16,40 @@ SERVER_LAST = "v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4="
 def reason_of(error: SqlError) -> str:
     match error:
         case .Failed(reason=reason):
-            reason
+            return reason
         case _:
-            error.message()
+            return error.message()
 
 ## Why `run` fails, or "fine" if it doesn't.
 def why[T](run: () -> T fails SqlError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return reason_of(error)
-    "fine"
+    return "fine"
 
 ## Why `scram` refuses `server_first`, or "fine" if it answers it.
 def answering(ref scram: PgScram, server_first: bytes) -> str:
-    _ = scram.answer(server_first) else as error:
+    _ = scram.answer(server_first) except error:
         return reason_of(error)
-    "fine"
+    return "fine"
 
 ## A sign-in started as RFC 7677's is.
 def started() -> PgScram:
-    PgScram.started(Secret.of("pencil"), nonce=OUR_NONCE, user="user")
+    return PgScram.started(Secret.of("pencil"), nonce=OUR_NONCE, user="user")
 
 ## Why the client refuses `server_first`, from a sign-in whose nonce is `abc`.
 def refused_first(server_first: str) -> str:
     mut scram = PgScram.started(Secret.of("pencil"), nonce="abc")
-    answering(ref scram, server_first.encode())
+    return answering(ref scram, server_first.encode())
 
 ## Why the client refuses `server_last`, after answering the RFC's server first.
 def refused_last(server_last: bytes) -> str fails SqlError:
     mut scram = started()
     _ = scram.answer(SERVER_FIRST.encode())?
-    why(() => scram.check(server_last)?)
+    return why(() => scram.check(server_last)?)
 
 ## The four bytes of `n`, highest first, as a message's length is written.
 def int32(n: int) -> bytes:
-    bytes([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
+    return bytes([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
 
 test "a password goes as a p message: its length, then the text and a zero byte"():
     assert postgres.password("pw") == bytes([112, 0, 0, 0, 7, 112, 119, 0])
@@ -68,7 +68,7 @@ test "SASL's first message names the mechanism, then the length of what follows 
             11,
         ) + data
     )
-    assert sent.len() == 1 + 33
+    assert len(sent) == 1 + 33
 
 test "SASL's later messages are the data and nothing else, and terminate is just X"():
     assert postgres.sasl_next("c=biws".encode()) == bytes([112, 0, 0, 0, 10]) + "c=biws".encode()
@@ -119,7 +119,7 @@ test "only the server's exact signature proves it knows the password"():
 
 test "a sign-in whose answer was refused can't then be checked"():
     mut scram = PgScram.started(Secret.of("pencil"), nonce="abc")
-    _ = scram.answer(f"r=xyz,s={SALT},i=4096".encode()) else bytes([])
+    _ = scram.answer(f"r=xyz,s={SALT},i=4096".encode()) except .Constraint() | .Busy() | .Column() | .Failed(): bytes([])
     assert (
         why(() => scram.check(SERVER_LAST.encode())?)
         == "the server sent its SCRAM proof before the exchange"

@@ -7,17 +7,17 @@ from std.net import Connection, NetError, Response
 from std.time import Duration
 
 def reason[T](run: () -> T fails NetError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message()
-    "it worked"
+    return "it worked"
 
 ## The next line a connection is sent, or "" once the other side is done.
 def line_of(conn: Connection) -> str fails NetError:
-    conn.read_line()? else ""
+    return conn.read_line()? else ""
 
 ## Every line a connection is sent, until the other side is done.
 def lines_of(conn: Connection) -> list[str] fails NetError:
-    list(conn.lines()?)
+    return list(conn.lines()?)
 
 ## Connects to `host` and hangs up, to see how connecting goes.
 def connecting(net: Net, host: str, port: int) fails NetError:
@@ -56,7 +56,7 @@ test "looping over a server gives each connection as it comes"(net: Net):
                 mut heard = list[str]()
                 for conn in server:
                     heard.append(line_of(conn)?)
-                    if heard.len() == 2: break
+                    if len(heard) == 2: break
                 assert heard == ["first", "second"]
 
 test "a server gives each connection its own task"(net: Net):
@@ -172,10 +172,10 @@ def main(stdout: Stdout, net: Net):
                 stdout.print(client.read_line()?)
                 # The server's end is still open but sends nothing more, so a read with a
                 # timeout gives up.
-                _ = client.read_line(timeout=Duration.millis(50)) else as why:
-                    match why:
-                        case .TimedOut(after=after):
-                            stdout.print("nothing came in", after.as_millis(), "ms")
-                        case _:
-                            stdout.print("something came")
-                    ""
+                _ = client.read_line(timeout=Duration.millis(50)) except why:
+                    case .TimedOut(after=after):
+                        stdout.print("nothing came in", after.as_millis(), "ms")
+                        ""
+                    case .NotFound() | .Refused() | .Closed | .Denied() | .Tls() | .Status() | .Other():
+                        stdout.print("something came")
+                        ""

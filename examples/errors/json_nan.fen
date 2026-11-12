@@ -6,6 +6,6 @@ struct Reading:
     values: list[float]
 
 def main(stdout: Stdout):
-    broken = float("nan") else 0.0
+    broken = float("nan") except InvalidValue(): 0.0
     readings = [Reading(label="a", values=[1.0]), Reading(label="b", values=[2.0, broken])]
     stdout.print(json.dumps(readings))

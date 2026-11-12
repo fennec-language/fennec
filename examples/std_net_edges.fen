@@ -7,19 +7,18 @@ from std.time import Duration
 
 ## What `run` fails with, in words, or "fine" if it doesn't.
 def why[T](run: () -> T fails NetError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message()
-    "fine"
+    return "fine"
 
 ## Whether `run` fails with `Closed`.
 def closes[T](run: () -> T fails NetError) -> bool:
-    _ = run() else as error:
-        match error:
-            case .Closed:
-                return True
-            case _:
-                return False
-    False
+    _ = run() except error:
+        case .Closed:
+            return True
+        case .NotFound() | .Refused() | .TimedOut() | .Denied() | .Tls() | .Status() | .Other():
+            return False
+    return False
 
 ## How many requests reached a respond.
 struct Calls:
@@ -29,7 +28,7 @@ struct Calls:
 def counted(calls: shared Calls, request: Request) -> Response:
     lock calls as ref now:
         now.seen += 1
-    Response(status=200, body=request.path.encode())
+    return Response(status=200, body=request.path.encode())
 
 ## How many requests reach `respond` when `raw` is sent and the client hangs up before the server
 ## reads it. Cut off, it's never a whole request, so none should.
@@ -42,7 +41,7 @@ def reached(net: Net, raw: str) -> int fails NetError:
             server.serve((request) => counted(calls, request), timeout=1s)
     lock calls as now:
         return now.seen
-    0
+    return 0
 
 test "a request cut off in its headers or its body never reaches respond"(net: Net):
     assert reached(net, "GET / HTTP/1.1\r\nX: y\r\n")? == 0
@@ -58,17 +57,17 @@ def read_after_close(net: Net) -> str fails NetError:
         with net.connect("localhost", server.port)? as client:
             client.close()
             return client.read_line()? else "the end"
-    ""
+    return ""
 
 ## Writes a line through the `Writer` of a connection this side closed.
 def write_after_close(net: Net) -> str fails NetError:
     with net.listen(0)? as server:
         with net.connect("localhost", server.port)? as client:
             client.close()
-            client.writer().write_line("late") else as error:
+            client.writer().write_line("late") except error:
                 return error.message()
             return "written"
-    ""
+    return ""
 
 ## What using a socket closed on this side fails with.
 CLOSED_HERE = "the socket was closed here, so it can't be used any more"
@@ -87,13 +86,13 @@ def flushed(net: Net) -> str fails NetError:
     with net.listen(0)? as server:
         with net.connect("localhost", server.port)? as client:
             out = client.writer()
-            out.write_line("one") else as error:
+            out.write_line("one") except error:
                 return error.message()
-            out.flush() else as error:
+            out.flush() except error:
                 return error.message()
             with server.accept()? as other:
                 return other.read_line()? else "nothing"
-    ""
+    return ""
 
 test "a line written through a connection's writer and flushed reaches the other side"(net: Net):
     assert flushed(net)? == "one"
@@ -103,7 +102,7 @@ def accept_none(net: Net) -> str fails NetError:
     with net.listen(0)? as server:
         with server.accept(timeout=10ms)? as _:
             return "accepted"
-    ""
+    return ""
 
 test "a test's server with no connection waiting fails to accept one"(net: Net):
     assert why(() => accept_none(net)?).startswith("no connection is waiting")
@@ -112,14 +111,14 @@ test "a test's server with no connection waiting fails to accept one"(net: Net):
 def send(net: Net, address: str) -> str fails NetError:
     with net.udp()? as socket:
         socket.send_to("x", address)?
-    "sent"
+    return "sent"
 
 ## Opens a second socket on a port the first has.
 def taken_twice(net: Net, port: int) -> str fails NetError:
     with net.udp(port=port)? as _:
         with net.udp(port=port)? as _:
             return "opened twice"
-    ""
+    return ""
 
 test "UDP refuses an address without a port, a host outside the test, and a port taken"(net: Net):
     assert send(net, "localhost:9")? == "sent"
@@ -136,7 +135,7 @@ def received(net: Net, timeout: Duration?) -> str fails NetError:
             _ = socket.receive()?
         else:
             _ = socket.receive(timeout=timeout)?
-    "received"
+    return "received"
 
 ## Each packet's data that a socket's loop gives, sent two at a time.
 def looped(net: Net) -> list[str] fails NetError:
@@ -145,7 +144,7 @@ def looped(net: Net) -> list[str] fails NetError:
             other.send_to("a", "localhost:9011")?
             other.send_to("b", "localhost:9011")?
         return [packet.data.decode() else "?" for packet in socket]
-    []
+    return []
 
 test "a test's socket with no packet waiting gives up at once, so its loop ends"(net: Net):
     assert why(() => received(net, timeout=10ms)?) == NetError.TimedOut(after=10ms).message()

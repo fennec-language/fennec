@@ -12,4 +12,4 @@ def main(stdout: Stdout):
     mut kept = list(items)
     kept.remove(f"{long}")
     kept.remove("x")
-    stdout.print(kept.len(), long in kept, "x" in kept, "café" in kept)
+    stdout.print(len(kept), long in kept, "x" in kept, "café" in kept)

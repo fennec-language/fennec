@@ -13,7 +13,7 @@ def load(text: str) -> Config fails Oops:
         fail Oops(line=3)
     if text == "worse":
         fail Oops(line=4, why="worse")
-    Config(size=text.len())
+    return Config(size=len(text))
 
 test "fails as it should":
     assert load("bad") fails Oops(line=3)

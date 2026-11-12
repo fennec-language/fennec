@@ -6,14 +6,14 @@ error Missing:
     what: str
 
 def lent(stdout: Stdout, name: str) -> with int:
-    lend 1 else:
+    lend 1 except:
         stdout.print("  failed", name)
     stdout.print("  ended", name)
 
 def maybe(n: int) -> int fails Missing:
     if n > 1:
         fail Missing(what=f"{n}")
-    n
+    return n
 
 def check(n: int) fails Missing:
     if n > 1:
@@ -21,61 +21,61 @@ def check(n: int) fails Missing:
 
 def else_return(stdout: Stdout) -> int:
     with lent(stdout, "else return") as one:
-        got = maybe(one + 1) else return -1
+        got = maybe(one + 1) except Missing(): return -1
         return got
-    0
+    return 0
 
 def else_return_deeper(stdout: Stdout) -> int:
     with lent(stdout, "else return in a line") as one:
         stdout.print(maybe(one + 1) else return -2)
-    0
+    return 0
 
 def else_fail(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "else fail") as one:
-        got = maybe(one + 1) else fail Missing(what="else fail")
+        got = maybe(one + 1) except Missing(): fail Missing(what="else fail")
         return got
-    0
+    return 0
 
 def else_as_fails(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "else as") as one:
-        got = maybe(one + 1) else as why:
+        got = maybe(one + 1) except why:
             fail Missing(what=f"again {why.what}")
         return got
-    0
+    return 0
 
 def else_continue_and_break(stdout: Stdout) -> int:
     mut total = 0
     for n in range(3):
         with lent(stdout, f"continue {n}") as one:
-            got = maybe(n) else continue
+            got = maybe(n) except Missing(): continue
             total += got * one
     for n in range(3):
         with lent(stdout, f"break {n}") as one:
-            _ = maybe(n) else break
-    total
+            _ = maybe(n) except Missing(): break
+    return total
 
 def question_on_a_line(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "? on a line") as one:
         check(one + 1)?
-    0
+    return 0
 
 def question_kept(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "? kept") as one:
         got = maybe(one + 1)?
         return got
-    0
+    return 0
 
 def question_in_an_expression(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "? in an expression") as one:
         stdout.print(maybe(one + 1)? + 1)
-    0
+    return 0
 
 def return_in_nested_if(stdout: Stdout) -> int:
     with lent(stdout, "return in an if") as one:
         if one > 0:
             if one == 1:
                 return 7
-    0
+    return 0
 
 def return_in_match(stdout: Stdout) -> int:
     with lent(stdout, "return in a match") as one:
@@ -84,65 +84,73 @@ def return_in_match(stdout: Stdout) -> int:
                 return 8
             case _:
                 pass
-    0
+    return 0
 
 def fail_in_nested_if(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "fail in an if") as one:
         if one > 0:
             if one == 1:
                 fail Missing(what="in an if")
-    0
+    return 0
 
 def nested_else_return(stdout: Stdout) -> int:
     with lent(stdout, "outer, else return") as one:
         with lent(stdout, "inner, else return") as two:
-            got = maybe(one + two) else return -3
+            got = maybe(one + two) except Missing(): return -3
             return got
-    0
+    return 0
 
 def nested_else_fail(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "outer, else fail") as one:
         with lent(stdout, "inner, else fail") as two:
-            got = maybe(one + two) else fail Missing(what="nested")
+            got = maybe(one + two) except Missing(): fail Missing(what="nested")
             return got
-    0
+    return 0
 
 def nested_question(stdout: Stdout) -> int fails Missing:
     with lent(stdout, "outer, ?") as one:
         with lent(stdout, "inner, ?") as two:
             stdout.print(maybe(one + two)?)
-    0
+    return 0
 
 def nested_else_break(stdout: Stdout) -> int:
     mut rounds = 0
     for n in range(3):
         with lent(stdout, f"outer {n}, else break") as one:
             with lent(stdout, f"inner {n}, else break") as two:
-                _ = maybe(n + one * two - 1) else break
+                _ = maybe(n + one * two - 1) except Missing(): break
                 rounds += 1
-    rounds
+    return rounds
 
 def nested_crash(stdout: Stdout) -> int:
     with lent(stdout, "outer, crash") as one:
         with lent(stdout, "inner, crash") as two:
             values = [1]
             return values[one + two]
-    0
+    return 0
 
 def main(stdout: Stdout):
     stdout.print(else_return(stdout))
     stdout.print(else_return_deeper(stdout))
-    stdout.print(else_fail(stdout) else -10)
-    stdout.print(else_as_fails(stdout) else -11)
+    else_fail_value = else_fail(stdout) except Missing(): -10
+    stdout.print(else_fail_value)
+    else_as_fails_value = else_as_fails(stdout) except Missing(): -11
+    stdout.print(else_as_fails_value)
     stdout.print(else_continue_and_break(stdout))
-    stdout.print(question_on_a_line(stdout) else -12)
-    stdout.print(question_kept(stdout) else -13)
-    stdout.print(question_in_an_expression(stdout) else -14)
+    question_on_a_line_value = question_on_a_line(stdout) except Missing(): -12
+    stdout.print(question_on_a_line_value)
+    question_kept_value = question_kept(stdout) except Missing(): -13
+    stdout.print(question_kept_value)
+    question_in_an_expression_value = question_in_an_expression(stdout) except Missing(): -14
+    stdout.print(question_in_an_expression_value)
     stdout.print(return_in_nested_if(stdout))
     stdout.print(return_in_match(stdout))
-    stdout.print(fail_in_nested_if(stdout) else -15)
+    fail_in_nested_if_value = fail_in_nested_if(stdout) except Missing(): -15
+    stdout.print(fail_in_nested_if_value)
     stdout.print(nested_else_return(stdout))
-    stdout.print(nested_else_fail(stdout) else -16)
-    stdout.print(nested_question(stdout) else -17)
+    nested_else_fail_value = nested_else_fail(stdout) except Missing(): -16
+    stdout.print(nested_else_fail_value)
+    nested_question_value = nested_question(stdout) except Missing(): -17
+    stdout.print(nested_question_value)
     stdout.print(nested_else_break(stdout))
     stdout.print(nested_crash(stdout))

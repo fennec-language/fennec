@@ -717,7 +717,7 @@ def main(stdout: Stdout):
     #[test]
     fn a_field_a_reader_can_fill_isnt_proven() -> Result<(), String> {
         assert_eq!(proven(&CURSOR.replace("READ", ""), "pick")?, 1);
-        let read = "stdout.print(pick(xs, json.loads[Cursor](\"{\\\"at\\\": -1}\") else Cursor(at=0)))";
+        let read = "cursor = json.loads[Cursor](\"{\\\"at\\\": -1}\") except ParseError(): Cursor(at=0)\n    stdout.print(pick(xs, cursor))";
         assert_eq!(proven(&CURSOR.replace("READ", read), "pick")?, 0);
         Ok(())
     }

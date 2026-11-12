@@ -3979,7 +3979,7 @@ def main(stdout: Stdout):
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
     fn checking_proofs_writes_what_they_left_out() -> Result<(), String> {
-        let source = "def total(xs: list[int]) -> int:\n    mut sum = 0\n    for i in range(len(xs)):\n        sum += xs[i] * 0\n    return sum\n\ndef main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
+        let source = "def total(xs: list[int]) -> int:\n    mut subtotal = 0\n    for i in range(len(xs)):\n        subtotal += xs[i] * 0\n    return subtotal\n\ndef main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
         let program = lowered(source)?;
         let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
         let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
@@ -4076,7 +4076,7 @@ def main(stdout: Stdout):
         let checks = |lines: usize| -> Result<usize, String> {
             let line = "    stdout.print(area(.Square(at_or_zero([3, 1, 2], at_or_zero([1, 2], 1)))))\n";
             let source = format!(
-                "enum Shape:\n    Circle(radius: int)\n    Square(side: int)\n    Empty\n\ndef area(shape: Shape) -> int:\n    match shape:\n        case .Circle(radius): radius * radius * 3\n        case .Square(side): side * side\n        case .Empty: 0\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef main(stdout: Stdout):\n{}",
+                "enum Shape:\n    Circle(radius: int)\n    Square(side: int)\n    Empty\n\ndef area(shape: Shape) -> int:\n    match shape:\n        case .Circle(radius): return radius * radius * 3\n        case .Square(side): return side * side\n        case .Empty: return 0\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef main(stdout: Stdout):\n{}",
                 line.repeat(lines)
             );
             let program = lowered(&source)?;

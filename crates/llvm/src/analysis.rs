@@ -3701,7 +3701,7 @@ mod tests {
     /// appends somewhere other than its body's first block, so those keep the check.
     #[test]
     fn only_a_list_filled_within_its_room_skips_the_check() -> Result<(), String> {
-        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    xs.len()\n");
+        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    return len(xs)\n");
         for body in ["    xs = [i * 2 for i in range(n)]\n", "    xs = [i for i in range(1, n)]\n"] {
             assert!(within_room(&filled(body))?, "kept the check: {body}");
         }

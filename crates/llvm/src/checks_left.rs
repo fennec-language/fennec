@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn the_index_checks_reported_are_the_ones_emitted() -> Result<(), String> {
         for body in [
-            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    return sum\n",
+            "def go(xs: list[float]) -> float:\n    mut subtotal = 0.0\n    for x in xs:\n        subtotal += x\n    return subtotal\n",
             "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
             "def go(xs: list[int], at: int) -> int:\n    mut total = xs[at]\n    for i in range(len(xs)):\n        total += xs[i] - xs[-1]\n    return total\n",
             "def go(xs: list[int], at: int) -> int:\n    return xs[at] + xs[at] * 2\n",
@@ -292,9 +292,9 @@ mod tests {
     #[test]
     fn a_loop_over_a_list_s_items_keeps_no_index_check() -> Result<(), String> {
         for body in [
-            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    return sum\n",
+            "def go(xs: list[float]) -> float:\n    mut subtotal = 0.0\n    for x in xs:\n        subtotal += x\n    return subtotal\n",
             "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
-            "struct World:\n    xs: list[float]\n\ndef go(world: World) -> float:\n    mut sum = 0.0\n    for x in world.xs:\n        sum += x\n    return sum\n",
+            "struct World:\n    xs: list[float]\n\ndef go(world: World) -> float:\n    mut subtotal = 0.0\n    for x in world.xs:\n        subtotal += x\n    return subtotal\n",
             "def go(xs: list[float]) -> float:\n    mut best = 0.0\n    for x in xs:\n        if x > 9.0:\n            break\n        best = x\n    return best\n",
         ] {
             let found = kept(body)?;

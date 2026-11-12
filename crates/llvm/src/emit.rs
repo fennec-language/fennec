@@ -1624,6 +1624,35 @@ impl Emit<'_, '_, '_> {
     /// In a build that checks proofs, ends the program if `broken` is true, as `proof_held` does,
     /// but through a call LLVM copies in, so the block this is in carries on: for a fact checked
     /// where what comes after leans on the block it's written in, like a phi.
+    /// In a build that checks proofs, that an item copied out and put back at `at` goes back
+    /// where it was taken from: the place still holds what was taken, which the local it was
+    /// first read into still has. A put back anywhere else would leave that block with no owner.
+    /// For a struct kept in place, the place still holds the words that were copied out.
+    pub(crate) fn proof_goes_back(&mut self, value: &Operand, at: &str) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let Operand::Local(item) = value else { return };
+        let Some(read) = self.known.put_back_read(*item) else { return };
+        let Ok(kind) = self.kind_of(read).cloned() else { return };
+        let slot = self.slot(read);
+        let words = if kind.in_memory() { kind.size(self.module.layouts) / 8 } else { 1 };
+        let mut elsewhere = "false".to_owned();
+        for word in 0..words {
+            let (there_at, taken_at, there, taken, differs, either) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{there_at} = getelementptr inbounds i64, ptr {at}, i64 {word}"));
+            self.line(&format!("{taken_at} = getelementptr inbounds i64, ptr {slot}, i64 {word}"));
+            self.line(&format!("{there} = load i64, ptr {there_at}"));
+            self.line(&format!("{taken} = load i64, ptr {taken_at}"));
+            self.line(&format!("{differs} = icmp ne i64 {there}, {taken}"));
+            self.line(&format!("{either} = or i1 {elsewhere}, {differs}"));
+            elsewhere = either;
+        }
+        let span = self.here_span();
+        self.proof_held(&elsewhere, "an item copied out goes back to the place it was taken from", span);
+    }
+
     pub(crate) fn proof_held_here(&mut self, broken: &str, proof: &str, span: Span) {
         let text = self.proof_text(proof);
         let here = self.label("proof_at");

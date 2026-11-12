@@ -62,6 +62,10 @@ pub(crate) struct Analysis {
     /// Locals taking an item out of a list to change it and put it back: the local or field
     /// the list is in, which has to be alone before the item's count says anything.
     items_taken: HashMap<usize, (LocalId, Vec<String>)>,
+    /// Names an item copied out with `mut` is changed under, by the local it was read into
+    /// first, which still holds what was taken: a build that checks proofs checks it goes back
+    /// where it came from.
+    put_back_reads: HashMap<usize, LocalId>,
     /// `for ref` items taken out of a `Table`'s slot: the local or field the `Table` is in,
     /// which has to be alone before the item is taken.
     slot_homes: HashMap<usize, (LocalId, Vec<String>)>,
@@ -2307,6 +2311,7 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
                     known.taken.insert(local.0);
                     known.items_taken.insert(local.0, (root, path.clone()));
                 }
+                known.put_back_reads.insert(item.0, *read);
             }
         }
     }
@@ -2355,10 +2360,26 @@ fn same_key(function: &Function, known: &Analysis, one: &Operand, other: &Operan
             _ => None,
         })
     };
+    // What a key is read from mustn't change in place either, as `ids.swap(0, 1)`, `ids.reverse()`,
+    // `ids[2] = x` or `shuffle(ref ids)` change it: the same read would then find another key.
+    let changed_in_place = |operand: &Operand| {
+        let Operand::Local(held) = operand else { return false };
+        function.blocks.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
+            InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => object == held,
+            InstKind::Builtin { args, changes: true, .. } => args.first() == Some(operand),
+            InstKind::Call { args, .. } => args.contains(operand),
+            _ => false,
+        })
+    };
     once(one)
         && once(other)
         && read_by(one).zip(read_by(other)).is_some_and(|((object, index), (object2, index2))| {
-            object == object2 && index == index2 && steady(&object) && steady(&index)
+            object == object2
+                && index == index2
+                && steady(&object)
+                && steady(&index)
+                && !changed_in_place(&object)
+                && !changed_in_place(&index)
         })
 }
 
@@ -2927,6 +2948,7 @@ impl Analysis {
             taken: HashSet::new(),
             items_taken: HashMap::new(),
             slot_homes: HashMap::new(),
+            put_back_reads: HashMap::new(),
             path_taken: HashMap::new(),
             loop_taken: HashSet::new(),
             places_taken: HashMap::new(),
@@ -3090,6 +3112,11 @@ impl Analysis {
 
     pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
         self.items_taken.get(&local.0)
+    }
+
+    /// The local an item copied out with `mut` was first read into, which holds what was taken.
+    pub(crate) fn put_back_read(&self, item: LocalId) -> Option<LocalId> {
+        self.put_back_reads.get(&item.0).copied()
     }
 
     /// Where the `Table` is that a `for ref` item was taken out of.

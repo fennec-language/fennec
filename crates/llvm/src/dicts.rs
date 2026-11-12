@@ -874,8 +874,10 @@ impl Emit<'_, '_, '_> {
         ));
         if value_kind.in_memory() {
             let at = self.value_place(&value_kind, &value_at);
+            self.proof_goes_back(value, &at);
             self.store_field(&value_kind, &held, &at, "");
         } else if value_kind.counted() {
+            self.proof_goes_back(value, &value_at);
             self.line(&format!("store ptr {held}, ptr {value_at}"));
         } else if value_kind != Kind::Unit {
             self.store_field(&value_kind, &held, &value_at, "");

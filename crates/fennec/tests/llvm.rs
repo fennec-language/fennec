@@ -18653,6 +18653,123 @@ const TEXT_GROWN_PAST_ROOM: &str = r#"def main(stdout: Stdout):
     return
 "#;
 
+/// An item copied out with `mut` and put back by a key read again goes back only where it came
+/// from: when what the key is read from changes between, by `swap`, `reverse`, an item set or a
+/// call given it by `ref`, the item is copied, as the source says, rather than taken out. Taking
+/// it out then put it in another item's place and left the first with no list. A `Table`, a list
+/// and a dict, each of the four ways, print what a copy gives.
+#[test]
+fn an_item_put_back_by_a_key_that_moved_is_a_copy() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("put_back_moved_key")?;
+    std::fs::write(dir.join("put_back_moved_key.fen"), PUT_BACK_MOVED_KEY)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "put_back_moved_key", how)?;
+        assert_eq!(printed, PUT_BACK_MOVED_KEY_PRINT, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const PUT_BACK_MOVED_KEY_PRINT: &str = r#"table 0 [(0, [0]), (100, [0, 5]), (2, [2])]
+list 0 [(0, [0]), (100, [0, 7]), (2, [2])]
+dict 0 [("a", 0, [0]), ("b", 100, [0, 9]), ("c", 2, [2])]
+table 1 [(0, [0]), (1, [1]), (100, [0, 5])]
+list 1 [(0, [0]), (1, [1]), (100, [0, 7])]
+dict 1 [("a", 0, [0]), ("b", 1, [1]), ("c", 100, [0, 9])]
+table 2 [(0, [0]), (1, [1]), (100, [0, 5])]
+list 2 [(0, [0]), (1, [1]), (100, [0, 7])]
+dict 2 [("a", 0, [0]), ("b", 1, [1]), ("c", 100, [0, 9])]
+table 3 [(0, [0]), (1, [1]), (100, [0, 5])]
+list 3 [(0, [0]), (1, [1]), (100, [0, 7])]
+dict 3 [("a", 0, [0]), ("b", 1, [1]), ("c", 100, [0, 9])]
+"#;
+
+const PUT_BACK_MOVED_KEY: &str = r#"from std.collections import Id, Table
+
+struct Heavy:
+    x: int
+    names: list[int]
+
+def shuffle(ref keys: list[Id[Heavy]]):
+    keys.reverse()
+    return
+
+def shuffle_at(ref keys: list[int]):
+    keys.reverse()
+    return
+
+def shuffle_names(ref keys: list[str]):
+    keys.reverse()
+    return
+
+def table_case(stdout: Stdout, how: int):
+    mut table = Table[Heavy]()
+    mut ids = list[Id[Heavy]]()
+    for i in range(3):
+        ids.append(table.add(Heavy(x=i, names=[i])))
+    mut item = table[ids[0]]
+    item.x += 100
+    item.names.append(5)
+    if how == 0:
+        ids.swap(0, 1)
+    elif how == 1:
+        ids.reverse()
+    elif how == 2:
+        ids[0] = ids[2]
+    else:
+        shuffle(ref ids)
+    table[ids[0]] = item
+    stdout.print("table", how, [(h.x, h.names) for h in table.values()])
+    return
+
+def list_case(stdout: Stdout, how: int):
+    mut items = [Heavy(x=i, names=[i]) for i in range(3)]
+    mut places = [0, 1, 2]
+    mut item = items[places[0]]
+    item.x += 100
+    item.names.append(7)
+    if how == 0:
+        places.swap(0, 1)
+    elif how == 1:
+        places.reverse()
+    elif how == 2:
+        places[0] = 2
+    else:
+        shuffle_at(ref places)
+    items[places[0]] = item
+    stdout.print("list", how, [(h.x, h.names) for h in items])
+    return
+
+def dict_case(stdout: Stdout, how: int):
+    mut held = {"a": Heavy(x=0, names=[0]), "b": Heavy(x=1, names=[1]), "c": Heavy(x=2, names=[2])}
+    mut keys = ["a", "b", "c"]
+    mut item = held[keys[0]]
+    item.x += 100
+    item.names.append(9)
+    if how == 0:
+        keys.swap(0, 1)
+    elif how == 1:
+        keys.reverse()
+    elif how == 2:
+        keys[0] = "c"
+    else:
+        shuffle_names(ref keys)
+    held[keys[0]] = item
+    stdout.print("dict", how, [(k, held[k].x, held[k].names) for k in sorted(held.keys())])
+    return
+
+def main(stdout: Stdout):
+    for how in range(4):
+        table_case(stdout, how=how)
+        list_case(stdout, how=how)
+        dict_case(stdout, how=how)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

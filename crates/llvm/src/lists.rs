@@ -2017,6 +2017,7 @@ impl Emit<'_, '_, '_> {
         };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
+        let value_operand = value;
         let (value, fresh) = self.value_for(value, &held)?;
         let memory = held.memory(self.module.layouts);
         let at = if let Some(at) = from_here {
@@ -2041,6 +2042,7 @@ impl Emit<'_, '_, '_> {
             self.item_address(&list, &memory, &position)
         };
         if put_back && held.counted() {
+            self.proof_goes_back(value_operand, &at);
             let text = self.text_of(&held);
             self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
         } else if held.counted() {
@@ -2052,6 +2054,9 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
             self.release_kind(&old, &held);
         } else {
+            if put_back {
+                self.proof_goes_back(value_operand, &at);
+            }
             // An inline struct's blocks: the old item's let go of, the new one's owned, unless
             // it's the item that was taken out coming back.
             if !put_back {

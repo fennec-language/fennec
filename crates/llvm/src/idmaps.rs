@@ -1028,6 +1028,7 @@ impl Emit<'_, '_, '_> {
         // A `for ref` item taken out of its slot coming home: the slot still points at what was
         // taken, which the item owned meanwhile, so it's moved back with nothing let go of.
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
+        let value_operand = value;
         let (value, fresh) = self.value_for(value, &held)?;
         let id = self.id_parts(id)?;
         let block = self.alone_at(place, "fennec_unshare");
@@ -1040,9 +1041,11 @@ impl Emit<'_, '_, '_> {
         let (_, items) = self.part(&block, parts.items, true);
         let at = self.item_address(&items, &memory, &id.0);
         if put_back && held.counted() {
+            self.proof_goes_back(value_operand, &at);
             let text = self.text_of(&held);
             self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
         } else if put_back {
+            self.proof_goes_back(value_operand, &at);
             self.store_field(&held, &value, &at, ITEM_ACCESS);
         } else if held.counted() {
             if !fresh {

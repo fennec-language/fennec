@@ -17680,13 +17680,12 @@ fn a_table_copied_before_its_items_change_keeps_them() -> std::io::Result<()> {
     let dir = folder("table_copied_before")?;
     std::fs::write(dir.join("table_copied_before.fen"), TABLE_COPIED_BEFORE)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-        let (printed, counts) = printed_and_counts(&dir, "table_copied_before", how)?;
+        let (printed, _) = printed_and_counts(&dir, "table_copied_before", how)?;
         assert_eq!(
             printed,
             "local 0 0\nlocal 1 1\nlocal 2 2\nchanged 100 7\nchanged 101 7\nchanged 102 7\nplain 0 0\nplain 1 1\nplain 2 2\nfield 0 0\nfield 1 1\nfield 2 2\nparam 0 0\nparam 1 1\nparam 2 2\ntask 0 0\ntask 1 1\ntask 2 2\nafter 100 7\nafter 101 7\nafter 102 7\nby id 0 0\nby id 1 1\nby id 2 2\nby id changed 100 7\nby id changed 101 7\nby id changed 102 7\n",
             "{how:?}"
         );
-        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

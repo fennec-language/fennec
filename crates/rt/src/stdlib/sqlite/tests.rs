@@ -286,6 +286,10 @@ fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), Strin
         "pragma temp_store_directory = '/tmp'",
         "detach database main",
         "detach database temp",
+        // Refused by SQLite's own default, extension loading being off, and by the allow-list's
+        // refusal of a virtual table, so a later rusqlite feature can't open either.
+        "select load_extension('x')",
+        "create virtual table found using fts5(text)",
     ];
     for text in refused {
         let said = run(db, "_execute", &query(text, &[], &[]))?;

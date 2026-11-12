@@ -165,6 +165,9 @@ fn failure_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
     let whole = whole_values(module);
     let mut found = Vec::new();
     fennec_syntax::read::exprs(module, &mut |expr| {
+        if let Some(fix) = builtin_call(expr, &types, sources) {
+            found.push(fix);
+        }
         let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
         if expr.span.in_prelude() || !whole.contains(&(expr.span.start, expr.span.end)) {
             return;
@@ -175,6 +178,59 @@ fn failure_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
         }
     });
     found
+}
+
+/// `x.len()` or `x.abs()` on a value, written as the builtin, `len(x)` or `abs(x)`. One holding
+/// another, like `x.len().abs()`, is left for the next round, so the two never write over each
+/// other.
+fn builtin_call(expr: &Expr, types: &HashMap<(u32, u32), &Type>, sources: &Sources) -> Option<Diagnostic> {
+    let ExprKind::Call { callee, args } = &expr.kind else { return None };
+    let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+    if !args.is_empty() || !matches!(name.as_str(), "len" | "abs") || expr.span.in_prelude() {
+        return None;
+    }
+    if matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown)) {
+        return None;
+    }
+    let mut holds_one = false;
+    fennec_syntax::read::in_expr(object, &mut |inner| {
+        holds_one |= matches!(&inner.kind, ExprKind::Call { callee, args } if args.is_empty()
+            && matches!(&callee.kind, ExprKind::Attr { name, .. } if matches!(name.as_str(), "len" | "abs")));
+    });
+    if holds_one {
+        return None;
+    }
+    // The receiver as written, with the parentheses a builtin's own make needless.
+    let text = Text::of(sources, expr.span)?;
+    let written = text.get(Span { start: expr.span.start, end: callee.span.end })?;
+    let receiver = written.strip_suffix(name.as_str())?.trim_end().strip_suffix('.')?.trim_end();
+    // A receiver in parentheses, like `(a + b).len()`, is written from inside them: its `(`
+    // is before where the call starts, and its `)` is the receiver's last, which no `(` opens.
+    let mut at = expr.span;
+    let mut receiver = one_group(receiver).unwrap_or(receiver);
+    if receiver.matches(')').count() > receiver.matches('(').count() {
+        let before = text.get(Span { start: text.base, end: at.start })?.trim_end();
+        let opened = before.strip_suffix('(')?;
+        at.start = text.base + u32::try_from(opened.len()).ok()?;
+        receiver = receiver.strip_suffix(')')?.trim_end();
+    }
+    let message = format!("`{name}` is a builtin: write `{name}(x)`");
+    Some(Diagnostic::new(message, at).with_fix(at, format!("{name}({receiver})")))
+}
+
+/// What's inside `text` when it's all one pair of parentheses, as `(a + b)` is and
+/// `(a) + (b)` isn't.
+fn one_group(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix('(')?.strip_suffix(')')?;
+    let mut depth = 0_usize;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(inner)
 }
 
 /// The `else`s that are all of what a statement is written with, where `except` may stand: an
@@ -219,7 +275,10 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
     }
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Expr(value) | StmtKind::Return(Some(value)) | StmtKind::Assign { value, .. } => {
+            // Not `x += f() else d`: `except` can't stand there, so that's left to be written by hand.
+            StmtKind::Expr(value)
+            | StmtKind::Return(Some(value))
+            | StmtKind::Assign { value, op: None, .. } => {
                 note(value);
             }
             _ => {}
@@ -311,6 +370,19 @@ fn arms_under(
                 .collect();
             if !left.is_empty() {
                 written = written.replacen("case _", &format!("case {}", left.join(" | ")), 1);
+            }
+        }
+        // `case error:` names the failure again, which `why` names already: it's `case _:`, with
+        // `error` given `why` first.
+        if let fennec_syntax::Pattern::Bind(other) = &arm.pattern
+            && arm.guard.is_none()
+            && let Some(first) = arm.body.first()
+        {
+            let line = text.get(Span { start: text.base, end: first.span.start })?;
+            let body_indent = line.rsplit('\n').next().unwrap_or_default();
+            let named = format!("case {other}:");
+            if written.starts_with(&named) {
+                written = written.replacen(&named, &format!("case _:\n{body_indent}{other} = {name}"), 1);
             }
         }
         variant_names(&arm.pattern, &mut cased);
@@ -444,6 +516,24 @@ mod tests {
         );
     }
 
+    /// `x.len()` and `x.abs()` are written as the builtins, without the parentheses a receiver
+    /// needed, one at a time where one holds another, and a type's own `def len` too.
+    #[test]
+    fn a_len_or_abs_method_is_written_as_the_builtin() {
+        let source = "struct Bag:\n    items: list[int]\n\n    def len(self) -> int:\n        return len(self.items)\n\n\
+            def main(stdout: Stdout):\n    numbers = [1, -2]\n    bag = Bag(items=numbers)\n    \
+            stdout.print(numbers.len(), (numbers + [3]).len(), bag.len(), (-2).abs(), numbers.len().abs())\n";
+        let once = migrated(source);
+        assert_eq!(
+            once,
+            source.replace(
+                "numbers.len(), (numbers + [3]).len(), bag.len(), (-2).abs(), numbers.len().abs()",
+                "len(numbers), len(numbers + [3]), len(bag), abs(-2), len(numbers).abs()"
+            )
+        );
+        assert_eq!(migrated(&once), once.replace("len(numbers).abs()", "abs(len(numbers))"));
+    }
+
     /// `return` goes where the line starts, before a parenthesis, and into each case of a
     /// `match` and each branch of an `if` that ends a def, where they don't leave already.
     #[test]
@@ -476,6 +566,22 @@ mod tests {
             def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
         let expected = "    got = load(n) except why:\n        case .Long(size):\n            return size\n        \
             case .Empty | .Odd:\n            stdout.print(\"short\")\n            0\n    return got\n";
+        let migrated = migrated(source);
+        assert!(migrated.contains(expected), "{migrated}");
+    }
+
+    /// A case that names the failure again, `case error:`, becomes `case _:` with `error`
+    /// given `why`, and `x += f() else d`, where `except` can't stand, is left as it is.
+    #[test]
+    fn a_case_naming_the_failure_again_reads_why() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout) -> int:\n    mut total = 0\n    total += load(n) else 1\n    \
+            got = load(n) else as why:\n        match why:\n            case .Long(size):\n                return size\n            \
+            case problem:\n                stdout.print(problem)\n                return -1\n    return got + total\n\n\
+            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
+        let expected = "    total += load(n) else 1\n    got = load(n) except why:\n        case .Long(size):\n            \
+            return size\n        case _:\n            problem = why\n            stdout.print(problem)\n            return -1\n";
         let migrated = migrated(source);
         assert!(migrated.contains(expected), "{migrated}");
     }

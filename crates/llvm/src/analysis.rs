@@ -108,6 +108,9 @@ pub(crate) struct Analysis {
     /// Copies, by block and place in it, whose source nothing reads again or leans on: the
     /// copy takes over its owner.
     last_copies: HashSet<(usize, usize)>,
+    /// Fields a struct is made with, by block, place in it and local, that nothing reads again or
+    /// leans on: the struct takes over the local's owner.
+    last_made: HashSet<(usize, usize, usize)>,
     /// `enumerate(list)` results, and copies of them, never made: each with the list.
     pub(crate) enumerated: HashMap<usize, LocalId>,
     /// `map.items()` or `map.values()` where all that's done with what it gives is going through
@@ -2938,6 +2941,7 @@ impl Analysis {
             room_enough: HashSet::new(),
             length_kept: HashMap::new(),
             last_copies: HashSet::new(),
+            last_made: HashSet::new(),
             enumerated: HashMap::new(),
             map_walks: HashMap::new(),
             walk_keys: HashSet::new(),
@@ -2986,6 +2990,12 @@ impl Analysis {
     /// Whether the copy at this place in this block is the last anything does with its source.
     pub(crate) fn is_last_copy(&self, block: usize, index: usize) -> bool {
         self.last_copies.contains(&(block, index))
+    }
+
+    /// Whether a struct made at this place in this block is the last anything does with this
+    /// local it's made with.
+    pub(crate) fn is_last_made(&self, (block, index): (usize, usize), local: LocalId) -> bool {
+        self.last_made.contains(&(block, index, local.0))
     }
 
     /// Whether a local is written once and read once.
@@ -3397,6 +3407,18 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
                 && from.0 >= function.params
             {
                 known.last_copies.insert((at, index));
+            }
+            if let InstKind::Make { fields, .. } = &inst.kind {
+                for field in fields {
+                    if let Operand::Local(from) = field
+                        && fields.iter().filter(|other| *other == field).count() == 1
+                        && !live.contains(&from.0)
+                        && !leaned_on.contains(&from.0)
+                        && from.0 >= function.params
+                    {
+                        known.last_made.insert((at, index, from.0));
+                    }
+                }
             }
             let (mut reads, mut writes) = (Vec::new(), Vec::new());
             visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));

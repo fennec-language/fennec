@@ -18430,6 +18430,91 @@ const TEXT_GROWN: &str = r#"def main(stdout: Stdout):
     return
 "#;
 
+/// A struct made with a list nothing reads again takes the list's owner over, so the list has
+/// one owner and changing it through the struct copies nothing: a list built just for a struct
+/// used to be copied, with its items, the first time anything changed it. A list that's read
+/// again, made with in a loop, or given to two fields keeps its own owner, so it's copied where
+/// it changes, as a copy has to be.
+#[test]
+fn a_struct_made_with_a_list_built_for_it_takes_it_over() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("made_with_a_list")?;
+    std::fs::write(dir.join("made_with_a_list.fen"), MADE_WITH_A_LIST)?;
+    std::fs::write(dir.join("list_built_for_it.fen"), LIST_BUILT_FOR_IT)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "made_with_a_list", how)?;
+        assert_eq!(printed, MADE_WITH_A_LIST_PRINTS, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+        let (printed, counts) = printed_and_counts(&dir, "list_built_for_it", how)?;
+        assert_eq!(printed, "95\n", "{how:?}");
+        assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const MADE_WITH_A_LIST_PRINTS: &str = r#"[1, 2, 9] [1, 2, 3]
+[[5, 0], [5, 10, 1], [5, 10, 11, 2]] [5, 10, 11, 12]
+[7, 8] [7] [7]
+[0, 1, 2, 3, 100] [4]
+"#;
+
+const MADE_WITH_A_LIST: &str = r#"struct W:
+    es: list[int]
+    more: list[int]
+
+def build(n: int) -> W:
+    mut made = list[int]()
+    for i in range(n):
+        made.append(i)
+    return W(es=made, more=[n])
+
+def main(stdout: Stdout):
+    mut xs = [1, 2]
+    mut w = W(es=xs, more=[0])
+    xs.append(3)
+    w.es.append(9)
+    stdout.print(w.es, xs)
+    mut kept = list[W]()
+    mut ys = [5]
+    for round in range(3):
+        mut v = W(es=ys, more=[round])
+        v.es.append(round)
+        kept.append(v)
+        ys.append(10 + round)
+    stdout.print([k.es for k in kept], ys)
+    same = [7]
+    mut twice = W(es=same, more=same)
+    twice.es.append(8)
+    stdout.print(twice.es, twice.more, same)
+    mut b = build(4)
+    b.es.append(100)
+    stdout.print(b.es, b.more)
+    return
+"#;
+
+const LIST_BUILT_FOR_IT: &str = r#"struct E:
+    x: int
+    d: dict[str, int]
+
+struct W:
+    es: list[E]
+
+def bump(ref w: W):
+    for ref e in w.es:
+        e.x += 1
+    return
+
+def main(stdout: Stdout):
+    mut w = W(es=[E(x=i, d={"a": 1}) for i in range(10)])
+    for _ in range(5):
+        bump(ref w)
+    stdout.print(sum(e.x for e in w.es))
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

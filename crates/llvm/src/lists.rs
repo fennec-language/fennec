@@ -102,10 +102,27 @@ impl Emit<'_, '_, '_> {
         access: &str,
     ) -> Result<(), String> {
         let (value, fresh) = self.value_for(operand, kind)?;
-        if kind.counted() && !fresh {
+        // A block in a local read only here is handed over, as a copy from one is: the list a
+        // struct is made with, built just before, then has one owner.
+        let handed = match operand {
+            Operand::Local(local)
+                if kind.counted()
+                    && !fresh
+                    && self.owns(*local)
+                    && (self.known.moves(*local) || self.made_here_last(*local)) =>
+            {
+                Some(*local)
+            }
+            _ => None,
+        };
+        if kind.counted() && !fresh && handed.is_none() {
             self.retain_value(&value, kind);
         }
         self.store_field(kind, &value, at, access);
+        if let Some(local) = handed {
+            let (slot, text) = (self.slot(local), self.text_of(kind));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+        }
         // An inline struct in a local read only here moves its blocks over; any other gets
         // another owner for each.
         let moved = !fresh
@@ -296,6 +313,11 @@ impl Emit<'_, '_, '_> {
     /// Where the fields of what's in `base` start: inline, or in a block.
     pub(crate) fn fields_at(&mut self, base: &str, kind: &Kind) -> String {
         if matches!(kind, Kind::Boxed(_)) { self.offset(base, FIELDS_OFFSET) } else { base.to_owned() }
+    }
+
+    /// Whether the struct being made here is the last thing to read a local it's made with.
+    fn made_here_last(&self, local: LocalId) -> bool {
+        self.known.is_last_made((self.at.0, self.at.1), local)
     }
 
     pub(crate) fn make(&mut self, dest: LocalId, fields: &[Operand]) -> Result<(), String> {

@@ -3314,6 +3314,7 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "parallel.peer"
                     | "parallel.label"
                     | "parallel.map"
+                    | "parallel.stream_next"
                     | "parallel.sum"
         )
 }

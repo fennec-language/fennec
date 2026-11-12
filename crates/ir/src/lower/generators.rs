@@ -122,7 +122,7 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn yield_operand(&mut self, value: Operand) {
+    pub(super) fn yield_operand(&mut self, value: Operand) {
         let block = self.current;
         let next = self.new_block();
         self.finish(Terminator::Jump(next));
@@ -382,6 +382,9 @@ impl<'a> Lowering<'a> {
         (names, iter): (&[String], &Expr),
     ) -> Lowered<Operand> {
         const SOURCE: &str = "\0source";
+        if let Some(streamed) = self.parallel_stream(expr, (elem, cond), (names, iter)) {
+            return streamed;
+        }
         let ty = self.ty(expr)?;
         let Type::Iterator(item) = &ty else { return Err(format!("a generator expression is {ty}")) };
         let source_ty = self.ty(iter)?;

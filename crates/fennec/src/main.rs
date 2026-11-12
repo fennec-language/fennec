@@ -46,6 +46,17 @@ pub(crate) fn own_temp(what: &str) -> std::path::PathBuf {
 
 use std::process::ExitCode;
 
+/// What the environment asks of builds, to find the compiler's own mistakes with.
+fn builds_checking() {
+    let on = |name: &str| std::env::var_os(name).is_some_and(|value| value == "1");
+    // A build that writes every check a proof left out as an assertion it held, to find false
+    // proofs with: each says "proof broken" and which, if one didn't.
+    fennec_llvm::check_proofs(on("FENNEC_CHECK_PROOFS"));
+    // A build without the facts the compiler hands LLVM beside the code, which runs the same, only
+    // slower: one printing otherwise was handed a wrong fact.
+    fennec_llvm::strip_facts(on("FENNEC_STRIP_FACTS"));
+}
+
 const USAGE: &str = "usage:
   fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's,
       built through LLVM a function at a time
@@ -109,9 +120,7 @@ fn main() -> ExitCode {
         fennec_kit::keep_parses_in(Box::new(parsed::Kept::new(cache.clone())));
         fennec_syntax::keep_prelude_in(Box::new(parsed::Kept::new(cache)));
     }
-    // A build that writes every check a proof left out as an assertion it held, to find false
-    // proofs with: each says "proof broken" and which, if one didn't.
-    fennec_llvm::check_proofs(std::env::var_os("FENNEC_CHECK_PROOFS").is_some_and(|value| value == "1"));
+    builds_checking();
     let Some(args) = arguments() else {
         return ExitCode::FAILURE;
     };

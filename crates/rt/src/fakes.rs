@@ -143,13 +143,11 @@ impl TestWorld {
         self.capabilities == TestCapabilities::Real
     }
 
-    /// What the test and its tasks have printed.
+    /// What the test and its tasks have printed, with what the test holds of a line it hasn't
+    /// ended yet.
     pub(crate) fn printed(&self) -> String {
+        crate::embed::flush_held_line();
         self.capture.printed()
-    }
-
-    pub(crate) fn print(&mut self, text: &str, ending: &str) {
-        self.capture.print(&format!("{text}{ending}"));
     }
 
     /// The test's capture, for the tasks and ranges it starts to print into.

@@ -45,3 +45,15 @@ fn a_tasks_printed_line_goes_into_its_tests_capture_whole() {
     other.join().unwrap();
     assert_eq!(capture.printed(), "other 1\nitem 0\n");
 }
+
+/// What's held of an unfinished line goes to the capture it was printed for: when the thread
+/// prints into another, and when what's captured is read.
+#[test]
+fn a_held_line_goes_into_the_capture_it_was_printed_for() {
+    let (first, second) = (crate::fakes::Capture::new(), crate::fakes::Capture::new());
+    super::capture_lines(&first, "first");
+    super::capture_lines(&second, "second");
+    assert_eq!((first.printed(), second.printed()), ("first".to_owned(), String::new()));
+    super::flush_held_line();
+    assert_eq!(second.printed(), "second");
+}

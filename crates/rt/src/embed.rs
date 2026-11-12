@@ -1073,33 +1073,47 @@ pub(in crate::embed) fn capture_here() -> Option<std::sync::Arc<crate::fakes::Ca
 pub(in crate::embed) fn swap_capture(capture: &mut Option<std::sync::Arc<crate::fakes::Capture>>) {
     // What's held of an unfinished line goes to the capture it was printed for, before another's
     // comes in.
-    let held = HELD_LINE.take();
-    if !held.is_empty()
-        && let Some(going) = capture_given()
-    {
-        going.print(&held);
-    }
+    flush_held_line();
     CAPTURE.with_borrow_mut(|here| std::mem::swap(here, capture));
 }
 
 thread_local! {
-    /// What a task or range a test started has printed of a line not ended yet. A `print` comes
-    /// here in pieces, and its pieces go into the test's capture together, once its line ends, so
-    /// other threads' prints never land inside it.
-    static HELD_LINE: Cell<String> = const { Cell::new(String::new()) };
+    /// What this thread has printed into a test's capture of a line not ended yet, and the capture
+    /// it's for. A `print` comes in pieces, and its pieces go into the capture together, once its
+    /// line ends, so other threads' prints never land inside it.
+    static HELD_LINE: RefCell<Option<(std::sync::Arc<crate::fakes::Capture>, String)>> =
+        const { RefCell::new(None) };
 }
 
-/// Puts what a task or range printed into `capture`, a whole line at a time: the end of a line it
+/// Puts what this thread printed into `capture`, a whole line at a time: the end of a line it
 /// holds back until the rest of it comes.
-fn capture_lines(capture: &crate::fakes::Capture, text: &str) {
-    let mut held = HELD_LINE.take();
+fn capture_lines(capture: &std::sync::Arc<crate::fakes::Capture>, text: &str) {
+    let held = HELD_LINE.take();
+    let mut held = match held {
+        Some((was, held)) if std::sync::Arc::ptr_eq(&was, capture) => held,
+        Some((was, held)) => {
+            was.print(&held);
+            String::new()
+        }
+        None => String::new(),
+    };
     held.push_str(text);
     if let Some(end) = held.rfind('\n') {
         let rest = held.split_off(end + 1);
         capture.print(&held);
         held = rest;
     }
-    HELD_LINE.set(held);
+    if !held.is_empty() {
+        HELD_LINE.set(Some((std::sync::Arc::clone(capture), held)));
+    }
+}
+
+/// Puts what this thread holds of an unfinished line into the capture it was printed for, as
+/// what's captured is about to be read or this thread is to print elsewhere.
+pub(crate) fn flush_held_line() {
+    if let Some((capture, held)) = HELD_LINE.take() {
+        capture.print(&held);
+    }
 }
 
 /// The capture this thread prints into, when what it runs belongs to a test and the thread has no
@@ -1126,7 +1140,8 @@ pub mod io {
         // A test's `Stdout` keeps what it printed, for `stdout.captured()`, and a fake one prints
         // nothing more.
         if let Some(world) = state.world_mut() {
-            world.print(text, "");
+            // Each line whole, as a task the test started may be printing at the same time.
+            super::capture_lines(&world.capture(), text);
             if !world.real() {
                 return Ok(());
             }

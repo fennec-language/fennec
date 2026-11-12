@@ -678,7 +678,7 @@ fn tasks_printing_replay_their_output_in_the_order_it_went_out() -> std::io::Res
     Ok(())
 }
 
-/// An ordered stream whose body prints, read slowly until a `break`, while its chunks run ahead.
+/// An ordered stream whose body prints, read until a `break`, while its chunks run ahead.
 const STREAM_PAST_A_BREAK: &str = "def shown(stdout: Stdout, n: int) -> int:
     stdout.print(\"chunk\", n)
     return n * n
@@ -686,8 +686,7 @@ const STREAM_PAST_A_BREAK: &str = "def shown(stdout: Stdout, n: int) -> int:
 def main(stdout: Stdout):
     many = [n for n in range(20000)]
     for square in (shown(stdout, n) for n in parallel(many)):
-        spin = sum(step % 3 for step in range(20_000))
-        if square + spin * 0 > 900:
+        if square > 900:
             break
     stdout.print(\"after break\")
 ";
@@ -712,8 +711,6 @@ fn a_streams_chunks_run_past_a_break_replay_as_they_ran() -> std::io::Result<()>
     let recorded = outcome(&record.output_before(DEADLINE)?);
     assert_eq!(recorded.2, Some(0), "{}", recorded.1);
     let read = recorded.0.lines().filter(|line| line.starts_with("chunk ")).count();
-    // The reader takes its time over each item, so the workers start the chunks ahead of it
-    // before it gets to the break, however loaded the machine is.
     assert!(read > 32, "no chunk ran past the break, so this tests nothing: {}", recorded.0);
     for threads in ["1", "7", "1", "7"] {
         let replayed = outcome(

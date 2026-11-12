@@ -446,10 +446,31 @@ fn builtin_call(
     if !args.is_empty() || !matches!(name.as_str(), "len" | "abs") {
         return None;
     }
-    // On a value: with no types, anything but a type's or module's name, like `Grid.len()`.
+    // On a value: with no types, anything but a type's or module's name, like `Grid.len()`. Not
+    // at the end of a chain a step of which can fail or be missing, as `find(1).name.len() else 0`,
+    // whose `else` ends the chain: `len(...)` would hold the chain as an argument.
     let value = match types {
         Some(types) => {
-            !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
+            let mut chained = false;
+            let mut step = object.as_ref();
+            loop {
+                if matches!(
+                    types.get(&(step.span.start, step.span.end)),
+                    Some(Type::Optional(_) | Type::Result(..))
+                ) {
+                    chained = true;
+                }
+                step = match &step.kind {
+                    ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => object,
+                    ExprKind::Call { callee, .. } => match &callee.kind {
+                        ExprKind::Attr { object, .. } => object,
+                        _ => break,
+                    },
+                    _ => break,
+                };
+            }
+            !chained
+                && !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
         }
         None => !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase)),
     };
@@ -1086,6 +1107,20 @@ mod tests {
             migrated.contains("    got = load(n) except why:\n        case .Long(size):\n            stdout.print(size)\n            return\n        case .Empty:\n            stdout.print(\"empty\")\n            return\n"),
             "{migrated}"
         );
+    }
+
+    /// `x.len()` at the end of a chain whose step can fail or be missing stays: the chain's
+    /// `else` ends it, and `len(...)` would hold the chain as an argument.
+    #[test]
+    fn a_len_ending_a_chain_that_can_fail_stays_a_method() {
+        let source = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n\
+            def find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    return Part()\n\n\
+            def main(stdout: Stdout):\n    size: int = find(1).name.len() else 0\n    \
+            ages = {\"a\": \"x\"}\n    kept = ages.get(\"a\").len() else 0\n    stdout.print(size, kept, \"ab\".len())\n";
+        let migrated = migrated(source);
+        assert!(migrated.contains("find(1).name.len() else 0"), "{migrated}");
+        assert!(migrated.contains("ages.get(\"a\").len() else 0"), "{migrated}");
+        assert!(migrated.contains("len(\"ab\")"), "{migrated}");
     }
 
     /// A def's last value gets `return`, and a def that gives nothing is left as it is.

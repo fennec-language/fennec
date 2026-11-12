@@ -1576,6 +1576,10 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
     }
 }
 
+/// Since 2026-11-11 a program can't write `with src else fail E:`, which `else` on a failing
+/// call refuses, so nothing reaches this from what a program writes; it's kept until lowering is
+/// next reworked.
+///
 /// A source's body as `with src else fail E:` writes it in: each `fail` does what the `else` does
 /// instead, and so does each `?`, through `else`. A `?` in an arrow function passes the arrow's
 /// own failure up, not the source's, so it stays.

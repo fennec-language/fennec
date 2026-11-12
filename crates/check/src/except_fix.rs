@@ -814,8 +814,7 @@ fn by_hand(span: Span) -> bool {
 
 /// Each `else` on a call that can fail, `else as why:` among them.
 fn elses_on_failures(module: &Module, checked: &crate::Checked) -> Vec<Diagnostic> {
-    // `with source() else fail E as x:` gives the block's failure its own, a form 2026-11-11
-    // didn't settle a new way to write, so it stays for now.
+    // `with source() else fail E as x:` is refused too, with what to write instead.
     let mut sources = HashSet::new();
     for body in bodies_of(module) {
         let mut stmts = Vec::new();
@@ -830,7 +829,6 @@ fn elses_on_failures(module: &Module, checked: &crate::Checked) -> Vec<Diagnosti
     fennec_syntax::read::exprs(module, &mut |expr| {
         if let ExprKind::Else { value, except: false, .. } = &expr.kind
             && by_hand(expr.span)
-            && !sources.contains(&(expr.span.start, expr.span.end))
         {
             failing.insert((value.span.start, value.span.end));
         }
@@ -853,11 +851,17 @@ fn elses_on_failures(module: &Module, checked: &crate::Checked) -> Vec<Diagnosti
             return;
         }
         let word = Span { start: value.span.end, end: default.span.start.max(value.span.end) };
+        let help = if sources.contains(&(expr.span.start, expr.span.end)) {
+            "replace the failure inside the source (`except why: fail E(...)` there), then `with source()? as name:`"
+        } else {
+            "write `x = f() except why:` and use `why`, or name what it handles, as `x = f() except Missing(): 0`; `fennec fix` makes this change"
+        };
         found.push(
-            Diagnostic::new("a failure is handled with `except` now: `else` is for a value that's missing", word)
-                .with_help(
-                    "write `x = f() except why:` and use `why`, or name what it handles, as `x = f() except Missing(): 0`; `fennec fix` makes this change",
-                ),
+            Diagnostic::new(
+                "a failure is handled with `except` now: `else` is for a value that's missing",
+                word,
+            )
+            .with_help(help),
         );
     });
     found

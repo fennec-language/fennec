@@ -23,11 +23,26 @@ extend dict[K: Hashable & Serializable, V: Serializable]:
         out.map(self.items())
 
 ## A key that came twice as a message names it: in backticks, cut to its first 20 characters and
-## `…` past 40, since a key from outside can be as long as it likes.
+## `…` past 40, since a key from outside can be as long as it likes, with its control characters
+## written as escapes, as `std.string`'s `quoted_input` writes them, which a core file can't import.
 def twice_key[K](key: K) -> str:
-    text = f"{key}"
-    if text.len() <= 40: return f"`{text}`"
-    return f"`{text[0:20]}…`"
+    full = f"{key}"
+    cut = full if full.len() <= 40 else full[0:20] + "…"
+    hex = "0123456789abcdef"
+    mut text = ""
+    for c in cut:
+        code = c.code()
+        if c == "\n":
+            text += "\\n"
+        elif c == "\r":
+            text += "\\r"
+        elif c == "\t":
+            text += "\\t"
+        elif code < 32 or (code >= 127 and code < 160):
+            text += "\\u{" + hex[code // 16] + hex[code % 16] + "}"
+        else:
+            text += c
+    return f"`{text}`"
 
 extend dict[K: Hashable & Deserializable, V: Deserializable]:
     ## A key that comes twice fails, naming it, rather than the last one winning: two readers that

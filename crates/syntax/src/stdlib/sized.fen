@@ -298,8 +298,10 @@ extend u64:
                 digit = u64(c.code() - 48)
                 # Checked before it's multiplied, so it never goes past the top.
                 if value > (top - digit) // 10:
+                    # Only digits, but as many as it likes: past 40, its first 20 and its length.
+                    shown = text if text.len() <= 40 else f"{text[0:20]}… ({text.len():,} digits)"
                     fail InvalidValue(
-                        message=f"{text} doesn't fit in u64, which holds 0 to 18446744073709551615",
+                        message=f"{shown} doesn't fit in u64, which holds 0 to 18446744073709551615",
                     )
                 value = value * 10 + digit
             return value

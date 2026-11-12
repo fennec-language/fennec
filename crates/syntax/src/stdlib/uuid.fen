@@ -109,4 +109,4 @@ extend Uuid:
 
     def deserialize(ref src: Deserializer) -> Uuid fails ParseError:
         text = src.text()?
-        Uuid.parse(text) else fail src.here(f"is `{text}`, which isn't a UUID")
+        Uuid.parse(text) else fail src.here(f"is {quoted_input(text)}, which isn't a UUID")

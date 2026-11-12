@@ -5,16 +5,43 @@ from std.intrinsics import stop
 ## `text` as an error quotes what it was given: whole, in backticks, or past 40 characters, its first
 ## 20 and `…` in backticks, then how long it was, as in "`12345678901234567890…` (5,000
 ## characters)". Text from outside can be as long as it likes, and this way it can't make a
-## message as long as itself. For std's own messages, not exported.
+## message as long as itself. Its control characters are written as escapes. For std's own
+## messages, not exported.
 def quoted_input(text: str) -> str:
-    if text.len() <= 40: return f"`{text}`"
-    return f"`{text[0:20]}…` ({text.len():,} characters)"
+    if text.len() <= 40: return f"`{escaped(text)}`"
+    return f"`{escaped(text[0:20])}…` ({text.len():,} characters)"
 
 ## `text` as a message names a key or a part of a path from outside: whole, or past 40
-## characters, its first 20 and `…`.
+## characters, its first 20 and `…`, with its control characters written as escapes.
 def cut_input(text: str) -> str:
-    if text.len() <= 40: return text
-    return text[0:20] + "…"
+    if text.len() <= 40: return escaped(text)
+    return escaped(text[0:20]) + "…"
+
+## `text` with each control character written as an escape, as `\n` or `\u{1b}`, so text from
+## outside can't break a message's line, or send a terminal or a log its codes.
+def escaped(text: str) -> str:
+    mut plain = True
+    for c in text:
+        code = c.code()
+        if code < 32 or (code >= 127 and code < 160):
+            plain = False
+            break
+    if plain: return text
+    hex = "0123456789abcdef"
+    mut out = ""
+    for c in text:
+        code = c.code()
+        if c == "\n":
+            out += "\\n"
+        elif c == "\r":
+            out += "\\r"
+        elif c == "\t":
+            out += "\\t"
+        elif code < 32 or (code >= 127 and code < 160):
+            out += "\\u{" + hex[code // 16] + hex[code % 16] + "}"
+        else:
+            out += c
+    return out
 
 export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
 export ASCII_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

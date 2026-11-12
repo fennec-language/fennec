@@ -26,6 +26,7 @@ from std.crypto import Secret
 from std.intrinsics import bytes_text
 from std.net import Connection, NetError
 from std.sql import SqlError, SqlRows, SqlValue, rows_as
+from std.string import quoted_input
 from std.time import Duration
 from std.url import parse, unquote
 
@@ -522,13 +523,15 @@ def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlEr
         rows.at.append(rows.ints.len())
         # Postgres writes a bool as `t` or `f`, and anything else isn't one.
         if text != "t" and text != "f":
-            fail SqlError.Failed(reason=f"the server sent `{text}` as a bool")
+            fail SqlError.Failed(reason=f"the server sent {quoted_input(text)} as a bool")
         rows.ints.append(1 if text == "t" else 0)
     elif kind == 20 or kind == 21 or kind == 23:
         rows.kinds.append(1)
         rows.at.append(rows.ints.len())
         rows.ints.append(
-            int(text) else fail SqlError.Failed(reason=f"the server sent `{text}` as an int"),
+            int(text) else fail SqlError.Failed(
+                reason=f"the server sent {quoted_input(text)} as an int",
+            ),
         )
     elif kind == 700 or kind == 701:
         rows.kinds.append(2)
@@ -547,7 +550,7 @@ def float_of(text: str) -> float fails SqlError:
     if text == "NaN": return float("nan") else 0.0
     if text == "Infinity": return 1e308 * 10.0
     if text == "-Infinity": return -1e308 * 10.0
-    float(text) else fail SqlError.Failed(reason=f"the server sent `{text}` as a float")
+    float(text) else fail SqlError.Failed(reason=f"the server sent {quoted_input(text)} as a float")
 
 ## `bytea` as Postgres writes it as text: `\x`, then two hex digits a byte.
 def hex_bytes(text: str) -> bytes fails SqlError:

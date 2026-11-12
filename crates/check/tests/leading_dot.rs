@@ -93,7 +93,7 @@ fn the_expected_enum_has_to_have_the_case() {
 #[test]
 fn running_the_module_names_the_chosen_enum() {
     let source = format!(
-        "{}\ndef literal(tok: Tok) -> ExprKind:\n    match tok:\n        case .Int(value): .Int(value)\n        case _: .Name(\"?\")\n",
+        "{}\ndef literal(tok: Tok) -> ExprKind:\n    match tok:\n        case .Int(value): return .Int(value)\n        case _: return .Name(\"?\")\n",
         crate::dedent(ENUMS)
     );
     let mut module = fennec_syntax::parse(&source).unwrap();

@@ -2171,10 +2171,8 @@ def main(stdout: Stdout):
     stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), len(many), light == .Off)
     stdout.print(shown(warm), maybe() == .Red)
     dialled = dial(0) except why:
-        case .Closed:
-            \"closed\"
-        case .NotFound():
-            \"other\"
+        case .Closed: \"closed\"
+        case .NotFound(): \"other\"
     stdout.print(dialled)
     unsaid_value = unsaid() except .NotFound() | .Closed: \"failed\"
     stdout.print(unsaid_value)

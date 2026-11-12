@@ -481,7 +481,7 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
     let helpers = dir.join("src/maths.fen");
     let text = std::fs::read_to_string(&helpers).unwrap();
     let documented = format!(
-        "{text}\n## A private helper's example.\n##\n## ```\n## assert hidden() == 3\n## ```\ndef hidden() -> int:\n    3\n"
+        "{text}\n## A private helper's example.\n##\n## ```\n## assert hidden() == 3\n## ```\ndef hidden() -> int:\n    return 3\n"
     );
     std::fs::write(&helpers, documented).unwrap();
     let first = test_kit(&dir).unwrap();

@@ -2598,7 +2598,7 @@ def f(n: int) -> int:
                 return door.name.len()
     with opened(\"b\") as other:
         pass
-    0
+    return 0
 "
     );
     assert_eq!(printed(&source, "f").unwrap(), LEFT_EVERY_WAY);
@@ -2618,7 +2618,7 @@ def held(name: str) -> Iterator[int]:
             return
 
 def f() -> int:
-    sum(n for n in held(\"a\"))
+    return sum(n for n in held(\"a\"))
 "
     );
     // What the source lent is kept across the `yield`, and its cleanup is written in once, where

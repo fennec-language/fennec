@@ -358,7 +358,7 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
             size: int
 
         def main(stdout: Stdout):
-            stdout.print(Tree(size=1).len())
+            stdout.print(len(Tree(size=1)))
     ";
     assert_eq!(problems(wrong), ["`Tree` has no method `len` @ len(Tree(size=1))"]);
 }

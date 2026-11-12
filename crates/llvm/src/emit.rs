@@ -3832,7 +3832,7 @@ def main(stdout: Stdout):
             "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n\n";
         let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(ref units, 0, 1)\n    mut world = World(units)\n    grow_field(ref world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
         let source = format!(
-            "{types}def grow(ref units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(ref world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
+            "{types}def grow(ref units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(ref world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    return world.units[at].hp\n\n{main}"
         );
         for function in ["grow", "grow_field"] {
             let text = text_of(&source, function)?;

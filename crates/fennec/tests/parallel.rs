@@ -1484,10 +1484,10 @@ fn an_item_that_fails_cuts_a_stream_short() -> std::io::Result<()> {
     return 1000 // (x - 150_000)
 
 def total(xs: list[int]) -> int:
-    mut sum = 0
+    mut running = 0
     for y in (risky(x) for x in parallel(xs)):
-        sum += y
-    return sum
+        running += y
+    return running
 
 def main(stdout: Stdout):
     xs = [n for n in range(300_000)]

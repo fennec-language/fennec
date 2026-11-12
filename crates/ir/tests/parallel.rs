@@ -235,16 +235,16 @@ def doubled(x: int) -> int:
     return x * 2
 
 def total(xs: list[int]) -> int:
-    mut sum = 0
+    mut running = 0
     for y in (doubled(x) for x in parallel(xs)):
-        sum += y
-    return sum
+        running += y
+    return running
 
 def kept(xs: list[int]) -> int:
-    mut sum = 0
+    mut running = 0
     for y in (doubled(x) for x in parallel(xs) if x > 1):
-        sum += y
-    return sum
+        running += y
+    return running
 
 def main(stdout: Stdout):
     stdout.print(total([1, 2, 3]), kept([1, 2, 3]))

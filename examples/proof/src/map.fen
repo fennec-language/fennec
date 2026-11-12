@@ -13,39 +13,39 @@ enum Tile:
     def cost(self) -> int:
         match self:
             case .Floor:
-                1
+                return 1
             case .Forest:
-                2
+                return 2
             case .Wall:
-                0
+                return 0
             case .Water:
-                0
+                return 0
 
     def walkable(self) -> bool:
-        self.cost() > 0
+        return self.cost() > 0
 
     def symbol(self) -> str:
         match self:
             case .Floor:
-                "."
+                return "."
             case .Wall:
-                "#"
+                return "#"
             case .Forest:
-                "^"
+                return "^"
             case .Water:
-                "~"
+                return "~"
 
 ## A tile drawn as `symbol` gives back.
 def tile_of(symbol: str) -> Tile:
     match symbol:
         case "#":
-            .Wall
+            return .Wall
         case "^":
-            .Forest
+            return .Forest
         case "~":
-            .Water
+            return .Water
         case _:
-            .Floor
+            return .Floor
 
 struct Map:
     tiles: Grid[Tile]
@@ -56,33 +56,33 @@ struct Map:
 
     ## A map of `tiles`, with the links between them worked out.
     def of(tiles: Grid[Tile]) -> Map:
-        Map(tiles=tiles, links=links_of(tiles))
+        return Map(tiles=tiles, links=links_of(tiles))
 
     ## A map drawn with one character a tile, every row the same length.
     def drawn(rows: list[str]) -> Map:
-        Map.of(Grid.of([[tile_of(symbol) for symbol in row] for row in rows]))
+        return Map.of(Grid.of([[tile_of(symbol) for symbol in row] for row in rows]))
 
     def width(self) -> int:
-        self.tiles.width
+        return self.tiles.width
 
     def height(self) -> int:
-        self.tiles.height
+        return self.tiles.height
 
     def number(self, at: (int, int)) -> int:
         x, y = at
-        y * self.tiles.width + x
+        return y * self.tiles.width + x
 
     def position(self, number: int) -> (int, int):
-        (number % self.tiles.width, number // self.tiles.width)
+        return (number % self.tiles.width, number // self.tiles.width)
 
     def walkable(self, at: (int, int)) -> bool:
         tile = self.tiles.get(at)
         if tile is None: return False
-        tile.walkable()
+        return tile.walkable()
 
     ## The walkable cells next to `at`.
     def next_to(self, at: (int, int)) -> list[(int, int)]:
-        [self.position(number) for number in self.links[self.number(at)]]
+        return [self.position(number) for number in self.links[self.number(at)]]
 
     ## The cheapest way from `start` to `goal`, without `start`, or None when there's none.
     ## Cells in `blocked` can't be walked through, though `goal` may be one of them.
@@ -92,7 +92,7 @@ struct Map:
     )]?:
         if start == goal: return []
         if not self.walkable(goal): return None
-        cells = self.tiles.len()
+        cells = len(self.tiles)
         mut cost = [-1 for _ in range(cells)]
         mut came_from = [-1 for _ in range(cells)]
         first = self.number(start)
@@ -100,7 +100,7 @@ struct Map:
         cost[first] = 0
         mut waiting = PriorityQueue[int]()
         waiting.push(first, distance(start, b=goal))
-        while waiting.len() > 0:
+        while len(waiting) > 0:
             here = waiting.pop() else first
             if here == last: break
             for near in self.links[here]:
@@ -119,23 +119,23 @@ struct Map:
             steps.append(self.position(at))
             at = came_from[at]
         steps.reverse()
-        steps
+        return steps
 
     ## How many steps every cell is from `start`, or -1 when it can't be reached.
     def reach(self, start: (int, int)) -> Grid[int]:
         mut steps = Grid.filled(width=self.width(), height=self.height(), value=-1)
         steps[start] = 0
         mut waiting = Deque.of([start])
-        while waiting.len() > 0:
+        while len(waiting) > 0:
             here = waiting.popleft() else start
             for near in self.next_to(here):
                 if steps[near] == -1:
                     steps[near] = steps[here] + 1
                     waiting.append(near)
-        steps
+        return steps
 
     def drawing(self) -> list[str]:
-        ["".join([tile.symbol() for tile in row]) for row in self.tiles.rows()]
+        return ["".join([tile.symbol() for tile in row]) for row in self.tiles.rows()]
 
 ## The walkable neighbors of every cell, in cell order.
 def links_of(tiles: Grid[Tile]) -> Packed[int]:
@@ -147,13 +147,13 @@ def links_of(tiles: Grid[Tile]) -> Packed[int]:
             if tiles[near].walkable():
                 x, y = near
                 links.push(y * tiles.width + x)
-    links
+    return links
 
 ## Steps between two cells, going only across and down: a guess that's never too high.
 def distance(a: (int, int), b: (int, int)) -> int:
     ax, ay = a
     bx, by = b
-    (ax - bx).abs() + (ay - by).abs()
+    return abs(ax - bx) + abs(ay - by)
 
 test "a map knows its walls and its links":
     map = Map.drawn(["..#", ".~.", "^.."])
@@ -170,7 +170,7 @@ test "a path goes round water and walls":
     found = map.path((0, 0), goal=(3, 3), blocked=set())
     assert found is not None
     if found is not None:
-        assert found.len() == 6 and found[-1] == (3, 3)
+        assert len(found) == 6 and found[-1] == (3, 3)
 
 test "a path is cheapest, not shortest":
     # Through the forest is 7; round it is 6.

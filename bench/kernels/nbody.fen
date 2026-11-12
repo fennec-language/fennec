@@ -14,19 +14,19 @@ struct Body:
 
 def energy(bodies: list[Body]) -> float:
     mut total = 0.0
-    for i in range(bodies.len()):
+    for i in range(len(bodies)):
         a = bodies[i]
         total += 0.5 * a.mass * (a.vx * a.vx + a.vy * a.vy + a.vz * a.vz)
-        for j in range(i + 1, bodies.len()):
+        for j in range(i + 1, len(bodies)):
             b = bodies[j]
             dx = a.x - b.x
             dy = a.y - b.y
             dz = a.z - b.z
             total -= a.mass * b.mass / sqrt(dx * dx + dy * dy + dz * dz)
-    total
+    return total
 
 def advance(ref bodies: list[Body], dt: float):
-    count = bodies.len()
+    count = len(bodies)
     for i in range(count):
         for j in range(i + 1, count):
             dx = bodies[i].x - bodies[j].x

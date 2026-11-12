@@ -1,12 +1,12 @@
-source 69134b0cce0d9605faad962905eb4f173a39e312f498404d36fef69ac7a830ff
+source 3fde884e68723e3e9d3f8dee58884cd4d15cd57167f3d430b5862802479292a1
 code 1
 stdout 2
 1
-stderr 186
+stderr 184
 error: this assertion failed
   --> <dir>/assert_5.fen:31:12
    |
-31 |     assert [1].len() >= 2
-   |            ^^^^^^^^^^^^^^
+31 |     assert len([1]) >= 2
+   |            ^^^^^^^^^^^^^
    |
    = help: the left side is 1 and the right side is 2

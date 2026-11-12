@@ -16,15 +16,15 @@ WORDS = ["a", "b"]
 DOUBLE = LIMIT * 2
 
 def around(n: int) -> int:
-    n + NONE
+    return n + NONE
 
 def shadow(limit: int) -> int:
-    limit + 1
+    return limit + 1
 
 def main(stdout: Stdout):
     stdout.print(NONE, LIMIT, ALSO, HALF, NEGATIVE, READY, NAME, TYPED, WORDS, DOUBLE)
     stdout.print(around(LIMIT), shadow(1), LIMIT * LIMIT, HALF + NEGATIVE, not READY)
-    stdout.print(NAME.len(), NAME + "!", NAME[0], f"{NAME} {LIMIT}")
+    stdout.print(len(NAME), NAME + "!", NAME[0], f"{NAME} {LIMIT}")
     mut at = NONE
     while at != LIMIT:
         at += 1

@@ -8,7 +8,7 @@ struct Queue:
         self.items.append(item)
 
     def pop(ref self) -> int:
-        self.items.pop() else 0
+        return self.items.pop() else 0
 
 def worker(queue: shared Queue):
     for n in range(2000):
@@ -39,4 +39,4 @@ def main(stdout: Stdout) fails Crashed:
             held.items.append(n)
     run(queue)?
     lock queue as held:
-        stdout.print(held.items.len())
+        stdout.print(len(held.items))

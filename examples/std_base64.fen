@@ -6,7 +6,7 @@ from std import base64
 
 ## A token for a link: random bytes would go here, written so a URL can hold them.
 def token(seed: bytes) -> str:
-    base64.url_encode(seed)
+    return base64.url_encode(seed)
 
 test "RFC 4648's examples come out as it says, and read back"():
     for text, written in [
@@ -44,4 +44,5 @@ test "any bytes come back as they were" for numbers: list[int]:
 
 def main(stdout: Stdout):
     stdout.print(base64.encode("Fennec 🦊".encode()), token(bytes([255, 238, 221])))
-    stdout.print(base64.decode("RmVubmVj") else bytes([]))
+    decode_value = base64.decode("RmVubmVj") except InvalidValue(): bytes([])
+    stdout.print(decode_value)

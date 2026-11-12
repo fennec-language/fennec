@@ -613,6 +613,8 @@ C is called only through the standard library and first-party kits, whose bindin
 
 Fennec has no sandbox for untrusted code: don't run code you don't trust, and don't add dependencies you don't understand. Capabilities limit what any dependency can do, with no `unsafe` and no C outside std and first-party kits, but that's no licence to run code nobody has read. The Den scans, lints and reports each kit's capabilities, and never runs a kit's code. No program loads and runs code at run time.
 
+A dependency gets only the capabilities its line in `kit.toml` grants, as `http = { ..., gets = ["Net"] }`. No `gets` means nothing, `gets = []` is an error, and no tool, fix or error help ever writes it. It's checked wherever one kit hands a value to another, and `kit.lock` records what each kit `holds`. Narrowing comes later, as `{ Fs = { only = "saves/" } }`. Locked 2026-11-12; not built yet. See the guide's Dependencies.
+
 ## Capabilities
 
 ```fennec

@@ -3,7 +3,7 @@ error NotANumber:
 
 def parse(text: str) -> int fails InvalidValue | NotANumber:
     if not text.isdigit(): fail NotANumber(text)
-    int(text)?
+    return int(text)?
 
 def main(stdout: Stdout):
     stdout.print(parse("12").bit_length())

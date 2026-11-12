@@ -6,7 +6,7 @@ def answer(connection: Connection) -> int fails NetError:
     for line in connection.lines()?:
         connection.write(line + "\n")?
         count += 1
-    count
+    return count
 
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:

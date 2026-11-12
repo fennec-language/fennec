@@ -4,7 +4,7 @@ struct Pool:
 
     def grow(ref self) -> int:
         self.items.append(0)
-        self.items.len()
+        return len(self.items)
 
     def fill(ref self):
         self.items.append(self.grow())

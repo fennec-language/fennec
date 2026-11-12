@@ -137,7 +137,7 @@ fn f32_and_u64_check_to_run() {
 fn literals_take_the_size_they_go_into() {
     let program = "
         def scaled(by: f32) -> f32:
-            by * 2.0
+            return by * 2.0
 
         def first(stdout: Stdout) -> u8:
             mut pixel: u8 = 255
@@ -147,7 +147,7 @@ fn literals_take_the_size_they_go_into() {
             stdout.print(scaled(0.5), 3 * low, low < 0, 0 == pixel, speed + 1.0, pixel >> 1)
             count = 3
             stdout.print(count + 1, 1.5 * 2.0)
-            7
+            return 7
 
         def too_big(stdout: Stdout) -> u16:
             over: u8 = 256
@@ -156,7 +156,7 @@ fn literals_take_the_size_they_go_into() {
             huge: f32 = 1e39
             whole: f32 = 1
             stdout.print(over, under, low, huge, whole)
-            70000
+            return 70000
     ";
     assert_eq!(
         problems(program),
@@ -205,7 +205,7 @@ fn sized_numbers_mix_only_with_their_own_size() {
             both = wide + count
             reals = double * real
             stdout.print(bits, half, both, reals, small < other, -small, -single)
-            whole
+            return whole
 
         def mixed(stdout: Stdout, small: i32, wide: i64, byte: u8, single: f32, double: float, count: int):
             stdout.print(small + wide, byte - small, single * double, count + small)
@@ -344,7 +344,7 @@ fn a_fixed_size_array_holds_exactly_its_size() {
             by_name: dict[str, array[float, 2]] = {'a': [1.0, 2.0]}
             picked: array[int, 2]? = [4, 5]
             stdout.print(maybe, lists, by_name, picked)
-            stdout.print(xs[2] + 1, xs.len(), 2 in xs, xs == array[int, 3](), list(xs), grid[1][0], bag.m[3] * 2.0)
+            stdout.print(xs[2] + 1, len(xs), 2 in xs, xs == array[int, 3](), list(xs), grid[1][0], bag.m[3] * 2.0)
     ";
     assert_eq!(problems(&program.replace('\'', "\"")), Vec::<String>::new());
 }
@@ -356,7 +356,7 @@ fn a_fixed_size_array_refuses_a_wrong_size_or_position() {
             name: str
 
         def takes(xs: list[int]) -> int:
-            xs.len()
+            return len(xs)
 
         def main(stdout: Stdout):
             a: array[int, 3] = [1, 2]
@@ -448,7 +448,7 @@ fn unpacking_needs_the_right_number_of_values() {
 #[test]
 fn builtins_give_back_the_right_types() {
     let cases = [
-        ("[1].len() + 1.0", "can't mix int and float in `+` @ [1].len() + 1.0"),
+        ("len([1]) + 1.0", "can't mix int and float in `+` @ len([1]) + 1.0"),
         ("str(1) + 1", "can't use `+` on a str and an int @ str(1) + 1"),
         ("int(1.5) + 1.0", "can't mix int and float in `+` @ int(1.5) + 1.0"),
         ("int('1') + 1", "this is the result of something that can fail @ int(\"1\") + 1"),
@@ -457,7 +457,7 @@ fn builtins_give_back_the_right_types() {
         ("round(1.5, 1) + 1", "can't mix int and float in `+` @ round(1.5, 1) + 1"),
         ("float(1) + 1", "can't mix int and float in `+` @ float(1) + 1"),
         ("sqrt(4.0) + 1", "can't mix int and float in `+` @ sqrt(4.0) + 1"),
-        ("(-1).abs() + 1.0", "can't mix int and float in `+` @ -1).abs() + 1.0"),
+        ("abs(-1) + 1.0", "can't mix int and float in `+` @ abs(-1) + 1.0"),
         ("sum([1.0]) + 1", "can't mix int and float in `+` @ sum([1.0]) + 1"),
         ("max([1]) + 1.0", "can't mix int and float in `+` @ max([1]) + 1.0"),
         ("min(1, 2) + 1.0", "can't mix int and float in `+` @ min(1, 2) + 1.0"),
@@ -541,10 +541,10 @@ fn only_text_written_in_the_source_is_a_literal_str() {
             parts: list[LiteralStr]
 
         def query(sql: LiteralStr) -> int:
-            sql.len()
+            return len(sql)
 
         def named() -> LiteralStr:
-            'select ' + 'name'
+            return 'select ' + 'name'
 
         def main(stdout: Stdout):
             name = 'ash'
@@ -582,7 +582,7 @@ fn a_template_string_checks_its_values_where_it_goes() {
         type SqlValue = int | str
 
         def count(query: Template[SqlValue]) -> int:
-            query.values.len()
+            return len(query.values)
 
         def main(stdout: Stdout):
             name = 'ash'
@@ -606,7 +606,7 @@ fn a_template_string_checks_its_values_where_it_goes() {
 
 #[test]
 fn a_types_own_equality_has_to_give_back_a_bool() {
-    let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> int:\n        1\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) == Pair(a=2))\n";
+    let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> int:\n        return 1\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) == Pair(a=2))\n";
     assert_eq!(
         problems(text),
         ["`Pair`'s `def ==` gives back an int, so `==` can't use it @ Pair(a=1) == Pair(a=2)"]
@@ -615,7 +615,7 @@ fn a_types_own_equality_has_to_give_back_a_bool() {
 
 #[test]
 fn a_types_own_equality_takes_its_own_type() {
-    let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> bool:\n        True\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) != 2)\n";
+    let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> bool:\n        return True\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) != 2)\n";
     assert!(problems(text).iter().any(|problem| problem.ends_with("@ 2")), "{:?}", problems(text));
 }
 

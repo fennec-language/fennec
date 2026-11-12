@@ -27,16 +27,16 @@ export struct CliArgs:
 
     ## Whether a flag was given.
     def flag(self, name: str) -> bool:
-        name in self.flags
+        return name in self.flags
 
     ## An option's or positional argument's value, its default when it wasn't given, or None
     ## when it has neither.
     def value(self, name: str) -> str?:
-        self.values.get(name)
+        return self.values.get(name)
 
     ## What the last positional argument collected, when it takes many.
     def many(self) -> list[str]:
-        self.rest
+        return self.rest
 
 ## What a program takes on its command line, built up one argument at a time, then used to
 ## read `args` and to write the help:
@@ -53,12 +53,12 @@ export struct Cli:
 
     ## A flag, which is either given or not.
     def flag(self, name: str, short = "", help = "") -> Cli:
-        self._with(CliArg(name=name, short=short, help=help))
+        return self._with(CliArg(name=name, short=short, help=help))
 
     ## An option, which takes a value. With no default and not required, it has no value
     ## unless it's given.
     def option(self, name: str, short = "", help = "", default = "", required = False) -> Cli:
-        self._with(
+        return self._with(
             CliArg(
                 name=name,
                 short=short,
@@ -71,7 +71,7 @@ export struct Cli:
 
     ## A positional argument, given in order. `many` makes it collect all the rest.
     def positional(self, name: str, help = "", required = True, many = False) -> Cli:
-        self._with(
+        return self._with(
             CliArg(
                 name=name,
                 help=help,
@@ -89,7 +89,7 @@ export struct Cli:
         mut positionals = []
         mut at = 0
         mut only_positional = False
-        while at < args.len():
+        while at < len(args):
             arg = args[at]
             at += 1
             if only_positional or arg == "-" or not arg.startswith("-"):
@@ -112,7 +112,7 @@ export struct Cli:
                     given.flags.add(name)
                 else:
                     if value is None:
-                        if at >= args.len(): fail CliError(message=f"`--{name}` needs a value")
+                        if at >= len(args): fail CliError(message=f"`--{name}` needs a value")
                         value = args[at]
                         at += 1
                     given.values[name] = value
@@ -127,7 +127,7 @@ export struct Cli:
         for taken in self.takes:
             if taken.default != "" and taken.name not in given.values:
                 given.values[taken.name] = taken.default
-        given
+        return given
 
     ## What the program takes, for `--help`.
     def help(self) -> str:
@@ -145,18 +145,18 @@ export struct Cli:
         ]
         named.append(("-h, --help", "show this help"))
         # Both tables line up with each other.
-        width = max([shown.len() for shown, _ in positionals + named])
-        if positionals.len() > 0:
+        width = max([len(shown) for shown, _ in positionals + named])
+        if len(positionals) > 0:
             lines.extend(["", "arguments:"])
             lines.extend(Cli._table(positionals, width))
         lines.extend(["", "options:"])
         lines.extend(Cli._table(named, width))
-        "\n".join(lines) + "\n"
+        return "\n".join(lines) + "\n"
 
     ## This `Cli` with one more argument. Two with the same name is a mistake in the program.
     def _with(self, taken: CliArg) -> Cli:
         assert all(each.name != taken.name for each in self.takes)
-        copy(self, takes=self.takes + [taken])
+        return copy(self, takes=self.takes + [taken])
 
     def _named(self, name: str) -> CliArg:
         for taken in self.takes:
@@ -180,13 +180,13 @@ export struct Cli:
             rest = letters[spot + 1:]
             if rest != "":
                 given.values[found.name] = rest
-            elif next < args.len():
+            elif next < len(args):
                 given.values[found.name] = args[next]
                 next += 1
             else:
                 fail CliError(message=f"`-{letter}` needs a value")
             return next
-        next
+        return next
 
     ## Gives each positional argument its value, in order.
     def _place(self, positionals: list[str], ref given: CliArgs):
@@ -196,10 +196,10 @@ export struct Cli:
             if taken.many:
                 given.rest = left
                 left = []
-            elif left.len() > 0:
+            elif len(left) > 0:
                 given.values[taken.name] = left[0]
                 left = left[1:]
-        if left.len() > 0: fail CliError(message=f"{quoted_input(left[0])} wasn't expected")
+        if len(left) > 0: fail CliError(message=f"{quoted_input(left[0])} wasn't expected")
 
     def _usage(self) -> str:
         mut usage = ""
@@ -209,13 +209,13 @@ export struct Cli:
             if not taken.positional: continue
             shown = f"{taken.name}..." if taken.many else taken.name
             usage += f" <{shown}>" if taken.required else f" [{shown}]"
-        usage
+        return usage
 
     def _shown(taken: CliArg) -> str:
         if taken.positional: return taken.name
         long = f"--{taken.name}" + (" <value>" if taken.takes_value else "")
         if taken.short == "": return f"    {long}"
-        f"-{taken.short}, {long}"
+        return f"-{taken.short}, {long}"
 
     def _explained(taken: CliArg) -> str:
         mut parts = [] if taken.help == "" else [taken.help]
@@ -223,11 +223,11 @@ export struct Cli:
             parts.append(f"(default: {taken.default})")
         elif taken.required and not taken.positional:
             parts.append("(required)")
-        " ".join(parts)
+        return " ".join(parts)
 
     ## Rows of two columns, the second starting past `width`.
     def _table(rows: list[(str, str)], width: int) -> list[str]:
-        [
-            ("  " + shown + " " * (width - shown.len() + 2) + explained).rstrip() for shown,
+        return [
+            ("  " + shown + " " * (width - len(shown) + 2) + explained).rstrip() for shown,
             explained in rows
         ]

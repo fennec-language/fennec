@@ -7,32 +7,32 @@ error Broken:
 
 def load(path: str) -> int fails Missing:
     if path == "": fail Missing(path="(none)")
-    path.len()
+    return len(path)
 
 def parse(n: int) -> int fails Broken:
     if n > 3: fail Broken(code=n, why="too long")
-    n
+    return n
 
 def both(path: str) -> int fails Missing | Broken:
-    parse(load(path)?)?
+    return parse(load(path)?)?
 
 def noted(path: str) -> int fails Missing | Broken:
-    n = both(path) else as problem:
+    n = both(path) except problem:
         mut kept = problem
         kept.add_note(f"while loading {path}")
         kept.add_note("second line\nand a third")
         fail kept
-    n
+    return n
 
 ## Prints what `noted` gave, or the notes on what it failed with and the failure.
 def shown(stdout: Stdout, path: str):
-    n = noted(path) else as problem:
+    n = noted(path) except problem:
         stdout.print(problem.notes(), problem)
         return
     stdout.print(n)
 
 def main(stdout: Stdout) fails Missing | Broken:
-    _ = load("") else as missing:
+    _ = load("") except missing:
         mut m = missing
         stdout.print(m.notes(), m)
         m.add_note("first")

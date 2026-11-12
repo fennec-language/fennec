@@ -176,7 +176,7 @@ pub fn write_kit_file(path: &Path, text: &str) -> Result<(), String> {
 /// The user this process runs as: the owner of a file it makes, since the standard library has no
 /// call that says so. Found once.
 #[cfg(unix)]
-fn own_uid() -> Option<u32> {
+pub(crate) fn own_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt as _;
     static OWN: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *OWN.get_or_init(|| {

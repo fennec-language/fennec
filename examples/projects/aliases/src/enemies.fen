@@ -9,11 +9,11 @@ struct Enemy:
     kind: Kind
 
 def spawn(name: str, kind: Kind) -> Enemy:
-    Enemy(name, kind)
+    return Enemy(name, kind)
 
 def describe(enemy: Enemy) -> str:
     match enemy.kind:
         case .Walker:
-            enemy.name + " walks"
+            return enemy.name + " walks"
         case .Flyer(height):
-            f"{enemy.name} flies at {height}"
+            return f"{enemy.name} flies at {height}"

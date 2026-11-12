@@ -25,9 +25,9 @@ struct Level:
     scores: SortedMap[str, int]
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "loaded"
+    return "loaded"
 
 test "cases are their names, or objects of their fields":
     orders = [Order.Hold, Order.Move(to=(2, 3)), Order.Guard(around=(1, 1), range=4)]
@@ -50,7 +50,7 @@ test "a whole level saves and loads with one call":
     tiles[(2, 1)] = Tile.Door(locked=False)
     mut scores = SortedMap[str, int]()
     for name in ["vex", "ash", "kit"]:
-        scores[name] = name.len()
+        scores[name] = len(name)
     level = Level(
         tiles=tiles,
         rooms=Packed.of([[0, 1], [], [5]]),
@@ -87,5 +87,5 @@ def main(stdout: Stdout):
     tiles = Grid.of([[Tile.Floor, Tile.Wall], [Tile.Door(locked=True), Tile.Floor]])
     text = json.dumps(tiles)
     stdout.print(text)
-    loaded = json.loads[Grid[Tile]](text) else tiles
+    loaded = json.loads[Grid[Tile]](text) except ParseError(): tiles
     stdout.print(loaded[(0, 1)], loaded == tiles)

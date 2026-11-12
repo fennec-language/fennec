@@ -13,21 +13,21 @@ struct Node:
 
 def word(n: int) -> str fails TooBig:
     if n > 2: fail TooBig(limit=2)
-    f"w{n}"
+    return f"w{n}"
 
 def words(n: int) -> list[str] fails TooBig:
     spelled = [word(i)? for i in range(n)]
-    spelled
+    return spelled
 
 def node(n: int) -> Node fails TooBig:
     if n > 3: fail TooBig(limit=3)
     if n == 0: return Node(value=0, next=None, names=[])
     inner = node(n - 1)?
-    Node(value=n, next=inner, names=words(n)?)
+    return Node(value=n, next=inner, names=words(n)?)
 
 def wrapped(n: int) -> str fails Wrapped:
     text = word(n)? from Wrapped(why="word failed")
-    text + "!"
+    return text + "!"
 
 struct Maker:
     made = 0
@@ -35,38 +35,44 @@ struct Maker:
     def make(ref self, n: int) -> str fails TooBig:
         self.made += 1
         if n > 2: fail TooBig(limit=n)
-        word(n)?
+        return word(n)?
 
     def twice(ref self, n: int) -> list[str] fails TooBig:
-        [self.make(n)?, self.make(n + 1)?]
+        return [self.make(n)?, self.make(n + 1)?]
 
 ## "ok" and what a call gave, or "err" and what it failed with.
 def shown[E](run: () -> str fails E) -> str:
-    found = run() else as why:
+    found = run() except why:
         return f"err {why}"
-    f"ok {found}"
+    return f"ok {found}"
 
 def main(stdout: Stdout):
-    stdout.print(word(1) else "none", word(9) else "none")
-    stdout.print(words(2) else [], words(9) else ["failed"])
-    stdout.print(
-        (node(2) else Node(value=-1, next=None, names=[])).value,
-        (node(9) else Node(value=-1, next=None, names=[])).value,
-    )
-    stdout.print(wrapped(1) else "failed", wrapped(9) else "failed")
+    word_value = word(1) except TooBig(): "none"
+    word_value2 = word(9) except TooBig(): "none"
+    stdout.print(word_value, word_value2)
+    words_value = words(2) except TooBig(): []
+    words_value2 = words(9) except TooBig(): ["failed"]
+    stdout.print(words_value, words_value2)
+    node_value = node(2) except TooBig(): Node(value=-1, next=None, names=[])
+    node_value2 = node(9) except TooBig(): Node(value=-1, next=None, names=[])
+    stdout.print((node_value).value, (node_value2).value)
+    wrapped_value = wrapped(1) except Wrapped(): "failed"
+    wrapped_value2 = wrapped(9) except Wrapped(): "failed"
+    stdout.print(wrapped_value, wrapped_value2)
 
     stdout.print(shown(() => word(1)?))
     stdout.print(shown(() => word(5)?))
     stdout.print(shown(() => wrapped(5)?))
 
-    stdout.print(words(1) else [])
-    _ = words(9) else as why:
+    words_value3 = words(1) except TooBig(): []
+    stdout.print(words_value3)
+    _ = words(9) except why:
         stdout.print(why)
         []
 
     mut maker = Maker()
     for n in [1, 2, 5]:
-        made = maker.twice(n) else as why:
+        made = maker.twice(n) except why:
             stdout.print(why, maker.made)
             continue
         stdout.print(made, maker.made)

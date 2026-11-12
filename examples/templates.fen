@@ -8,9 +8,9 @@ def placeholders(query: Template[SqlValue]) -> str:
     mut sent = ""
     for at, text in enumerate(query.strings):
         sent += text
-        if at < query.values.len():
+        if at < len(query.values):
             sent += "?"
-    sent
+    return sent
 
 ## The values in order, each with its type.
 def bound(query: Template[SqlValue]) -> list[str]:
@@ -20,12 +20,12 @@ def bound(query: Template[SqlValue]) -> list[str]:
             shown.append(f"int {value}")
         else:
             shown.append(f"str {value}")
-    shown
+    return shown
 
 ## A column to sort by: input picks between texts written here, so the result is still a
 ## `LiteralStr`.
 def order_column(by_score: bool) -> LiteralStr:
-    "score" if by_score else "name"
+    return "score" if by_score else "name"
 
 def main(stdout: Stdout):
     # A name an attacker chose is a value, never part of the query's text.

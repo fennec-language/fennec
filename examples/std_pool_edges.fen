@@ -9,7 +9,7 @@ struct Link:
     resets = True
 
     def reset(self) -> bool:
-        self.resets
+        return self.resets
 
     def close(self):
         pass
@@ -19,7 +19,7 @@ error Refused:
     why: str
 
     def message(self) -> str:
-        self.why
+        return self.why
 
 ## How many links have been opened, and the most that can be.
 struct Tally:
@@ -31,7 +31,7 @@ def opened(tally: shared Tally, fragile: bool) -> Link fails Refused:
     lock tally as ref counts:
         if counts.opened == counts.most: fail Refused(why="no more links")
         counts.opened += 1
-        Link(number=counts.opened, resets=not fragile)
+        return Link(number=counts.opened, resets=not fragile)
 
 ## Lets `most` links be opened in all.
 def allow(tally: shared Tally, most: int):
@@ -41,7 +41,7 @@ def allow(tally: shared Tally, most: int):
 ## The number of links opened so far.
 def opens(tally: shared Tally) -> int:
     lock tally as counts:
-        counts.opened
+        return counts.opened
 
 ## A pool of `size` links, never used.
 def sized(size: int) fails PoolError | Crashed:
@@ -53,7 +53,7 @@ def sized(size: int) fails PoolError | Crashed:
 def borrowed_number(links: Pool[Link], wait: Duration) -> int fails PoolError:
     lent = links.borrowed(wait=wait)?
     lent.give_back(True)
-    lent.value.number
+    return lent.value.number
 
 test "a pool needs at least one value"():
     assert sized(0) fails PoolError.Open(reason="a pool needs at least one value, not 0")
@@ -103,9 +103,8 @@ test "a value that fails to open later fails its borrower, and opens for the nex
             assert borrowed_number(links, wait=5s)? == 2
 
 def main(stdout: Stdout):
-    sized(0) else as why:
-        match why:
-            case PoolError.Open(reason=reason):
-                stdout.print(reason)
-            case _:
-                stdout.print("it failed another way")
+    sized(0) except why:
+        case PoolError.Open(reason=reason):
+            stdout.print(reason)
+        case Crashed() | .Timeout() | .Closed:
+            stdout.print("it failed another way")

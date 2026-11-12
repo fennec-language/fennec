@@ -756,6 +756,41 @@ mod tests {
         finish();
     }
 
+    /// A list of strings with no items, and a dict of strings with no entries used, hold nothing,
+    /// so freeing them walks nothing: one made empty, one emptied after holding strings in blocks
+    /// of their own, and a dict whose only key was taken out again all free what they held once,
+    /// and leave nothing behind.
+    #[test]
+    fn empty_lists_and_dicts_of_strings_free_whole_without_a_walk() {
+        use super::super::dicts;
+        begin();
+        let before = live();
+        heap::free(lists::new(0, 0));
+        let emptied = lists::new(0, 2);
+        with(|state| {
+            for at in 0..2 {
+                let header = super::header(state, "a string too long to be held in a header");
+                let block = state.heap.block_mut(emptied.cast_unsigned()).unwrap();
+                let start = lists::LIST_HEADER_WORDS + 3 * at;
+                block.get_mut(start..start + 3).unwrap().copy_from_slice(&header);
+            }
+        });
+        assert_eq!(live(), before + 3);
+        let emptied = lists::truncate(emptied, 0);
+        assert_eq!(live(), before + 1, "the strings went as it was emptied");
+        heap::free(emptied);
+        assert_eq!(live(), before);
+        let shape = i64::try_from(dicts::shape(0, dicts::Word::Str, dicts::Word::Int).unwrap()).unwrap();
+        heap::free(dicts::new(shape, 0));
+        let long = header("a key much longer than any header");
+        let mut dict = dicts::set_header(dicts::new(shape, 0), long[0], long[1], long[2], 1);
+        dict = dicts::pop_header(dict, long[0], long[1], long[2], 0, 0);
+        assert_eq!(dicts::popped(), 1);
+        heap::free(dict);
+        assert_eq!(live(), before);
+        finish();
+    }
+
     #[test]
     fn a_dict_of_strings_finds_and_sets_a_key_given_as_its_header_without_making_a_block() {
         use super::super::dicts;

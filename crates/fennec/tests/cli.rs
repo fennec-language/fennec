@@ -2673,6 +2673,72 @@ fn a_kit_from_git_naming_a_file_repository_is_refused() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A pinned kit that uses a capability it wasn't given is broken, or changed: the error says so,
+/// and offers no fix. `fennec fix` once handed such a kit the program's `Fs`, editing the kit in the
+/// store and `main` to pass it, and left the store unlike its pin. Now it changes neither.
+#[test]
+fn no_tool_changes_a_kit_this_one_depends_on() {
+    let dir = scratch("fix-dependency").unwrap();
+    let repository = dir.join("helper");
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(
+        repository.join("kit.toml"),
+        "name = \"helper\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
+    )
+    .unwrap();
+    let library = "export def tidy(text: str) -> str:\n    _ = fs\n    return text.strip()\n";
+    std::fs::write(repository.join("src/lib.fen"), library).unwrap();
+    let commit = committed_to_git(&repository).unwrap();
+    let kit = dir.join("app");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nhelper = {{ git = \"file:///{}\", commit = \"{commit}\" }}\n",
+            repository.display().to_string().replace('\\', "/").trim_start_matches('/')
+        ),
+    )
+    .unwrap();
+    let main = "from helper import tidy\n\ndef main(stdout: Stdout, fs: Fs):\n    stdout.print(tidy(\"  hello  \"))\n    return\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .arg(command)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap()
+    };
+    // It pins the kit, and then says the program doesn't check, as it doesn't.
+    let updated = fennec("update");
+    assert!(kit.join("kit.lock").is_file(), "{}", text(&updated.stderr));
+    assert!(
+        text(&updated.stderr).contains("this is in a kit this one depends on"),
+        "{}",
+        text(&updated.stderr)
+    );
+    let checked = fennec("check");
+    let said = text(&checked.stderr);
+    assert!(!checked.status.success());
+    assert!(
+        said.contains("`fs` doesn't exist")
+            && said.contains(
+                "this is in a kit this one depends on, which no tool changes: the kit changed or is broken"
+            ),
+        "{said}"
+    );
+    assert!(!said.contains("parameter"), "the error still offers to hand the kit a capability: {said}");
+    let fixed = fennec("fix");
+    assert!(!fixed.status.success());
+    assert!(!text(&fixed.stdout).contains("fixed"), "{}", text(&fixed.stdout));
+    let stored: Vec<_> = std::fs::read_dir(dir.join("home/kits")).unwrap().flatten().collect();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(std::fs::read_to_string(stored[0].path().join("src/lib.fen")).unwrap(), library);
+    assert_eq!(std::fs::read_to_string(kit.join("src/main.fen")).unwrap(), main);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
 #[test]
 fn fennec_update_pins_a_kit_from_git() {

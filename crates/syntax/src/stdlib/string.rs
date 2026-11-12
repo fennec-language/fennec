@@ -18,6 +18,9 @@ pub(crate) const MODULE: Module = Module {
         "OCT_DIGITS",
         "PUNCTUATION",
         "WHITESPACE",
+        // How std's other modules quote text from outside in an error.
+        "quoted_input",
+        "cut_input",
     ],
     source: include_str!("string.fen"),
     gives: &[],

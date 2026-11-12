@@ -22,6 +22,13 @@ extend dict[K: Hashable & Serializable, V: Serializable]:
     def serialize(self, ref out: Serializer):
         out.map(self.items())
 
+## A key that came twice as a message names it: in backticks, cut to its first 20 characters and
+## `…` past 40, since a key from outside can be as long as it likes.
+def twice_key[K](key: K) -> str:
+    text = f"{key}"
+    if text.len() <= 40: return f"`{text}`"
+    return f"`{text[0:20]}…`"
+
 extend dict[K: Hashable & Deserializable, V: Deserializable]:
     ## A key that comes twice fails, naming it, rather than the last one winning: two readers that
     ## disagree on which wins would let a value past a check that read the other.
@@ -34,11 +41,11 @@ extend dict[K: Hashable & Deserializable, V: Deserializable]:
                 key = src.value[K]()?
                 before = found.len()
                 found[key] = src.value[V]()?
-                if found.len() == before: fail src.here(f"has `{key}` twice")
+                if found.len() == before: fail src.here(f"has {twice_key(key)} twice")
             src.end_map()
             return found
         for key, value in src.map[K, V]()?:
             before = found.len()
             found[key] = value
-            if found.len() == before: fail src.here(f"has `{key}` twice")
+            if found.len() == before: fail src.here(f"has {twice_key(key)} twice")
         return found

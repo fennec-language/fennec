@@ -587,7 +587,7 @@ impl Writer<'_> {
             23..=25 => self.copies(body, which),
             26 if self.choice(3) == 0 => self.leaves(body),
             26 if self.choice(4) == 0 => self.turns(body),
-            26 if PARALLEL_STREAMS && self.choice(4) == 0 => self.streams(body),
+            26 if PARALLEL_STREAMS && !self.threadless && self.choice(4) == 0 => self.streams(body),
             26 => self.change_counts(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),

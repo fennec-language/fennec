@@ -272,8 +272,7 @@ impl Launcher {
         }
         let hash = self.ensure(&version, pin.as_ref().map(|(_, hash)| *hash))?;
         if pin.is_none() {
-            std::fs::write(root.join("kit.lock"), kit::with_pin(&lock, &version, hash))
-                .map_err(|err| format!("couldn't write kit.lock: {err}"))?;
+            fennec_dist::write_kit_file(&root.join("kit.lock"), &kit::with_pin(&lock, &version, hash))?;
         }
         Ok(self.command(&version))
     }
@@ -396,8 +395,7 @@ impl Launcher {
         if latest {
             let newest = self.latest()?;
             if newest != version {
-                std::fs::write(root.join("kit.toml"), kit::asking_for(&manifest, &newest))
-                    .map_err(|err| format!("couldn't write kit.toml: {err}"))?;
+                fennec_dist::write_kit_file(&root.join("kit.toml"), &kit::asking_for(&manifest, &newest))?;
                 version = newest;
             }
         }
@@ -405,8 +403,7 @@ impl Launcher {
         if pin.as_ref() == Some(&(version.clone(), hash)) {
             return Ok(format!("kit.lock pins Fennec {version} already\n"));
         }
-        std::fs::write(root.join("kit.lock"), kit::with_pin(&lock, &version, hash))
-            .map_err(|err| format!("couldn't write kit.lock: {err}"))?;
+        fennec_dist::write_kit_file(&root.join("kit.lock"), &kit::with_pin(&lock, &version, hash))?;
         Ok(match pin {
             Some((before, _)) if before != version => format!("kit.lock: Fennec {before} → {version}\n"),
             Some(_) => format!("kit.lock: Fennec {version}, as its release is now\n"),

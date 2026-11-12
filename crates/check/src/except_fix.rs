@@ -20,9 +20,37 @@ use crate::types::Type;
 /// The fixes that move a program to the forms of 2026-11-11, for `fennec fix --migrate`.
 #[must_use]
 pub fn migration_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
+    rewrites(&[module], sources, Some(module), false)
+}
+
+/// The same for the standard library's own code, checked with `module`. Its spans are past
+/// `Span::PRELUDE`, each file in its own range, which `fennec_syntax::prelude_file_at` names.
+#[must_use]
+pub fn std_migration_fixes(module: &Module) -> Vec<Diagnostic> {
+    let library: Vec<&Module> = fennec_syntax::prelude_modules().unwrap_or_default().iter().collect();
+    rewrites(&library, &Sources::new(), Some(module), true)
+}
+
+/// The rewrites that need no types, for code that doesn't check on its own, like an example
+/// of a mistake or a piece of a program in a test: `return`, `lend x except:`, `except why:`
+/// for `else as why:`, and `len(x)` and `abs(x)`. A plain `else` on a failure needs its types,
+/// so it's left.
+#[must_use]
+pub fn syntax_migration_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
+    rewrites(&[module], sources, None, false)
+}
+
+/// The rewrites in `modules`, those of the standard library's code when `library`, typed by
+/// checking `typed` when there is one.
+fn rewrites(
+    modules: &[&Module],
+    sources: &Sources,
+    typed: Option<&Module>,
+    library: bool,
+) -> Vec<Diagnostic> {
     let mut found = Vec::new();
     let mut defs = Vec::new();
-    for item in &module.items {
+    for item in modules.iter().flat_map(|module| &module.items) {
         match item {
             Item::Function(def) => defs.push(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => defs.extend(&def.methods),
@@ -34,13 +62,13 @@ pub fn migration_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
     for def in defs {
         nested(def, &mut all);
     }
-    for def in all.iter().filter(|def| !def.span.in_prelude()) {
+    for def in all.iter().filter(|def| def.span.in_prelude() == library) {
         found.extend(def_return(def));
         let mut stmts = Vec::new();
         statements(&def.body, &mut stmts);
         found.extend(stmts.iter().filter_map(|stmt| lend_except(stmt, sources)));
     }
-    found.extend(failure_fixes(module, sources));
+    found.extend(failure_fixes(modules, sources, typed, library));
     found
 }
 
@@ -154,27 +182,121 @@ fn lend_except(stmt: &Stmt, sources: &Sources) -> Option<Diagnostic> {
     Some(Diagnostic::new("a `with` source's cleanup is `lend x except:`", word).with_fix(word, "except"))
 }
 
-/// Each `else` on a call that can fail, written as `except`.
-fn failure_fixes(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
-    let Ok(checked) = crate::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs().map(|(span, ty)| ((span.start, span.end), ty)))
-        .collect();
-    let whole = whole_values(module);
-    let mut found = Vec::new();
-    fennec_syntax::read::exprs(module, &mut |expr| {
-        let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
-        if expr.span.in_prelude() || !whole.contains(&(expr.span.start, expr.span.end)) {
-            return;
-        }
-        let Some(Type::Result(_, error)) = types.get(&(value.span.start, value.span.end)) else { return };
-        if let Some(fix) = failure_fix((value, default), error, &checked.signatures, sources) {
-            found.push(fix);
-        }
+/// Each `else` on a call that can fail, written as `except`, and `x.len()` as `len(x)`. With
+/// no types, only `else as why:`, which only a failure takes.
+fn failure_fixes(
+    modules: &[&Module],
+    sources: &Sources,
+    typed: Option<&Module>,
+    library: bool,
+) -> Vec<Diagnostic> {
+    let checked = match typed.map(crate::check_typed) {
+        Some(Ok(checked)) => Some(checked),
+        Some(Err(_)) => return Vec::new(),
+        None => None,
+    };
+    let typed_exprs: Option<HashMap<(u32, u32), &Type>> = checked.as_ref().map(|checked| {
+        checked
+            .types
+            .iter()
+            .flat_map(|(_, body)| body.exprs().map(|(span, ty)| ((span.start, span.end), ty)))
+            .collect()
     });
+    let whole: HashSet<(u32, u32)> = modules.iter().flat_map(|module| whole_values(module)).collect();
+    let mut found = Vec::new();
+    for module in modules {
+        fennec_syntax::read::exprs(module, &mut |expr| {
+            if expr.span.in_prelude() != library {
+                return;
+            }
+            if let Some(fix) = builtin_call(expr, typed_exprs.as_ref(), sources) {
+                found.push(fix);
+            }
+            let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
+            if !whole.contains(&(expr.span.start, expr.span.end)) {
+                return;
+            }
+            let failing = match (&typed_exprs, &checked) {
+                (Some(typed_exprs), Some(checked)) => {
+                    match typed_exprs.get(&(value.span.start, value.span.end)) {
+                        Some(Type::Result(_, error)) => Some((error.as_ref(), &checked.signatures)),
+                        _ => return,
+                    }
+                }
+                // Only a failure is named with `else as`.
+                _ if matches!(default.else_block(), Some((Some(_), _))) => None,
+                _ => return,
+            };
+            if let Some(fix) = failure_fix((value, default), failing, sources) {
+                found.push(fix);
+            }
+        });
+    }
     found
+}
+
+/// `x.len()` or `x.abs()` on a value, written as the builtin, `len(x)` or `abs(x)`. One holding
+/// another, like `x.len().abs()`, is left for the next round, so the two never write over each
+/// other.
+fn builtin_call(
+    expr: &Expr,
+    types: Option<&HashMap<(u32, u32), &Type>>,
+    sources: &Sources,
+) -> Option<Diagnostic> {
+    let ExprKind::Call { callee, args } = &expr.kind else { return None };
+    let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+    if !args.is_empty() || !matches!(name.as_str(), "len" | "abs") {
+        return None;
+    }
+    // On a value: with no types, anything but a type's or module's name, like `Grid.len()`.
+    let value = match types {
+        Some(types) => {
+            !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
+        }
+        None => !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase)),
+    };
+    if !value {
+        return None;
+    }
+    let mut holds_one = false;
+    fennec_syntax::read::in_expr(object, &mut |inner| {
+        holds_one |= matches!(&inner.kind, ExprKind::Call { callee, args } if args.is_empty()
+            && matches!(&callee.kind, ExprKind::Attr { name, .. } if matches!(name.as_str(), "len" | "abs")));
+    });
+    if holds_one {
+        return None;
+    }
+    // The receiver as written, with the parentheses a builtin's own make needless.
+    let text = Text::of(sources, expr.span)?;
+    let written = text.get(Span { start: expr.span.start, end: callee.span.end })?;
+    let receiver = written.strip_suffix(name.as_str())?.trim_end().strip_suffix('.')?.trim_end();
+    // A receiver in parentheses, like `(a + b).len()`, is written from inside them: its `(`
+    // is before where the call starts, and its `)` is the receiver's last, which no `(` opens.
+    let mut at = expr.span;
+    let mut receiver = one_group(receiver).unwrap_or(receiver);
+    if receiver.matches(')').count() > receiver.matches('(').count() {
+        let before = text.get(Span { start: text.base, end: at.start })?.trim_end();
+        let opened = before.strip_suffix('(')?;
+        at.start = text.base + u32::try_from(opened.len()).ok()?;
+        receiver = receiver.strip_suffix(')')?.trim_end();
+    }
+    let message = format!("`{name}` is a builtin: write `{name}(x)`");
+    Some(Diagnostic::new(message, at).with_fix(at, format!("{name}({receiver})")))
+}
+
+/// What's inside `text` when it's all one pair of parentheses, as `(a + b)` is and
+/// `(a) + (b)` isn't.
+fn one_group(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix('(')?.strip_suffix(')')?;
+    let mut depth = 0_usize;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(inner)
 }
 
 /// The `else`s that are all of what a statement is written with, where `except` may stand: an
@@ -219,7 +341,10 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
     }
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Expr(value) | StmtKind::Return(Some(value)) | StmtKind::Assign { value, .. } => {
+            // Not `x += f() else d`: `except` can't stand there, so that's left to be written by hand.
+            StmtKind::Expr(value)
+            | StmtKind::Return(Some(value))
+            | StmtKind::Assign { value, op: None, .. } => {
                 note(value);
             }
             _ => {}
@@ -231,8 +356,7 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
 /// `value else ...` on a call that can fail with `error`, written with `except`.
 fn failure_fix(
     (value, default): (&Expr, &Expr),
-    error: &Type,
-    signatures: &crate::Signatures,
+    failing: Option<(&Type, &crate::Signatures)>,
     sources: &Sources,
 ) -> Option<Diagnostic> {
     let text = Text::of(sources, value.span)?;
@@ -243,7 +367,7 @@ fn failure_fix(
     }
     // A block starts at its `:`, and a way out on the line, as `else return`, at its word.
     let block = text.get(default.span)?.starts_with(':');
-    let all = failures(error, signatures).unwrap_or_default();
+    let all = failing.and_then(|(error, signatures)| failures(error, signatures)).unwrap_or_default();
     let mut diagnostic = Diagnostic::new("a failure is handled with `except` now", between);
     match default.else_block() {
         // A `match why:` that's all of the block is its arms, which needn't read `why`.
@@ -311,6 +435,19 @@ fn arms_under(
                 .collect();
             if !left.is_empty() {
                 written = written.replacen("case _", &format!("case {}", left.join(" | ")), 1);
+            }
+        }
+        // `case error:` names the failure again, which `why` names already: it's `case _:`, with
+        // `error` given `why` first.
+        if let fennec_syntax::Pattern::Bind(other) = &arm.pattern
+            && arm.guard.is_none()
+            && let Some(first) = arm.body.first()
+        {
+            let line = text.get(Span { start: text.base, end: first.span.start })?;
+            let body_indent = line.rsplit('\n').next().unwrap_or_default();
+            let named = format!("case {other}:");
+            if written.starts_with(&named) {
+                written = written.replacen(&named, &format!("case _:\n{body_indent}{other} = {name}"), 1);
             }
         }
         variant_names(&arm.pattern, &mut cased);
@@ -406,7 +543,7 @@ struct Text<'a> {
 
 impl<'a> Text<'a> {
     fn of(sources: &'a Sources, span: Span) -> Option<Self> {
-        let (_, text, base) = sources.file_at(span)?;
+        let (_, text, base) = sources.file_at(span).or_else(|| fennec_syntax::prelude_file_at(span))?;
         Some(Text { text, base })
     }
 
@@ -444,6 +581,24 @@ mod tests {
         );
     }
 
+    /// `x.len()` and `x.abs()` are written as the builtins, without the parentheses a receiver
+    /// needed, one at a time where one holds another, and a type's own `def len` too.
+    #[test]
+    fn a_len_or_abs_method_is_written_as_the_builtin() {
+        let source = "struct Bag:\n    items: list[int]\n\n    def len(self) -> int:\n        return len(self.items)\n\n\
+            def main(stdout: Stdout):\n    numbers = [1, -2]\n    bag = Bag(items=numbers)\n    \
+            stdout.print(numbers.len(), (numbers + [3]).len(), bag.len(), (-2).abs(), numbers.len().abs())\n";
+        let once = migrated(source);
+        assert_eq!(
+            once,
+            source.replace(
+                "numbers.len(), (numbers + [3]).len(), bag.len(), (-2).abs(), numbers.len().abs()",
+                "len(numbers), len(numbers + [3]), len(bag), abs(-2), len(numbers).abs()"
+            )
+        );
+        assert_eq!(migrated(&once), once.replace("len(numbers).abs()", "abs(len(numbers))"));
+    }
+
     /// `return` goes where the line starts, before a parenthesis, and into each case of a
     /// `match` and each branch of an `if` that ends a def, where they don't leave already.
     #[test]
@@ -476,6 +631,22 @@ mod tests {
             def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
         let expected = "    got = load(n) except why:\n        case .Long(size):\n            return size\n        \
             case .Empty | .Odd:\n            stdout.print(\"short\")\n            0\n    return got\n";
+        let migrated = migrated(source);
+        assert!(migrated.contains(expected), "{migrated}");
+    }
+
+    /// A case that names the failure again, `case error:`, becomes `case _:` with `error`
+    /// given `why`, and `x += f() else d`, where `except` can't stand, is left as it is.
+    #[test]
+    fn a_case_naming_the_failure_again_reads_why() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout) -> int:\n    mut total = 0\n    total += load(n) else 1\n    \
+            got = load(n) else as why:\n        match why:\n            case .Long(size):\n                return size\n            \
+            case problem:\n                stdout.print(problem)\n                return -1\n    return got + total\n\n\
+            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
+        let expected = "    total += load(n) else 1\n    got = load(n) except why:\n        case .Long(size):\n            \
+            return size\n        case _:\n            problem = why\n            stdout.print(problem)\n            return -1\n";
         let migrated = migrated(source);
         assert!(migrated.contains(expected), "{migrated}");
     }

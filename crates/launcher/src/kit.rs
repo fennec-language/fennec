@@ -4,9 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The kit around a folder: the nearest folder above it, or it, with a `kit.toml`.
+/// The kit around a folder: the nearest folder above it, or it, with a `kit.toml`, reached only
+/// through folders nobody else can write to. See `fennec_dist::kit_root`.
 pub(crate) fn root(from: &Path) -> Option<PathBuf> {
-    from.ancestors().find(|dir| dir.join("kit.toml").is_file()).map(Path::to_path_buf)
+    fennec_dist::kit_root(from)
 }
 
 /// The version `kit.toml` asks for: `fennec = "0.4.2"`, at its top, before any table.

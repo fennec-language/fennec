@@ -24,6 +24,7 @@ mod notices;
 mod parsed;
 mod report;
 mod run;
+mod rust_strings;
 mod test;
 mod test_inputs;
 mod trace;
@@ -67,8 +68,8 @@ const USAGE: &str = "usage:
   fennec lint [path]        what the checker and linter find, and hints about what may copy or allocate;
                             add --json to either for JSON on standard output
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
-  fennec fix --migrate [path]  also move it to the failure forms of 2026-11-11: `except`, `lend x except:`
-      and a `return` on each `def`'s value
+  fennec fix --migrate [path]  move it to the forms of 2026-11-11 instead: `except`, `lend x except:`,
+      a `return` on each `def`'s value, and `len(x)`; `--std` does the standard library's code
   fennec lsp                the language server, for editors, over standard input and output
   fennec notices <program>  the third-party notices a program built by `fennec build` holds
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
@@ -152,6 +153,8 @@ fn main() -> ExitCode {
         ["check", path] => on_big_stack(lint::check, path),
         ["fix"] => fix::fix(".", false),
         ["fix", "--migrate"] => fix::fix(".", true),
+        ["fix", "--migrate", "--std"] => fix::migrate_std(),
+        ["fix", "--migrate", "--rust-strings", files @ ..] => rust_strings::migrate_files(files),
         ["fix", "--migrate", path] => fix::fix(path, true),
         ["fix", path] => fix::fix(path, false),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),

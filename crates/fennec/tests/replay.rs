@@ -526,14 +526,71 @@ fn network_values_print_the_same_every_run_and_in_a_replay() -> std::io::Result<
     Ok(())
 }
 
-/// Whether an example runs more than one task, whose order between them isn't recorded yet, or
-/// serves until it's stopped, so its run doesn't end by itself.
-fn several_tasks_or_serves(source: &str) -> bool {
-    ["parallel(", "launch(", "Channel[", ".serve("].iter().any(|marker| source.contains(marker))
+/// Ranges of a `parallel` call and launched tasks all printing, enough that each task's output
+/// goes out in several bursts, which interleave differently from run to run.
+const TASKS_PRINTING: &str = "from std.concurrent import Crashed
+
+def chatter(stdout: Stdout, name: str):
+    for at in range(2500):
+        stdout.print(name, at)
+
+def main(stdout: Stdout) fails Crashed:
+    numbers = [n for n in range(64)]
+    for n in parallel(numbers):
+        stdout.print(\"range\", n)
+    with launch(() => chatter(stdout, \"a\"))?:
+        with launch(() => chatter(stdout, \"b\"))?:
+            chatter(stdout, \"main\")
+    stdout.print(\"done\")
+";
+
+/// How tasks' output interleaved is recorded, and a replay writes it in the same order, byte for
+/// byte, however many threads it's given.
+#[test]
+fn tasks_printing_replay_their_output_in_the_order_it_went_out() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("output-order")?;
+    let program = dir.join("printing.fen");
+    std::fs::write(&program, TASKS_PRINTING)?;
+    let log = dir.join("printing.log");
+    let mut record = fennec_command();
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    assert_eq!(recorded.0.lines().count(), 64 + 3 * 2500 + 1);
+    for threads in ["1", "4", "1", "4", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
+/// Whether an example serves until it's stopped, so its run doesn't end by itself.
+fn serves(source: &str) -> bool {
+    source.contains(".serve(")
+}
+
+/// Whether an example runs more than one task, which needs the threads runtime.
+fn several_tasks(source: &str) -> bool {
+    ["parallel(", "launch(", "Channel["].iter().any(|marker| source.contains(marker))
+}
+
+/// Every example that ends by itself replays exactly as it ran, its output byte for byte, tasks
+/// and `parallel` calls among them: how their output interleaved is recorded, and a replay repeats
+/// it.
 #[test]
-fn every_single_task_example_replays_exactly_as_it_ran() -> std::io::Result<()> {
+fn every_example_that_ends_replays_exactly_as_it_ran() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -546,7 +603,7 @@ fn every_single_task_example_replays_exactly_as_it_ran() -> std::io::Result<()> 
         } else {
             continue;
         };
-        if !several_tasks_or_serves(&source) {
+        if !serves(&source) && (threads_runtime_built() || !several_tasks(&source)) {
             programs.push(path);
         }
     }

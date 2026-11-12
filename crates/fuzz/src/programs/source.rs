@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Stmt, Via,
+    RefPlace, Stmt, Turn, Turning, Via, XS,
 };
 
 /// What every program starts with, for its body to use.
@@ -630,6 +630,35 @@ pub(crate) fn excepted(program: &str) -> String {
     out
 }
 
+/// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
+/// turn, printed with what each use of it gives.
+fn turned_written(turning: &Turning) -> String {
+    let Turning { id, how, rounds, start, step, reset_at, reset_to } = *turning;
+    let xs: Vec<String> = XS.iter().map(ToString::to_string).collect();
+    let (setup, value, after) = match how {
+        Turn::StepDown => {
+            (format!("    mut at = {start}\n"), "at".to_owned(), format!("        at -= {step}\n"))
+        }
+        Turn::Flip => (
+            format!("    mut sign = 1\n    at = {start}\n    mut v = 0\n"),
+            "v".to_owned(),
+            "        sign = -sign\n".to_owned(),
+        ),
+        Turn::Reset => (format!("    mut n = {start}\n"), "n".to_owned(), "        n += 1\n".to_owned()),
+    };
+    let before = match how {
+        Turn::StepDown => String::new(),
+        Turn::Flip => "        v = sign * at\n".to_owned(),
+        Turn::Reset => format!("        if i == {reset_at}:\n            n = {reset_to}\n"),
+    };
+    format!(
+        "def turned{id}(stdout: Stdout):\n    xs = [{}]\n{setup}    for i in range({rounds}):\n{before}        \
+         stdout.print(\"turn\", {value}, xs[{value}], {value} * 3, -9223372036854775804 + {value}, \
+         9223372036854775804 + {value})\n{after}\n",
+        xs.join(", ")
+    )
+}
+
 /// The names `Left`'s `ward`s are lent as, outermost first.
 pub(crate) const WARDS: [&str; 3] = ["a", "b", "c"];
 
@@ -1227,6 +1256,10 @@ impl Writer {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 self.line(indent, &format!("guard_all([{}], stdout) else:", items.join(", ")));
                 self.line(indent + 1, "stdout.print(\"stopped\")");
+            }
+            Stmt::Turned(turning) => {
+                let _ = write!(self.helpers, "{}", turned_written(turning));
+                self.line(indent, &format!("turned{}(stdout)", turning.id));
             }
             Stmt::Left { id, depth, together, rounds, at, how } => {
                 let _ = write!(self.helpers, "{}", left_written(*id, *depth, *together, *rounds, *at, *how));

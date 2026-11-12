@@ -506,6 +506,28 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
+    /// A loop's int is at least 0 on its first turn and changes sign later, every way: stepped
+    /// down past 0, flipped each turn, and reset below 0 partway through.
+    #[test]
+    fn it_turns_ints_negative_after_the_first_turn() {
+        let ways = ["        at -= ", "        sign = -sign\n", "            n = -"];
+        let mut found = [0_usize; 3];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            for turned in source.split("\ndef turned").skip(1) {
+                let turned = turned.split("\n\n").next().unwrap_or_default();
+                assert!(turned.contains("xs[") && turned.contains("-9223372036854775804 + "), "{turned}");
+                for (count, way) in found.iter_mut().zip(ways) {
+                    *count += usize::from(turned.contains(way));
+                }
+            }
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
     /// Changes are planned on `parallel`'s threads and applied in a plain loop afterwards.
     #[test]
     fn it_plans_on_threads_then_applies() {

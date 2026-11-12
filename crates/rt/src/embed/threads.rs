@@ -291,6 +291,8 @@ pub(crate) struct Accounts {
     writes: bool,
     /// The mark in the blocks it makes, so that when it ends it takes only its own.
     task: u64,
+    /// The capture of the test that launched it, if a test did, for what it prints.
+    capture: Option<Arc<crate::fakes::Capture>>,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -299,7 +301,15 @@ impl Accounts {
     /// stopping when `stop` is set.
     pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicU8>) -> Accounts {
         let writes = super::program_writes();
-        Accounts { lent, stop: Some(stop), replay: crate::replay::child(), writes, ..Accounts::default() }
+        let capture = super::capture_here();
+        Accounts {
+            lent,
+            stop: Some(stop),
+            replay: crate::replay::child(),
+            writes,
+            capture,
+            ..Accounts::default()
+        }
     }
 
     /// Marks what it makes from now on as the blocks of the task numbered `task` on this thread.
@@ -336,6 +346,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
         STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
         accounts.writes = super::swap_task_writes(accounts.writes);
+        super::swap_capture(&mut accounts.capture);
         accounts.cleaning = CLEANING.replace(accounts.cleaning);
         crate::replay::swap(&mut accounts.replay);
         if !same {

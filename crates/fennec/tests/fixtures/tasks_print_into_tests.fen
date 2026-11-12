@@ -1,0 +1,29 @@
+## What a test's tasks and `parallel` bodies print is the test's to read, whatever thread they ran
+## on, in the order they wrote it: compared sorted.
+from std.concurrent import Crashed
+
+def chatter(stdout: Stdout, name: str):
+    for at in range(3):
+        stdout.print(name, at)
+
+def with_task(stdout: Stdout) fails Crashed:
+    with launch(() => chatter(stdout, "task"))?:
+        chatter(stdout, "test")
+    return
+
+def looped(stdout: Stdout, numbers: list[int]):
+    for n in parallel(numbers):
+        stdout.print("item", n)
+    stdout.print("after")
+
+test "what a launched task prints is the test's to read"(stdout: Stdout):
+    with_task(stdout) except why:
+        stdout.print(f"crashed {why}")
+    assert stdout.sorted_lines() == ["task 0", "task 1", "task 2", "test 0", "test 1", "test 2"]
+
+test "what a parallel loop's bodies print is the test's to read, wherever they ran"(stdout: Stdout):
+    looped(stdout, [n for n in range(40)])
+    lines = stdout.sorted_lines()
+    assert lines.len() == 41
+    assert "item 0" in lines and "item 39" in lines
+    assert stdout.captured().endswith("after\n")

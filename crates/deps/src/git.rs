@@ -92,6 +92,9 @@ impl Git {
             .arg("-c")
             .arg(format!("core.hooksPath={}", self.hooks.display()))
             .args(["-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"])
+            // Only the kinds of address a dependency may have, so no other transport's helper runs.
+            .args(["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"])
+            .args(["-c", "protocol.ssh.allow=always", "-c", "protocol.file.allow=always"])
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
         command

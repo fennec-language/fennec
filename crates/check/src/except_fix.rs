@@ -787,6 +787,11 @@ impl<'a> Text<'a> {
     }
 }
 
+/// Whether a local can't take `name`: a builtin's, a built-in type's, or `case`.
+pub fn reserved_name(name: &str) -> bool {
+    RESERVED.contains(&name)
+}
+
 /// The names a local can't take: the builtins and the built-in types, and `case`, which starts an
 /// arm under `except why:`.
 const RESERVED: [&str; 29] = [

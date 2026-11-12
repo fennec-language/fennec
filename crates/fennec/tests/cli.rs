@@ -3051,6 +3051,87 @@ fn a_program_or_kit_handed_nothing_cant_reach_std_internals() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An `extend` has to be in the kit that declares the type. Another kit's extension would change
+/// what that kit's own code does with it: a small kit gave `b.Amount` an `==` that's always true,
+/// and `b`'s own comparison ran it. Refused in a dependency extending another dependency's type or
+/// the program's own, and in the program extending a dependency's; a kit still extends its own
+/// types.
+#[test]
+fn only_the_kit_that_declares_a_type_extends_it() {
+    let dir = scratch("extend-own-kit").unwrap();
+    write_kit(
+        &dir.join("b"),
+        "b",
+        "",
+        &[(
+            "lib.fen",
+            "export struct Amount:\n    cents: int\n\n\
+             export def same(first: Amount, second: Amount) -> bool:\n    return first == second\n\n\
+             export def doubled_of(amount: Amount) -> int:\n    return amount.doubled()\n\n\
+             extend Amount:\n    def doubled(self) -> int:\n        return self.cents * 2\n",
+        )],
+    )
+    .unwrap();
+    let a = dir.join("a");
+    let extends_b = "from b import Amount\n\nexport def one() -> int:\n    return 1\n\n\
+                     extend Amount:\n    def ==(self, other: Amount) -> bool:\n        return True\n";
+    write_kit(&a, "a", "[dependencies]\nb = { path = \"../b\" }\n", &[("lib.fen", extends_b)]).unwrap();
+    let game = dir.join("game");
+    let main = "import a\nimport b\n\ndef main(stdout: Stdout):\n    \
+                stdout.print(a.one(), b.same(b.Amount(cents=1999), second=b.Amount(cents=1)))\n";
+    let manifest = "[dependencies]\na = { path = \"../a\" }\nb = { path = \"../b\" }\n";
+    write_kit(&game, "game", manifest, &[("main.fen", main)]).unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let refused = |says: &str, file: &str| {
+        let checked = fennec("check");
+        assert!(!checked.status.success());
+        let said = text(&checked.stderr);
+        assert!(said.contains(says), "{said}");
+        assert!(said.contains(file), "{said}");
+    };
+    refused("`Amount` is declared in the kit `b`, so only that kit can extend it", "a/src/lib.fen");
+    // A dependency extending the program's own type, which it doesn't import, as `len`.
+    std::fs::write(
+        a.join("src/lib.fen"),
+        "export def one() -> int:\n    return 1\n\nextend Player:\n    def len(self) -> int:\n        return 99\n",
+    )
+    .unwrap();
+    std::fs::write(
+        game.join("src/main.fen"),
+        "import a\n\nstruct Player:\n    hp: int\n\n    def len(self) -> int:\n        return self.hp\n\n\
+         def main(stdout: Stdout):\n    stdout.print(a.one(), len(Player(hp=3)))\n",
+    )
+    .unwrap();
+    refused("`Player` is declared in the program's own kit, so only that kit can extend it", "a/src/lib.fen");
+    // The program extending a dependency's type.
+    std::fs::write(a.join("src/lib.fen"), "export def one() -> int:\n    return 1\n").unwrap();
+    std::fs::write(
+        game.join("src/main.fen"),
+        "import b\nfrom b import Amount\n\nextend Amount:\n    def tripled(self) -> int:\n        return self.cents * 3\n\n\
+         def main(stdout: Stdout):\n    stdout.print(Amount(cents=1).tripled())\n",
+    )
+    .unwrap();
+    refused("`Amount` is declared in the kit `b`, so only that kit can extend it", "main.fen");
+    // `b`'s own extension, in another of its files, stands.
+    std::fs::write(
+        game.join("src/main.fen"),
+        "import b\n\ndef main(stdout: Stdout):\n    \
+         stdout.print(b.doubled_of(b.Amount(cents=2)), b.same(b.Amount(cents=1999), second=b.Amount(cents=1)))\n",
+    )
+    .unwrap();
+    let ran = fennec("run");
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "4 False\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A dependency sees its own kit's names, what it imports, and the language's: never the program's.
 /// The program's names have no prefix in the merged module, so a dependency writing one it doesn't
 /// define read the program's private constant and called its private function.

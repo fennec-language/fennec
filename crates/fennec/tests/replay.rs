@@ -704,7 +704,10 @@ fn a_streams_chunks_run_past_a_break_replay_as_they_ran() -> std::io::Result<()>
     std::fs::write(&program, STREAM_PAST_A_BREAK)?;
     let log = dir.join("stream.log");
     let mut record = fennec_command();
-    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    // The reader waits for the workers to run each chunk in its window, so chunks run past the
+    // break however loaded the machine: left to itself, a reader that gets to every chunk first
+    // runs them all, and none runs past it.
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1").env("FENNEC_STREAM_RUN_AHEAD", "1");
     record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
     let recorded = outcome(&record.output_before(DEADLINE)?);
     assert_eq!(recorded.2, Some(0), "{}", recorded.1);

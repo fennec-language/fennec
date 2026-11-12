@@ -153,10 +153,20 @@ impl Stream {
     /// The next chunk, once it's done: run here if no thread has started it. With it taken,
     /// the window moves on by one, and the chunk now at its end starts on the pool.
     fn take(self: &Arc<Self>) -> Option<Slot> {
+        // For a test, the reader leaves every chunk in its window to the workers, and waits for
+        // them all, so chunks always run ahead of it. Not on a worker, which might be the one a
+        // chunk waits for, nor in a replay, where only the chunks the recording ran are run.
+        let waits =
+            self.window > 0 && pool::streams_run_ahead() && !pool::on_worker() && self.recorded.is_none();
         let mut chunks = self.lock();
         loop {
             if chunks.ended {
                 return None;
+            }
+            if waits && chunks.slots.iter().any(|slot| !matches!(slot, Slot::Done { .. })) {
+                super::super::write_kept_output();
+                chunks = self.done.wait(chunks).unwrap_or_else(PoisonError::into_inner);
+                continue;
             }
             let at = chunks.first;
             match chunks.slots.front() {

@@ -894,11 +894,35 @@ pub extern "C" fn find(address: i64, part: i64) -> i64 {
 /// once. An empty separator fails.
 pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
-        let at = span(start, end);
-        let separators: &[i64] = if separator == 0 { &[] } else { &[separator] };
-        let parts = method(state, address, "split", separators, at)?;
+        let whole = text(state, address).ok_or_else(|| lost(start, end))?;
+        let between = match separator {
+            0 => None,
+            _ => Some(text(state, separator).ok_or_else(|| lost(start, end))?),
+        };
+        if between.as_deref() == Some("") {
+            // An empty separator fails, as the method says.
+            return method(state, address, "split", &[separator], span(start, end)).map(|_| 0);
+        }
+        // Each part goes straight into the list's items, with no list of values made on the way
+        // and dropped after.
         let element = super::text::string_element(state);
-        super::lists::write_list(state, &element, &parts).ok_or_else(|| lost(start, end))
+        let headers = *element == Element::Text;
+        let mut items = Vec::new();
+        let mut put = |state: &mut State, part: &str| {
+            if headers {
+                items.extend(super::text::header(state, part));
+            } else {
+                items.push(text_address(state, part).cast_unsigned());
+            }
+        };
+        let mut one = between.as_deref().map(str::chars);
+        match (one.as_mut().and_then(Iterator::next), one.as_mut().and_then(Iterator::next), &between) {
+            (_, _, None) => whole.split_whitespace().for_each(|part| put(state, part)),
+            // One character, like "/" or " ", is looked for as a character, which is quicker.
+            (Some(character), None, _) => whole.split(character).for_each(|part| put(state, part)),
+            (_, _, Some(between)) => whole.split(between.as_str()).for_each(|part| put(state, part)),
+        }
+        Ok(super::lists::list_of_items(state, &element, &items))
     })
 }
 
@@ -978,6 +1002,84 @@ mod place_tests {
         let empty = slice(text, 5, 2, 0, 0);
         with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
         finish();
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use std::rc::Rc;
+
+    use super::super::{Tables, finish, heap, lists, start, text, with};
+    use super::split;
+    use crate::packed::Element;
+
+    /// The parts `split` gave, read back from the list's items, headers or blocks' addresses.
+    fn parts(list: i64, headers: bool) -> Vec<String> {
+        with(|state| {
+            let block = state.heap.block(list.cast_unsigned()).unwrap_or_default();
+            if headers {
+                text::texts(state, lists::items(block, 3))
+            } else {
+                let items = lists::items(block, 1);
+                items.iter().map(|item| super::text(state, item.cast_signed()).unwrap_or_default()).collect()
+            }
+        })
+    }
+
+    /// An inline header packs its bytes as a block's words do, with its tag in its last byte, and
+    /// a block made from it holds its text and counts its characters.
+    #[test]
+    fn an_inline_header_made_a_block_keeps_its_text_and_characters() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        for short in ["", "a", "\u{e9}t\u{e9}", "eight by", "twenty-three bytes long", "\u{65e5}\u{1f98a}"] {
+            let header = text::inline(short.as_bytes());
+            let mut packed = [0_u8; 24];
+            packed[..short.len()].copy_from_slice(short.as_bytes());
+            packed[23] = 0x80 | u8::try_from(short.len()).unwrap();
+            let words: Vec<u64> =
+                packed.chunks(8).map(|eight| u64::from_le_bytes(eight.try_into().unwrap())).collect();
+            assert_eq!(header.to_vec(), words, "{short:?}");
+            let [a, b, c] = header;
+            let address = text::block(a, b, c);
+            with(|state| {
+                let block = state.heap.block(address.cast_unsigned()).unwrap_or_default();
+                assert_eq!(super::text(state, address).as_deref(), Some(short));
+                assert_eq!(block.get(3).copied(), Some(u64::try_from(short.chars().count()).unwrap()));
+            });
+        }
+        finish();
+    }
+
+    /// `split` gives what Rust's own split gives, by a separator or by runs of whitespace, short
+    /// parts and long, wide characters too, whether native code holds strings as headers or blocks.
+    #[test]
+    fn a_split_gives_the_parts_rusts_own_gives() {
+        let long = "a part long enough to need a block of its own";
+        let texts = [
+            String::new(),
+            "/".to_owned(),
+            "/api/orders/42".to_owned(),
+            "a//b/".to_owned(),
+            format!("\u{e9}t\u{e9}/{long}/\u{65e5}\u{672c}\u{1f98a}"),
+            "  spaced \t out\nwords  ".to_owned(),
+        ];
+        for headers in [true, false] {
+            let tables =
+                Tables { shapes: vec![Rc::new(Element::Str)], text_headers: headers, ..Tables::default() };
+            start(tables, crate::Inputs::default());
+            let slash = with(|state| heap::text_address(state, "/"));
+            for whole in &texts {
+                let address = with(|state| heap::text_address(state, whole));
+                let by_slash: Vec<&str> = whole.split('/').collect();
+                assert_eq!(parts(split(address, slash, 0, 0), headers), by_slash, "{whole:?}");
+                let by_space: Vec<&str> = whole.split_whitespace().collect();
+                assert_eq!(parts(split(address, 0, 0, 0), headers), by_space, "{whole:?}");
+            }
+            let empty = with(|state| heap::text_address(state, ""));
+            assert_eq!(split(slash, empty, 0, 0), 0);
+            let (_, failure, _) = finish();
+            assert!(failure.is_some_and(|failure| failure.message.contains("wrong arguments")));
+        }
     }
 }
 

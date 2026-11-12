@@ -81,12 +81,12 @@ fn the_prelude_keeps_its_meaning() {
     }
 }
 
-/// A program of about 40,000 lines, made of the examples over and over.
-fn big_program() -> std::io::Result<String> {
+/// A program of about `lines` lines, made of the examples over and over.
+fn big_program(lines: usize) -> std::io::Result<String> {
     let sources =
         fen_files(&examples_dir())?.iter().map(fs::read_to_string).collect::<Result<Vec<_>, _>>()?;
     let mut program = String::new();
-    while program.lines().count() < 40_000 {
+    while program.lines().count() < lines {
         for source in &sources {
             program.push_str(source);
             program.push('\n');
@@ -95,14 +95,33 @@ fn big_program() -> std::io::Result<String> {
     Ok(program)
 }
 
+/// The quickest of three formattings of `program`, which a busy machine slows least.
+fn quickest(program: &str) -> Duration {
+    (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            assert!(fennec_fmt::format(program).is_ok());
+            started.elapsed()
+        })
+        .min()
+        .unwrap_or_default()
+}
+
+/// Formatting takes time in proportion to the program: four times the lines takes about four
+/// times as long, where work that grows with the square would take sixteen. A busy machine slows
+/// both sizes alike, so their ratio holds where a limit in seconds wouldn't.
 #[test]
-fn formats_a_big_program_quickly() {
-    let program = big_program().unwrap();
-    let started = Instant::now();
-    let formatted = fennec_fmt::format(&program).unwrap();
-    let took = started.elapsed();
-    // Release builds take a small fraction of this; debug builds and busy machines are slower.
-    let limit = if cfg!(debug_assertions) { Duration::from_secs(10) } else { Duration::from_secs(1) };
-    assert!(took < limit, "formatting {} lines took {took:?}", program.lines().count());
-    assert!(formatted.lines().count() >= 40_000);
+fn formats_a_big_program_in_time_in_proportion() {
+    let (small, big) = (big_program(10_000).unwrap(), big_program(40_000).unwrap());
+    assert!(fennec_fmt::format(&big).unwrap().lines().count() >= 40_000);
+    let (small_took, big_took) = (quickest(&small), quickest(&big));
+    let lines = |program: &str| f64::from(u32::try_from(program.lines().count()).unwrap_or(u32::MAX));
+    let times = big_took.as_secs_f64() / small_took.as_secs_f64().max(1e-6);
+    let grown = lines(&big) / lines(&small);
+    assert!(
+        times < grown * 2.0,
+        "{} lines took {big_took:?} and {} took {small_took:?}: {times:.1} times as long for {grown:.1} times the lines",
+        lines(&big),
+        lines(&small)
+    );
 }

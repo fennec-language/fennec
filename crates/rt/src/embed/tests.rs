@@ -80,4 +80,20 @@ fn a_task_writes_as_it_goes_only_when_its_own_run_does() {
     })
     .join()
     .unwrap();
+/// A block a runtime function would give native code as 0, no block at all, stops the run as a bug
+/// in Fennec rather than reaching native code, which uses it at once with no check.
+#[test]
+fn a_block_made_as_nothing_is_said_as_a_bug() {
+    assert_eq!(super::made("fennec_list_new", 8), 8);
+    let said = std::panic::catch_unwind(|| super::made("fennec_list_new", 0)).expect_err("0 is said");
+    let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert_eq!(said, "`fennec_list_new` made no block");
+}
+
+/// A header given back where there's nothing else to give, as with no runtime on the thread, is
+/// the empty string's, never one pointing at no block.
+#[test]
+fn a_header_by_default_is_the_empty_strings() {
+    let empty = super::text::Text::default();
+    assert_eq!(super::text::inline_bytes(&empty.words), Some(Vec::new()));
 }

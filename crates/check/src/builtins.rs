@@ -546,7 +546,7 @@ impl FnCx<'_> {
                         self.error(mismatch("`crlf`", &Type::Bool, &ty, arg.value.span));
                     }
                 }
-                Some(option @ ("indent" | "level" | "port" | "most_output" | "most_body"))
+                Some(option @ ("indent" | "level" | "port" | "most_output" | "most_body" | "most"))
                     if named.contains(&option) =>
                 {
                     if !self.checker.fits(&Type::Int, &ty) {

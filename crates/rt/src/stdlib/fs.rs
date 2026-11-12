@@ -54,7 +54,11 @@ impl Written {
             Written::Path { target, .. } => sync_folder(target),
             Written::Beneath { folder, target, .. } => {
                 let parent = target.parent().filter(|parent| !parent.as_os_str().is_empty());
-                folder.open_dir(parent.unwrap_or(Path::new(".")))?.into_std_file().sync_all()
+                // Opened to read, beneath the folder as any path is: a handle `open_dir` gives is
+                // only for finding names on Linux (`O_PATH`), which `fsync` refuses with EBADF.
+                let mut reading = cap_std::fs::OpenOptions::new();
+                reading.read(true);
+                folder.open_with(parent.unwrap_or(Path::new(".")), &reading)?.into_std().sync_all()
             }
         }
     }
@@ -886,8 +890,43 @@ impl From<std::io::Error> for Fail {
             std::io::ErrorKind::AlreadyExists => "AlreadyExists",
             _ => "Other",
         };
-        Self { case, reason: err.to_string() }
+        // A failure made with words of its own, like a library's or the runtime's, keeps them. The
+        // system's are said in Fennec's words, which are the same on every system, where its own,
+        // like "No such file or directory (os error 2)", differ from one to the next.
+        let reason = if err.get_ref().is_some() { err.to_string() } else { in_own_words(err.kind()) };
+        Self { case, reason }
     }
+}
+
+/// A failure of the system's, in Fennec's words.
+fn in_own_words(kind: std::io::ErrorKind) -> String {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::NotFound => "nothing is there",
+        ErrorKind::PermissionDenied => "the system won't allow it",
+        ErrorKind::AlreadyExists => "something is there already",
+        ErrorKind::IsADirectory => "it's a folder, not a file",
+        ErrorKind::NotADirectory => "part of the path is a file, not a folder",
+        ErrorKind::DirectoryNotEmpty => "the folder isn't empty",
+        ErrorKind::InvalidData => "the file isn't UTF-8 text",
+        ErrorKind::ReadOnlyFilesystem => "the disk can't be written to",
+        ErrorKind::StorageFull => "the disk is full",
+        ErrorKind::QuotaExceeded => "the disk space allowed is used up",
+        ErrorKind::FileTooLarge => "the file is too big for the system",
+        ErrorKind::InvalidFilename => "that can't be a file's name",
+        ErrorKind::TooManyLinks => "the path goes through too many links",
+        ErrorKind::CrossesDevices => "it would move from one disk to another",
+        ErrorKind::ResourceBusy => "something else is using it",
+        ErrorKind::ExecutableFileBusy => "the file is a program that's running",
+        ErrorKind::Interrupted => "the system broke off",
+        ErrorKind::TimedOut => "the system took too long",
+        ErrorKind::UnexpectedEof => "it ended early",
+        ErrorKind::OutOfMemory => "the system ran out of memory",
+        ErrorKind::Unsupported => "the system can't do that",
+        // What else the system can fail with, said the same way everywhere.
+        other => return format!("the system failed: {other}"),
+    }
+    .to_owned()
 }
 
 /// A failed result holding the `IoError` a failure is.
@@ -925,12 +964,21 @@ mod tests {
     use super::Fail;
 
     /// The system's failures that a caller may handle differently each have a case of their own,
-    /// on the real file system, and the rest are `Other`, each keeping the system's words.
+    /// on the real file system, and the rest are `Other`. Each is said in Fennec's words, the same
+    /// on every system, and one made with words of its own keeps them.
     #[test]
     fn a_systems_failure_is_the_case_its_kind_is() {
         let gone = std::fs::read("/no/such/place/for/fennec").expect_err("it isn't there");
         let fail = Fail::from(gone);
-        assert_eq!((fail.case, fail.reason.is_empty()), ("NotFound", false));
+        assert_eq!((fail.case, fail.reason.as_str()), ("NotFound", "nothing is there"));
+        let folder = std::fs::read_to_string(std::env::temp_dir()).expect_err("it's a folder");
+        assert_eq!(Fail::from(folder).reason, "it's a folder, not a file");
+        let binary = std::io::read_to_string(&[0xFF, 0xFE][..]).expect_err("it isn't text");
+        assert_eq!(Fail::from(binary).reason, "the file isn't UTF-8 text");
+        assert_eq!(
+            Fail::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).reason,
+            "the system won't allow it"
+        );
         for (kind, case) in [
             (std::io::ErrorKind::PermissionDenied, "PermissionDenied"),
             (std::io::ErrorKind::AlreadyExists, "AlreadyExists"),

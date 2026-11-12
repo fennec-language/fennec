@@ -147,6 +147,16 @@ fn a_log_without_its_mark_isnt_a_recording() {
     assert_eq!(entries_start(&log), None, "its header runs past its end");
 }
 
+/// Whether a task in `tasks_take_their_turns_at_a_place_in_the_recorded_order` has had to wait for
+/// its turn.
+static WAITED: AtomicBool = AtomicBool::new(false);
+
+/// Makes way for another task, as a task waiting for its turn does, noting that one has.
+fn wait_noted() {
+    WAITED.store(true, Ordering::SeqCst);
+    std::thread::yield_now();
+}
+
 /// At a place where tasks meet, each task waits for its turn, so they go in the recorded order
 /// whatever order they arrive in, and each gets what it came to.
 #[test]
@@ -162,16 +172,18 @@ fn tasks_take_their_turns_at_a_place_in_the_recorded_order() {
         std::thread::spawn(move || {
             TASK.with_borrow_mut(|running| *running = Some(Task::named(Arc::from(name))));
             for _ in 0..times {
-                let got =
-                    turn_in(&player, ("0:c0", what), Duration::from_secs(5), std::thread::yield_now).unwrap();
+                let got = turn_in(&player, ("0:c0", what), Duration::from_secs(5), wait_noted).unwrap();
                 order.lock().unwrap().push((name, got));
                 end_turn(&player, "0:c0");
             }
         })
     };
-    // The receiver arrives first, and waits for the send that came first in the recording.
+    // The receiver arrives first, and waits for the send that came first in the recording: the
+    // sender starts only once it's waiting, however long that takes.
     let receiving = go("0.0", "receive", 2);
-    std::thread::sleep(Duration::from_millis(20));
+    while !WAITED.load(Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
     let sending = go("0.1", "send", 1);
     receiving.join().unwrap();
     sending.join().unwrap();

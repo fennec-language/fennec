@@ -54,13 +54,18 @@ fn error_examples_the_checker_catches_fail_with_their_expected_message() {
 
 #[test]
 fn a_run_checking_only_what_it_reaches_finds_the_same_mistakes() {
+    let mut compared = 0;
     for path in programs(&examples_dir().join("errors")).unwrap() {
         let source = fs::read_to_string(&path).unwrap();
+        // An example of a mistake the parser finds has nothing for either check to look at.
         let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
         let whole = fennec_check::check(&module).err();
         let reached = fennec_check::check_to_run(&mut module).err();
         assert_eq!(reached, whole, "{} found different mistakes", path.display());
+        compared += 1;
     }
+    // Skipping every example, as a parser change could make it, would pass with nothing compared.
+    assert!(compared > 200, "only {compared} error examples parsed, so only they were compared");
 }
 
 /// How many functions in each benchmark kernel LLVM doesn't take can only go down: a change that

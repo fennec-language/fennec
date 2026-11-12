@@ -3788,6 +3788,45 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
     same_as_expected_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
 }
 
+/// A print that fails stops the program there, as anything that fails does. Its standard output
+/// is a file it may only write 512 bytes of (`ulimit -f 1`, with the signal for passing that
+/// ignored), so writing fails once a run has kept enough to write out: what comes after the loop
+/// never runs, and the failure says why. It used to carry on and say so only at the end.
+#[cfg(unix)]
+#[test]
+fn a_print_that_fails_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, stderr: Stderr):\n    for i in range(100000):\n        stdout.print(i)\n    stderr.write_line(\"went on\")?\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("print_fails")?;
+        let (program, executable) = (dir.join("prints.fen"), dir.join("prints"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' XFSZ; ulimit -f 1; exec \"$0\" > \"$1\"")
+            .arg(&executable)
+            .arg(dir.join("printed.txt"))
+            .output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert!(err.starts_with("error: couldn't write output"), "{how:?}: {err}");
+        assert!(!err.contains("went on"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
 /// Two ints known not negative multiply unsigned: past `i64::MAX` and past `u64::MAX` both fail.
@@ -10619,12 +10658,41 @@ def main(net: Net, signals: Signals, stdout: Stdout):
         .env("FENNEC_THREADS_RUNTIME", threads)
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_LIVE_REPORT", dir.join("live"))
+            .stdout(std::process::Stdio::piped())
+            .spawn()?,
+    );
     let mut printed = std::io::BufReader::new(server.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
     let mut port = String::new();
     std::io::BufRead::read_line(&mut printed, &mut port)?;
     let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     Ok((dir, server, port, printed))
+}
+
+/// Waits until the live count a program writes to `report`, as `FENNEC_LIVE_REPORT` asks, says it's
+/// serving at least `at_least` connections, so a test acts once the server has taken them rather
+/// than after a guess at how long that takes. Fails if it never does.
+#[cfg(unix)]
+pub(crate) fn serving(report: &Path, at_least: usize) {
+    let started = std::time::Instant::now();
+    loop {
+        let counts = std::fs::read_to_string(report).unwrap_or_default();
+        let connections = counts
+            .lines()
+            .find_map(|line| line.strip_prefix("connections "))
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or(0);
+        if connections >= at_least {
+            return;
+        }
+        assert!(
+            started.elapsed() < crate::executables::WALL_DEADLINE,
+            "the server took {connections} of {at_least} connections:\n{counts}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// Sends SIGTERM to `running`.
@@ -10682,8 +10750,8 @@ fn a_server_serving_until_signals_drains_when_asked() -> std::io::Result<()> {
     // Partway through one it never finishes.
     let mut stuck = connected(port)?;
     stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
-    // The server has taken each before it's asked to stop.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // The server has taken each before it's asked to stop, as its live count says.
+    serving(&dir.join("live"), 3);
     terminate(&server)?;
     let asked = std::time::Instant::now();
     let mut rest = Vec::new();
@@ -10935,7 +11003,7 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = peak {
+    if let Some(peak) = measured(peak) {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
@@ -11006,10 +11074,20 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    if let Some(peak) = peak {
+    if let Some(peak) = measured(peak) {
         assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
+}
+
+/// The peak `with_peak_memory` read, which only Windows, with no `/usr/bin/time`, goes without.
+/// Anywhere else a peak that wasn't read fails, so a memory limit is never passed unchecked.
+fn measured(peak: Option<u64>) -> Option<u64> {
+    assert!(
+        peak.is_some() || cfg!(windows),
+        "no peak memory was read: /usr/bin/time is missing, or what it printed has changed"
+    );
+    peak
 }
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
@@ -17872,12 +17950,14 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let (_, said, code) = both_built_unpinned("raised_chain", raised, how)?;
         assert_eq!(code, Some(1));
-        assert!(said.contains(" --> <dir>/raised_chain.fen:5:20\n"), "{how:?}: {said}");
+        // A release names its files from where it was built, never the builder's folders.
+        let at = if how.contains(&"--release") { "" } else { "<dir>/" };
+        assert!(said.contains(&format!(" --> {at}raised_chain.fen:5:20\n")), "{how:?}: {said}");
         assert!(
-            said.ends_with(
-                "  = in `find`\n  = called from `look` at <dir>/raised_chain.fen:9:5\n  \
-                 = called from `main` at <dir>/raised_chain.fen:12:18\n"
-            ),
+            said.ends_with(&format!(
+                "  = in `find`\n  = called from `look` at {at}raised_chain.fen:9:5\n  \
+                 = called from `main` at {at}raised_chain.fen:12:18\n"
+            )),
             "{how:?}: {said}"
         );
         let (_, said, _) = both_built_unpinned("bouncing_chain", bouncing, how)?;
@@ -17885,7 +17965,7 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
         assert_eq!(calls, 2 * 16, "{how:?}: {said}");
         assert!(said.contains("  = ... more calls\n"), "{how:?}: {said}");
         assert!(
-            said.ends_with("  = called from `main` at <dir>/bouncing_chain.fen:8:18\n"),
+            said.ends_with(&format!("  = called from `main` at {at}bouncing_chain.fen:8:18\n")),
             "{how:?}: {said}"
         );
     }

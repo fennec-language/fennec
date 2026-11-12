@@ -89,7 +89,15 @@ fn waits(name: &str) -> Option<bool> {
     ];
     // A `parallel` call waits for its ranges, or for connections; what helps a range put its
     // items back or take what it owns doesn't.
-    let runs = ["parallel.for", "parallel.map", "parallel.sum", "parallel.serve"];
+    let runs = [
+        "parallel.for",
+        "parallel.map",
+        "parallel.sum",
+        "parallel.serve",
+        "parallel.stream",
+        "parallel.stream_next",
+        "parallel.stream_end",
+    ];
     // Sending on a channel waits for room, taking from one waits for a message, and the end of a
     // `with launch` waits for its task.
     let tasks = ["intrinsics.channel_send", "intrinsics.channel_take", "intrinsics.launch_take"];

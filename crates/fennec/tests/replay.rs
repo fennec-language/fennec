@@ -678,6 +678,52 @@ fn tasks_printing_replay_their_output_in_the_order_it_went_out() -> std::io::Res
     Ok(())
 }
 
+/// An ordered stream whose body prints, read until a `break`, while its chunks run ahead.
+const STREAM_PAST_A_BREAK: &str = "def shown(stdout: Stdout, n: int) -> int:
+    stdout.print(\"chunk\", n)
+    return n * n
+
+def main(stdout: Stdout):
+    many = [n for n in range(20000)]
+    for square in (shown(stdout, n) for n in parallel(many)):
+        if square > 900:
+            break
+    stdout.print(\"after break\")
+";
+
+/// A stream's chunks that ran ahead of a `break` in the recording run in its replay too, and no
+/// others do, so what they printed comes out the same, however many threads the replay is given.
+#[test]
+fn a_streams_chunks_run_past_a_break_replay_as_they_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stream-break")?;
+    let program = dir.join("stream.fen");
+    std::fs::write(&program, STREAM_PAST_A_BREAK)?;
+    let log = dir.join("stream.log");
+    let mut record = fennec_command();
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    let read = recorded.0.lines().filter(|line| line.starts_with("chunk ")).count();
+    assert!(read > 32, "no chunk ran past the break, so this tests nothing: {}", recorded.0);
+    for threads in ["1", "7", "1", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example serves until it's stopped, so its run doesn't end by itself.
 fn serves(source: &str) -> bool {
     source.contains(".serve(")

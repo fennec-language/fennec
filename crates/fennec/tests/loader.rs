@@ -487,8 +487,10 @@ fn pieces(
             wanted.entry((place, unit, piece)).or_default().push((section.object, section.section, *from));
         }
     }
-    // Each copy the executable holds, aligned as the piece is. As many copies as objects have the
-    // piece are theirs in order, as the linker lays objects out; fewer were merged into one.
+    // Each copy the executable holds, aligned as the piece is. The program's objects come before the
+    // runtime library, so with as many copies as objects have the piece, or more, as when the
+    // runtime has the same bytes, as Rust's table of two-digit pairs is Fennec's, the first are
+    // theirs in order, as the linker lays objects out. Fewer were merged into one.
     let mut found = BTreeMap::new();
     for ((place, unit, piece), owners) in wanted {
         let mut copies = Vec::new();
@@ -501,7 +503,7 @@ fn pieces(
             );
         }
         for (n, owner) in owners.iter().enumerate() {
-            let copy = if copies.len() == owners.len() { copies.get(n) } else { copies.first() };
+            let copy = if copies.len() >= owners.len() { copies.get(n) } else { copies.first() };
             if let Some(copy) = copy {
                 found.insert(*owner, *copy);
             }
@@ -565,8 +567,10 @@ fn same_section(
             (meaning(effect(&words(&section.bytes, group))), meaning(effect(&words(theirs, group))));
         assert!(
             ours.is_some() && ours == linked,
-            "{}: a hinted group works out {ours:?}, not {linked:?}",
-            place(group[0] - start)
+            "{}: a hinted group works out {ours:?}, not {linked:?}\n  ours {:x?}\n  theirs {:x?}",
+            place(group[0] - start),
+            words(&section.bytes, group),
+            words(theirs, group)
         );
     }
 }

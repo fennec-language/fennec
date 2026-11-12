@@ -780,25 +780,29 @@ fn new_key(state: &mut State, key_word: Word, (bytes, chars): (&[u8], usize)) ->
 /// block is made straight from the text's, with no looking first. A key that's there after
 /// all is still found, by `set_in`.
 pub extern "C" fn add_new_slice(dict: i64, text: i64, from: i64, to: i64, value: i64) -> i64 {
-    with(|state| {
-        let held_as_headers = state
-            .heap
-            .block(u64::try_from(dict).ok()?)
-            .and_then(|block| kind(state, block))
-            .is_some_and(|(key, _)| key == Word::Text);
-        if held_as_headers {
-            if let Some(key) = ascii_slice_header(state, text, from, to) {
-                let value = value.cast_unsigned();
-                return set_inline(state, dict, key, value).or_else(|| set_words(state, dict, &key, value));
+    super::made(
+        "fennec_dict_add_new_slice",
+        with(|state| {
+            let held_as_headers = state
+                .heap
+                .block(u64::try_from(dict).ok()?)
+                .and_then(|block| kind(state, block))
+                .is_some_and(|(key, _)| key == Word::Text);
+            if held_as_headers {
+                if let Some(key) = ascii_slice_header(state, text, from, to) {
+                    let value = value.cast_unsigned();
+                    return set_inline(state, dict, key, value)
+                        .or_else(|| set_words(state, dict, &key, value));
+                }
+                let (bytes, chars) = slice_of(state, text, from, to)?;
+                let key = new_key(state, Word::Text, (&bytes, chars));
+                return set_words(state, dict, &key, value.cast_unsigned());
             }
-            let (bytes, chars) = slice_of(state, text, from, to)?;
-            let key = new_key(state, Word::Text, (&bytes, chars));
-            return set_words(state, dict, &key, value.cast_unsigned());
-        }
-        let key = slice_key(state, text, from, to)?;
-        set_in(state, dict, key, value)
-    })
-    .unwrap_or(dict)
+            let key = slice_key(state, text, from, to)?;
+            set_in(state, dict, key, value)
+        })
+        .unwrap_or(dict),
+    )
 }
 
 /// The inline header of `text[from:to]`, for an ASCII string whose slice fits in one, made
@@ -895,40 +899,44 @@ pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
 /// over the owners `dict`, `value` and a key in a block had, like `set`. A block is made for a
 /// key held in its header only when the key is new.
 pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i64 {
-    with(|state| {
-        let header = [a, b, c];
-        let at = u64::try_from(dict).ok()?;
-        let block = state.heap.block(at)?;
-        let (key_word, value_word) = kind(state, block)?;
-        if key_word == Word::Text {
-            let value = value.cast_unsigned();
-            return set_inline(state, dict, header, value).or_else(|| set_words(state, dict, &header, value));
-        }
-        let (bytes, chars) = header_text(state, &header)?;
-        if key_word != Word::Str {
-            return None;
-        }
-        let owned = super::text::block_of(&header);
-        if let (Some(&1), (Probe::Found(entry), _)) =
-            (block.first(), find_text(state, block, (&bytes, chars))?)
-        {
-            let word = value_place(block, layout(state, block)?, entry)?;
-            let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value.cast_unsigned());
-            if value_word.owned() {
-                release(state, old);
+    super::made(
+        "fennec_dict_set_header",
+        with(|state| {
+            let header = [a, b, c];
+            let at = u64::try_from(dict).ok()?;
+            let block = state.heap.block(at)?;
+            let (key_word, value_word) = kind(state, block)?;
+            if key_word == Word::Text {
+                let value = value.cast_unsigned();
+                return set_inline(state, dict, header, value)
+                    .or_else(|| set_words(state, dict, &header, value));
             }
-            if let Some(key) = owned {
-                release(state, key);
+            let (bytes, chars) = header_text(state, &header)?;
+            if key_word != Word::Str {
+                return None;
             }
-            return Some(dict);
-        }
-        let key = match owned {
-            Some(key) => key.cast_signed(),
-            None => text_from_bytes(state, &bytes, chars),
-        };
-        set_in(state, dict, key, value)
-    })
-    .unwrap_or(dict)
+            let owned = super::text::block_of(&header);
+            if let (Some(&1), (Probe::Found(entry), _)) =
+                (block.first(), find_text(state, block, (&bytes, chars))?)
+            {
+                let word = value_place(block, layout(state, block)?, entry)?;
+                let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value.cast_unsigned());
+                if value_word.owned() {
+                    release(state, old);
+                }
+                if let Some(key) = owned {
+                    release(state, key);
+                }
+                return Some(dict);
+            }
+            let key = match owned {
+                Some(key) => key.cast_signed(),
+                None => text_from_bytes(state, &bytes, chars),
+            };
+            set_in(state, dict, key, value)
+        })
+        .unwrap_or(dict),
+    )
 }
 
 /// `dict.pop(key)` for a dict of string keys, the key given as its header's words, as `pop`
@@ -949,7 +957,7 @@ pub extern "C" fn pop_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end:
 
 /// A new empty dict of a shape, owned once, with room for `room` keys.
 pub extern "C" fn new(shape: i64, room: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_dict_new", |state| {
         let shape = u64::try_from(shape).unwrap_or(0);
         let width = shape_layout(state, shape).map_or(ENTRY_WORDS, |layout| layout.width);
         let block = build(state, (shape, Hashing::Fast), width, &[], usize::try_from(room).unwrap_or(0));
@@ -960,7 +968,7 @@ pub extern "C" fn new(shape: i64, room: i64) -> i64 {
 /// `dict[key] = value`: takes over the owners `dict`, `key` and `value` had, and gives back
 /// the dict's. A dict with other owners is copied first, and a full one grows.
 pub extern "C" fn set(dict: i64, key: i64, value: i64) -> i64 {
-    with(|state| set_in(state, dict, key, value).unwrap_or(dict))
+    super::made_with("fennec_dict_set", |state| set_in(state, dict, key, value).unwrap_or(dict))
 }
 
 fn set_in(state: &mut State, dict: i64, key: i64, value: i64) -> Option<i64> {
@@ -1393,7 +1401,7 @@ pub extern "C" fn popped() -> i64 {
 
 /// `set.clear()`: takes over the set's owner and gives back an empty set's.
 pub extern "C" fn set_clear(set: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_set_clear", |state| {
         let at = u64::try_from(set).unwrap_or(0);
         let shape = state.heap.block(at).and_then(shape_word).unwrap_or(0);
         release(state, at);

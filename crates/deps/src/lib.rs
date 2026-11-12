@@ -41,6 +41,28 @@ pub fn hash_of(files: &Files) -> Hash {
     hasher.finalize()
 }
 
+/// Two of these paths that a Mac or Windows would take as one, as `src/A.fen` and `src/a.fen`, or
+/// `src/Shapes/box.fen` and `src/shapes/ball.fen`, whose folders would merge: any two that differ
+/// only by case, in the file's name or a folder's.
+pub(crate) fn same_but_for_case<'p>(paths: impl Iterator<Item = &'p str>) -> Option<(String, String)> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for path in paths {
+        // Each folder on the way, then the file.
+        let ends = path.match_indices('/').map(|(at, _)| at).chain([path.len()]);
+        for end in ends {
+            let Some(part) = path.get(..end) else { continue };
+            match seen.get(&part.to_lowercase()) {
+                Some(had) if *had != part => return Some(((*had).to_owned(), part.to_owned())),
+                Some(_) => {}
+                None => {
+                    seen.insert(part.to_lowercase(), part);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// A dependency, and where its files are on this machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
@@ -62,7 +84,13 @@ pub struct Kits {
     /// Whether a kit fetched from git may name another by `file://`, which only fennec-deps' own
     /// tests ask for: see `with_local_git_chains`.
     local_git_chains: bool,
+    /// How many bytes a kit fetched from git may come to: `MOST_BYTES`, but for tests.
+    most_bytes: u64,
 }
+
+/// How many bytes a kit's files fetched from git may come to, all told: far more than any kit's
+/// source, and little enough that reading them can't take the machine's memory.
+pub const MOST_BYTES: u64 = 256 << 20;
 
 /// Finds a kit from git, by its name, address, commit and folder: its pin and its folder in the
 /// store.
@@ -83,7 +111,7 @@ impl Kits {
     /// The store in the Fennec folder `home`. Offline, a kit that isn't there is an error rather
     /// than fetched.
     pub fn new(home: &Path, offline: bool) -> Self {
-        Kits { home: home.to_path_buf(), offline, local_git_chains: false }
+        Kits { home: home.to_path_buf(), offline, local_git_chains: false, most_bytes: MOST_BYTES }
     }
 
     /// The store in this machine's Fennec folder, which fetches nothing with `FENNEC_OFFLINE` set
@@ -101,6 +129,14 @@ impl Kits {
     #[must_use]
     pub fn with_local_git_chains(mut self) -> Self {
         self.local_git_chains = true;
+        self
+    }
+
+    /// This store, taking kits from git of at most `most` bytes, for tests that can't commit
+    /// `MOST_BYTES` of files. Like `with_local_git_chains`, it's a call, which `fennec` never makes.
+    #[must_use]
+    pub fn with_most_bytes(mut self, most: u64) -> Self {
+        self.most_bytes = most;
         self
     }
 
@@ -252,7 +288,8 @@ impl Kits {
         }
         let count = FETCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let work = self.home.join("work").join(format!("fetch-{}-{count}", std::process::id()));
-        git::fetch(url, commit, folder, &work).map_err(|err| format!("couldn't fetch `{name}`: {err}"))
+        git::fetch(url, commit, folder, &work, self.most_bytes)
+            .map_err(|err| format!("couldn't fetch `{name}`: {err}"))
     }
 
     /// Keeps a kit's files in the store, written whole and renamed into place, giving back its
@@ -261,6 +298,9 @@ impl Kits {
         let at = self.stored(hash);
         if at.is_dir() {
             return Ok(at);
+        }
+        if let Some((one, other)) = same_but_for_case(files.keys().map(String::as_str)) {
+            return Err(format!("a kit can't have both {one} and {other}, which differ only by case"));
         }
         let partial = at.with_extension(format!("partial-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&partial);

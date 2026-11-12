@@ -240,6 +240,62 @@ mod deps {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A kit whose files come to more than the store takes is refused from git's listing, before
+    /// any of them is read: a dependency with a huge file can't take the machine's memory.
+    #[test]
+    fn a_dependency_too_big_is_refused_before_its_read() {
+        let dir = folder("too-big");
+        let (repository, _) = physics(&dir);
+        let commit = commit(&repository, &[("src/huge.fen", &"# padding\n".repeat(1000))]);
+        let root = game(&dir, &from_git("physics", &repository, &commit));
+        let said = Kits::new(&dir.join("home"), false).with_most_bytes(5000).update(&root).unwrap_err();
+        assert!(
+            said.contains("has more under `src` than a kit may, 5000 bytes, so none of it is read"),
+            "{said}"
+        );
+        assert!(!dir.join("home/kits").exists(), "a kit too big was kept");
+        // Within what it may come to, it's fetched.
+        Kits::new(&dir.join("home"), false).update(&root).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two files whose names differ only by case, or whose folders do, are refused: git keeps both,
+    /// but a Mac or Windows keeps one, and the same pin would build different code there.
+    #[test]
+    fn names_that_differ_only_by_case_are_refused() {
+        for (one, other) in
+            [("src/Shapes.fen", "src/shapes.fen"), ("src/Shapes/box.fen", "src/shapes/ball.fen")]
+        {
+            let dir = folder("case");
+            let (repository, _) = physics(&dir);
+            // Into git's index by hash, since a Mac's disk can't hold both.
+            let blob = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let blob = String::from_utf8_lossy(&blob.stdout).trim().to_owned();
+            for path in [one, other] {
+                git(&repository, &["update-index", "--add", "--cacheinfo", &format!("100644,{blob},{path}")]);
+            }
+            git(&repository, &["commit", "--quiet", "-m", "both"]);
+            let commit = git(&repository, &["rev-parse", "HEAD"]);
+            let root = game(&dir, &from_git("physics", &repository, &commit));
+            let said = Kits::new(&dir.join("home"), false).update(&root).unwrap_err();
+            let (folded_one, folded_other) =
+                if one.contains("/box") { ("src/Shapes", "src/shapes") } else { (one, other) };
+            assert!(
+                said.contains(&format!(
+                    "has both {folded_one} and {folded_other}, which differ only by case"
+                )),
+                "{said}"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
     #[test]
     fn a_kit_inside_a_repository_is_found_by_its_folder() {
         let dir = folder("folder");

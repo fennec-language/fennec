@@ -29,6 +29,21 @@ pub mod layout;
 pub mod lists;
 #[cfg(any(test, feature = "threads"))]
 pub(crate) mod live;
+
+/// Without threads, a runtime counts nothing for `FENNEC_LIVE_REPORT`: its one line is whether a
+/// server has taken a stop the program was asked for (see `live` in the threads build).
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) mod live {
+    /// A server has taken a stop the program was asked for, and is draining: written to the report,
+    /// if it's asked for, as `stopping 1`, once.
+    pub(crate) fn stop_taken() {
+        let Some(path) = std::env::var_os("FENNEC_LIVE_REPORT").map(std::path::PathBuf::from) else { return };
+        let writing = path.with_extension("writing");
+        if std::fs::write(&writing, "stopping 1\n").is_ok() {
+            let _ = std::fs::rename(&writing, &path);
+        }
+    }
+}
 pub mod notes;
 pub mod numbers;
 pub mod objects;

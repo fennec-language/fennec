@@ -284,20 +284,7 @@ impl Lowering<'_> {
         }
         let handle = task.declare("\0parallel.conn", Type::Int);
         task.scopes.push(HashMap::new());
-        let peer = task.temporary(Type::Str);
-        let asked = vec![Operand::Local(handle)];
-        task.emit(
-            InstKind::Builtin {
-                dest: Some(peer),
-                name: "parallel.peer".to_owned(),
-                args: asked,
-                changes: false,
-            },
-            span,
-        );
-        let made = task.temporary(connection);
-        let fields = vec![Operand::Local(handle), Operand::Local(peer)];
-        task.emit(InstKind::Make { dest: made, type_name: "Connection".to_owned(), fields }, span);
+        let made = served_connection(&mut task, handle, connection, span);
         args.push(Operand::Local(made));
         let result = task.temporary(returns.clone());
         task.emit(InstKind::Call { dest: Some(result), function: inner, args }, span);
@@ -719,4 +706,30 @@ impl Lowering<'_> {
         self.emit(InstKind::Builtin { dest: None, name: builtin.to_owned(), args, changes: false }, span);
         Ok(())
     }
+}
+
+/// The `Connection` a task serving a connection makes from its handle: with its peer, and its
+/// label, which it prints as, counted by the runtime as it's made.
+fn served_connection(task: &mut Lowering<'_>, handle: LocalId, connection: Type, span: Span) -> LocalId {
+    let peer = task.temporary(Type::Str);
+    let asked = vec![Operand::Local(handle)];
+    task.emit(
+        InstKind::Builtin { dest: Some(peer), name: "parallel.peer".to_owned(), args: asked, changes: false },
+        span,
+    );
+    // Its label, which it prints as, counted by the runtime as it's made.
+    let label = task.temporary(Type::Int);
+    task.emit(
+        InstKind::Builtin {
+            dest: Some(label),
+            name: "parallel.label".to_owned(),
+            args: vec![Operand::Local(handle)],
+            changes: false,
+        },
+        span,
+    );
+    let made = task.temporary(connection);
+    let fields = vec![Operand::Local(handle), Operand::Local(label), Operand::Local(peer)];
+    task.emit(InstKind::Make { dest: made, type_name: "Connection".to_owned(), fields }, span);
+    made
 }

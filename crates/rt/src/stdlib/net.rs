@@ -246,6 +246,8 @@ impl Fake {
             // A test's server never drains: its connections are taken one at a time.
             ("Server", "_stop_on", _) => return Ok(Value::Unit),
             ("Connection", "draining", []) => return Ok(Value::Bool(false)),
+            // The label of a connection a task serving it makes its `Connection` with.
+            ("Connection", "_label", []) => return Ok(Value::Int(next_label(0))),
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -672,8 +674,9 @@ pub(crate) fn real_connection(
             close(handle);
             return Ok(Value::Unit);
         }
-        // What a task serving a connection makes its `Connection` from.
+        // What a task serving a connection makes its `Connection` from: its peer, and its label.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
+        ("_label", []) => return Ok(Value::Int(next_label(0))),
         // Its server's draining, when it was told to `stop_on` signals and one has come.
         ("draining", []) => {
             let draining = PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping();
@@ -940,9 +943,13 @@ fn labelled((type_name, mut fields): Made) -> Made {
         "UdpSocket" => 2,
         _ => return (type_name, fields),
     };
-    let label = LABELS.get(kind).map_or(0, |count| count.fetch_add(1, Ordering::Relaxed) + 1);
-    fields.push(("_label", Value::Int(label)));
+    fields.push(("_label", Value::Int(next_label(kind))));
     (type_name, fields)
+}
+
+/// The next label of the kind numbered `kind`: 0 for connections, 1 servers, 2 UDP sockets.
+pub(crate) fn next_label(kind: usize) -> i64 {
+    LABELS.get(kind).map_or(0, |count| count.fetch_add(1, Ordering::Relaxed) + 1)
 }
 
 fn made_or_failed(found: Result<Made, Failure>) -> Value {

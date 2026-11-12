@@ -18,7 +18,7 @@ fn failed(case: &str, reason: &str) -> Value {
     Value::Err(Rc::new(Value::made_case("SqlError", case, vec![("reason", Value::str(reason))])))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) use real::open_checked;
 pub(crate) use real::{Fakes, call, open_fake, open_file};
 
@@ -47,6 +47,14 @@ mod real {
     /// How long a query waits for another writer to finish before failing with `Busy`.
     const BUSY_WAIT: Duration = Duration::from_secs(5);
 
+    /// What a narrowed `Fs` found at a database's path, to tell it's the file SQLite opened: its
+    /// device and number on Unix, and on Windows the file itself, held open, which says its volume
+    /// and index.
+    #[cfg(unix)]
+    pub(crate) type FileId = (u64, u64);
+    #[cfg(windows)]
+    pub(crate) type FileId = Arc<same_file::Handle>;
+
     /// How many connections a database keeps for its next transactions once they're done.
     const KEPT_IDLE: usize = 8;
 
@@ -56,12 +64,12 @@ mod real {
     enum Place {
         File(String),
         Test(String),
-        /// A file an `Fs` narrowed with `only` opened, by its path and the device and number of
-        /// the file the narrowed `Fs` found there: each connection checks it opened that one.
-        #[cfg(unix)]
+        /// A file an `Fs` narrowed with `only` opened, by its path with no link in it and the
+        /// file the narrowed `Fs` found there: each connection checks it opened that one.
+        #[cfg(any(unix, windows))]
         Checked {
             path: String,
-            file: (u64, u64),
+            file: FileId,
         },
     }
 
@@ -163,19 +171,20 @@ mod real {
     /// A new connection, which never waits on a lock itself: see the module's comment.
     fn connect(place: &Place) -> rusqlite::Result<Connection> {
         // Serialized: SQLite takes a lock of its own around each call, as well as ours.
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-        let path = match place {
-            Place::File(path) | Place::Test(path) => path,
-            #[cfg(unix)]
-            Place::Checked { path, .. } => path,
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+        let (path, flags) = match place {
+            Place::File(path) | Place::Test(path) => (path, flags | OpenFlags::SQLITE_OPEN_CREATE),
+            // The narrowed `Fs` made the file already, beneath its folder, so SQLite makes none,
+            // and refuses a path with a link in it, which the `Fs` resolved to one with none: a
+            // link swapped in on the way can't lead it to make or open a file outside.
+            #[cfg(any(unix, windows))]
+            Place::Checked { path, .. } => (path, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW),
         };
         let mut conn = Connection::open_with_flags(path, flags)?;
         kept_to_its_file(&mut conn)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Place::Checked { path, file } = place
-            && !still_the_file(&conn, path, *file)
+            && !still_the_file(&conn, path, file)
         {
             let message = format!(
                 "the database at `{path}` changed while it was being opened, so it isn't the one this Fs \
@@ -289,19 +298,27 @@ mod real {
     /// what the path names. A folder or link swapped in on the way is caught, short of one swapped
     /// back and forth between those looks.
     #[cfg(unix)]
-    pub(in crate::stdlib::sqlite) fn still_the_file(conn: &Connection, path: &str, file: (u64, u64)) -> bool {
+    pub(in crate::stdlib::sqlite) fn still_the_file(conn: &Connection, path: &str, file: &FileId) -> bool {
         use std::os::unix::fs::MetadataExt as _;
-        let named = || std::fs::metadata(path).is_ok_and(|found| (found.dev(), found.ino()) == file);
+        let named = || std::fs::metadata(path).is_ok_and(|found| (found.dev(), found.ino()) == *file);
         let before = named();
         let mut moved: std::ffi::c_int = -1;
         let asked = conn.file_control(rusqlite::DEFAULT_NAME, rusqlite::FileControl::HasMoved(&mut moved));
         before && asked.is_ok() && moved == 0 && named()
     }
 
+    /// On Windows, whether the path names the file the narrowed `Fs` noted, after SQLite has
+    /// opened it. SQLite can't say there whether its own open file has moved, so a file swapped
+    /// out and back while it opens isn't caught, as on Unix one swapped between the looks isn't.
+    #[cfg(windows)]
+    pub(in crate::stdlib::sqlite) fn still_the_file(_conn: &Connection, path: &str, file: &FileId) -> bool {
+        same_file::Handle::from_path(path).is_ok_and(|found| found == **file)
+    }
+
     /// `fs._sqlite_open(path)` for an `Fs` narrowed with `only`, on the real disk: the database in
     /// the file at `path`, refused unless SQLite opened `file`, the one the narrowed `Fs` found.
-    #[cfg(unix)]
-    pub(crate) fn open_checked(path: &str, file: (u64, u64)) -> Value {
+    #[cfg(any(unix, windows))]
+    pub(crate) fn open_checked(path: &str, file: FileId) -> Value {
         match open(Place::Checked { path: path.to_owned(), file }) {
             Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
             Err(reason) => io_error(&reason),

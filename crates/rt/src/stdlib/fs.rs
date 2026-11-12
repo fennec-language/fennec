@@ -757,31 +757,40 @@ fn remove_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<()> {
 
 /// `fs._sqlite_open` beneath `folder`. SQLite opens its file by path, and can't be handed a
 /// folder's handle, so the file is opened, or made, beneath the folder first and what it is noted.
-/// SQLite then opens the path, and the database is refused unless SQLite's file is still that one,
-/// as SQLite itself and the path both say, before and after it looks (see
-/// `sqlite::open_checked`). Its `-wal` and `-shm` files beside it are opened by SQLite by path,
-/// unchecked.
+/// SQLite then opens it by the path with every link resolved, never making a file and refusing one
+/// with a link in it, and the database is refused unless SQLite's file is still that one, as the
+/// path, and on Unix SQLite itself, say (see `sqlite::open_checked`). Its `-wal` and `-shm` files
+/// beside it are opened by SQLite by path, without following a link at the last step. Closing the
+/// window between the looks needs SQLite handed the open file, through a VFS of Fennec's own.
 fn sqlite_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, full: &str) -> Value {
+    let full = full.to_owned();
     #[cfg(unix)]
-    {
-        let noted = blocking(move || {
-            use std::os::unix::fs::MetadataExt as _;
-            let mut options = cap_std::fs::OpenOptions::new();
-            options.read(true).write(true).create(true);
-            let found = folder.open_with(&at, &options)?.into_std().metadata()?;
-            Ok::<(u64, u64), std::io::Error>((found.dev(), found.ino()))
-        });
-        match noted {
-            Ok(file) => crate::stdlib::sqlite::open_checked(full, file),
-            Err(err) => io_failed(&Fail::from(err)),
-        }
+    let noted = blocking(move || {
+        use std::os::unix::fs::MetadataExt as _;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        let found = folder.open_with(&at, &options)?.into_std().metadata()?;
+        // With every link resolved, so SQLite can be told to refuse one.
+        let resolved = std::fs::canonicalize(&full)?.to_string_lossy().into_owned();
+        Ok::<_, std::io::Error>((resolved, (found.dev(), found.ino())))
+    });
+    #[cfg(windows)]
+    let noted = blocking(move || {
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        let found = same_file::Handle::from_file(folder.open_with(&at, &options)?.into_std())?;
+        Ok::<_, std::io::Error>((full, Arc::new(found)))
+    });
+    #[cfg(any(unix, windows))]
+    match noted {
+        Ok((path, file)) => crate::stdlib::sqlite::open_checked(&path, file),
+        Err(err) => io_failed(&Fail::from(err)),
     }
-    // Elsewhere there's no number for a file to compare, so SQLite opens the path the `Fs`'s check
-    // allowed, as it always has.
-    #[cfg(not(unix))]
+    // Elsewhere, there's no SQLite.
+    #[cfg(not(any(unix, windows)))]
     {
         drop((folder, at));
-        crate::stdlib::sqlite::open_file(full)
+        crate::stdlib::sqlite::open_file(&full)
     }
 }
 

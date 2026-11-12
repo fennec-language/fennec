@@ -5,8 +5,10 @@
 use std::path::{Path, PathBuf};
 
 /// The kit around a folder: the nearest folder above it, or it, with a `kit.toml`, reached only
-/// through folders nobody else can write to. See `fennec_dist::kit_root`.
-pub(crate) fn root(from: &Path) -> Option<PathBuf> {
+/// through folders that are trusted. A `kit.toml` there that isn't trusted is an error, never no
+/// kit, which would run the default toolchain where the kit pins another. See
+/// `fennec_dist::kit_root`.
+pub(crate) fn root(from: &Path) -> Result<Option<PathBuf>, String> {
     fennec_dist::kit_root(from)
 }
 

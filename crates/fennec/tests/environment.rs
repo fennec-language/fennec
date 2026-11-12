@@ -21,7 +21,9 @@ fn code_files(folder: &Path, found: &mut Vec<PathBuf>) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if path.is_dir() {
-            if !SKIPPED.contains(&name.as_str()) {
+            // `crates/dist` is the release crate's code, not a site's built output.
+            let a_crate = folder.file_name().is_some_and(|parent| parent == "crates");
+            if a_crate || !SKIPPED.contains(&name.as_str()) {
                 code_files(&path, found);
             }
         } else if path.extension().is_some_and(|ext| CODE.iter().any(|code| ext == *code))

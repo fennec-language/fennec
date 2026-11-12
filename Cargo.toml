@@ -92,6 +92,10 @@ libm = { version = "=0.2.16", default-features = false }
 # and libsqlite3-sys. Without default features, there's no statement cache to pull in a second
 # hashbrown. Not on WebAssembly, where there's no disk. Under MIT, with SQLite in the public domain.
 rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled", "hooks", "limits"] }
+# Stopping a program `process.run` started, with whatever it started in turn: on Unix it runs in a
+# process group of its own, and the group is killed at its timeout, which the standard library
+# can't do without `unsafe`. rustix is already here under cap-std; this is its safe call for it.
+rustix = { version = "=1.1.6", default-features = false, features = ["process", "std"] }
 # On Windows, telling whether a path still names a file held open, by its volume and index, for a
 # SQLite database a narrowed `Fs` opened. It's already here under walkdir; this is its safe call
 # for `GetFileInformationByHandle`. Under MIT or Unlicense.

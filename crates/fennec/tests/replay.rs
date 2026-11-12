@@ -26,13 +26,14 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
 type Outcome = (String, String, Option<i32>);
 
 fn outcome(ran: &Output) -> Outcome {
-    let mut said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
     // A program a signal stopped has no exit code, so which signal goes with what it said: a run
     // killed with nothing printed is otherwise only `None`, which says nothing of why.
     #[cfg(unix)]
-    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&ran.status) {
-        let _ = std::fmt::Write::write_fmt(&mut said, format_args!("[stopped by signal {signal}]"));
-    }
+    let said = match std::os::unix::process::ExitStatusExt::signal(&ran.status) {
+        Some(signal) => format!("{said}[stopped by signal {signal}]"),
+        None => said,
+    };
     (String::from_utf8_lossy(&ran.stdout).into_owned(), said, ran.status.code())
 }
 

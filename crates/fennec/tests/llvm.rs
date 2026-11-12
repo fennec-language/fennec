@@ -6051,6 +6051,185 @@ def main(stdout: Stdout) fails Oops | Crashed:
     )
 }
 
+/// A struct field that defaults to a module constant holds that constant's block, which is never
+/// freed and is shared by every reader, so it's never taken as made alone: changing the field
+/// copies it. A list, a dict, a long text and a nested struct's list, on the main thread, in
+/// `parallel` and in a launched task, in both builds, checking proofs and not. The constants
+/// stay as written. The coverage lane's fuzz found a false proof here, before #1531.
+#[test]
+fn a_field_defaulting_to_a_constant_is_shared_however_it_is_changed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let programs = [
+        (
+            r#"from std.concurrent import Crashed
+
+struct Point:
+    x: int
+    y: int
+
+    def moved(ref self, by: int):
+        self.x += by
+
+NUMBERS3 = [12, 13]
+COUNTS3 = {"a": 12}
+NOTHING3 = list[(str, int)]()
+SPOT3 = Point(x=12, y=1)
+
+struct Bin3:
+    at = 0
+    items = NOTHING3
+    counts = COUNTS3
+    numbers = NUMBERS3
+
+    def pushed(ref self, n: int):
+        self.items.append(("x", n))
+        self.counts["n"] = n
+        self.numbers.append(n)
+
+    def top(ref self) -> int:
+        last = self.items.pop() else return -1
+        return last[1]
+
+def used3(n: int) -> str:
+    mut bin = Bin3()
+    bin.pushed(n)
+    top = bin.top()
+    mut mine = NUMBERS3
+    mine.append(n)
+    mine[0] = n
+    mut spot = SPOT3
+    spot.moved(n)
+    mut counts = COUNTS3
+    counts["m"] = n
+    return f"{top} {len(bin.items)} {bin.counts} {bin.numbers} {mine} {spot} {counts} {len(NOTHING3)} {NUMBERS3} {COUNTS3} {SPOT3}"
+
+struct Said3:
+    texts: list[str]
+
+def tasked3(said: shared Said3):
+    text = used3(2)
+    lock said as ref held:
+        held.texts.append(text)
+    return
+
+def constants3(stdout: Stdout) fails Crashed:
+    shared said = Said3(texts=list[str]())
+    stdout.print(len(NUMBERS3), len(COUNTS3), len(NOTHING3), SPOT3.x)
+    stdout.print("main", used3(1))
+    for line in [used3(i) for i in parallel(range(3))]:
+        stdout.print("parallel", line)
+    with launch(() => tasked3(said))?:
+        pass
+    lock said as held:
+        for text in held.texts:
+            stdout.print("task", text)
+    stdout.print("after", used3(3), NUMBERS3, COUNTS3, len(NOTHING3))
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    constants3(stdout)?
+    return
+"#,
+            r#"2 1 0 12
+main 1 0 {"a": 12, "n": 1} [12, 13, 1] [1, 13, 1] Point(x=13, y=1) {"a": 12, "m": 1} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+parallel 0 0 {"a": 12, "n": 0} [12, 13, 0] [0, 13, 0] Point(x=12, y=1) {"a": 12, "m": 0} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+parallel 1 0 {"a": 12, "n": 1} [12, 13, 1] [1, 13, 1] Point(x=13, y=1) {"a": 12, "m": 1} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+parallel 2 0 {"a": 12, "n": 2} [12, 13, 2] [2, 13, 2] Point(x=14, y=1) {"a": 12, "m": 2} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+task 2 0 {"a": 12, "n": 2} [12, 13, 2] [2, 13, 2] Point(x=14, y=1) {"a": 12, "m": 2} 0 [12, 13] {"a": 12} Point(x=12, y=1)
+after 3 0 {"a": 12, "n": 3} [12, 13, 3] [3, 13, 3] Point(x=15, y=1) {"a": 12, "m": 3} 0 [12, 13] {"a": 12} Point(x=12, y=1) [12, 13] {"a": 12} 0
+"#,
+        ),
+        (
+            r#"from std.concurrent import Crashed
+
+NAMES = {"a": [1]}
+GREETING = "a text longer than any header holds"
+EMPTY = list[int]()
+
+struct Inner:
+    seen = EMPTY
+
+struct Shelf:
+    names = NAMES
+    text = GREETING
+    inner = Inner()
+
+    def filled(ref self, n: int):
+        self.names["b"] = [n]
+        self.names["a"].append(n)
+        self.text += "!"
+        self.inner.seen.append(n)
+
+def used(n: int) -> str:
+    mut shelf = Shelf()
+    shelf.filled(n)
+    mut again = Shelf()
+    again.inner.seen.append(n + 10)
+    return f"{shelf.names} {shelf.text} {shelf.inner.seen} {again.inner.seen} {NAMES} {GREETING} {EMPTY}"
+
+struct Said:
+    texts: list[str]
+
+def tasked(said: shared Said):
+    text = used(2)
+    lock said as ref held:
+        held.texts.append(text)
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(texts=list[str]())
+    stdout.print("main", used(1))
+    for line in [used(i) for i in parallel(range(3))]:
+        stdout.print("parallel", line)
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        for text in held.texts:
+            stdout.print("task", text)
+    stdout.print("after", used(3), NAMES, GREETING, EMPTY)
+    return
+"#,
+            r#"main {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
+parallel {"a": [1, 0], "b": [0]} a text longer than any header holds! [0] [10] {"a": [1]} a text longer than any header holds []
+parallel {"a": [1, 1], "b": [1]} a text longer than any header holds! [1] [11] {"a": [1]} a text longer than any header holds []
+parallel {"a": [1, 2], "b": [2]} a text longer than any header holds! [2] [12] {"a": [1]} a text longer than any header holds []
+task {"a": [1, 2], "b": [2]} a text longer than any header holds! [2] [12] {"a": [1]} a text longer than any header holds []
+after {"a": [1, 3], "b": [3]} a text longer than any header holds! [3] [13] {"a": [1]} a text longer than any header holds [] {"a": [1]} a text longer than any header holds []
+"#,
+        ),
+    ];
+    for (source, wanted) in programs {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            for proofs in ["0", "1"] {
+                let dir = folder("constant_defaults")?;
+                let (program, executable) = (dir.join("defaults.fen"), dir.join("defaults"));
+                std::fs::write(&program, source)?;
+                let built = crate::executables::fennec_command()
+                    .arg("build")
+                    .args(how)
+                    .arg(&program)
+                    .arg("-o")
+                    .arg(&executable)
+                    .env("FENNEC_HOME", &dir)
+                    .env("FENNEC_CHECK_PROOFS", proofs)
+                    .output_before(FENNEC_DEADLINE)?;
+                assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+                let ran = Command::new(&executable).output_within()?;
+                std::fs::remove_dir_all(&dir)?;
+                assert_eq!(
+                    String::from_utf8_lossy(&ran.stdout),
+                    wanted,
+                    "{how:?} proofs {proofs}: {}",
+                    String::from_utf8_lossy(&ran.stderr)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What the main thread printed before a launch comes out before what the task prints, on its own
 /// output, as it was printed first: the main thread's kept output is written as the task starts.
 #[test]

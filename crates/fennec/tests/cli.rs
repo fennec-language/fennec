@@ -2895,6 +2895,71 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A dependency sees its own kit's names, what it imports, and the language's: never the program's.
+/// The program's names have no prefix in the merged module, so a dependency writing one it doesn't
+/// define read the program's private constant and called its private function.
+#[test]
+fn a_dependency_sees_only_its_own_names_what_it_imports_and_the_languages() {
+    let dir = scratch("dependency-names").unwrap();
+    let helper = dir.join("helper");
+    let peeks = "export def peek() -> str:\n    return f\"{API_KEY} {secret_total()}\"\n";
+    write_kit(&helper, "helper", "", &[("lib.fen", peeks)]).unwrap();
+    let game = dir.join("game");
+    let main = "import helper\n\nAPI_KEY = \"hunter2\"\n\nstruct Player:\n    hp: int\n\n\
+                def secret_total() -> int:\n    return 42\n\n\
+                def main(stdout: Stdout):\n    stdout.print(helper.peek())\n";
+    write_kit(&game, "game", "[dependencies]\nhelper = { path = \"../helper\" }\n", &[("main.fen", main)])
+        .unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let refused = |says: &[&str]| {
+        for command in ["check", "build"] {
+            let output = fennec(command);
+            assert!(!output.status.success(), "{command}");
+            let said = text(&output.stderr);
+            for one in says {
+                assert!(said.contains(one), "{command}: {said}");
+            }
+            assert!(said.contains("helper/src/lib.fen"), "{command}: {said}");
+        }
+    };
+    refused(&["`API_KEY` doesn't exist", "`secret_total` doesn't exist"]);
+    // A type of the program's, too.
+    std::fs::write(
+        helper.join("src/lib.fen"),
+        "export def hurt(player: Player) -> int:\n    return player.hp\n",
+    )
+    .unwrap();
+    refused(&["`Player` doesn't exist"]);
+    // The program's own `len` would hide the language's from the dependency: refused, saying so.
+    std::fs::write(helper.join("src/lib.fen"), "export def size() -> int:\n    return len(\"abc\")\n")
+        .unwrap();
+    std::fs::write(
+        game.join("src/main.fen"),
+        "import helper\n\ndef len(text: str) -> int:\n    return 99\n\n\
+         def main(stdout: Stdout):\n    stdout.print(helper.size())\n",
+    )
+    .unwrap();
+    refused(&["`len` here would be the program's own `len`, not the language's"]);
+    // A name the dependency defines itself is its own, though the program has one too.
+    std::fs::write(
+        helper.join("src/lib.fen"),
+        "API_KEY = \"theirs\"\n\nexport def peek() -> str:\n    return f\"{API_KEY} {len(API_KEY)}\"\n",
+    )
+    .unwrap();
+    std::fs::write(game.join("src/main.fen"), main).unwrap();
+    let ran = fennec("run");
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "theirs 6\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A small kit and a folder for Fennec's own files, in a folder that holds both and goes when the
 /// first is dropped.
 fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {

@@ -98,18 +98,11 @@ mod real {
     /// first opens one and gone when the test ends. A test's database is a real one in WAL mode,
     /// so it does what a database on the disk does: a query outside a transaction reads what was
     /// there before it, while it's still going.
+    #[derive(Default)]
     pub(crate) struct Fakes {
-        test: u64,
         pub(super) folder: Option<PathBuf>,
         /// Each path's file in the folder, by the path's key in the test's fake file system.
         files: HashMap<String, PathBuf>,
-    }
-
-    impl Default for Fakes {
-        fn default() -> Self {
-            static TESTS: AtomicU64 = AtomicU64::new(0);
-            Fakes { test: TESTS.fetch_add(1, Ordering::Relaxed), folder: None, files: HashMap::new() }
-        }
     }
 
     impl Drop for Fakes {
@@ -141,18 +134,29 @@ mod real {
                 return Ok(file.clone());
             }
             if self.folder.is_none() {
-                let made = std::env::temp_dir().join(format!(
-                    "fennec-test-databases-{}-{}",
-                    std::process::id(),
-                    self.test
-                ));
-                std::fs::create_dir_all(&made)?;
-                self.folder = Some(made);
+                self.folder = Some(fresh_folder()?);
             }
             let folder = self.folder.clone().unwrap_or_default();
             let file = folder.join(format!("{}.db", self.files.len()));
             self.files.insert(key.to_owned(), file.clone());
             Ok(file)
+        }
+    }
+
+    /// A folder of a test's own for its databases, named at random and made new: one a crashed
+    /// run left behind, with its databases still in it, is never taken for this test's.
+    fn fresh_folder() -> std::io::Result<PathBuf> {
+        loop {
+            let mut name = [0; 8];
+            getrandom::fill(&mut name).map_err(std::io::Error::other)?;
+            let made =
+                std::env::temp_dir().join(format!("fennec-test-databases-{:016x}", u64::from_le_bytes(name)));
+            match std::fs::create_dir(&made) {
+                Ok(()) => return Ok(made),
+                // Taken already, by chance: draw another.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
         }
     }
 

@@ -361,6 +361,7 @@ pub(super) fn copies(function: &Function, known: Known<'_>, depths: &[usize]) ->
 pub(super) fn every_time(function: &Function, known: Known<'_>) -> HashSet<(u32, u32)> {
     let depths = vec![0; function.blocks.len()];
     let mut found = HashSet::new();
+    #[expect(clippy::iter_over_hash_type, reason = "what each loop finds goes in one set, in any order")]
     for (head, body) in super::loops::bodies(function) {
         let again = walk(function, known, &depths, Some((head, &body)));
         found.extend(again.into_iter().map(|(span, ..)| (span.start, span.end)));

@@ -1498,9 +1498,19 @@ found:
             self.line(&format!("store ptr {block}, ptr {value_at}"));
             self.release(&old);
         } else if value_kind.counted() {
-            if !fresh {
-                self.retain_value(&held, &value_kind);
-            }
+            // A string's header becomes a block of the dict's own, as any store's does.
+            let held = if value_kind == Kind::TextBlock {
+                let block = self.owned_text_block(&held);
+                if fresh {
+                    self.release_text(&held);
+                }
+                block
+            } else {
+                if !fresh {
+                    self.retain_value(&held, &value_kind);
+                }
+                held.clone()
+            };
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {value_at}"));
             self.line(&format!("store ptr {held}, ptr {value_at}"));

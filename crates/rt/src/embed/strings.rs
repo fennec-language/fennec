@@ -486,10 +486,10 @@ const WORD_BYTES: usize = 8;
 const LOW_BITS: u64 = u64::from_ne_bytes([1; 8]);
 const HIGH_BITS: u64 = LOW_BITS << 7;
 
-/// Whether `part`, of at most a word's bytes, is in `whole`, with nothing copied: a word at a
-/// time to where `part`'s first byte is, then whether the rest follows. It takes one look per
+/// Where `part`, of one to eight bytes, first is in `whole`, in bytes, with nothing copied: a word
+/// at a time to where `part`'s first byte is, then whether the rest follows. It takes one look per
 /// place, so it's linear whatever the strings hold.
-fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> bool {
+fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> Option<usize> {
     let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
     let (part, first) = (part & mask, part & 0xff);
     for (at, word) in whole.iter().enumerate() {
@@ -501,18 +501,34 @@ fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> bo
         while places != 0 {
             let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
             if at * 8 + byte + size > length {
-                return false;
+                return None;
             }
             let next = whole.get(at + 1).map_or(0, |next| u64::from_le(*next));
             let shift = byte * 8;
             let found = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
             if found & mask == part {
-                return true;
+                return Some(at * 8 + byte);
             }
             places &= places - 1;
         }
     }
-    false
+    None
+}
+
+/// How many characters the first `bytes` bytes of a string's words hold: the bytes that don't carry
+/// on a character begun before them, whose top two bits are `10`, counted eight at a time.
+fn chars_before(words: &[u64], bytes: usize) -> usize {
+    let mut count = 0;
+    for (at, word) in words.iter().enumerate().take(bytes.div_ceil(8)) {
+        let taken = (bytes - at * 8).min(8);
+        let mask = if taken == 8 { u64::MAX } else { (1 << (taken * 8)) - 1 };
+        let word = u64::from_le(*word);
+        // A byte's top bit set and the one below it clear: shifted up a place, each byte's second
+        // bit lands on its own top bit.
+        let carries_on = word & !(word << 1) & HIGH_BITS & mask;
+        count += taken - usize::try_from(carries_on.count_ones()).unwrap_or(0);
+    }
+    count
 }
 
 /// Whether `part`'s bytes are in `whole`'s, each given where it is. Bytes are the same question as
@@ -526,7 +542,7 @@ pub(super) fn bytes_contain(whole: (&[u64], usize), (part, size): (&[u64], usize
     }
     if size <= WORD_BYTES {
         let first = part.first().map_or(0, |word| u64::from_le(*word));
-        return word_in_place(whole, first, size);
+        return word_in_place(whole, first, size).is_some();
     }
     // Longer ones are rare, and `str`'s search stays linear however the two repeat themselves.
     let text_of = |(words, length): (&[u64], usize)| {
@@ -925,6 +941,19 @@ pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
 /// `text.find(part)`: which character `part` first starts at, or -1 when it isn't there.
 pub extern "C" fn find(address: i64, part: i64) -> i64 {
     with(|state| {
+        // A part of a word or less, as most are, is looked for where both strings are.
+        let looked_for = u64::try_from(part).ok().and_then(|at| state.heap.block(at));
+        if looked_for
+            .is_some_and(|block| super::heap::is_text(state, block) && lengths(block).0 <= WORD_BYTES)
+        {
+            let (whole, (words, size)) = (bytes_in_block(state, address), bytes_in_block(state, part));
+            if size == 0 {
+                return Some(0);
+            }
+            let first = words.first().map_or(0, |word| u64::from_le(*word));
+            let found = word_in_place(whole, first, size);
+            return Some(found.map_or(-1, |at| i64::try_from(chars_before(whole.0, at)).unwrap_or(-1)));
+        }
         read_two(state, (address, part), |_, text, part| {
             let before = text.find(part).and_then(|at| text.get(..at));
             before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
@@ -1105,7 +1134,7 @@ mod split_tests {
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let read = |address: i64| with(|state| super::text(state, address)).unwrap_or_default();
         let wholes = ["", "caf\u{e9} au lait, \u{e9}t\u{e9}", "GET /api/orders HTTP/1.1\r\nHost: x\r\n\r\n"];
-        let parts = ["", "a", "\u{e9}t\u{e9}", "\r\n\r\n", "absent", "orders"];
+        let parts = ["", "a", "\u{e9}t\u{e9}", "\r\n\r\n", "absent", "orders", "orders HTTP/1.1", "t\u{e9}"];
         for whole in wholes {
             let address = string(whole);
             for part in parts {

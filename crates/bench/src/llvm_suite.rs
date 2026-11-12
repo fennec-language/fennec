@@ -166,7 +166,7 @@ fn timed_copy(source: &str, out_dir: &Path, name: &str) -> Option<String> {
         return None;
     }
     let timed = format!(
-        "{}def main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n{}\n    if args.len() > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n",
+        "{}def main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n{}\n    if len(args) > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n",
         text.get(..at)?,
         body.trim_end()
     );
@@ -701,7 +701,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(copy).unwrap(),
             "def f() -> int:\n    1\n\ndef main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n    \
-             stdout.print(f())\n    if args.len() > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n"
+             stdout.print(f())\n    if len(args) > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n"
         );
         std::fs::write(
             &kernel,

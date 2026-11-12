@@ -710,13 +710,61 @@ impl Emit<'_, '_, '_> {
         let copy_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
+        // An inline `more` with no room for it is joined in a new block with room to double,
+        // as the runtime would, rather than boxed to be handed to it.
+        let (boxed, grow) = (self.label("append_block"), self.label("append_grow"));
+        self.line(&format!("br i1 {in_block}, label %{boxed}, label %{grow}"));
+        self.start_block(&grow);
+        let made = self.grown_text(block, more);
+        let grow_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&boxed);
         let grown = self.on_blocks([more], |emit, [more]| emit.append_text(block, &more));
         let slow_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         let result = self.temp();
-        self.line(&format!("{result} = phi ptr [ {block}, %{copy_end} ], [ {grown}, %{slow_end} ]"));
+        self.line(&format!(
+            "{result} = phi ptr [ {block}, %{copy_end} ], [ {made}, %{grow_end} ], [ {grown}, %{slow_end} ]"
+        ));
         result
+    }
+
+    /// `block + more` in a new block with room for twice as much, as the runtime grows a text
+    /// with no room left: the block's bytes and then `more`'s are copied in, and the block's
+    /// owner is let go of, as `+=` takes it over. What follows the bytes stays zero.
+    fn grown_text(&mut self, block: &str, more: &str) -> String {
+        use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS};
+        self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let at = |emit: &mut Self, base: &str, offset: i32| emit.offset(base, offset.unsigned_abs());
+        let (length, chars) = (self.temp(), self.temp());
+        let (length_at, chars_at) = (at(self, block, TEXT_BYTES), at(self, block, TEXT_CHARS));
+        self.line(&format!("{length} = load i64, ptr {length_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        let (from, more_length, more_chars) =
+            (self.header_bytes(more), self.header_byte_length(more), self.header_chars(more));
+        let (total, room, all_chars, made) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{total} = add nuw i64 {length}, {more_length}"));
+        self.line(&format!("{room} = shl nuw i64 {total}, 1"));
+        self.line(&format!("{all_chars} = add nuw i64 {chars}, {more_chars}"));
+        self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {room})"));
+        let (start, old_start) =
+            (self.offset(&made, crate::emit::TEXT_START), self.offset(block, crate::emit::TEXT_START));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {start}, ptr {old_start}, i64 {length}, i1 false)"
+        ));
+        let after = self.temp();
+        self.line(&format!("{after} = getelementptr inbounds i8, ptr {start}, i64 {length}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {after}, ptr {from}, i64 {more_length}, i1 false)"
+        ));
+        let (made_length_at, made_chars_at) = (at(self, &made, TEXT_BYTES), at(self, &made, TEXT_CHARS));
+        self.line(&format!("store i64 {total}, ptr {made_length_at}"));
+        self.line(&format!("store i64 {all_chars}, ptr {made_chars_at}"));
+        self.release(block);
+        self.leave_if_failed();
+        made
     }
 
     /// Whether a header's text is all ASCII, so a character's place is its byte's.

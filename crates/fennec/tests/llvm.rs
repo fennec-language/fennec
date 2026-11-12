@@ -18608,6 +18608,51 @@ const TEXTS_JOINED: &str = r#"def main(stdout: Stdout):
     return
 "#;
 
+/// `text += piece` with a piece held in its header and no room left in the text's block makes
+/// the joined text natively, in a block with room to double, letting the old text go, as the
+/// runtime grows one: the piece used to be boxed into a block of its own to hand to the runtime,
+/// and let go of again. A copy kept first keeps what it had, and adding a text to itself doubles.
+#[test]
+fn text_grown_past_its_room_takes_no_box() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("text_grown_past_room")?;
+    std::fs::write(dir.join("text_grown_past_room.fen"), TEXT_GROWN_PAST_ROOM)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "text_grown_past_room", how)?;
+        assert_eq!(printed, TEXT_GROWN_PAST_ROOM_PRINT, "{how:?}");
+        assert!(count(&counts, "allocations") < Some(30) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TEXT_GROWN_PAST_ROOM_PRINT: &str = r"132 130 é日本 né HTTP/1.1
+445 7é8é9é -1
+64 !!si
+";
+
+const TEXT_GROWN_PAST_ROOM: &str = r#"def main(stdout: Stdout):
+    long_one = "a string long enough to be held in a block of its own"
+    mut out = f"HTTP/1.1 {200} OK and some more words\r\n"
+    out += "Content-Type: x\r\n"
+    out += f"Content-Length: {len(long_one)}\r\n\r\n"
+    out += long_one
+    out += "é"
+    kept = out
+    out += "日本"
+    stdout.print(len(out), len(kept), out[-3:], kept[-2:], out[0:8])
+    mut built = "start of a text that does not fit in a header"
+    for n in range(200):
+        built += f"{n % 10}é"
+    stdout.print(len(built), built[-6:], built.find("9é9") else -1)
+    mut same = "sixteen chars!!!sixteen chars!!!"
+    same += same
+    stdout.print(len(same), same[30:34])
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

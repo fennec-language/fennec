@@ -3350,7 +3350,7 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 known.map_walks.insert(local.0, *list);
             }
             for (item, _, _, _) in pairs {
-                known.walk_items.insert(item.0, (*list, name.ends_with(".items")));
+                known.walk_items.insert(item.0, (*list, matches!(name.as_str(), "Table.items" | "dict.items")));
                 if name == "dict.keys" {
                     known.walk_keys.insert(item.0);
                 }

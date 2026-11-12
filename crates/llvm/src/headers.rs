@@ -1628,6 +1628,43 @@ done:
         self.assign(dest, &digits)
     }
 
+    /// `text.startswith(part)`, or `text.endswith(part)` with `at_end`, on two headers: their bytes
+    /// compared where they are, with no slice made and no call. Comparing bytes is comparing
+    /// characters, as both are UTF-8.
+    pub(crate) fn header_affix(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        (text, part): (&fennec_ir::Operand, &fennec_ir::Operand),
+        at_end: bool,
+    ) -> Result<(), String> {
+        let ((text, _), (part, _)) = (self.operand(text)?, self.operand(part)?);
+        let (text_bytes, text_length) = (self.header_bytes(&text), self.header_byte_length(&text));
+        let (part_bytes, part_length) = (self.header_bytes(&part), self.header_byte_length(&part));
+        let fits = self.temp();
+        self.line(&format!("{fits} = icmp ule i64 {part_length}, {text_length}"));
+        let before = self.current.clone();
+        let (compare, done) = (self.label("affix_compare"), self.label("affix_done"));
+        self.line(&format!("br i1 {fits}, label %{compare}, label %{done}"));
+        self.start_block(&compare);
+        let from = if at_end {
+            let (start, from) = (self.temp(), self.temp());
+            self.line(&format!("{start} = sub i64 {text_length}, {part_length}"));
+            self.line(&format!("{from} = getelementptr inbounds i8, ptr {text_bytes}, i64 {start}"));
+            from
+        } else {
+            text_bytes
+        };
+        self.declare("declare i32 @memcmp(ptr, ptr, i64)");
+        let (order, same) = (self.temp(), self.temp());
+        self.line(&format!("{order} = call i32 @memcmp(ptr {from}, ptr {part_bytes}, i64 {part_length})"));
+        self.line(&format!("{same} = icmp eq i32 {order}, 0"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let found = self.temp();
+        self.line(&format!("{found} = phi i1 [ false, %{before} ], [ {same}, %{compare} ]"));
+        self.assign(dest, &found)
+    }
+
     /// A word of a header's block at `offset`, read only when it's in a block, and 0 otherwise.
     fn block_word(&mut self, header: &str, offset: i32) -> String {
         let in_block = self.header_in_block(header);

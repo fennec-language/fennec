@@ -48,6 +48,7 @@ mod dying;
 mod emit;
 mod entry;
 mod facts;
+mod failure_checks;
 mod generators;
 mod headers;
 mod holding;
@@ -82,6 +83,7 @@ pub use emit::{
     trust_native_blocks,
 };
 pub use entry::{Image, entry, tests_entry};
+pub use failure_checks::unchecked_failures;
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_launch, uses_parallel, uses_tls};
 pub use waits::{Waits, Why, may_wait};

@@ -218,6 +218,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!(
             "{part} = call ptr @fennec_str_slice(ptr {whole}, i64 {start}, i64 {end}, i64 {from}, i64 {to})"
         ));
+        self.leave_if_failed();
         part
     }
 

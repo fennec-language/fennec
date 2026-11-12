@@ -156,14 +156,15 @@ fn decoded(text: &str, plus: bool) -> String {
     String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
 }
 
-/// A query's pairs as `std.url`'s `decode_query` reads them, a name given twice keeping its last.
+/// A query's pairs as `std.url`'s `decode_query` reads them, a name given twice keeping its first.
 fn query(text: &str) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
     for pair in text.split('&').filter(|pair| !pair.is_empty()) {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
         let (name, value) = (decoded(name, true), decoded(value, true));
-        found.retain(|(seen, _)| *seen != name);
-        found.push((name, value));
+        if !found.iter().any(|(seen, _)| *seen == name) {
+            found.push((name, value));
+        }
     }
     found
 }
@@ -479,7 +480,7 @@ mod tests {
             return;
         };
         assert_eq!(path, "/a b");
-        assert_eq!(query, &[("x".to_owned(), "3".to_owned())]);
+        assert_eq!(query, &[("x".to_owned(), "1 2".to_owned())]);
         assert_eq!(headers, &[("host".to_owned(), "h".to_owned()), ("x-y".to_owned(), "z".to_owned())]);
         assert_eq!(body, b"hi");
         for (asked, status) in [

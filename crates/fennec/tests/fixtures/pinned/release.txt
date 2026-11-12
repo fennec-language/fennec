@@ -2,9 +2,9 @@ source 9d0977c1bcd497bba74244f9af98d0056bb1b0b19f7c5e34a7e432d832e2e07a
 code 1
 stdout 7
 5 45 7
-stderr 144
+stderr 138
 error: index 5 is out of range for length 2
-  --> <dir>/release.fen:21:18
+  --> release.fen:21:18
    |
 21 |     stdout.print([1, 2][5])
    |                  ^^^^^^^^^

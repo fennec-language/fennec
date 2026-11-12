@@ -3384,13 +3384,13 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
-/// One program built in two folders, with two Fennec folders, a second apart, is the same bytes
-/// each time: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
+/// One program built for release in two folders, with two Fennec folders, a second apart, is the
+/// same bytes each time, as a signed release has to be to check by building it again: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
 /// a single file built by its whole path. Nothing of where or when it was built goes in: the files
 /// it carries to show a failure in are named from the kit, not from the root of the disk, and its
 /// cache key goes by the runtime library's build, not by where that is or when it changed.
 #[test]
-fn a_program_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
+fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
     use crate::executables::Within as _;
     if !crate::llvm::ready() {
         return Ok(());
@@ -3423,7 +3423,7 @@ fn a_program_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
     let build =
         |place: &Path, home: &str, target: &str, from: &Path, out: &str| -> std::io::Result<Vec<u8>> {
             let built = crate::executables::fennec_command()
-                .args(["build", target, "-o"])
+                .args(["build", "--release", target, "-o"])
                 .arg(place.join(out))
                 .current_dir(from)
                 .env("FENNEC_HOME", dir.join(home))

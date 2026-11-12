@@ -198,7 +198,7 @@ pub(crate) fn tracing_executable(
     let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false, None)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
-            sources: portable_sources(program),
+            sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
         }
@@ -434,11 +434,13 @@ fn root_hash(
         .into_iter()
         .chain(release.then(|| runtime_bitcode(runtime, statically)).flatten());
     for path in library {
-        // The build of Fennec it's from, as its stamp says, so the same library keys the same
-        // program on every machine and in every folder. One from before stamps goes by where it
-        // is, how big and when it changed.
+        // Which library, by its name, and the build of Fennec it's from, as its stamp says, so the
+        // same library keys the same program on every machine and in every folder. The name tells
+        // the runtime with threads from the one without, which one build of Fennec makes both of.
+        // One from before stamps goes by where it is, how big and when it changed.
         if let Some(build) = stamp_of(&path) {
-            hasher.update(format!("library built from {build}\n").as_bytes());
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            hasher.update(format!("library {name} built from {build}\n").as_bytes());
             continue;
         }
         let metadata = std::fs::metadata(&path).ok();
@@ -574,8 +576,10 @@ fn emitted_as_written(
     Ok(Emitted { lowered, units, shared, layouts })
 }
 
-/// The sources an executable carries, to show a failure in, named the same wherever the program
-/// was built, so two builds of one program are the same bytes. A name written as a path from where
+/// The sources a release build carries, to show a failure in, named the same wherever the program
+/// was built, so two release builds of one program are the same bytes, as a signed release has to
+/// be to check by building it again. A dev build keeps the names as they were loaded, so a failure
+/// in a program run by its whole path shows that whole path, as a person running it wants. A name written as a path from where
 /// the command ran, as `examples/game.fen` or `src/main.fen`, is the same on every machine, and
 /// stays. One written from the root of the disk, as a kit built by its whole path or a dependency
 /// in the store is, says where the builder keeps things, and is named instead: a file of the kit
@@ -646,7 +650,7 @@ fn llvm_objects(
     let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
-            sources: portable_sources(program),
+            sources: if release { portable_sources(program) } else { program.sources.clone() },
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
         }

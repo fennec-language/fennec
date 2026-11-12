@@ -927,6 +927,14 @@ impl<'a> Lowering<'a> {
     }
 
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
+        match builtin_as_method(expr) {
+            Some(method) => self.expr_as_written(&method),
+            None => self.expr_as_written(expr),
+        }
+    }
+
+    /// Lowers an expression whose `len(x)` or `abs(x)`, if it is one, is already the method it calls.
+    fn expr_as_written(&mut self, expr: &Expr) -> Lowered<Operand> {
         let span = expr.span;
         if let Some((owner, case, args)) = self.built_case(expr) {
             return self.make_case(&owner, case, args, span);
@@ -970,18 +978,6 @@ impl<'a> Lowering<'a> {
                 Ok(Operand::Local(dest))
             }
             ExprKind::Call { callee, args } => {
-                // `len(x)` and `abs(x)` call `x`'s own method, which the checker writes in when it
-                // resolves a module: one lowered as it was checked reads them so too.
-                if let ExprKind::Name(name) = &callee.kind
-                    && matches!(name.as_str(), "len" | "abs")
-                    && let [arg] = args.as_slice()
-                    && arg.name.is_none()
-                    && !arg.is_mut
-                {
-                    let mut method = expr.clone();
-                    fennec_syntax::visit::method_of_call(&mut method);
-                    return self.expr(&method);
-                }
                 if let Some(type_name) = self.constructs(callee, span) {
                     return self.make(&type_name, args, span);
                 }
@@ -1164,4 +1160,18 @@ fn typed_empty(expr: &Expr) -> Option<Expr> {
     let mut empty = expr.clone();
     fennec_syntax::visit::empty_collection(&mut empty);
     Some(empty)
+}
+
+/// `len(x)` and `abs(x)` call `x`'s own method, which the checker writes in when it resolves a
+/// module: one lowered as it was checked reads them so too. The call as that method, if it's one.
+fn builtin_as_method(expr: &Expr) -> Option<Expr> {
+    let ExprKind::Call { callee, args } = &expr.kind else { return None };
+    let ExprKind::Name(name) = &callee.kind else { return None };
+    let [arg] = args.as_slice() else { return None };
+    if !matches!(name.as_str(), "len" | "abs") || arg.name.is_some() || arg.is_mut {
+        return None;
+    }
+    let mut method = expr.clone();
+    fennec_syntax::visit::method_of_call(&mut method);
+    Some(method)
 }

@@ -449,38 +449,34 @@ fn builtin_call(
     // On a value: with no types, anything but a type's or module's name, like `Grid.len()`. Not
     // at the end of a chain a step of which can fail or be missing, as `find(1).name.len() else 0`,
     // whose `else` ends the chain: `len(...)` would hold the chain as an argument.
-    let value = match types {
-        Some(types) => {
-            let mut chained = false;
-            let mut step = object.as_ref();
-            loop {
-                if matches!(
-                    types.get(&(step.span.start, step.span.end)),
-                    Some(Type::Optional(_) | Type::Result(..))
-                ) {
-                    chained = true;
-                }
-                step = match &step.kind {
-                    ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => object,
-                    ExprKind::Call { callee, .. } => match &callee.kind {
-                        ExprKind::Attr { object, .. } => object,
-                        _ => break,
-                    },
-                    _ => break,
-                };
+    let value = if let Some(types) = types {
+        let mut chained = false;
+        let mut step = object.as_ref();
+        loop {
+            if matches!(
+                types.get(&(step.span.start, step.span.end)),
+                Some(Type::Optional(_) | Type::Result(..))
+            ) {
+                chained = true;
             }
-            !chained
-                && !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
+            step = match &step.kind {
+                ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => object,
+                ExprKind::Call { callee, .. } => match &callee.kind {
+                    ExprKind::Attr { object, .. } => object,
+                    _ => break,
+                },
+                _ => break,
+            };
         }
+        !chained && !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
+    } else {
         // With no types, only a receiver with no call in it, which can't be a step that fails
         // or is missing.
-        None => {
-            let mut calls = false;
-            fennec_syntax::read::in_expr(object, &mut |inner| {
-                calls |= matches!(inner.kind, ExprKind::Call { .. })
-            });
-            !calls && !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase))
-        }
+        let mut calls = false;
+        fennec_syntax::read::in_expr(object, &mut |inner| {
+            calls |= matches!(inner.kind, ExprKind::Call { .. });
+        });
+        !calls && !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase))
     };
     if !value {
         return None;

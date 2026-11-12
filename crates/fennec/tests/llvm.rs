@@ -3616,7 +3616,7 @@ fn a_ref_case_that_returns_puts_the_case_back_first() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "ref_case_returns",
-        r#"enum Slot:
+        r"enum Slot:
     Empty
     Held(count: int)
 
@@ -3644,7 +3644,7 @@ def main(stdout: Stdout):
     mut empty = Slot.Empty
     stdout.print(bump(ref empty), empty)
     stdout.print(bump_or_keep(ref slot, True), bump_or_keep(ref slot, False), slot)
-"#,
+",
         "2 3 Slot.Held(count=3)\n0 Slot.Empty\n4 -1 Slot.Held(count=5)\n",
     )
 }

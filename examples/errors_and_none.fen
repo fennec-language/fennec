@@ -11,17 +11,17 @@ struct Player:
 def find(players: list[Player], name: str) -> Player?:
     for player in players:
         if player.name == name: return player
-    None
+    return None
 
 def require(players: list[Player], name: str) -> Player fails NotFound:
     player = find(players, name)
     if player is None: fail NotFound(name)
-    player
+    return player
 
 def challenge(players: list[Player], name: str) -> str fails NotFound | TooWeak:
     player = require(players, name)?
     if player.level < 5: fail TooWeak(player.level)
-    f"{player.name} accepts the challenge"
+    return f"{player.name} accepts the challenge"
 
 def main(stdout: Stdout):
     players = [Player(name="Ash", level=7), Player(name="Kit")]
@@ -31,22 +31,22 @@ def main(stdout: Stdout):
     stdout.print(find(players, "Vex").level else 0)
 
     for name in ["Ash", "Kit", "Vex"]:
-        message = challenge(players, name) else as why:
-            match why:
-                case TooWeak(level):
-                    stdout.print(f"{name} is only level {level}")
-                    continue
-                case _:
-                    error = why
-                    stdout.print(f"no luck: {error}")
-                    continue
+        message = challenge(players, name) except why:
+            case TooWeak(level):
+                stdout.print(f"{name} is only level {level}")
+                continue
+            case _:
+                error = why
+                stdout.print(f"no luck: {error}")
+                continue
         stdout.print(message)
 
     nobody = Player(name="nobody", level=-1)
-    level = (require(players, "Vex") else nobody).level
+    require_value = require(players, "Vex") except NotFound(): nobody
+    level = (require_value).level
     stdout.print(level)
     found = require(players, "Ash").expect("Ash was added above")
     stdout.print(found.name)
-    _ = challenge(players, "Kit") else as why:
+    _ = challenge(players, "Kit") except why:
         stdout.print(why == TooWeak(level=1))
         ""

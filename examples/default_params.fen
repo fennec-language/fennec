@@ -6,11 +6,11 @@ def repeat(text: str, times = 2, between = "") -> str:
         if at > 0:
             out += between
         out += text
-    out
+    return out
 
 def offset(by = -1, scale = -0.5, label: str? = None) -> str:
     shown = label else "none"
-    f"{by} {scale} {shown}"
+    return f"{by} {scale} {shown}"
 
 struct Tally:
     count: int

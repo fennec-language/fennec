@@ -10,7 +10,7 @@ def main(stdout: Stdout):
         cell = Cell(x=i % 31, y=i % 17)
         seen[cell] = (seen.get(cell) else 0) + 1
     stdout.print(
-        seen.len(),
+        len(seen),
         seen[Cell(x=0, y=0)],
         Cell(x=99, y=0) in seen,
         (seen.get(Cell(x=99, y=0)) else -1),
@@ -22,21 +22,21 @@ def main(stdout: Stdout):
         if key not in by_pair:
             by_pair[key] = []
         by_pair[key].append(i)
-    stdout.print(by_pair.len(), by_pair[(1, "k1")], (19, "k9") in by_pair)
+    stdout.print(len(by_pair), by_pair[(1, "k1")], (19, "k9") in by_pair)
     popped = by_pair.pop((1, "k1"))
-    stdout.print(popped.len(), (1, "k1") in by_pair, by_pair.len())
+    stdout.print(len(popped), (1, "k1") in by_pair, len(by_pair))
     by_pair[(1, "k1")] = [7]
-    stdout.print(by_pair[(1, "k1")], by_pair.keys()[by_pair.len() - 1])
+    stdout.print(by_pair[(1, "k1")], by_pair.keys()[len(by_pair) - 1])
 
     kept = by_pair
     by_pair[(2, "new")] = [1]
-    stdout.print(kept.len(), by_pair.len(), kept == by_pair, kept == kept, (2, "new") in kept)
+    stdout.print(len(kept), len(by_pair), kept == by_pair, kept == kept, (2, "new") in kept)
 
     mut floats: dict[float, int] = {}
     for i in range(40):
         floats[float(i) / 2.0] = i
-    stdout.print(floats[1.5], floats.len(), (floats.get(99.0) else 0), (floats.get(-1.0) else 5))
+    stdout.print(floats[1.5], len(floats), (floats.get(99.0) else 0), (floats.get(-1.0) else 5))
     built = {i % 25: i for i in range(100)}
-    stdout.print(built.len(), built[3], list(built.keys())[:3])
+    stdout.print(len(built), built[3], list(built.keys())[:3])
     by_pair.clear()
-    stdout.print(by_pair.len(), (1, "k1") in by_pair)
+    stdout.print(len(by_pair), (1, "k1") in by_pair)

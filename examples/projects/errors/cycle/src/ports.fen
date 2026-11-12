@@ -4,4 +4,4 @@ struct Port:
     name: str
 
 def docked(port: Port) -> list[Ship]:
-    []
+    return []

@@ -5,9 +5,9 @@ from std import math
 
 ## What `run` fails with, in words, or "fine" if it doesn't.
 def why[T](run: () -> T fails InvalidValue) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
-    "fine"
+    return "fine"
 
 test "int.parse reads an int written in decimal, with a sign and space around it"():
     assert int.parse("42")? == 42
@@ -59,4 +59,6 @@ test "int(text) and float(text) still read as they did"():
     assert float("1.5")? == float.parse("1.5")?
 
 def main(stdout: Stdout):
-    stdout.print(int.parse("42") else 0, float.parse("2.5") else 0.0, math.NAN, math.INFINITY)
+    parse_value = int.parse("42") except InvalidValue(): 0
+    parse_value2 = float.parse("2.5") except InvalidValue(): 0.0
+    stdout.print(parse_value, parse_value2, math.NAN, math.INFINITY)

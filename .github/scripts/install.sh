@@ -13,7 +13,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 into="${1:-${FENNEC_HOME:-$HOME/.fennec}/bin}"
-mkdir -p "$into"
+# Its user's alone, as fennec makes Fennec's folder: what's kept there is run.
+(umask 077 && mkdir -p "$into")
 
 echo "building fennec and its runtime libraries for release; this takes a few minutes the first time" >&2
 cargo build --release --locked -p fennec -p fennec-runtime

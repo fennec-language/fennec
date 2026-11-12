@@ -1,9 +1,9 @@
 def named(count: int) -> str:
     match count:
         case "one":
-            "1"
+            return "1"
         case _:
-            "many"
+            return "many"
 
 def main(stdout: Stdout):
     stdout.print(named(1))

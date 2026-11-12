@@ -12,31 +12,31 @@ struct Queue:
     kept = list[int]()
 
     def reading_itself(ref self):
-        self.items.append(self.items.len())
-        self.items.insert(self.items.len(), self.total)
+        self.items.append(len(self.items))
+        self.items.insert(len(self.items), self.total)
         self.items.extend(self.items)
-        self.rows[0].tags.append(self.rows[0].tags.len())
+        self.rows[0].tags.append(len(self.rows[0].tags))
         self.rows[self.total % 2].tags.append(self.rows[1].tags[0])
         self.total += self.items.pop() else 0
 
     def through_a_call(ref self):
-        grow(ref self.items, self.items.len())
-        grow(ref self.rows[1].tags, self.rows[0].tags.len())
+        grow(ref self.items, len(self.items))
+        grow(ref self.rows[1].tags, len(self.rows[0].tags))
 
     def keeping_it(ref self) -> list[int]:
         self.kept = self.items
         self.items.append(100)
         self.kept.append(200)
-        self.kept
+        return self.kept
 
     def handing_out(self) -> list[int]:
-        self.items
+        return self.items
 
     def row_kept(ref self) -> Row:
         row = self.rows[0]
         self.rows[0].tags.append(300)
         self.rows[0].name += " changed"
-        row
+        return row
 
 def grow(ref numbers: list[int], by: int):
     numbers.append(by)
@@ -64,9 +64,9 @@ def main(stdout: Stdout):
         stdout.print(row.tags, row.name, held.rows[0].tags, held.rows[0].name)
     lock queue as ref held:
         before = held.items
-        held.items.append(held.items.len())
+        held.items.append(len(held.items))
         held.items.extend(before)
-        held.total += before.len()
+        held.total += len(before)
         stdout.print(held.items, held.total)
     second = queue
     lock second as ref held:

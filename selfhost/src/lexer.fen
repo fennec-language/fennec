@@ -1,21 +1,21 @@
 ## Source text to tokens. Mirrors `crates/syntax/src/lexer.rs`.
 
-from span import Span, Diagnostic
+from span import Diagnostic, Span
 from token import FPart, Tok, Token, is_keyword, is_three_char_punct, is_two_char_punct
 
 def is_digit(c: str) -> bool:
-    c != "" and c >= "0" and c <= "9"
+    return c != "" and c >= "0" and c <= "9"
 
 def is_letter(c: str) -> bool:
-    (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
+    return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
 
 ## How many bytes `c` takes in UTF-8.
 def utf8_width(c: str) -> int:
-    c.encode().len()
+    return len(c.encode())
 
 ## How many bytes `text` takes in UTF-8.
 def byte_length(text: str) -> int:
-    text.encode().len()
+    return len(text.encode())
 
 ## The byte offset of each character, plus one past the end. Spans count bytes, but Fennec
 ## strings index by character.
@@ -25,7 +25,7 @@ def byte_offsets(chars: list[str]) -> list[int]:
     for c in chars:
         at += utf8_width(c)
         offsets.append(at)
-    offsets
+    return offsets
 
 ## Source text to tokens. Indentation becomes `Indent` and `Dedent` tokens, as in Python,
 ## and line breaks inside brackets are ignored. `base` is added to every span, for code
@@ -34,7 +34,7 @@ def lex(source: str, base: int) -> list[Token] fails Diagnostic:
     chars = list(source)
     mut lexer = Lexer(chars=chars, offsets=byte_offsets(chars), base=base)
     lexer.run()?
-    lexer.tokens
+    return lexer.tokens
 
 struct Lexer:
     chars: list[str]
@@ -49,11 +49,9 @@ struct Lexer:
 
     def run(ref self) fails Diagnostic:
         while True:
-            if self.at_line_start and self.depth == 0 and not self.indentation()?:
-                break
+            if self.at_line_start and self.depth == 0 and not self.indentation()?: break
             c = self.peek(0)
-            if c == "":
-                break
+            if c == "": break
             start = self.pos
             if c == " " or c == "\r":
                 self.pos += 1
@@ -85,31 +83,30 @@ struct Lexer:
     ## The character `ahead` places on, or an empty string past the end.
     def peek(self, ahead: int) -> str:
         at = self.pos + ahead
-        if at < self.chars.len():
-            return self.chars[at]
-        ""
+        if at < len(self.chars): return self.chars[at]
+        return ""
 
     ## The byte offset of character `at`, shifted by `base`.
     def offset(self, at: int) -> int:
-        self.offsets[at] + self.base
+        return self.offsets[at] + self.base
 
     ## The span from character `start` to the current position.
     def span(self, start: int) -> Span:
-        Span(start=self.offset(start), end=self.offset(self.pos))
+        return Span(start=self.offset(start), end=self.offset(self.pos))
 
     def text(self, start: int, end: int) -> str:
-        "".join(self.chars[start:end])
+        return "".join(self.chars[start:end])
 
     def push(ref self, tok: Tok, start: int):
         self.tokens.append(Token(tok=tok, span=self.span(start)))
 
     def newline(ref self, start: int):
-        if self.tokens.len() > 0 and self.tokens[-1].tok != .Newline:
+        if len(self.tokens) > 0 and self.tokens[-1].tok != .Newline:
             self.push(.Newline, start)
 
     def tab_error(self, start: int) -> Diagnostic:
         span = Span(start=self.offset(start), end=self.offset(start) + 1)
-        Diagnostic(message="tabs aren't allowed", span=span, help="indent with 4 spaces")
+        return Diagnostic(message="tabs aren't allowed", span=span, help="indent with 4 spaces")
 
     def skip_comment(ref self):
         while self.peek(0) != "" and self.peek(0) != "\n":
@@ -122,8 +119,7 @@ struct Lexer:
             line_start = self.pos
             mut width = 0
             while self.peek(0) == " " or self.peek(0) == "\t":
-                if self.peek(0) == "\t":
-                    fail self.tab_error(self.pos)
+                if self.peek(0) == "\t": fail self.tab_error(self.pos)
                 width += 1
                 self.pos += 1
             c = self.peek(0)
@@ -137,7 +133,7 @@ struct Lexer:
                 self.at_line_start = False
                 self.set_indent(width, line_start=line_start)?
                 return True
-        False
+        return False
 
     def set_indent(ref self, width: int, line_start: int) fails Diagnostic:
         if width > self.indents[-1]:
@@ -155,9 +151,9 @@ struct Lexer:
             )
 
     def finish(ref self):
-        self.pos = self.chars.len()
+        self.pos = len(self.chars)
         self.newline(self.pos)
-        while self.indents.len() > 1:
+        while len(self.indents) > 1:
             _ = self.indents.pop()
             self.push(.Dedent, self.pos)
         self.push(.Eof, self.pos)
@@ -197,15 +193,20 @@ struct Lexer:
                     self.digits()
                 numbers.append(self.text(part_start, self.pos).replace("_", ""))
                 units.append(self.unit())
-            nanos = duration(self.text(start, self.pos), numbers=numbers, units=units, span=self.span(start))?
+            nanos = duration(
+                self.text(start, self.pos),
+                numbers=numbers,
+                units=units,
+                span=self.span(start),
+            )?
             self.push(.Duration(nanos), start)
             return
         if is_float:
-            value = float(text) else:
+            value = float(text) except InvalidValue():
                 fail Diagnostic(message="this isn't a valid number", span=self.span(start))
             self.push(.Float(value), start)
         else:
-            value = int(text) else:
+            value = int(text) except InvalidValue():
                 fail Diagnostic(
                     message="this number is too big for an int",
                     span=self.span(start),
@@ -218,7 +219,7 @@ struct Lexer:
         start = self.pos
         while is_letter(self.peek(0)):
             self.pos += 1
-        self.text(start, self.pos)
+        return self.text(start, self.pos)
 
     def digits(ref self):
         while is_digit(self.peek(0)) or self.peek(0) == "_":
@@ -267,15 +268,14 @@ struct Lexer:
         mut text = ""
         while self.peek(0) != "\"":
             c = self.peek(0)
-            if c == "" or c == "\n":
-                fail self.unterminated(start)
+            if c == "" or c == "\n": fail self.unterminated(start)
             text += c
             self.pos += 1
         self.pos += 1
         self.push(.Str(text), start)
 
     def unterminated(self, start: int) -> Diagnostic:
-        Diagnostic(
+        return Diagnostic(
             message="this string never ends",
             span=Span(start=self.offset(start), end=self.offset(start) + 1),
             help="close it with `\"` on the same line",
@@ -286,19 +286,25 @@ struct Lexer:
         at = self.pos
         self.pos += 1
         c = self.peek(0)
-        if c == "" or c == "\n":
-            fail self.unterminated(start)
-        if c == "x" or c == "u" or c == "U":
-            return self.code_escape(c, at)?
+        if c == "" or c == "\n": fail self.unterminated(start)
+        if c == "x" or c == "u" or c == "U": return self.code_escape(c, at)?
         replacement = match c:
-            case "n": "\n"
-            case "t": "\t"
-            case "r": "\r"
-            case "0": "\0"
-            case "\\": "\\"
-            case "\"": "\""
-            case "{": "{"
-            case "}": "}"
+            case "n":
+                "\n"
+            case "t":
+                "\t"
+            case "r":
+                "\r"
+            case "0":
+                "\0"
+            case "\\":
+                "\\"
+            case "\"":
+                "\""
+            case "{":
+                "{"
+            case "}":
+                "}"
             case _:
                 fail Diagnostic(
                     message=f"`\\{c}` isn't an escape Fennec knows",
@@ -306,7 +312,7 @@ struct Lexer:
                     help="the escapes are \\n, \\t, \\r, \\0, \\\\, \\\", \\xhh, \\uhhhh and \\Uhhhhhhhh; to keep backslashes as written, use a raw string like r\"\\d+\"",
                 )
         self.pos += 1
-        replacement
+        return replacement
 
     ## `\x41`, `\u00e9` or `\U0001f98a`: a character written as its code in hex, with two,
     ## four or eight digits. `at` is where the backslash is.
@@ -319,21 +325,24 @@ struct Lexer:
             value = "0123456789abcdef".find(c)
             if c == "" or value is None:
                 example = match letter:
-                    case "x": "\\x41"
-                    case "u": "\\u00e9"
-                    case _: "\\U0001f98a"
+                    case "x":
+                        "\\x41"
+                    case "u":
+                        "\\u00e9"
+                    case _:
+                        "\\U0001f98a"
                 fail Diagnostic(
                     message=f"`\\{letter}` needs {digits} hex digits, like `{example}`",
                     span=self.span(at),
                 )
             code = code * 16 + value
             self.pos += 1
-        character = str.from_code(code) else:
+        character = str.from_code(code) except InvalidValue():
             fail Diagnostic(
                 message=f"`{self.text(at, self.pos)}` isn't the code of a character",
                 span=self.span(at),
             )
-        character
+        return character
 
     ## An f-string, or a template string when `template`: the same text and `{}`s, built as a
     ## `Template` instead of joined.
@@ -400,35 +409,52 @@ struct Lexer:
         self.pos += 1
         code_end = spec_start else end
         spec = self.text(spec_start + 1, end) if spec_start is not None else None
-        .Code(self.text(code_start, code_end), self.offset(code_start), spec)
+        return .Code(self.text(code_start, code_end), self.offset(code_start), spec)
 
 ## What an f-string's `{expression=}` shows: written out with its `=`, as in Python, the
 ## expression before the `=`, or `None` for a plain `{expression}`. A `=` that ends `==`, `!=`,
 ## `<=` or `>=` is the comparison's own.
 def shown_as_written(source: str) -> str?:
     trimmed = source.rstrip()
-    if not trimmed.endswith("="):
-        return None
+    if not trimmed.endswith("="): return None
     before = trimmed.removesuffix("=")
-    if before.strip() == "" or before.endswith("=") or before.endswith("!") or before.endswith("<") or before.endswith(">"):
+    if (
+        before.strip() == ""
+        or before.endswith("=")
+        or before.endswith("!")
+        or before.endswith("<")
+        or before.endswith(">")
+    ):
         return None
-    before
+    return before
 
 ## How many nanoseconds a unit of time is, or 0 when it isn't one. Minutes are `min`, so `m`
 ## is never a unit.
 def unit_nanos(unit: str) -> int:
     match unit:
-        case "ns": 1
-        case "us": 1_000
-        case "ms": 1_000_000
-        case "s": 1_000_000_000
-        case "min": 60_000_000_000
-        case "h": 3_600_000_000_000
-        case _: 0
+        case "ns":
+            return 1
+        case "us":
+            return 1_000
+        case "ms":
+            return 1_000_000
+        case "s":
+            return 1_000_000_000
+        case "min":
+            return 60_000_000_000
+        case "h":
+            return 3_600_000_000_000
+        case _:
+            return 0
 
 ## The nanoseconds a duration literal stands for, from its parts: each a number and a unit,
 ## the largest unit first, worked out from the digits as written.
-def duration(written: str, numbers: list[str], units: list[str], span: Span) -> int fails Diagnostic:
+def duration(
+    written: str,
+    numbers: list[str],
+    units: list[str],
+    span: Span,
+) -> int fails Diagnostic:
     help = "a duration ends in `ns`, `us`, `ms`, `s`, `min` or `h`, like `30s`, `1.5s`, `200ms` or `1h30min`"
     mut total = 0
     mut previous = 0
@@ -441,7 +467,11 @@ def duration(written: str, numbers: list[str], units: list[str], span: Span) -> 
             mut why = help
             if unit == "m":
                 why = "minutes are `min`, like `5min`"
-            fail Diagnostic(message=f"`{written}` uses `{unit}`, which isn't a unit of time", span=span, help=why)
+            fail Diagnostic(
+                message=f"`{written}` uses `{unit}`, which isn't a unit of time",
+                span=span,
+                help=why,
+            )
         if at > 0 and per >= previous:
             fail Diagnostic(
                 message=f"`{written}` has its units out of order",
@@ -450,7 +480,7 @@ def duration(written: str, numbers: list[str], units: list[str], span: Span) -> 
             )
         previous = per
         total += part_nanos(written, number=number, per=per, span=span)?
-    total
+    return total
 
 ## The nanoseconds in `number` of a unit `per` nanoseconds long.
 def part_nanos(written: str, number: str, per: int, span: Span) -> int fails Diagnostic:
@@ -472,7 +502,7 @@ def part_nanos(written: str, number: str, per: int, span: Span) -> int fails Dia
                 places += 1
     mut shift = 0 - places
     if exponent != "":
-        value = int(exponent) else:
+        value = int(exponent) except InvalidValue():
             fail Diagnostic(
                 message=f"`{written}` is too long for a duration",
                 span=span,
@@ -493,4 +523,4 @@ def part_nanos(written: str, number: str, per: int, span: Span) -> int fails Dia
             span=span,
             help="a duration counts whole nanoseconds: write fewer decimal places",
         )
-    nanos // ten
+    return nanos // ten

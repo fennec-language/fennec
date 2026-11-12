@@ -5,10 +5,10 @@ KEYWORDS = {"def", "if", "elif", "else", "for", "while", "return"}
 LONGEST = 32
 
 ## Each keyword's length, worked out from the set above.
-LENGTHS = {word: word.len() for word in KEYWORDS}
+LENGTHS = {word: len(word) for word in KEYWORDS}
 
 def is_keyword(word: str) -> bool:
-    word in KEYWORDS
+    return word in KEYWORDS
 
 test "constants can be read from tests":
     assert is_keyword("def")

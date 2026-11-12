@@ -2,7 +2,7 @@
 
 def over(n: int) -> int:
     if n < 2: return 9_223_372_036_854_775_807
-    over(n - 1) + over(n - 2)
+    return over(n - 1) + over(n - 2)
 
 def main(stdout: Stdout):
     stdout.print(over(1))

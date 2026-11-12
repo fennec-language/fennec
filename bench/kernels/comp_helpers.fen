@@ -4,7 +4,7 @@
 from std.math import sqrt
 
 def a(i: int, j: int) -> float:
-    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)
+    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)
 
 def row(v: list[float], i: int, transpose: bool) -> float:
     mut total = 0.0
@@ -12,13 +12,13 @@ def row(v: list[float], i: int, transpose: bool) -> float:
     for x in v:
         total += (a(j, j=i) if transpose else a(i, j=j)) * x
         j += 1
-    total
+    return total
 
 def times(v: list[float], transpose: bool) -> list[float]:
-    [row(v, i, transpose) for i in range(v.len())]
+    return [row(v, i, transpose) for i in range(len(v))]
 
 def times_transposed(v: list[float]) -> list[float]:
-    times(times(v, transpose=False), transpose=True)
+    return times(times(v, transpose=False), transpose=True)
 
 def main(stdout: Stdout):
     n = 100

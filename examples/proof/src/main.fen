@@ -43,7 +43,7 @@ def raise_army(ref world: World, team: Team, columns: (int, int), rally: (int, i
             at = (column, row)
             if not world.field.walkable(at) or world.unit_at(at) is not None: continue
             if random.randint(0, high=2) == 0: continue
-            kind = kinds[placed % kinds.len()]
+            kind = kinds[placed % len(kinds)]
             id = world.spawn(f"{team.name()}{placed + 1}", team, kind, at)
             if kind == .Medic:
                 world.units[id].items = [
@@ -88,14 +88,14 @@ def main(stdout: Stdout):
     raise_army(ref world, .Red, (0, 4), (10, 2), 7)
     raise_army(ref world, .Blue, (19, 23), (12, 7), 11)
     mut board = Scoreboard()
-    stdout.print(f"{world.units.len()} units in {world.squads.len()} squads")
+    stdout.print(f"{len(world.units)} units in {len(world.squads)} squads")
     show(stdout, world)
     play(stdout, ref world, ref board, LONGEST // 2)
 
     # Half way: save, load, and carry on from the loaded copy.
     text = save.dumps(world)
-    mut loaded = save.loads(text) else world
-    stdout.print(f"saved {text.len()} bytes; loads back the same: {save.dumps(loaded) == text}")
+    mut loaded = save.loads(text) except ParseError(): world
+    stdout.print(f"saved {len(text)} bytes; loads back the same: {save.dumps(loaded) == text}")
     play(stdout, ref loaded, ref board, LONGEST)
 
     report(stdout, loaded, board)
@@ -104,8 +104,8 @@ def main(stdout: Stdout):
     stdout.print(board.line(.Blue))
     for event in board.events[:12]:
         stdout.print(f"  {event.tick}: {event.text}")
-    if board.events.len() > 12:
-        stdout.print(f"  ... and {board.events.len() - 12} more")
+    if len(board.events) > 12:
+        stdout.print(f"  ... and {len(board.events) - 12} more")
     survivors = sorted(loaded.units.values(), key=unit => -unit.kills)
     for unit in survivors[:3]:
         stdout.print(f"{unit.describe()}: {unit.kills} kills")

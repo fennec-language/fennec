@@ -6,7 +6,7 @@ def names[T](value: T) -> list[str]:
     mut found = []
     for name, field in fields(T):
         found.append(name)
-    found
+    return found
 
 def main(stdout: Stdout):
     stdout.print(names(Point(1, 2)))

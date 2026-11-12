@@ -3,7 +3,7 @@ error TooBig:
 
 def double(n: int) -> int fails TooBig:
     if n > 100: fail TooBig(n)
-    n * 2
+    return n * 2
 
 def main(stdout: Stdout):
     stdout.print(double(5) + 1)

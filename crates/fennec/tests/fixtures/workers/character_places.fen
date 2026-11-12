@@ -1,17 +1,17 @@
 def accented(chars: int) -> str:
-    "é" * chars
+    return "é" * chars
 
 def wide(chars: int) -> str:
-    "日" * chars
+    return "日" * chars
 
 def mixed(chars: int) -> str:
     mut parts = []
     for i in range(chars // 3):
         parts.append("aé日")
-    "".join(parts)
+    return "".join(parts)
 
 def count(text: str, wanted: str, xs: list[int]) -> int:
-    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
+    return sum(1 if text[x] == wanted else 0 for x in parallel(xs))
 
 def main(stdout: Stdout):
     size = 120000

@@ -5,7 +5,7 @@ struct Pool:
         self.items.append(item)
 
     def len(self) -> int:
-        return self.items.len()
+        return len(self.items)
 
     def [](ref self, i: int) -> int:
         return self.items[i]
@@ -15,4 +15,4 @@ def main(stdout: Stdout):
     for ref item in pool:
         item += 1
         pool.add(item)
-    stdout.print(pool.len())
+    stdout.print(len(pool))

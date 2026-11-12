@@ -50,7 +50,7 @@ export def dumps[T: Serializable](value: T, exact = False) -> bytes:
     mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
     again._header(shape_hash[T](), layout_unless_locked[T]())
     value.serialize(ref again)
-    again._done()
+    return again._done()
 
 ## A `T` from bytes `dumps` wrote for a `T`, or for an earlier version of it, read by its fields'
 ## names. It fails if a field it needs isn't there, if they end too soon or go on past it, or if
@@ -65,10 +65,10 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
     )
     if not src._header(shape_hash[T](), type_name[T]())?:
         mut layout = data[src._layout_at:src._layout_end]
-        if src._locked.len() > 0:
+        if len(src._locked) > 0:
             layout = src._locked
         return by_name[T](src, layout=layout, at=src._layout_at)?
-    read_value[T](ref src) else:
+    return read_value[T](ref src) except ParseError():
         # Read again keeping track of where it is, which a load that works never pays for.
         mut again = PackReader(
             _data=data,
@@ -110,11 +110,11 @@ export struct Packer:
 
     ## A packer that saves `Table`s slot for slot, as `dumps(value, exact=True)` does.
     def exact() -> Packer:
-        Packer(_exact=True)
+        return Packer(_exact=True)
 
     ## Adds `value`, after its type's layout if it's the first value of its type.
     def add[T: Serializable](ref self, value: T):
-        if self._out.len() == 0:
+        if len(self._out) == 0:
             for b in [HEADER, 80, 75, 84 if self._exact else 83]:
                 bytes_push(ref self._out, b)
         shape = shape_hash[T]()
@@ -124,26 +124,26 @@ export struct Packer:
                 at = seen
         mut head = PackWriter()
         if at < 0:
-            at = self._shapes.len()
+            at = len(self._shapes)
             self._shapes.append(shape)
             head._varint(0)
             head._word(shape)
             head.text(layout[T]())
         body = packed(value, self._exact)
         head._varint(at + 1 if at + 1 < HEADER else at + 2)
-        head._varint(body.len())
+        head._varint(len(body))
         bytes_push_bytes(ref self._out, head._done())
         bytes_push_bytes(ref self._out, body)
 
     ## Everything added so far, as a file holds it.
     def bytes(self) -> bytes:
-        self._out[0:self._out.len()]
+        return self._out[0:len(self._out)]
 
     ## What's been added since the last `take`, to send on a stream.
     def take(ref self) -> bytes:
-        part = self._out[self._taken:self._out.len()]
-        self._taken = self._out.len()
-        part
+        part = self._out[self._taken:len(self._out)]
+        self._taken = len(self._out)
+        return part
 
 ## Reads what a `Packer` wrote, a value at a time: in order when it was written from the type it's
 ## read as, and by its layout's names when it was written from another shape of it, like an
@@ -169,47 +169,47 @@ export struct Unpacker:
 
     ## Reads `data`, all a `Packer` wrote: bytes that end partway through a value fail.
     def of(data: bytes, limits: Limits? = None) -> Unpacker:
-        Unpacker(_data=data, _limits=limits else Limits())
+        return Unpacker(_data=data, _limits=limits else Limits())
 
     ## Reads a stream, given to it with `feed` as it comes: a value that's only partly come waits for
     ## the rest.
     def stream(limits: Limits? = None) -> Unpacker:
-        Unpacker(_streaming=True, _limits=limits else Limits())
+        return Unpacker(_streaming=True, _limits=limits else Limits())
 
     ## Gives it more of the stream.
     def feed(ref self, more: bytes):
-        self._data = self._data[self._at:self._data.len()] + more
+        self._data = self._data[self._at:len(self._data)] + more
         self._at = 0
 
     def _fail(self, at: int, message: str) -> ParseError:
-        ParseError(message=f"{message}, at byte {at}", line=0, column=0)
+        return ParseError(message=f"{message}, at byte {at}", line=0, column=0)
 
     ## A varint at `at`, and where what's after it starts, or -1 there if the bytes end first.
     def _varint(self, at: int) -> (int, int) fails ParseError:
         mut n = 0
         mut shift = 0
         mut place = at
-        while place < self._data.len():
+        while place < len(self._data):
             b = self._data[place]
             if shift > 63 or (shift == 63 and b > 1): fail self._fail(at, "a number is too long")
             n = n | ((b & 127) << shift)
             place += 1
             if b < 128: return (n, place)
             shift += 7
-        (0, -1)
+        return (0, -1)
 
     ## `None` when what's left ends partway, on a stream that has more to come, and a failure in
     ## bytes that are all there are.
     def _cut_off(self) -> bool fails ParseError:
         if self._streaming: return True
-        fail self._fail(self._data.len(), "the data ends too soon")
+        fail self._fail(len(self._data), "the data ends too soon")
 
     ## The next value, as a `T`, or `None` when there's no more: at the end of the bytes, or on a
     ## stream until more is fed. It fails if the next value isn't one a `T` loads from.
     def next[T: Deserializable](ref self) -> T? fails ParseError:
         while True:
             at = self._at
-            left = self._data.len() - at
+            left = len(self._data) - at
             if left == 0: return None
             if not self._started and self._data[at] != HEADER:
                 fail self._fail(at, "these aren't values a `pack.Packer` wrote")
@@ -237,14 +237,14 @@ export struct Unpacker:
                 continue
             if tag == 0:
                 # A layout, for the values after it that say its place.
-                if after + 8 > self._data.len():
+                if after + 8 > len(self._data):
                     _ = self._cut_off()?
                     return None
                 mut shape = 0
                 for place in range(8):
                     shape = shape | (self._data[after + place] << (8 * place))
                 size, start = self._varint(after + 8)?
-                if start < 0 or size > self._data.len() - start:
+                if start < 0 or size > len(self._data) - start:
                     _ = self._cut_off()?
                     return None
                 self._shapes.append(shape)
@@ -252,10 +252,10 @@ export struct Unpacker:
                 self._at = start + size
                 continue
             place = tag - 1 if tag < HEADER else tag - 2
-            if place >= self._layouts.len():
+            if place >= len(self._layouts):
                 fail self._fail(at, f"a value has layout {place}, which hasn't come")
             size, start = self._varint(after)?
-            if start < 0 or size > self._data.len() - start:
+            if start < 0 or size > len(self._data) - start:
                 _ = self._cut_off()?
                 return None
             body = self._data[start:start + size]
@@ -272,7 +272,7 @@ export struct Unpacker:
                 _items_left=held.length,
             )
             return by_name[T](raw, layout=self._layouts[place], at=0)?
-        None
+        return None
 
 ## `value` with no header, as a `Packer` writes it after its layout.
 def packed[T: Serializable](value: T, exact: bool) -> bytes:
@@ -283,7 +283,7 @@ def packed[T: Serializable](value: T, exact: bool) -> bytes:
     found = found_tables(value, exact)
     mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
     value.serialize(ref again)
-    again._done()
+    return again._done()
 
 ## A `T` from `body`, a value with no header written from a `T`, read in order.
 def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fails ParseError:
@@ -295,7 +295,7 @@ def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fai
         _most_empty=held.empty,
         _items_left=held.length,
     )
-    read_value[T](ref src) else:
+    return read_value[T](ref src) except ParseError():
         # Read again keeping track of where it is, which a load that works never pays for.
         mut again = PackReader(
             _data=body,
@@ -312,7 +312,7 @@ def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fai
 ## finds there instead. A value is then as small as it was before layouts.
 def layout_unless_locked[T]() -> str:
     if shape_locked[T](): return ""
-    layout[T]()
+    return layout[T]()
 
 ## The layout `pack.lock` holds for the shape number `shape`, or nothing.
 def locked_layout(shape: int) -> bytes:
@@ -320,10 +320,10 @@ def locked_layout(shape: int) -> bytes:
     for line in pack_lock().split("\n"):
         if line.startswith(wanted + " "):
             # The type's name, then its layout.
-            rest = line[wanted.len() + 1:]
+            rest = line[len(wanted) + 1:]
             space = rest.find(" ") else return bytes([])
             return rest[space + 1:].encode()
-    bytes([])
+    return bytes([])
 
 ## A shape's number as `pack.lock` writes it: 16 hex digits, the highest first.
 def shape_text(shape: int) -> str:
@@ -331,7 +331,7 @@ def shape_text(shape: int) -> str:
     mut out = ""
     for at in range(16):
         out += digits[(shape >> (60 - 4 * at)) & 15]
-    out
+    return out
 
 ## A `T` from data saved from another shape of it, by the names in `layout`, the one saved with it,
 ## which starts at byte `at`.
@@ -339,17 +339,17 @@ def by_name[T: Deserializable](raw: PackReader, layout: bytes, at: int) -> T fai
     mut src = PackByName(_raw=raw, _layout=layout, _layout_at=at)
     src._read_layout()?
     value = src.value[T]()?
-    if src._raw._at != src._raw._data.len(): fail src._raw._fail("there's more after the value")
+    if src._raw._at != len(src._raw._data): fail src._raw._fail("there's more after the value")
     problem = src._raw._ids.problem()
     if problem != "": fail ParseError(message=problem, line=0, column=0)
-    value
+    return value
 
 def read_value[T: Deserializable](ref src: PackReader) -> T fails ParseError:
     value = T.deserialize(ref src)?
-    if src._at != src._data.len(): fail src._fail("there's more after the value")
+    if src._at != len(src._data): fail src._fail("there's more after the value")
     problem = src._ids.problem()
     if problem != "": fail ParseError(message=problem if src._explain else "", line=0, column=0)
-    value
+    return value
 
 ## The bits a varint takes, 7 at a time, with the top 7 cleared after an arithmetic shift so it
 ## goes down as an unsigned number would.
@@ -377,7 +377,7 @@ export struct PackWriter:
 
     ## The bytes written, at their exact size, which is all anything but this writer sees of them.
     def _done(self) -> bytes:
-        self._out[0:self._out.len()]
+        return self._out[0:len(self._out)]
 
     ## The header: `FPK2` and the shape's number, then the layout. With no layout, as when the
     ## kit's `pack.lock` has it, it's `FPK1` and the number alone, as before layouts.
@@ -419,14 +419,14 @@ export struct PackWriter:
         bytes_push_text(ref self._out, value)
 
     def bytes(ref self, value: bytes):
-        self._varint(value.len())
+        self._varint(len(value))
         bytes_push_bytes(ref self._out, value)
 
     def none(ref self):
         bytes_push(ref self._out, 0)
 
     def some[T: Serializable](ref self, x: T):
-        self._some_at = self._out.len()
+        self._some_at = len(self._out)
         bytes_push(ref self._out, 1)
         self._optional = True
         x.serialize(ref self)
@@ -437,13 +437,13 @@ export struct PackWriter:
 
     def sequence[T: Serializable](ref self, items: list[T]):
         self._optional = False
-        self._varint(items.len())
+        self._varint(len(items))
         for item in items:
             item.serialize(ref self)
 
     def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         self._optional = False
-        self._varint(pairs.len())
+        self._varint(len(pairs))
         for key, value in pairs:
             key.serialize(ref self)
             value.serialize(ref self)
@@ -488,7 +488,7 @@ export struct PackWriter:
         self.sequence(items)
 
     def exact(self) -> bool:
-        self._exact
+        return self._exact
 
     def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
         self.sequence(slots)
@@ -545,18 +545,18 @@ export struct PackReader:
     _locked = bytes([])
 
     def _fail(self, message: str) -> ParseError:
-        self._fail_at(self._at, message)
+        return self._fail_at(self._at, message)
 
     ## The error for what starts at byte `at`.
     def _fail_at(self, at: int, message: str) -> ParseError:
-        ParseError(message=f"{message}, at byte {at}", line=0, column=0)
+        return ParseError(message=f"{message}, at byte {at}", line=0, column=0)
 
     ## Reads the header, and gives whether the data was saved from a type of the same shape, to
     ## read in order. One saved from another shape is read by its layout's names. Data from the
     ## first version, `FPK1`, has no layout, so it loads only into the same shape.
     def _header(ref self, shape: int, name: str) -> bool fails ParseError:
         self._items_left = self._longest
-        if self._data.len() < 12: fail self._fail("these aren't bytes `std.pack` wrote")
+        if len(self._data) < 12: fail self._fail("these aren't bytes `std.pack` wrote")
         for at, b in enumerate([70, 80, 75]):
             if self._data[at] != b: fail self._fail("these aren't bytes `std.pack` wrote")
         mode = self._data[3]
@@ -571,7 +571,7 @@ export struct PackReader:
             # The layout is held to what the data holds, not to the limit on one text: it's read
             # only for data from another shape, a word at a time, as deep as `Limits.depth` allows.
             n = self._varint()?
-            if n < 0 or n > self._data.len() - self._at: fail self._fail("the data ends too soon")
+            if n < 0 or n > len(self._data) - self._at: fail self._fail("the data ends too soon")
             self._layout_at = self._at
             self._layout_end = self._at + n
             self._at += n
@@ -579,29 +579,29 @@ export struct PackReader:
         if not same:
             # Written with no layout, it's read by the one the kit's `pack.lock` has for it.
             self._locked = locked_layout(saved)
-            if self._locked.len() > 0: return False
+            if len(self._locked) > 0: return False
             self._at = 4
             fail self._fail(f"this was packed from a different `{name}`")
-        True
+        return True
 
     def _byte(ref self) -> int fails ParseError:
-        if self._at >= self._data.len(): fail self._fail("the data ends too soon")
+        if self._at >= len(self._data): fail self._fail("the data ends too soon")
         b = self._data[self._at]
         self._at += 1
-        b
+        return b
 
     def _word(ref self) -> int fails ParseError:
-        if self._at + 8 > self._data.len(): fail self._fail("the data ends too soon")
+        if self._at + 8 > len(self._data): fail self._fail("the data ends too soon")
         mut bits = 0
         for at in range(8):
             bits = bits | (self._data[self._at + at] << (8 * at))
         self._at += 8
-        bits
+        return bits
 
     def _varint(ref self) -> int fails ParseError:
         # Most take one byte, read here with no call.
         at = self._at
-        if at < self._data.len():
+        if at < len(self._data):
             b = self._data[at]
             if b < 128:
                 self._at = at + 1
@@ -616,13 +616,13 @@ export struct PackReader:
             if b < 128: return n
             shift += 7
             if shift > 63: fail self._fail("a number is too long")
-        n
+        return n
 
     ## A count of what follows, which may be no more than the limit.
     def _length(ref self) -> int fails ParseError:
         start = self._at
         # Most are under 128 and take one byte, read here with no call.
-        if start < self._data.len():
+        if start < len(self._data):
             b = self._data[start]
             if b < 128 and b <= self._longest:
                 self._at = start + 1
@@ -630,15 +630,15 @@ export struct PackReader:
         n = self._varint()?
         if n < 0 or n > self._longest:
             fail self._fail_at(start, f"a length is over the limit of {self._longest}")
-        n
+        return n
 
     ## The next `n` bytes, which have to be there.
     def _run(ref self) -> bytes fails ParseError:
         n = self._length()?
-        if n > self._data.len() - self._at: fail self._fail("the data ends too soon")
+        if n > len(self._data) - self._at: fail self._fail("the data ends too soon")
         part = self._data[self._at:self._at + n]
         self._at += n
-        part
+        return part
 
     def _deeper(ref self) fails ParseError:
         self._depth += 1
@@ -661,36 +661,36 @@ export struct PackReader:
 
     def int(ref self) -> int fails ParseError:
         z = self._varint()?
-        ((z >> 1) & LOW_63) ^ (0 - (z & 1))
+        return ((z >> 1) & LOW_63) ^ (0 - (z & 1))
 
     def float(ref self) -> float fails ParseError:
-        float_of_bits(self._word()?)
+        return float_of_bits(self._word()?)
 
     def bool(ref self) -> bool fails ParseError:
         b = self._byte()?
         if b > 1: fail self._fail_at(self._at - 1, "a bool should be 0 or 1")
-        b == 1
+        return b == 1
 
     def text(ref self) -> str fails ParseError:
         start = self._at
         n = self._length()?
-        if n > self._data.len() - self._at: fail self._fail("the data ends too soon")
+        if n > len(self._data) - self._at: fail self._fail("the data ends too soon")
         # Made straight from the bytes, which bytes that aren't UTF-8 never come out empty from.
         text = bytes_text(self._data, self._at, self._at + n)
         if n > 0 and text_size(text) == 0: fail self._fail_at(start, "a text isn't UTF-8")
         self._at += n
-        text
+        return text
 
     def bytes(ref self) -> bytes fails ParseError:
-        self._run()?
+        return self._run()?
 
     def none(ref self) -> bool fails ParseError:
         b = self._byte()?
         if b > 1: fail self._fail_at(self._at - 1, "an optional should start with 0 or 1")
-        b == 0
+        return b == 0
 
     def value[T: Deserializable](ref self) -> T fails ParseError:
-        T.deserialize(ref self)?
+        return T.deserialize(ref self)?
 
     def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         n = self._length()?
@@ -707,7 +707,7 @@ export struct PackReader:
             if self._explain:
                 _ = self._path.pop()
         self._depth -= 1
-        found
+        return found
 
     def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         n = self._length()?
@@ -726,7 +726,7 @@ export struct PackReader:
             if self._explain:
                 _ = self._path.pop()
         self._depth -= 1
-        found
+        return found
 
     def record(ref self, name: str) fails ParseError:
         self._deeper()?
@@ -735,19 +735,19 @@ export struct PackReader:
             self._path.append("")
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
-        at = self._next[self._next.len() - 1]
+        at = self._next[len(self._next) - 1]
         # Fields that aren't saved come last, with no name in the text.
-        if at < fields.len() and fields[at][0] != "":
-            self._next[self._next.len() - 1] = at + 1
+        if at < len(fields) and fields[at][0] != "":
+            self._next[len(self._next) - 1] = at + 1
             self._field = at
             if self._explain:
-                self._path[self._path.len() - 1] = fields[at][0]
+                self._path[len(self._path) - 1] = fields[at][0]
             return True
         _ = self._next.pop()
         self._depth -= 1
         if self._explain:
             _ = self._path.pop()
-        False
+        return False
 
     ## Where the reader is, as messages say it.
     def _where(self) -> str:
@@ -756,22 +756,22 @@ export struct PackReader:
             if out != "" and text_byte(part, 0) != 91:
                 out += "."
             out += part
-        "the data" if out == "" else f"`{out}`"
+        return "the data" if out == "" else f"`{out}`"
 
     def field_at(self) -> int:
-        self._field
+        return self._field
 
     def missing(self, name: str) -> ParseError:
-        self._fail(f"`{name}` is missing")
+        return self._fail(f"`{name}` is missing")
 
     def rule(self, message: str) -> ParseError:
-        self._fail(message)
+        return self._fail(message)
 
     def at_item(self, at: int, message: str) -> ParseError:
-        self._fail(f"item {at} {message}")
+        return self._fail(f"item {at} {message}")
 
     def here(self, message: str) -> ParseError:
-        self._fail(f"{self._where()} {message}")
+        return self._fail(f"{self._where()} {message}")
 
     def saw_id(ref self, kind: str, position: int):
         self._ids.id(kind, self._where() if self._explain else "", position)
@@ -784,16 +784,16 @@ export struct PackReader:
         if found > 0: return found
         made = new_tag()
         self._tags[kind] = made
-        made
+        return made
 
     def none_next(ref self) -> bool:
-        False
+        return False
 
     def ordered(ref self, name: str) -> bool fails ParseError:
         # Read again for a message, it goes through `record`, which keeps track of names.
         if self._explain: return False
         self._deeper()?
-        True
+        return True
 
     def end_ordered(ref self):
         self._depth -= 1
@@ -804,13 +804,13 @@ export struct PackReader:
         n = self._length()?
         self._items(n)?
         self._deeper()?
-        n
+        return n
 
     def items(ref self, name: str, count: int) fails ParseError:
         self._deeper()?
 
     def item[T: Deserializable](ref self) -> T fails ParseError:
-        T.deserialize(ref self)?
+        return T.deserialize(ref self)?
 
     def end_items(ref self) fails ParseError:
         self._depth -= 1
@@ -819,13 +819,13 @@ export struct PackReader:
         self._depth -= 1
 
     def exact(self) -> bool:
-        self._exact
+        return self._exact
 
     def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         start = self._at
         at = self._varint()?
-        if at < 0 or at >= cases.len(): fail self._fail_at(start, f"`{name}` has no case {at}")
-        at
+        if at < 0 or at >= len(cases): fail self._fail_at(start, f"`{name}` has no case {at}")
+        return at
 
     def end_case(ref self) fails ParseError:
         pass
@@ -833,11 +833,11 @@ export struct PackReader:
     def member(ref self, names: list[str]) -> int fails ParseError:
         start = self._at
         at = self._varint()?
-        if at < 0 or at >= names.len():
+        if at < 0 or at >= len(names):
             union = " | ".join(names)
             fail self._fail_at(start, f"`{union}` has no member {at}")
         self._deeper()?
-        at
+        return at
 
     def end_member(ref self) fails ParseError:
         self._depth -= 1
@@ -892,7 +892,7 @@ struct PackByName:
     _path = list[str]()
 
     def _bad_layout(self) -> ParseError:
-        self._raw._fail_at(
+        return self._raw._fail_at(
             self._layout_at,
             "the layout saved with the data isn't one `std.pack` writes",
         )
@@ -900,14 +900,14 @@ struct PackByName:
     ## The next word of the layout.
     def _word(ref self) -> str fails ParseError:
         start = self._at
-        end = self._layout.len()
+        end = len(self._layout)
         mut at = start
         while at < end and self._layout[at] != 32:
             at += 1
         word = bytes_text(self._layout, start, at)
         if text_size(word) == 0: fail self._bad_layout()
         self._at = at + 1
-        word
+        return word
 
     ## The next word of the layout, as a count.
     def _count(ref self) -> int fails ParseError:
@@ -917,7 +917,7 @@ struct PackByName:
             digit = text_byte(word, at) - 48
             if digit < 0 or digit > 9 or n > 100000000: fail self._bad_layout()
             n = n * 10 + digit
-        n
+        return n
 
     def _read_layout(ref self) fails ParseError:
         # The first is an int, which the slots of a `Table` saved slot for slot are read as.
@@ -925,13 +925,13 @@ struct PackByName:
         self._at = 0
         mut open = list[int]()
         self._expect = self._node(ref open, 0)?
-        if self._at < self._layout.len(): fail self._bad_layout()
+        if self._at < len(self._layout): fail self._bad_layout()
 
     def _made(ref self, kind: int) -> int:
         self._kinds.append(kind)
         self._kids.append(list[int]())
         self._names.append(list[str]())
-        self._kinds.len() - 1
+        return len(self._kinds) - 1
 
     ## Reads a value's layout, and gives where it is. `open` holds the structs and enums it's in,
     ## outermost first, which a type inside itself names by where they are.
@@ -942,7 +942,7 @@ struct PackByName:
         kind = text_byte(word, 0)
         if kind == SAME:
             at = self._count()?
-            if at >= open.len(): fail self._bad_layout()
+            if at >= len(open): fail self._bad_layout()
             return open[at]
         node = self._made(kind)
         if kind == LIST or kind == OPTIONAL or kind == TABLE:
@@ -986,7 +986,7 @@ struct PackByName:
             and kind != UNKNOWN
         ):
             fail self._bad_layout()
-        node
+        return node
 
     def _kid(ref self, node: int, name: str, ref open: list[int], depth: int) fails ParseError:
         kid = self._node(ref open, depth + 1)?
@@ -994,7 +994,7 @@ struct PackByName:
         self._names[node].append(name)
 
     def _kind(self) -> int:
-        self._kinds[self._expect]
+        return self._kinds[self._expect]
 
     ## What a value was saved as, in words.
     def _saved_as(self, node: int) -> str:
@@ -1012,10 +1012,10 @@ struct PackByName:
         if kind == ENUM: return "an enum"
         if kind == UNION: return "a union"
         if kind == OWN: return f"a `{self._names[node][0]}`"
-        "something that can't be loaded"
+        return "something that can't be loaded"
 
     def _was(self, wanted: str) -> ParseError:
-        self._raw._fail(
+        return self._raw._fail(
             f"{self._where()} was saved as {self._saved_as(self._expect)}, not {wanted}",
         )
 
@@ -1026,7 +1026,7 @@ struct PackByName:
             if out != "" and text_byte(part, 0) != 91:
                 out += "."
             out += part
-        "the data" if out == "" else f"`{out}`"
+        return "the data" if out == "" else f"`{out}`"
 
     ## Passes over a value the type it's loaded into doesn't have, as the layout says it was saved.
     def _skip(ref self, node: int) fails ParseError:
@@ -1055,7 +1055,7 @@ struct PackByName:
         elif kind == ENUM or kind == UNION:
             start = self._raw._at
             at = self._raw._varint()?
-            if at < 0 or at >= self._kids[node].len():
+            if at < 0 or at >= len(self._kids[node]):
                 fail self._raw._fail_at(start, f"{self._where()} has no case {at}")
             self._skip(self._kids[node][at])?
         elif kind == TABLE:
@@ -1082,26 +1082,26 @@ struct PackByName:
     def int(ref self) -> int fails ParseError:
         kind = self._kind()
         if kind != INT and kind != ID: fail self._was("an int")
-        self._raw.int()?
+        return self._raw.int()?
 
     def float(ref self) -> float fails ParseError:
         kind = self._kind()
         # An int field that's a float now reads as one.
         if kind == INT: return float(self._raw.int()?)
         if kind != FLOAT: fail self._was("a float")
-        self._raw.float()?
+        return self._raw.float()?
 
     def bool(ref self) -> bool fails ParseError:
         if self._kind() != BOOL: fail self._was("a bool")
-        self._raw.bool()?
+        return self._raw.bool()?
 
     def text(ref self) -> str fails ParseError:
         if self._kind() != TEXT: fail self._was("text")
-        self._raw.text()?
+        return self._raw.text()?
 
     def bytes(ref self) -> bytes fails ParseError:
         if self._kind() != BYTES: fail self._was("bytes")
-        self._raw.bytes()?
+        return self._raw.bytes()?
 
     ## Whether an optional value is missing. A value that wasn't optional when it was saved is
     ## there; one that was and is there is read as what it holds.
@@ -1109,16 +1109,16 @@ struct PackByName:
         if self._kind() != OPTIONAL: return False
         if self._raw.none()?: return True
         self._expect = self._kids[self._expect][0]
-        False
+        return False
 
     ## A field that was optional when it was saved may be missing, and takes its default.
     def none_next(ref self) -> bool:
-        self._kind() == OPTIONAL
+        return self._kind() == OPTIONAL
 
     def value[T: Deserializable](ref self) -> T fails ParseError:
         # A type that saves itself its own way reads it its own way, in order.
         if self._kind() == OWN: return T.deserialize(ref self._raw)?
-        T.deserialize(ref self)?
+        return T.deserialize(ref self)?
 
     def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         node = self._expect
@@ -1148,7 +1148,7 @@ struct PackByName:
             _ = self._path.pop()
         self._raw._depth -= 1
         self._expect = node
-        found
+        return found
 
     def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         node = self._expect
@@ -1170,10 +1170,10 @@ struct PackByName:
             _ = self._path.pop()
         self._raw._depth -= 1
         self._expect = node
-        found
+        return found
 
     def map_count(ref self) -> int fails ParseError:
-        -1
+        return -1
 
     def end_map(ref self):
         pass
@@ -1194,13 +1194,13 @@ struct PackByName:
     ## The next field the data has that the type has too, by its name. Those it doesn't have any
     ## more are passed over.
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
-        top = self._open.len() - 1
+        top = len(self._open) - 1
         node = self._open[top]
-        while self._next[top] < self._kids[node].len():
+        while self._next[top] < len(self._kids[node]):
             at = self._next[top]
             self._next[top] = at + 1
             name = self._names[node][at]
-            self._path[self._path.len() - 1] = name
+            self._path[len(self._path) - 1] = name
             for found, field in enumerate(fields):
                 if field[0] != "" and field[0] == name:
                     self._field = found
@@ -1209,28 +1209,28 @@ struct PackByName:
                     return True
             self._skip(self._kids[node][at])?
         # The fields the data didn't have are made from their defaults, so they count too.
-        self._raw._items(fields.len() - self._matched[top])?
+        self._raw._items(len(fields) - self._matched[top])?
         _ = self._open.pop()
         _ = self._next.pop()
         _ = self._matched.pop()
         _ = self._path.pop()
         self._raw._depth -= 1
-        False
+        return False
 
     def field_at(self) -> int:
-        self._field
+        return self._field
 
     def missing(self, name: str) -> ParseError:
-        self._raw._fail(f"`{name}` isn't in the data, and has no default")
+        return self._raw._fail(f"`{name}` isn't in the data, and has no default")
 
     def rule(self, message: str) -> ParseError:
-        self._raw._fail(message)
+        return self._raw._fail(message)
 
     def at_item(self, at: int, message: str) -> ParseError:
-        self._raw._fail(f"item {at} {message}")
+        return self._raw._fail(f"item {at} {message}")
 
     def here(self, message: str) -> ParseError:
-        self._raw._fail(f"{self._where()} {message}")
+        return self._raw._fail(f"{self._where()} {message}")
 
     def saw_id(ref self, kind: str, position: int):
         self._raw._ids.id(kind, self._where(), position)
@@ -1239,11 +1239,11 @@ struct PackByName:
         self._raw._ids.table(kind, self._where(), count)
 
     def tag(ref self, kind: str) -> int:
-        self._raw.tag(kind)
+        return self._raw.tag(kind)
 
     ## Fields are read by name, never in order.
     def ordered(ref self, name: str) -> bool fails ParseError:
-        False
+        return False
 
     def end_ordered(ref self):
         pass
@@ -1251,7 +1251,7 @@ struct PackByName:
     def items(ref self, name: str, count: int) fails ParseError:
         node = self._expect
         if self._kinds[node] != TUPLE: fail self._was("a tuple")
-        saved = self._kids[node].len()
+        saved = len(self._kids[node])
         if saved != count:
             fail self._raw._fail(
                 f"{self._where()} was saved as a tuple of {saved} items, not {count}",
@@ -1262,11 +1262,11 @@ struct PackByName:
         self._matched.append(0)
 
     def item[T: Deserializable](ref self) -> T fails ParseError:
-        top = self._open.len() - 1
+        top = len(self._open) - 1
         at = self._next[top]
         self._next[top] = at + 1
         self._expect = self._kids[self._open[top]][at]
-        self.value[T]()?
+        return self.value[T]()?
 
     def end_items(ref self) fails ParseError:
         _ = self._open.pop()
@@ -1275,7 +1275,7 @@ struct PackByName:
         self._raw._depth -= 1
 
     def exact(self) -> bool:
-        self._raw._exact
+        return self._raw._exact
 
     ## A case by its name, which may be at another place among the cases now.
     def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
@@ -1283,7 +1283,7 @@ struct PackByName:
         if self._kinds[node] != ENUM: fail self._was(f"a `{name}`")
         start = self._raw._at
         at = self._raw._varint()?
-        if at < 0 or at >= self._kids[node].len():
+        if at < 0 or at >= len(self._kids[node]):
             fail self._raw._fail_at(start, f"`{name}` has no case {at}")
         saved = self._names[node][at]
         case_name = self._kids[node][at]
@@ -1311,7 +1311,7 @@ struct PackByName:
         if self._kinds[node] != UNION: fail self._was(f"a `{union}`")
         start = self._raw._at
         at = self._raw._varint()?
-        if at < 0 or at >= self._kids[node].len():
+        if at < 0 or at >= len(self._kids[node]):
             fail self._raw._fail_at(start, f"`{union}` has no member {at}")
         saved = self._names[node][at]
         for found, name in enumerate(names):
@@ -1337,4 +1337,4 @@ export def load[T: Deserializable, R: Reader](
     limits: Limits? = None,
 ) -> T fails ParseError | IoError:
     data = read_all(ref src)?
-    loads[T](data, limits=limits)?
+    return loads[T](data, limits=limits)?

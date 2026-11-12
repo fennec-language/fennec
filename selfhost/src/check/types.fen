@@ -44,10 +44,10 @@ enum Type:
 def optional_type(inner: Type) -> Type:
     match inner:
         case .Optional(_):
-            inner
+            return inner
         case .NoneType:
-            inner
+            return inner
         case .Unknown:
-            inner
+            return inner
         case _:
-            .Optional(inner)
+            return .Optional(inner)

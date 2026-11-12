@@ -1,6 +1,6 @@
 # `None` is never part of a union: a value that can be missing is optional.
 def shown(name: str | None) -> str:
-    name else "nobody"
+    return name else "nobody"
 
 def main(stdout: Stdout):
     stdout.print(shown(None))

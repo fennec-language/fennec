@@ -4,19 +4,19 @@ struct Holder:
     groups = dict[str, list[int]]()
 
 def row(base: int) -> list[int]:
-    [base + turn for turn in range(8)]
+    return [base + turn for turn in range(8)]
 
 def build() -> dict[str, list[int]]:
     mut groups = dict[str, list[int]]()
     groups["first"] = row(100)
     groups["second"] = row(200)
-    groups
+    return groups
 
 def churn() -> list[list[int]]:
     mut made = list[list[int]]()
     for turn in range(5000):
         made.append(row(7000))
-    made
+    return made
 
 def reader(groups: dict[str, list[int]], clock: Clock, stdout: Stdout):
     clock.sleep(50ms)
@@ -37,5 +37,5 @@ def main(clock: Clock, stdout: Stdout) fails Crashed:
     extra = churn()
     lock holder as current:
         stdout.print("lock", current.groups["first"], current.groups["second"])
-    stdout.print(extra.len())
+    stdout.print(len(extra))
     start(clock, stdout)?

@@ -20,7 +20,7 @@ def escape(cx: float, cy: float) -> int:
         y = 2.0 * x * y + cy
         x = next
         count += 1
-    count
+    return count
 
 def main(stdout: Stdout):
     mut pixels = [

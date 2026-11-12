@@ -200,8 +200,8 @@ mod tests {
     #[test]
     fn a_cut_down_program_reaches_into_what_was_cut_only_when_it_names_it() {
         let whole = fennec_syntax::parse(
-            "struct Box:\n    size: int\n    def grow(self) -> int:\n        self.size + 1\n\n\
-             def unused() -> int:\n    1\n\ndef main():\n    print(2)\n",
+            "struct Box:\n    size: int\n    def grow(self) -> int:\n        return self.size + 1\n\n\
+             def unused() -> int:\n    return 1\n\ndef main():\n    print(2)\n",
         )
         .unwrap();
         let kept = reached_by_main(&whole);
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn only_what_main_reaches_stays() {
-        let source = "def used() -> int:\n    1\n\ndef unused() -> int:\n    2\n\n\
+        let source = "def used() -> int:\n    return 1\n\ndef unused() -> int:\n    return 2\n\n\
                       test \"t\":\n    assert unused() == 2\n\n\
                       def main(stdout: Stdout):\n    stdout.print(used())\n";
         assert!(keeps(source, "main") && keeps(source, "used"));
@@ -247,8 +247,8 @@ mod tests {
 
     #[test]
     fn a_type_stays_with_what_all_of_its_methods_reach() {
-        let source = "def helper() -> int:\n    1\n\nstruct Point:\n    x: int\n\n    \
-                      def other(self) -> int:\n        helper()\n\n\
+        let source = "def helper() -> int:\n    return 1\n\nstruct Point:\n    x: int\n\n    \
+                      def other(self) -> int:\n        return helper()\n\n\
                       def main(stdout: Stdout):\n    stdout.print(Point(x=1).x)\n";
         assert!(keeps(source, "Point") && keeps(source, "helper"));
     }
@@ -267,9 +267,9 @@ mod tests {
 
     #[test]
     fn a_type_stays_when_something_names_it() {
-        let source = "struct Point:\n    x: int\n\n    def area(self) -> int:\n        self.x\n\n\
+        let source = "struct Point:\n    x: int\n\n    def area(self) -> int:\n        return self.x\n\n\
                       struct Lonely:\n    x: int\n\n\
-                      def make(p: Point) -> int:\n    p.area()\n\n\
+                      def make(p: Point) -> int:\n    return p.area()\n\n\
                       def main(stdout: Stdout):\n    stdout.print(make(Point(x=1)))\n";
         assert!(keeps(source, "Point") && keeps(source, "make"));
         assert!(!keeps(source, "Lonely"));

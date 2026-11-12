@@ -4,60 +4,60 @@ struct Circle:
     radius: float
 
     def area(self) -> float:
-        3.0 * self.radius * self.radius
+        return 3.0 * self.radius * self.radius
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
 interface Shape:
     def area(self) -> float
 
 def total[T: Shape](shapes: list[T]) -> float:
     sum_of = sum(shape.area() for shape in shapes)
-    sum_of
+    return sum_of
 
 def largest[T](items: list[T], better: (T, T) -> bool) -> T:
     mut best = items[0]
     for item in items:
         if better(item, best):
             best = item
-    best
+    return best
 
 def apply(value: int, change: (int) -> int) -> int:
-    change(value)
+    return change(value)
 
 def twice(value: int, change: (int) -> int) -> int:
-    change(change(value))
+    return change(change(value))
 
 def pass_on(value: int, change: (int) -> int) -> int:
-    twice(value, change)
+    return twice(value, change)
 
 def keep(change: (int) -> int) -> (int) -> int:
-    change
+    return change
 
 def map_all(values: list[int], change: (int) -> int) -> list[int]:
-    [change(value) for value in values]
+    return [change(value) for value in values]
 
 def first_big(values: list[int], limit: int, big: (int, int) -> bool) -> int:
     mut found = -1
     for value in values:
         if found < 0 and big(value, limit):
             found = value
-    found
+    return found
 
 def identity[T](value: T) -> T:
-    value
+    return value
 
 def shadow(value: int, change: (int) -> int) -> int:
     offset = 100
-    change(value) + offset
+    return change(value) + offset
 
 def countdown(n: int, change: (int) -> int) -> int:
     if n <= 0: return 0
-    change(n) + countdown(n - 1, change)
+    return change(n) + countdown(n - 1, change)
 
 def main(stdout: Stdout):
     offset = 7
@@ -91,7 +91,7 @@ def main(stdout: Stdout):
     stdout.print(twice(1, (n) => twice(n, (inner) => inner * 3 + offset)))
     words = ["a", "bb"]
     stdout.print(
-        apply(words[1].len(), (n) => n + words.len()),
+        apply(len(words[1]), (n) => n + len(words)),
         [apply(i, (n) => n + i) for i in range(3)],
     )
     for i in range(2):

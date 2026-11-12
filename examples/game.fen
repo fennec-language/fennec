@@ -43,9 +43,9 @@ def main(stdout: Stdout):
     near = world.enemies.add(Enemy(position=Vec3(x=3.0, y=4.0), velocity=Vec3(x=-1.0)))
     far = world.enemies.add(Enemy(position=Vec3(x=10.0)))
 
-    attack(ref world, near) else as why:
+    attack(ref world, near) except why:
         stdout.print(why)
-    attack(ref world, far) else as why:
+    attack(ref world, far) except why:
         stdout.print(why)
     stdout.print(world.enemies[near].health)
 
@@ -56,9 +56,9 @@ def main(stdout: Stdout):
     stdout.print(world.enemies[far].health)
 
     _ = world.enemies.remove(near)
-    attack(ref world, near) else as why:
+    attack(ref world, near) except why:
         stdout.print(why)
-    stdout.print(world.enemies.len(), world.enemies.get(near))
+    stdout.print(len(world.enemies), world.enemies.get(near))
 
     weakest = min(world.enemies.values(), key=enemy => enemy.health)
     stdout.print(weakest.health)
@@ -82,4 +82,4 @@ test "update replaces a live enemy, and leaves a removed one's Id alone"():
     assert world.enemies[id].position.x == 1.0
     _ = world.enemies.remove(id)
     assert not world.enemies.update(id, moved)
-    assert world.enemies.len() == 0
+    assert len(world.enemies) == 0

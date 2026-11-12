@@ -51,11 +51,11 @@ def step(ref units: list[Unit], by: float):
 
 def take(ref state: list[int]) -> list[int]:
     state.append(9)
-    [1, 2]
+    return [1, 2]
 
 def show(stdout: Stdout, ref state: list[int]):
     for n in parallel(take(ref state)):
-        stdout.print(n, state.len())
+        stdout.print(n, len(state))
 
 def main(stdout: Stdout):
     mut units = [Unit(float(n), health=10.0) for n in range(8)]
@@ -176,7 +176,7 @@ const TOO_DEEP: &str = "\
 def deep(n: int) -> int:
     if n == 0:
         return 0
-    1 + deep(n - 1)
+    return 1 + deep(n - 1)
 
 def main(stdout: Stdout):
     xs = [n for n in range(50_000)]
@@ -230,7 +230,7 @@ fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure
 /// A function `parallel` programs share with one that doesn't use it.
 const SHARED: &str = "\
 def half(n: int) -> int:
-    n // 2
+    return n // 2
 ";
 
 #[test]
@@ -413,11 +413,11 @@ const INPUTS: &str = "\
 def main(stdout: Stdout, args: Args, stdin: Stdin):
     mut counts = [0, 0, 0, 0, 0, 0, 0, 0]
     for ref count in parallel(counts):
-        count = args.len()
+        count = len(args)
     stdout.print(counts)
     mut lines = [0, 0, 0, 0]
     for ref count in parallel(lines):
-        count = stdin.lines().len()
+        count = len(stdin.lines())
     stdout.print(sum(lines))
 ";
 
@@ -1081,12 +1081,12 @@ def deep(n: int) -> int:
         return 0
     # Held across the call, so the call stays a call.
     kept = [n]
-    deep(n - 1) + 1 + kept[0] - n
+    return deep(n - 1) + 1 + kept[0] - n
 
 def waited(connection: Connection) -> str:
-    _ = connection.read_line(timeout=20ms) else as error:
+    _ = connection.read_line(timeout=20ms) except error:
         return error.message()
-    \"heard something\"
+    return \"heard something\"
 
 def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails NetError:
     connection.write(greeting + \"\\n\")?
@@ -1105,7 +1105,7 @@ def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails
         else:
             connection.write(line + marks[0] + \"\\n\")?
         count += 1
-    count
+    return count
 
 def main(net: Net, stdout: Stdout) fails NetError:
     greeting = \"hello from \" + str(1 + 1)
@@ -1113,7 +1113,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
         stdout.print(server.port)
         for connection in parallel(server):
-            count = answer(connection, greeting, marks) else as error:
+            count = answer(connection, greeting, marks) except error:
                 stdout.print(\"failed\", error.message())
                 continue
             stdout.print(\"answered\", count, connection.peer != \"\")
@@ -1208,14 +1208,14 @@ def answer(connection: Connection, counter: shared Counter) -> int fails NetErro
                 held.total += 1
                 total = held.total
             connection.write(f\"{total}\\n\")?
-    0
+    return 0
 
 def main(net: Net, stdout: Stdout) fails NetError:
     shared counter = Counter()
     with net.listen(0)? as server:
         stdout.print(server.port)
         for connection in parallel(server):
-            _ = answer(connection, counter) else as error:
+            _ = answer(connection, counter) except error:
                 stdout.print(\"failed\", error.message())
                 continue
             stdout.print(\"answered\")
@@ -1347,10 +1347,7 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     std::fs::create_dir_all(&dir)?;
     let source = "LONG = f\"{1 + 1} and then a string too long to fit in a header\"\n\
                   WORDS = [\"a\", \"b\", LONG]\n\n\
-                  def main(stdout: Stdout):\n    mut counts = [at for at in range(2000)]\n    for ref count in parallel(counts):\n        \
-                  count = LONG.len() + WORDS.len() + WORDS[2].upper().len()\n    \
-                  stdout.print(sum(counts), LONG, WORDS.len())\n    mut mine = WORDS\n    mine.append(\"mine\")\n    \
-                  stdout.print(mine.len(), WORDS.len())\n";
+                  def main(stdout: Stdout):\n    mut counts = [at for at in range(2000)]\n    for ref count in parallel(counts):\n        count = len(LONG) + len(WORDS) + len(WORDS[2].upper())\n    stdout.print(sum(counts), LONG, len(WORDS))\n    mut mine = WORDS\n    mine.append(\"mine\")\n    stdout.print(len(mine), len(WORDS))\n";
     let executable = build_on_threads(&dir, source, "constants")?;
     let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
@@ -1487,10 +1484,10 @@ fn an_item_that_fails_cuts_a_stream_short() -> std::io::Result<()> {
     return 1000 // (x - 150_000)
 
 def total(xs: list[int]) -> int:
-    mut sum = 0
+    mut running = 0
     for y in (risky(x) for x in parallel(xs)):
-        sum += y
-    return sum
+        running += y
+    return running
 
 def main(stdout: Stdout):
     xs = [n for n in range(300_000)]

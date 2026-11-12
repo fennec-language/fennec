@@ -49,6 +49,31 @@ tools = { path = "../tools" }
 - Fetching runs nothing: a kit has no install or build scripts, nothing is checked out, and only `kit.toml` and `src` are taken. A fetched kit is kept in `~/.fennec/kits/`, so the network is only needed for one that isn't there yet, and `--offline` refuses to fetch at all.
 - A kit from a path isn't pinned, since it's work in progress. A kit from git can't name a path.
 
+#### What a dependency gets
+
+A dependency gets no capability unless its line in `kit.toml` says so, with `gets`:
+
+```toml
+[dependencies]
+# calls the payment API
+http = { git = "https://git.example.com/ada/http", commit = "...", gets = ["Net"] }
+# keeps saved carts
+saves = { path = "../saves", gets = ["Fs", "Clock"] }
+# no `gets`: it gets nothing
+shapes = { git = "https://git.example.com/ada/shapes", commit = "..." }
+```
+
+- **No `gets` means nothing.** Most lines should look like that.
+- **`gets = []` is an error.** Its fix takes it out, so there's one way to write nothing.
+- **Entries are capability types, as code writes them:** `"Fs"`, `"Net"`, `"Clock"`, `"Database"`.
+- **What a kit gets is a person's decision.** No tool writes `gets`: not `fennec fix`, not `fennec update`, and no error's help or fix.
+- **It's checked wherever one kit hands a value to another.** The handing kit's line for the receiver has to list every capability the value holds. A kit hands on only what it holds, so the main kit's lines bound everything below them. Every `kit.toml` speaks for its own kit: in `http`'s, `tls = { ..., gets = ["Net"] }` says what `http` lets `tls` have.
+- **`kit.lock` records `holds`:** what the compiler saw each kit hold, beside what a person wrote. An update that holds more stops until you approve it.
+
+Narrowing comes later, as an entry that's a table from the type to how it's narrowed, in the narrowing method's words: `gets = ["Clock", { Fs = { only = "saves/" } }]`. A plain `"Fs"` keeps meaning the whole of it.
+
+Not built yet: today `kit.toml` doesn't read `gets`, and nothing is checked.
+
 `import physics` reaches the kit's `src/lib.fen`, and `import physics.shapes` its `src/shapes.fen`, and `from physics import Body` works as it does for a kit's own files. A kit imports only what its own `kit.toml` names, so a dependency's dependencies stay its own.
 
 Each kit keeps its own names: a program's `Circle` and a dependency's `Circle` are different types, and neither gets in the other's way. Another kit reaches only what's marked `export`. A dependency's tests and lints are its own, so `fennec test` and `fennec lint` leave them out, and a change to `kit.lock`, or to a kit from a path, is seen by the next run.

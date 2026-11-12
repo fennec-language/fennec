@@ -75,6 +75,24 @@ pub(super) fn marked_alone(block: &[u64]) -> bool {
 /// `more` items' room on the end of a marked list with one owner and room enough, zeroed, the
 /// append noted for a crash to undo. `None` for any other list, which is grown as one shared is.
 fn marked_append(state: &mut State, list: i64, more: usize) -> Option<i64> {
+    marked_grow(state, list, more, super::guarded::rollback::grew)
+}
+
+/// Room for one item more on the end of a marked list with one owner, zeroed, for an insert at
+/// `place` to move the items from there up into, the insert noted for a crash to undo. `None` for
+/// any other list, which is grown as one shared is.
+fn marked_insert(state: &mut State, list: i64, place: usize) -> Option<i64> {
+    marked_grow(state, list, 1, |address, _| super::guarded::rollback::inserted(address, place))
+}
+
+/// `more` items' room on the end of a marked list with one owner, zeroed, once `noted` says the
+/// log has the change, given where the list is and how many items it had.
+fn marked_grow(
+    state: &mut State,
+    list: i64,
+    more: usize,
+    noted: impl FnOnce(u64, usize) -> bool,
+) -> Option<i64> {
     let address = u64::try_from(list).ok()?;
     let block = state.heap.block(address)?;
     if !marked_alone(block) {
@@ -98,7 +116,7 @@ fn marked_append(state: &mut State, list: i64, more: usize) -> Option<i64> {
     } else {
         address
     };
-    if !super::guarded::rollback::grew(address, count) {
+    if !noted(address, count) {
         return None;
     }
     let block = state.heap.block_mut(address)?;
@@ -202,6 +220,17 @@ pub(super) fn shorten_to(state: &mut State, address: u64, length: usize) {
         }
     }
     release_items(state, &element, &dropped);
+}
+
+/// After a crash, the item put in at `at` in a marked list taken out again, those after it moving
+/// back down one: what it holds is let go of.
+pub(super) fn take_out(state: &mut State, address: u64, at: usize) {
+    let Some(stride) =
+        state.heap.block(address).and_then(|block| element_of(state, block)).map(|e| e.words())
+    else {
+        return;
+    };
+    close_up(state, address, LIST_HEADER_WORDS + at * stride);
 }
 
 /// After a crash, a marked list's popped item back at `at`, its last, with the owners the log held:
@@ -863,7 +892,8 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
             let message = format!("can't insert at {at} in a {kind} of length {length}");
             return Err(Diagnostic::new(message, span(start, end)));
         };
-        let grown = grow_in(state, list, 1).unwrap_or(list);
+        // A marked list is changed where it is, a crash taking the item out again, rather than copied.
+        let grown = marked_insert(state, list, place).or_else(|| grow_in(state, list, 1)).unwrap_or(list);
         let address = u64::try_from(grown).unwrap_or(0);
         let stride =
             state.heap.block(address).and_then(|block| element_of(state, block)).map_or(1, |e| e.words());

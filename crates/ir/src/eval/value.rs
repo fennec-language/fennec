@@ -79,6 +79,10 @@ impl Ordered {
             return None;
         }
         let (_, value) = self.pairs.remove(at);
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "each place past the removed one moves down by one, in any order"
+        )]
         for place in self.places.values_mut() {
             if *place > at {
                 *place -= 1;

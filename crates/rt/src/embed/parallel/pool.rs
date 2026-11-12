@@ -381,6 +381,20 @@ pub(super) fn stressed() -> bool {
     *STRESSED.get_or_init(|| std::env::var_os("FENNEC_PARALLEL_STRESS").is_some())
 }
 
+/// Whether a stream's reader waits, for a test, for the workers to run every chunk in its window
+/// before it takes the next, set by `FENNEC_STREAM_RUN_AHEAD`. Then chunks always run ahead of the
+/// reader, as many as the window holds, however loaded the machine: without it, a reader that gets
+/// to a chunk first runs it itself, and under load it can get to every one first.
+pub(super) fn streams_run_ahead() -> bool {
+    static AHEAD: OnceLock<bool> = OnceLock::new();
+    *AHEAD.get_or_init(|| std::env::var_os("FENNEC_STREAM_RUN_AHEAD").is_some())
+}
+
+/// Whether this thread is one of the pool's workers.
+pub(super) fn on_worker() -> bool {
+    WORKER.get()
+}
+
 /// A pool of its own with `threads` workers, set up as the shared pool's are, for tests.
 #[cfg(test)]
 pub(super) fn with_threads(threads: usize) -> &'static Pool {

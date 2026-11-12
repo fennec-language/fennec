@@ -1,0 +1,4 @@
+# An empty fill can't make text any wider, so padding with one is a bug in the program, as Python
+# says too.
+def main(stdout: Stdout):
+    stdout.print("ab".ljust(5, fill="") + "|")

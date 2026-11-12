@@ -66,7 +66,7 @@ fn quoted_input(text: &str) -> String {
 }
 
 /// `n` with a comma between each group of three digits, as `5,000`.
-fn with_commas(n: usize) -> String {
+pub(crate) fn with_commas(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (at, digit) in digits.chars().enumerate() {

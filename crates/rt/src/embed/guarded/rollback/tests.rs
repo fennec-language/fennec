@@ -276,6 +276,52 @@ fn an_append_and_a_pop_in_place_go_back_on_a_crash_and_stay_at_an_end() {
     finish();
 }
 
+/// Items put in at the front and in the middle of a marked list, with an append between, are made
+/// in place, moving the list once it needs room: a crash takes them all out again, newest first,
+/// and a normal end keeps them.
+#[test]
+fn inserts_in_place_go_back_on_a_crash_and_stay_at_an_end() {
+    begin_run();
+    for crashed in [false, true] {
+        let cell = locked(&["one", "two"]);
+        let before = blocks();
+        let inside = word(cell, LINES_AT);
+        save_ref(cell, i64::try_from(LINES_AT).unwrap(), inside);
+        // Each as native code makes it: the runtime gives back the list with a zeroed item at the
+        // place, which is filled with a new line.
+        let (mut now, mut length) = (inside, 2);
+        for (at, line) in [(Some(0), "zero"), (None, "three"), (Some(2), "middle")] {
+            now = match at {
+                Some(at) => lists::insert(now, at, 0, 0),
+                None => lists::grow(now),
+            };
+            let place = at.map_or(length, |at| usize::try_from(at).unwrap());
+            length += 1;
+            set_word(now, LIST_HEADER_WORDS + place, string(line));
+            set_word(cell, LINES_AT, now);
+        }
+        assert_eq!(lines(now), ["zero", "one", "middle", "two", "three"]);
+        assert_eq!(
+            count_of(now) & lists::MARKED.cast_signed(),
+            lists::MARKED.cast_signed(),
+            "changed in place"
+        );
+        if crashed {
+            crash(cell);
+        } else {
+            kept();
+        }
+        let after = word(cell, LINES_AT);
+        let wanted: &[&str] =
+            if crashed { &["one", "two"] } else { &["zero", "one", "middle", "two", "three"] };
+        assert_eq!(lines(after), wanted, "crashed: {crashed}");
+        assert_eq!(count_of(after), 1, "crashed: {crashed}");
+        assert_eq!(blocks(), before + usize::from(!crashed) * 3, "crashed: {crashed}");
+        shared_leave(cell, 1);
+    }
+    finish();
+}
+
 #[test]
 fn an_item_set_in_place_goes_back_on_a_crash_and_stays_at_an_end() {
     begin_run();

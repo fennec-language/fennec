@@ -5,6 +5,10 @@
 //! into one module that the checker and the compiler take as they take a single file. Every file is parsed at its own byte offset, so `Program::sources` can say which
 //! file a diagnostic is in.
 
+// A hash map's order changes with every process, so iterating one would make what the compiler
+// emits, or the order it checks in, differ from run to run. Iterate a sorted copy or a BTreeMap.
+#![deny(clippy::iter_over_hash_type)]
+
 mod embed;
 mod init;
 mod load;

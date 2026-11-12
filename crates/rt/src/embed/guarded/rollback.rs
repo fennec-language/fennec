@@ -65,13 +65,15 @@ enum Change {
     /// The item at `at` was set, and the log holds its words as they were, with an owner of each
     /// block in them.
     Set { at: usize, words: Vec<u64> },
+    /// An item was put in at `at`, those from there moving up one.
+    Inserted { at: usize },
 }
 
 impl Change {
     /// The item's words the log holds owners in, if it holds any.
     fn held_words(&self) -> Option<&[u64]> {
         match self {
-            Change::Grew { .. } => None,
+            Change::Grew { .. } | Change::Inserted { .. } => None,
             Change::Popped { words, .. } | Change::Set { words, .. } => Some(words),
         }
     }
@@ -867,6 +869,7 @@ pub extern "C" fn undo() {
                     Change::Grew { before } => lists::shorten_to(state, saved.old, before),
                     Change::Popped { at, words } => lists::put_back(state, saved.old, at, &words),
                     Change::Set { at, words } => lists::set_back(state, saved.old, at, &words),
+                    Change::Inserted { at } => lists::take_out(state, saved.old, at),
                 }
             }
             lists::unmark(state, saved.old, true);
@@ -991,6 +994,12 @@ pub(in crate::embed) fn grew(list: u64, before: usize) -> bool {
 /// owner of each block in them, already taken. Says whether a log has it.
 pub(in crate::embed) fn popped(list: u64, at: usize, words: Vec<u64>) -> bool {
     note(list, Change::Popped { at, words })
+}
+
+/// A marked list is about to have an item put in at `at`, those from there moving up one. Says
+/// whether a log has it.
+pub(in crate::embed) fn inserted(list: u64, at: usize) -> bool {
+    note(list, Change::Inserted { at })
 }
 
 /// A marked list's item at `at` is about to be set: the log holds `words`, the item as it is, with an

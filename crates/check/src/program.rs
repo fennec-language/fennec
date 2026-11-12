@@ -199,7 +199,19 @@ impl Program {
     }
 
     fn add_import(&mut self, import: &Import) {
-        if import.module == ["std", "intrinsics"] && !import.span.in_prelude() {
+        // Among other names, as in `from std import json, intrinsics`, the others are imported.
+        if import.names.len() > 1 && reaches_intrinsics(import) {
+            for (at, name) in import.names.iter().enumerate() {
+                let one = Import {
+                    names: vec![name.clone()],
+                    aliases: vec![import.aliases.get(at).cloned().flatten()],
+                    ..import.clone()
+                };
+                self.add_import(&one);
+            }
+            return;
+        }
+        if reaches_intrinsics(import) && !import.span.in_prelude() {
             self.problems.push(
                 Diagnostic::new("`std.intrinsics` is for the standard library", import.span)
                     .with_help("use the std types built on it, like `int`, `float` and `Buffer`"),
@@ -858,4 +870,19 @@ fn written_type(ty: &TypeExpr) -> String {
 /// Whether `ty` has a `shared` type anywhere in it.
 fn holds_shared(ty: &TypeExpr) -> bool {
     ty.name == crate::lock::SHARED || ty.args.iter().any(holds_shared)
+}
+
+/// Whether an import reaches `std.intrinsics`, however it's written: `import std.intrinsics`,
+/// `from std.intrinsics import x`, `from std import intrinsics` with or without `as`, or among
+/// other names. What's asked is the module the import brings in, not how it's spelled.
+fn reaches_intrinsics(import: &Import) -> bool {
+    let named = |module: &str| module == "intrinsics";
+    let from_its_path = import.module.first().is_some_and(|first| first == "std")
+        && import.module.get(1).is_some_and(|second| named(second));
+    from_its_path
+        || fennec_syntax::std_import(import).is_ok_and(|all| {
+            all.iter().any(|imported| match imported {
+                Imported::Module { module, .. } | Imported::Name { module, .. } => named(module),
+            })
+        })
 }

@@ -41,7 +41,7 @@ export struct Url:
     ## `host`, then `:port` when a port was given: what the URL says to connect to.
     def address(self) -> str:
         host = f"[{self.host}]" if self.host.find(":") is not None else self.host
-        f"{host}:{self.port}" if self.port > 0 else host
+        return f"{host}:{self.port}" if self.port > 0 else host
 
     def str(self, ref out: StrWriter):
         if self.scheme != "":
@@ -56,7 +56,7 @@ export struct Url:
             out.write(self._raw_path)
         else:
             out.write(quoted(self.path, keep="/:@!$&'()*+,;="))
-        if self.query.len() > 0:
+        if len(self.query) > 0:
             out.write("?" + encode_query(self.query))
         if self.fragment != "":
             out.write("#" + quoted(self.fragment, keep="/?:@!$&'()*+,;="))
@@ -83,13 +83,13 @@ export def parse(text: str) -> Url fails InvalidValue:
         found = copy(found, query=decode_query(raw_query), _raw_query=raw_query)
         rest = rest[:at_question]
     colon = rest.find(":")
-    slash = rest.find("/") else rest.len()
+    slash = rest.find("/") else len(rest)
     if colon is not None and colon < slash and colon > 0 and is_scheme(rest[:colon]):
         found = copy(found, scheme=rest[:colon].lower())
         rest = rest[colon + 1:]
     if rest.startswith("//"):
         rest = rest[2:]
-        end = rest.find("/") else rest.len()
+        end = rest.find("/") else len(rest)
         mut authority = rest[:end]
         rest = rest[end:]
         at_sign = authority.find("@")
@@ -98,7 +98,7 @@ export def parse(text: str) -> Url fails InvalidValue:
             authority = authority[at_sign + 1:]
         host, port = host_and_port(authority, text)?
         found = copy(found, host=host, port=port, _authority=True)
-    copy(found, path=unquote(rest), _raw_path=rest)
+    return copy(found, path=unquote(rest), _raw_path=rest)
 
 ## Whether text can be a URL's scheme: a letter, then letters, digits, `+`, `-` or `.`.
 def is_scheme(text: str) -> bool:
@@ -109,7 +109,7 @@ def is_scheme(text: str) -> bool:
         if not letter and not (c >= "0" and c <= "9") and c != "+" and c != "-" and c != ".":
             return False
         first = False
-    not first
+    return not first
 
 ## Whether `text`, what's between a URL's brackets, is an IPv6 address: hex digits, `:` and the
 ## `.` of an IPv4 address at its end, with at least one `:`. A zone, like `%25en0`, isn't taken.
@@ -158,23 +158,23 @@ def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
                     message=f"{quoted_input(text)} isn't a URL: its host can't hold `@`, `%`, `\\`, `[` or `]`",
                 )
         # The most a name may be, as DNS has it.
-        if host.len() > 253:
+        if len(host) > 253:
             fail InvalidValue(
                 message=f"{quoted_input(text)} isn't a URL: its host is longer than 253 characters",
             )
         host = host.lower()
     if port_text == "": return (host, 0)
-    port = int(port_text) else 0
+    port = int(port_text) except InvalidValue(): 0
     if not port_text.isdigit() or port < 1 or port > 65_535:
         fail InvalidValue(
             message=f"{quoted_input(text)} isn't a URL: its port `{cut_input(port_text)}` isn't from 1 to 65535",
         )
-    (host, port)
+    return (host, port)
 
 ## `text` with each byte URLs can't hold as it is written as `%` and two hex digits, like `%20`
 ## for a space. Letters, digits and `-._~` are left as they are, and so is anything in `keep`.
 export def quote(text: str, keep = "") -> str:
-    quoted(text, keep=keep)
+    return quoted(text, keep=keep)
 
 def quoted(text: str, keep: str) -> str:
     raw = text.encode()
@@ -186,17 +186,17 @@ def quoted(text: str, keep: str) -> str:
             out.append(37)
             out.append(hex_char(b >> 4))
             out.append(hex_char(b & 15))
-    bytes(out).decode() else text
+    return bytes(out).decode() except InvalidValue(): text
 
 ## `text` with each `%` and two hex digits read as the byte they write. One that doesn't, like
 ## `%zz`, stays as it is, and so does text whose bytes aren't UTF-8 once read.
 export def unquote(text: str) -> str:
-    decoded(text, plus=False)
+    return decoded(text, plus=False)
 
 ## `params` as a query, `name=value` pairs joined by `&`, each part escaped as an HTML form
 ## sends it, with `+` for a space: `{"q": "red fox"}` is `q=red+fox`.
 export def encode_query(params: dict[str, str]) -> str:
-    "&".join([form_quoted(name) + "=" + form_quoted(value) for name, value in params.items()])
+    return "&".join([form_quoted(name) + "=" + form_quoted(value) for name, value in params.items()])
 
 ## A query's pairs, with their escapes read and `+` read as a space, in the order the query
 ## has them. A name with no `=` has the value "", and a name given twice keeps its first value,
@@ -221,21 +221,21 @@ def query_pairs(text: str) -> list[(str, str)]:
     return found
 
 def form_quoted(text: str) -> str:
-    quoted(text, keep=" ").replace(" ", "+")
+    return quoted(text, keep=" ").replace(" ", "+")
 
 def decoded(text: str, plus: bool) -> str:
     if text.find("%") is None and (not plus or text.find("+") is None): return text
     raw = text.encode()
     mut out = list[int]()
     mut at = 0
-    while at < raw.len():
+    while at < len(raw):
         b = raw[at]
         if b == 43 and plus:
             out.append(32)
             at += 1
         elif (
             b == 37
-            and at + 2 < raw.len()
+            and at + 2 < len(raw)
             and hex_value(raw[at + 1]) >= 0
             and hex_value(raw[at + 2]) >= 0
         ):
@@ -244,21 +244,21 @@ def decoded(text: str, plus: bool) -> str:
         else:
             out.append(b)
             at += 1
-    bytes(out).decode() else text
+    return bytes(out).decode() except InvalidValue(): text
 
 def is_unreserved(b: int) -> bool:
-    (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (
+    return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (
         b >= 48 and b <= 57
     ) or b == 45 or b == 46 or b == 95 or b == 126
 
 def hex_char(n: int) -> int:
-    n + 48 if n < 10 else n + 55
+    return n + 48 if n < 10 else n + 55
 
 def hex_value(b: int) -> int:
     if b >= 48 and b <= 57: return b - 48
     if b >= 97 and b <= 102: return b - 87
     if b >= 65 and b <= 70: return b - 55
-    -1
+    return -1
 
 def text_of_byte(b: int) -> str:
-    bytes([b]).decode() else ""
+    return bytes([b]).decode() except InvalidValue(): ""

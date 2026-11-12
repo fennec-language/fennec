@@ -38,7 +38,7 @@ export def channel[T](size: int, to: Delivery? = None) -> with Channel[T]:
         case .Every:
             number = channel_new_every(size)
     made = Channel[T](_channel=number)
-    lend made else:
+    lend made except:
         channel_close(made._channel)
         channel_free(made._channel)
     channel_close(made._channel)
@@ -97,11 +97,11 @@ export struct Channel[T]:
 
     ## The sending end, to hand to a task.
     def sender(self) -> Sender[T]:
-        Sender[T](_channel=self._channel)
+        return Sender[T](_channel=self._channel)
 
     ## The receiving end, to hand to a task.
     def inbox(self) -> Inbox[T]:
-        Inbox[T](_channel=self._channel)
+        return Inbox[T](_channel=self._channel)
 
 ## The receiving end of a channel: a task's inbox, as `with launch` makes it.
 export struct Inbox[T]:
@@ -139,7 +139,7 @@ export struct Sender[T]:
 ## negative `timeout` has already run out, so it doesn't wait at all.
 def nanos_of(timeout: Duration?) -> int:
     if timeout is None: return -1
-    max(timeout.nanos, 0)
+    return max(timeout.nanos, 0)
 
 ## What a send's answer means: 0 sent, 1 closed, 2 gave up after `wait`, which only a send given
 ## one can.
@@ -191,11 +191,11 @@ export error PoolError:
     def message(self) -> str:
         match self:
             case .Timeout(waited):
-                f"no value came free in {waited.as_seconds()}s"
+                return f"no value came free in {waited.as_seconds()}s"
             case .Open(reason):
-                reason
+                return reason
             case .Closed:
-                "the pool has ended"
+                return "the pool has ended"
 
 ## A pool of up to `size` values, each kept by a task of its own and lent to one `with` block at a
 ## time by `take()`: `with pool[Db](size=10, open=() => connected(net))? as dbs:`. One value is
@@ -220,7 +220,7 @@ export def pool[T: Pooled, E: Explained](
         sender = notes.sender()
         with launch(() => run_pool(0, inbox, sender, size, open, begun)?)?:
             made = Pool[T](_notes=sender, _wait=wait)
-            lend made else:
+            lend made except:
                 told(sender, PoolNote[T](kind=STOP))
             told(sender, PoolNote[T](kind=STOP))
 
@@ -234,7 +234,7 @@ export struct Pool[T]:
     ## failed or crashed, it's reset first, or replaced.
     def take(self, wait: Duration? = None) -> with T fails PoolError:
         borrowed = self.borrowed(wait=wait)?
-        lend borrowed.value else:
+        lend borrowed.value except:
             borrowed.give_back(False)
         borrowed.give_back(True)
 
@@ -243,7 +243,7 @@ export struct Pool[T]:
     def borrowed(self, wait: Duration? = None) -> Borrowed[T] fails PoolError:
         waiting = wait else self._wait
         with channel[Lent[T]](size=1) as reply:
-            self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) else fail .Closed
+            self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) except Closed(): fail .Closed
             answered = reply.receive_within(waiting) except why:
                 gave_up[T](self._notes, reply)
                 fail .Timeout(waited=why.waited)
@@ -277,7 +277,7 @@ struct Lent[T]:
 ## straight back. So a reply is never left with a value no one takes, and no keeper waits on a
 ## borrower that's gone.
 def gave_up[T](notes: Sender[PoolNote[T]], reply: Channel[Lent[T]]):
-    notes.send(PoolNote[T](kind=GAVE_UP, reply=reply.sender())) else return
+    notes.send(PoolNote[T](kind=GAVE_UP, reply=reply.sender())) except Closed(): return
     late = reply.receive() else return
     back = late.back else return
     value = late.value else return
@@ -314,18 +314,18 @@ GAVE_UP = 5
 
 ## What `open` gives, or its failure as a `PoolError`.
 def opened[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
-    value = open() else as failure:
+    value = open() except failure:
         fail PoolError.Open(reason=failure.message())
-    value
+    return value
 
 ## Sends `message` if `to` still takes it: the other side may have gone, which is fine.
 def told[T](to: Sender[T], message: T):
-    to.send(message) else return
+    to.send(message) except Closed(): return
 
 ## Whether `to` took `message`: the other side may have gone.
 def delivered[T](to: Sender[T], message: T) -> bool:
-    to.send(message) else return False
-    True
+    to.send(message) except Closed(): return False
+    return True
 
 ## The pool's tasks: a keeper for each value, each launched inside the last so they all run at
 ## once, then the dispatcher that hands them out. Each `with launch` ends once its keeper has
@@ -357,9 +357,9 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
             stopping = True
         elif note.kind == WANT:
             reply = note.reply else continue
-            if open_free.len() > 0:
+            if len(open_free) > 0:
                 told(keepers[open_free.pop(0)], KeeperOrder[T](reply=reply))
-            elif empty_free.len() > 0:
+            elif len(empty_free) > 0:
                 told(keepers[empty_free.pop(0)], KeeperOrder[T](reply=reply))
             else:
                 waiting.append(reply)
@@ -378,14 +378,14 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
             keeper = note.keeper
             if note.kind == HELLO:
                 keepers[keeper] = note.orders else continue
-            if waiting.len() > 0 and not stopping:
+            if len(waiting) > 0 and not stopping:
                 told(keepers[keeper], KeeperOrder[T](reply=waiting.pop(0)))
             elif note.kind == EMPTY or (note.kind == HELLO and keeper != 0):
                 empty_free.append(keeper)
             else:
                 open_free.append(keeper)
         # Every keeper has to have started to be told to stop.
-        if stopping and keepers.len() == size:
+        if stopping and len(keepers) == size:
             for _, orders in keepers.items():
                 told(orders, KeeperOrder[T](reply=None))
             return
@@ -406,7 +406,7 @@ def keep[T: Pooled, E: Explained](
         for order in orders:
             reply = order.reply else break
             if held is None:
-                held = open() else as failure:
+                held = open() except failure:
                     told(reply, Lent[T](value=None, back=None, failure=failure.message()))
                     told(notes, PoolNote[T](kind=EMPTY, keeper=number))
                     continue

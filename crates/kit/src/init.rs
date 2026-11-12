@@ -160,16 +160,25 @@ mod tests {
         assert_eq!(GUIDANCE.matches(START).count(), 1);
     }
 
-    /// Every code block is a program the checker accepts, so the guidance can't teach something
-    /// that stopped working.
+    /// Every code block is a program the checker accepts, written in the forms of 2026-11-11 with
+    /// nothing the migration would rewrite, so the guidance can't teach something that stopped
+    /// working, or an old form every AI that opens a new kit would copy.
     #[test]
     fn the_guidance_checks() {
         let blocks: Vec<&str> =
             GUIDANCE.split("```fennec\n").skip(1).filter_map(|rest| rest.split("```").next()).collect();
         assert_eq!(blocks.len(), 1);
         for block in blocks {
-            let module = fennec_syntax::parse(block).unwrap();
+            let mut sources = fennec_syntax::Sources::new();
+            let base = sources.add("guidance.fen", block);
+            let module = fennec_syntax::parse_at(block, base).unwrap();
             assert!(fennec_check::check(&module).is_ok(), "{block}");
+            let old: Vec<String> = fennec_check::migration_fixes(&module, &sources)
+                .into_iter()
+                .map(|found| found.message)
+                .collect();
+            assert!(old.is_empty(), "{old:?}");
+            assert!(!block.contains(".len()") && !block.contains(".abs()"), "{block}");
         }
     }
 }

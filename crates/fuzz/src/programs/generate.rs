@@ -15,10 +15,10 @@
 
 use super::ast::{
     Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Size, Stmt, TYPES, Ty, Via,
+    RefPlace, Size, Stmt, TYPES, Turn, Turning, Ty, Via,
 };
 
-/// Whether a crash runs a `lend x else:` cleanup holding a line like `kept = capped(code)?`.
+/// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
 const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = true;
 
@@ -581,6 +581,7 @@ impl Writer<'_> {
             3..=5 | 7 | 19..=21 if depth < MOST_BLOCKS => self.nested(body, depth, which),
             23..=25 => self.copies(body, which),
             26 if self.choice(3) == 0 => self.leaves(body),
+            26 if self.choice(4) == 0 => self.turns(body),
             26 => self.change_counts(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
@@ -903,7 +904,7 @@ impl Writer<'_> {
 
     /// A list lent to a call through `ref` beside a value read from it, the whole list or a
     /// list's item, or a value assigned to itself, a local or a struct's fields.
-    /// A `with` whose source's `lend x else:` cleanup runs when the block fails or crashes, in
+    /// A `with` whose source's `lend x except:` cleanup runs when the block fails or crashes, in
     /// `main` or in a launched task.
     fn guards(&mut self, body: &mut Vec<Stmt>) {
         if !self.threadless && self.choice(3) == 0 {
@@ -944,11 +945,9 @@ impl Writer<'_> {
         if ELSE_LEAVES_RUN_CLEANUPS {
             ways.extend([Leave::ElseReturn, Leave::ElseFail, Leave::ElseContinue, Leave::ElseBreak]);
         }
-        if super::source::EXCEPT_PARSES {
-            ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
-            if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
-                ways.push(Leave::ExceptArms);
-            }
+        ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
+        if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
+            ways.push(Leave::ExceptArms);
         }
         // A crash ends the program, so it's rare.
         let how = if self.choice(10) == 0 {
@@ -957,6 +956,25 @@ impl Writer<'_> {
             ways.get(self.choice(ways.len())).copied().unwrap_or(Leave::Return)
         };
         body.push(Stmt::Left { id, depth, together, rounds, at, how });
+    }
+
+    /// A loop whose int is at least 0 on its first turn and changes sign later, used as an index,
+    /// in a multiply and in adds at each end of `int`. Most stay from -4 to 3, where all of
+    /// those hold; some step past it, which stops the program.
+    fn turns(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let how = match self.choice(3) {
+            0 => Turn::StepDown,
+            1 => Turn::Flip,
+            _ => Turn::Reset,
+        };
+        let rounds = 2 + i64::from(self.byte() % 4);
+        let start = i64::from(self.byte() % 4);
+        let step = 1 + i64::from(self.byte() % 2);
+        let reset_at = 1 + i64::from(self.byte()) % (rounds - 1);
+        let reset_to = -1 - i64::from(self.byte() % 4);
+        body.push(Stmt::Turned(Turning { id, how, rounds, start, step, reset_at, reset_to }));
     }
 
     /// An arrow function that fails and passes it up with `?`, or keys holding floats.

@@ -2,6 +2,20 @@
 # characters Python's `string` names. Most of what's done to text is a method of `str`.
 from std.intrinsics import stop
 
+## `text` as an error quotes what it was given: whole, in backticks, or past 40 characters, its first
+## 20 and `…` in backticks, then how long it was, as in "`12345678901234567890…` (5,000
+## characters)". Text from outside can be as long as it likes, and this way it can't make a
+## message as long as itself. For std's own messages, not exported.
+def quoted_input(text: str) -> str:
+    if text.len() <= 40: return f"`{text}`"
+    return f"`{text[0:20]}…` ({text.len():,} characters)"
+
+## `text` as a message names a key or a part of a path from outside: whole, or past 40
+## characters, its first 20 and `…`.
+def cut_input(text: str) -> str:
+    if text.len() <= 40: return text
+    return text[0:20] + "…"
+
 export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
 export ASCII_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 export ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"

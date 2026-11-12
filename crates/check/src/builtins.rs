@@ -281,7 +281,9 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Clock", "now") => reads(&[], Type::named("Instant")),
         ("Clock", "time") => reads(&[], Type::named("Time")),
         ("Args", "len") | ("Entropy", "seed") => reads(&[], Type::Int),
-        ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
+        // A test's printed lines, sorted, since tasks print in no fixed order; and standard
+        // input's lines.
+        ("Stdout", "sorted_lines") | ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         // The next line without its ending, `None` at the end, and up to `size` bytes, empty at
         // the end: what makes `Stdin` a `Reader`.
         ("Stdin", "read_line") => reads(&[], Type::result(Type::optional(Type::Str), Type::named("IoError"))),
@@ -296,7 +298,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
 fn test_only(ty: &Type, name: &str) -> Option<&'static str> {
     let Type::Named(owner) = ty else { return None };
     Some(match (owner.as_str(), name) {
-        ("Stdout", "captured") => {
+        ("Stdout", "captured" | "sorted_lines") => {
             "only a test's own body can read what it printed, from the `Stdout` it received"
         }
         ("Net", "script" | "requests") => {
@@ -404,7 +406,7 @@ impl FnCx<'_> {
             Some("Connection") if name == "read_line" => &["crlf", "timeout"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "_udp" => &["port"],
-            Some("Process") if name == "run" => &["cwd", "env", "input"],
+            Some("Process") if name == "run" => &["cwd", "env", "input", "most_output", "timeout"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
                 self.one_request_body(args, span);
                 &["body", "headers", "json", "params", "timeout"]
@@ -544,12 +546,7 @@ impl FnCx<'_> {
                         self.error(mismatch("`crlf`", &Type::Bool, &ty, arg.value.span));
                     }
                 }
-                Some("port") if named.contains(&"port") => {
-                    if !self.checker.fits(&Type::Int, &ty) {
-                        self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
-                    }
-                }
-                Some(option @ ("indent" | "level")) if named.contains(&option) => {
+                Some(option @ ("indent" | "level" | "port" | "most_output")) if named.contains(&option) => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch(&format!("`{option}`"), &Type::Int, &ty, arg.value.span));
                     }

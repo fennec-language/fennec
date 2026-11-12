@@ -16,10 +16,48 @@ use crate::value::{Capability, Value};
 /// goes into a file of its own beside where it's going, which takes that place when its block
 /// ends. A test's fake files are held in memory, and go into its fake file system then.
 enum OpenFile {
-    Writing { out: BufWriter<std::fs::File>, temporary: PathBuf, target: PathBuf, durable: bool },
+    Writing { out: BufWriter<std::fs::File>, at: Written, durable: bool },
     Reading(BufReader<std::fs::File>),
     FakeWriting { target: String, data: Vec<u8> },
     FakeReading { data: Vec<u8>, at: usize },
+}
+
+/// Where a file being written is, and where it goes when its block ends: by path, or, for an `Fs`
+/// narrowed with `only`, by name beneath the handle of the folder it's narrowed to, so nothing
+/// swapped in on the way can send it outside.
+enum Written {
+    Path { temporary: PathBuf, target: PathBuf },
+    Beneath { folder: Arc<cap_std::fs::Dir>, temporary: PathBuf, target: PathBuf },
+}
+
+impl Written {
+    /// Renames the file written into its target's place.
+    fn put_in_place(&self) -> std::io::Result<()> {
+        match self {
+            Written::Path { temporary, target } => std::fs::rename(temporary, target),
+            Written::Beneath { folder, temporary, target } => folder.rename(temporary, folder, target),
+        }
+    }
+
+    /// Throws the file written away, leaving its target as it was.
+    fn throw_away(&self) {
+        let _ = match self {
+            Written::Path { temporary, .. } => std::fs::remove_file(temporary),
+            Written::Beneath { folder, temporary, .. } => folder.remove_file(temporary),
+        };
+    }
+
+    /// Puts the rename in the target's folder on the disk.
+    #[cfg(unix)]
+    fn sync_folder(&self) -> std::io::Result<()> {
+        match self {
+            Written::Path { target, .. } => sync_folder(target),
+            Written::Beneath { folder, target, .. } => {
+                let parent = target.parent().filter(|parent| !parent.as_os_str().is_empty());
+                folder.open_dir(parent.unwrap_or(Path::new(".")))?.into_std_file().sync_all()
+            }
+        }
+    }
 }
 
 /// Each open file has a lock of its own, so a long write to one never holds up another.
@@ -159,7 +197,8 @@ fn create(path: &str, durable: bool) -> Value {
     match made {
         Ok((file, temporary, target)) => {
             let out = BufWriter::new(file);
-            Value::Ok(Rc::new(lent(OpenFile::Writing { out, temporary, target, durable })))
+            let at = Written::Path { temporary, target };
+            Value::Ok(Rc::new(lent(OpenFile::Writing { out, at, durable })))
         }
         Err(fail) => io_failed(&fail),
     }
@@ -177,28 +216,23 @@ fn open(path: &str) -> Value {
 /// A file written takes its target's place: everything written is on the disk first, and the
 /// rename is too, after, unless it was made with `durable=False`. Anything left is thrown away
 /// when that fails, leaving the target as it was.
-fn finish_writing(
-    out: &mut BufWriter<std::fs::File>,
-    temporary: &Path,
-    target: &Path,
-    durable: bool,
-) -> Result<(), String> {
+fn finish_writing(out: &mut BufWriter<std::fs::File>, at: &Written, durable: bool) -> Result<(), String> {
     let done = (|| {
         out.flush()?;
         if durable {
             out.get_ref().sync_all()?;
         }
-        std::fs::rename(temporary, target)?;
+        at.put_in_place()?;
         // Windows has no handle to a folder to sync, and its renames are written through by
         // the file system.
         #[cfg(unix)]
         if durable {
-            sync_folder(target)?;
+            at.sync_folder()?;
         }
         Ok::<(), std::io::Error>(())
     })();
     if done.is_err() {
-        let _ = std::fs::remove_file(temporary);
+        at.throw_away();
     }
     done.map_err(|err| err.to_string())
 }
@@ -225,9 +259,7 @@ fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
         return fake(&target, &data);
     }
     blocking(move || match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
-        OpenFile::Writing { out, temporary, target, durable } => {
-            finish_writing(out, temporary, target, *durable)
-        }
+        OpenFile::Writing { out, at, durable } => finish_writing(out, at, *durable),
         _ => Ok(()),
     })
 }
@@ -236,8 +268,8 @@ fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
 fn discard(file: &Value) {
     let Some(file) = taken(file) else { return };
     blocking(move || {
-        if let OpenFile::Writing { temporary, .. } = &*file.lock().unwrap_or_else(PoisonError::into_inner) {
-            let _ = std::fs::remove_file(temporary);
+        if let OpenFile::Writing { at, .. } = &*file.lock().unwrap_or_else(PoisonError::into_inner) {
+            at.throw_away();
         }
     });
 }
@@ -322,16 +354,11 @@ fn file_work(
             Ok(Given::Data(all))
         }
         ("read_chunk", OpenFile::Reading(reader)) => {
-            let mut chunk = vec![0; size.unwrap_or(0)];
-            let mut filled = 0;
-            while filled < chunk.len() {
-                let read = reader.read(chunk.get_mut(filled..).unwrap_or_default()).map_err(io)?;
-                if read == 0 {
-                    break;
-                }
-                filled += read;
-            }
-            chunk.truncate(filled);
+            // Up to `size` bytes, growing as they're read, so a `size` far past what the file
+            // holds makes no room for what isn't there.
+            let mut chunk = Vec::new();
+            let limit = u64::try_from(size.unwrap_or(0)).unwrap_or(u64::MAX);
+            reader.by_ref().take(limit).read_to_end(&mut chunk).map_err(io)?;
             Ok(Given::Data(chunk))
         }
         ("read_line", OpenFile::Reading(reader)) => {
@@ -506,6 +533,252 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         ) => return wrong(),
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
     })
+}
+
+/// A method of an `Fs` narrowed with `only` to `folder`, on the real file system, for a path
+/// `relative` to that folder, whose whole form is `full`. Everything it does goes through a
+/// handle held on the folder, by names beneath it, so a folder or a link swapped in partway down
+/// the path between the narrowed `Fs`'s check and the work can't lead outside: the system refuses
+/// any step out. What's given back reads as `real_fs` gives it.
+pub(crate) fn beneath(
+    folder: &str,
+    (full, relative): (&str, &Path),
+    method: &str,
+    paths: &[Value],
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    let folder = match cap_std::fs::Dir::open_ambient_dir(folder, cap_std::ambient_authority()) {
+        Ok(folder) => Arc::new(folder),
+        Err(err) => return Ok(io_failed(&Fail::from(err))),
+    };
+    let io = Fail::from;
+    let at = relative.to_path_buf();
+    Ok(match (method, paths) {
+        ("exists", [Value::Str(_)]) => {
+            done(blocking(move || folder.try_exists(&at).map_err(io)), Value::Bool)
+        }
+        ("read_text", [Value::Str(_)]) => {
+            done(blocking(move || folder.read_to_string(&at).map_err(io)), |text| Value::str(&text))
+        }
+        ("read_bytes", [Value::Str(_)]) => {
+            done(blocking(move || folder.read(&at).map_err(io)), |data| Value::Bytes(Rc::from(data)))
+        }
+        ("write_text" | "write_bytes", [Value::Str(_), data @ (Value::Str(_) | Value::Bytes(_))]) => {
+            let data = bytes_of(data).to_vec();
+            done(blocking(move || write_whole_beneath(&folder, &at, &data).map_err(io)), |()| Value::Unit)
+        }
+        ("list_dir", [Value::Str(path)]) => {
+            let shown = path.to_string();
+            match blocking(move || names_beneath(&folder, &at, &shown).map_err(io)) {
+                Ok(names) => paths_in(path, &names),
+                Err(fail) => io_failed(&fail),
+            }
+        }
+        ("walk", [Value::Str(path)]) => {
+            let shown = path.to_string();
+            let walked = blocking(move || {
+                let mut found = Vec::new();
+                walk_beneath(&folder, &at, &shown, &mut found).map(|()| found).map_err(io)
+            });
+            match walked {
+                Ok(found) => paths_of(&found),
+                Err(fail) => io_failed(&fail),
+            }
+        }
+        ("make_dir", [Value::Str(_)]) => {
+            done(blocking(move || folder.create_dir_all(&at).map_err(io)), |()| Value::Unit)
+        }
+        ("remove", [Value::Str(_)]) => {
+            done(blocking(move || remove_beneath(&folder, &at).map_err(io)), |()| Value::Unit)
+        }
+        ("metadata", [Value::Str(_)]) => {
+            let found = blocking(move || {
+                folder.metadata(&at).map(|found| (found.len(), found.is_file(), found.is_dir())).map_err(io)
+            });
+            done(found, |(size, is_file, is_dir)| {
+                Value::made(
+                    "Metadata",
+                    vec![
+                        ("size", Value::Int(i64::try_from(size).unwrap_or(i64::MAX))),
+                        ("is_file", Value::Bool(is_file)),
+                        ("is_dir", Value::Bool(is_dir)),
+                    ],
+                )
+            })
+        }
+        ("_create", [Value::Str(_), Value::Bool(durable)]) => create_beneath(folder, at, *durable),
+        ("_open", [Value::Str(_)]) => {
+            match blocking(move || folder.open(&at).map(cap_std::fs::File::into_std).map_err(io)) {
+                Ok(file) => Value::Ok(Rc::new(lent(OpenFile::Reading(BufReader::new(file))))),
+                Err(fail) => io_failed(&fail),
+            }
+        }
+        ("_sqlite_open", [Value::Str(_)]) => sqlite_beneath(folder, at, full),
+        // Wrong arguments, and a method that isn't the file system's, say so as the whole `Fs` does.
+        _ => return real_fs(method, paths, span),
+    })
+}
+
+/// Where writing to `at` beneath `folder` really puts a file: what a link there points at, when
+/// that's beneath the folder too, so the link stays a link. One pointing out is refused.
+fn through_links_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<PathBuf> {
+    match folder.symlink_metadata(at) {
+        Ok(found) if found.file_type().is_symlink() => folder.canonicalize(at),
+        _ => Ok(at.to_path_buf()),
+    }
+}
+
+/// [`replaceable`], beneath `folder`.
+fn replaceable_beneath(folder: &cap_std::fs::Dir, target: &Path) -> bool {
+    folder.metadata(target).map_or(true, |found| found.is_file())
+}
+
+/// [`new_beside`], beneath `folder`: a new file beside `target`, with `target`'s permissions.
+fn new_beside_beneath(folder: &cap_std::fs::Dir, target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let replaced = folder.metadata(target).ok();
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if replaced.is_some() {
+        use cap_std::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+    for _ in 0..32 {
+        let temporary = temporary_beside(target);
+        match folder.open_with(&temporary, &options) {
+            Ok(file) => {
+                let file = file.into_std();
+                if let Some(replaced) = &replaced {
+                    permissions_like(&file, replaced)?;
+                }
+                return Ok((file, temporary));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last)
+}
+
+/// Gives `file` the permissions of the file it's to replace.
+fn permissions_like(file: &std::fs::File, replaced: &cap_std::fs::Metadata) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::PermissionsExt as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(replaced.permissions().mode()))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(replaced.permissions().readonly());
+        file.set_permissions(permissions)
+    }
+}
+
+/// [`write_whole`], beneath `folder`.
+fn write_whole_beneath(folder: &cap_std::fs::Dir, at: &Path, data: &[u8]) -> std::io::Result<()> {
+    let target = through_links_beneath(folder, at)?;
+    if !replaceable_beneath(folder, &target) {
+        return folder.write(&target, data);
+    }
+    let (mut file, temporary) = match new_beside_beneath(folder, &target) {
+        Ok(made) => made,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            return folder.write(&target, data);
+        }
+        Err(err) => return Err(err),
+    };
+    let done = file.write_all(data).and_then(|()| folder.rename(&temporary, folder, &target));
+    if done.is_err() {
+        let _ = folder.remove_file(&temporary);
+    }
+    done
+}
+
+/// [`create`], beneath `folder`: a new file beside `at` to write, which takes its place by name
+/// beneath the folder when its block ends.
+fn create_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, durable: bool) -> Value {
+    let made = blocking(move || {
+        let target = through_links_beneath(&folder, &at).map_err(Fail::from)?;
+        if !replaceable_beneath(&folder, &target) {
+            return Err(Fail::from(format!("`{}` isn't a file that can be replaced", target.display())));
+        }
+        let (file, temporary) = new_beside_beneath(&folder, &target).map_err(Fail::from)?;
+        Ok((file, Written::Beneath { folder, temporary, target }))
+    });
+    match made {
+        Ok((file, at)) => {
+            Value::Ok(Rc::new(lent(OpenFile::Writing { out: BufWriter::new(file), at, durable })))
+        }
+        Err(fail) => io_failed(&fail),
+    }
+}
+
+/// [`names_in`], beneath `folder`, with `shown` the folder's path as the program gave it.
+fn names_beneath(folder: &cap_std::fs::Dir, at: &Path, shown: &str) -> std::io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in folder.read_dir(at)? {
+        names.push(name_of(entry?.file_name(), shown)?);
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// [`walk_into`], beneath `folder`: every path under `at`, as the program would write it, each
+/// folder's before what's in it, and a link to a folder listed but not gone into.
+fn walk_beneath(
+    folder: &cap_std::fs::Dir,
+    at: &Path,
+    shown: &str,
+    found: &mut Vec<String>,
+) -> std::io::Result<()> {
+    for name in names_beneath(folder, at, shown)? {
+        let path = joined(shown, &name);
+        let inside = at.join(&name);
+        let is_folder = folder.symlink_metadata(&inside)?.is_dir();
+        found.push(path.clone());
+        if is_folder {
+            walk_beneath(folder, &inside, &path, found)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`remove`], beneath `folder`.
+fn remove_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<()> {
+    if folder.symlink_metadata(at)?.is_dir() { folder.remove_dir(at) } else { folder.remove_file(at) }
+}
+
+/// `fs._sqlite_open` beneath `folder`. SQLite opens its file by path, and can't be handed a
+/// folder's handle, so the file is opened, or made, beneath the folder first and what it is noted.
+/// SQLite then opens the path, and the database is refused unless SQLite's file is still that one,
+/// as SQLite itself and the path both say, before and after it looks (see
+/// `sqlite::open_checked`). Its `-wal` and `-shm` files beside it are opened by SQLite by path,
+/// unchecked.
+fn sqlite_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, full: &str) -> Value {
+    #[cfg(unix)]
+    {
+        let noted = blocking(move || {
+            use std::os::unix::fs::MetadataExt as _;
+            let mut options = cap_std::fs::OpenOptions::new();
+            options.read(true).write(true).create(true);
+            let found = folder.open_with(&at, &options)?.into_std().metadata()?;
+            Ok::<(u64, u64), std::io::Error>((found.dev(), found.ino()))
+        });
+        match noted {
+            Ok(file) => crate::stdlib::sqlite::open_checked(full, file),
+            Err(err) => io_failed(&Fail::from(err)),
+        }
+    }
+    // Elsewhere there's no number for a file to compare, so SQLite opens the path the `Fs`'s check
+    // allowed, as it always has.
+    #[cfg(not(unix))]
+    {
+        drop((folder, at));
+        crate::stdlib::sqlite::open_file(full)
+    }
 }
 
 /// A result's value, made into what a program gets back, or its failure as an `IoError`.

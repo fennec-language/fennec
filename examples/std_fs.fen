@@ -163,6 +163,18 @@ test "read_chunk gives up to its size, and empty bytes at the end"(fs: Fs):
         assert file.read_chunk(100)? == "fghi".encode()
         assert file.read_chunk(100)?.len() == 0
 
+## What a file's `read_chunk(size)` gives for `path`.
+def chunk_of(fs: Fs, path: str, size: int) -> bytes fails IoError:
+    with fs.open(path)? as file:
+        return file.read_chunk(size)?
+    return bytes([])
+
+test "read_chunk of a size far past the file gives the whole file, making no room for the rest"(
+    fs: Fs,
+):
+    fs.write_text("small.txt", "abc")?
+    assert chunk_of(fs, "small.txt", size=1 << 50)? == "abc".encode()
+
 test "a file being made isn't at its path until its block ends, flushed or synced"(fs: Fs):
     with fs.create("made.txt")? as file:
         file.write_text("half")?

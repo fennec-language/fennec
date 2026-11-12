@@ -477,14 +477,222 @@ fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Resul
     Ok(())
 }
 
-/// Whether an example runs more than one task, whose order between them isn't recorded yet, or
-/// serves until it's stopped, so its run doesn't end by itself.
-fn several_tasks_or_serves(source: &str) -> bool {
-    ["parallel(", "launch(", "Channel[", ".serve("].iter().any(|marker| source.contains(marker))
+/// A program connecting to a server of its own and printing what it made.
+const NET_LABELS: &str = "from std.net import NetError
+
+def main(stdout: Stdout, net: Net) fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port)? as first:
+            with server.accept()? as taken:
+                stdout.print(server, first, taken)
+    with net.udp()? as socket:
+        stdout.print(socket)
+    return
+";
+
+/// Connections, servers and UDP sockets print as their labels, counted as the program makes them,
+/// not their handles, which are random: the same every run, and in a replay.
+#[test]
+fn network_values_print_the_same_every_run_and_in_a_replay() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("net-labels")?;
+    let program = dir.join("labels.fen");
+    std::fs::write(&program, NET_LABELS)?;
+    let wanted = "Server(#1) Connection(#1) Connection(#2)\nUdpSocket(#1)\n";
+    for _ in 0..2 {
+        let ran =
+            outcome(&fennec_command().arg("run").arg(&program).current_dir(&dir).output_before(DEADLINE)?);
+        assert_eq!((ran.0.as_str(), ran.2), (wanted, Some(0)), "{}", ran.1);
+    }
+    let log = dir.join("labels.log");
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(recorded.0, wanted, "{}", recorded.1);
+    let replayed = outcome(
+        &fennec_command()
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(replayed, recorded);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
+/// A server whose tasks each say which connection they serve, back to its client and on its own
+/// output.
+const LABELLED_SERVER: &str = "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"stop\":
+                break
+            stdout.print(line, conn)
+            conn.write(f\"{conn}\\n\")?
+    stdout.print(\"done\")
+    return
+";
+
+/// How many connections `serve_labelled` keeps open at once.
+const LABELLED: usize = 6;
+
+/// Runs `LABELLED_SERVER`, recording to `log` if it's given, with several connections open at
+/// once that are asked in the opposite order to the one they came in. Gives back what each
+/// connection was told it is, in the order they came, and everything the server printed.
+fn serve_labelled(dir: &Path, program: &Path, log: Option<&Path>) -> std::io::Result<(Vec<String>, String)> {
+    let mut command = fennec_command();
+    command.arg("run");
+    if let Some(log) = log {
+        command.args(["--record", &log.to_string_lossy()]);
+    }
+    let mut server = command
+        .arg(program)
+        .env("FENNEC_THREADS", "4")
+        .env("FENNEC_PARALLEL_STRESS", "1")
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    let mut open = Vec::new();
+    for _ in 0..LABELLED {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+        open.push(stream);
+    }
+    let mut told = vec![String::new(); LABELLED];
+    for (at, stream) in open.iter().enumerate().rev() {
+        std::io::Write::write_all(&mut &*stream, format!("asked{at}\n").as_bytes())?;
+        let mut back = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut back)?;
+        if let Some(slot) = told.get_mut(at) {
+            back.trim().clone_into(slot);
+        }
+    }
+    let mut stopping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    std::io::Write::write_all(&mut stopping, b"stop\n")?;
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest)?;
+    let status = server.wait()?;
+    assert!(status.success(), "the server failed");
+    Ok((told, format!("{port}\n{rest}")))
+}
+
+/// The connections a server serves in parallel are numbered in the order it took them, not the
+/// order their tasks start: the same every run, and in a replay.
 #[test]
-fn every_single_task_example_replays_exactly_as_it_ran() -> std::io::Result<()> {
+fn served_connections_are_numbered_in_the_order_they_came_every_run_and_in_a_replay() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("served-labels")?;
+    let program = dir.join("served.fen");
+    std::fs::write(&program, LABELLED_SERVER)?;
+    let wanted: Vec<String> = (1..=LABELLED).map(|n| format!("Connection(#{n})")).collect();
+    for _ in 0..2 {
+        let (told, _) = serve_labelled(&dir, &program, None)?;
+        assert_eq!(told, wanted);
+    }
+    let log = dir.join("served.log");
+    let (told, recorded) = serve_labelled(&dir, &program, Some(&log))?;
+    assert_eq!(told, wanted);
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .env("FENNEC_THREADS", threads)
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&replayed.stdout),
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Ranges of a `parallel` call and launched tasks all printing, enough that each task's output
+/// goes out in several bursts, which interleave differently from run to run.
+const TASKS_PRINTING: &str = "from std.concurrent import Crashed
+
+def chatter(stdout: Stdout, name: str):
+    for at in range(2500):
+        stdout.print(name, at)
+
+def main(stdout: Stdout) fails Crashed:
+    numbers = [n for n in range(64)]
+    for n in parallel(numbers):
+        stdout.print(\"range\", n)
+    with launch(() => chatter(stdout, \"a\"))?:
+        with launch(() => chatter(stdout, \"b\"))?:
+            chatter(stdout, \"main\")
+    stdout.print(\"done\")
+";
+
+/// How tasks' output interleaved is recorded, and a replay writes it in the same order, byte for
+/// byte, however many threads it's given.
+#[test]
+fn tasks_printing_replay_their_output_in_the_order_it_went_out() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("output-order")?;
+    let program = dir.join("printing.fen");
+    std::fs::write(&program, TASKS_PRINTING)?;
+    let log = dir.join("printing.log");
+    let mut record = fennec_command();
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    assert_eq!(recorded.0.lines().count(), 64 + 3 * 2500 + 1);
+    for threads in ["1", "4", "1", "4", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Whether an example serves until it's stopped, so its run doesn't end by itself.
+fn serves(source: &str) -> bool {
+    source.contains(".serve(")
+}
+
+/// Whether an example runs more than one task, which needs the threads runtime.
+fn several_tasks(source: &str) -> bool {
+    ["parallel(", "launch(", "Channel["].iter().any(|marker| source.contains(marker))
+}
+
+/// Every example that ends by itself replays exactly as it ran, its output byte for byte, tasks
+/// and `parallel` calls among them: how their output interleaved is recorded, and a replay repeats
+/// it.
+#[test]
+fn every_example_that_ends_replays_exactly_as_it_ran() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -497,7 +705,7 @@ fn every_single_task_example_replays_exactly_as_it_ran() -> std::io::Result<()> 
         } else {
             continue;
         };
-        if !several_tasks_or_serves(&source) {
+        if !serves(&source) && (threads_runtime_built() || !several_tasks(&source)) {
             programs.push(path);
         }
     }

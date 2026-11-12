@@ -1,3 +1,5 @@
+from std.string import cut_input
+
 ## A file path, like `saves/slot1.json`. Its parts are separated by `/`. Every method only
 ## looks at the text; none of them touch the file system.
 export struct Path:
@@ -19,10 +21,15 @@ export struct Path:
     def inside(self, part: str) -> Path fails InvalidValue:
         for c in part:
             if c.code() < 32 or c.code() == 127 or c == "\\":
-                fail InvalidValue(message=f"`{part}` can't be a path inside `{self.text}`")
+                fail InvalidValue(
+                    message=f"`{cut_input(part)}` can't be a path inside `{cut_input(self.text)}`",
+                )
         kept = Path(part).parts()
         for name in kept:
-            if name == "..": fail InvalidValue(message=f"`{part}` would leave `{self.text}`")
+            if name == "..":
+                fail InvalidValue(
+                    message=f"`{cut_input(part)}` would leave `{cut_input(self.text)}`",
+                )
         self.join("/".join(kept))
 
     ## Whether the path starts at the root, `/`.

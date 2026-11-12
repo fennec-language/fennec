@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Size, Stmt,
+    RefPlace, Size, Stmt, Turn, Turning, XS,
 };
 
 /// A value while the program runs.
@@ -1137,6 +1137,7 @@ impl Machine {
             Stmt::Guarded { code, refuse, crash, noted } => self.guarded(*code, *refuse, *crash, *noted)?,
             Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
+            Stmt::Turned(turning) => self.turned(turning)?,
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1316,7 +1317,7 @@ impl Machine {
         Ok(())
     }
 
-    /// `guarded`'s `lend x else:` cleanup, after a block that failed or crashed: the note it
+    /// `guarded`'s `lend x except:` cleanup, after a block that failed or crashed: the note it
     /// leaves when it fails, with the rest of it skipped.
     fn cleanup(&mut self, code: i64, noted: bool) -> Ran<Option<i64>> {
         let _ = writeln!(self.out, "unguard {code}");
@@ -1366,7 +1367,7 @@ impl Machine {
 
     /// `left{id}(stdout)`: each round opens the wards outermost first and closes them innermost
     /// first, the code after `lend` for a block that finished or was left by `return`, `break` or
-    /// `continue`, and `lend x else:` for one that failed or crashed.
+    /// `continue`, and `lend x except:` for one that failed or crashed.
     fn left(&mut self, depth: usize, rounds: i64, at: i64, how: Leave) -> Ran<()> {
         let names = super::source::WARDS.get(..depth).unwrap_or(&super::source::WARDS);
         let mut total = 0_i64;
@@ -1427,6 +1428,33 @@ impl Machine {
             let _ = writeln!(self.out, "round {i}");
         }
         let _ = writeln!(self.out, "total {total}");
+        Ok(())
+    }
+
+    /// What `turned{id}` prints: each turn, its int, `XS` at it, it times 3, and it added to each
+    /// end of `int`. A place outside `XS` or an add past an end stops the program, as natively.
+    fn turned(&mut self, turning: &Turning) -> Ran<()> {
+        let Turning { how, rounds, start, step, reset_at, reset_to, .. } = *turning;
+        let (mut at, mut sign, mut n) = (start, 1_i64, start);
+        for i in 0..rounds {
+            if how == Turn::Reset && i == reset_at {
+                n = reset_to;
+            }
+            let value = match how {
+                Turn::StepDown => at,
+                Turn::Flip => checked(sign.checked_mul(start))?,
+                Turn::Reset => n,
+            };
+            let item = XS.get(place_in(value, XS.len())?).copied().ok_or(Stop::Unsure)?;
+            let low = (-9_223_372_036_854_775_804_i64).checked_add(value).ok_or(Stop::Failed)?;
+            let high = 9_223_372_036_854_775_804_i64.checked_add(value).ok_or(Stop::Failed)?;
+            let _ = writeln!(self.out, "turn {value} {item} {} {low} {high}", checked(value.checked_mul(3))?);
+            match how {
+                Turn::StepDown => at = checked(at.checked_sub(step))?,
+                Turn::Flip => sign = -sign,
+                Turn::Reset => n = checked(n.checked_add(1))?,
+            }
+        }
         Ok(())
     }
 

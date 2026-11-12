@@ -5,7 +5,9 @@
 //! the output is kept, and the rest is real.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -24,12 +26,79 @@ pub(crate) enum TestCapabilities {
     Real,
 }
 
+/// What a test printed and wrote to standard error, shared with every task and `parallel` range it
+/// starts, so what they print is the test's too, whatever thread runs them. It closes when the
+/// test ends: a task still writing then has outlived its test, and what it writes goes to standard
+/// error with a warning, never into another test's.
+pub(crate) struct Capture(Mutex<Captured>);
+
+#[derive(Default)]
+struct Captured {
+    printed: String,
+    errors: String,
+    closed: bool,
+}
+
+impl Capture {
+    pub(crate) fn new() -> Arc<Capture> {
+        Arc::new(Capture(Mutex::new(Captured::default())))
+    }
+
+    fn captured(&self) -> std::sync::MutexGuard<'_, Captured> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps what a task of the test printed.
+    pub(crate) fn print(&self, text: &str) {
+        let mut captured = self.captured();
+        if captured.closed {
+            drop(captured);
+            late("printed", text);
+        } else {
+            captured.printed.push_str(text);
+        }
+    }
+
+    /// Keeps what a task of the test wrote to standard error.
+    pub(crate) fn error(&self, text: &str) {
+        let mut captured = self.captured();
+        if captured.closed {
+            drop(captured);
+            late("wrote to standard error", text);
+        } else {
+            captured.errors.push_str(text);
+        }
+    }
+
+    pub(crate) fn printed(&self) -> String {
+        self.captured().printed.clone()
+    }
+
+    fn errors(&self) -> String {
+        self.captured().errors.clone()
+    }
+
+    /// The test has ended: anything written from now on is a task's that outlived it.
+    fn close(&self) {
+        self.captured().closed = true;
+    }
+}
+
+/// What a task wrote after its test ended, said on standard error rather than kept for a test.
+fn late(what: &str, text: &str) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "warning: a task {what} after its test ended, so it's here rather than in what the test captured:\n{text}"
+    );
+}
+
 pub(crate) struct TestWorld {
     capabilities: TestCapabilities,
     /// By path, as `key` writes it. The top folder is always there, and isn't listed.
     nodes: BTreeMap<String, Node>,
     nanos: i64,
-    printed: String,
+    /// What the test and its tasks printed and wrote to standard error.
+    capture: Arc<Capture>,
     /// What each program gives back, by name, as the test scripted it.
     pub(crate) scripts: BTreeMap<String, Value>,
     /// Each program the test ran, with its arguments, in order.
@@ -38,8 +107,6 @@ pub(crate) struct TestWorld {
     pub(crate) entropy_drawn: usize,
     /// The fake `Env`'s variables, by name, as the test set them.
     pub(crate) variables: BTreeMap<String, String>,
-    /// What the test wrote to its fake `Stderr`.
-    pub(crate) errors: String,
     /// Whether the test asked its fake `Signals` to stop.
     pub(crate) stopped: bool,
     /// The test's network, in memory.
@@ -48,18 +115,24 @@ pub(crate) struct TestWorld {
     pub(crate) databases: crate::stdlib::sqlite::Fakes,
 }
 
+/// A test's world goes when the test ends, and its capture closes with it.
+impl Drop for TestWorld {
+    fn drop(&mut self) {
+        self.capture.close();
+    }
+}
+
 impl TestWorld {
     pub(crate) fn new(capabilities: TestCapabilities) -> Self {
         TestWorld {
             capabilities,
             nodes: BTreeMap::new(),
             nanos: 0,
-            printed: String::new(),
+            capture: Capture::new(),
             scripts: BTreeMap::new(),
             ran: Vec::new(),
             entropy_drawn: 0,
             variables: BTreeMap::new(),
-            errors: String::new(),
             stopped: false,
             net: crate::stdlib::net::Fake::default(),
             databases: crate::stdlib::sqlite::Fakes::default(),
@@ -70,13 +143,16 @@ impl TestWorld {
         self.capabilities == TestCapabilities::Real
     }
 
-    pub(crate) fn printed(&self) -> &str {
-        &self.printed
+    /// What the test and its tasks have printed, with what the test holds of a line it hasn't
+    /// ended yet.
+    pub(crate) fn printed(&self) -> String {
+        crate::embed::flush_held_line();
+        self.capture.printed()
     }
 
-    pub(crate) fn print(&mut self, text: &str, ending: &str) {
-        self.printed.push_str(text);
-        self.printed.push_str(ending);
+    /// The test's capture, for the tasks and ranges it starts to print into.
+    pub(crate) fn capture(&self) -> Arc<Capture> {
+        Arc::clone(&self.capture)
     }
 
     pub(crate) fn now(&self) -> i64 {
@@ -217,10 +293,18 @@ impl TestWorld {
         span: Span,
     ) -> Option<Result<Value, Diagnostic>> {
         if capability == Capability::Stdout && method == "captured" {
-            return Some(Ok(Value::str(self.printed())));
+            return Some(Ok(Value::str(&self.printed())));
+        }
+        // What tasks print comes out in the order they write it, which differs between runs, so a
+        // test compares their lines sorted.
+        if capability == Capability::Stdout && method == "sorted_lines" {
+            let printed = self.printed();
+            let mut lines: Vec<&str> = printed.lines().collect();
+            lines.sort_unstable();
+            return Some(Ok(Value::list(lines.into_iter().map(Value::str).collect())));
         }
         if capability == Capability::Stderr && method == "captured" {
-            return Some(Ok(Value::str(&self.errors)));
+            return Some(Ok(Value::str(&self.capture.errors())));
         }
         if self.real() || method == "only" {
             return None;
@@ -234,7 +318,7 @@ impl TestWorld {
             Capability::Entropy => Some(self.entropy(method, args, span)),
             Capability::Env => Some(self.env(method, args, span)),
             Capability::Signals => Some(self.signals(method, args, span)),
-            Capability::Stderr => Some(crate::stderr::faked(&mut self.errors, method, args, span)),
+            Capability::Stderr => Some(crate::stderr::faked(&self.capture, method, args, span)),
             Capability::Process => self.process(method, args, span),
             Capability::Net => Some(self.net.net_method(method, args, span)),
             Capability::Stdout | Capability::Stdin | Capability::Args => None,
@@ -447,4 +531,23 @@ fn metadata(world: &TestWorld, path: &str) -> Result<Vec<(&'static str, Value)>,
         ("is_file", Value::Bool(size.is_some())),
         ("is_dir", Value::Bool(size.is_none())),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Capture;
+
+    /// Once its test has ended, a capture takes nothing more: a task still writing has outlived the
+    /// test, and what it writes goes to standard error, never into what the test, or the next one,
+    /// captured.
+    #[test]
+    fn a_capture_takes_nothing_once_its_test_has_ended() {
+        let capture = Capture::new();
+        capture.print("kept\n");
+        capture.error("said\n");
+        capture.close();
+        capture.print("too late\n");
+        capture.error("too late\n");
+        assert_eq!((capture.printed(), capture.errors()), ("kept\n".to_owned(), "said\n".to_owned()));
+    }
 }

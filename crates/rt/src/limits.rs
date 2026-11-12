@@ -4,11 +4,13 @@
 //! `ProcessError` or an `IoError` value that says what was allowed, rather than stopping the
 //! program. Folders are compared by their paths with `.` and `..` worked out, so a path can't
 //! climb out of its folder by naming its parent, and again with every link followed, so a link
-//! inside a folder can't lead out of it.
+//! inside a folder can't lead out of it. On the real file system, what an `Fs` narrowed to a
+//! folder then does goes through a handle held on that folder, by names beneath it, so nothing
+//! swapped in between the check and the work can lead out either.
 
 use std::rc::Rc;
 
-use fennec_syntax::Diagnostic;
+use fennec_syntax::{Diagnostic, Span};
 
 use crate::stdlib::fs::path_text;
 use crate::value::{Capability, Value};
@@ -96,14 +98,24 @@ fn inside(path: &str, folder: &str) -> bool {
     path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// `path`, inside `folder`, as a path relative to it: `.` for the folder itself.
+fn beneath(path: &str, folder: &str) -> std::path::PathBuf {
+    let folder = folder.strip_suffix('/').unwrap_or(folder);
+    let rest = path.strip_prefix(folder).unwrap_or_default().trim_start_matches('/');
+    std::path::PathBuf::from(if rest.is_empty() { "." } else { rest })
+}
+
 /// Runs a method of a whole capability.
 type CallWhole<'c> = dyn FnMut(Capability, &str, &[Value]) -> Result<Value, Diagnostic> + 'c;
 
 /// A method of a narrowed capability: what it may do goes to `call`, and what it may not fails.
+/// `real` says the whole capability is the real one rather than a test's fake, so a narrowed `Fs`
+/// works beneath its folder's handle itself.
 pub(crate) fn narrowed(
     limited: &Rc<Limited>,
     method: &str,
     args: &[Value],
+    (real, at): (bool, Span),
     call: &mut CallWhole<'_>,
 ) -> Result<Value, Diagnostic> {
     match (limited.capability, method) {
@@ -134,7 +146,7 @@ pub(crate) fn narrowed(
             Ok(crate::stdlib::process::process_error(&program, &message))
         }
         (Capability::Process, _) => call(Capability::Process, method, args),
-        (Capability::Fs, _) => narrowed_fs(limited, method, args, call),
+        (Capability::Fs, _) => narrowed_fs(limited, method, args, (real, at), call),
         (capability, _) => call(capability, method, args),
     }
 }
@@ -143,22 +155,27 @@ fn narrowed_fs(
     limited: &Rc<Limited>,
     method: &str,
     args: &[Value],
+    (real, at): (bool, Span),
     call: &mut CallWhole<'_>,
 ) -> Result<Value, Diagnostic> {
     let Some(Value::Str(path)) = args.first().map(path_text) else {
         return call(Capability::Fs, method, args);
     };
     let full = absolute(&path);
-    let real = with_links_followed(&full);
-    let reachable = limited
+    let followed = with_links_followed(&full);
+    let reaching = limited
         .allowed
         .iter()
-        .any(|folder| inside(&full, folder) && inside(&real, &with_links_followed(folder)));
+        .find(|folder| inside(&full, folder) && inside(&followed, &with_links_followed(folder)));
     if method == "only" {
-        let allowed = if reachable { vec![Rc::from(full)] } else { Vec::new() };
+        let allowed = if reaching.is_some() { vec![Rc::from(full)] } else { Vec::new() };
         return Ok(Limited::to(Capability::Fs, allowed));
     }
-    if reachable {
+    if let Some(folder) = reaching {
+        if real {
+            let paths: Vec<Value> = args.iter().map(path_text).collect();
+            return crate::stdlib::fs::beneath(folder, (&full, &beneath(&full, folder)), method, &paths, at);
+        }
         return call(Capability::Fs, method, args);
     }
     let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
@@ -167,7 +184,193 @@ fn narrowed_fs(
 
 #[cfg(test)]
 mod tests {
-    use super::{absolute, inside, plain};
+    use std::rc::Rc;
+
+    use fennec_syntax::Span;
+
+    use super::{Limited, absolute, inside, narrowed, plain};
+    use crate::stdlib::fs::path_text;
+    use crate::value::{Capability, Value};
+
+    /// A new, empty folder of this test's own.
+    fn scratch(name: &str) -> String {
+        let folder = std::env::temp_dir().join(format!("fennec-beneath-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder.to_string_lossy().into_owned()
+    }
+
+    /// The real `Fs` narrowed to `folder`.
+    fn fs_in(folder: &str) -> Rc<Limited> {
+        Rc::new(Limited { capability: Capability::Fs, allowed: vec![Rc::from(absolute(folder))] })
+    }
+
+    /// A method of the narrowed real `Fs`, as compiled code calls it.
+    fn call(fs: &Rc<Limited>, method: &str, args: &[Value]) -> Value {
+        narrowed(fs, method, args, (true, Span::default()), &mut |capability, method, args| {
+            assert_eq!(capability, Capability::Fs);
+            let paths: Vec<Value> = args.iter().map(path_text).collect();
+            crate::stdlib::fs::real_fs(method, &paths, Span::default())
+        })
+        .unwrap()
+    }
+
+    fn ok(given: Value) -> Value {
+        match given {
+            Value::Ok(value) => (*value).clone(),
+            other => panic!("not Ok: {other:?}"),
+        }
+    }
+
+    /// The texts of a list of `Path`s.
+    fn texts(paths: &Value) -> Vec<String> {
+        let Value::List(paths) = paths else { panic!("not a list: {paths:?}") };
+        paths
+            .iter()
+            .map(|path| match path {
+                Value::Instance(path) => match path.field("text") {
+                    Some(Value::Str(text)) => text.to_string(),
+                    other => panic!("a Path's text isn't text: {other:?}"),
+                },
+                other => panic!("not a Path: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn handle(file: &Value) -> i64 {
+        match file {
+            Value::Instance(file) => match file.field("_handle") {
+                Some(Value::Int(handle)) => *handle,
+                _ => panic!("no handle"),
+            },
+            other => panic!("not a File: {other:?}"),
+        }
+    }
+
+    /// Every method of an `Fs` narrowed to a folder works on what's beneath it, through the
+    /// folder's handle: a file written takes its place whole, by name beneath the folder, and one
+    /// thrown away leaves nothing behind.
+    #[test]
+    fn a_narrowed_fs_does_all_it_does_beneath_its_folder() {
+        let folder = scratch("works");
+        let fs = fs_in(&folder);
+        let at = |name: &str| Value::str(&format!("{folder}/{name}"));
+        ok(call(&fs, "make_dir", &[at("sub/deeper")]));
+        ok(call(&fs, "write_text", &[at("sub/note.txt"), Value::str("hello")]));
+        assert_eq!(ok(call(&fs, "exists", &[at("sub/note.txt")])), Value::Bool(true));
+        assert_eq!(ok(call(&fs, "exists", &[at("sub/none.txt")])), Value::Bool(false));
+        assert_eq!(ok(call(&fs, "read_text", &[at("sub/note.txt")])), Value::str("hello"));
+        assert_eq!(
+            ok(call(&fs, "read_bytes", &[at("sub/note.txt")])),
+            Value::Bytes(Rc::from(b"hello".to_vec()))
+        );
+        let Value::Instance(found) = ok(call(&fs, "metadata", &[at("sub/note.txt")])) else {
+            panic!("no metadata")
+        };
+        assert_eq!(
+            (found.field("size"), found.field("is_file")),
+            (Some(&Value::Int(5)), Some(&Value::Bool(true)))
+        );
+        let made = ok(call(&fs, "_create", &[at("sub/made.txt"), Value::Bool(true)]));
+        ok(crate::stdlib::fs::real_file(handle(&made), "write", &[Value::str("made")], Span::default())
+            .unwrap());
+        ok(call(&fs, "_finish", &[made]));
+        assert_eq!(ok(call(&fs, "read_text", &[at("sub/made.txt")])), Value::str("made"));
+        let dropped = ok(call(&fs, "_create", &[at("sub/never.txt"), Value::Bool(false)]));
+        call(&fs, "_discard", &[dropped]);
+        let opened = ok(call(&fs, "_open", &[at("sub/note.txt")]));
+        let read = crate::stdlib::fs::real_file(handle(&opened), "read", &[], Span::default()).unwrap();
+        assert_eq!(ok(read), Value::Bytes(Rc::from(b"hello".to_vec())));
+        call(&fs, "_finish", &[opened]);
+        let listed = ok(call(&fs, "list_dir", &[at("sub")]));
+        let names = ["deeper", "made.txt", "note.txt"].map(|name| format!("{folder}/sub/{name}"));
+        assert_eq!(texts(&listed), names);
+        let walked = ok(call(&fs, "walk", &[Value::str(&folder)]));
+        let mut wanted = vec![format!("{folder}/sub")];
+        wanted.extend(names);
+        assert_eq!(texts(&walked), wanted);
+        ok(call(&fs, "remove", &[at("sub/made.txt")]));
+        assert_eq!(ok(call(&fs, "exists", &[at("sub/made.txt")])), Value::Bool(false));
+        #[cfg(unix)]
+        {
+            // A link inside the folder to a file inside it is written through, and stays a link.
+            std::os::unix::fs::symlink("note.txt", format!("{folder}/sub/link.txt")).unwrap();
+            ok(call(&fs, "write_text", &[at("sub/link.txt"), Value::str("again")]));
+            assert_eq!(ok(call(&fs, "read_text", &[at("sub/note.txt")])), Value::str("again"));
+            assert!(std::fs::symlink_metadata(format!("{folder}/sub/link.txt")).unwrap().is_symlink());
+            assert!(matches!(call(&fs, "_sqlite_open", &[at("sub/data.db")]), Value::Ok(_)));
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// A path out of a narrowed `Fs`'s folder, by `..` or by a link inside it, is refused.
+    #[test]
+    fn a_narrowed_fs_refuses_what_lies_outside_its_folder() {
+        let folder = scratch("refuses");
+        std::fs::create_dir_all(format!("{folder}/inside")).unwrap();
+        std::fs::write(format!("{folder}/secret.txt"), "outside").unwrap();
+        let fs = fs_in(&format!("{folder}/inside"));
+        let climbing = Value::str(&format!("{folder}/inside/../secret.txt"));
+        assert!(matches!(call(&fs, "read_text", &[climbing]), Value::Err(_)));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(format!("{folder}/secret.txt"), format!("{folder}/inside/out.txt"))
+                .unwrap();
+            let linked = Value::str(&format!("{folder}/inside/out.txt"));
+            assert!(matches!(call(&fs, "read_text", &[linked]), Value::Err(_)));
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// Another process swapping a folder inside a narrowed `Fs`'s for a link to one outside, and
+    /// back, over and over while the `Fs` reads a file under it, never lets it read the file
+    /// outside: each read gives the file inside, or fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_for_a_link_out_never_lets_a_narrowed_fs_read_outside() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("race");
+        let (inside, outside) = (format!("{base}/inside"), format!("{base}/outside"));
+        let (staged, link, sub) = (format!("{base}/staged"), format!("{base}/link"), format!("{inside}/sub"));
+        for made in [&inside, &outside, &staged] {
+            std::fs::create_dir_all(made).unwrap();
+        }
+        std::fs::write(format!("{outside}/secret.txt"), "OUTSIDE").unwrap();
+        std::fs::write(format!("{staged}/secret.txt"), "INSIDE").unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        std::fs::rename(&staged, &sub).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapping = {
+            let stop = Arc::clone(&stop);
+            let (staged, link, sub) = (staged.clone(), link.clone(), sub.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::rename(&sub, &staged);
+                    let _ = std::fs::rename(&link, &sub);
+                    let _ = std::fs::rename(&sub, &link);
+                    let _ = std::fs::rename(&staged, &sub);
+                }
+            })
+        };
+        let fs = fs_in(&inside);
+        let secret = Value::str(&format!("{sub}/secret.txt"));
+        let (mut read, mut refused) = (0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            match call(&fs, "read_text", std::slice::from_ref(&secret)) {
+                Value::Ok(text) => {
+                    assert_eq!(*text, Value::str("INSIDE"), "a narrowed Fs read outside its folder");
+                    read += 1;
+                }
+                _ => refused += 1,
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapping.join().unwrap();
+        assert!(read > 0 && refused > 0, "{read} read, {refused} refused: the swap never raced the reads");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// `.` and `..` are worked out, so a path can't climb out of a folder by naming its parent.
     #[test]

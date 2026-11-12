@@ -139,8 +139,9 @@ impl Place<'_> {
             return (real(root), true);
         }
         let own = real(folder);
-        match own.ancestors().find(|at| at.join("kit.toml").is_file()) {
-            Some(kit) => (kit.to_path_buf(), true),
+        // Reached only through folders nobody else can write to: see `fennec_dist::kit_root`.
+        match fennec_dist::kit_root(&own) {
+            Some(kit) => (kit, true),
             None => (own, false),
         }
     }

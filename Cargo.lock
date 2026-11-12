@@ -190,6 +190,7 @@ dependencies = [
  "fennec-check",
  "fennec-count",
  "fennec-deps",
+ "fennec-dist",
  "fennec-fmt",
  "fennec-ir",
  "fennec-kit",
@@ -408,8 +409,10 @@ dependencies = [
  "libm",
  "mio",
  "rusqlite",
+ "rustix",
  "rustls",
  "rustls-platform-verifier",
+ "same-file",
  "signal-hook",
  "socket2",
 ]

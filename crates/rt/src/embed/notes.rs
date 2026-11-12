@@ -181,7 +181,7 @@ pub extern "C" fn traced(notes: i64) {
 /// once: a line `note: ...` for each note, each starting with a line break, and nothing for 0.
 /// A note's later lines are indented under its first.
 pub extern "C" fn shown(notes: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_notes_shown", |state| {
         let mut text = String::new();
         for note in texts(state, notes) {
             text.push_str("\nnote: ");

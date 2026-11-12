@@ -67,7 +67,9 @@ impl Lowering<'_> {
         let read = name_at(&item, Span { start: value.span.start, end: value.span.start });
         let parts = match written(value) {
             Some(parts) => parts,
-            None if self.gives_items(value) || (name == "sum" && self.adds_its_own_way(value)) => {
+            None if self.gives_items(value)
+                || (name == "sum" && (self.adds_its_own_way(value) || self.is_a_view(value))) =>
+            {
                 Written { elem: &read, names: &names, iter: value, cond: None }
             }
             None => return Ok(None),
@@ -92,6 +94,16 @@ impl Lowering<'_> {
             ("any" | "all", [_]) => self.deciding(name == "any", &parts, expr.span).map(Some),
             _ => Ok(None),
         }
+    }
+
+    /// Whether this is a dict's or a `Table`'s `values()` or `keys()`, which a loop goes through
+    /// where they are, so a `sum` of one is that loop rather than a list made to add up.
+    fn is_a_view(&self, value: &Expr) -> bool {
+        let ExprKind::Call { callee, args } = &value.kind else { return false };
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return false };
+        args.is_empty()
+            && matches!(name.as_str(), "values" | "keys")
+            && matches!(self.type_at(object.span), Some(Type::Dict(..) | Type::Table(_)))
     }
 
     /// Whether this is a list of what `+` on its items isn't an int's or a float's.

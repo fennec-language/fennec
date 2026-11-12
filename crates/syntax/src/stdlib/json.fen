@@ -508,7 +508,7 @@ struct IdsSeen:
     ## What's wrong with the `Id`s and `Table`s read, or "" when nothing is.
     def problem(self) -> str:
         # Nearly always: nothing read was an `Id` or a `Table`, so there's nothing to check.
-        if self._ids.len() == 0 and self._tables.len() == 0: return ""
+        if len(self._ids) == 0 and len(self._tables) == 0: return ""
         mut seen = dict[str, str]()
         for kind, at, _ in self._tables:
             if kind in seen:

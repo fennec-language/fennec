@@ -659,7 +659,6 @@ fn compare(program: &str, scratch: &Path, tally: &mut Tally) {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn the_loader_links_each_program_as_the_linker_does() {
     if !runtime_built() {
         return;

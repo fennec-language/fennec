@@ -412,7 +412,8 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let Some(block) = state.heap.block(address) else {
         // A list native code changes that this thread can't find is a bug: going on as if it were
         // changed would drop what was added, as a task once did with a constant it couldn't see.
-        if address != 0 {
+        // The fuzzer hands made-up addresses on purpose, and goes on.
+        if address != 0 && !super::made_up_inputs() {
             super::heap::runtime_bug("a list native code changed isn't one this thread can find");
         }
         return None;

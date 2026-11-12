@@ -10,7 +10,7 @@ from std.collections import Id, Table
 from std.concurrent import Closed, Crashed, Sender, channel
 
 ENTITIES = 10_000
-TICKS = 100
+TICKS = 40
 COMMANDS = 64
 SIZE = 2048
 CELL = 32

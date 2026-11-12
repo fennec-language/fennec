@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::mpsc::{sync_channel, SyncSender};
 
-const TICKS: i64 = 100;
+const TICKS: i64 = 40;
 const COMMANDS: i64 = 64;
 const SIZE: i64 = 2048;
 const CELL: i64 = 32;

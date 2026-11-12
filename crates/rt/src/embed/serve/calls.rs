@@ -252,6 +252,14 @@ pub(in crate::embed) fn served_call(
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }
+        ("_reads_within", [after]) => {
+            let after = match crate::stdlib::net::duration_of(after, at) {
+                Ok(after) => after,
+                Err(wrong) => return Some(Err(wrong)),
+            };
+            CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.reads_within(after)));
+            return Some(Ok(Value::Unit));
+        }
         ("close", []) => {
             if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
                 conn.linger();

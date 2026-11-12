@@ -280,23 +280,25 @@ impl Unions {
         let (saved_as, saving, loading) = match ty {
             Type::Union(members) => {
                 let wrapper = self.wrapper(ty, members)?;
-                (wrapper.clone(), format!("{wrapper}(value=x__)"), "x__.value".to_owned())
+                (wrapper.clone(), format!("return {wrapper}(value=x__)"), "return x__.value".to_owned())
             }
             Type::Optional(inner) => {
                 let Changed { saved_as, helper } = self.change(inner)?;
-                let saving = format!("y__ = x__ else return None\n    saved_union__{helper}(y__)");
-                let loading = format!("y__ = x__ else return None\n    loaded_union__{helper}(y__)");
+                let saving = format!("y__ = x__ else return None\n    return saved_union__{helper}(y__)");
+                let loading = format!("y__ = x__ else return None\n    return loaded_union__{helper}(y__)");
                 (format!("{saved_as}?"), saving, loading)
             }
             Type::List(inner) => {
                 let Changed { saved_as, helper } = self.change(inner)?;
-                let each = |way: &str| format!("[{way}_union__{helper}(item__) for item__ in x__]");
+                let each = |way: &str| format!("return [{way}_union__{helper}(item__) for item__ in x__]");
                 (format!("list[{saved_as}]"), each("saved"), each("loaded"))
             }
             Type::Dict(key, value) => {
                 let Changed { saved_as, helper } = self.change(value)?;
                 let each = |way: &str| {
-                    format!("{{key__: {way}_union__{helper}(value__) for key__, value__ in x__.items()}}")
+                    format!(
+                        "return {{key__: {way}_union__{helper}(value__) for key__, value__ in x__.items()}}"
+                    )
                 };
                 (format!("dict[{}, {saved_as}]", key.source()?), each("saved"), each("loaded"))
             }
@@ -581,12 +583,12 @@ fn given(all: &[Field]) -> String {
 
 /// Gives back the value. One with a `where` rule fails to load when what was read breaks it.
 fn made(out: &mut String, indent: &str, make: &str, all: &[Field]) {
+    let value = make.strip_prefix("return ").unwrap_or(make);
     if all.iter().all(|field| field.rule.is_none()) {
-        let _ = writeln!(out, "{indent}{make}({})", given(all));
+        let _ = writeln!(out, "{indent}return {value}({})", given(all));
         return;
     }
-    let value = make.strip_prefix("return ").unwrap_or(make);
-    let _ = writeln!(out, "{indent}value__ = {value}({}) else as broken__:", given(all));
+    let _ = writeln!(out, "{indent}value__ = {value}({}) except broken__:", given(all));
     let _ = writeln!(out, "{indent}    fail src__.rule(broken__.message)\n{indent}return value__");
 }
 
@@ -623,7 +625,7 @@ fn load_in_order(
         let _ = writeln!(out, "{indent}    return {value}({})", given.join(", "));
         return;
     }
-    let _ = writeln!(out, "{indent}    value__ = {value}({}) else as broken__:", given.join(", "));
+    let _ = writeln!(out, "{indent}    value__ = {value}({}) except broken__:", given.join(", "));
     let _ = writeln!(out, "{indent}        fail src__.rule(broken__.message)\n{indent}    return value__");
 }
 

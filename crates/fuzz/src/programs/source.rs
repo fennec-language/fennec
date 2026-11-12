@@ -35,8 +35,8 @@ def area(shape: Shape) -> int:
         case .Empty: return 0
 
 def at_or_zero(items: list[int], at: int) -> int:
-    if items.len() == 0: return 0
-    return items[at % items.len()]
+    if len(items) == 0: return 0
+    return items[at % len(items)]
 
 def bump(ref value: int, by: int) -> int:
     value += by
@@ -96,7 +96,7 @@ error Shut:
 
 def shutting(code: int, stdout: Stdout) -> with Tally fails Shut:
     stdout.print(\"opening\", code)
-    lend Tally(count=code) else:
+    lend Tally(count=code) except:
         stdout.print(\"undoing\", code)
     stdout.print(\"closing\", code)
     if code % 2 == 0:
@@ -116,8 +116,9 @@ def summed_until(limit: int, stop: int, stdout: Stdout) -> int fails Shut:
     return total
 
 def summed_shown(limit: int, stop: int, stdout: Stdout) -> str:
-    total = summed_until(limit, stop=stop, stdout=stdout) else:
-        return \"shut\"
+    total = summed_until(limit, stop=stop, stdout=stdout) except why:
+        case Shut():
+            return \"shut\"
     return str(total)
 
 struct Holder:
@@ -142,30 +143,30 @@ struct Lite:
     name: str
 
     def run(self, text: str) -> int:
-        return text.len()
+        return len(text)
 
     def session(self) -> with Session:
-        lend Session(log=\"lite\") else:
+        lend Session(log=\"lite\") except:
             pass
 
 struct Pg:
     host: str
 
     def run(self, text: str) -> int:
-        return text.len() * 2
+        return len(text) * 2
 
     def session(self) -> with Session:
-        lend Session(log=\"pg\") else:
+        lend Session(log=\"pg\") except:
             pass
 
 struct Mem:
     size: int
 
     def run(self, text: str) -> int:
-        return text.len() * 3
+        return len(text) * 3
 
     def session(self) -> with Session:
-        lend Session(log=\"mem\") else:
+        lend Session(log=\"mem\") except:
             pass
 
 type Two = Lite | Pg
@@ -273,12 +274,12 @@ def shut_below(n: int, limit: int) -> int fails Shut:
     return n
 
 def tried(run: () -> int fails Refused) -> str:
-    value = run() else as why:
+    value = run() except why:
         return f\"refused {why.code}\"
     return str(value)
 
 def fallback(run: () -> int fails Refused) -> str:
-    value = run() else as why:
+    value = run() except why:
         why.code * 100
     return str(value)
 
@@ -289,14 +290,15 @@ def tried_twice(run: () -> int fails Refused) -> str fails Refused:
 
 ## Whether `run` gives its value rather than failing.
 def ran_fine(run: () -> int fails Refused) -> bool:
-    _ = run() else:
-        return False
+    _ = run() except why:
+        case Refused():
+            return False
     return True
 
 def tried_each(items: list[int], run: (int) -> int fails Refused) -> str:
     mut kept = list[int]()
     for item in items:
-        value = run(item) else as why:
+        value = run(item) except why:
             return f\"refused {why.code} after {kept}\"
         kept.append(value)
     return str(kept)
@@ -305,12 +307,11 @@ def paired(a: int, b: int) -> str:
     return f\"{a} {b}\"
 
 def either(run: () -> str fails Refused | Shut) -> str:
-    text = run() else as why:
-        match why:
-            case Refused(code=code):
-                return f\"refused {code}\"
-            case Shut(code=code):
-                return f\"shut {code}\"
+    text = run() except why:
+        case Refused(code=code):
+            return f\"refused {code}\"
+        case Shut(code=code):
+            return f\"shut {code}\"
     return text
 
 struct Gauge:
@@ -343,7 +344,7 @@ enum Change:
     Rename(at: int, label: str)
 
 def plan(x: int, world: list[Spot]) -> Change:
-    at = x % world.len()
+    at = x % len(world)
     if x % 2 == 0:
         return .Move(at=at, by=x)
     return .Rename(at=at, label=f\"<{x}>\")
@@ -353,7 +354,7 @@ def regrown(seed: int) -> int:
     holder.items.append(holder.tag)
     own = holder.items
     holder.grown_by(own)
-    return sum(holder.items) + own.len()
+    return sum(holder.items) + len(own)
 
 enum Node:
     Leaf(name: str)
@@ -373,7 +374,7 @@ def depth_of(node: Node) -> int:
     while True:
         match at:
             case .Branch(_, children):
-                if children.len() == 0:
+                if len(children) == 0:
                     return depth
                 at = children[0]
                 depth += 1
@@ -407,8 +408,8 @@ def digest_all(nodes: list[Node]) -> str:
     return text + \"]\"
 
 def node_or_leaf(nodes: list[Node], at: int) -> Node:
-    if nodes.len() == 0: return .Leaf(name=\"none\")
-    return nodes[at % nodes.len()]
+    if len(nodes) == 0: return .Leaf(name=\"none\")
+    return nodes[at % len(nodes)]
 
 enum Named:
     Leaf(name: str)
@@ -444,7 +445,7 @@ def named_depth(named: Named) -> int:
 
 def ward(name: str, stdout: Stdout) -> with str:
     stdout.print(\"open\", name)
-    lend name else:
+    lend name except:
         stdout.print(\"undo\", name)
     stdout.print(\"close\", name)
 
@@ -455,7 +456,7 @@ def present(i: int, at: int) -> int?:
 
 def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
     stdout.print(\"guard\", code)
-    lend Tally(count=code) else:
+    lend Tally(count=code) except:
         stdout.print(\"unguard\", code)
         if code % 3 == 0:
             fail Refused(code=code + 1000)
@@ -464,7 +465,7 @@ def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
 
 def guarded_noted(code: int, stdout: Stdout) -> with Tally fails Refused:
     stdout.print(\"guard\", code)
-    lend Tally(count=code) else:
+    lend Tally(count=code) except:
         stdout.print(\"unguard\", code)
         if code % 3 == 0:
             fail Refused(code=code + 1000)
@@ -490,13 +491,13 @@ def guarded_run(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdou
         return tally.count
 
 def guarded_shown(code: int, refuse: bool, crash: bool, noted: bool, stdout: Stdout) -> str:
-    value = guarded_run(code, refuse=refuse, crash=crash, noted=noted, stdout=stdout) else as why:
+    value = guarded_run(code, refuse=refuse, crash=crash, noted=noted, stdout=stdout) except why:
         return f\"refused {why.code} {why.notes()}\"
     return str(value)
 
 def tallied(start: int, stdout: Stdout) -> with Tally:
     stdout.print(\"open\", start)
-    lend Tally(count=start) else:
+    lend Tally(count=start) except:
         stdout.print(\"undone\", start)
     stdout.print(\"closed\", start)
 
@@ -536,98 +537,7 @@ pub(crate) fn source(program: &Program) -> String {
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
-    let written = format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out);
-    if EXCEPT_PARSES { excepted(&written) } else { written }
-}
-
-/// Whether failures are handled with `except`, as the syntax locked on 2026-11-11 has it, rather
-/// than `else`. It parses and runs since #1398. Once the migration makes the old forms errors,
-/// `excepted` becomes how the program is written, and this goes.
-pub(crate) const EXCEPT_PARSES: bool = true;
-
-/// What each function a program handles the failures of fails with, so its `except` block can
-/// have a `case` for each. Every one is an error without cases, so the cases cover it by name
-/// and needn't read `why`.
-const FAILS_WITH: [(&str, &[&str]); 8] = [
-    ("change", &["Refused"]),
-    ("bump_outer", &["Refused"]),
-    ("locked", &["Refused"]),
-    ("run", &["Refused"]),
-    ("summed_until", &["Shut"]),
-    ("tally", &["Crashed", "Closed", "Timeout"]),
-    ("sent", &["Crashed", "Closed", "Timeout"]),
-    ("guard_all", &["Crashed", "Closed", "Timeout", "Refused"]),
-];
-
-/// A program's failures handled with `except`, the old `else` forms rewritten line by line:
-/// - `lend x else:` is `lend x except:`;
-/// - `x = f() else as why:` is `x = f() except why:`, and a `match why:` straight under it gives
-///   its `case` arms to the `except`;
-/// - `f() else:` on a call that fails is `f() except why:`, with a `case` for each error it fails
-///   with, each holding what the `else:` held.
-///
-/// It reads the program as `source` writes it, four spaces an indent.
-pub(crate) fn excepted(program: &str) -> String {
-    let lines: Vec<&str> = program.lines().collect();
-    let indent_of = |line: &str| line.len() - line.trim_start().len();
-    let block_end = |from: usize, indent: usize| {
-        (from..lines.len())
-            .find(|&at| {
-                lines.get(at).is_some_and(|line| !line.trim().is_empty() && indent_of(line) <= indent)
-            })
-            .unwrap_or(lines.len())
-    };
-    let mut out = String::with_capacity(program.len() + program.len() / 8);
-    let mut at = 0;
-    while let Some(&line) = lines.get(at) {
-        let trimmed = line.trim_start();
-        let indent = indent_of(line);
-        let pad = " ".repeat(indent);
-        let opens = ["if ", "elif ", "while ", "for ", "else:", "with ", "lock ", "def ", "case "];
-        if trimmed.starts_with("lend ") && trimmed.ends_with(" else:") {
-            let _ = writeln!(out, "{pad}{} except:", trimmed.trim_end_matches(" else:"));
-        } else if let Some(handled) = trimmed.strip_suffix(" else as why:") {
-            let _ = writeln!(out, "{pad}{handled} except why:");
-            let next = lines.get(at + 1).copied().unwrap_or_default();
-            if next.trim() == "match why:" {
-                // The arms go straight under the `except`, an indent nearer.
-                let end = block_end(at + 2, indent_of(next));
-                for arm in lines.get(at + 2..end).unwrap_or_default() {
-                    out.push_str(arm.get(4..).unwrap_or(arm));
-                    out.push('\n');
-                }
-                at = end;
-                continue;
-            }
-        } else if trimmed.ends_with(") else:") && !opens.iter().any(|open| trimmed.starts_with(open)) {
-            let handled = trimmed.trim_end_matches(" else:");
-            let call = handled.split_once(" = ").map_or(handled, |(_, call)| call);
-            let callee =
-                call.split('(').next().unwrap_or_default().trim_end_matches(|c: char| c.is_ascii_digit());
-            // A call whose errors aren't known is left as it was, which the tests catch.
-            let Some((_, errors)) = FAILS_WITH.iter().find(|(name, _)| *name == callee) else {
-                out.push_str(line);
-                out.push('\n');
-                at += 1;
-                continue;
-            };
-            let _ = writeln!(out, "{pad}{handled} except why:");
-            let end = block_end(at + 1, indent);
-            for error in *errors {
-                let _ = writeln!(out, "{pad}    case {error}():");
-                for held in lines.get(at + 1..end).unwrap_or_default() {
-                    let _ = writeln!(out, "    {held}");
-                }
-            }
-            at = end;
-            continue;
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-        at += 1;
-    }
-    out
+    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
@@ -810,6 +720,16 @@ fn ops_written(ops: &[Op], indent: usize) -> String {
 }
 
 impl Writer {
+    /// `call`, a statement that can fail with each of `errors`, none of which has cases, handled
+    /// with `except why:` and a `case` for each, every one doing `then`.
+    fn handled(&mut self, indent: usize, call: &str, errors: &[&str], then: &str) {
+        self.line(indent, &format!("{call} except why:"));
+        for error in errors {
+            self.line(indent + 1, &format!("case {error}():"));
+            self.line(indent + 2, then);
+        }
+    }
+
     fn line(&mut self, indent: usize, text: &str) {
         let _ = writeln!(self.out, "{}{text}", "    ".repeat(indent));
     }
@@ -911,7 +831,7 @@ impl Writer {
     fn held_or_lent(&mut self, stmt: &Stmt, indent: usize) {
         match stmt {
             Stmt::Indexed(name, list, body) => {
-                self.line(indent, &format!("for {name} in range({list}.len()):"));
+                self.line(indent, &format!("for {name} in range(len({list})):"));
                 self.line(indent + 1, &format!("stdout.print({list}[{name}])"));
                 self.block(body, indent + 1);
             }
@@ -1006,7 +926,7 @@ impl Writer {
                 self.line(indent + 2, "case .Rename(at, label):");
                 self.line(indent + 3, &format!("ref spot = {world}[at]"));
                 self.line(indent + 3, "spot.label += label");
-                self.line(indent, &format!("stdout.print({world}, {changes}.len())"));
+                self.line(indent, &format!("stdout.print({world}, len({changes}))"));
             }
             Stmt::Shadowed(id, by) => {
                 let _ = write!(
@@ -1018,7 +938,7 @@ impl Writer {
                 self.line(indent, &format!("shadowed{id}(stdout, by={by})"));
             }
             Stmt::LentRef(list, own) => {
-                self.line(indent, &format!("if {list}.len() < 64:"));
+                self.line(indent, &format!("if len({list}) < 64:"));
                 self.line(indent + 1, &format!("{own} = {list}"));
                 self.line(indent + 1, &format!("appended_all(ref {list}, {own})"));
                 self.line(indent + 1, &format!("stdout.print({list}, {own})"));
@@ -1026,7 +946,7 @@ impl Writer {
             Stmt::LentItem(rows, own, items) => {
                 let items = self.expr(items, false);
                 self.line(indent, &format!("mut {rows} = [{items}, [7]]"));
-                self.line(indent, &format!("if {rows}[0].len() < 64:"));
+                self.line(indent, &format!("if len({rows}[0]) < 64:"));
                 self.line(indent + 1, &format!("{own} = {rows}[0]"));
                 self.line(indent + 1, &format!("appended_all(ref {rows}[0], {own})"));
                 self.line(indent + 1, &format!("stdout.print({rows}, {own})"));
@@ -1036,7 +956,7 @@ impl Writer {
                 self.line(indent, &format!("{holder}.tag = {holder}.tag"));
             }
             Stmt::GrownBy(holder, own) => {
-                self.line(indent, &format!("if {holder}.items.len() < 64:"));
+                self.line(indent, &format!("if len({holder}.items) < 64:"));
                 self.line(indent + 1, &format!("{holder}.items.append({holder}.tag)"));
                 self.line(indent + 1, &format!("{own} = {holder}.items"));
                 self.line(indent + 1, &format!("{holder}.grown_by({own})"));
@@ -1063,7 +983,7 @@ impl Writer {
             Stmt::NodesPop(name) => self.line(indent, &format!("_ = {name}.pop()")),
             Stmt::NodesSet(name, at, node) => {
                 let (at, node) = (self.expr(at, false), self.expr(node, true));
-                self.line(indent, &format!("if {name}.len() > 0: {name}[{at} % {name}.len()] = {node}"));
+                self.line(indent, &format!("if len({name}) > 0: {name}[{at} % len({name})] = {node}"));
             }
             Stmt::Reshape(name, text, child) => {
                 let (text, child) = (self.expr(text, false), self.expr(child, false));
@@ -1133,13 +1053,21 @@ impl Writer {
             }
             Stmt::Change(name, by, refuse) => {
                 let (by, refuse) = (self.expr(by, false), self.expr(refuse, false));
-                self.line(indent, &format!("change({name}, by={by}, refuse={refuse}) else:"));
-                self.line(indent + 1, "stdout.print(\"refused\")");
+                self.handled(
+                    indent,
+                    &format!("change({name}, by={by}, refuse={refuse})"),
+                    &["Refused"],
+                    "stdout.print(\"refused\")",
+                );
             }
             Stmt::Tally(name, items) => {
                 let items = self.expr(items, false);
-                self.line(indent, &format!("tally({name}, items={items}) else:"));
-                self.line(indent + 1, "stdout.print(\"crashed\")");
+                self.handled(
+                    indent,
+                    &format!("tally({name}, items={items})"),
+                    &["Crashed", "Closed", "Timeout"],
+                    "stdout.print(\"crashed\")",
+                );
             }
             Stmt::PrintShared(name) => {
                 self.line(indent, &format!("lock {name} as held:"));
@@ -1188,8 +1116,12 @@ impl Writer {
             }
             Stmt::OuterBump(name, by, refuse) => {
                 let (by, refuse) = (self.expr(by, false), self.expr(refuse, false));
-                self.line(indent, &format!("bump_outer({name}, by={by}, refuse={refuse}) else:"));
-                self.line(indent + 1, "stdout.print(\"refused\")");
+                self.handled(
+                    indent,
+                    &format!("bump_outer({name}, by={by}, refuse={refuse})"),
+                    &["Refused"],
+                    "stdout.print(\"refused\")",
+                );
             }
             Stmt::Summed(limit, stop) => {
                 let (limit, stop) = (self.expr(limit, false), self.expr(stop, false));
@@ -1203,7 +1135,7 @@ impl Writer {
                 let capped = format!("capped({n}, limit={limit})?");
                 match how {
                     Arrow::Tried => self.line(indent, &format!("stdout.print(tried(() => {capped}))")),
-                    Arrow::Twice if EXCEPT_PARSES => {
+                    Arrow::Twice => {
                         // A failing call can't sit inside another expression, so it has a line.
                         self.made += 1;
                         let name = format!("twice{}", self.made);
@@ -1212,12 +1144,6 @@ impl Writer {
                             &format!("{name} = tried_twice(() => {capped}) except Refused(): \"refused\""),
                         );
                         self.line(indent, &format!("stdout.print({name})"));
-                    }
-                    Arrow::Twice => {
-                        self.line(
-                            indent,
-                            &format!("stdout.print(tried_twice(() => {capped}) else \"refused\")"),
-                        );
                     }
                     Arrow::Fallback => self.line(indent, &format!("stdout.print(fallback(() => {capped}))")),
                     Arrow::Each(list) => {
@@ -1254,8 +1180,13 @@ impl Writer {
             }
             Stmt::GuardAll(items) => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
-                self.line(indent, &format!("guard_all([{}], stdout) else:", items.join(", ")));
-                self.line(indent + 1, "stdout.print(\"stopped\")");
+                let call = format!("guard_all([{}], stdout)", items.join(", "));
+                self.handled(
+                    indent,
+                    &call,
+                    &["Crashed", "Closed", "Timeout", "Refused"],
+                    "stdout.print(\"stopped\")",
+                );
             }
             Stmt::Turned(turning) => {
                 let _ = write!(self.helpers, "{}", turned_written(turning));
@@ -1263,7 +1194,7 @@ impl Writer {
             }
             Stmt::Left { id, depth, together, rounds, at, how } => {
                 let _ = write!(self.helpers, "{}", left_written(*id, *depth, *together, *rounds, *at, *how));
-                self.line(indent, &format!("left{id}(stdout) else as why:"));
+                self.line(indent, &format!("left{id}(stdout) except why:"));
                 self.line(indent + 1, "stdout.print(\"refused\", why.code)");
             }
             Stmt::FloatKeys { held, names: (keyed, seen), values, probe, asked, pair: (left, right) } => {
@@ -1292,7 +1223,7 @@ impl Writer {
                 self.line(
                     indent,
                     &format!(
-                        "stdout.print({keyed}.len(), {keyed}[{probe}], {seen}.len(), {asked} in {seen}, \
+                        "stdout.print(len({keyed}), {keyed}[{probe}], len({seen}), {asked} in {seen}, \
                          {left} == {right}, {left} != {right})"
                     ),
                 );
@@ -1316,8 +1247,12 @@ impl Writer {
                     ops_written(ops, 2)
                 );
                 let refuse = self.expr(refuse, false);
-                self.line(indent, &format!("locked{id}({name}, refuse={refuse}) else:"));
-                self.line(indent + 1, "stdout.print(\"refused\")");
+                self.handled(
+                    indent,
+                    &format!("locked{id}({name}, refuse={refuse})"),
+                    &["Refused"],
+                    "stdout.print(\"refused\")",
+                );
             }
             Stmt::Sent { id, name, ops, items } => {
                 let _ = write!(
@@ -1329,8 +1264,12 @@ impl Writer {
                     ops_written(ops, 3)
                 );
                 let items = self.expr(items, false);
-                self.line(indent, &format!("sent{id}({name}, items={items}) else:"));
-                self.line(indent + 1, "stdout.print(\"crashed\")");
+                self.handled(
+                    indent,
+                    &format!("sent{id}({name}, items={items})"),
+                    &["Crashed", "Closed", "Timeout"],
+                    "stdout.print(\"crashed\")",
+                );
             }
             _ => {}
         }
@@ -1375,7 +1314,7 @@ impl Writer {
                 format!("({} + {})", self.expr(left, false), self.expr(right, false))
             }
             Expr::Format(value) => format!("f\"<{{{}}}>\"", self.expr(value, false)),
-            Expr::TextLen(text) => format!("{}.len()", self.expr(text, false)),
+            Expr::TextLen(text) => format!("len({})", self.expr(text, false)),
             Expr::Ints(items) if items.is_empty() => "list[int]()".to_owned(),
             Expr::Ints(items) => {
                 let items: Vec<String> = items.iter().map(|item| self.expr(item, false)).collect();
@@ -1399,7 +1338,7 @@ impl Writer {
                 let (by, list) = (self.expr(by, false), self.expr(list, false));
                 format!("sum({item} * {by} for {item} in parallel({list}))")
             }
-            Expr::Len(list) => format!("{}.len()", self.expr(list, false)),
+            Expr::Len(list) => format!("len({})", self.expr(list, false)),
             Expr::Index(list, at) => format!("{}[{}]", self.expr(list, false), self.expr(at, false)),
             Expr::AtOrZero(list, at) => {
                 format!("at_or_zero({}, {})", self.expr(list, false), self.expr(at, false))
@@ -1472,7 +1411,7 @@ impl Writer {
                 let item = format!("item{}", self.made);
                 format!("[{item} for {item} in {}]", self.expr(buffer, false))
             }
-            Expr::BufLen(buffer) => format!("{}.len()", self.expr(buffer, false)),
+            Expr::BufLen(buffer) => format!("len({})", self.expr(buffer, false)),
             Expr::BufAt(buffer, at) => format!("{}[{}]", self.expr(buffer, false), self.expr(at, false)),
             Expr::Leaf(name) => {
                 let start = if known { "." } else { "Node." };

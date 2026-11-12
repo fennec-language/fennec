@@ -18,7 +18,7 @@ use super::ast::{
     RefPlace, Size, Stmt, TYPES, Turn, Turning, Ty, Via,
 };
 
-/// Whether a crash runs a `lend x else:` cleanup holding a line like `kept = capped(code)?`.
+/// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
 const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = true;
 
@@ -904,7 +904,7 @@ impl Writer<'_> {
 
     /// A list lent to a call through `ref` beside a value read from it, the whole list or a
     /// list's item, or a value assigned to itself, a local or a struct's fields.
-    /// A `with` whose source's `lend x else:` cleanup runs when the block fails or crashes, in
+    /// A `with` whose source's `lend x except:` cleanup runs when the block fails or crashes, in
     /// `main` or in a launched task.
     fn guards(&mut self, body: &mut Vec<Stmt>) {
         if !self.threadless && self.choice(3) == 0 {
@@ -945,11 +945,9 @@ impl Writer<'_> {
         if ELSE_LEAVES_RUN_CLEANUPS {
             ways.extend([Leave::ElseReturn, Leave::ElseFail, Leave::ElseContinue, Leave::ElseBreak]);
         }
-        if super::source::EXCEPT_PARSES {
-            ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
-            if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
-                ways.push(Leave::ExceptArms);
-            }
+        ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
+        if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
+            ways.push(Leave::ExceptArms);
         }
         // A crash ends the program, so it's rare.
         let how = if self.choice(10) == 0 {

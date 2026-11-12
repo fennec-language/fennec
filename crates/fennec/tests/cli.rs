@@ -406,6 +406,65 @@ fn test_fails_when_a_test_fails() {
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
 }
 
+/// What a test's launched tasks and its `parallel` loop's bodies print reaches the test's
+/// `captured()` and `sorted_lines()`, whatever thread they ran on, however many threads there are
+/// and whether the loop was split to an item a range or left whole.
+#[test]
+fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4", "16"] {
+        for stressed in [false, true] {
+            let mut command = crate::executables::fennec_command();
+            command
+                .args(["test", "crates/fennec/tests/fixtures/tasks_print_into_tests.fen"])
+                .current_dir(repo())
+                .env("FENNEC_NO_CACHE", "1")
+                .env("FENNEC_THREADS", threads);
+            if stressed {
+                command.env("FENNEC_PARALLEL_STRESS", "1");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                text(&output.stdout),
+                "2 passed, 0 failed\n",
+                "{threads} threads, stressed {stressed}: {}",
+                text(&output.stderr)
+            );
+        }
+    }
+}
+
+/// Each line a test and its tasks print reaches the test's capture whole. A `print` arrives in
+/// pieces, and before the fix, pieces of a task's line and the test's own mixed in most runs of
+/// this fixture: 42 of 50 at 4 threads and 30 of 50 at 1 thread, both stressed. So three runs at
+/// each nearly always catch it.
+#[test]
+fn every_line_a_test_and_its_tasks_print_reaches_it_whole() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4"] {
+        for run in 0..3 {
+            let output = crate::executables::fennec_command()
+                .args(["test", "crates/fennec/tests/fixtures/whole_lines_into_tests.fen"])
+                .current_dir(repo())
+                .env("FENNEC_NO_CACHE", "1")
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .output()
+                .unwrap();
+            assert_eq!(
+                text(&output.stdout),
+                "2 passed, 0 failed\n",
+                "{threads} threads, run {run}: {}",
+                text(&output.stderr)
+            );
+        }
+    }
+}
+
 /// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
 /// failed one says what really happened: what it failed with instead, or what it gave.
 #[test]
@@ -800,7 +859,7 @@ fn a_double_lookup_fixed_prints_the_same() {
 }
 
 /// `fennec fix` writes what used `Ok`, `Err` and `Result`, which are refused now: a `match` on
-/// `Ok` and `Err` with `else`, where a function's last line returns from its failure case, a named
+/// `Ok` and `Err` with `except`, where a function's last line returns from its failure case, a named
 /// value keeps its name, and a loop's last statement continues; `-> Result[T, E]` as
 /// `-> T fails E`; and `return Err(e)` as `fail e`. The program runs once fixed.
 #[test]
@@ -826,9 +885,9 @@ fn what_used_ok_err_and_result_is_fixed_and_runs() {
     for written in [
         "def lower(n: int) -> int fails Bad:\n",
         "        fail Bad(\"small\")\n",
-        "lowered = lower(n) else:\n        return 0\n    lowered\n",
-        "given = lower(n) else:\n            9\n",
-        "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",
+        "lowered = lower(n) except Bad():\n        return 0\n    return lowered\n",
+        "given = lower(n) except Bad():\n            9\n",
+        "lowered = lower(n) except problem:\n            stdout.print(problem.why)\n            continue\n",
     ] {
         assert!(now.contains(written), "{now}");
     }
@@ -2311,6 +2370,82 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     assert!(after.status.success(), "{}", text(&after.stderr));
     assert_eq!(text(&after.stdout), text(&before.stdout));
     assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
+}
+
+/// `--migrate` makes only the migration's rewrites: a function nothing calls keeps its place,
+/// with only its `return` added, and a line the rewrite makes longer than `fennec fmt` keeps
+/// lines is left as it's written, in a file that was formatted before.
+#[test]
+fn fix_migrate_deletes_nothing_and_reflows_nothing() {
+    let dir = scratch("migrate-only").unwrap();
+    let program = dir.join("only.fen");
+    let path = program.to_string_lossy().into_owned();
+    // 96 columns, which `return ` takes past 100.
+    let long = format!(
+        "    {}",
+        ["first_value", "second_value", "third_value", "fourth_value"].join(" + ")
+            + " + 1000000000000000000 + 2000000000000000"
+    );
+    let old = format!(
+        "def unused(n: int) -> int:\n    return n + 1\n\n\
+         def sum(first_value: int, second_value: int, third_value: int, fourth_value: int) -> int:\n{long}\n\n\
+         def main(stdout: Stdout):\n    stdout.print(sum(1, 2, 3, 4))\n"
+    )
+    .replace("    return n + 1", "    n + 1");
+    assert!(long.len() <= 100 && long.len() + "return ".len() > 100, "{}", long.len());
+    std::fs::write(&program, &old).unwrap();
+    let formatted = fennec(&["fmt", "--check", &path], "").unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(formatted.status.success(), "{}", text(&formatted.stderr));
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("    n + 1", "    return n + 1")
+            .replace(&long, &format!("    return {}", long.trim_start()))
+    );
+}
+
+/// A program that doesn't check, like an example of a mistake, gets the rewrites that need no
+/// types: `return`, `except why:` for `else as why:`, and `len(x)`. The mistake stays.
+#[test]
+fn fix_migrate_rewrites_what_needs_no_types_in_a_program_that_doesnt_check() {
+    let dir = scratch("migrate-unchecked").unwrap();
+    let program = dir.join("mistake.fen");
+    let path = program.to_string_lossy().into_owned();
+    let old = "def size(items: list[int]) -> int:\n    items.len()\n\n\
+        def main(stdout: Stdout):\n    got = int(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
+        stdout.print(size([got]), nowhere)\n";
+    std::fs::write(&program, old).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("    items.len()", "    return len(items)").replace("else as why:", "except why:")
+    );
+}
+
+/// `--rust-strings` moves the programs in a Rust file's string literals, raw or plain, writing
+/// back only their changed lines in each literal's own quoting and indent.
+#[test]
+fn fix_migrate_rewrites_the_programs_in_rust_strings() {
+    let dir = scratch("migrate-rust-strings").unwrap();
+    let file = dir.join("tests.rs");
+    let path = file.to_string_lossy().into_owned();
+    let old = "fn raw() -> &'static str {\n    r#\"\n        def two() -> int:\n            1 + 1\n\n        \
+        def main(stdout: Stdout):\n            stdout.print(\"two\", two())\n    \"#\n}\n\n\
+        fn plain() -> &'static str {\n    \"def three() -> int:\\n    3\\n\\ndef main(stdout: Stdout):\\n    \
+        stdout.print(three())\\n\"\n}\n";
+    std::fs::write(&file, old).unwrap();
+    let fixed = fennec(&["fix", "--migrate", "--rust-strings", &path], "").unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("            1 + 1\n", "            return 1 + 1\n")
+            .replace("\\n    3\\n", "\\n    return 3\\n")
+    );
 }
 
 /// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:

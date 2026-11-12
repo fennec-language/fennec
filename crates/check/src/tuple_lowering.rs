@@ -213,6 +213,6 @@ fn functions_for(tuple: &Type, at: usize) -> Option<String> {
         }
     }
     let made = if count == 1 { format!("({},)", made.join(", ")) } else { format!("({})", made.join(", ")) };
-    let _ = write!(out, "    src.end_items()?\n    {made}\n\n");
+    let _ = write!(out, "    src.end_items()?\n    return {made}\n\n");
     Some(out)
 }

@@ -2442,6 +2442,110 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What every call gives a helper is known in it: `go`'s sums are proven from positions and a
+/// count stepped once a turn, and a build checking proofs checks what it's given on the way in.
+/// `shifted` is given both ends of int across its calls, so its sum keeps its check, and fails.
+#[test]
+fn what_every_call_gives_a_helper_is_known_in_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def go(i: int, j: int) -> float:
+    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)
+
+def row(v: list[float], i: int) -> float:
+    mut total = 0.0
+    mut j = 0
+    for x in v:
+        total += go(i, j=j) * x
+        j += 1
+    return total
+
+def shifted(a: int, b: int) -> int:
+    return a + b
+
+def counted(v: list[int]) -> int:
+    mut seen = 0
+    for x in v:
+        seen += 2
+    return seen - 1
+
+def main(stdout: Stdout):
+    v = [1.0, 2.0, 3.0]
+    rows = [row(v, i) for i in range(v.len())]
+    stdout.print(f"{rows[0] + rows[1] + rows[2]:.6f}")
+    stdout.print(shifted(3, b=4), shifted(-9, b=2), counted([5, 6, 7]))
+    big = 9223372036854775800
+    stdout.print(shifted(big, b=7))
+    stdout.print(shifted(big, b=8))
+    return
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("given_ranges")?;
+        let (program, executable) = (dir.join("given.fen"), dir.join("given"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "4.477991\n7 -7 5\n9223372036854775807\n",
+            "{how:?}: {err}"
+        );
+        assert!(err.starts_with("error: this calculation overflows an int"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+/// A program whose code is handed every kind of fact runs the same built with them, with them
+/// stripped (`FENNEC_STRIP_FACTS=1`), and checking proofs, which checks the facts it can.
+#[test]
+fn facts_stripped_or_checked_run_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + seen.len()\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(xs.len())\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for (setting, on) in
+            [("FENNEC_STRIP_FACTS", "0"), ("FENNEC_STRIP_FACTS", "1"), ("FENNEC_CHECK_PROOFS", "1")]
+        {
+            let dir = folder("facts_stripped")?;
+            let (program, executable) = (dir.join("facts.fen"), dir.join("facts"));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env(setting, on)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5 [1, 2, 2] 5\n",
+                "{how:?} {setting}={on}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {
@@ -11806,6 +11910,66 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
     ];
     assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
+/// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
+/// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
+#[test]
+fn a_native_server_cuts_off_a_request_sent_a_byte_at_a_time() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=1s)
+";
+    let dir = folder("http_server_trickle")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+    let mut trickle = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    trickle.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+    trickle.write_all(b"POST /slow HTTP/1.1\r\nContent-Length: 1000\r\n\r\n")?;
+    // A byte of the body each tenth of a second, each well within the timeout, for up to 20
+    // seconds: with only each read timed, each read gets its byte and this never ends.
+    let started = std::time::Instant::now();
+    let mut heard = Vec::new();
+    let mut closed = false;
+    while started.elapsed() < std::time::Duration::from_secs(20) {
+        if trickle.write_all(b"x").is_err() {
+            closed = true;
+            break;
+        }
+        let mut buffer = [0; 512];
+        match trickle.read(&mut buffer) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(read) => heard.extend_from_slice(&buffer[..read]),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => {
+                closed = true;
+                break;
+            }
+        }
+    }
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(closed, "the server still held a request sent a byte at a time after 20 seconds");
+    assert!(!String::from_utf8_lossy(&heard).contains("200 OK"), "{}", String::from_utf8_lossy(&heard));
     Ok(())
 }
 

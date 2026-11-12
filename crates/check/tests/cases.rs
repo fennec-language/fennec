@@ -57,8 +57,8 @@ fn every_alternative_binds_the_same_names() {
     assert_eq!(
         with_shapes(program),
         [
-            "`r` is bound by only some of the alternatives of this `case` @ case .Circle(r) | .Point:\n            1\n        ",
-            "`side` is a float in one alternative and an int in another @ case .Square(side) | .Line(side):\n            2\n        ",
+            "`r` is bound by only some of the alternatives of this `case` @ case .Circle(r) | .Point:\n            return 1\n        ",
+            "`side` is a float in one alternative and an int in another @ case .Square(side) | .Line(side):\n            return 2\n        ",
         ]
     );
 }

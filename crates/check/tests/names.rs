@@ -466,7 +466,7 @@ fn a_value_nobody_uses_is_an_error() {
         in_main("xs = [3, 1]\nsorted(xs)\nlen(xs)\nstdout.print(xs)\n"),
         [
             "this gives back a list[int], and nothing uses it @ sorted(xs)",
-            "this gives back an int, and nothing uses it @ xs.len()",
+            "this gives back an int, and nothing uses it @ len(xs)",
         ]
     );
     assert_eq!(

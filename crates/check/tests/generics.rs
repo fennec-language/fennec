@@ -326,7 +326,7 @@ fn self_in_an_interface_is_the_type_that_fits_it() {
     assert_eq!(
         problems(program),
         [
-            "can't use `+` on a T and a T @ x.abs() + x",
+            "can't use `+` on a T and a T @ abs(x) + x",
             "`max` compares its items with `<`, but `T` could be any type @ max(xs)",
             "can't use `+` on an int and a str @ twice(1) + \"a\"",
             "can't use `+` on a str and an int @ twice(\"a\") + 1",
@@ -360,7 +360,7 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
         def main(stdout: Stdout):
             stdout.print(Tree(size=1).len())
     ";
-    assert_eq!(problems(wrong), ["`Tree` has no method `len` @ Tree(size=1).len()"]);
+    assert_eq!(problems(wrong), ["`Tree` has no method `len` @ len(Tree(size=1))"]);
 }
 
 #[test]

@@ -6,12 +6,19 @@ use fennec_check::Type;
 
 use crate::{dedent, helps, problems, problems_as_written, returns};
 
-/// A program with the fixes of its problems made, the way `fennec fix` makes them.
+/// A program with the fixes of its problems made, the way `fennec fix` makes them: round after
+/// round, as each fix can show the next, like the `return` a return type written in asks for.
 fn fixed(text: &str) -> String {
-    let source = dedent(text);
-    let Ok(module) = fennec_syntax::parse(&source) else { return source };
-    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
-    fennec_syntax::apply_fixes(&source, 0, &diagnostics).unwrap_or(source)
+    let mut source = dedent(text);
+    for _ in 0..4 {
+        let Ok(module) = fennec_syntax::parse(&source) else { return source };
+        let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+        match fennec_syntax::apply_fixes(&source, 0, &diagnostics) {
+            Some(changed) if changed != source => source = changed,
+            _ => return source,
+        }
+    }
+    source
 }
 
 #[test]

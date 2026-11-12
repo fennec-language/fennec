@@ -289,7 +289,7 @@ fn builtins_take_the_right_arguments() {
             "`sum` doesn't take `key` @ sum([1], key=n => n)",
             "`range` was called with the wrong arguments @ range(1, 2, 3, 4)",
             "`range` takes one to three ints @ range('a')".replace('\'', "\"").as_str(),
-            "an int has no method `len` @ 5.len()",
+            "an int has no method `len` @ len(5)",
             "`zip` was called with the wrong arguments @ zip([1])",
             "`any` needs bools, but got an int @ any([1])",
         ]

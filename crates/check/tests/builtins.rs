@@ -347,7 +347,7 @@ fn arguments_and_input_are_text() {
         [
             "can't use `+` on a str and an int @ arg + 1",
             "can't use `+` on a str and an int @ args[0] + 1",
-            "can't use `+` on an int and a str @ args.len() + \"a\"",
+            "can't use `+` on an int and a str @ len(args) + \"a\"",
             "can't use `+` on a str and an int @ args.program + 1",
             "can't use `+` on a str and an int @ stdin.lines()[0] + 1",
             "an index must be an int, not a str @ \"a\"",

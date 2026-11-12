@@ -1376,7 +1376,7 @@ pub extern "C" fn new_tag() -> i64 {
 
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_alloc", |state| {
         let at = usize::try_from(shape).ok();
         let Some(words) = at.and_then(|at| state.heap.sizes.get(at).copied()).or_else(|| {
             at.and_then(|at| state.tables.shapes.get(at)).map(|element| HEADER_WORDS + element.words())
@@ -1395,7 +1395,7 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 /// A copy of a shared block for one owner to change: owned once, sharing its boxed
 /// fields. The block copied loses that owner.
 pub extern "C" fn unshare(address: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_unshare", |state| {
         let address = u64::try_from(address).unwrap_or(0);
         let Some(block) = state.heap.block(address) else {
             not_native(address, "copy, to change");

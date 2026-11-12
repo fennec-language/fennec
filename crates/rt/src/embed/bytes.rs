@@ -98,7 +98,7 @@ fn builder_room(length: usize) -> usize {
 
 /// An empty byte builder, with room for 16 bytes.
 pub extern "C" fn builder() -> i64 {
-    with(|state| {
+    super::made_with("fennec_bytes_builder", |state| {
         let mut block = with_room(state, builder_room(0));
         if let Some(length) = block.get_mut(2) {
             *length = 0;
@@ -110,7 +110,7 @@ pub extern "C" fn builder() -> i64 {
 /// A byte builder with room for at least `wanted` bytes, holding what `bytes` does. It takes over
 /// the caller's owner of `bytes`, and lets go of it, so what it gives back is the caller's alone.
 pub extern "C" fn grow(bytes: i64, wanted: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_bytes_grow", |state| {
         let block = state.heap.block(bytes.cast_unsigned()).unwrap_or_default();
         let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
         let kept: Vec<u64> =
@@ -303,7 +303,7 @@ pub extern "C" fn decode(bytes: i64) -> i64 {
 
 /// What's wrong with bytes that aren't UTF-8 text.
 pub extern "C" fn decode_problem(bytes: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_bytes_decode_problem", |state| {
         let data = data_at(state, bytes);
         let message = std::str::from_utf8(&data)
             .err()
@@ -332,7 +332,7 @@ pub extern "C" fn from_hex_problem(text: i64) -> i64 {
 
 /// `text.encode()`.
 pub extern "C" fn encode(text: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_encode", |state| {
         let held = text_at(state, text);
         make(state, held.as_bytes())
     })

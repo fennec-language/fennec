@@ -94,10 +94,11 @@ fn question_mark_and_else_get_the_value_out() {
     let program = "
         def total(n: int):
             a = risky(n)? + 1
-            b = (risky(n) else 0) + 1
+            risky_value = risky(n) except Oops(): 0
+            b = risky_value + 1
             c = (player('x')?).name.upper()
-            d = risky(n) else as oops:
-                oops.why.len()
+            d = risky(n) except oops:
+                len(oops.why)
             e = risky(n).expect('small') + 1
             a + b + d + e
     ";
@@ -109,12 +110,12 @@ fn question_mark_and_else_get_the_value_out() {
 #[test]
 fn a_match_over_a_failure_handles_each_case() {
     let one = "error Bad:\n    Empty\n    Long(size: int)\n\n\
-        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    n\n\n\
-        def f(n: int) -> int:\n    load(n) else as why:\n        match why:\n            case .Empty: 1\n";
-    assert_eq!(problems(one), ["this `match` doesn't handle `Bad.Long` @ why"]);
-    let all = format!("{one}            case .Long(size): size\n");
+        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+        def f(n: int) -> int:\n    return load(n) except why:\n        case .Empty: 1\n";
+    assert_eq!(problems(one), ["this `except` doesn't handle `Bad.Long` @ why"]);
+    let all = format!("{one}        case .Long(size): size\n");
     assert_eq!(problems(&all), Vec::<String>::new());
-    let caught = format!("{one}            case _: 0\n");
+    let caught = format!("{one}        case _: len(str(why))\n");
     assert_eq!(problems(&caught), Vec::<String>::new());
 }
 
@@ -124,15 +125,15 @@ fn a_match_over_a_failure_handles_each_case() {
 #[test]
 fn except_handles_a_failure_in_three_forms() {
     let declared = "error Bad:\n    Empty\n    Long(size: int)\n\n\
-        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    n\n\n\
-        def only(n: int) -> int fails InvalidValue:\n    if n == 1: fail InvalidValue(message='one')\n    n\n\n\
+        def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+        def only(n: int) -> int fails InvalidValue:\n    if n == 1: fail InvalidValue(message='one')\n    return n\n\n\
         def act(n: int) fails InvalidValue:\n    if n == 1: fail InvalidValue(message='one')\n\n";
-    let fine = "def named(n: int) -> int:\n    x = load(n) except why:\n        return why.notes().len()\n    x\n\n\
-        def arms(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case .Long(size):\n            size\n        case _:\n            fail why\n    x\n\n\
-        def one(n: int) -> int:\n    x = only(n) except InvalidValue(): 8080\n    y = only(n) except InvalidValue(): return 0\n    x + y\n\n\
+    let fine = "def named(n: int) -> int:\n    x = load(n) except why:\n        return len(why.notes())\n    return x\n\n\
+        def arms(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case .Long(size):\n            size\n        case _:\n            fail why\n    return x\n\n\
+        def one(n: int) -> int:\n    x = only(n) except InvalidValue(): 8080\n    y = only(n) except InvalidValue(): return 0\n    return x + y\n\n\
         def bare(n: int) -> str:\n    act(n) except why:\n        return why.message\n    return \"\"\n";
     assert_eq!(problems(&format!("{declared}{fine}")), Vec::<String>::new());
-    let one_of_two = "def f(n: int) -> int:\n    x = load(n) except .Empty: 0\n    x\n";
+    let one_of_two = "def f(n: int) -> int:\n    x = load(n) except .Empty: 0\n    return x\n";
     assert_eq!(
         problems(&format!("{declared}{one_of_two}")),
         ["this `except` doesn't handle `Bad.Long` @ except"]
@@ -161,7 +162,7 @@ fn except_drops_no_failure_without_a_word() {
     assert_eq!(body("x = load(n) except why:\n        _ = why\n        return 0"), [dropped]);
     assert_eq!(
         body(
-            "x = load(n) except why:\n        if n > 1:\n            return 0\n        return why.notes().len()"
+            "x = load(n) except why:\n        if n > 1:\n            return 0\n        return len(why.notes())"
         ),
         [dropped]
     );
@@ -170,7 +171,7 @@ fn except_drops_no_failure_without_a_word() {
         body("x = load(n) except why:\n        match why:\n            case _:\n                return 0");
     assert!(matched.contains(&"`match why:` goes away under `except`".to_owned()), "{matched:?}");
     for used in [
-        "x = load(n) except why:\n        return why.notes().len()",
+        "x = load(n) except why:\n        return len(why.notes())",
         "x = load(n) except why:\n        fail Other(why=f\"{why}\")",
         "x = load(n) except why:\n        fail Other(why=\"lost\")",
         "x = load(n) except why:\n        case .Empty:\n            0\n        case .Long(size):\n            size",
@@ -196,7 +197,7 @@ fn except_drops_no_failure_without_a_word() {
         ["`Bad()` takes every case of `Bad`, which drops them all"]
     );
     assert_eq!(
-        body("x = plain(n) except why:\n        return why.notes().len()"),
+        body("x = plain(n) except why:\n        return len(why.notes())"),
         ["this can't fail, so `except` has nothing to handle"]
     );
     let optional = helps(&format!(
@@ -204,7 +205,7 @@ fn except_drops_no_failure_without_a_word() {
     ));
     assert!(optional.iter().any(|help| help.contains("takes `else`")), "{optional:?}");
     assert!(
-        body("x = n except why:\n        return why.notes().len()")
+        body("x = n except why:\n        return len(why.notes())")
             .contains(&"`except` goes right after the call it handles".to_owned())
     );
 }
@@ -215,9 +216,9 @@ fn except_drops_no_failure_without_a_word() {
 #[test]
 fn a_function_that_can_fail_says_fails() {
     let program = "error TooBig:\n    limit: int\n\nerror Empty:\n    pass\n\n\
-        def word(n: int) -> str:\n    if n > 2: fail TooBig(limit=2)\n    \"w\"\n\n\
+        def word(n: int) -> str:\n    if n > 2: fail TooBig(limit=2)\n    return \"w\"\n\n\
         def check(n: int):\n    if n > 2: fail TooBig(limit=2)\n\n\
-        def both(n: int) -> int:\n    if n == 0: fail Empty()\n    _ = word(n)?\n    n\n\n\
+        def both(n: int) -> int:\n    if n == 0: fail Empty()\n    _ = word(n)?\n    return n\n\n\
         def main(stdout: Stdout):\n    stdout.print(word(1)?)\n";
     assert_eq!(
         crate::problems_as_written(program),
@@ -246,16 +247,16 @@ fn an_error_carries_notes() {
     let empty: [&str; 0] = [];
     assert_eq!(
         found(
-            "_ = risky(5) else as failure:\n    mut noted = failure\n    noted.add_note('while loading')\n    texts: list[str] = noted.notes()\n    _ = texts\n    0\n"
+            "_ = risky(5) except failure:\n    mut noted = failure\n    noted.add_note('while loading')\n    texts: list[str] = noted.notes()\n    _ = texts\n    0\n"
         ),
         empty
     );
     assert_eq!(
-        found("_ = risky(5) else as failure:\n    failure.add_note('x')\n    0\n"),
+        found("_ = risky(5) except failure:\n    failure.add_note('x')\n    0\n"),
         ["`failure` isn't mut @ failure"]
     );
     assert_eq!(
-        found("_ = risky(5) else as failure:\n    mut noted = failure\n    noted.add_note(3)\n    0\n"),
+        found("_ = risky(5) except failure:\n    mut noted = failure\n    noted.add_note(3)\n    0\n"),
         ["`add_note` takes the note's text, a str, but this is an int @ 3"]
     );
     assert_eq!(found("p = player('a')?\n_ = p.notes()\n").len(), 1);
@@ -290,12 +291,12 @@ fn ignored_results_are_mistakes() {
 fn a_function_passes_a_failure_up_only_with_a_question_mark() {
     let program = "
         def passthrough(n: int) -> int fails Oops:
-            risky(n)
+            return risky(n)
 
         def early(n: int) -> int fails Oops:
             if n > 0:
                 return risky(n)
-            risky(n)?
+            return risky(n)?
     ";
     let program = format!("{}\n{}", crate::dedent(RISKY), crate::dedent(program));
     assert_eq!(
@@ -364,7 +365,7 @@ fn files_can_fail_to_read() {
 #[test]
 fn builtins_need_values_not_results() {
     assert_eq!(
-        with_risky("stdout.print(names().len(), risky(1).abs())"),
+        with_risky("stdout.print(len(names()), abs(risky(1)))"),
         [
             "this is the result of something that can fail @ names()",
             "this is the result of something that can fail @ risky(1)",
@@ -379,11 +380,8 @@ const NET_ERROR: &str =
 fn an_error_with_cases_fails_and_is_matched_like_an_enum() {
     let text = format!(
         "{NET_ERROR}def connect(host: str, port: int) -> int fails DialError:\n    if host == \"\":\n        \
-         fail .NotFound(host)\n    if port == 0:\n        fail .Closed\n    port\n\n\
-         def described(port: int) -> str:\n    got = connect(\"db\", port) else as why:\n        match why:\n            \
-         case .Refused(host, port): return f\"refused {{host}}:{{port}}\"\n            \
-         case .NotFound(host): return f\"no {{host}}\"\n            case _: return f\"failed: {{why}}\"\n    \
-         f\"port {{got}}\"\n"
+         fail .NotFound(host)\n    if port == 0:\n        fail .Closed\n    return port\n\n\
+         def described(port: int) -> str:\n    got = connect(\"db\", port) except why:\n        case .Refused(host, port): return f\"refused {{host}}:{{port}}\"\n        case .NotFound(host): return f\"no {{host}}\"\n        case _: return f\"failed: {{why}}\"\n    return f\"port {{got}}\"\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
 }
@@ -419,9 +417,9 @@ const LOAD_ERROR: &str =
 fn fails_names_the_one_error_a_function_can_fail_with() {
     let text = format!(
         "{LOAD_ERROR}def load(path: str) -> float fails LoadError:\n    if path == \"\":\n        \
-         fail .NotFound(path)\n    if path == \"bad\":\n        fail .BadRow(3)\n    1.5\n\n\
-         def total(paths: list[str]) -> float fails LoadError:\n    mut sum = 0.0\n    for path in paths:\n        \
-         sum += load(path)?\n    sum\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
+         fail .NotFound(path)\n    if path == \"bad\":\n        fail .BadRow(3)\n    return 1.5\n\n\
+         def total(paths: list[str]) -> float fails LoadError:\n    mut total = 0.0\n    for path in paths:\n        \
+         total += load(path)?\n    return total\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
          fail .BadRow(0)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
@@ -431,25 +429,22 @@ fn fails_names_the_one_error_a_function_can_fail_with() {
 fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
     let text = format!(
         "{LOAD_ERROR}error ParseError:\n    Bad(text: str)\n\n\
-         def parse(text: str) -> int fails ParseError:\n    if text == \"\":\n        fail .Bad(text)\n    1\n\n\
+         def parse(text: str) -> int fails ParseError:\n    if text == \"\":\n        fail .Bad(text)\n    return 1\n\n\
          def load(path: str) -> int fails LoadError | ParseError:\n    if path == \"\":\n        \
-         fail .NotFound(path)\n    parse(path)?\n\n\
-         def apply(read: (str) -> int fails LoadError | ParseError, path: str) -> int fails LoadError | ParseError:\n    \
-         read(path)?\n\n\
-         def main(stdout: Stdout):\n    n = load(\"a\") else as why:\n        match why:\n            \
-         case .NotFound(path): stdout.print(path)\n            case .Bad(text): stdout.print(text)\n            \
-         case _: pass\n        -1\n    stdout.print(n)\n    stdout.print(apply(path => load(path)?, \"b\") else 0)\n    \
+         fail .NotFound(path)\n    return parse(path)?\n\n\
+         def apply(read: (str) -> int fails LoadError | ParseError, path: str) -> int fails LoadError | ParseError:\n    return read(path)?\n\n\
+         def main(stdout: Stdout):\n    n = load(\"a\") except why:\n        case .NotFound(path):\n            stdout.print(path)\n            -1\n        case .Bad(text):\n            stdout.print(text)\n            -1\n        case _:\n            stdout.print(why)\n            -1\n    stdout.print(n)\n    applied = apply(path => load(path)?, \"b\") except .NotFound() | .BadRow() | .Bad(): 0\n    stdout.print(applied)\n    \
          reader: (str) -> int fails LoadError | ParseError = path => load(path)?\n    \
          stdout.print(said(() => reader(\"c\")?))\n\n\
-         def said(run: () -> int fails LoadError | ParseError) -> int:\n    run() else -1\n"
+         def said(run: () -> int fails LoadError | ParseError) -> int:\n    return run() except .NotFound() | .BadRow() | .Bad(): -1\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     assert_eq!(
         problems(&format!(
-            "{LOAD_ERROR}def load(path: str) -> int fails LoadError | int:\n    1\n\n\
-             def read(path: str) -> int fails LoadError | Other:\n    if path == \"\":\n        fail .Gone(path)\n    1\n\n\
+            "{LOAD_ERROR}def load(path: str) -> int fails LoadError | int:\n    return 1\n\n\
+             def read(path: str) -> int fails LoadError | Other:\n    if path == \"\":\n        fail .Gone(path)\n    return 1\n\n\
              def other() -> int fails Other:\n    fail Other(why=\"no\")\n\n\
-             def check(path: str) -> int fails LoadError:\n    other()?\n"
+             def check(path: str) -> int fails LoadError:\n    return other()?\n"
         )),
         [
             "`|` joins errors, but `int` is an int @ int",
@@ -464,12 +459,12 @@ fn only_the_error_fails_names_can_escape() {
     assert_eq!(
         problems(&format!(
             "{LOAD_ERROR}def load(path: str) -> int fails LoadError:\n    if path == \"\":\n        \
-             fail Other(why=\"empty\")\n    1\n"
+             fail Other(why=\"empty\")\n    return 1\n"
         )),
         ["`load` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError"]
     );
     assert_eq!(
-        problems("struct Point:\n    x = 0\n\ndef load() -> int fails Point:\n    1\n"),
+        problems("struct Point:\n    x = 0\n\ndef load() -> int fails Point:\n    return 1\n"),
         ["`fails` names an error, but `Point` is a Point @ Point"]
     );
 }
@@ -477,8 +472,8 @@ fn only_the_error_fails_names_can_escape() {
 #[test]
 fn a_result_passed_on_adds_its_errors_to_the_functions() {
     let program = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int:\n    \
-                   if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
-                   fail Worse(why=\"big\")\n    inner(n)?\n";
+                   if n < 0:\n        fail Bad(why=\"neg\")\n    return n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
+                   fail Worse(why=\"big\")\n    return inner(n)?\n";
     let errors = fennec_check::Type::Errors(vec!["Bad".to_owned(), "Worse".to_owned()]);
     assert_eq!(
         crate::returns(program, "outer"),
@@ -495,11 +490,11 @@ def add_up(names: list[str], ages: dict[str, int]) -> int:
     for name in names:
         age: int = ages.get(name) else continue
         total += age
-    total
+    return total
 
 def age_of(ages: dict[str, int], name: str) -> int:
     age: int = ages.get(name) else return -1
-    age
+    return age
 
 def show(ages: dict[str, int], name: str, stdout: Stdout):
     age: int = ages.get(name) else return
@@ -507,10 +502,10 @@ def show(ages: dict[str, int], name: str, stdout: Stdout):
 
 def must(ages: dict[str, int], name: str) -> int fails Missing:
     age: int = ages.get(name) else fail Missing(name=name)
-    age
+    return age
 
 def parse(text: str) -> int:
-    int(text) else return 0
+    return int(text) except InvalidValue(): return 0
 ";
 
 #[test]
@@ -520,15 +515,14 @@ fn else_can_leave_and_what_it_gives_is_whats_inside() {
 
 #[test]
 fn leaving_with_else_is_checked_like_the_statement() {
-    let wrong_value =
-        "def age_of(ages: dict[str, int]) -> int:\n    age = ages.get('a') else return 'old'\n    age\n";
+    let wrong_value = "def age_of(ages: dict[str, int]) -> int:\n    age = ages.get('a') else return 'old'\n    return age\n";
     assert_eq!(
         problems(wrong_value).len(),
         1,
         "the value `else return` gives has to fit the function: {:?}",
         problems(wrong_value)
     );
-    let cant_fail = "def age_of(ages: dict[str, int]) -> int:\n    ages.get('a') else fail 'nope'\n";
+    let cant_fail = "def age_of(ages: dict[str, int]) -> int:\n    return ages.get('a') else fail 'nope'\n";
     assert_eq!(problems(cant_fail).len(), 1, "{:?}", problems(cant_fail));
 }
 
@@ -539,13 +533,13 @@ fn leaving_with_else_is_checked_like_the_statement() {
 /// ended there with no error and an exit code of 0.
 #[test]
 fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
-    let unmarked = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(why=\"neg\")\n    n // 2\n\ntest \"half\":\n    assert failure_of(() => half(-1)) is not None\n";
+    let unmarked = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(why=\"neg\")\n    return n // 2\n\ntest \"half\":\n    assert failure_of(() => half(-1)) is not None\n";
     assert_eq!(problems(unmarked), ["this can fail, and a failure passes up only with `?` @ half(-1)"]);
     assert!(fixed(unmarked).contains("failure_of(() => half(-1)?)"), "{}", fixed(unmarked));
     assert_eq!(problems(&fixed(unmarked)), Vec::<String>::new());
     // The arrow's `?`s, with `from` too, pass up its own failures, and a `def` takes it as one
     // that fails.
-    let marked = "error Bad:\n    why: str\n\ndef twice(run: () -> int fails Bad | InvalidValue) -> int fails Bad | InvalidValue:\n    run()? + run()?\n\ndef main(stdout: Stdout):\n    stdout.print(twice(() => int(\"1\")? + (int(\"2\")? from Bad(why=\"no\"))) else 0)\n";
+    let marked = "error Bad:\n    why: str\n\ndef twice(run: () -> int fails Bad | InvalidValue) -> int fails Bad | InvalidValue:\n    return run()? + run()?\n\ndef main(stdout: Stdout):\n    twice_value = twice(() => int(\"1\")? + (int(\"2\")? from Bad(why=\"no\"))) except Bad() | InvalidValue(): 0\n    stdout.print(twice_value)\n";
     assert_eq!(problems(marked), Vec::<String>::new());
     let said = "this arrow function can fail, but where it's passed takes one that can't";
     for body in [
@@ -561,15 +555,16 @@ fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
         assert_eq!(found.len(), 1, "{body}: {found:?}");
     }
     // The failure is the arrow's, not one more way the function around it fails.
-    let around = "def around() -> list[str]:\n    sorted(['1'], key=text => int(text)?)\n";
+    let around = "def around() -> list[str]:\n    return sorted(['1'], key=text => int(text)?)\n";
     let found = problems(around);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|one| one.starts_with(said)), "{found:?}");
     // After an arrow, `?` is as it was.
-    let after = "def after(text: str) -> int fails InvalidValue:\n    kept = sorted(['1'], key=one => one)\n    int(text)? + kept.len()\n\ndef main(stdout: Stdout):\n    stdout.print(after(\"1\") else 0)\n";
+    let after = "def after(text: str) -> int fails InvalidValue:\n    kept = sorted(['1'], key=one => one)\n    return int(text)? + len(kept)\n\ndef main(stdout: Stdout):\n    after_value = after(\"1\") except InvalidValue(): 0\n    stdout.print(after_value)\n";
     assert_eq!(problems(after), Vec::<String>::new());
-    // `?` still leaves from a comprehension, and an arrow can still give a value instead.
-    let fine = "def parsed(texts: list[str]) -> list[int] fails InvalidValue:\n    [int(text)? for text in texts]\n\ndef main(stdout: Stdout):\n    stdout.print(sorted(['1'], key=text => int(text) else 0))\n";
+    // `?` still leaves from a comprehension, and a function an arrow is given for can still give
+    // a value instead.
+    let fine = "def parsed(texts: list[str]) -> list[int] fails InvalidValue:\n    return [int(text)? for text in texts]\n\ndef number(text: str) -> int:\n    found = int(text) except InvalidValue(): 0\n    return found\n\ndef main(stdout: Stdout):\n    stdout.print(sorted(['1'], key=number))\n";
     assert_eq!(problems(fine), Vec::<String>::new());
 }
 
@@ -589,16 +584,22 @@ fn an_arrow_function_or_comprehension_cant_leave_with_else() {
 #[test]
 fn else_as_is_for_what_can_fail_and_its_block_leaves() {
     let found = problems(
-        "def main(stdout: Stdout):\n    held: int? = None\n    value = held else as failure:\n        stdout.print(failure)\n        return\n    stdout.print(value)\n",
+        "def main(stdout: Stdout):\n    held: int? = None\n    value = held except failure:\n        stdout.print(failure)\n        return\n    stdout.print(value)\n",
     );
-    assert_eq!(found, ["this can't fail, so `else as` has no failure to name @ held"]);
+    assert_eq!(
+        found,
+        [
+            "`except` goes right after the call it handles @ held",
+            "this can't fail, so `except` has nothing to handle @ held"
+        ]
+    );
     let ends_on_nothing = problems(
-        "error Oops:\n    pass\n\ndef risky() -> int fails Oops:\n    fail Oops()\n\ndef main(stdout: Stdout):\n    value = risky() else as failure:\n        stdout.print(failure)\n    stdout.print(value)\n",
+        "error Oops:\n    pass\n\ndef risky() -> int fails Oops:\n    fail Oops()\n\ndef main(stdout: Stdout):\n    value = risky() except failure:\n        stdout.print(failure)\n    stdout.print(value)\n",
     );
     assert_eq!(
         ends_on_nothing,
         [
-            "this `else` block must give an `int` or leave; its last line `stdout.print(...)` gives nothing @ stdout.print(failure)"
+            "this `except` block must give an `int` or leave; its last line `stdout.print(...)` gives nothing @ stdout.print(failure)"
         ]
     );
 }
@@ -608,18 +609,18 @@ fn else_as_is_for_what_can_fail_and_its_block_leaves() {
 /// and what its last line is.
 #[test]
 fn an_else_block_gives_a_value_or_leaves() {
-    let declared = "error Oops:\n    why: str\n\nstruct World:\n    size: int\n\ndef load(n: int) -> World fails Oops:\n    if n > 1:\n        fail Oops('big')\n    World(size=n)\n\ndef find(n: int) -> int?:\n    if n > 1:\n        return None\n    n\n";
+    let declared = "error Oops:\n    why: str\n\nstruct World:\n    size: int\n\ndef load(n: int) -> World fails Oops:\n    if n > 1:\n        fail Oops('big')\n    return World(size=n)\n\ndef find(n: int) -> int?:\n    if n > 1:\n        return None\n    return n\n";
     let fine = format!(
-        "{declared}\ndef main(stdout: Stdout):\n    world = load(3) else as why:\n        stdout.print(why.why)\n        World(size=0)\n    kept = load(1) else:\n        World(size=-1)\n    found = find(5) else:\n        stdout.print('none')\n        0\n    for at in range(2):\n        held = load(at) else:\n            continue\n        stdout.print(held.size)\n    stdout.print(world.size, kept.size, found)\n"
+        "{declared}\ndef main(stdout: Stdout):\n    world = load(3) except why:\n        stdout.print(why.why)\n        World(size=0)\n    kept = load(1) except Oops():\n        World(size=-1)\n    found = find(5) else:\n        stdout.print('none')\n        0\n    for at in range(2):\n        held = load(at) except Oops():\n            continue\n        stdout.print(held.size)\n    stdout.print(world.size, kept.size, found)\n"
     );
     assert_eq!(problems(&fine), Vec::<String>::new());
     let set = format!(
-        "{declared}\ndef main(stdout: Stdout):\n    mut total = 0\n    world = load(3) else as why:\n        total = 1\n    stdout.print(world.size, total)\n"
+        "{declared}\ndef main(stdout: Stdout):\n    mut total = 0\n    world = load(3) except Oops():\n        total = 1\n    stdout.print(world.size, total)\n"
     );
     assert_eq!(
         problems(&set),
         [
-            "this `else` block must give a `World` or leave; its last line `total = ...` gives nothing @ total = 1"
+            "this `except` block must give a `World` or leave; its last line `total = ...` gives nothing @ total = 1"
         ]
     );
     let wrong = format!(
@@ -644,12 +645,11 @@ fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
         let written = fennec_syntax::apply_fixes(&source, 0, problem.as_slice());
         assert_eq!(written, Some(format!("def port(text: str, given: bool) -> int:\n    {fixed}\n")));
     }
-    let parenthesized =
-        "def port(text: str, given: bool) -> int:\n    (int(text) else 80) if given else 8080\n";
+    let parenthesized = "def port(text: str, given: bool) -> int:\n    int_value = int(text) except InvalidValue(): 80\n    return (int_value) if given else 8080\n";
     assert!(fennec_syntax::parse(parenthesized).is_ok());
-    let chained = "def size(n: int) -> int:\n    1 if n < 1 else 2 if n < 2 else 3\n";
+    let chained = "def size(n: int) -> int:\n    return 1 if n < 1 else 2 if n < 2 else 3\n";
     assert!(fennec_syntax::parse(chained).is_ok());
-    let unhandled = "def port(text: str, given: bool) -> int:\n    int(text) if given else 8080\n";
+    let unhandled = "def port(text: str, given: bool) -> int:\n    return int(text) if given else 8080\n";
     assert_eq!(problems(unhandled), ["this can fail, but nothing handles it @ int(text)"]);
 }
 
@@ -658,7 +658,7 @@ fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
 /// `else as why:`, which handles only the failure, check.
 #[test]
 fn a_plain_else_cant_handle_a_failure_and_a_none_alike() {
-    let declared = "error Bad:\n    why: str\n\ndef cached(n: int) -> int? fails Bad:\n    if n > 5:\n        fail Bad('broken')\n    if n > 2:\n        return None\n    n\n";
+    let declared = "error Bad:\n    why: str\n\ndef cached(n: int) -> int? fails Bad:\n    if n > 5:\n        fail Bad('broken')\n    if n > 2:\n        return None\n    return n\n";
     let said = "this can fail as well as give `None`, and a plain `else` would handle both";
     for line in [
         "found = cached(7) else 0",
@@ -673,7 +673,7 @@ fn a_plain_else_cant_handle_a_failure_and_a_none_alike() {
         );
     }
     let fine = format!(
-        "{declared}\ndef first(n: int) -> int fails Bad:\n    cached(n)? else 0\n\ndef main(stdout: Stdout):\n    held = cached(7) else as why:\n        None\n    stdout.print(held, first(1) else 2)\n"
+        "{declared}\ndef first(n: int) -> int fails Bad:\n    return cached(n)? else 0\n\ndef main(stdout: Stdout):\n    held = cached(7) except why:\n        stdout.print(why.why)\n        None\n    first_value = first(1) except Bad(): 2\n    stdout.print(held, first_value)\n"
     );
     assert_eq!(problems(&fine), Vec::<String>::new());
 }
@@ -695,7 +695,7 @@ fn an_if_over_several_lines_gives_no_value() {
             .and_then(|problem| problem.help)
             .is_some_and(|help| help.contains("x = a if condition else b"))
     );
-    let locked = "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    total\n";
+    let locked = "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    return total\n";
     assert_eq!(problems(locked), Vec::<String>::new());
 }
 
@@ -703,7 +703,7 @@ fn an_if_over_several_lines_gives_no_value() {
 /// `fails` checks a failure only there.
 #[test]
 fn an_assert_that_something_fails_takes_what_can_fail() {
-    let declared = "error Oops:\n    line: int\n\ndef load(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops(line=n)\n    n\n\ndef plain(n: int) -> int:\n    n\n";
+    let declared = "error Oops:\n    line: int\n\ndef load(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops(line=n)\n    return n\n\ndef plain(n: int) -> int:\n    return n\n";
     let fine = format!(
         "{declared}\ntest \"load\":\n    assert load(3) fails Oops(line=3)\n    assert load(3) fails Oops()\n"
     );
@@ -726,11 +726,11 @@ fn an_assert_that_something_fails_takes_what_can_fail() {
 fn a_failure_of_several_kinds_is_matched_case_by_case() {
     let declared = "error Gone:\n    path: str\n\nerror Bad:\n    line: int\n\n    def said(self) -> str:\n        f\"line {self.line}\"\n\ndef load(n: int) -> int fails Gone | Bad:\n    if n == 1:\n        fail Gone(path='x')\n    if n == 2:\n        fail Bad(line=2)\n    n\n";
     let missing = format!(
-        "{declared}\ndef main(stdout: Stdout):\n    got = load(1) else as why:\n        match why:\n            case Gone(path):\n                stdout.print(path)\n        0\n    stdout.print(got)\n"
+        "{declared}\ndef main(stdout: Stdout):\n    got = load(1) except why:\n        case Gone(path):\n            stdout.print(path)\n            0\n    stdout.print(got)\n"
     );
-    assert_eq!(problems(&missing), ["this `match` doesn't handle `Bad` @ why"]);
+    assert_eq!(problems(&missing), ["this `except` doesn't handle `Bad` @ why"]);
     let narrowed = format!(
-        "{declared}\ndef main(stdout: Stdout):\n    got = load(2) else as why:\n        match why:\n            case Gone(path):\n                stdout.print(path)\n            case rest:\n                stdout.print(rest.said())\n        0\n    stdout.print(got)\n"
+        "{declared}\ndef main(stdout: Stdout):\n    got = load(2) except why:\n        case Gone(path):\n            stdout.print(path)\n            0\n        case _:\n            rest = why\n            stdout.print(rest.said())\n            0\n    stdout.print(got)\n"
     );
     assert_eq!(problems(&narrowed), Vec::<String>::new());
     let compared = format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(load(1) == load(2))\n");
@@ -742,13 +742,13 @@ fn a_failure_of_several_kinds_is_matched_case_by_case() {
 /// writes of them, for `?` and `else`, still checks.
 #[test]
 fn ok_err_and_result_are_refused_with_what_to_write() {
-    let program = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        return Err(Bad(\"small\"))\n    return Ok(n - 1)\n\ndef show(n: int) -> str:\n    match half(n):\n        case Ok(value): str(value)\n        case Err(problem): problem.why\n\ndef held(found: Result[int, Bad]) -> int:\n    0\n";
+    let program = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        return Err(Bad(\"small\"))\n    return Ok(n - 1)\n\ndef show(n: int) -> str:\n    match half(n):\n        case Ok(value): return str(value)\n        case Err(problem): return problem.why\n\ndef held(found: Result[int, Bad]) -> int:\n    return 0\n";
     assert_eq!(
         crate::problems_as_written(program),
         [
             "`Err` is gone: a function fails with `fail error` @ Err(Bad(\"small\"))",
             "`Ok` is gone: a value is given as it is @ Ok(n - 1)",
-            "`Ok` and `Err` are gone: a failure is handled with `except why:` @ case Ok(value): str(value)\n",
+            "`Ok` and `Err` are gone: a failure is handled with `except why:` @ case Ok(value): return str(value)\n",
             "`Result` is gone: what can fail says so with `fails` @ Result[int, Bad]",
         ]
     );
@@ -758,7 +758,7 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
     for written in ["        fail Bad(\"small\")\n", "    return n - 1\n"] {
         assert!(fixed.contains(written), "{fixed}");
     }
-    let lowered = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n\ndef twice(n: int) -> int fails Bad:\n    half(n)? + (half(n) else 0)\n";
+    let lowered = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    return n - 1\n\ndef twice(n: int) -> int fails Bad:\n    half_value = half(n) except Bad(): 0\n    return half(n)? + half_value\n";
     assert_eq!(crate::problems_as_written(lowered), Vec::<String>::new());
 }
 
@@ -766,14 +766,14 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
 /// refused, and the help points at `else as why:`, which names a failure where it happens.
 #[test]
 fn failure_of_is_only_for_tests() {
-    let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n";
+    let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    return n - 1\n";
     let said = "`failure_of` is only for tests @ failure_of(() => half(-1)?)";
     let help = "outside a test, name a failure where it happens with `x = f() except why:`; a test checks one with `assert f() fails Oops()`";
     let in_main =
         format!("{declared}\ndef main(stdout: Stdout):\n    stdout.print(failure_of(() => half(-1)?))\n");
     assert_eq!(problems(&in_main), [said]);
     assert_eq!(helps(&in_main), [help]);
-    let helper = format!("{declared}\ndef problem() -> Bad?:\n    failure_of(() => half(-1)?)\n");
+    let helper = format!("{declared}\ndef problem() -> Bad?:\n    return failure_of(() => half(-1)?)\n");
     assert_eq!(problems(&helper), [said]);
     let in_test = format!("{declared}\ntest \"half\":\n    assert failure_of(() => half(-1)?) is not None\n");
     assert_eq!(problems(&in_test), Vec::<String>::new());
@@ -784,7 +784,7 @@ fn failure_of_is_only_for_tests() {
 /// may give one back, for `failure_of`.
 #[test]
 fn what_can_fail_is_never_a_plain_value() {
-    let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    n - 1\n\ndef keep[T](x: T) -> T:\n    x\n";
+    let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    return n - 1\n\ndef keep[T](x: T) -> T:\n    return x\n";
     let said = "this can fail, but nothing handles it";
     for line in [
         "stdout.print(half(3))",
@@ -803,14 +803,14 @@ fn what_can_fail_is_never_a_plain_value() {
         assert_eq!(crate::problems_as_written(&program), [format!("{said} @ {call}")], "{line}");
     }
     let fine = format!(
-        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(3) else 0, half(3).expect(\"3 is big enough\"))\n    held = half(3) else as why:\n        stdout.print(why.why)\n        0\n    stdout.print(held)\n\ntest \"its failure\":\n    problem = failure_of(() => half(-1)?)\n    assert problem is not None\n"
+        "{declared}\ntest \"half\":\n    assert half(-1) fails Bad()\n    assert half(3)? == 2\n\ndef main(stdout: Stdout):\n    half_value = half(3) except Bad(): 0\n    stdout.print(half_value, half(3).expect(\"3 is big enough\"))\n    held = half(3) except why:\n        stdout.print(why.why)\n        0\n    stdout.print(held)\n\ntest \"its failure\":\n    problem = failure_of(() => half(-1)?)\n    assert problem is not None\n"
     );
     assert_eq!(crate::problems_as_written(&fine), Vec::<String>::new());
     // In a function that fails with what the call does, the fix passes the failure up.
-    let passing = format!("{declared}\ndef shown(n: int) -> str fails Bad:\n    str(half(n))\n");
+    let passing = format!("{declared}\ndef shown(n: int) -> str fails Bad:\n    return str(half(n))\n");
     let module = fennec_syntax::parse(&passing).unwrap();
     let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
     let fixed = fennec_syntax::apply_fixes(&passing, 0, &diagnostics).unwrap();
-    assert!(fixed.contains("    str(half(n)?)\n"), "{fixed}");
+    assert!(fixed.contains("    return str(half(n)?)\n"), "{fixed}");
     assert_eq!(crate::problems_as_written(&fixed), Vec::<String>::new());
 }

@@ -14,18 +14,18 @@ struct Expr:
 def literal(tok: Tok) -> ExprKind:
     match tok:
         case .Int(value):
-            .Int(value)
+            return .Int(value)
         case .Name(text):
-            .Name(text)
+            return .Name(text)
 
 def show(expr: Expr) -> str:
     match expr.kind:
         case .Int(value):
-            str(value)
+            return str(value)
         case .Name(text):
-            text
+            return text
         case .Negative(inner):
-            "-" + show(inner)
+            return "-" + show(inner)
 
 test "the return type picks the enum":
     assert literal(.Int(2)) == .Int(2)

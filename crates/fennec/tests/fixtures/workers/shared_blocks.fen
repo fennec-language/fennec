@@ -24,7 +24,7 @@ struct Log:
         self.seen[line] = self.count
 
     def size(self) -> int:
-        self.lines.len()
+        return len(self.lines)
 
 struct Board:
     points = [Point(x=0, name="the very first point on this board")]
@@ -36,7 +36,7 @@ struct Board:
             self.best = point
 
     def top(self) -> Point:
-        self.best
+        return self.best
 
 struct Table:
     rows = list[str]()
@@ -47,7 +47,7 @@ struct Table:
         self.kept.append("a literal that is much too long to fit inside a header")
 
     def rows_now(self) -> list[str]:
-        self.rows
+        return self.rows
 
 struct Grid:
     cells = [[1, 2], [3, 4]]
@@ -55,8 +55,8 @@ struct Grid:
 
     def bump(ref self, row: int, by: list[int]):
         self.cells[row].append(by[0])
-        self.cells[row][0] += by.len()
-        self.maybe = self.cells[row].len()
+        self.cells[row][0] += len(by)
+        self.maybe = len(self.cells[row])
 
 struct Box:
     items = [1, 2, 3]
@@ -75,10 +75,10 @@ def touch(holder: Holder, n: int) -> int:
     lock holder.box as ref held:
         held.items[0] = n
         held.total += 1
-        return held.total * 0 + holder.name.len()
+        return held.total * 0 + len(holder.name)
 
 def units_of(count: int) -> list[Unit]:
-    [Unit(n) for n in range(count)]
+    return [Unit(n) for n in range(count)]
 
 def logs(stdout: Stdout):
     shared log = Log()
@@ -89,7 +89,7 @@ def logs(stdout: Stdout):
             unit.x = held.size() % 1 + unit.x
     walked = sum(unit.x for unit in parallel(units))
     lock log as held:
-        stdout.print(held.count, held.lines.len(), held.size(), held.seen.len())
+        stdout.print(held.count, len(held.lines), held.size(), len(held.seen))
         stdout.print(held.name, walked)
 
 def boards(stdout: Stdout):
@@ -101,7 +101,7 @@ def boards(stdout: Stdout):
             kept = held.top()
             unit.x = kept.x % 1 + unit.x
     lock board as held:
-        stdout.print(held.points.len(), held.top().x, held.best.name)
+        stdout.print(len(held.points), held.top().x, held.best.name)
     stdout.print(sum(unit.x for unit in parallel(units)))
 
 def tables(stdout: Stdout):
@@ -110,9 +110,9 @@ def tables(stdout: Stdout):
     for ref unit in parallel(units):
         lock table as ref held:
             held.fill()
-            unit.x += held.rows_now().len()
+            unit.x += len(held.rows_now())
     lock table as held:
-        stdout.print(held.rows, held.kept.len(), DEFAULTS.len())
+        stdout.print(held.rows, len(held.kept), len(DEFAULTS))
     stdout.print(sum(unit.x for unit in parallel(units)))
 
 def grids(stdout: Stdout):
@@ -122,9 +122,9 @@ def grids(stdout: Stdout):
     for ref unit in parallel(units):
         lock grid as ref held:
             held.bump(unit.x % 2, given)
-        unit.x += given.len()
+        unit.x += len(given)
     lock grid as held:
-        stdout.print(held.cells[0].len(), held.cells[1].len(), held.cells[0][0], held.maybe, given)
+        stdout.print(len(held.cells[0]), len(held.cells[1]), held.cells[0][0], held.maybe, given)
     stdout.print(sum(unit.x for unit in parallel(units)))
 
 def holders(stdout: Stdout):
@@ -142,7 +142,7 @@ def holders(stdout: Stdout):
     stdout.print(sum(unit.x for unit in parallel(units)))
     mut both = 0
     lock one, two as first, second:
-        both = first.items.len() + second.items.len()
+        both = len(first.items) + len(second.items)
     stdout.print(both)
 
 def passed_along(from_purse: shared Purse, to_purse: shared Purse, n: int):
@@ -150,8 +150,8 @@ def passed_along(from_purse: shared Purse, to_purse: shared Purse, n: int):
         made = f"a note made here, long enough to be a block {n}"
         source.notes.append(made)
         source.total += 1
-        target.notes = [note for note in source.notes if note.len() % 2 == 0]
-        target.total += source.notes.len() % 1
+        target.notes = [note for note in source.notes if len(note) % 2 == 0]
+        target.total += len(source.notes) % 1
         if n > source.biggest.x:
             source.biggest = Point(x=n, name=f"the biggest note, number {n}, in this purse")
             target.biggest = source.biggest
@@ -161,8 +161,8 @@ def read_across(mine: shared Purse, other: shared Purse) -> int:
     mut seen = 0
     lock mine, other as ref held, looked:
         held.notes = looked.notes
-        seen = held.notes.len() % 1
-    seen
+        seen = len(held.notes) % 1
+    return seen
 
 def purses(stdout: Stdout):
     shared one = Purse()
@@ -203,9 +203,9 @@ def mixed(stdout: Stdout):
     for ref unit in parallel(units):
         counted_with_text(tally, log=log, n=unit.x)
         lock log, tally as held, seen:
-            unit.x += held.lines.len() % 1 + seen.total % 1
+            unit.x += len(held.lines) % 1 + seen.total % 1
     lock tally, log as counted, held:
-        stdout.print(counted.total, held.count, held.lines.len(), held.lines[0])
+        stdout.print(counted.total, held.count, len(held.lines), held.lines[0])
 
 def main(stdout: Stdout):
     logs(stdout)

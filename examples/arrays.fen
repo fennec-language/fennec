@@ -12,7 +12,7 @@ struct Mat2:
                     self.cells[row * 2] * other.cells[col]
                     + self.cells[row * 2 + 1] * other.cells[2 + col]
                 )
-        out
+        return out
 
 struct Item:
     name = ""
@@ -27,7 +27,7 @@ struct Bag:
         for slot in self.slots:
             if slot is not None:
                 total += slot.weight
-        total
+        return total
 
 def doubled(ref values: array[int, 3]):
     for ref value in values:
@@ -40,7 +40,7 @@ def main(stdout: Stdout):
     mut bag = Bag()
     bag.slots[0] = Item(name="rope", weight=2)
     bag.slots[-1] = Item(name="lamp", weight=3)
-    stdout.print(bag.weight(), bag.slots.len(), bag.slots[1] is None)
+    stdout.print(bag.weight(), len(bag.slots), bag.slots[1] is None)
 
     # A plain `=` copies the whole array.
     mut counts = array[int, 3]()

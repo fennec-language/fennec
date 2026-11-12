@@ -6,11 +6,15 @@ use std::process::ExitCode;
 
 /// `fennec update`, in the kit around `path`.
 pub(crate) fn update(path: &str) -> ExitCode {
-    let Some(root) = Path::new(path)
-        .canonicalize()
-        .ok()
-        .and_then(|from| from.ancestors().find(|dir| dir.join("kit.toml").is_file()).map(Path::to_path_buf))
-    else {
+    // Reached only through folders that are trusted: see `fennec_dist::kit_root`.
+    let found = match fennec_dist::kit_root(Path::new(path)) {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("error: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(root) = found else {
         eprintln!(
             "error: there's no kit.toml in {path} or any folder above it, so there's nothing to update"
         );

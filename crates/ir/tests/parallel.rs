@@ -87,10 +87,10 @@ fn a_parallel_loop_s_body_is_lifted_into_a_function_of_its_own() {
 fn a_comprehension_and_a_sum_over_parallel_lift_what_they_work_out_for_each_item() {
     let source = "\
 def squares(xs: list[int]) -> list[int]:
-    [x * x for x in parallel(xs)]
+    return [x * x for x in parallel(xs)]
 
 def total(xs: list[float], by: float) -> float:
-    sum(x * by for x in parallel(xs))
+    return sum(x * by for x in parallel(xs))
 
 def main(stdout: Stdout):
     stdout.print(squares([1, 2]), total([1.0, 2.0], 3.0))
@@ -153,7 +153,7 @@ fn the_list_is_worked_out_before_what_the_body_captures() {
     let source = "\
 def take(ref state: list[int]) -> list[int]:
     state.append(1)
-    [2, 3]
+    return [2, 3]
 
 def run(stdout: Stdout, ref state: list[int]):
     for x in parallel(take(ref state)):
@@ -201,7 +201,7 @@ fn a_sum_with_an_if_adds_into_a_name_of_its_own_and_stays_an_ordinary_loop() {
     // copy of.
     let source = "\
 def left(xs: list[int], above: int) -> int:
-    sum(x for x in parallel(xs) if x > above)
+    return sum(x for x in parallel(xs) if x > above)
 
 def main(stdout: Stdout):
     stdout.print(left([1, 5, 9], 4))
@@ -216,10 +216,10 @@ fn what_a_sum_s_item_lifts_is_lifted_once() -> Result<(), String> {
     // A `parallel` and an arrow function inside the item of a `parallel` sum.
     let source = "\
 def twice(f: (int) -> int, n: int) -> int:
-    f(f(n))
+    return f(f(n))
 
 def total(grids: list[list[int]]) -> int:
-    sum(sum(twice(n => n + 1, cell) for cell in parallel(row)) for row in parallel(grids))
+    return sum(sum(twice(n => n + 1, cell) for cell in parallel(row)) for row in parallel(grids))
 ";
     let program = lowered(source, OUTLINED)?;
     let mut names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
@@ -235,16 +235,16 @@ def doubled(x: int) -> int:
     return x * 2
 
 def total(xs: list[int]) -> int:
-    mut sum = 0
+    mut running = 0
     for y in (doubled(x) for x in parallel(xs)):
-        sum += y
-    return sum
+        running += y
+    return running
 
 def kept(xs: list[int]) -> int:
-    mut sum = 0
+    mut running = 0
     for y in (doubled(x) for x in parallel(xs) if x > 1):
-        sum += y
-    return sum
+        running += y
+    return running
 
 def main(stdout: Stdout):
     stdout.print(total([1, 2, 3]), kept([1, 2, 3]))

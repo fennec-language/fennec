@@ -21,14 +21,14 @@ struct Bag:
     def add(ref self, id: int, tag: str) -> int:
         self.items.append(Item(id=id, tags=[tag], near=[]))
         self.total += id
-        self.items.len() - 1
+        return len(self.items) - 1
 
     def tag_of(self, at: int) -> str:
-        self.items[at].tags[0]
+        return self.items[at].tags[0]
 
     def bump(ref self) -> int:
         self.total += 1
-        self.total
+        return self.total
 
     def link(ref self, first: int, second: int):
         self.items[first].near.append(second)
@@ -39,14 +39,14 @@ struct Bag:
             if point.x > 3:
                 point.x = 0
                 return point.x + 1
-        -1
+        return -1
 
     def mean_near(ref self) -> int:
         for ref point in self.points:
-            point.x += self.numbers.len() + self.points.len()
-        self.numbers.remove_where((n) => n == self.numbers.len())
-        self.items[0].near.remove_where((n) => n > self.items.len())
-        self.points[0].x
+            point.x += len(self.numbers) + len(self.points)
+        self.numbers.remove_where((n) => n == len(self.numbers))
+        self.items[0].near.remove_where((n) => n > len(self.items))
+        return self.points[0].x
 
 enum Shape:
     Dot
@@ -56,24 +56,24 @@ enum Shape:
 def describe(shape: Shape) -> int:
     match shape:
         case .Dot:
-            1
+            return 1
         case .Line(length):
-            length * 10
+            return length * 10
         case .Group(parts, names):
-            mut total = names.len()
+            mut total = len(names)
             for part in parts:
                 total += describe(part)
-            total
+            return total
 
 def kind_of(shape: Shape) -> str:
     match shape:
         case .Dot | .Line(_):
-            "small"
+            return "small"
         case _:
-            "big"
+            return "big"
 
 def fresh() -> Bag:
-    Bag(
+    return Bag(
         items=[],
         points=[Point(x=1, y=0.5)],
         counts={},
@@ -83,8 +83,8 @@ def fresh() -> Bag:
     )
 
 def total_near(bag: Bag) -> int:
-    sum_of = sum(item.near.len() for item in bag.items)
-    sum_of
+    sum_of = sum(len(item.near) for item in bag.items)
+    return sum_of
 
 def main(stdout: Stdout):
     mut bag = fresh()
@@ -107,7 +107,7 @@ def main(stdout: Stdout):
     bag.items[1].tags[0] = "VII"
     bag.items[1].tags.append("more")
     bag.items[bag.bump() - bag.total].id += 1
-    stdout.print(bag.points[0].x, bag.points[0].y, bag.points.len(), bag.numbers, bag.counts)
+    stdout.print(bag.points[0].x, bag.points[0].y, len(bag.points), bag.numbers, bag.counts)
     stdout.print(bag.spot.x, bag.spot.y, bag.name, bag.items[0].id, bag.items[1].tags, bag.total)
 
     kept = bag
@@ -116,16 +116,10 @@ def main(stdout: Stdout):
     bag.counts["c"] = 1
     bag.items[1].id = -1
     stdout.print(kept.items[0].near, bag.items[0].near, kept.numbers, bag.numbers)
-    stdout.print(
-        kept.counts.len(),
-        bag.counts.len(),
-        kept.items[1].id,
-        bag.items[1].id,
-        kept == bag,
-    )
+    stdout.print(len(kept.counts), len(bag.counts), kept.items[1].id, bag.items[1].id, kept == bag)
 
     last = bag.items.pop() else return
-    stdout.print(bag.numbers.pop(), bag.numbers, last.id, bag.items.len())
+    stdout.print(bag.numbers.pop(), bag.numbers, last.id, len(bag.items))
     bag.numbers.insert(0, 42)
     bag.numbers.remove(8)
     bag.numbers.sort()
@@ -143,13 +137,13 @@ def main(stdout: Stdout):
     stdout.print(0.0 in floats, -1.0 in floats, 1.5 in floats, 2.5 not in floats)
     bag.numbers.clear()
     stdout.print(bag.numbers, bag)
-    stdout.print(fresh().numbers[2], fresh().name.len())
+    stdout.print(fresh().numbers[2], len(fresh().name))
     mut more = fresh()
     more.numbers.append(4)
     more.points.append(Point(x=7, y=1.0))
     _ = more.add(1, "one")
     more.items[0].near.append(50)
-    stdout.print(more.first_big(), more.points, more.points.len())
+    stdout.print(more.first_big(), more.points, len(more.points))
     stdout.print(more.mean_near(), more.numbers, more.items[0].near, more.points)
     _ = more.points.pop()
     stdout.print(more.points, more.first_big())

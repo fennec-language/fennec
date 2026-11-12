@@ -7,20 +7,20 @@ from std.string import quoted_input
 
 ## `data` as standard base64 text, like `aGk=` for `b"hi"`.
 export def encode(data: bytes) -> str:
-    written(data, url=False)
+    return written(data, url=False)
 
 ## `data` as base64 text that's safe in a URL or a file name, like `aGk` for `b"hi"`.
 export def url_encode(data: bytes) -> str:
-    written(data, url=True)
+    return written(data, url=True)
 
 ## The bytes standard base64 text stands for. Text that isn't fails with an `InvalidValue`
 ## saying where.
 export def decode(text: str) -> bytes fails InvalidValue:
-    read_back(text, url=False)?
+    return read_back(text, url=False)?
 
 ## The bytes URL-safe base64 text stands for, with or without `=` at its end.
 export def url_decode(text: str) -> bytes fails InvalidValue:
-    read_back(text, url=True)?
+    return read_back(text, url=True)?
 
 ## The digit for six bits, 0 to 63.
 def digit(n: int, url: bool) -> int:
@@ -28,7 +28,7 @@ def digit(n: int, url: bool) -> int:
     if n < 52: return n + 71
     if n < 62: return n - 4
     if n == 62: return 45 if url else 43
-    95 if url else 47
+    return 95 if url else 47
 
 ## The six bits a digit stands for, or -1 for a byte that isn't one.
 def bits_of(b: int, url: bool) -> int:
@@ -37,10 +37,10 @@ def bits_of(b: int, url: bool) -> int:
     if b >= 48 and b <= 57: return b + 4
     if b == (45 if url else 43): return 62
     if b == (95 if url else 47): return 63
-    -1
+    return -1
 
 def written(data: bytes, url: bool) -> str:
-    size = data.len()
+    size = len(data)
     mut out = list[int]()
     mut at = 0
     while at + 2 < size:
@@ -61,7 +61,7 @@ def written(data: bytes, url: bool) -> str:
             out.append(61)
             if left == 1:
                 out.append(61)
-    bytes_text(bytes(out), 0, out.len())
+    return bytes_text(bytes(out), 0, len(out))
 
 def read_back(text: str, url: bool) -> bytes fails InvalidValue:
     size = text_size(text)
@@ -94,7 +94,7 @@ def read_back(text: str, url: bool) -> bytes fails InvalidValue:
         if count > 3:
             out.append(n & 255)
         at += count
-    bytes(out)
+    return bytes(out)
 
 def not_base64(text: str, why: str) -> InvalidValue:
-    InvalidValue(message=f"{quoted_input(text)} isn't base64: {why}")
+    return InvalidValue(message=f"{quoted_input(text)} isn't base64: {why}")

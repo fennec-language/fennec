@@ -19,10 +19,10 @@ struct Units:
         self._live[i] = False
 
     def len(self) -> int:
-        self._items.len()
+        return len(self._items)
 
     def is_live(self, i: int) -> bool:
-        self._live[i]
+        return self._live[i]
 
     def [](ref self, i: int) -> Unit:
         return self._items[i]
@@ -37,7 +37,7 @@ def heal_until(ref units: Units, full: int) -> int:
         unit.health += 5
         healed += 1
         if unit.health >= full: return healed
-    healed
+    return healed
 
 def main(stdout: Stdout):
     mut units = Units()
@@ -86,7 +86,7 @@ def main(stdout: Stdout):
     queue.append(9)
     for ref item in queue:
         item *= 2
-    stdout.print(queue[0], queue[4], queue.len())
+    stdout.print(queue[0], queue[4], len(queue))
     queue[1] = 77
     stdout.print(queue[1], queue.popleft())
 

@@ -10,13 +10,13 @@ from units import Item, World
 
 ## The world as JSON text.
 def dumps(world: World) -> str:
-    json.dumps(world)
+    return json.dumps(world)
 
 ## A world from JSON text that `dumps` wrote.
 def loads(text: str) -> World fails ParseError:
     mut world = json.loads[World](text)?
     world.field = map.Map.of(world.field.tiles)
-    world
+    return world
 
 test "a saved world loads back the same":
     mut world = World(field=map.Map.drawn(["...", "^~."]))
@@ -30,7 +30,7 @@ test "a saved world loads back the same":
     text = dumps(world)
     loaded = loads(text)?
     assert dumps(loaded) == text
-    assert loaded.units.len() == 3 and loaded.squads.len() == 1
+    assert len(loaded.units) == 3 and len(loaded.squads) == 1
     # The loaded world's `Id`s find the same units. Those from before the load are another
     # `Table`'s, so the loaded ones are taken in order.
     ids = loaded.units.ids()

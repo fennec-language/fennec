@@ -1,13 +1,13 @@
 def grown(ref items: list[int]) -> bool:
     items.append(1)
-    True
+    return True
 
 def named(count: int, ref items: list[int]) -> str:
     match count:
         case 0 if grown(ref items):
-            "zero"
+            return "zero"
         case _:
-            "more"
+            return "more"
 
 def main(stdout: Stdout):
     mut items = [1]

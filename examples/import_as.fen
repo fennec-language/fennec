@@ -13,7 +13,7 @@ struct Settings:
     speed: float
 
 def main(stdout: Stdout):
-    numbers = json_loads[list[int]]("[1, 2, 3]") else []
-    settings = toml_loads[Settings]("speed = 2.5") else Settings(1.0)
+    numbers = json_loads[list[int]]("[1, 2, 3]") except ParseError(): []
+    settings = toml_loads[Settings]("speed = 2.5") except ParseError(): Settings(1.0)
     stdout.print(numbers, settings.speed)
     stdout.print(geometry.sqrt(16.0), data.dumps(numbers))

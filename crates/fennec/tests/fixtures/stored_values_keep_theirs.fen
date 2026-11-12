@@ -19,7 +19,7 @@ def main(stdout: Stdout):
     stdout.print(outer, c)
 
     mut e = [1, 2]
-    f = () => e[0] + e.len()
+    f = () => e[0] + len(e)
     e[0] = 9
     stdout.print(f(), e)
 
@@ -48,7 +48,7 @@ def main(stdout: Stdout):
     mut k = "text that is long enough to live in a block"
     p = (k, 2)
     k += "!"
-    stdout.print(p, k.len())
+    stdout.print(p, len(k))
 
     mut l = [1, 2]
     z = [x for x in [l, l]]

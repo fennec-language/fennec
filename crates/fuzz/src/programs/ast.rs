@@ -349,6 +349,152 @@ pub(crate) enum StreamMap {
 /// The list a `StreamMap::Indexed` stream indexes.
 pub(crate) const YS: [i64; 4] = [10, 20, 30, 40];
 
+/// What a name in an `Aliased` function holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// `list[int]`.
+    Numbers,
+    /// `list[Holder]`.
+    Holders,
+    Holder,
+    /// `dict[str, list[int]]`.
+    Lists,
+    /// `dict[str, Point]`.
+    Spots,
+    /// `Table[Point]`.
+    Table,
+    Point,
+    Text,
+}
+
+impl Held {
+    /// What a part of it holds: an item, a value at a key, or a `Holder`'s list.
+    pub(crate) const fn part(self) -> Option<Held> {
+        match self {
+            Held::Holders => Some(Held::Holder),
+            Held::Holder | Held::Lists => Some(Held::Numbers),
+            Held::Spots | Held::Table => Some(Held::Point),
+            Held::Numbers | Held::Point | Held::Text => None,
+        }
+    }
+}
+
+/// The names every `Aliased` function starts with, in order, and what each holds.
+pub(crate) const STARTING: [(&str, Held); 6] = [
+    ("numbers", Held::Numbers),
+    ("holders", Held::Holders),
+    ("lists", Held::Lists),
+    ("spots", Held::Spots),
+    ("table", Held::Table),
+    ("text", Held::Text),
+];
+
+/// Where `STARTING`'s table is: the one name whose items are read by their `Id`s.
+pub(crate) const TABLE: usize = 4;
+
+/// The keys of an `Aliased` function's dicts, and so the places of its lists' first items, each
+/// list starting with two items and never losing one.
+pub(crate) const KEYS: [&str; 2] = ["a", "b"];
+
+/// An `Aliased` function: names starting as copies of others' values or parts, changed through
+/// each way of writing in place, then each printed. Each name must hold only what was written
+/// to it, never what was written to the one it was copied from, or to one copied from it.
+#[derive(Clone, Debug)]
+pub(crate) struct Aliasing {
+    pub(crate) id: usize,
+    /// What the starting values are made from.
+    pub(crate) base: i64,
+    pub(crate) steps: Vec<Alias>,
+}
+
+impl Aliasing {
+    /// What each name holds, the starting ones first, then one for each copy in order.
+    pub(crate) fn names(&self) -> Vec<Held> {
+        let mut held: Vec<Held> = STARTING.iter().map(|(_, held)| *held).collect();
+        for step in &self.steps {
+            match *step {
+                Alias::Copied { from } => held.push(held.get(from).copied().unwrap_or(Held::Numbers)),
+                Alias::Part { from, .. } => {
+                    held.push(held.get(from).and_then(|from| from.part()).unwrap_or(Held::Numbers));
+                }
+                Alias::Written { .. } | Alias::Tasked { .. } => {}
+            }
+        }
+        held
+    }
+}
+
+/// A value an `Aliased` function holds, as the reference evaluator keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Kept {
+    Numbers(Vec<i64>),
+    /// Each `Holder`'s items and tag.
+    Holders(Vec<(Vec<i64>, i64)>),
+    Holder(Vec<i64>, i64),
+    /// Each key's list, in `KEYS`' order.
+    Lists(Vec<Vec<i64>>),
+    /// Each key's point, in `KEYS`' order.
+    Spots(Vec<(i64, i64)>),
+    /// Each point, the first with `first_id` and the second with `second_id`.
+    Table(Vec<(i64, i64)>),
+    Point(i64, i64),
+    Text(String),
+}
+
+/// The name of an `Aliased` function's `n`th name: a starting one's, or `kept1` on for copies.
+pub(crate) fn alias_name(n: usize) -> String {
+    STARTING.get(n).map_or_else(|| format!("kept{}", n + 1 - STARTING.len()), |(name, _)| (*name).to_owned())
+}
+
+/// What `STARTING`'s names hold at first, made from `base`.
+pub(crate) fn starting(base: i64) -> Vec<Kept> {
+    vec![
+        Kept::Numbers(vec![base, base + 1]),
+        Kept::Holders(vec![(vec![base + 2, base + 3], base + 4), (vec![base + 5, base + 6], base + 7)]),
+        Kept::Lists(vec![vec![base, base + 8], vec![base + 9, base + 1]]),
+        Kept::Spots(vec![(base, base + 1), (base + 2, base + 3)]),
+        Kept::Table(vec![(base, 0), (base + 1, 0)]),
+        Kept::Text(format!("t{base}")),
+    ]
+}
+
+/// A step of an `Aliased` function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Alias {
+    /// `kept{n} = from`, a copy of a whole value.
+    Copied { from: usize },
+    /// `kept{n} = from[at]`, by place, key or `Id`, or `from.items` of a `Holder`.
+    Part { from: usize, at: usize },
+    /// A change to `to`, at place, key or `Id` `at` where it takes one, by `n`.
+    Written { to: usize, how: Writing, at: usize, n: i64 },
+    /// `[counted{id}(from, n=i) for i in parallel(range(3))]`, each task changing its own copy of
+    /// the list it's handed, printed.
+    Tasked { from: usize },
+}
+
+/// How an `Aliased` step changes a name, each meaning what it says for the kinds that take it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Writing {
+    /// `to.append(n)`, or `to[key].append(n)` / `to[at].items.append(n)` / `to.items.append(n)`.
+    Append,
+    /// `to[at] = n`, or `to[key][0] = n`.
+    Set,
+    /// `for ref item in to:`, changing each.
+    ForRef,
+    /// `to[at].tag = n`, `to[key].x += n`, `to[id].x = n`, `to.tag = n` or `to.x = n`.
+    Field,
+    /// `mut taken = to[at]`, changed, then `to[at] = taken`.
+    PutBack,
+    /// A `ref self` method: `grown_by` or `moved`.
+    Method,
+    /// `poked{id}(ref to, n=n)`, a `ref` parameter.
+    Ref,
+    /// `to = to + piece`.
+    Joined,
+    /// `to += piece`.
+    Added,
+}
+
 /// How a `Streamed` stream is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamRead {
@@ -626,6 +772,9 @@ pub(crate) enum Stmt {
     Turned(Turning),
     /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
     Streamed(Streaming),
+    /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then
+    /// all printed.
+    Aliased(Aliasing),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

@@ -439,22 +439,45 @@ struct Lowering<'a> {
     retyped: Vec<(Span, Type)>,
 }
 
+/// The name a place is reached from: `text` for `text`, `self` for `self._text` or `self.parts[0]`.
+fn root_name(target: &Expr) -> Option<&str> {
+    match &target.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Attr { object, optional: false, .. } => root_name(object),
+        ExprKind::Index { object, .. } => root_name(object),
+        _ => None,
+    }
+}
+
+/// The pieces of `a + b + c`, left to right.
+fn added_pieces(value: &Expr) -> Vec<Expr> {
+    match &value.kind {
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } => {
+            let mut pieces = added_pieces(lhs);
+            pieces.push((**rhs).clone());
+            pieces
+        }
+        _ => vec![value.clone()],
+    }
+}
+
+/// Whether an expression reads a name anywhere in it.
+fn mentions(piece: &Expr, name: &str) -> bool {
+    let mut found = matches!(&piece.kind, ExprKind::Name(held) if held == name);
+    let mut looked = piece.clone();
+    fennec_syntax::visit::in_expr(&mut looked, &mut |inner| {
+        found |= matches!(&inner.kind, ExprKind::Name(held) if held == name);
+    });
+    found
+}
+
 /// What `name = value` adds to `name`'s text, in order, when `value` is `name + a + b ...` or an
 /// f-string that starts with `name` as it is: the pieces, or the rest of the f-string. Each is
 /// worked out after the ones before it, as the whole would be.
 fn grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
     let pieces = pieces_grown_by(name, value)?;
     // A piece after the first that reads the text itself would see it grown by the ones before.
-    let mentions = |piece: &Expr| {
-        let mut found = false;
-        let mut looked = piece.clone();
-        found |= matches!(&looked.kind, ExprKind::Name(held) if held == name);
-        fennec_syntax::visit::in_expr(&mut looked, &mut |inner| {
-            found |= matches!(&inner.kind, ExprKind::Name(held) if held == name);
-        });
-        found
-    };
-    (!pieces.iter().skip(1).any(mentions)).then_some(pieces)
+    (!pieces.iter().skip(1).any(|piece| mentions(piece, name))).then_some(pieces)
 }
 
 fn pieces_grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
@@ -827,6 +850,24 @@ impl<'a> Lowering<'a> {
                 self.assign(target, (Some(BinOp::Add), false), piece, span)?;
             }
             return Ok(());
+        }
+        // `text += a + b + c` adds each piece in turn, as `text += a`, `text += b`, `text += c`,
+        // with no texts made to join first. A piece that reads what the target is reached from
+        // isn't split off, since it would see the text grown already.
+        if op == Some(BinOp::Add)
+            && let Some(root) = root_name(target)
+            && self.type_at(target.span) == Some(Type::Str)
+            && let ExprKind::Binary { op: BinOp::Add, .. } = &value.kind
+        {
+            let pieces = added_pieces(value);
+            if pieces.iter().all(|piece| self.type_at(piece.span) == Some(Type::Str))
+                && !pieces.iter().any(|piece| mentions(piece, root))
+            {
+                for piece in &pieces {
+                    self.assign(target, (Some(BinOp::Add), false), piece, span)?;
+                }
+                return Ok(());
+            }
         }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);

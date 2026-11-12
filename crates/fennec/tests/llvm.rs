@@ -18546,14 +18546,41 @@ fn texts_joined_past_a_header_are_made_once() -> std::io::Result<()> {
     }
     let dir = folder("texts_joined")?;
     std::fs::write(dir.join("texts_joined.fen"), TEXTS_JOINED)?;
+    std::fs::write(dir.join("texts_added_in_turn.fen"), TEXTS_ADDED_IN_TURN)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let (printed, counts) = printed_and_counts(&dir, "texts_joined", how)?;
         assert_eq!(printed, TEXTS_JOINED_PRINT, "{how:?}");
+        // `text += a + b + c` adds each piece in turn, to a name or a field, unless a piece reads
+        // what the text is reached from.
+        let (printed, _) = printed_and_counts(&dir, "texts_added_in_turn", how)?;
+        assert_eq!(printed, "\"a\": <\">\"bb\": <\"> xyzx pqrs [\"\", \"mn\"]\n", "{how:?}");
         assert!(count(&counts, "allocations") < Some(90) && counts.ends_with(" live 0"), "{how:?}: {counts}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+const TEXTS_ADDED_IN_TURN: &str = r#"struct Writer:
+    text = ""
+    parts = ["", ""]
+
+    def field(ref self, name: str):
+        self.text += "\"" + name + "\": "
+        self.text += "<" + self.text[0:1] + ">"
+        return
+
+def main(stdout: Stdout):
+    mut w = Writer()
+    w.field("a")
+    w.field("bb")
+    mut t = "x"
+    t += "y" + "z" + t
+    mut u = "p"
+    u += "q" + ("r" + "s")
+    w.parts[1] += "m" + "n"
+    stdout.print(w.text, t, u, w.parts)
+    return
+"#;
 
 const TEXTS_JOINED_PRINT: &str = r"abab aba string long enough to be held in a block of its own a string long enough to be held in a block of its ownab a string long enough to be held in a block of its owna string long enough to be held in a block of its own
 55 56 é日本é日本 18

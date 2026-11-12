@@ -408,6 +408,7 @@ dependencies = [
  "libm",
  "mio",
  "rusqlite",
+ "rustix",
  "rustls",
  "rustls-platform-verifier",
  "signal-hook",

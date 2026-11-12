@@ -393,6 +393,23 @@ fn unowned(what: &str) -> ! {
     panic!("the runtime was handed a native block it doesn't own: {what}");
 }
 
+/// Stops the program: the runtime found `what`, a bug in Fennec, which going on would hide. This
+/// is reached with the runtime's state borrowed, so it says so itself.
+#[cfg(not(test))]
+#[cold]
+#[inline(never)]
+pub(in crate::embed) fn runtime_bug(what: &str) -> ! {
+    super::write_kept_output();
+    let _ = writeln!(std::io::stderr(), "error: {what}\n  = help: this is a bug in Fennec; please report it");
+    super::aot::stop_now(1)
+}
+
+/// [`runtime_bug`] in a test, which goes on to be caught, where a program stops.
+#[cfg(test)]
+pub(in crate::embed) fn runtime_bug(what: &str) -> ! {
+    panic!("{what}");
+}
+
 /// Stops the program: it asked for a block too big to exist. This is reached with the runtime's
 /// state borrowed, so it says so itself.
 pub(super) fn too_big() -> ! {
@@ -1357,7 +1374,7 @@ pub extern "C" fn new_tag() -> i64 {
 
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_alloc", |state| {
         let at = usize::try_from(shape).ok();
         let Some(words) = at.and_then(|at| state.heap.sizes.get(at).copied()).or_else(|| {
             at.and_then(|at| state.tables.shapes.get(at)).map(|element| HEADER_WORDS + element.words())
@@ -1376,7 +1393,7 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 /// A copy of a shared block for one owner to change: owned once, sharing its boxed
 /// fields. The block copied loses that owner.
 pub extern "C" fn unshare(address: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_unshare", |state| {
         let address = u64::try_from(address).unwrap_or(0);
         let Some(block) = state.heap.block(address) else {
             not_native(address, "copy, to change");

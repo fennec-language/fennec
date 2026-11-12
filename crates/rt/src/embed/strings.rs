@@ -37,7 +37,7 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
 
 /// `a + b`.
 pub extern "C" fn concat(a: i64, b: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_concat", |state| {
         let joined = format!("{}{}", text(state, a).unwrap_or_default(), text(state, b).unwrap_or_default());
         text_address(state, &joined)
     })
@@ -47,7 +47,7 @@ pub extern "C" fn concat(a: i64, b: i64) -> i64 {
 /// that know a string's length before making it, like an f-string's. They copy its bytes in
 /// themselves and then set its lengths in bytes and characters.
 pub extern "C" fn with_room(bytes: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_with_room", |state| {
         let words = usize::try_from(bytes).unwrap_or(0).div_ceil(8).max(1);
         let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
         if let Some([count, shape, _, _, room, _cursor]) = block.get_mut(..TEXT_HEADER_WORDS) {
@@ -64,7 +64,7 @@ pub extern "C" fn with_room(bytes: i64) -> i64 {
 /// place. Otherwise they're joined in a new block with room to double, so building a
 /// string a piece at a time takes time in proportion to its length.
 pub extern "C" fn append(text: i64, more: i64) -> i64 {
-    with(|state| grow(state, text, more).unwrap_or(text))
+    super::made_with("fennec_str_append", |state| grow(state, text, more).unwrap_or(text))
 }
 
 fn grow(state: &mut State, text: i64, more: i64) -> Option<i64> {
@@ -167,7 +167,7 @@ fn set_lengths(block: &mut [u64], length: usize, chars: u64) {
 /// The character starting `at` bytes into a string. Each character has one block, which
 /// lives for the whole run, as a literal's does.
 pub extern "C" fn char_at(text: i64, at: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_char_at", |state| {
         // A character is at most four bytes, so only the words holding those are read.
         let at = usize::try_from(at).unwrap_or(0);
         let block = u64::try_from(text).ok().and_then(|text| state.heap.block(text)).unwrap_or_default();
@@ -555,12 +555,12 @@ pub extern "C" fn int_text(n: i64) -> i64 {
     // ASCII, so they're its text as they are, a character each, with nothing to check or count.
     let mut digits = [0_u8; 20];
     let written = super::text::decimal(n, &mut digits);
-    with(|state| text_from_bytes(state, written, written.len()))
+    super::made_with("fennec_int_text", |state| text_from_bytes(state, written, written.len()))
 }
 
 /// `reversed(text)`: a new string of its characters, last first.
 pub extern "C" fn reversed(address: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_reversed", |state| {
         let whole = text(state, address).unwrap_or_default();
         let turned: String = whole.chars().rev().collect();
         text_address(state, &turned)
@@ -569,7 +569,7 @@ pub extern "C" fn reversed(address: i64) -> i64 {
 
 /// `text.codes()`: a new list of the code of each character.
 pub extern "C" fn codes(address: i64, element: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_codes", |state| {
         let whole = text(state, address).unwrap_or_default();
         let words: Vec<u64> = whole.chars().map(|c| u64::from(u32::from(c))).collect();
         super::lists::list_of_words(state, element, &words)
@@ -586,7 +586,9 @@ pub extern "C" fn from_code(code: i64) -> i64 {
 
 /// What's wrong with a number that isn't a character's code.
 pub extern "C" fn from_code_problem(code: i64) -> i64 {
-    with(|state| text_address(state, &format!("{code} isn't the code of a character")))
+    super::made_with("fennec_str_from_code_problem", |state| {
+        text_address(state, &format!("{code} isn't the code of a character"))
+    })
 }
 
 /// A new string with a string's text as it shows inside a collection, in quotes.
@@ -600,13 +602,15 @@ pub extern "C" fn str_repr(text: i64) -> i64 {
 
 /// A new string with a float's text, as it prints.
 pub extern "C" fn float_text(x: f64) -> i64 {
-    with(|state| text_address(state, &crate::format::display(&Value::Float(x))))
+    super::made_with("fennec_float_text", |state| {
+        text_address(state, &crate::format::display(&Value::Float(x)))
+    })
 }
 
 /// A new string with the text of the value in a block, read from the block.
 pub extern "C" fn shown_text(address: i64) -> i64 {
     let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
-    with(|state| text_address(state, &shown))
+    super::made_with("fennec_block_text", |state| text_address(state, &shown))
 }
 
 /// `str(x)` for a `u64`: a new string of its digits, unsigned.
@@ -679,7 +683,7 @@ pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
 /// `strip` (0), `lstrip` (1) or `rstrip` (2). A string with nothing to take off is shared,
 /// so most lines cost nothing.
 pub extern "C" fn strip(address: i64, which: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_strip", |state| {
         let Some(at) = u64::try_from(address).ok() else { return 0 };
         let ends = state.heap.block(at).and_then(|block| Some((ascii_ends(block, which)?, lengths(block))));
         if let Some(((from, to), (length, chars))) = ends {
@@ -818,7 +822,7 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     if let Some(joined) = with(|state| join_headers(state, separator, list)) {
         return joined;
     }
-    with(|state| {
+    super::made_with("fennec_str_join", |state| {
         let block = |address: u64| state.heap.block(address).unwrap_or_default();
         let between = u64::try_from(separator).map_or(&[][..], block);
         let items = super::lists::items(u64::try_from(list).map_or(&[][..], block), 1);
@@ -857,7 +861,7 @@ fn method(state: &State, address: i64, name: &str, args: &[i64], at: Span) -> Re
 
 /// A string method that gives a string, as a block owned once.
 fn text_method(address: i64, name: &str, args: &[i64]) -> i64 {
-    with(|state| match method(state, address, name, args, Span::default()) {
+    super::made_with(name, |state| match method(state, address, name, args, Span::default()) {
         Ok(Value::Str(text)) => text_address(state, &text),
         _ => 0,
     })

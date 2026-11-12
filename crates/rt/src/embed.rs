@@ -715,6 +715,21 @@ fn report_failure() {
     }
 }
 
+/// A block a runtime function gives native code, which uses it at once with no check. 0, no block
+/// at all, only a bug in Fennec gives: an input generated code shouldn't pass, or no runtime on the
+/// thread. So it stops the program saying so, rather than giving native code address 0 to read.
+pub(in crate::embed) fn made(what: &str, address: i64) -> i64 {
+    if address == 0 {
+        heap::runtime_bug(&format!("`{what}` made no block"));
+    }
+    address
+}
+
+/// [`with`], for a runtime function that gives native code a block: see [`made`].
+pub(in crate::embed) fn made_with(what: &str, make: impl FnOnce(&mut State) -> i64) -> i64 {
+    made(what, with(make))
+}
+
 fn with<T: Default>(f: impl FnOnce(&mut State) -> T) -> T {
     STATE.with_borrow_mut(|state| state.as_mut().map(f)).unwrap_or_default()
 }

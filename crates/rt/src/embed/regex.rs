@@ -35,7 +35,7 @@ pub extern "C" fn is_valid(pattern: i64) -> i8 {
 
 /// A new string saying what's wrong with a pattern, as making a `Regex` of it says.
 pub extern "C" fn problem(pattern: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_regex_problem", |state| {
         let pattern = text(state, pattern);
         let problem = state.regexes.compiled(&pattern).err();
         let message = problem.map(|error| invalid(&error, Span::default()).message).unwrap_or_default();

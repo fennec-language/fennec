@@ -1079,8 +1079,8 @@ def f() -> P:
 #[test]
 fn a_call_left_unrewritten_takes_its_defaults() {
     let source = "def added(n: int, more = 1) -> int:\n    n + more\n\ndef main(stdout: Stdout):\n    stdout.print(added(2))\n";
-    let module = fennec_syntax::parse(source).unwrap();
-    let checked = fennec_check::check(&module).unwrap();
+    let mut module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check_and_resolve(&mut module).unwrap();
     let program = lower(&module, &checked);
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
     let main = program.functions.iter().find(|function| function.name == "main").unwrap().to_string();
@@ -2189,8 +2189,8 @@ def b() -> int:
 def c() -> int:
     1
 ";
-    let module = fennec_syntax::parse(source).unwrap();
-    let checked = fennec_check::check(&module).unwrap();
+    let mut module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check_and_resolve(&mut module).unwrap();
     let program = fennec_ir::lower_some(&module, &checked, &|key| key == "a");
     let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
     assert_eq!(names, ["a"]);

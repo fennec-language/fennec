@@ -3624,8 +3624,8 @@ mod tests {
     use super::*;
 
     fn lowered(source: &str) -> Result<Program, String> {
-        let module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         Ok(fennec_ir::lower(&module, &checked))
     }
 

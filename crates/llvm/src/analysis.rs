@@ -3660,8 +3660,8 @@ mod tests {
     /// Whether the `unit` of a function called `go` is taken out for its loop's whole body.
     fn taken(body: &str) -> Result<bool, String> {
         let source = format!("{TYPES}{body}");
-        let module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
         let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
@@ -3687,8 +3687,8 @@ mod tests {
     /// Whether the one list a function called `go` fills is filled with no room check: the
     /// list its comprehension makes, before it's given a name.
     fn within_room(body: &str) -> Result<bool, String> {
-        let module = fennec_syntax::parse(body).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(body).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
         let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
@@ -3718,8 +3718,8 @@ mod tests {
     /// How many locals of a function called `go` are taken out of where they came from.
     fn taken_locals(body: &str) -> Result<usize, String> {
         let source = format!("struct Note:\n    text: str\n    hp: int\n\n{body}");
-        let module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
         let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);

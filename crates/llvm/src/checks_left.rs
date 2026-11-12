@@ -208,8 +208,8 @@ mod tests {
     use super::{CheckKind, checks_left};
 
     fn lowered(body: &str) -> Result<fennec_ir::Program, String> {
-        let module = fennec_syntax::parse(body).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(body).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         Ok(fennec_ir::lower(&module, &checked))
     }
 

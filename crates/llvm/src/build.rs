@@ -654,8 +654,8 @@ mod tests {
     }
 
     fn units(source: &str) -> Result<Vec<Unit>, String> {
-        let module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         Ok(crate::emit(&fennec_ir::lower(&module, &checked))?.0)
     }
 

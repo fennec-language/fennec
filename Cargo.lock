@@ -190,6 +190,7 @@ dependencies = [
  "fennec-check",
  "fennec-count",
  "fennec-deps",
+ "fennec-dist",
  "fennec-fmt",
  "fennec-ir",
  "fennec-kit",

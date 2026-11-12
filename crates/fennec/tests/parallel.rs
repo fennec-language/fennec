@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use crate::executables::{FENNEC_DEADLINE, Running, Within, runtime_built, threads_runtime_built};
+use crate::executables::{FENNEC_DEADLINE, Running, Within, threads_runtime_built};
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output_before(FENNEC_DEADLINE)
@@ -22,11 +22,18 @@ fn ran_in(dir: &Path, ran: &Output) -> crate::llvm::Outcome {
     crate::llvm::apart_from(dir, crate::llvm::outcome(ran))
 }
 
+/// Whether these tests can run, as `llvm::ready` says. Where `FENNEC_EXPECT_LLVM` is set, what's
+/// missing fails the test, the threads runtime included, so a break in it fails every test here
+/// rather than letting each pass by returning early.
 fn ready() -> bool {
-    fennec_llvm::Tools::find().is_ok()
-        && runtime_built()
-        // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
-        && crate::executables::runtime_beside_fennec()
+    // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
+    if !crate::executables::runtime_beside_fennec() || !crate::llvm::ready() {
+        return false;
+    }
+    if crate::llvm::llvm_expected() {
+        assert!(threads_runtime_built(), "FENNEC_EXPECT_LLVM is set, but the threads runtime didn't build");
+    }
+    true
 }
 
 /// A tick over units, as an entity system steps them, each changed in place by a `for mut` over

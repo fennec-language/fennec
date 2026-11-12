@@ -722,24 +722,36 @@ fn report_failure() {
 /// at all, only a bug in Fennec gives: an input generated code shouldn't pass, or no runtime on the
 /// thread. So it stops the program saying so, rather than giving native code address 0 to read.
 pub(in crate::embed) fn made(what: &str, address: i64) -> i64 {
-    if address == 0 && !MADE_UP_INPUTS.get() {
+    if address == 0 && !made_up_inputs() {
         heap::runtime_bug(&format!("`{what}` made no block"));
     }
     address
 }
 
+#[cfg(feature = "made-up-inputs")]
 thread_local! {
     /// Whether what calls the runtime on this thread passes it made-up values on purpose, as the
     /// fuzzer does to show they can't make it follow an address it didn't give out: then a block
     /// it can't make for one is given back as 0, which the caller drops, rather than stopping the
-    /// process it runs in. Native code never passes one, and can't set this.
+    /// process it runs in. Only a runtime built with the `made-up-inputs` feature, as the fuzzer's
+    /// is, has this: native code never passes a made-up value, and can't set it.
     static MADE_UP_INPUTS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Says that what calls the runtime on this thread passes it made-up values on purpose, as a
 /// fuzzer does (see `MADE_UP_INPUTS`).
+#[cfg(feature = "made-up-inputs")]
 pub fn takes_made_up_inputs(on: bool) {
     MADE_UP_INPUTS.set(on);
+}
+
+/// Whether what calls the runtime here passes it made-up values on purpose: never, in a runtime
+/// built without the `made-up-inputs` feature, as one that ships is.
+fn made_up_inputs() -> bool {
+    #[cfg(feature = "made-up-inputs")]
+    return MADE_UP_INPUTS.get();
+    #[cfg(not(feature = "made-up-inputs"))]
+    false
 }
 
 /// [`with`], for a runtime function that gives native code a block: see [`made`].

@@ -226,10 +226,6 @@ fn turn_in(
 
 impl Task {
     /// The task's name.
-    #[cfg_attr(
-        not(any(test, feature = "threads")),
-        expect(dead_code, reason = "only servers use it, which need threads")
-    )]
     pub(crate) fn name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
@@ -313,6 +309,25 @@ pub(crate) fn writing(bytes: &[u8], write: impl Fn(&[u8]) -> std::io::Result<()>
             Ok(())
         }
     }
+}
+
+/// In a recording, logs a list of numbers under `task`, as `what`: which of a stream's chunks ran.
+pub(crate) fn log_numbers(task: &str, what: &str, numbers: &[u64]) {
+    if let Mode::Record(file) = mode() {
+        let bytes: Vec<u8> = numbers.iter().flat_map(|number| number.to_le_bytes()).collect();
+        log(file, task, what, &bytes);
+    }
+}
+
+/// In a replay, the list of numbers logged under `task` as `what`, taken: `None` when this isn't a
+/// replay, or the recording logged none.
+pub(crate) fn logged_numbers(task: &str, what: &str) -> Option<Vec<u64>> {
+    let Mode::Replay(player) = mode() else { return None };
+    let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    let stream = player.streams.get_mut(task)?;
+    let at = stream.iter().position(|(call, _)| call == what)?;
+    let (_, payload) = stream.remove(at)?;
+    Some(payload.as_chunks::<8>().0.iter().map(|word| u64::from_le_bytes(*word)).collect())
 }
 
 /// A `parallel` call's range, named by its call and where it starts.

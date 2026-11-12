@@ -436,6 +436,35 @@ fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
     }
 }
 
+/// Each line a test and its tasks print reaches the test's capture whole. A `print` arrives in
+/// pieces, and before the fix, pieces of a task's line and the test's own mixed in most runs of
+/// this fixture: 42 of 50 at 4 threads and 30 of 50 at 1 thread, both stressed. So three runs at
+/// each nearly always catch it.
+#[test]
+fn every_line_a_test_and_its_tasks_print_reaches_it_whole() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4"] {
+        for run in 0..3 {
+            let output = crate::executables::fennec_command()
+                .args(["test", "crates/fennec/tests/fixtures/whole_lines_into_tests.fen"])
+                .current_dir(repo())
+                .env("FENNEC_NO_CACHE", "1")
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .output()
+                .unwrap();
+            assert_eq!(
+                text(&output.stdout),
+                "2 passed, 0 failed\n",
+                "{threads} threads, run {run}: {}",
+                text(&output.stderr)
+            );
+        }
+    }
+}
+
 /// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
 /// failed one says what really happened: what it failed with instead, or what it gave.
 #[test]
@@ -830,7 +859,7 @@ fn a_double_lookup_fixed_prints_the_same() {
 }
 
 /// `fennec fix` writes what used `Ok`, `Err` and `Result`, which are refused now: a `match` on
-/// `Ok` and `Err` with `else`, where a function's last line returns from its failure case, a named
+/// `Ok` and `Err` with `except`, where a function's last line returns from its failure case, a named
 /// value keeps its name, and a loop's last statement continues; `-> Result[T, E]` as
 /// `-> T fails E`; and `return Err(e)` as `fail e`. The program runs once fixed.
 #[test]
@@ -856,9 +885,9 @@ fn what_used_ok_err_and_result_is_fixed_and_runs() {
     for written in [
         "def lower(n: int) -> int fails Bad:\n",
         "        fail Bad(\"small\")\n",
-        "lowered = lower(n) else:\n        return 0\n    lowered\n",
-        "given = lower(n) else:\n            9\n",
-        "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",
+        "lowered = lower(n) except Bad():\n        return 0\n    return lowered\n",
+        "given = lower(n) except Bad():\n            9\n",
+        "lowered = lower(n) except problem:\n            stdout.print(problem.why)\n            continue\n",
     ] {
         assert!(now.contains(written), "{now}");
     }
@@ -2311,6 +2340,8 @@ fn fix_moves_idmap_to_table() {
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
 }
 
+// The migration's own tests, whose programs are in the old forms on purpose.
+// fennec-migrate: off
 /// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
 /// and a def's last value as what it returns): plain `fennec fix` leaves them, `fennec fix
 /// --migrate` writes `except` and `return` for them, a second run finds nothing more, and the
@@ -2341,6 +2372,40 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     assert!(after.status.success(), "{}", text(&after.stderr));
     assert_eq!(text(&after.stdout), text(&before.stdout));
     assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
+}
+
+/// `--migrate` makes only the migration's rewrites: a function nothing calls keeps its place,
+/// with only its `return` added, and a line the rewrite makes longer than `fennec fmt` keeps
+/// lines is left as it's written, in a file that was formatted before.
+#[test]
+fn fix_migrate_deletes_nothing_and_reflows_nothing() {
+    let dir = scratch("migrate-only").unwrap();
+    let program = dir.join("only.fen");
+    let path = program.to_string_lossy().into_owned();
+    // 96 columns, which `return ` takes past 100.
+    let long = format!(
+        "    {}",
+        ["first_value", "second_value", "third_value", "fourth_value"].join(" + ")
+            + " + 1000000000000000000 + 2000000000000000"
+    );
+    let old = format!(
+        "def unused(n: int) -> int:\n    return n + 1\n\n\
+         def sum(first_value: int, second_value: int, third_value: int, fourth_value: int) -> int:\n{long}\n\n\
+         def main(stdout: Stdout):\n    stdout.print(sum(1, 2, 3, 4))\n"
+    )
+    .replace("    return n + 1", "    n + 1");
+    assert!(long.len() <= 100 && long.len() + "return ".len() > 100, "{}", long.len());
+    std::fs::write(&program, &old).unwrap();
+    let formatted = fennec(&["fmt", "--check", &path], "").unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(formatted.status.success(), "{}", text(&formatted.stderr));
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("    n + 1", "    return n + 1")
+            .replace(&long, &format!("    return {}", long.trim_start()))
+    );
 }
 
 /// A program that doesn't check, like an example of a mistake, gets the rewrites that need no
@@ -2384,6 +2449,7 @@ fn fix_migrate_rewrites_the_programs_in_rust_strings() {
             .replace("\\n    3\\n", "\\n    return 3\\n")
     );
 }
+// fennec-migrate: on
 
 /// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
 /// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
@@ -3505,5 +3571,59 @@ fn embed_folder_gives_a_folders_files_by_path() {
     assert!(refused("site/index.html").contains("`site/index.html` is a file"));
     std::os::unix::fs::symlink(dir.join("outside.txt"), site.join("link.txt")).unwrap();
     assert!(refused("site").contains("`site/link.txt` is outside this file's folder"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A folder linked into itself is walked once: `src/a -> .` and `src/b -> .` would double finding a
+/// kit's modules at every level until the path was too long, and `assets/loop -> .` would have
+/// `embed_folder` read the folder again inside itself, a few hundred levels deep. Each command
+/// here finishes within its CPU time, or the test fails rather than taking the machine's memory.
+#[test]
+#[cfg(unix)]
+fn a_folder_linked_into_itself_is_walked_once() {
+    use crate::executables::Within as _;
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-link-loop-{}", std::process::id())),
+    );
+    let kit = dir.join("kit");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::create_dir_all(kit.join("assets")).unwrap();
+    std::fs::write(kit.join("kit.toml"), "name = \"looped\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(kit.join("src/helper.fen"), "def twice(n: int) -> int:\n    return n * 2\n").unwrap();
+    std::fs::write(
+        kit.join("src/main.fen"),
+        "from helper import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice(21))\n    return\n",
+    )
+    .unwrap();
+    std::fs::write(kit.join("assets/a.txt"), "a").unwrap();
+    std::os::unix::fs::symlink(".", kit.join("src/a")).unwrap();
+    std::os::unix::fs::symlink(".", kit.join("src/b")).unwrap();
+    std::os::unix::fs::symlink(".", kit.join("assets/loop")).unwrap();
+    let run = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_NO_DAEMON", "1")
+            .output_within()
+            .unwrap()
+    };
+    let checked = run(&["check"]);
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+    let ran = run(&["run", "--no-test"]);
+    assert_eq!(text(&ran.stdout), "42\n", "{}", text(&ran.stderr));
+    std::fs::write(
+        kit.join("src/main.fen"),
+        "ASSETS = embed_folder(\"../assets\")\n\ndef main(stdout: Stdout):\n    stdout.print(ASSETS.len())\n    return\n",
+    )
+    .unwrap();
+    let embedded = run(&["check"]);
+    assert!(!embedded.status.success());
+    assert!(
+        text(&embedded.stderr).contains("is a folder this embeds already, reached again through a link"),
+        "{}",
+        text(&embedded.stderr)
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }

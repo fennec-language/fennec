@@ -60,6 +60,13 @@ fn main() -> ExitCode {
         ["show", file] => show(Path::new(file), generate::program),
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["show", "programs", file] => show(Path::new(file), programs::written),
+        ["show", "reader", name] => llvm::reader_source(name).map_or_else(
+            || Err(format!("there's no reader for `{name}`; there are {}", llvm::reader_names().join(", "))),
+            |source| {
+                print!("{source}");
+                Ok(ExitCode::SUCCESS)
+            },
+        ),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["input", name, seed, number, file] => input(name, (seed, number), Path::new(file)),
         ["run", rest @ ..] => run(rest),

@@ -1,4 +1,4 @@
-//! A crash inside a `with` runs its source's cleanup, `lend x else:` and the rest of the source, as a
+//! A crash inside a `with` runs its source's cleanup, `lend x except:` and the rest of the source, as a
 //! failure of the block would, before the crash goes on out. Native code reaches that cleanup on its
 //! way out of the function, at its one failure exit, innermost first, beside the rollback of locks.
 //!

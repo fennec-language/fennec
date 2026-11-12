@@ -1,0 +1,84 @@
+# An error quotes the text it was given, but text from outside can be as long as it likes, so
+# past 40 characters only its first 20 are quoted, then `…` and how long it was: a hostile input
+# can't make a message as long as itself. Text that short is quoted whole, as before.
+from std import base64, json, toml, url, uuid
+from std.time import Time
+
+struct Count:
+    value: int
+
+## What `run` fails with, in words, or "fine" if it doesn't.
+def parse_error[T](run: () -> T fails ParseError) -> str:
+    _ = run() except why:
+        return why.message
+    return "fine"
+
+## What `run` fails with, in words, or "fine" if it doesn't.
+def invalid[T](run: () -> T fails InvalidValue) -> str:
+    _ = run() except why:
+        return why.message
+    return "fine"
+
+## 5,000 digits, as a number too big for anything.
+def digits() -> str:
+    return "1234567890" * 500
+
+## 5,000 letters, as text too long for anything.
+def letters() -> str:
+    return "abcdefghij" * 500
+
+test "a long number is quoted by its start and its length, wherever it's read"():
+    head = "`12345678901234567890…` (5,000 characters)"
+    assert (
+        invalid(() => int.parse(digits())?)
+        == "\"12345678901234567890…\" (5,000 characters) isn't an int"
+    )
+    assert (
+        invalid(() => float.parse(digits() + "x")?)
+        == "\"12345678901234567890…\" (5,001 characters) isn't a float"
+    )
+    assert (
+        parse_error(() => json.loads[int](digits())?)
+        == f"{head} is too big for an int, at line 1, column 1"
+    )
+    assert (
+        parse_error(() => toml.loads[Count](f"value = {digits()}")?)
+        == f"{head} is too big for an int, at line 1, column 9"
+    )
+
+test "long text from outside is quoted by its start and its length"():
+    head = "`abcdefghijabcdefghij…` (5,000 characters)"
+    assert parse_error(() => json.loads[int](letters())?).startswith(head)
+    # TOML says which character it stopped at, so it quotes none of the rest.
+    assert parse_error(() => toml.loads[Count](f"value = {letters()}")?).len() < 100
+    assert invalid(() => uuid.Uuid.parse(letters())?).startswith(head)
+    assert invalid(() => url.parse(letters() + " ")?).startswith(
+        "`abcdefghijabcdefghij…` (5,001 characters)",
+    )
+    assert invalid(() => base64.decode(letters() + "!")?).startswith(
+        "`abcdefghijabcdefghij…` (5,001 characters)",
+    )
+    assert parse_error(() => Time.parse(letters())?).startswith(head)
+
+test "a long key from outside is cut in what a message says of it"():
+    key = "k" * 5000
+    said = parse_error(() => json.loads[dict[str, int]](f"{{\"{key}\": 1, \"{key}\": 2}}")?)
+    assert said.len() < 100
+    assert said == "the text has `kkkkkkkkkkkkkkkkkkkk…` twice"
+    toml_said = parse_error(() => toml.loads[dict[str, int]](f"{key} = 1\n{key} = 2")?)
+    assert toml_said.len() < 100
+
+test "text 40 characters long or shorter is quoted whole, as before"():
+    forty = "1" * 40
+    assert invalid(() => int.parse("4_2")?) == "\"4_2\" isn't an int"
+    assert (
+        invalid(() => uuid.Uuid.parse("not-a-uuid")?)
+        == "`not-a-uuid` isn't a UUID: it has 10 characters, not 36"
+    )
+    assert (
+        parse_error(() => json.loads[int](forty)?)
+        == f"`{forty}` is too big for an int, at line 1, column 1"
+    )
+
+def main(stdout: Stdout):
+    stdout.print(invalid(() => int.parse(digits())?))

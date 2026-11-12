@@ -21,7 +21,6 @@
 //! except a parameter nothing writes, which the caller lends. A copy from a local nothing else
 //! reads takes over its owner, and a list with other owners is copied before it changes. A
 //! failure ends the program, so the way out on failing releases nothing.
-
 #![expect(
     clippy::similar_names,
     clippy::too_many_lines,
@@ -47,6 +46,8 @@ mod dicts;
 mod dying;
 mod emit;
 mod entry;
+mod facts;
+mod failure_checks;
 mod generators;
 mod headers;
 mod holding;
@@ -77,9 +78,11 @@ use fennec_rt::embed::dicts::Word;
 pub use build::{Built, Tools, compile, compile_whole, huge_functions, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use emit::{
-    Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, trust_native_blocks,
+    Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, strip_facts,
+    trust_native_blocks,
 };
 pub use entry::{Image, entry, tests_entry};
+pub use failure_checks::unchecked_failures;
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_launch, uses_parallel, uses_tls};
 pub use waits::{Waits, Why, may_wait};
@@ -93,6 +96,17 @@ pub enum Proofs {
     /// Writes it anyway, as an assertion that the proof held: a build to find false proofs with,
     /// which `FENNEC_CHECK_PROOFS=1` asks for. One that didn't hold says "proof broken" and which.
     Checked,
+}
+
+/// Whether a build hands LLVM the facts it knows beside the code (see `facts`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Facts {
+    /// Hands them over, for LLVM to optimize with.
+    #[default]
+    Given,
+    /// Leaves them out, which `FENNEC_STRIP_FACTS=1` asks for: a build that should run the same,
+    /// only slower, to catch a wrong one.
+    Stripped,
 }
 
 /// Whether a build tells the runtime of each native block it makes and frees (see `native`). The
@@ -152,6 +166,8 @@ pub struct Shared {
     pub noting_checks: bool,
     /// Whether checks left out because of a proof are, or are written anyway as assertions.
     pub proofs: Proofs,
+    /// Whether LLVM is handed the facts known beside the code.
+    pub facts: Facts,
     /// Whether native blocks are made known to the runtime, for it to stop if it's ever given one.
     pub native_blocks: NativeBlocks,
     /// The checks written, when they're noted: the same one more than once if its function is

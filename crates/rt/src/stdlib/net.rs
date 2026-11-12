@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,14 @@ struct Stream {
     /// Whether anything's been read since it last wrote: before anything has, a read is waiting
     /// for a next message, which a server draining ends.
     read_since_write: AtomicBool,
+    /// The label a server's connection prints as, taken as the server accepted it, so connections
+    /// are numbered in the order they came, whichever task serving one starts first. A client's is
+    /// 0 here, as it's labelled as it's made.
+    label: i64,
+    /// When every read from now on has to be done by, and how long that was from when it was
+    /// set: a server gives a request's head and body one, so a client sending a byte at a time
+    /// can't hold a connection open for longer than a request may take.
+    reads_by: Mutex<Option<(Instant, Duration)>>,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -164,6 +172,8 @@ pub(crate) struct Fake {
     answers: BTreeMap<String, Value>,
     /// Each request sent, as its method and URL.
     requests: Vec<String>,
+    /// The label of each connection a server accepted, taken as it accepted it.
+    labels: BTreeMap<i64, i64>,
 }
 
 impl Fake {
@@ -242,10 +252,22 @@ impl Fake {
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
-            ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
-            // A test's server never drains: its connections are taken one at a time.
-            ("Server", "_stop_on", _) => return Ok(Value::Unit),
+            ("Server", "_accept", []) => {
+                let accepted = self.accept(handle);
+                let made = accepted.map(|(connection, peer)| {
+                    let label = self.labels.get(&connection).copied().unwrap_or(0);
+                    with_label(connection_made((connection, peer)), label)
+                });
+                return Ok(made_or_failed(made));
+            }
+            // A test's server never drains: its connections are taken one at a time. And a test's
+            // connection never waits, so it has no time to run out of.
+            ("Server", "_stop_on", _) | ("Connection", "_reads_within", [_]) => return Ok(Value::Unit),
             ("Connection", "draining", []) => return Ok(Value::Bool(false)),
+            // The label of a connection a task serving it makes its `Connection` with.
+            ("Connection", "_label", []) => {
+                return Ok(Value::Int(self.labels.get(&handle).copied().unwrap_or(0)));
+            }
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
                 return Ok(Value::Unit);
@@ -388,11 +410,13 @@ impl Fake {
     pub(crate) fn accept(&mut self, handle: i64) -> Result<(i64, String), Failure> {
         let fake = self;
         let Some((port, waiting)) = fake.servers.get_mut(&handle) else { return Err(closed_here()) };
-        waiting.pop_front().ok_or_else(|| {
+        let accepted = waiting.pop_front().ok_or_else(|| {
             Failure::Other(format!(
                 "no connection is waiting for the test's fake server on port {port}, and none can come while a test waits"
             ))
-        })
+        })?;
+        fake.labels.insert(accepted.0, next_label(0));
+        Ok(accepted)
     }
 
     /// A read of `count` bytes in a test that's given `timeout=`, which gives up as `or_timed_out`
@@ -557,7 +581,7 @@ fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     }
 }
 
-fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
+pub(crate) fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
     if let Value::Instance(duration) = value
         && let Some(Value::Int(nanos)) = duration.field("nanos")
     {
@@ -672,8 +696,18 @@ pub(crate) fn real_connection(
             close(handle);
             return Ok(Value::Unit);
         }
-        // What a task serving a connection makes its `Connection` from.
+        // What a task serving a connection makes its `Connection` from: its peer, and its label.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
+        ("_label", []) => return Ok(Value::Int(stream(handle).map_or(0, |stream| stream.label))),
+        // Has every read from now on done within `after`.
+        ("_reads_within", [after]) => {
+            let after = duration_of(after, span)?;
+            if let Ok(stream) = stream(handle) {
+                *stream.reads_by.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some((Instant::now() + after, after));
+            }
+            return Ok(Value::Unit);
+        }
         // Its server's draining, when it was told to `stop_on` signals and one has come.
         ("draining", []) => {
             let draining = PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping();
@@ -749,11 +783,17 @@ fn request_of(
         headers: Vec::new(),
         body: Vec::new(),
         timeout: CONNECT_TIMEOUT,
+        most_body: http::MOST_BODY,
     };
     let sends_json = named.iter().any(|(name, _)| *name == "json");
     for (name, value) in named {
         match (*name, value) {
             ("timeout", value) => request.timeout = duration_of(value, span)?,
+            ("most_body", Value::Int(most)) => {
+                request.most_body = usize::try_from(*most).map_err(|_| {
+                    Diagnostic::new(format!("`most_body` is a number of bytes, not {most}"), span)
+                })?;
+            }
             // Native code and `http_method` both give `json=` as the JSON text already.
             ("body" | "json", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
             ("body", Value::Bytes(data)) => request.body = data.to_vec(),
@@ -912,15 +952,61 @@ pub(crate) fn trimmed_line_value(line: Option<&[u8]>) -> Value {
 }
 
 fn connection_made((connection, peer): (i64, String)) -> Made {
-    ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))])
+    let made = ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))]);
+    with_label(made, stream(connection).map_or(0, |stream| stream.label))
+}
+
+/// A connection with the label it was given as its server accepted it. One with none yet, 0, gets
+/// the next as it's made.
+fn with_label((type_name, mut fields): Made, label: i64) -> Made {
+    if label > 0 {
+        fields.push(("_label", Value::Int(label)));
+    }
+    (type_name, fields)
 }
 
 fn packet_value((data, sender): (Vec<u8>, String)) -> Value {
     Value::made("Packet", vec![("data", Value::Bytes(Rc::from(data))), ("sender", Value::str(&sender))])
 }
 
+/// The labels the program has given its connections, servers and UDP sockets, each counted on
+/// its own. A value's label is what it prints as, `Connection(#3)`. Its handle is random, so that
+/// nothing could guess it, and printing it would show a different number every run.
+static LABELS: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+
+/// Starts the labels from 1 again, for a test, so what it prints doesn't depend on the tests that
+/// ran before it.
+pub(crate) fn labels_start_over() {
+    for count in &LABELS {
+        count.store(0, Ordering::Relaxed);
+    }
+}
+
+/// A network value with its label: the next of its kind's.
+fn labelled((type_name, mut fields): Made) -> Made {
+    let kind = match type_name {
+        "Connection" => 0,
+        "Server" => 1,
+        "UdpSocket" => 2,
+        _ => return (type_name, fields),
+    };
+    if fields.iter().any(|(name, _)| *name == "_label") {
+        return (type_name, fields);
+    }
+    fields.push(("_label", Value::Int(next_label(kind))));
+    (type_name, fields)
+}
+
+/// The next label of the kind numbered `kind`: 0 for connections, 1 servers, 2 UDP sockets.
+pub(crate) fn next_label(kind: usize) -> i64 {
+    LABELS.get(kind).map_or(0, |count| count.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 fn made_or_failed(found: Result<Made, Failure>) -> Value {
-    done_or_failed(found.map(|(type_name, fields)| Value::made(type_name, fields)))
+    done_or_failed(found.map(|made| {
+        let (type_name, fields) = labelled(made);
+        Value::made(type_name, fields)
+    }))
 }
 
 pub(crate) fn done_or_failed(done: Result<Value, Failure>) -> Value {
@@ -1093,6 +1179,8 @@ fn keep_stream_as(
         writing: Mutex::new(()),
         served,
         read_since_write: AtomicBool::new(false),
+        label: if served { next_label(0) } else { 0 },
+        reads_by: Mutex::new(None),
     };
     Ok(open(|open| {
         let handle = fresh_handle(open);
@@ -1133,13 +1221,18 @@ fn wait_at_most(socket: &TcpStream, timeout: Option<Duration>) -> Result<(), Fai
     }
 }
 
+/// The most one read takes in. A read gives what's there, up to what it was asked for, so a
+/// count far past that, as one from a request's header can be, reads no more at once, and room
+/// is never made for what only a count says is coming.
+const MOST_READ_AT_ONCE: usize = 64 * 1024;
+
 fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
     let stream = stream(handle)?;
     // With nothing to give, it mustn't wait for something to come.
     if count == 0 {
         return Ok(Vec::new());
     }
-    let mut data = vec![0; count];
+    let mut data = vec![0; count.min(MOST_READ_AT_ONCE)];
     let read = reading(&stream, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
     if read > 0 {
@@ -1333,6 +1426,17 @@ fn reading<T>(
     timeout: Option<Duration>,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
+    // A read waits no longer than what's left before the connection's reads have to be done by.
+    let timeout = match *stream.reads_by.lock().unwrap_or_else(PoisonError::into_inner) {
+        Some((by, whole)) => {
+            let left = by.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(Failure::TimedOut(whole));
+            }
+            Some(timeout.map_or(left, |timeout| timeout.min(left)))
+        }
+        None => timeout,
+    };
     let mut attempt = || {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
         match &mut *reader {
@@ -1946,6 +2050,61 @@ pub(crate) mod tests {
         server.write_all(b"lo\n").unwrap();
         let line = super::read_line(handle, Some(std::time::Duration::from_secs(10)));
         assert_eq!(line.ok().flatten().as_deref(), Some(&b"hello\n"[..]));
+        close(handle);
+    }
+
+    /// Once a connection's reads are given a time to be done by, a client sending a little at a
+    /// time, each read well inside its own timeout, is cut off when that time comes, rather than
+    /// holding the connection as long as it keeps sending.
+    #[test]
+    fn reads_given_a_time_to_be_done_by_stop_then_however_steadily_bytes_come() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        // A line every 20 ms, for five seconds, far longer than the reads are given.
+        let sender = std::thread::spawn(move || {
+            for _ in 0..250 {
+                if server.write_all(b"x\n").is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        let within = Value::made("Duration", vec![("nanos", Value::Int(300_000_000))]);
+        let set = super::real_connection(handle, "_reads_within", &[within], None, Span::default());
+        assert!(set.is_ok());
+        let started = std::time::Instant::now();
+        let each = Some(std::time::Duration::from_secs(1));
+        let ended = loop {
+            match super::read_line(handle, each) {
+                Ok(Some(_)) => {}
+                other => break other,
+            }
+        };
+        let took = started.elapsed();
+        close(handle);
+        let _ = sender.join();
+        assert!(matches!(ended, Err(Failure::TimedOut(_))), "{ended:?}");
+        // Cut off at about 300 ms; the sender would have gone on for five seconds.
+        assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+    }
+
+    /// A read asked for far more than could ever come, as with a count from a request's header,
+    /// gives what's there without making room for the rest.
+    #[test]
+    fn a_read_of_a_huge_count_gives_what_there_is() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        server.write_all(b"abc").unwrap();
+        let read = super::read(handle, 1 << 50, Some(std::time::Duration::from_secs(10)));
+        assert_eq!(read.ok().as_deref(), Some(&b"abc"[..]));
         close(handle);
     }
 

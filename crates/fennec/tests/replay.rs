@@ -26,11 +26,14 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
 type Outcome = (String, String, Option<i32>);
 
 fn outcome(ran: &Output) -> Outcome {
-    (
-        String::from_utf8_lossy(&ran.stdout).into_owned(),
-        String::from_utf8_lossy(&ran.stderr).into_owned(),
-        ran.status.code(),
-    )
+    let mut said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    // A program a signal stopped has no exit code, so which signal goes with what it said: a run
+    // killed with nothing printed is otherwise only `None`, which says nothing of why.
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&ran.status) {
+        let _ = std::fmt::Write::write_fmt(&mut said, format_args!("[stopped by signal {signal}]"));
+    }
+    (String::from_utf8_lossy(&ran.stdout).into_owned(), said, ran.status.code())
 }
 
 /// Records a run of `program` with `input` on its standard input, then replays it, giving back both
@@ -477,6 +480,157 @@ fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Resul
     Ok(())
 }
 
+/// A program connecting to a server of its own and printing what it made.
+const NET_LABELS: &str = "from std.net import NetError
+
+def main(stdout: Stdout, net: Net) fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port)? as first:
+            with server.accept()? as taken:
+                stdout.print(server, first, taken)
+    with net.udp()? as socket:
+        stdout.print(socket)
+    return
+";
+
+/// Connections, servers and UDP sockets print as their labels, counted as the program makes them,
+/// not their handles, which are random: the same every run, and in a replay.
+#[test]
+fn network_values_print_the_same_every_run_and_in_a_replay() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("net-labels")?;
+    let program = dir.join("labels.fen");
+    std::fs::write(&program, NET_LABELS)?;
+    let wanted = "Server(#1) Connection(#1) Connection(#2)\nUdpSocket(#1)\n";
+    for _ in 0..2 {
+        let ran =
+            outcome(&fennec_command().arg("run").arg(&program).current_dir(&dir).output_before(DEADLINE)?);
+        assert_eq!((ran.0.as_str(), ran.2), (wanted, Some(0)), "{}", ran.1);
+    }
+    let log = dir.join("labels.log");
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(recorded.0, wanted, "{}", recorded.1);
+    let replayed = outcome(
+        &fennec_command()
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(replayed, recorded);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A server whose tasks each say which connection they serve, back to its client and on its own
+/// output.
+const LABELLED_SERVER: &str = "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"stop\":
+                break
+            stdout.print(line, conn)
+            conn.write(f\"{conn}\\n\")?
+    stdout.print(\"done\")
+    return
+";
+
+/// How many connections `serve_labelled` keeps open at once.
+const LABELLED: usize = 6;
+
+/// Runs `LABELLED_SERVER`, recording to `log` if it's given, with several connections open at
+/// once that are asked in the opposite order to the one they came in. Gives back what each
+/// connection was told it is, in the order they came, and everything the server printed.
+fn serve_labelled(dir: &Path, program: &Path, log: Option<&Path>) -> std::io::Result<(Vec<String>, String)> {
+    let mut command = fennec_command();
+    command.arg("run");
+    if let Some(log) = log {
+        command.args(["--record", &log.to_string_lossy()]);
+    }
+    let mut server = command
+        .arg(program)
+        .env("FENNEC_THREADS", "4")
+        .env("FENNEC_PARALLEL_STRESS", "1")
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    let mut open = Vec::new();
+    for _ in 0..LABELLED {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+        open.push(stream);
+    }
+    let mut told = vec![String::new(); LABELLED];
+    for (at, stream) in open.iter().enumerate().rev() {
+        std::io::Write::write_all(&mut &*stream, format!("asked{at}\n").as_bytes())?;
+        let mut back = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut back)?;
+        if let Some(slot) = told.get_mut(at) {
+            back.trim().clone_into(slot);
+        }
+    }
+    let mut stopping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    std::io::Write::write_all(&mut stopping, b"stop\n")?;
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest)?;
+    let status = server.wait()?;
+    assert!(status.success(), "the server failed");
+    Ok((told, format!("{port}\n{rest}")))
+}
+
+/// The connections a server serves in parallel are numbered in the order it took them, not the
+/// order their tasks start: the same every run, and in a replay.
+#[test]
+fn served_connections_are_numbered_in_the_order_they_came_every_run_and_in_a_replay() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("served-labels")?;
+    let program = dir.join("served.fen");
+    std::fs::write(&program, LABELLED_SERVER)?;
+    let wanted: Vec<String> = (1..=LABELLED).map(|n| format!("Connection(#{n})")).collect();
+    for _ in 0..2 {
+        let (told, _) = serve_labelled(&dir, &program, None)?;
+        assert_eq!(told, wanted);
+    }
+    let log = dir.join("served.log");
+    let (told, recorded) = serve_labelled(&dir, &program, Some(&log))?;
+    assert_eq!(told, wanted);
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .env("FENNEC_THREADS", threads)
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&replayed.stdout),
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Ranges of a `parallel` call and launched tasks all printing, enough that each task's output
 /// goes out in several bursts, which interleave differently from run to run.
 const TASKS_PRINTING: &str = "from std.concurrent import Crashed
@@ -513,6 +667,97 @@ fn tasks_printing_replay_their_output_in_the_order_it_went_out() -> std::io::Res
     assert_eq!(recorded.2, Some(0), "{}", recorded.1);
     assert_eq!(recorded.0.lines().count(), 64 + 3 * 2500 + 1);
     for threads in ["1", "4", "1", "4", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An ordered stream whose body prints, read until a `break`, while its chunks run ahead.
+const STREAM_PAST_A_BREAK: &str = "def shown(stdout: Stdout, n: int) -> int:
+    stdout.print(\"chunk\", n)
+    return n * n
+
+def main(stdout: Stdout):
+    many = [n for n in range(20000)]
+    for square in (shown(stdout, n) for n in parallel(many)):
+        if square > 900:
+            break
+    stdout.print(\"after break\")
+";
+
+/// A stream's chunks that ran ahead of a `break` in the recording run in its replay too, and no
+/// others do, so what they printed comes out the same, however many threads the replay is given.
+#[test]
+fn a_streams_chunks_run_past_a_break_replay_as_they_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stream-break")?;
+    let program = dir.join("stream.fen");
+    std::fs::write(&program, STREAM_PAST_A_BREAK)?;
+    let log = dir.join("stream.log");
+    let mut record = fennec_command();
+    // The reader waits for the workers to run each chunk in its window, so chunks run past the
+    // break however loaded the machine: left to itself, a reader that gets to every chunk first
+    // runs them all, and none runs past it.
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1").env("FENNEC_STREAM_RUN_AHEAD", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    let read = recorded.0.lines().filter(|line| line.starts_with("chunk ")).count();
+    assert!(read > 32, "no chunk ran past the break, so this tests nothing: {}", recorded.0);
+    for threads in ["1", "7", "1", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An ordered stream whose body prints, with an item that fails partway.
+const STREAM_FAILING: &str = "def shown(stdout: Stdout, n: int) -> int:
+    stdout.print(\"chunk\", n)
+    return 1000 // (n - 3000)
+
+def main(stdout: Stdout):
+    many = [n for n in range(20000)]
+    stdout.print(\"never\", sum(part for part in (shown(stdout, n) for n in parallel(many))))
+";
+
+/// A stream whose item fails stops the program where it did when recorded: its replay prints
+/// what the chunks that ran printed and fails the same way, however many threads it's given.
+#[test]
+fn a_stream_that_fails_replays_as_it_failed() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stream-fails")?;
+    let program = dir.join("stream.fen");
+    std::fs::write(&program, STREAM_FAILING)?;
+    let log = dir.join("stream.log");
+    let mut record = fennec_command();
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(1), "{}", recorded.1);
+    assert!(recorded.1.contains("division by zero") && !recorded.0.contains("never"), "{recorded:?}");
+    for threads in ["1", "7", "1", "7"] {
         let replayed = outcome(
             &fennec_command()
                 .env("FENNEC_THREADS", threads)

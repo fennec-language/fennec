@@ -23,14 +23,17 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 
 ## For CI and the tests
 
-- `FENNEC_CHECK_PROOFS`: `1` builds an assertion for every check a proof left out, so a wrong proof stops the program.
+- `FENNEC_CHECK_PROOFS`: `1` builds an assertion for every check a proof left out, so a wrong proof stops the program. It also checks, rather than hands to LLVM, every fact it can check where it runs: what's assumed, that a length is in range, and that a `ref` parameter's address is no other parameter's.
+- `FENNEC_STRIP_FACTS`: `1` builds without the facts the compiler hands LLVM beside the code: `!range`, `!tbaa`, `!invariant.load`, `inbounds`, `nsw` and `nuw`, `noalias`, `captures(none)` and `llvm.assume`. The program runs the same, only slower. One that prints otherwise was handed a wrong fact, which is the only way to catch a wrong TBAA tag. The nightly proofs run builds everything both ways and compares.
 - `FENNEC_SANITIZE`: `address` or `thread` builds programs with that sanitizer.
 - `FENNEC_EXPECT_LLVM`: LLVM's tests fail rather than skip themselves when its tools are missing.
 - `FENNEC_EXPECT_STATIC`: the static-link test fails rather than skips when musl is missing.
 - `FENNEC_PARALLEL_STRESS`: every parallel loop runs on the pool, split one item a range.
+- `FENNEC_STREAM_RUN_AHEAD`: set, a parallel stream's reader waits for the workers to run every chunk in its window before it takes one, so chunks always run ahead of it, as a test of what runs past a `break` needs. Off on a worker and in a replay.
 - `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
 - `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
+- `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
@@ -63,4 +66,3 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 ## Decided, not built yet
 
 - `FENNEC_LOG`: per-part log levels for `Log.from_env`. See [decisions.md](decisions.md).
-- `FENNEC_STRIP_FACTS`: builds with every fact handed to LLVM stripped (`!range`, `noalias`, TBAA, `assume`), so the nightly run can check a program prints the same without them. The nightly run starts using it once the compiler reads it; move it to "For CI and the tests" then.

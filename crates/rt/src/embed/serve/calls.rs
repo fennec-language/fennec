@@ -252,6 +252,14 @@ pub(in crate::embed) fn served_call(
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }
+        ("_reads_within", [after]) => {
+            let after = match crate::stdlib::net::duration_of(after, at) {
+                Ok(after) => after,
+                Err(wrong) => return Some(Err(wrong)),
+            };
+            CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.reads_within(after)));
+            return Some(Ok(Value::Unit));
+        }
         ("close", []) => {
             if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
                 conn.linger();
@@ -266,6 +274,12 @@ pub(in crate::embed) fn served_call(
             let peer =
                 CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.peer())).unwrap_or_default();
             return Some(Ok(Value::str(&peer)));
+        }
+        // The label a task serving the connection makes its `Connection` with.
+        ("_label", []) => {
+            let label =
+                CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.label())).unwrap_or_default();
+            return Some(Ok(Value::Int(label)));
         }
         _ => {
             return Some(Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), at)));

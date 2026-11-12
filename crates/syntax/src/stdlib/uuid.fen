@@ -2,6 +2,8 @@
 # RFC 9562 sets them out. `v4` makes one from random bytes, and `v7` one that starts with the
 # time it was made, so ids made later sort after it, which suits a database's keys.
 
+from std.string import quoted_input
+
 ## A UUID. `Uuid()` is the nil UUID, all zeros. It prints in lower case with its hyphens, and
 ## `Uuid.parse` reads that back.
 export struct Uuid:
@@ -14,7 +16,7 @@ export struct Uuid:
     def parse(text: str) -> Uuid fails InvalidValue:
         if text.len() != 36:
             fail InvalidValue(
-                message=f"`{text}` isn't a UUID: it has {text.len()} characters, not 36",
+                message=f"{quoted_input(text)} isn't a UUID: it has {text.len()} characters, not 36",
             )
         mut high = 0
         mut low = 0
@@ -24,13 +26,13 @@ export struct Uuid:
             if at == 8 or at == 13 or at == 18 or at == 23:
                 if c != "-":
                     fail InvalidValue(
-                        message=f"`{text}` isn't a UUID: character {at + 1} should be `-`",
+                        message=f"{quoted_input(text)} isn't a UUID: character {at + 1} should be `-`",
                     )
             else:
                 n = Uuid._hex_value(c)
                 if n < 0:
                     fail InvalidValue(
-                        message=f"`{text}` isn't a UUID: character {at + 1} isn't a hex digit",
+                        message=f"{quoted_input(text)} isn't a UUID: character {at + 1} isn't a hex digit",
                     )
                 if digits < 16:
                     high = (high << 4) | n

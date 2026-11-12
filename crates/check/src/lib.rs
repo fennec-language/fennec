@@ -13,6 +13,10 @@
 //! besides the signatures, a check gives the type of every expression and every name: the
 //! typed tree a compiler builds on. See [`Types`].
 
+// A hash map's order changes with every process, so iterating one would make what the compiler
+// emits, or the order it checks in, differ from run to run. Iterate a sorted copy or a BTreeMap.
+#![deny(clippy::iter_over_hash_type)]
+
 mod annotations;
 mod builtins;
 mod call;
@@ -340,22 +344,22 @@ fn sends_json(module: &Module) -> bool {
 /// only when its item is `<` the left one, so the order is the same where `<` is.
 const SORTED_IN_ORDER: &str = "\
 def fennec_sorted_in_order[T: Ordered](items: list[T]) -> list[T]:
-    if items.len() <= 1:
+    if len(items) <= 1:
         return items
-    half = items.len() // 2
+    half = len(items) // 2
     left = fennec_sorted_in_order(items[:half])
     right = fennec_sorted_in_order(items[half:])
     mut merged: list[T] = []
     mut at_left = 0
     mut at_right = 0
-    while at_left < left.len() and at_right < right.len():
+    while at_left < len(left) and at_right < len(right):
         if right[at_right] < left[at_left]:
             merged.append(right[at_right])
             at_right += 1
         else:
             merged.append(left[at_left])
             at_left += 1
-    merged + left[at_left:] + right[at_right:]
+    return merged + left[at_left:] + right[at_right:]
 ";
 
 /// Makes each `sorted(items)` whose items have their own `<` call a merge sort written in Fennec,

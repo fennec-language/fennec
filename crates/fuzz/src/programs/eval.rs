@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Size, Stmt, Turn, Turning, XS,
+    RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming, Turn, Turning, XS, YS,
 };
 
 /// A value while the program runs.
@@ -223,12 +223,13 @@ enum Stop {
     Continue,
 }
 
-/// How a program ran: what it printed, and whether it ran to the end, or None where the evaluator
-/// can't be sure.
-pub(crate) fn run(program: &Program) -> Option<(String, bool)> {
+/// How a program ran: what it printed, whether it ran to the end, and what a failure that stopped
+/// it says first, where the evaluator knows. None where the evaluator can't be sure.
+pub(crate) fn run_saying(program: &Program) -> Option<(String, bool, Option<String>)> {
     let mut machine = Machine {
         scopes: vec![Vec::new()],
         out: String::new(),
+        said: None,
         heap: Vec::new(),
         bags: Vec::new(),
         outers: Vec::new(),
@@ -236,9 +237,9 @@ pub(crate) fn run(program: &Program) -> Option<(String, bool)> {
     match machine.block(&program.body) {
         Ok(()) => {
             machine.out.push_str("done\n");
-            Some((machine.out, true))
+            Some((machine.out, true, None))
         }
-        Err(Stop::Failed) => Some((machine.out, false)),
+        Err(Stop::Failed) => Some((machine.out, false, machine.said)),
         // A `break` or `continue` outside a loop never gets written.
         Err(Stop::Unsure | Stop::Break | Stop::Continue) => None,
     }
@@ -248,6 +249,8 @@ struct Machine {
     /// Each block's names and values, innermost last.
     scopes: Vec<Vec<(String, Value)>>,
     out: String,
+    /// What a program stopped by a failure says first, where the evaluator knows it.
+    said: Option<String>,
     /// What each `shared Point` holds.
     heap: Vec<(i64, i64)>,
     /// What each `shared Bag` holds.
@@ -1138,6 +1141,7 @@ impl Machine {
             Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
+            Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1317,7 +1321,7 @@ impl Machine {
         Ok(())
     }
 
-    /// `guarded`'s `lend x else:` cleanup, after a block that failed or crashed: the note it
+    /// `guarded`'s `lend x except:` cleanup, after a block that failed or crashed: the note it
     /// leaves when it fails, with the rest of it skipped.
     fn cleanup(&mut self, code: i64, noted: bool) -> Ran<Option<i64>> {
         let _ = writeln!(self.out, "unguard {code}");
@@ -1367,7 +1371,7 @@ impl Machine {
 
     /// `left{id}(stdout)`: each round opens the wards outermost first and closes them innermost
     /// first, the code after `lend` for a block that finished or was left by `return`, `break` or
-    /// `continue`, and `lend x else:` for one that failed or crashed.
+    /// `continue`, and `lend x except:` for one that failed or crashed.
     fn left(&mut self, depth: usize, rounds: i64, at: i64, how: Leave) -> Ran<()> {
         let names = super::source::WARDS.get(..depth).unwrap_or(&super::source::WARDS);
         let mut total = 0_i64;
@@ -1428,6 +1432,68 @@ impl Machine {
             let _ = writeln!(self.out, "round {i}");
         }
         let _ = writeln!(self.out, "total {total}");
+        Ok(())
+    }
+
+    /// What `streamed{id}` prints. Its items are read in order, as one thread would work them out,
+    /// and the first item that fails, among those read, stops the program, saying why: an item a
+    /// `break` never reaches doesn't. A `sum` or a list reads every item before printing.
+    fn streamed(&mut self, streaming: &Streaming) -> Ran<()> {
+        let worked = |item: i64| -> Result<i64, String> {
+            match streaming.map {
+                StreamMap::Scaled(by, plus) => {
+                    item.checked_mul(by).and_then(|scaled| scaled.checked_add(plus)).ok_or_else(String::new)
+                }
+                StreamMap::Divided(zero) => {
+                    let by = item - zero;
+                    if by == 0 {
+                        Err("division by zero".to_owned())
+                    } else {
+                        floor_div(100, by).map_err(|_| String::new())
+                    }
+                }
+                StreamMap::Indexed => usize::try_from(item)
+                    .ok()
+                    .and_then(|at| YS.get(at).copied())
+                    .ok_or_else(|| format!("index {item} is out of range for length {}", YS.len())),
+            }
+        };
+        let mut values = Vec::new();
+        let limit = match streaming.read {
+            StreamRead::Loop(Some(stop)) => usize::try_from(stop).unwrap_or(usize::MAX),
+            _ => usize::MAX,
+        };
+        for &item in streaming.items.iter().take(limit) {
+            match worked(item) {
+                Ok(value) => {
+                    if matches!(streaming.read, StreamRead::Loop(_)) {
+                        let _ = writeln!(self.out, "streamed {value}");
+                    }
+                    values.push(value);
+                }
+                Err(said) if said.is_empty() => return Err(Stop::Unsure),
+                Err(said) => {
+                    self.said = Some(said);
+                    return Err(Stop::Failed);
+                }
+            }
+        }
+        match streaming.read {
+            StreamRead::Loop(_) => {
+                let _ = writeln!(self.out, "read {}", values.len());
+            }
+            StreamRead::Sum => {
+                let total = values
+                    .iter()
+                    .try_fold(0_i64, |total, value| total.checked_add(*value))
+                    .ok_or(Stop::Unsure)?;
+                let _ = writeln!(self.out, "sum {total}");
+            }
+            StreamRead::Listed => {
+                let plus: Option<Vec<i64>> = values.iter().map(|value| value.checked_add(1)).collect();
+                let _ = writeln!(self.out, "{}", shown(&Value::Ints(plus.ok_or(Stop::Unsure)?)));
+            }
+        }
         Ok(())
     }
 

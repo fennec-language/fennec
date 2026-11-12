@@ -15,14 +15,14 @@ from std import csv, json
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    loaded: list[list[str]]? = csv.loads(text) else None
+    loaded: list[list[str]]? = csv.loads(text) except ParseError(): None
     stdout.print(\"err\" if loaded is None else \"ok \" + json.dumps(loaded))
     rows = [part.split(\"\\u001f\") for part in text.split(\"\\u001e\")]
-    written: str? = csv.dumps(rows) else None
+    written: str? = csv.dumps(rows) except InvalidValue(): None
     if written is None:
         stdout.print(\"unwritten\")
     else:
-        back: list[list[str]]? = csv.loads(written) else None
+        back: list[list[str]]? = csv.loads(written) except ParseError(): None
         stdout.print(\"err\" if back is None else \"ok \" + json.dumps(back))
     stdout.print(json.dumps(rows))
 ";

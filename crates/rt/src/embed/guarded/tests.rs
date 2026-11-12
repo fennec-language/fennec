@@ -285,21 +285,23 @@ fn another_thread_reads_and_changes_what_this_one_put_there() {
 
 /// A `shared` value's handle put on another runtime's queue, as a block whose memory came back as
 /// the handle would be, isn't let go of when that runtime frees what waits for it: a queue holds
-/// only blocks its runtime made, and the value keeps its table.
+/// only blocks its runtime made, and the value keeps its table. Such a block is a bug upstream, so
+/// it's said, as a test and a debug build say it.
 #[test]
 fn a_handle_waiting_for_another_runtime_is_left_alone() {
     begin();
     let log = log_of(&["kept"]);
     shared_new(log);
-    std::thread::spawn(move || {
+    let said = std::thread::spawn(move || {
         begin();
         threads::wait_here(u64::try_from(log).unwrap());
-        let its_own = log_of(&["its own"]);
-        heap::free(its_own);
-        finish();
+        // What `free` frees first, called as it is here: a panic can't leave native code's `free`.
+        with(heap::free_waiting);
     })
     .join()
-    .unwrap();
+    .expect_err("a block on the queue that isn't this runtime's is said");
+    let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(said.contains("which this heap doesn't hold"), "{said}");
     assert!(is_handle(u64::try_from(log).unwrap()), "the value is still there");
     assert_eq!(shared_enter(log, 1), i64::try_from(GUARDED_OWNER).unwrap());
     let inside = i64::try_from(word(log, FIELDS)).unwrap();
@@ -331,6 +333,28 @@ fn a_value_gone_while_its_lock_is_held_is_a_bug_and_its_table_stays() {
     let (_, failure, _) = finish();
     let failure = failure.expect("letting go of the lock fails");
     assert!(failure.message.contains("went while its lock was held"), "{failure:?}");
+}
+
+/// The last handle to a value going while another thread reads it is a bug, since a reader holds
+/// a handle while it reads: it's said, rather than an empty table being freed in the value's place.
+#[test]
+fn the_last_handle_going_while_a_reader_holds_the_table_is_said() {
+    begin();
+    let log = log_of(&["kept"]);
+    shared_new(log);
+    shared_enter(log, 0);
+    let address = u64::try_from(log).unwrap();
+    let gone = std::thread::spawn(move || {
+        start(Tables::default(), crate::Inputs::default());
+        with(|state| heap::release(state, address));
+    })
+    .join();
+    let said = gone.expect_err("the last handle going while the value is read stops the run");
+    let said = said.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(said.contains("went while another thread was reading it"), "{said}");
+    // The table's gone with its slot, so leaving the lock fails, which isn't what this tests.
+    shared_leave(log, 0);
+    let _ = finish();
 }
 
 /// A thread asking to write a value it's still reading is refused, and the value stays read: once

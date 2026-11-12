@@ -1,4 +1,6 @@
 ## `str`'s methods written in Fennec. The rest are machine operations the engines provide.
+from std.intrinsics import stop
+
 extend str:
     ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
     def *(self, times: int) -> str:
@@ -122,8 +124,11 @@ export struct StrWriter:
     def text(self) -> str:
         "".join(self._parts)
 
-## `count` characters of `fill` repeated, cut to that many when `fill` is longer than one.
+## `count` characters of `fill` repeated, cut to that many when `fill` is longer than one. An
+## empty `fill` can't make any width, so it's a bug in the program, as Python says too.
 def padding(fill: str, count: int) -> str:
+    if fill == "":
+        stop("a fill has to be at least one character, to pad text with")
     if count <= 0: return ""
     (fill * count)[:count]
 

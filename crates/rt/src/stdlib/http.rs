@@ -17,6 +17,10 @@ const MOST_REDIRECTS: usize = 10;
 /// The most a response's status line and headers can take, so a server can't send them forever.
 const MOST_IN_HEADERS: usize = 1 << 20;
 
+/// The most a response's body can be unless `most_body=` says otherwise, so a server can't send
+/// one forever.
+pub(crate) const MOST_BODY: usize = 64 << 20;
+
 /// What's asked for.
 pub(crate) struct Request {
     pub(crate) method: String,
@@ -25,6 +29,8 @@ pub(crate) struct Request {
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: Vec<u8>,
     pub(crate) timeout: Duration,
+    /// The most the answer's body can be.
+    pub(crate) most_body: usize,
 }
 
 /// What came back.
@@ -159,7 +165,7 @@ pub(crate) fn send(request: &Request) -> Result<Answer, Failure> {
             .iter()
             .filter(|(name, _)| same_site || is_harmless(name))
             .map(|(name, value)| (name.as_str(), value.as_str()));
-        let answer = once(&at, &method, headers, body, (deadline, request.timeout))?;
+        let answer = once(&at, &method, headers, body, (deadline, request.timeout), request.most_body)?;
         if !matches!(answer.status, 301 | 302 | 303 | 307 | 308) {
             return Ok(answer);
         }
@@ -189,12 +195,22 @@ fn once<'h>(
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body: &[u8],
     (deadline, timeout): (Instant, Duration),
+    most_body: usize,
 ) -> Result<Answer, Failure> {
     if !is_token(method) {
         return Err(Failure::Other(format!("`{}` can't be a request's method", method.escape_debug())));
     }
     if !fits_on_a_line(&url.target) || !fits_on_a_line(&url.host) {
         return Err(Failure::Other("the URL has a space, line break or control character in it".to_owned()));
+    }
+    // Every header's checked before anything's sent, or any connection tried: one whose name
+    // isn't one, or whose value would start a line of its own, could make one request two.
+    let headers: Vec<(&str, &str)> = headers.collect();
+    for (name, value) in &headers {
+        if !is_token(name) || value.bytes().any(|byte| (byte < 32 && byte != b'\t') || byte == 127) {
+            let shown = name.escape_debug();
+            return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
+        }
     }
     let tcp = connect(url, deadline, timeout)?;
     let mut stream =
@@ -207,10 +223,6 @@ fn once<'h>(
     let mut head = format!("{method} {} HTTP/1.1\r\nHost: {host}\r\n", url.target);
     let (mut agent, mut accept) = (false, false);
     for (name, value) in headers {
-        if !is_token(name) || value.bytes().any(|byte| (byte < 32 && byte != b'\t') || byte == 127) {
-            let shown = name.escape_debug();
-            return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
-        }
         agent |= name.eq_ignore_ascii_case("user-agent");
         accept |= name.eq_ignore_ascii_case("accept");
         let _ = write!(head, "{name}: {value}\r\n");
@@ -230,7 +242,7 @@ fn once<'h>(
     let mut request = head.into_bytes();
     request.extend_from_slice(body);
     stream.write_all_by(&request, deadline, timeout)?;
-    read_answer(&mut stream, method, deadline, timeout)
+    read_answer(&mut stream, method, (deadline, timeout), most_body)
 }
 
 /// Whether this is what HTTP calls a token, as a method or a header's name has to be.
@@ -407,6 +419,8 @@ struct Reader<'s> {
     head_bytes: usize,
     /// How many bytes the last line took, its ending included.
     last_line: usize,
+    /// The most the body can be.
+    most_body: usize,
 }
 
 impl Reader<'_> {
@@ -470,13 +484,25 @@ impl Reader<'_> {
 
     /// Everything until the other side is done.
     fn all(&mut self) -> Result<Vec<u8>, Failure> {
-        while self.more()? {}
+        while self.more()? {
+            if self.rest().len() > self.most_body {
+                return Err(self.too_big());
+            }
+        }
         if self.cut_off {
             return Err(Failure::Tls("the connection was cut off before the answer ended".to_owned()));
         }
         let taken = self.rest().to_vec();
         self.at = self.held.len();
         Ok(taken)
+    }
+
+    /// A body longer than `most_body=` allows.
+    fn too_big(&self) -> Failure {
+        let most = crate::embed::numbers::with_commas(self.most_body);
+        Failure::Other(format!(
+            "the response's body is longer than {most} bytes: give `most_body=` a bigger number if it needs one"
+        ))
     }
 
     fn chunked(&mut self) -> Result<Vec<u8>, Failure> {
@@ -490,6 +516,9 @@ impl Reader<'_> {
                 while !self.head_line()?.is_empty() {}
                 return Ok(body);
             }
+            if size > self.most_body.saturating_sub(body.len()) {
+                return Err(self.too_big());
+            }
             body.extend(self.take(size)?);
             if !self.line()?.is_empty() {
                 return Err(Failure::Other("a chunk ran past the size it gave".to_owned()));
@@ -501,8 +530,8 @@ impl Reader<'_> {
 fn read_answer(
     stream: &mut Stream,
     method: &str,
-    deadline: Instant,
-    timeout: Duration,
+    (deadline, timeout): (Instant, Duration),
+    most_body: usize,
 ) -> Result<Answer, Failure> {
     let mut reader = Reader {
         stream,
@@ -513,6 +542,7 @@ fn read_answer(
         cut_off: false,
         head_bytes: 0,
         last_line: 0,
+        most_body,
     };
     let (status, headers) = loop {
         let (status, headers) = read_head(&mut reader)?;
@@ -534,6 +564,10 @@ fn read_answer(
             .trim()
             .parse()
             .map_err(|_| Failure::Other(format!("`{length}` isn't the length of a response")))?;
+        // Refused before any of it's read, so a length that's too big makes no room for itself.
+        if size > reader.most_body {
+            return Err(reader.too_big());
+        }
         reader.take(size)?
     } else {
         reader.all()?
@@ -906,6 +940,7 @@ mod tests {
             cut_off: false,
             head_bytes: 0,
             last_line: 0,
+            most_body: super::MOST_BODY,
         };
         assert!(matches!(reader.all(), Err(Failure::Tls(_))));
     }
@@ -962,7 +997,60 @@ mod tests {
             headers: Vec::new(),
             body: Vec::new(),
             timeout: Duration::from_secs(5),
+            most_body: super::MOST_BODY,
         })
+    }
+
+    /// A server that answers one request with `head`, then sends `piece` again and again until
+    /// the client hangs up.
+    fn streaming_forever(head: &'static str, piece: &'static [u8]) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let done = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = conn.read(&mut request);
+            if conn.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            while conn.write_all(piece).is_ok() {}
+        });
+        (port, done)
+    }
+
+    #[test]
+    fn a_response_body_past_most_body_fails_however_it_comes() {
+        let x = &[b'x'; 16 * 1024][..];
+        let chunk: &'static [u8] =
+            Box::leak(format!("4000\r\n{}\r\n", "x".repeat(0x4000)).into_bytes().into_boxed_slice());
+        for (head, piece) in [
+            // Read until the server hangs up, which it never does.
+            ("HTTP/1.1 200 OK\r\n\r\n", x),
+            // Chunks that never end.
+            ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", chunk),
+            // A length far past the most, refused before any of it's read.
+            ("HTTP/1.1 200 OK\r\nContent-Length: 1099511627776\r\n\r\n", x),
+        ] {
+            let (port, done) = streaming_forever(head, piece);
+            let failed = send(&Request {
+                method: "GET".to_owned(),
+                url: format!("http://127.0.0.1:{port}/"),
+                params: Vec::new(),
+                headers: Vec::new(),
+                body: Vec::new(),
+                timeout: Duration::from_secs(30),
+                most_body: 1 << 20,
+            });
+            let Err(Failure::Other(reason)) = failed else {
+                panic!("{head}: {:?}", failed.map(|answer| answer.body.len()));
+            };
+            assert_eq!(
+                reason,
+                "the response's body is longer than 1,048,576 bytes: give `most_body=` a bigger number if it needs one",
+                "{head}"
+            );
+            done.join().unwrap();
+        }
     }
 
     #[test]
@@ -1014,6 +1102,7 @@ mod tests {
             ],
             body: b"data".to_vec(),
             timeout: Duration::from_secs(5),
+            most_body: super::MOST_BODY,
         });
         assert_eq!(answer.ok().unwrap().status, 200);
         let asked = done.join().unwrap();
@@ -1027,17 +1116,34 @@ mod tests {
         assert!(asked.ends_with("\r\n\r\ndata"), "{asked}");
     }
 
+    /// A header whose value would start a line of its own is refused before any connection is
+    /// tried: nothing listens on port 1, so a refusal that came only from connecting would say
+    /// so instead. A name that isn't one is refused the same way, and so is a control character.
     #[test]
     fn a_header_cant_smuggle_in_another_line() {
-        let answer = send(&Request {
-            method: "GET".to_owned(),
-            url: "http://127.0.0.1:1/".to_owned(),
-            params: Vec::new(),
-            headers: vec![("X".to_owned(), "a\r\nEvil: b".to_owned())],
-            body: Vec::new(),
-            timeout: Duration::from_millis(200),
-        });
-        assert!(answer.is_err());
+        let refused = |name: &str, value: &str| {
+            let answer = send(&Request {
+                method: "GET".to_owned(),
+                url: "http://127.0.0.1:1/".to_owned(),
+                params: Vec::new(),
+                headers: vec![(name.to_owned(), value.to_owned())],
+                body: Vec::new(),
+                timeout: Duration::from_millis(200),
+                most_body: super::MOST_BODY,
+            });
+            match answer {
+                Err(Failure::Other(why)) => why,
+                Err(other) => format!("{other:?}"),
+                Ok(_) => "an answer".to_owned(),
+            }
+        };
+        let said = "the header `X` has a line break or `:` in it";
+        assert_eq!(refused("X", "a\r\nEvil: b"), said);
+        assert_eq!(refused("X", "a\nEvil: b"), said);
+        assert_eq!(refused("X", "a\u{7f}"), said);
+        assert_eq!(refused("Evil: b\r\nX", "a"), "the header `Evil: b\\r\\nX` has a line break or `:` in it");
+        // A good header gets as far as connecting, which fails on its own terms.
+        assert!(!refused("X", "a").contains("header"));
     }
 
     #[test]
@@ -1054,6 +1160,7 @@ mod tests {
             headers: vec![("Authorization".to_owned(), "secret".to_owned())],
             body: b"data".to_vec(),
             timeout: Duration::from_secs(5),
+            most_body: super::MOST_BODY,
         });
         assert_eq!(answer.ok().unwrap().body, b"ok");
         let asked = done.join().unwrap();
@@ -1080,6 +1187,7 @@ mod tests {
             ],
             body: Vec::new(),
             timeout: Duration::from_secs(5),
+            most_body: super::MOST_BODY,
         });
         assert_eq!(answer.ok().unwrap().status, 200);
         done.join().unwrap();
@@ -1106,6 +1214,7 @@ mod tests {
             ],
             body: Vec::new(),
             timeout: Duration::from_secs(5),
+            most_body: super::MOST_BODY,
         });
         assert_eq!(answer.ok().unwrap().status, 200);
         done.join().unwrap();
@@ -1152,6 +1261,7 @@ mod tests {
                 headers,
                 body: Vec::new(),
                 timeout: Duration::from_secs(5),
+                most_body: super::MOST_BODY,
             })
         };
         let plain = "http://127.0.0.1:1/";
@@ -1173,6 +1283,7 @@ mod tests {
             headers: Vec::new(),
             body: Vec::new(),
             timeout: Duration::from_millis(50),
+            most_body: super::MOST_BODY,
         });
         assert!(matches!(answer, Err(Failure::TimedOut(after)) if after == Duration::from_millis(50)));
         drop(listener);

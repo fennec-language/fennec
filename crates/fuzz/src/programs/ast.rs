@@ -142,7 +142,7 @@ pub(crate) enum Expr {
     Concat(Box<Expr>, Box<Expr>),
     /// `f"<{int}>"`.
     Format(Box<Expr>),
-    /// `text.len()`.
+    /// `len(text)`.
     TextLen(Box<Expr>),
     /// A list of ints written out.
     Ints(Vec<Expr>),
@@ -153,7 +153,7 @@ pub(crate) enum Expr {
     /// `sum(regrown(item) for item in parallel(list))`: each round makes a holder, reads its list
     /// and passes it to a `ref self` method on the same holder.
     Regrown(Box<Expr>),
-    /// `list.len()`.
+    /// `len(list)`.
     Len(Box<Expr>),
     /// `list[at]`, which fails outside the list.
     Index(Box<Expr>, Box<Expr>),
@@ -209,7 +209,7 @@ pub(crate) enum Expr {
     Buffer(Option<i64>, Vec<Expr>),
     /// `[item for item in buffer]`.
     BufItems(Box<Expr>),
-    /// `buffer.len()`.
+    /// `len(buffer)`.
     BufLen(Box<Expr>),
     /// `buffer[at]`, which fails outside what's filled.
     BufAt(Box<Expr>, Box<Expr>),
@@ -324,6 +324,42 @@ pub(crate) struct Turning {
     pub(crate) reset_to: i64,
 }
 
+/// A `Streamed` stream: `stream = (f(item) for item in parallel(xs))` over `items`, where `f` is
+/// `map`, read by `read`. The runtime runs it as an ordered stream: items worked out on several
+/// threads, read in order, a failure cutting it short where it's read.
+#[derive(Clone, Debug)]
+pub(crate) struct Streaming {
+    pub(crate) id: usize,
+    pub(crate) items: Vec<i64>,
+    pub(crate) map: StreamMap,
+    pub(crate) read: StreamRead,
+}
+
+/// What a `Streamed` stream works out from each item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamMap {
+    /// `item * by + plus`, which can't fail.
+    Scaled(i64, i64),
+    /// `100 // (item - zero)`, which divides by zero at an item equal to `zero`.
+    Divided(i64),
+    /// `ys[item]`, of `YS`, which is out of range at an item of 4 or more.
+    Indexed,
+}
+
+/// The list a `StreamMap::Indexed` stream indexes.
+pub(crate) const YS: [i64; 4] = [10, 20, 30, 40];
+
+/// How a `Streamed` stream is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamRead {
+    /// A `for` loop printing each, breaking after the `n`th when it's given.
+    Loop(Option<i64>),
+    /// `sum(y for y in stream)`.
+    Sum,
+    /// `[y + 1 for y in stream]`.
+    Listed,
+}
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -381,7 +417,7 @@ pub(crate) enum Leave {
 }
 
 impl Leave {
-    /// Whether leaving this way is a failure, which runs the cleanups in `lend x else:`, rather
+    /// Whether leaving this way is a failure, which runs the cleanups in `lend x except:`, rather
     /// than the code after `lend`.
     pub(crate) const fn fails(self) -> bool {
         matches!(
@@ -588,6 +624,8 @@ pub(crate) enum Stmt {
     /// to each end of `int`, so a proof that it's never negative, made from the first turn alone,
     /// shows: from -4 to 3 all of those hold, and past them the program stops.
     Turned(Turning),
+    /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
+    Streamed(Streaming),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.
@@ -640,7 +678,7 @@ pub(crate) enum Stmt {
     /// lock, counts it in `y` and adds it to `x`. A task that overflows crashes, which undoes
     /// that lock's changes and prints `crashed`.
     Tally(String, Expr),
-    /// `for name in range(list.len()):` reading `list[name]` first each round, with the body free
+    /// `for name in range(len(list)):` reading `list[name]` first each round, with the body free
     /// to change the list, so a bound worked out once can stop holding.
     Indexed(String, String, Vec<Stmt>),
     /// `counts[key] = value`, or `+=` with `add`, which fails for a key that isn't there.
@@ -652,7 +690,7 @@ pub(crate) enum Stmt {
     /// A change to a `list[Node]`: an append, a pop, or an item set where it's kept in the list.
     NodesAppend(String, Expr),
     NodesPop(String),
-    /// `if nodes.len() > 0: nodes[at % nodes.len()] = node`.
+    /// `if len(nodes) > 0: nodes[at % len(nodes)] = node`.
     NodesSet(String, Expr, Expr),
     /// `match node:` changing whichever case it is through `ref`: a branch's label grows by `text`
     /// and its children by `child`, a tagged node's tags and inner nodes likewise, a leaf's name
@@ -663,12 +701,12 @@ pub(crate) enum Stmt {
     Rename(String, Expr, Expr),
     /// `holder.items.append(holder.tag)`, `own = holder.items`, then `holder.grown_by(own)`: a
     /// `ref self` method given a value read from the list it grows, just after that list grew in
-    /// place, and both printed, under `if holder.items.len() < 64:`.
+    /// place, and both printed, under `if len(holder.items) < 64:`.
     GrownBy(String, String),
-    /// `if list.len() < 64:` then `own = list`, `appended_all(ref list, own)` and both printed:
+    /// `if len(list) < 64:` then `own = list`, `appended_all(ref list, own)` and both printed:
     /// a list lent to a call through `ref` beside a value read from it.
     LentRef(String, String),
-    /// `mut rows = [items, [7]]`, then under `if rows[0].len() < 64:`, `own = rows[0]`,
+    /// `mut rows = [items, [7]]`, then under `if len(rows[0]) < 64:`, `own = rows[0]`,
     /// `appended_all(ref rows[0], own)` and the rows and `own` printed: a list's item lent.
     LentItem(String, String, Expr),
     /// `holder.items = holder.items` and `holder.tag = holder.tag`, which change nothing.

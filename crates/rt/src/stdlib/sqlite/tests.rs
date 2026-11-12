@@ -113,6 +113,29 @@ fn a_tests_databases_left_open_are_closed_and_gone_when_it_ends() -> Result<(), 
     Ok(())
 }
 
+/// A database opened for a narrowed `Fs` is kept only while SQLite's file is the one the narrowed
+/// `Fs` found: once another file is swapped in at its path, SQLite and the path both say so.
+#[cfg(unix)]
+#[test]
+fn a_database_whose_file_was_swapped_is_told_apart() {
+    use std::os::unix::fs::MetadataExt as _;
+    let folder = std::env::temp_dir().join(format!("fennec-sqlite-swapped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("data.db");
+    let path_text = path.to_string_lossy().into_owned();
+    std::fs::write(&path, b"").unwrap();
+    let found = std::fs::metadata(&path).unwrap();
+    let noted = (found.dev(), found.ino());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert!(super::real::still_the_file(&conn, &path_text, noted));
+    std::fs::rename(&path, folder.join("moved.db")).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    assert!(!super::real::still_the_file(&conn, &path_text, noted));
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
 /// A `Database` reaches only its own file. A query's text is the program's, so without a guard
 /// it could `ATTACH` any file the process can open, write a copy of itself anywhere with
 /// `VACUUM INTO`, or move SQLite's temporary files with a pragma: each fails with `SqlError`,
@@ -265,5 +288,26 @@ fn a_view_and_a_trigger_in_main_work() -> Result<(), String> {
         let said = run(db, "_execute", &query(text, &[], &[]))?;
         assert!(said.starts_with("Ok("), "{text}: {said}");
     }
+    Ok(())
+}
+
+/// A test's databases go in a folder made new for it, named at random, so one a crashed run left
+/// behind, with its databases in it, is never taken for this test's.
+#[test]
+fn each_test_s_databases_go_in_a_new_folder_of_its_own() -> Result<(), String> {
+    let (mut first, mut second) = (Fakes::default(), Fakes::default());
+    handle_of(&open_fake(&mut first, "same.db"))?;
+    handle_of(&open_fake(&mut second, "same.db"))?;
+    let (Some(one), Some(two)) = (first.folder.clone(), second.folder.clone()) else {
+        return Err("a test opened a database with no folder for it".to_owned());
+    };
+    assert_ne!(one, two);
+    for folder in [&one, &two] {
+        let name = folder.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let random = name.strip_prefix("fennec-test-databases-").unwrap_or_default();
+        assert!(random.len() == 16 && random.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
+    drop((first, second));
+    assert!(!one.exists() && !two.exists(), "a test's folder outlived it");
     Ok(())
 }

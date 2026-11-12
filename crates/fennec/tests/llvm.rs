@@ -19,12 +19,18 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
-    if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+    if llvm_expected() {
         let missing = tools.as_ref().err().map_or("", String::as_str);
         assert!(tools.is_ok(), "FENNEC_EXPECT_LLVM is set, but {missing}");
         assert!(runtime, "FENNEC_EXPECT_LLVM is set, but the runtime library didn't build");
     }
     tools.is_ok() && runtime
+}
+
+/// Whether `FENNEC_EXPECT_LLVM` says LLVM is the backend that has to work here, as CI's Linux and
+/// Windows test jobs say, so what's missing fails a test rather than skipping it.
+pub(crate) fn llvm_expected() -> bool {
+    std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty())
 }
 
 /// A folder of its own, emptied when the test is done.
@@ -1756,13 +1762,12 @@ fn changing_a_list_in_a_shared_value_in_a_task_copies_nothing() -> std::io::Resu
     Ok(())
 }
 
-/// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
-/// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
-/// a note of each in the lock's rollback log, but these change what a note of one place can't put
-/// back, so the log keeps the list as it was, and the change copies it. `insert(0, x)` takes time
-/// in proportion to the list's length anyway.
+/// Changes to a list in a `shared` value under its lock that copy nothing: an `insert`, made in place
+/// and noted in the lock's rollback log for a crash to take out again, and a change inside one of
+/// its items, like a list in a struct in it. That one still copies: reaching the item, the log
+/// holds it as it was, so a list in it has a second owner, and changing it copies it.
 #[test]
-#[ignore = "a crash puts back only appends and pops from notes; an insert, or a change inside an item, under a `lock ... as ref` copies the list"]
+#[ignore = "a change inside an item of a list under a `lock ... as ref` copies what it changes: the log holds the item, so a list in it is shared (#1469); an insert is made in place"]
 fn changes_inside_a_list_in_a_shared_value_copy_nothing() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -2504,6 +2509,99 @@ def main(stdout: Stdout):
         );
         assert!(err.starts_with("error: this calculation overflows an int"), "{how:?}: {err}");
         assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
+/// Reading a string with characters of more than one byte, in order, backwards and by place, runs
+/// the same checking proofs, which checks the string's cursor is inside it each time it's used.
+#[test]
+fn strings_read_by_place_run_the_same_checking_their_cursor() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def count(s: str) -> int:
+    mut n = 0
+    for i in range(s.len()):
+        if s[i] == "é" or s[i - 1] == "a":
+            n += 1
+    return n
+
+def backwards(s: str) -> str:
+    mut out = ""
+    mut i = s.len() - 1
+    while i >= 0:
+        out += s[i]
+        i -= 1
+    return out
+
+def main(stdout: Stdout):
+    s = "café naïve über alles, déjà vu"
+    stdout.print(count(s), backwards(s), s[7], s[-2], s[3], s[0])
+    return
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for proofs in ["0", "1"] {
+            let dir = folder("string_cursor")?;
+            let (program, executable) = (dir.join("cursor.fen"), dir.join("cursor"));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5 uv \u{e0}j\u{e9}d ,sella rebü evïan \u{e9}fac \u{ef} v \u{e9} c\n",
+                "{how:?} proofs {proofs}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A program whose code is handed every kind of fact runs the same built with them, with them
+/// stripped (`FENNEC_STRIP_FACTS=1`), and checking proofs, which checks the facts it can.
+#[test]
+fn facts_stripped_or_checked_run_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + seen.len()\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(xs.len())\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for (setting, on) in
+            [("FENNEC_STRIP_FACTS", "0"), ("FENNEC_STRIP_FACTS", "1"), ("FENNEC_CHECK_PROOFS", "1")]
+        {
+            let dir = folder("facts_stripped")?;
+            let (program, executable) = (dir.join("facts.fen"), dir.join("facts"));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env(setting, on)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5 [1, 2, 2] 5\n",
+                "{how:?} {setting}={on}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
     }
     Ok(())
 }
@@ -3688,6 +3786,45 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
     };
     same_as_expected_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
     same_as_expected_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
+}
+
+/// A print that fails stops the program there, as anything that fails does. Its standard output
+/// is a file it may only write 512 bytes of (`ulimit -f 1`, with the signal for passing that
+/// ignored), so writing fails once a run has kept enough to write out: what comes after the loop
+/// never runs, and the failure says why. It used to carry on and say so only at the end.
+#[cfg(unix)]
+#[test]
+fn a_print_that_fails_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, stderr: Stderr):\n    for i in range(100000):\n        stdout.print(i)\n    stderr.write_line(\"went on\")?\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("print_fails")?;
+        let (program, executable) = (dir.join("prints.fen"), dir.join("prints"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' XFSZ; ulimit -f 1; exec \"$0\" > \"$1\"")
+            .arg(&executable)
+            .arg(dir.join("printed.txt"))
+            .output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert!(err.starts_with("error: couldn't write output"), "{how:?}: {err}");
+        assert!(!err.contains("went on"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
 }
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
@@ -11872,6 +12009,66 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
     ];
     assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
+/// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
+/// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
+#[test]
+fn a_native_server_cuts_off_a_request_sent_a_byte_at_a_time() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=1s)
+";
+    let dir = folder("http_server_trickle")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+    let mut trickle = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    trickle.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+    trickle.write_all(b"POST /slow HTTP/1.1\r\nContent-Length: 1000\r\n\r\n")?;
+    // A byte of the body each tenth of a second, each well within the timeout, for up to 20
+    // seconds: with only each read timed, each read gets its byte and this never ends.
+    let started = std::time::Instant::now();
+    let mut heard = Vec::new();
+    let mut closed = false;
+    while started.elapsed() < std::time::Duration::from_secs(20) {
+        if trickle.write_all(b"x").is_err() {
+            closed = true;
+            break;
+        }
+        let mut buffer = [0; 512];
+        match trickle.read(&mut buffer) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(read) => heard.extend_from_slice(&buffer[..read]),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => {
+                closed = true;
+                break;
+            }
+        }
+    }
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(closed, "the server still held a request sent a byte at a time after 20 seconds");
+    assert!(!String::from_utf8_lossy(&heard).contains("200 OK"), "{}", String::from_utf8_lossy(&heard));
     Ok(())
 }
 

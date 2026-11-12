@@ -2,6 +2,7 @@ from std import base64
 from std.collections import Id
 from std.intrinsics import new_tag, stop, text_byte, text_of_code, text_part, text_size, type_name
 from std.json import IdsSeen, article, escape_of, float_text, tables_in
+from std.string import cut_input, quoted_input
 
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
 TOML_MOST_DEEP = 500
@@ -224,7 +225,7 @@ struct TomlParser:
             word = text_part(self.source, at, self.at)
             if word == "true": return .Bool(b=True)
             if word == "false": return .Bool(b=False)
-            fail self.bad_at(f"`{word}` isn't a TOML value", at)
+            fail self.bad_at(f"{quoted_input(word)} isn't a TOML value", at)
         fail self.bad(f"expected a value, but found {self.found()}")
 
     ## `"text"`, with backslash escapes, on one line.
@@ -508,7 +509,7 @@ struct TomlParser:
         signed = lead == 43 or lead == 45
         negative = lead == 45
         unsigned = text_part(token, 1 if signed else 0, text_size(token))
-        unknown = f"`{token}` isn't a number TOML knows"
+        unknown = f"{quoted_input(token)} isn't a number TOML knows"
         if unsigned == "inf": return .Float(x=-1e308 * 10.0 if negative else 1e308 * 10.0)
         if unsigned == "nan": return .Float(x=1e308 * 10.0 - 1e308 * 10.0)
         if text_size(unsigned) >= 2 and text_byte(unsigned, 0) == 48:
@@ -518,18 +519,18 @@ struct TomlParser:
                 digits = text_part(unsigned, 2, text_size(unsigned))
                 if signed or not digits_ok(digits, radix): fail self.bad_at(unknown, at)
                 n = radix_int(digits, radix)
-                if n < 0: fail self.bad_at(f"`{token}` is too big for an int", at)
+                if n < 0: fail self.bad_at(f"{quoted_input(token)} is too big for an int", at)
                 return .Int(n=n)
         if has_any(unsigned, 46, 101, 69):
             if not float_ok(unsigned): fail self.bad_at(unknown, at)
             x = float(without_underscores(token)) else fail self.bad_at(unknown, at)
             # TOML writes `inf` for that. A number too big for a float didn't say it.
             if x == 1e308 * 10.0 or x == -1e308 * 10.0:
-                fail self.bad_at(f"`{token}` is too big for a float", at)
+                fail self.bad_at(f"{quoted_input(token)} is too big for a float", at)
             return .Float(x=x)
         if not whole_ok(unsigned): fail self.bad_at(unknown, at)
         n = int(without_underscores(token)) else fail self.bad_at(
-            f"`{token}` is too big for an int",
+            f"{quoted_input(token)} is too big for an int",
             at,
         )
         .Int(n=n)
@@ -618,10 +619,10 @@ def radix_int(digits: str, radix: int) -> int:
 def no_table(parser: TomlParser, key: str, at: int, dotted: bool, inner_dotted: bool) -> ParseError:
     if dotted and not inner_dotted:
         return parser.bad_at(
-            f"`{key}` is a table defined elsewhere, so a dotted key can't add to it",
+            f"`{cut_input(key)}` is a table defined elsewhere, so a dotted key can't add to it",
             at,
         )
-    parser.bad_at(f"`{key}` already has a value, so it can't hold a table", at)
+    parser.bad_at(f"`{cut_input(key)}` already has a value, so it can't hold a table", at)
 
 ## Adds `keys = value` under the table a header named, making the tables that dotted keys name.
 def insert(
@@ -663,7 +664,7 @@ def insert_dotted(
     key = keys[step]
     if step == keys.len() - 1:
         if table.place_of(key) >= 0:
-            fail parser.bad_at(f"`{joined_keys(keys)}` is defined twice", at)
+            fail parser.bad_at(f"`{cut_input(joined_keys(keys))}` is defined twice", at)
         table.add(key, value)
         return
     mut place = table.place_of(key)
@@ -725,7 +726,7 @@ def define(
         case .Tables(tables):
             if not array:
                 fail parser.bad_at(
-                    f"`{name}` is already defined as something else, so it can't be `{shown}`",
+                    f"`{cut_input(name)}` is already defined as something else, so it can't be `{cut_input(shown)}`",
                     at,
                 )
             mut children = tables
@@ -734,17 +735,17 @@ def define(
         case .Table(inner):
             if array or inner.inline:
                 fail parser.bad_at(
-                    f"`{name}` is already defined as something else, so it can't be `{shown}`",
+                    f"`{cut_input(name)}` is already defined as something else, so it can't be `{cut_input(shown)}`",
                     at,
                 )
             if inner.header or inner.dotted:
-                fail parser.bad_at(f"the table `[{name}]` is defined twice", at)
+                fail parser.bad_at(f"the table `[{cut_input(name)}]` is defined twice", at)
             mut child = inner
             child.header = True
             table.values[place] = .Table(table=child)
         case _:
             fail parser.bad_at(
-                f"`{name}` is already defined as something else, so it can't be `{shown}`",
+                f"`{cut_input(name)}` is already defined as something else, so it can't be `{cut_input(shown)}`",
                 at,
             )
 
@@ -810,7 +811,7 @@ struct TomlReader:
             case .Text(text):
                 if self._in_key:
                     return int(text) else fail ParseError(
-                        message=f"{self._where()} has the key \"{text}\", which isn't an int",
+                        message=f"{self._where()} has the key \"{cut_input(text)}\", which isn't an int",
                         line=0,
                         column=0,
                     )
@@ -891,7 +892,7 @@ struct TomlReader:
                     self._in_key = True
                     read = K.deserialize(ref self)?
                     self._in_key = False
-                    self._path.append(f"[\"{key}\"]")
+                    self._path.append(f"[\"{cut_input(key)}\"]")
                     self._here = table.values[at]
                     found.append((read, V.deserialize(ref self)?))
                     _ = self._path.pop()
@@ -1049,7 +1050,7 @@ struct TomlReader:
                             if case_name == key:
                                 if not has_data and fields.keys.len() > 0:
                                     fail ParseError(
-                                        message=f"`{name}.{case_name}` has no field \"{fields.keys[0]}\", but {self._where()} has one",
+                                        message=f"`{name}.{case_name}` has no field \"{cut_input(fields.keys[0])}\", but {self._where()} has one",
                                         line=0,
                                         column=0,
                                     )

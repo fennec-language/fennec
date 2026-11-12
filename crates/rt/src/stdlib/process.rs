@@ -4,7 +4,11 @@
 //! than 0 doesn't fail, since what that means is the program's to say. In a test, `Process` is
 //! a fake that runs nothing and gives back what the test scripted.
 
+use std::io::Read as _;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -17,7 +21,19 @@ pub(crate) struct Options {
     input: Option<Vec<u8>>,
     cwd: Option<String>,
     env: Vec<(String, String)>,
+    /// How long it may run before it's stopped, `TIMEOUT` unless given.
+    timeout: Option<Duration>,
+    /// The most bytes of each of its outputs that are kept, `MOST_OUTPUT` unless given.
+    most_output: Option<usize>,
 }
+
+/// How long a program may run unless `run` is given `timeout=`: long enough for a build or a
+/// clone, short enough that one that hangs doesn't hold what ran it for good.
+const TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The most bytes of each of a program's outputs kept unless `run` is given `most_output=`, so
+/// one that writes without end can't take the memory with it.
+const MOST_OUTPUT: usize = 16 * 1024 * 1024;
 
 /// The words of a `process.run(t"...")`: its text split at spaces, with each value part of the
 /// word it's written in, whatever it holds, so a value can't add a word or end one. `None` if
@@ -145,6 +161,13 @@ pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<Result<
                     options.env.push((key.to_string(), value.to_string()));
                 }
             }
+            ("timeout", Value::Instance(duration)) => {
+                let Some(Value::Int(nanos)) = duration.field("nanos") else { return Err(wrong("run", span)) };
+                options.timeout = Some(Duration::from_nanos(u64::try_from(*nanos).unwrap_or(0)));
+            }
+            ("most_output", Value::Int(most)) => {
+                options.most_output = Some(usize::try_from(*most).unwrap_or(0));
+            }
             (other, _) => {
                 return Err(Diagnostic::new(format!("`run` has no parameter called `{other}`"), span));
             }
@@ -159,7 +182,9 @@ fn looks_like_an_option(program: &str, expression: &str) -> Value {
     Value::Err(Rc::new(Value::made_case("ProcessError", "LooksLikeAnOption", fields)))
 }
 
-/// Runs `program` and waits for it, giving a result holding what it wrote.
+/// Runs `program` and waits for it, giving a result holding what it wrote. It waits on a thread
+/// that may block, so a task running a program doesn't hold its worker. A program still running
+/// at its timeout, or that writes more than may be kept, is stopped, and fails as which it was.
 pub(crate) fn run_program(program: &str, arguments: &[String], options: &Options) -> Value {
     if let Some(folder) = &options.cwd
         && !std::path::Path::new(folder).is_dir()
@@ -172,12 +197,11 @@ pub(crate) fn run_program(program: &str, arguments: &[String], options: &Options
         command.current_dir(folder);
     }
     command.envs(options.env.iter().map(|(name, value)| (name, value)));
-    let ran = match &options.input {
-        Some(input) => with_input(command, input),
-        None => command.output(),
-    };
-    match ran {
-        Ok(done) => {
+    let input = options.input.clone();
+    let timeout = options.timeout.unwrap_or(TIMEOUT);
+    let most = options.most_output.unwrap_or(MOST_OUTPUT);
+    match crate::stdlib::fs::blocking(move || run_limited(command, input, timeout, most)) {
+        Ok(Ending::Done(done)) => {
             let status = done.status.code().map_or(-1, i64::from);
             let fields = vec![
                 ("status", Value::Int(status)),
@@ -186,28 +210,96 @@ pub(crate) fn run_program(program: &str, arguments: &[String], options: &Options
             ];
             Value::Ok(Rc::new(Value::made("Output", fields)))
         }
+        Ok(Ending::TimedOut) => {
+            let nanos = i64::try_from(timeout.as_nanos()).unwrap_or(i64::MAX);
+            let after = Value::made("Duration", vec![("nanos", Value::Int(nanos))]);
+            failed(program, "TimedOut", vec![("after", after)])
+        }
+        Ok(Ending::TooMuchOutput) => failed(
+            program,
+            "TooMuchOutput",
+            vec![("most", Value::Int(i64::try_from(most).unwrap_or(i64::MAX)))],
+        ),
         Err(error) => process_error(program, &error.to_string()),
     }
 }
 
-/// Runs `command`, writing `input` to its standard input on a thread of its own while what it
-/// writes is read, so neither side waits on the other. A program that stops reading early
-/// leaves the rest unwritten, which isn't an error.
-fn with_input(mut command: std::process::Command, input: &[u8]) -> std::io::Result<std::process::Output> {
+/// How a program run within its limits ended.
+enum Ending {
+    Done(std::process::Output),
+    TimedOut,
+    TooMuchOutput,
+}
+
+/// A failed result holding the `ProcessError` case `case` for `program`, with `fields` after it.
+fn failed(program: &str, case: &str, fields: Vec<(&str, Value)>) -> Value {
+    let mut all = vec![("program", Value::str(program))];
+    all.extend(fields);
+    Value::Err(Rc::new(Value::made_case("ProcessError", case, all)))
+}
+
+/// Runs `command`, writing `input` to its standard input on a thread of its own and reading each
+/// of its outputs on another, so none waits on the rest. It's stopped once `timeout` has passed,
+/// or one of its outputs has more than `most` bytes. A program that stops reading early leaves
+/// the rest of its input unwritten, which isn't an error.
+fn run_limited(
+    mut command: std::process::Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    most: usize,
+) -> std::io::Result<Ending> {
     use std::io::Write as _;
     use std::process::Stdio;
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn()?;
-    let stdin = child.stdin.take();
-    let input = input.to_vec();
-    let writer = std::thread::spawn(move || {
-        if let Some(mut stdin) = stdin {
+    let writer = child.stdin.take().zip(input).map(|(mut stdin, input)| {
+        std::thread::spawn(move || {
             let _ = stdin.write_all(&input);
-        }
+        })
     });
-    let output = child.wait_with_output();
-    let _ = writer.join();
-    output
+    let over = Arc::new(AtomicBool::new(false));
+    let read_kept = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let over = Arc::clone(&over);
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            if let Some(pipe) = pipe {
+                // One byte past the most, to tell it went past.
+                let limit = u64::try_from(most).unwrap_or(u64::MAX).saturating_add(1);
+                let _ = pipe.take(limit).read_to_end(&mut kept);
+            }
+            if kept.len() > most {
+                over.store(true, Ordering::SeqCst);
+            }
+            kept
+        })
+    };
+    let stdout = read_kept(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+    let stderr = read_kept(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>));
+    let deadline = Instant::now() + timeout;
+    let ended = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if over.load(Ordering::SeqCst) || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    if over.load(Ordering::SeqCst) {
+        return Ok(Ending::TooMuchOutput);
+    }
+    Ok(match ended {
+        Some(status) => Ending::Done(std::process::Output { status, stdout, stderr }),
+        None => Ending::TimedOut,
+    })
 }
 
 /// A failed result holding a `ProcessError`.
@@ -218,4 +310,51 @@ pub(crate) fn process_error(program: &str, message: &str) -> Value {
 
 fn wrong(method: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{Options, run_program};
+    use crate::value::Value;
+
+    /// What a run gave: the `Output`'s fields, or the `ProcessError`'s case and its fields.
+    fn said(ran: &Value) -> String {
+        crate::format::repr(ran)
+    }
+
+    /// A program that never ends is stopped at its timeout, rather than holding what ran it.
+    #[test]
+    fn a_child_that_never_ends_is_stopped_at_its_timeout() {
+        let options = Options { timeout: Some(Duration::from_millis(200)), ..Options::default() };
+        let started = Instant::now();
+        let ran = run_program("sleep", &["30".to_owned()], &options);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        let shown = said(&ran);
+        assert!(shown.contains("ProcessError.TimedOut") && shown.contains("program=\"sleep\""), "{shown}");
+    }
+
+    /// A program that writes without end is stopped once it's written more than may be kept,
+    /// rather than taking the memory with it.
+    #[test]
+    fn a_child_that_writes_without_end_is_stopped_past_the_most_output() {
+        let options = Options { most_output: Some(1000), ..Options::default() };
+        let ran = run_program("yes", &[], &options);
+        let shown = said(&ran);
+        assert!(shown.contains("ProcessError.TooMuchOutput") && shown.contains("most=1000"), "{shown}");
+    }
+
+    /// Within its limits, a program runs as ever, its output whole.
+    #[test]
+    fn a_child_within_its_limits_gives_what_it_wrote() {
+        let options = Options {
+            timeout: Some(Duration::from_secs(30)),
+            most_output: Some(5),
+            input: Some(b"typed".to_vec()),
+            ..Options::default()
+        };
+        let shown = said(&run_program("cat", &[], &options));
+        assert!(shown.contains("status=0") && shown.contains("stdout=\"typed\""), "{shown}");
+    }
 }

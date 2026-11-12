@@ -391,6 +391,13 @@ fn only_a_tests_own_body_reads_what_it_printed() {
     assert_eq!(problems(helper), ["`Stdout` has no method `captured` @ out.captured()"]);
     assert_eq!(helps(helper), [help]);
     assert_eq!(in_main("stdout.captured()"), ["`Stdout` has no method `captured` @ stdout.captured()"]);
+    let sorted = "def read(out: Stdout) -> list[str]:\n    out.sorted_lines()\n";
+    assert_eq!(problems(sorted), ["`Stdout` has no method `sorted_lines` @ out.sorted_lines()"]);
+    assert_eq!(helps(sorted), [help]);
+    assert_eq!(
+        in_main("stdout.sorted_lines()"),
+        ["`Stdout` has no method `sorted_lines` @ stdout.sorted_lines()"]
+    );
     assert_eq!(
         problems("test \"one\"(fs: Fs):\n    fs.captured()\n"),
         ["`Fs` has no method `captured` @ fs.captured()"]

@@ -406,6 +406,36 @@ fn test_fails_when_a_test_fails() {
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
 }
 
+/// What a test's launched tasks and its `parallel` loop's bodies print reaches the test's
+/// `captured()` and `sorted_lines()`, whatever thread they ran on, however many threads there are
+/// and whether the loop was split to an item a range or left whole.
+#[test]
+fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4", "16"] {
+        for stressed in [false, true] {
+            let mut command = crate::executables::fennec_command();
+            command
+                .args(["test", "crates/fennec/tests/fixtures/tasks_print_into_tests.fen"])
+                .current_dir(repo())
+                .env("FENNEC_NO_CACHE", "1")
+                .env("FENNEC_THREADS", threads);
+            if stressed {
+                command.env("FENNEC_PARALLEL_STRESS", "1");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                text(&output.stdout),
+                "2 passed, 0 failed\n",
+                "{threads} threads, stressed {stressed}: {}",
+                text(&output.stderr)
+            );
+        }
+    }
+}
+
 /// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
 /// failed one says what really happened: what it failed with instead, or what it gave.
 #[test]

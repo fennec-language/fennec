@@ -174,10 +174,11 @@ fn without_values(program: &str) -> (String, Vec<usize>) {
         if number > 0 {
             out.push('\n');
         }
+        let mut read = String::new();
         let mut rest = line;
         while let Some(c) = rest.chars().next() {
             if let Some(after) = rest.strip_prefix("{{").or_else(|| rest.strip_prefix("}}")) {
-                out.push(c);
+                read.push(c);
                 rest = after;
             } else if let Some(after) = rest.strip_prefix('{')
                 && let Some(close) = after.find('}')
@@ -185,13 +186,25 @@ fn without_values(program: &str) -> (String, Vec<usize>) {
                     inside.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '?' | '#'))
                 })
             {
-                held.push(number);
+                if held.last() != Some(&number) {
+                    held.push(number);
+                }
+                // A value put in where a line starts, as `{FILES}def show`, goes; one inside a
+                // line reads as a value, so the line still parses.
+                if !read.trim().is_empty() {
+                    read.push('0');
+                }
                 rest = after.get(close + 1..).unwrap_or_default();
             } else {
-                out.push(c);
+                read.push(c);
                 rest = rest.get(c.len_utf8()..).unwrap_or_default();
             }
         }
+        // A line that was only a value, as a statement put in, is a statement that does nothing.
+        if held.last() == Some(&number) && read.trim().is_empty() && !line.trim().is_empty() {
+            read.push_str("pass");
+        }
+        out.push_str(&read);
     }
     (out, held)
 }
@@ -517,6 +530,20 @@ mod tests {
         assert_eq!(
             out,
             "let p = format!(\"{FILES}def two() -> int:\\n    return 1 + 1\\n\\ndef three() -> {{int}}:\\n    return 1 + 1\\n\");\n"
+        );
+    }
+
+    #[test]
+    fn a_line_that_is_only_a_value_put_in_reads_as_a_statement() {
+        let src =
+            "let p = format!(\"def put(n: int):\\n    {shape}\\n\\ndef two() -> int:\\n    1 + 1\\n\");\n";
+        let mut migrate = |text: &str| -> Option<String> {
+            assert!(text.contains("    pass\n"), "{text}");
+            Some(text.replace("    1 + 1", "    return 1 + 1"))
+        };
+        assert_eq!(
+            migrated(src, &mut migrate).unwrap_or_default(),
+            "let p = format!(\"def put(n: int):\\n    {shape}\\n\\ndef two() -> int:\\n    return 1 + 1\\n\");\n"
         );
     }
 

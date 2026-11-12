@@ -4,6 +4,7 @@
 # read kept can reach the next, however the first went.
 from std import json
 from std.collections import Id, Table
+from std.concurrent import Crashed
 
 struct Inner:
     n: int
@@ -66,6 +67,23 @@ test "the Tables one write found don't reach the next"():
         with_ids = two_units()
         assert with_ids.find("\"target\": 0") is not None
         assert json.dumps(World()) == "{\"units\": [], \"selected\": []}"
+
+## Each of the reads above, twice, in a task of its own: a program that runs tasks shares its
+## constants between them too.
+def read_twice() fails ParseError:
+    for _ in range(2):
+        assert (
+            failure(() => json.loads[int]("\"x\"")?) == "the text should be an int, but it's a str"
+        )
+        assert json.loads[World](two_units())?.units.len() == 2
+        assert failure(() => json.loads[Id[Unit]]("0")?) != "loaded"
+        assert json.loads[Pair]("{\"both\": [3, \"c\"]}")?.both == (3, "c")
+
+test "reads in tasks start fresh too"():
+    for _ in range(2):
+        with launch(() => read_twice()?)?:
+            pass
+        read_twice()?
 
 def main(stdout: Stdout):
     stdout.print(failure(() => json.loads[int]("\"x\"")?))

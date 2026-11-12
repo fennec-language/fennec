@@ -737,10 +737,7 @@ const STREAM_FAILING: &str = "def shown(stdout: Stdout, n: int) -> int:
 
 def main(stdout: Stdout):
     many = [n for n in range(20000)]
-    mut total = 0
-    for part in (shown(stdout, n) for n in parallel(many)):
-        total += part
-    stdout.print(\"never\", total)
+    stdout.print(\"never\", sum(part for part in (shown(stdout, n) for n in parallel(many))))
 ";
 
 /// A stream whose item fails stops the program where it did when recorded: its replay prints

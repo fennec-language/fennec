@@ -127,12 +127,21 @@ impl Stream {
         super::super::swap_capture(&mut capture);
         let mut items = lists::new(self.element, number(to - from));
         let thread = i64::from(threads::index());
+        // A chunk the reader runs while a failure of its own is on its way out, as a replay's
+        // chunks run at the stream's end are, runs with the flag clear, and the reader's failure
+        // is put back after: the chunk's checks mustn't see it, nor its failure take its place.
+        let pending = super::super::failed().then(|| with(|state| state.failure.take()));
+        set_failed(0);
         let mut failure = None;
         if (self.body)(self.env, number(from), number(to), thread, items) != 0 {
             heap::free(items);
             items = 0;
             failure = with(|state| state.failure.take());
             set_failed(0);
+        }
+        if let Some(held) = pending {
+            with(|state| state.failure = held);
+            set_failed(1);
         }
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
         // What it printed is written before the reader can see it's done, so what the reader

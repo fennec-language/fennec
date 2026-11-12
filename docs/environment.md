@@ -33,6 +33,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
 - `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
+- `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.

@@ -3788,6 +3788,45 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
     same_as_expected_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
 }
 
+/// A print that fails stops the program there, as anything that fails does. Its standard output
+/// is a file it may only write 512 bytes of (`ulimit -f 1`, with the signal for passing that
+/// ignored), so writing fails once a run has kept enough to write out: what comes after the loop
+/// never runs, and the failure says why. It used to carry on and say so only at the end.
+#[cfg(unix)]
+#[test]
+fn a_print_that_fails_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, stderr: Stderr):\n    for i in range(100000):\n        stdout.print(i)\n    stderr.write_line(\"went on\")?\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("print_fails")?;
+        let (program, executable) = (dir.join("prints.fen"), dir.join("prints"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' XFSZ; ulimit -f 1; exec \"$0\" > \"$1\"")
+            .arg(&executable)
+            .arg(dir.join("printed.txt"))
+            .output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert!(err.starts_with("error: couldn't write output"), "{how:?}: {err}");
+        assert!(!err.contains("went on"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
 /// Two ints known not negative multiply unsigned: past `i64::MAX` and past `u64::MAX` both fail.

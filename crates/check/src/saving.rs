@@ -36,10 +36,38 @@ const NEVER_SAVED: [(&str, &str, &str); 3] = [
     ),
 ];
 
+/// The capabilities, through which all I/O goes, each named as a message says it. A capability is
+/// handed down from `main`, never made: loading one from text would make one nobody handed over,
+/// and saving one means nothing.
+const CAPABILITIES: [(&str, &str); 11] = [
+    ("Stdout", "a `Stdout`"),
+    ("Stderr", "a `Stderr`"),
+    ("Stdin", "a `Stdin`"),
+    ("Fs", "an `Fs`"),
+    ("Net", "a `Net`"),
+    ("Clock", "a `Clock`"),
+    ("Args", "an `Args`"),
+    ("Process", "a `Process`"),
+    ("Entropy", "an `Entropy`"),
+    ("Env", "an `Env`"),
+    ("Signals", "a `Signals`"),
+];
+
+/// What to do instead of saving a capability.
+const CAPABILITY_INSTEAD: &str =
+    "a capability is handed down from `main`, never saved or loaded: pass it to the code that needs it";
+
 /// How a message names a standard library type that's never saved, if it's one, and what to save
 /// instead.
 pub(crate) fn never_saved(name: &str) -> Option<(&'static str, &'static str)> {
-    NEVER_SAVED.iter().find(|(never, ..)| *never == name).map(|(_, what, instead)| (*what, *instead))
+    NEVER_SAVED.iter().find(|(never, ..)| *never == name).map(|(_, what, instead)| (*what, *instead)).or_else(
+        || {
+            CAPABILITIES
+                .iter()
+                .find(|(capability, _)| *capability == name)
+                .map(|(_, what)| (*what, CAPABILITY_INSTEAD))
+        },
+    )
 }
 
 /// The names that show a program uses saving.

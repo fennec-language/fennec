@@ -12,7 +12,7 @@ struct Pair:
         out.write(f"{self.x}!")
 
 def shown(n: int) -> str:
-    f"{[Pair(x=n)]} {[Tag(name=str(n))]}"
+    return f"{[Pair(x=n)]} {[Tag(name=str(n))]}"
 
 def main(stdout: Stdout):
     made = sorted([shown(n) for n in parallel(range(32))])

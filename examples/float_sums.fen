@@ -7,7 +7,7 @@ from std import math
 
 ## A float from a seed, the same everywhere: a ratio of ints, which every platform rounds alike.
 def item(seed: int) -> float:
-    (float(seed * 7919 % 10007) - 5003.0) / float(seed % 97 + 1)
+    return (float(seed * 7919 % 10007) - 5003.0) / float(seed % 97 + 1)
 
 def main(stdout: Stdout):
     for length in [0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 20, 1000, 4099]:
@@ -34,7 +34,7 @@ def main(stdout: Stdout):
     # One running total, left to right, as `sum` added before.
     mut one_by_one = 0.0
     mut at = 0
-    while at < ones.len():
+    while at < len(ones):
         one_by_one += ones[at]
         at += 1
     stdout.print("fixed", sum(ones), "one by one", one_by_one, "exact", 1e16 + 100000.0)

@@ -36,9 +36,9 @@ export error SqlError:
     def message(self) -> str:
         match self:
             case .Column(name, reason):
-                f"column `{name}`: {reason}"
+                return f"column `{name}`: {reason}"
             case Constraint(reason) | Busy(reason) | Failed(reason):
-                reason
+                return reason
 
 ## A database, or a transaction in one: what runs queries.
 export interface Sql:
@@ -65,21 +65,21 @@ export struct SqlRows:
 ## its own. A column that doesn't fit, a field with no column and a column with no field each fail
 ## with `SqlError.Column`, naming it.
 export def rows_as[T: Deserializable](rows: SqlRows) -> list[T] fails SqlError:
-    width = rows.columns.len()
-    count = 0 if width == 0 else rows.kinds.len() // width
+    width = len(rows.columns)
+    count = 0 if width == 0 else len(rows.kinds) // width
     mut src = SqlRowReader(_rows=rows, _width=width)
     mut found = list[T]()
     for row in range(count):
         src._row = row
         src._cell = 0
         src._in_record = False
-        value = T.deserialize(ref src) else as err:
+        value = T.deserialize(ref src) except err:
             # A field with no column says so with no line, and its name as the message.
             if err.line < 0:
                 fail .Column(name=err.message, reason="the query gives no column for this field")
             fail .Column(name=src._column(), reason=err.message)
         found.append(value)
-    found
+    return found
 
 ## Reads a row into a value, through its `deserialize`: a struct's fields by the columns' names,
 ## or a single column as a value of its own.
@@ -96,10 +96,10 @@ struct SqlRowReader:
     _filled = list[int]()
 
     def _column(self) -> str:
-        self._rows.columns[self._cell] if self._cell < self._width else ""
+        return self._rows.columns[self._cell] if self._cell < self._width else ""
 
     def _bad(self, message: str) -> ParseError:
-        ParseError(message=message, line=self._row + 1, column=self._cell + 1)
+        return ParseError(message=message, line=self._row + 1, column=self._cell + 1)
 
     ## Where the cell being read is, in the lists of `SqlRows`, after checking there's one.
     def _here(self) -> int fails ParseError:
@@ -107,51 +107,51 @@ struct SqlRowReader:
             fail self._bad(
                 f"a row of {self._width} columns can't be read as one value: read it into a struct",
             )
-        self._row * self._width + self._cell
+        return self._row * self._width + self._cell
 
     def _kind(self) -> int fails ParseError:
-        self._rows.kinds[self._here()?]
+        return self._rows.kinds[self._here()?]
 
     def _wrong(self, kind: int, wanted: str) -> ParseError:
         held = ["null", "an int", "a float", "text", "bytes"][kind]
-        self._bad(f"it holds {held}, not {wanted}")
+        return self._bad(f"it holds {held}, not {wanted}")
 
     def int(ref self) -> int fails ParseError:
         kind = self._kind()?
         if kind != 1: fail self._wrong(kind, "an int")
-        self._rows.ints[self._rows.at[self._here()?]]
+        return self._rows.ints[self._rows.at[self._here()?]]
 
     def float(ref self) -> float fails ParseError:
         kind = self._kind()?
         at = self._rows.at[self._here()?]
         if kind == 1: return float(self._rows.ints[at])
         if kind != 2: fail self._wrong(kind, "a float")
-        self._rows.floats[at]
+        return self._rows.floats[at]
 
     def bool(ref self) -> bool fails ParseError:
         kind = self._kind()?
         if kind != 1: fail self._wrong(kind, "a bool")
         n = self._rows.ints[self._rows.at[self._here()?]]
         if n != 0 and n != 1: fail self._bad(f"it holds {n}, and a bool is 0 or 1")
-        n == 1
+        return n == 1
 
     def text(ref self) -> str fails ParseError:
         kind = self._kind()?
         if kind != 3: fail self._wrong(kind, "text")
-        self._rows.texts[self._rows.at[self._here()?]]
+        return self._rows.texts[self._rows.at[self._here()?]]
 
     def bytes(ref self) -> bytes fails ParseError:
         kind = self._kind()?
         at = self._rows.at[self._here()?]
         if kind == 3: return self._rows.texts[at].encode()
         if kind != 4: fail self._wrong(kind, "bytes")
-        self._rows.blobs[at]
+        return self._rows.blobs[at]
 
     def none(ref self) -> bool fails ParseError:
-        self._kind()? == 0
+        return self._kind()? == 0
 
     def value[T: Deserializable](ref self) -> T fails ParseError:
-        T.deserialize(ref self)?
+        return T.deserialize(ref self)?
 
     def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         fail self._bad("a column holds one value, not a list")
@@ -189,19 +189,19 @@ struct SqlRowReader:
         fail self._bad(f"`{self._type}` has no field called `{name}`")
 
     def field_at(self) -> int:
-        self._field
+        return self._field
 
     def missing(self, name: str) -> ParseError:
-        ParseError(message=name, line=-1, column=0)
+        return ParseError(message=name, line=-1, column=0)
 
     def rule(self, message: str) -> ParseError:
-        self._bad(message)
+        return self._bad(message)
 
     def at_item(self, at: int, message: str) -> ParseError:
-        self._bad(f"item {at} {message}")
+        return self._bad(f"item {at} {message}")
 
     def here(self, message: str) -> ParseError:
-        self._bad(message)
+        return self._bad(message)
 
     def saw_id(ref self, kind: str, position: int):
         pass
@@ -210,23 +210,23 @@ struct SqlRowReader:
         pass
 
     def tag(ref self, kind: str) -> int:
-        new_tag()
+        return new_tag()
 
     ## A null in a field that isn't optional fails, saying so, rather than taking its default.
     def none_next(ref self) -> bool:
-        False
+        return False
 
     def exact(self) -> bool:
-        False
+        return False
 
     def ordered(ref self, name: str) -> bool fails ParseError:
-        False
+        return False
 
     def end_ordered(ref self):
         pass
 
     def map_count(ref self) -> int fails ParseError:
-        -1
+        return -1
 
     def end_map(ref self):
         pass

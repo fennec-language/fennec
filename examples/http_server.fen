@@ -7,11 +7,11 @@ def respond(request: Request) -> Response:
     match request.path:
         case "/hello":
             name = request.query.get("name") else "you"
-            Response(status=200, body=f"hello, {name}".encode())
+            return Response(status=200, body=f"hello, {name}".encode())
         case "/echo" if request.method == "POST":
-            Response(status=200, headers={"content-type": "text/plain"}, body=request.body)
+            return Response(status=200, headers={"content-type": "text/plain"}, body=request.body)
         case _:
-            Response(status=404, body="nothing here".encode())
+            return Response(status=404, body="nothing here".encode())
 
 # `respond` is a plain function, so its tests call it directly.
 test "it says hello by name":
@@ -39,10 +39,10 @@ test "a request goes through the server"(net: Net):
             )
 
 def main(net: Net, args: Args, stdout: Stdout):
-    if args.len() == 0:
+    if len(args) == 0:
         stdout.print("give a port to serve on, like 8080")
         return
-    port = int(args[0]) else 8080
+    port = int(args[0]) except InvalidValue(): 8080
     with net.listen(port)? as server:
         stdout.print(f"serving on http://localhost:{server.port}")
         server.serve(respond)

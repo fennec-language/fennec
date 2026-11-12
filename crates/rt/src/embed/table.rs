@@ -145,6 +145,7 @@ impl Table {
         places.chain(self.short.into_values())
     }
 
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.len
     }
@@ -171,6 +172,22 @@ impl Table {
             }
         }
         (sizes, never_freed)
+    }
+
+    /// How many blocks it holds that can still be freed: all but those kept for the whole run, like
+    /// literals and the cases with no fields made the first time they're asked for.
+    pub(super) fn freeable(&self) -> usize {
+        let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
+        let never_freed = |block: &[u64]| {
+            block
+                .get(1)
+                .is_some_and(|shape| *shape >> super::heap::OWNER_SHIFT == super::heap::NEVER_FREED_OWNER)
+        };
+        placed
+            .flat_map(|page| page.iter().flatten())
+            .chain(self.short.values())
+            .filter(|block| !never_freed(block))
+            .count()
     }
 
     fn slot(&self, address: usize) -> Option<&[u64]> {

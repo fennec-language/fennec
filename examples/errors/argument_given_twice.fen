@@ -1,5 +1,5 @@
 def area(width: int, height: int) -> int:
-    width * height
+    return width * height
 
 def main(stdout: Stdout):
     stdout.print(area(width=2, width=3, height=4))

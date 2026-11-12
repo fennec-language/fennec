@@ -3,7 +3,7 @@
 from std.math import lerp as blend
 
 def lerp(text: str) -> str:
-    text + " is mine"
+    return text + " is mine"
 
 def main(stdout: Stdout):
     stdout.print(blend(0.0, end=10.0, amount=0.5))

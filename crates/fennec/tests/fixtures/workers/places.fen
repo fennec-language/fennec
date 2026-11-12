@@ -14,13 +14,13 @@ struct Unit:
         self.hp += value
 
 def unit(hp: int) -> Unit:
-    Unit(hp, [hp], Inner([hp]))
+    return Unit(hp, [hp], Inner([hp]))
 
 def changed(captured: list[Unit], at: int) -> int:
     mut copy = captured
     copy[at % 2].grow(at)
     copy[at % 2].inner.grow(at)
-    copy[at % 2].tags.len() + copy[at % 2].inner.tags.len() + copy[at % 2].hp
+    return len(copy[at % 2].tags) + len(copy[at % 2].inner.tags) + copy[at % 2].hp
 
 def main(stdout: Stdout):
     captured = [unit(1), unit(2)]

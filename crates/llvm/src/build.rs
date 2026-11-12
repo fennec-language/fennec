@@ -637,7 +637,7 @@ mod tests {
             ));
         }
         format!(
-            "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+            "def at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    return total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
         )
     }
 
@@ -654,8 +654,8 @@ mod tests {
     }
 
     fn units(source: &str) -> Result<Vec<Unit>, String> {
-        let module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         Ok(crate::emit(&fennec_ir::lower(&module, &checked))?.0)
     }
 

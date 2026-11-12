@@ -13,7 +13,7 @@ def main(stdout: Stdout):
     imports.add_edge(from_id=api, to_id=notes, edge="Note")
     imports.add_edge(from_id=api, to_id=json, edge="dumps")
     imports.add_edge(from_id=notes, to_id=json, edge="loads")
-    stdout.print(imports.len(), "modules,", imports.edge_count(), "imports")
+    stdout.print(len(imports), "modules,", imports.edge_count(), "imports")
     stdout.print("api uses", [imports[edge.to_id] for edge in imports.edges_from(api)])
     stdout.print("json is used by", [imports[edge.from_id] for edge in imports.edges_to(json)])
     order = imports.topological_order() else []

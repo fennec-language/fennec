@@ -383,7 +383,10 @@ fn report_counts(counts: &heap::Counts, live: usize) {
     let blocked = super::serve::blocked_waits();
     #[cfg(not(any(test, feature = "threads")))]
     let blocked = 0;
-    let said = counts_line(counts, super::parallel::calls(), blocked);
+    // The main thread's, with every worker's, whose tasks the main thread's counts never see.
+    let mut all = *counts;
+    all.add(&heap::worker_counts());
+    let said = counts_line(&all, super::parallel::calls(), blocked);
     let said = match super::dicts::found_puts() {
         0 => said,
         puts => format!("{said} found_puts {puts}"),

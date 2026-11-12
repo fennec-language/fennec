@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Output;
 
-const SOURCE: &str = "def used() -> int:\n    41 + 1\n\ndef unused() -> int:\n    2\n\n\
+const SOURCE: &str = "def used() -> int:\n    return 41 + 1\n\ndef unused() -> int:\n    return 2\n\n\
     def main(stdout: Stdout):\n    stdout.print(used())\n";
 
 /// A folder for a program and for Fennec's own files, with `SOURCE` written in it.
@@ -42,7 +42,7 @@ fn a_mistake_main_doesnt_reach_stops_the_run_even_after_a_run_that_passed() {
     for _ in 0..2 {
         assert_eq!(stdout(&run(&home, &game).unwrap()), "42\n");
     }
-    std::fs::write(&game, SOURCE.replace("    2\n", "    \"two\"\n")).unwrap();
+    std::fs::write(&game, SOURCE.replace("    return 2\n", "    return \"two\"\n")).unwrap();
     for _ in 0..2 {
         let rejected = run(&home, &game).unwrap();
         assert!(!rejected.status.success());
@@ -113,12 +113,12 @@ fn what_main_reaches_checks_wherever_the_whole_program_does() {
     assert!(compared > 50, "only {compared} programs were compared");
 }
 
-/// A call in a `lend`'s cleanup, written `except:` or `else:`, is reached: `fennec run` runs the
-/// program `fennec build` builds, rather than refusing it as calling what "doesn't exist".
+/// A call in a `lend`'s cleanup, `lend x except:`, is reached: `fennec run` runs the program
+/// `fennec build` builds, rather than refusing it as calling what "doesn't exist".
 #[test]
 fn a_call_in_a_lends_cleanup_is_reached() {
     let dir = scratch("lend-cleanup").unwrap();
-    for cleanup in ["except", "else"] {
+    for cleanup in ["except"] {
         let source = format!(
             "struct Tally:\n    count: int\n\ndef noted(code: int, stdout: Stdout):\n    stdout.print(\"noted\", code)\n\n\
              def guarded(code: int, stdout: Stdout) -> with Tally:\n    stdout.print(\"open\", code)\n    \
@@ -140,7 +140,7 @@ fn a_call_in_a_lends_cleanup_is_reached() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-const TESTED: &str = "def double(x: int) -> int:\n    x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n\n\
+const TESTED: &str = "def double(x: int) -> int:\n    return x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n\n\
     def main(stdout: Stdout):\n    stdout.print(double(21))\n";
 
 #[test]
@@ -215,7 +215,7 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(dir.join("kit.toml"), manifest).unwrap();
-    let lib = |value: &str| format!("def value() -> int:\n    {value}\n");
+    let lib = |value: &str| format!("def value() -> int:\n    return {value}\n");
     std::fs::write(dir.join("src/lib.fen"), lib("1")).unwrap();
     let main = "from lib import value\n\ndef main(stdout: Stdout):\n    stdout.print(value())\n    stdout.print([1][value()])\n";
     std::fs::write(dir.join("src/main.fen"), main).unwrap();
@@ -229,8 +229,8 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
         assert_eq!(stdout(&again), stdout(&first));
         assert_eq!(shown(&again), shown(&first), "a failure points at the source just the same");
     }
-    // Long enough that a file's time can be told from when it was noted.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    // A file's time can be told from when it was noted once it's older than the clock's grain.
+    aged(&dir).unwrap();
     assert_eq!(stdout(&run(&home, &dir).unwrap()), stdout(&first));
     let noted = run(&home, &dir).unwrap();
     assert_eq!(shown(&noted), shown(&first), "started without reading anything");
@@ -238,6 +238,25 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     std::fs::write(dir.join("src/lib.fen"), lib("0")).unwrap();
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "0\n1\n", "an edit is seen");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Sets the time of every file of the kit in `dir`, `kit.toml` and what's under `src`, ten seconds
+/// back, so a run can tell each from when it was noted, which it otherwise couldn't until the
+/// clock's grain had passed: what a test once slept 2.1 seconds for.
+fn aged(dir: &Path) -> std::io::Result<()> {
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+    let mut files = vec![dir.join("kit.toml")];
+    let mut folders = vec![dir.join("src")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder)?.flatten() {
+            let path = entry.path();
+            if path.is_dir() { folders.push(path) } else { files.push(path) }
+        }
+    }
+    for file in files.iter().filter(|file| file.exists()) {
+        std::fs::File::options().write(true).open(file)?.set_modified(then)?;
+    }
+    Ok(())
 }
 
 /// A kit whose `main` prints what it embeds, with `test` added to what it holds.
@@ -260,8 +279,8 @@ fn an_edit_to_an_embedded_file_is_seen_by_a_kit_started_from_what_it_kept() {
     let dir = embedding_kit("embed_image", "").unwrap();
     let home = dir.join("home");
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
-    // Long enough that a file's time can be told from when it was noted.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    // A file's time can be told from when it was noted once it's older than the clock's grain.
+    aged(&dir).unwrap();
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n", "started from what it kept, bytes and all");
 
@@ -294,7 +313,7 @@ fn an_edit_to_an_embedded_file_is_seen_in_a_single_file() {
 fn a_program_with_its_own_embed_function_calls_it() {
     let dir = scratch("embed_own").unwrap();
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
-    let source = "def embed_file(path: str) -> int:\n    path.len()\n\n\
+    let source = "def embed_file(path: str) -> int:\n    return len(path)\n\n\
         def main(stdout: Stdout):\n    stdout.print(embed_file(\"no such file\"))\n";
     std::fs::write(&game, source).unwrap();
     assert_eq!(stdout(&run(&home, &game).unwrap()), "12\n");
@@ -319,7 +338,7 @@ fn an_edit_to_an_embedded_file_runs_the_tests_before_a_run_again() {
 /// one. The linter's `naming-case` keeps examples from doing this, so it's checked here.
 #[test]
 fn a_parameter_named_like_a_constant_is_the_parameter() {
-    let source = "LIMIT = 10\n\ndef shadow(LIMIT: int) -> int:\n    LIMIT + 1\n\n\
+    let source = "LIMIT = 10\n\ndef shadow(LIMIT: int) -> int:\n    return LIMIT + 1\n\n\
                   def main(stdout: Stdout):\n    stdout.print(shadow(1), LIMIT)\n";
     let dir = scratch("shadowed_constant").unwrap();
     let game = dir.join("game.fen");
@@ -344,7 +363,7 @@ fn locking_kit(name: &str) -> std::io::Result<fennec_temp::Temp> {
     std::fs::write(dir.join("kit.toml"), manifest)?;
     std::fs::write(
         dir.join("src/pause.fen"),
-        "def settle(clock: Clock) -> int:\n    _ = clock.now()\n    1\n",
+        "def settle(clock: Clock) -> int:\n    _ = clock.now()\n    return 1\n",
     )?;
     let main = "from pause import settle\n\n\
                 struct Count:\n    n = 0\n\n\
@@ -377,7 +396,7 @@ fn a_body_edit_that_waits_under_another_files_lock_is_refused() {
         let ran = run_untested(&home, &dir).unwrap();
         assert_eq!(stdout(&ran), "1\n", "{}", String::from_utf8_lossy(&ran.stderr));
     }
-    let waits = "def settle(clock: Clock) -> int:\n    clock.sleep(1ms)\n    1\n";
+    let waits = "def settle(clock: Clock) -> int:\n    clock.sleep(1ms)\n    return 1\n";
     std::fs::write(dir.join("src/pause.fen"), waits).unwrap();
     for _ in 0..2 {
         let refused = run_untested(&home, &dir).unwrap();

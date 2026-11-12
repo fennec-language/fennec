@@ -7,29 +7,29 @@ export struct EmbeddedFolder:
 
     ## How many files it holds.
     def len(self) -> int:
-        self._paths.len()
+        return len(self._paths)
 
     ## The file at `path`, like `"css/app.css"`, or `None` when it holds none there.
     def get(self, path: str) -> bytes?:
         mut low = 0
-        mut high = self._paths.len()
+        mut high = len(self._paths)
         while low < high:
             middle = (low + high) // 2
             if self._paths[middle] < path:
                 low = middle + 1
             else:
                 high = middle
-        if low < self._paths.len() and self._paths[low] == path: return self._files[low]
-        None
+        if low < len(self._paths) and self._paths[low] == path: return self._files[low]
+        return None
 
     ## Each file's path, in order.
     def keys(self) -> list[str]:
-        self._paths
+        return self._paths
 
     ## Each file's bytes, in the order of their paths.
     def values(self) -> list[bytes]:
-        self._files
+        return self._files
 
     ## Each file's path and bytes, in order.
     def items(self) -> list[(str, bytes)]:
-        [(self._paths[at], self._files[at]) for at in range(self._paths.len())]
+        return [(self._paths[at], self._files[at]) for at in range(len(self._paths))]

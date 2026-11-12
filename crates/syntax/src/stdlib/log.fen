@@ -10,24 +10,24 @@ export enum LogLevel:
     def rank(self) -> int:
         match self:
             case .Debug:
-                0
+                return 0
             case .Info:
-                1
+                return 1
             case .Warn:
-                2
+                return 2
             case .Error:
-                3
+                return 3
 
     def label(self) -> str:
         match self:
             case .Debug:
-                "DEBUG"
+                return "DEBUG"
             case .Info:
-                "INFO"
+                return "INFO"
             case .Warn:
-                "WARN"
+                return "WARN"
             case .Error:
-                "ERROR"
+                return "ERROR"
 
 ## How each entry is written.
 export enum LogFormat:
@@ -63,14 +63,14 @@ export struct Log:
 
     ## Whether an entry of this level would be written, for when making one takes work.
     def enabled(self, level: LogLevel) -> bool:
-        level.rank() >= self.level.rank()
+        return level.rank() >= self.level.rank()
 
     ## A log that adds these fields to every entry, like the request it's handling. Its own
     ## value replaces this log's for a field they both have.
     def with_fields(self, fields: dict[str, str]) -> Log:
         mut all_fields = {name: value for name, value in self.fields.items()}
         all_fields.update(fields)
-        copy(self, fields=all_fields)
+        return copy(self, fields=all_fields)
 
     def write(self, level: LogLevel, message: str, fields: dict[str, str]?):
         if not self.enabled(level): return
@@ -93,7 +93,7 @@ export struct Log:
             parts = [seconds] + parts
         for name, value in fields.items():
             parts.append(f"{Log._one_line(name)}={Log._value(value)}")
-        " ".join(parts)
+        return " ".join(parts)
 
     ## One JSON object. The time is a number of seconds, and a field can't replace `time`,
     ## `level` or `message`.
@@ -106,15 +106,15 @@ export struct Log:
         for name, value in fields.items():
             if name != "time" and name != "level" and name != "message":
                 parts.append(f"{quoted(name)}: {quoted(value)}")
-        "{" + ", ".join(parts) + "}"
+        return "{" + ", ".join(parts) + "}"
 
     ## Text that can't start another line, so an entry can't pretend to be two.
     def _one_line(text: str) -> str:
-        text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+        return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
 
     ## A field's value, in quotes if it couldn't be told apart from what follows it.
     def _value(value: str) -> str:
         text = Log._one_line(value)
         plain = text != "" and " " not in text and "=" not in text and "\"" not in text
         if plain: return text
-        "\"" + text.replace("\"", "\\\"") + "\""
+        return "\"" + text.replace("\"", "\\\"") + "\""

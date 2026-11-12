@@ -13,14 +13,14 @@ def main(stdout: Stdout):
         ids.append(units.add(Unit(x=i, hp=1)))
     for round in range(4):
         mut at = round
-        while at < ids.len():
+        while at < len(ids):
             _ = units.remove(ids[at])
             at += 5
         at = round
-        while at < ids.len():
+        while at < len(ids):
             ids[at] = units.add(Unit(x=at, hp=round))
             at += 5
     mut total = 0
     for unit in units.values():
         total += unit.x + unit.hp
-    stdout.print(units.len(), total)
+    stdout.print(len(units), total)

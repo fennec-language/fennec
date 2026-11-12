@@ -16,7 +16,7 @@ struct Link:
     resets = True
 
     def reset(self) -> bool:
-        self.resets
+        return self.resets
 
     def close(self):
         pass
@@ -26,7 +26,7 @@ error Refused:
     why: str
 
     def message(self) -> str:
-        self.why
+        return self.why
 
 ## What a block with a link did wrong.
 error Broke:
@@ -42,12 +42,12 @@ struct Tally:
 def opened(tally: shared Tally, fragile: bool) -> Link fails Refused:
     lock tally as ref counts:
         counts.opened += 1
-        Link(number=counts.opened, resets=not fragile)
+        return Link(number=counts.opened, resets=not fragile)
 
 ## The number of links opened so far.
 def opens(tally: shared Tally) -> int:
     lock tally as counts:
-        counts.opened
+        return counts.opened
 
 ## A block that fails with the link it took.
 def broken(link: Link) fails Broke:
@@ -113,7 +113,7 @@ test "many tasks share a few values"():
     shared count = Tally()
     with pool[Link, Refused](open=() => opened(count, fragile=False)?, size=3)? as links:
         for _ in parallel(range(12)):
-            served_once(links, count) else continue
+            served_once(links, count) except .Timeout() | .Open() | .Closed: continue
     assert opens(count) <= 3
     lock count as counts:
         assert counts.served == 12
@@ -133,7 +133,7 @@ def borrowed_and_broken(links: Pool[Link]) fails PoolError | Broke:
 def taken_number(links: Pool[Link], wait: Duration) -> int fails PoolError:
     with links.take(wait=wait)? as link:
         return link.number
-    0
+    return 0
 
 ## A pool whose links can't be opened.
 def pool_that_cant_open() fails PoolError | Crashed:

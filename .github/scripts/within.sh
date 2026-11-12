@@ -38,7 +38,11 @@ grace=5
 # nothing: a program waiting for input would only wait.
 set -m
 if [ "$cpu" = yes ]; then
-  (ulimit -t "$limit" && exec "$@") < /dev/null &
+  # The soft limit sends SIGXCPU, which says the CPU time was spent; the hard limit, a second
+  # later, is only for a command that catches it. Set as one, as `ulimit -t` sets them, Linux
+  # can find both passed at once and send SIGKILL, which says nothing. Soft first, as the hard
+  # limit can't go below it; a hard limit already lower stays.
+  (ulimit -S -t "$limit" && { ulimit -H -t "$((limit + 1))" 2>/dev/null || :; } && exec "$@") < /dev/null &
 else
   "$@" < /dev/null &
 fi

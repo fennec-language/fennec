@@ -116,10 +116,10 @@ fn program_files(path: &Path) -> Result<(PathBuf, Vec<(String, String)>), String
     }
     let absolute =
         std::fs::canonicalize(path).map_err(|err| format!("couldn't read {}: {err}", path.display()))?;
-    let root = absolute
-        .ancestors()
-        .find(|folder| folder.join("kit.toml").is_file())
+    // Reached only through folders that are trusted: see `fennec_dist::kit_root`.
+    let root = fennec_dist::kit_root(&absolute)?
         .ok_or_else(|| format!("there's no kit.toml in {} or any folder above it", path.display()))?;
+    let root = root.as_path();
     let mut found = Vec::new();
     sources(&root.join("src"), &mut found);
     found.sort();

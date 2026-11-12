@@ -93,7 +93,11 @@ fn cpu_limited(command: &Command, cpu: Duration) -> Command {
     let mut limited = Command::new("sh");
     limited
         .arg("-c")
-        .arg("ulimit -t \"$0\" && exec \"$@\"")
+        // The soft limit sends SIGXCPU, which the test hears as CPU time spent. The hard limit, a
+        // second later, is only for a program that catches it. Set as one, as `ulimit -t` sets
+        // them, Linux can find both passed at once and send SIGKILL, which says nothing. Soft
+        // first, as the hard limit can't go below it; a hard limit already lower stays.
+        .arg("ulimit -S -t \"$0\" && { ulimit -H -t \"$(($0 + 1))\" 2>/dev/null || :; } && exec \"$@\"")
         .arg(cpu.as_secs().max(1).to_string())
         .arg(command.get_program())
         .args(command.get_args());

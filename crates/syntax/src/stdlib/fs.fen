@@ -24,7 +24,7 @@ export struct Fs:
     ## matter if the power goes.
     def create(self, path: str, durable = True) -> with File fails IoError:
         file = self._create(path, durable)?
-        lend file else:
+        lend file except:
             self._discard(file)
         self._finish(file)?
 
@@ -52,7 +52,7 @@ export struct Fs:
     ## It's closed when the block ends.
     def open(self, path: str) -> with File fails IoError:
         file = self._open(path)?
-        lend file else:
+        lend file except:
             self._discard(file)
         self._finish(file)?
 
@@ -80,10 +80,10 @@ export struct File:
     ## What's left in it, as text.
     def read_text(self) -> str fails IoError:
         data = self.read()?
-        data.decode() else fail .Other(reason="this file isn't UTF-8 text")
+        return data.decode() except InvalidValue(): fail .Other(reason="this file isn't UTF-8 text")
 
     def read_bytes(self) -> bytes fails IoError:
-        self.read()?
+        return self.read()?
 
     ## What's left in it, `size` bytes at a time, the last chunk shorter: for reading a file far
     ## bigger than memory, as `blake3(file.chunks(1_000_000)?)` will. A failure to read fails the
@@ -91,7 +91,7 @@ export struct File:
     def chunks(self, size: int) -> Iterator[bytes] fails IoError:
         while True:
             chunk = self.read_chunk(size)?
-            if chunk.len() == 0: return
+            if len(chunk) == 0: return
             yield chunk
 
     ## Each line left in it, without its line break, until the end or a failure. To tell those

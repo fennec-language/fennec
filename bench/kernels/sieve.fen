@@ -10,7 +10,7 @@ def count_primes(limit: int) -> int:
             while multiple <= limit:
                 composite[multiple] = 1
                 multiple += n
-    count
+    return count
 
 def main(stdout: Stdout):
     stdout.print(count_primes(5_000_000))

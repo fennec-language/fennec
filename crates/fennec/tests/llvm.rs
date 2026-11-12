@@ -12293,6 +12293,7 @@ fn connection_writes(said: &str) -> Option<u64> {
 }
 
 /// How many bytes a run allocated in all, from what it said under `FENNEC_COUNTS`.
+#[cfg(unix)]
 fn allocated_bytes(said: &str) -> Option<u64> {
     let line = said.lines().find(|line| line.starts_with("copies "))?;
     let mut words = line.split(' ');
@@ -12302,8 +12303,10 @@ fn allocated_bytes(said: &str) -> Option<u64> {
 
 /// A server reads a body that comes in many pieces into one buffer with room to grow, so a 10 MB
 /// upload allocates a few times its size, where joining each piece onto what came before with
-/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed.
+/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed. It stops
+/// the server with SIGTERM, so it runs where there are signals.
 #[test]
+#[cfg(unix)]
 fn a_served_body_read_in_many_pieces_is_copied_about_once() -> std::io::Result<()> {
     use std::io::{BufRead, Read, Write};
     if !ready() {

@@ -51,8 +51,22 @@ impl Emit<'_, '_, '_> {
         index: &Operand,
         span: Span,
     ) -> Result<(), String> {
-        let (base, _) = self.operand(object)?;
-        let base = if shape.boxed { self.offset(&base, FIELDS_OFFSET) } else { base };
+        // An item taken out to change and put back is read from where the array is, made alone
+        // first when it's in a block, so the change can't show through a copy of it.
+        let home = self.known.is_taken(dest).then(|| self.known.item_home(dest).cloned()).flatten();
+        let base = if let Some((root, path)) = home {
+            let place = self.place_of(root, &path)?;
+            if shape.boxed {
+                let kind = self.place_kind(root, &path)?;
+                let block = self.block_to_change((root, &path), &place, &kind);
+                self.offset(&block, FIELDS_OFFSET)
+            } else {
+                place
+            }
+        } else {
+            let (base, _) = self.operand(object)?;
+            if shape.boxed { self.offset(&base, FIELDS_OFFSET) } else { base }
+        };
         let position = self.array_position(index, shape.count, span)?;
         let at = self.item_at(&base, &shape, &position);
         self.read_into(dest, &shape.item, &at, "")

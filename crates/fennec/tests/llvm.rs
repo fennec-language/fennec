@@ -3626,6 +3626,7 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
+/// Two ints known not negative multiply unsigned: past `i64::MAX` and past `u64::MAX` both fail.
 #[test]
 fn a_product_that_overflows_still_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -3640,6 +3641,7 @@ fn a_product_that_overflows_still_fails_as_pinned() -> std::io::Result<()> {
         ("product_fits", "3037000499", "3037000499"),
         ("product_too_big", "3037000500", "3037000500"),
         ("product_too_small", "-3037000500", "3037000500"),
+        ("product_far_too_big", "4294967296", "4294967296"),
     ] {
         same_as_expected_in_both_builds(name, &program(a, b))?;
     }

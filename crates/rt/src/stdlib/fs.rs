@@ -211,7 +211,12 @@ fn create(path: &str, durable: bool) -> Value {
 /// `fs._open(path)`: the file at `path`, to read.
 fn open(path: &str) -> Value {
     let path = path.to_owned();
-    match blocking(move || std::fs::File::open(path).map_err(Fail::from)) {
+    let opened = move || {
+        let file =
+            std::fs::File::open(&path).map_err(|err| read_failure(err, || Path::new(&path).is_dir()))?;
+        not_a_folder(file)
+    };
+    match blocking(opened) {
         Ok(file) => Value::Ok(Rc::new(lent(OpenFile::Reading(BufReader::new(file))))),
         Err(fail) => io_failed(&fail),
     }
@@ -465,13 +470,11 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
             let path = path.to_string();
             done(blocking(move || Path::new(&path).try_exists().map_err(io)), Value::Bool)
         }
-        ("read_text", [Value::Str(path)]) => {
+        ("read_text" | "read_bytes", [Value::Str(path)]) => {
             let path = path.to_string();
-            done(blocking(move || std::fs::read_to_string(path).map_err(io)), |text| Value::str(&text))
-        }
-        ("read_bytes", [Value::Str(path)]) => {
-            let path = path.to_string();
-            done(blocking(move || std::fs::read(path).map_err(io)), |data| Value::Bytes(Rc::from(data)))
+            read_whole(method == "read_text", move || {
+                std::fs::read(&path).map_err(|err| read_failure(err, || Path::new(&path).is_dir()))
+            })
         }
         ("write_text" | "write_bytes", [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_))]) => {
             let (path, data) = (path.to_string(), bytes_of(data).to_vec());
@@ -561,12 +564,9 @@ pub(crate) fn beneath(
         ("exists", [Value::Str(_)]) => {
             done(blocking(move || folder.try_exists(&at).map_err(io)), Value::Bool)
         }
-        ("read_text", [Value::Str(_)]) => {
-            done(blocking(move || folder.read_to_string(&at).map_err(io)), |text| Value::str(&text))
-        }
-        ("read_bytes", [Value::Str(_)]) => {
-            done(blocking(move || folder.read(&at).map_err(io)), |data| Value::Bytes(Rc::from(data)))
-        }
+        ("read_text" | "read_bytes", [Value::Str(_)]) => read_whole(method == "read_text", move || {
+            folder.read(&at).map_err(|err| read_failure(err, || is_folder_beneath(&folder, &at)))
+        }),
         ("write_text" | "write_bytes", [Value::Str(_), data @ (Value::Str(_) | Value::Bytes(_))]) => {
             let data = bytes_of(data).to_vec();
             done(blocking(move || write_whole_beneath(&folder, &at, &data).map_err(io)), |()| Value::Unit)
@@ -612,7 +612,14 @@ pub(crate) fn beneath(
         }
         ("_create", [Value::Str(_), Value::Bool(durable)]) => create_beneath(folder, at, *durable),
         ("_open", [Value::Str(_)]) => {
-            match blocking(move || folder.open(&at).map(cap_std::fs::File::into_std).map_err(io)) {
+            let opened = move || {
+                let file = folder
+                    .open(&at)
+                    .map(cap_std::fs::File::into_std)
+                    .map_err(|err| read_failure(err, || is_folder_beneath(&folder, &at)))?;
+                not_a_folder(file)
+            };
+            match blocking(opened) {
                 Ok(file) => Value::Ok(Rc::new(lent(OpenFile::Reading(BufReader::new(file))))),
                 Err(fail) => io_failed(&fail),
             }
@@ -938,6 +945,44 @@ fn in_own_words(kind: std::io::ErrorKind) -> String {
     .to_owned()
 }
 
+/// A read of a file that failed, as the failure says it, unless what's there is a folder, which
+/// is said as one on every system: Windows says a folder opened as a file is missing, or that it's
+/// not allowed, where Unix says it's a folder, and an error's kind alone can't tell a real refusal
+/// apart from a folder there.
+fn read_failure(err: std::io::Error, is_folder: impl FnOnce() -> bool) -> Fail {
+    if is_folder() {
+        return Fail { case: "Other", reason: in_own_words(std::io::ErrorKind::IsADirectory) };
+    }
+    Fail::from(err)
+}
+
+/// A whole file's bytes, as `read` gives them, as text or as bytes. Bytes that aren't UTF-8 fail
+/// as text, as the standard library's own read of text does.
+fn read_whole(text: bool, read: impl FnOnce() -> Result<Vec<u8>, Fail> + Send + 'static) -> Value {
+    let data = blocking(read);
+    if !text {
+        return done(data, |data| Value::Bytes(Rc::from(data)));
+    }
+    let text = data.and_then(|data| {
+        String::from_utf8(data).map_err(|_| Fail::from(std::io::Error::from(std::io::ErrorKind::InvalidData)))
+    });
+    done(text, |text| Value::str(&text))
+}
+
+/// A file opened to read, unless it's a folder, which Unix opens as a file and Windows doesn't:
+/// it fails as one on every system.
+fn not_a_folder(file: std::fs::File) -> Result<std::fs::File, Fail> {
+    if file.metadata().is_ok_and(|found| found.is_dir()) {
+        return Err(Fail { case: "Other", reason: in_own_words(std::io::ErrorKind::IsADirectory) });
+    }
+    Ok(file)
+}
+
+/// Whether `at`, beneath `folder`, is a folder.
+fn is_folder_beneath(folder: &cap_std::fs::Dir, at: &Path) -> bool {
+    folder.metadata(at).is_ok_and(|found| found.is_dir())
+}
+
 /// A failed result holding the `IoError` a failure is.
 pub(crate) fn io_failed(fail: &Fail) -> Value {
     let fields = vec![("reason", Value::str(&fail.reason))];
@@ -980,8 +1025,14 @@ mod tests {
         let gone = std::fs::read("/no/such/place/for/fennec").expect_err("it isn't there");
         let fail = Fail::from(gone);
         assert_eq!((fail.case, fail.reason.as_str()), ("NotFound", "nothing is there"));
-        let folder = std::fs::read_to_string(std::env::temp_dir()).expect_err("it's a folder");
-        assert_eq!(Fail::from(folder).reason, "it's a folder, not a file");
+        // A folder read as a file is said as one on every system, though Windows calls it missing.
+        for read in ["read_text", "read_bytes", "_open"] {
+            let folder = crate::value::Value::str(&std::env::temp_dir().to_string_lossy());
+            let shown = crate::format::repr(
+                &super::real_fs(read, &[folder], fennec_syntax::Span::default()).unwrap(),
+            );
+            assert!(shown.contains("reason=\"it's a folder, not a file\""), "{read}: {shown}");
+        }
         let binary = std::io::read_to_string(&[0xFF, 0xFE][..]).expect_err("it isn't text");
         assert_eq!(Fail::from(binary).reason, "the file isn't UTF-8 text");
         assert_eq!(

@@ -24,12 +24,16 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare i64 @fennec_clock_now() nounwind");
                 let nanos = self.temp();
                 self.line(&format!("{nanos} = call i64 @fennec_clock_now()"));
+                // A replay whose recording doesn't match fails here.
+                self.leave_if_failed();
                 self.instant_into(dest.ok_or("no result")?, &nanos)?;
             }
             ("Clock.time", []) => {
                 self.declare("declare i64 @fennec_clock_time() nounwind");
                 let nanos = self.temp();
                 self.line(&format!("{nanos} = call i64 @fennec_clock_time()"));
+                // A replay whose recording doesn't match fails here.
+                self.leave_if_failed();
                 self.instant_into(dest.ok_or("no result")?, &nanos)?;
             }
             ("Clock.sleep", [duration]) => {

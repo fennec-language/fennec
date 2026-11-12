@@ -128,11 +128,41 @@ fn a_database_whose_file_was_swapped_is_told_apart() {
     let found = std::fs::metadata(&path).unwrap();
     let noted = (found.dev(), found.ino());
     let conn = rusqlite::Connection::open(&path).unwrap();
-    assert!(super::real::still_the_file(&conn, &path_text, noted));
+    assert!(super::real::still_the_file(&conn, &path_text, &noted));
     std::fs::rename(&path, folder.join("moved.db")).unwrap();
     std::fs::write(&path, b"").unwrap();
-    assert!(!super::real::still_the_file(&conn, &path_text, noted));
+    assert!(!super::real::still_the_file(&conn, &path_text, &noted));
     drop(conn);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// A database a narrowed `Fs` opens is opened with no link in its path and never made by SQLite:
+/// a link swapped in on the way is refused, and a path that names no file makes none.
+#[cfg(unix)]
+#[test]
+fn a_checked_database_is_never_made_and_never_reached_through_a_link() {
+    use std::os::unix::fs::MetadataExt as _;
+    let folder = std::env::temp_dir().join(format!("fennec-sqlite-nofollow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(folder.join("real")).unwrap();
+    let folder = std::fs::canonicalize(&folder).unwrap();
+    let file = folder.join("real").join("data.db");
+    std::fs::write(&file, b"").unwrap();
+    let found = std::fs::metadata(&file).unwrap();
+    let noted = (found.dev(), found.ino());
+    // The same file, reached through a link to its folder.
+    std::os::unix::fs::symlink(folder.join("real"), folder.join("linked")).unwrap();
+    let through_link = folder.join("linked").join("data.db").to_string_lossy().into_owned();
+    let refused = crate::format::repr(&super::open_checked(&through_link, noted));
+    assert!(refused.contains("IoError"), "{refused}");
+    // A path that names no file: SQLite makes none.
+    let missing = folder.join("real").join("missing.db");
+    let refused = crate::format::repr(&super::open_checked(&missing.to_string_lossy(), noted));
+    assert!(refused.contains("IoError"), "{refused}");
+    assert!(!missing.exists(), "SQLite made a file the narrowed Fs didn't");
+    // By its own path, with no link in it, it opens.
+    let opened = super::open_checked(&file.to_string_lossy(), noted);
+    assert!(handle_of(&opened).is_ok(), "{}", crate::format::repr(&opened));
     let _ = std::fs::remove_dir_all(&folder);
 }
 
@@ -256,6 +286,10 @@ fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), Strin
         "pragma temp_store_directory = '/tmp'",
         "detach database main",
         "detach database temp",
+        // Refused by SQLite's own default, extension loading being off, and by the allow-list's
+        // refusal of a virtual table, so a later rusqlite feature can't open either.
+        "select load_extension('x')",
+        "create virtual table found using fts5(text)",
     ];
     for text in refused {
         let said = run(db, "_execute", &query(text, &[], &[]))?;

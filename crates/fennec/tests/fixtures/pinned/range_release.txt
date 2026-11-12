@@ -6,9 +6,9 @@ stdout 12
 3
 7
 6
-stderr 158
+stderr 152
 error: index 2 is out of range for length 2
-  --> <dir>/range_release.fen:27:18
+  --> range_release.fen:27:18
    |
 27 |     stdout.print(bag.items[at])
    |                  ^^^^^^^^^^^^^

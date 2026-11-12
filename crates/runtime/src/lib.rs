@@ -359,6 +359,8 @@ export! {
     fennec_parallel_failure() -> i64 => parallel::parallel_failure();
     fennec_parallel_map(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map(a0, a1, a2, a3);
     fennec_parallel_reduce(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce(a0, a1, a2, a3, a4);
+    fennec_parallel_for_heavy(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_heavy(a0, a1, a2);
+    fennec_parallel_map_heavy(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map_heavy(a0, a1, a2, a3);
     fennec_parallel_for_waiting(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_waiting(a0, a1, a2);
     fennec_parallel_map_waiting(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map_waiting(a0, a1, a2, a3);
     fennec_parallel_reduce_waiting(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce_waiting(a0, a1, a2, a3, a4);

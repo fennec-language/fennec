@@ -418,6 +418,15 @@ pub(super) fn for_call(words: usize) -> Option<&'static Pool> {
     pool()
 }
 
+/// The pool a call whose body is heavy runs on, whenever it has two items to share: the shared
+/// one, set up, and None on a worker, whose own call runs its ranges itself.
+pub(super) fn for_heavy(length: usize) -> Option<&'static Pool> {
+    if WORKER.get() || length < 2 || SETUP.get().is_none() {
+        return None;
+    }
+    pool()
+}
+
 /// The pool a call whose body may wait runs on, however few its items: the shared one, when workers
 /// can have runtimes, and None on a worker, whose own call runs its ranges itself.
 pub(super) fn for_waiting() -> Option<&'static Pool> {

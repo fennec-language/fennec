@@ -783,11 +783,17 @@ fn request_of(
         headers: Vec::new(),
         body: Vec::new(),
         timeout: CONNECT_TIMEOUT,
+        most_body: http::MOST_BODY,
     };
     let sends_json = named.iter().any(|(name, _)| *name == "json");
     for (name, value) in named {
         match (*name, value) {
             ("timeout", value) => request.timeout = duration_of(value, span)?,
+            ("most_body", Value::Int(most)) => {
+                request.most_body = usize::try_from(*most).map_err(|_| {
+                    Diagnostic::new(format!("`most_body` is a number of bytes, not {most}"), span)
+                })?;
+            }
             // Native code and `http_method` both give `json=` as the JSON text already.
             ("body" | "json", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
             ("body", Value::Bytes(data)) => request.body = data.to_vec(),

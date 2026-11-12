@@ -409,6 +409,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "rustls-platform-verifier",
+ "same-file",
  "signal-hook",
  "socket2",
 ]

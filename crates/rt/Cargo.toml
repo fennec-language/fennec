@@ -27,6 +27,7 @@ signal-hook.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 ctrlc.workspace = true
+same-file.workspace = true
 socket2.workspace = true
 
 [lints]

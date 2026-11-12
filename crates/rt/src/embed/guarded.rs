@@ -535,7 +535,15 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
         std::mem::replace(&mut *slot.held.write().unwrap_or_else(PoisonError::into_inner), Held::Taken);
     let table = match held {
         Held::Free(table) => *table,
-        Held::Read(table) => Arc::try_unwrap(table).unwrap_or_default(),
+        Held::Read(table) => match Arc::try_unwrap(table) {
+            Ok(table) => table,
+            // A thread reading it holds a handle while it does, so the last can't go while one
+            // reads: something let go of a handle it didn't hold. Freeing an empty table in its
+            // place, as this once did, would hide that.
+            Err(_) => super::heap::runtime_bug(&format!(
+                "the `shared` value at {cell:#x} went while another thread was reading it"
+            )),
+        },
         Held::Taken => return,
     };
     let mut handles = Vec::new();

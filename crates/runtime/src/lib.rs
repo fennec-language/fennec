@@ -20,87 +20,74 @@ use fennec_rt::embed::{
 #[used]
 static BUILD_STAMP: &str = concat!("fennec-runtime-build:", env!("FENNEC_BUILD"));
 
-/// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
-/// address of, which stays the same for the whole run. Generated code has to check it after
-/// calling one of these, and needn't after any other.
+/// The exported functions that never fail: none of them sets the flag `fennec_aot_failed_flag`
+/// gives the address of. Generated code has to check that flag after calling any other, and may
+/// skip the check after one of these. A function missing from here costs only a check. One here
+/// that can fail would let a program go on past a failure, so each was read through to what it
+/// calls, and in a debug build the export stops the program if one sets the flag anyway.
 ///
 /// Nothing exported unwinds: a panic crossing `extern "C"` aborts the program.
-pub const CAN_FAIL: &[&str] = &[
-    "fennec_dict_pop",
-    "fennec_dict_pop_header",
-    "fennec_stop",
-    "fennec_channel_new",
-    "fennec_channel_new_every",
-    "fennec_bytes_of_list",
-    "fennec_assert_sides",
-    "fennec_assert_said",
-    "fennec_list_sorted_with",
-    "fennec_list_sorted_by_keys_with",
-    "fennec_regex_split",
-    "fennec_regex_find",
-    "fennec_regex_find_all",
-    "fennec_regex_replace",
-    "fennec_box_from_value",
-    "fennec_buffer_insert",
-    "fennec_buffer_pop_empty",
-    "fennec_crypto_call",
-    "fennec_native_capability",
-    "fennec_net_call",
-    "fennec_capability_from_value",
-    "fennec_dict_missing",
-    "fennec_dict_missing_header",
-    "fennec_err",
-    "fennec_float_spec_text",
-    "fennec_f32_spec_text",
-    "fennec_u64_spec_text",
-    "fennec_int_power",
-    "fennec_int_spec_text",
-    "fennec_list_from_value",
-    "fennec_list_insert",
-    "fennec_list_remove",
-    "fennec_main_result",
-    "fennec_no_match",
-    "fennec_out_of_range",
-    "fennec_parallel_for",
-    "fennec_parallel_for_waiting",
-    "fennec_parallel_map",
-    "fennec_parallel_map_waiting",
-    "fennec_parallel_reduce",
-    "fennec_parallel_reduce_waiting",
-    "fennec_channel_send",
-    "fennec_channel_receive",
-    "fennec_launch",
-    "fennec_launch_end",
-    "fennec_net_serve",
-    "fennec_pop_empty",
-    "fennec_print_block",
-    "fennec_set_remove",
-    "fennec_shared_enter",
-    "fennec_shared_in",
-    "fennec_shared_leave",
-    "fennec_shared_new",
-    "fennec_shared_out",
-    "fennec_shared_settle",
-    "fennec_set_remove_header",
-    "fennec_str_code",
-    "fennec_str_from_value",
-    "fennec_str_index",
-    "fennec_str_index_text",
-    "fennec_str_print",
-    "fennec_str_slice",
-    "fennec_str_part",
+pub const NEVER_FAIL: &[&str] = &[
+    // Float math, through `libm` or plain arithmetic.
+    "fennec_sin",
+    "fennec_cos",
+    "fennec_tan",
+    "fennec_acos",
+    "fennec_exp",
+    "fennec_log",
+    "fennec_float_power",
+    "fennec_round_places",
+    // A text's header, made in place, or for a long one in a block the heap gives, which can't
+    // fail: running out of memory aborts.
     "fennec_int_header",
     "fennec_u64_header",
-    "fennec_code_header",
-    "fennec_float_header",
     "fennec_f32_header",
-    "fennec_str_split",
-    "fennec_stream_next",
-    "fennec_to_bool",
-    "fennec_to_float",
-    "fennec_to_int",
-    "fennec_unpack",
+    "fennec_float_header",
+    "fennec_code_header",
+    // Temporaries pushed, copied and read. Dropping back to a mark lets go of blocks, which only
+    // queues the generators among them to be closed: `fennec_free` runs those, so it can fail.
+    "fennec_mark",
+    "fennec_truncate",
+    "fennec_keep",
+    "fennec_int",
+    "fennec_float",
+    "fennec_bool",
+    "fennec_none",
+    "fennec_unit",
+    "fennec_str",
+    "fennec_copy",
+    "fennec_is_err",
+    "fennec_is_none",
+    "fennec_passes",
+    // The locks this thread notes it holds, a list of words.
+    "fennec_lock_note",
+    "fennec_lock_forget",
+    // The dict hash's seed and step, from keys made once.
+    "fennec_dict_hash_seed",
+    "fennec_dict_strong_step",
+    // A fresh tag, from a counter.
+    "fennec_new_tag",
 ];
+
+/// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.
+const fn never_fails(symbol: &str) -> bool {
+    listed(NEVER_FAIL, symbol.as_bytes())
+}
+
+const fn listed(names: &[&str], symbol: &[u8]) -> bool {
+    match names {
+        [first, rest @ ..] => same(first.as_bytes(), symbol) || listed(rest, symbol),
+        [] => false,
+    }
+}
+
+const fn same(a: &[u8], b: &[u8]) -> bool {
+    match (a, b) {
+        ([x, a @ ..], [y, b @ ..]) => *x == *y && same(a, b),
+        ([], []) => true,
+        _ => false,
+    }
+}
 
 /// What an executable's program allocates through: its big blocks, and what the runtime
 /// allocates for itself while it works. With the `sanitize` feature it's the system's own,
@@ -116,6 +103,15 @@ macro_rules! export {
             $(#[$($meta)*])*
             #[unsafe(no_mangle)]
             pub extern "C" fn $symbol($($arg: $ty),*) $(-> $ret)? {
+                // In a debug build, one listed as never failing stops the program if it does.
+                if cfg!(debug_assertions) && const { never_fails(stringify!($symbol)) } {
+                    let before = fennec_rt::embed::failure_flag_set();
+                    let result = $module::$function($($pass),*);
+                    if !before && fennec_rt::embed::failure_flag_set() {
+                        fennec_rt::embed::failed_though_never_fails(stringify!($symbol));
+                    }
+                    return result;
+                }
                 $module::$function($($pass),*)
             }
         )*
@@ -425,4 +421,24 @@ fn stop(code: i32) {
     }
     // SAFETY: the C library's `exit` takes any code, and this is the last thing the run does.
     unsafe { exit(code) }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Each function said never to fail is one the library exports, under that name.
+    #[test]
+    fn every_function_said_never_to_fail_is_exported() {
+        for symbol in super::NEVER_FAIL {
+            assert!(super::SYMBOLS.contains(symbol), "{symbol} isn't exported");
+        }
+    }
+
+    /// Whether a symbol is listed is worked out by name, exactly.
+    #[test]
+    fn a_symbol_is_listed_only_by_its_whole_name() {
+        assert!(super::never_fails("fennec_int"));
+        assert!(!super::never_fails("fennec_free"));
+        assert!(!super::never_fails("fennec_in"));
+        assert!(!super::never_fails("fennec_int_"));
+    }
 }

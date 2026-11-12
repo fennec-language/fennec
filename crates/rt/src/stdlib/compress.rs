@@ -1,6 +1,6 @@
 //! `std.compress`: DEFLATE, and zlib and gzip around it, which the runtime does in Rust in
-//! `crate::compress`. `level=` goes on a function's name, as native code has it:
-//! `compress.gzip.level`.
+//! `crate::compress`. `level=` and `most=` go on a function's name, as native code has it:
+//! `compress.gzip.level` and `compress.gunzip.most`.
 
 use std::rc::Rc;
 
@@ -11,6 +11,19 @@ use crate::value::Value;
 
 /// One of these functions, by its full name.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    // The most a read gives back.
+    let (name, most) = match name.strip_suffix(".most") {
+        Some(function) => {
+            let Some(Value::Int(most)) = values.get(1) else {
+                return Err(Diagnostic::new(format!("`{function}`'s `most` is an int"), span));
+            };
+            let Ok(most) = usize::try_from(*most) else {
+                return Err(Diagnostic::new(format!("`most` is a number of bytes, not {most}"), span));
+            };
+            (function, most)
+        }
+        None => (name, codec::MOST_READ),
+    };
     let (function, level) = match name.strip_suffix(".level") {
         Some(function) => {
             let Some(Value::Int(level)) = values.get(1) else {
@@ -36,7 +49,15 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
     let read = |found: Result<Vec<u8>, String>, what: &str| match found {
         Ok(out) => Value::Ok(Rc::new(made(out))),
         Err(why) => {
-            let message = Value::str(&format!("this isn't {what} data: {why}"));
+            let message = if why == codec::PAST_MOST {
+                let most = crate::embed::numbers::with_commas(most);
+                format!(
+                    "the {what} data holds more than {most} bytes: give `most=` a bigger number if it needs one"
+                )
+            } else {
+                format!("this isn't {what} data: {why}")
+            };
+            let message = Value::str(&message);
             Value::Err(Rc::new(Value::made_error("InvalidValue", vec![("message", message)])))
         }
     };
@@ -45,13 +66,13 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
         "compress.zlib" => made(codec::zlib(data, level)),
         "compress.gzip" => made(codec::gzip(data, level)),
         "compress.inflate" => read(
-            codec::inflate(data).and_then(|(out, used)| {
+            codec::inflate(data, most).and_then(|(out, used)| {
                 if used == data.len() { Ok(out) } else { Err("there's more after its end".to_owned()) }
             }),
             "DEFLATE",
         ),
-        "compress.unzlib" => read(codec::unzlib(data), "zlib"),
-        "compress.gunzip" => read(codec::gunzip(data), "gzip"),
+        "compress.unzlib" => read(codec::unzlib(data, most), "zlib"),
+        "compress.gunzip" => read(codec::gunzip(data, most), "gzip"),
         _ => return Err(Diagnostic::new(format!("`{function}` isn't in std.compress"), span)),
     })
 }

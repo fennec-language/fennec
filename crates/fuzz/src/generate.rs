@@ -68,8 +68,8 @@ def twice[T](value: T) -> list[T]:
     return [value, value]
 
 def at_or_zero(items: list[int], at: int) -> int:
-    if items.len() == 0: return 0
-    return items[at % items.len()]
+    if len(items) == 0: return 0
+    return items[at % len(items)]
 
 ";
 
@@ -141,7 +141,7 @@ impl Writer<'_> {
                 format!("({} {} {})", self.int(next), self.word(&["//", "%"]), self.int(next))
             }
             5 => format!("({} {} {})", self.int(next), self.word(&["//", "%"]), 1 + self.choice(9)),
-            6 => format!("{}.len()", self.of(Kind::Ints, next)),
+            6 => format!("len({})", self.of(Kind::Ints, next)),
             7 if self.risky => format!("{}[{}]", self.of(Kind::Ints, next), self.int(next)),
             7 => format!("at_or_zero({}, {})", self.of(Kind::Ints, next), self.int(next)),
             8 => {
@@ -289,9 +289,9 @@ impl Writer<'_> {
                 let change = match self.choice(3) {
                     0 => format!("{list}.append({value})"),
                     1 if self.risky => format!("{list}[{}] = {value}", self.int(2)),
-                    1 => format!("if {list}.len() > 0: {list}[{} % {list}.len()] = {value}", self.int(2)),
+                    1 => format!("if len({list}) > 0: {list}[{} % len({list})] = {value}", self.int(2)),
                     _ if self.risky => format!("_ = {list}.pop()"),
-                    _ => format!("if {list}.len() > 0: _ = {list}.pop()"),
+                    _ => format!("if len({list}) > 0: _ = {list}.pop()"),
                 };
                 self.line(indent, &change);
             }

@@ -945,11 +945,9 @@ impl Writer<'_> {
         if ELSE_LEAVES_RUN_CLEANUPS {
             ways.extend([Leave::ElseReturn, Leave::ElseFail, Leave::ElseContinue, Leave::ElseBreak]);
         }
-        if super::source::EXCEPT_PARSES {
-            ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
-            if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
-                ways.push(Leave::ExceptArms);
-            }
+        ways.extend([Leave::ExceptReturn, Leave::ExceptContinue, Leave::ExceptValue]);
+        if EXCEPT_ARMS_LEAVE_RUN_CLEANUPS {
+            ways.push(Leave::ExceptArms);
         }
         // A crash ends the program, so it's rare.
         let how = if self.choice(10) == 0 {

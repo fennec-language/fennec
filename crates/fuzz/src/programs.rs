@@ -452,9 +452,9 @@ mod tests {
         }
     }
 
-    /// With `except`, no failure is handled with `else`, and every catch-all `except why:` either
-    /// has a `case` for each error or reads `why`. Checked on the rewrite whether or not the switch
-    /// is on, so it's ready the day `except` parses.
+    /// Programs are written only in the forms locked on 2026-11-11: no failure is handled with
+    /// `else`, every catch-all `except why:` either has a `case` for each error or reads `why`,
+    /// and `len(x)` and `abs(x)` stand where the methods did.
     #[test]
     fn it_handles_failures_with_except() {
         let wanted = [
@@ -471,7 +471,7 @@ mod tests {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
-            let program = source::excepted(&source::source(&generate::program(&bytes)));
+            let program = source::source(&generate::program(&bytes));
             let lines: Vec<&str> = program.lines().collect();
             for (at, line) in lines.iter().enumerate() {
                 let trimmed = line.trim_start();
@@ -499,9 +499,11 @@ mod tests {
             for (count, want) in found.iter_mut().zip(wanted) {
                 *count += usize::from(program.contains(want));
             }
-            if source::EXCEPT_PARSES {
-                assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
-            }
+            assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
+            assert!(
+                !program.contains(".len()") && !program.contains(".abs()"),
+                "a method where a builtin goes"
+            );
         }
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }

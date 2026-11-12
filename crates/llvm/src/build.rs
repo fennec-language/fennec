@@ -761,4 +761,62 @@ mod tests {
         assert!(checks >= calls, "{checks} checks of r12 for {calls} calls");
         Ok(())
     }
+
+    /// A function is the same object byte for byte whatever its unit's number and folder, so one
+    /// taken from the cache is the one a fresh build makes. Its module is named `fennec`: unnamed,
+    /// LLVM names it by the file it's read from, `f{n}.ll`, and an ELF object keeps that name.
+    /// This builds ELF objects, so it runs on any machine.
+    #[test]
+    fn a_function_is_the_same_object_whatever_its_number_and_folder() -> Result<(), String> {
+        let Ok(tools) = Tools::find() else {
+            return Ok(());
+        };
+        let units = units(&long_program(3))?;
+        let unit = units.iter().find(|unit| unit.text.contains("define")).ok_or("no function")?;
+        assert!(unit.text.starts_with("source_filename = \"fennec\"\n"), "{}", unit.text);
+        let header = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n";
+        let named = unit.text.lines().filter(|line| !line.starts_with("target ")).fold(
+            header.to_owned(),
+            |mut text, line| {
+                text.push_str(line);
+                text.push('\n');
+                text
+            },
+        );
+        let unnamed: String = named.lines().filter(|line| !line.starts_with("source_filename")).fold(
+            String::new(),
+            |mut text, line| {
+                text.push_str(line);
+                text.push('\n');
+                text
+            },
+        );
+        let builds = [("one", "f0"), ("and-another", "f17")];
+        let mut objects = Vec::new();
+        let mut failed = None;
+        for (folder, number) in builds {
+            let work =
+                std::env::temp_dir().join(format!("fennec-same-object-{folder}-{}", std::process::id()));
+            let made = std::fs::create_dir_all(&work).map_err(|err| err.to_string()).and_then(|()| {
+                Ok((
+                    one(&tools, &named, &work, number, Way::Optimized)?,
+                    one(&tools, &unnamed, &work, number, Way::Optimized)?,
+                ))
+            });
+            let _ = std::fs::remove_dir_all(&work);
+            match made {
+                Ok(pair) => objects.push(pair),
+                Err(err) => failed = Some(err),
+            }
+        }
+        if let Some(err) = failed {
+            return Err(err);
+        }
+        let [(named_here, unnamed_here), (named_there, unnamed_there)] = &objects[..] else {
+            return Err("two builds give two objects each".to_owned());
+        };
+        assert!(named_here == named_there, "the same module gave two different objects");
+        assert!(unnamed_here != unnamed_there, "an unnamed module's object should hold its file's name");
+        Ok(())
+    }
 }

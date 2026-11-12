@@ -17,9 +17,11 @@ export struct Path:
 
     ## `part`, a path from outside like a request's, inside this one. A leading `/` is taken as
     ## this path's own top, and empty parts are passed over. It fails on anything that could lead
-    ## out of it: a `..`, a `\\`, a control character, or a drive letter like `C:` first. Unlike
-    ## `/`, it can't replace the path. It only looks at the text: an `Fs` narrowed with `only` is
-    ## what keeps a program out of other folders, links and all.
+    ## out of it: a `..`, a `\\`, a control character, or a drive letter like `C:` first. It fails
+    ## too on what Windows reads as other than its text: a name ending in `.` or a space, which
+    ## Windows drops, so `.. ` is `..`, and a device's name, like `CON` or `nul.txt`. Unlike `/`,
+    ## it can't replace the path. It only looks at the text: an `Fs` narrowed with `only` is what
+    ## keeps a program out of other folders, links and all.
     def inside(self, part: str) -> Path fails InvalidValue:
         for c in part:
             if c.code() < 32 or c.code() == 127 or c == "\\":
@@ -31,9 +33,15 @@ export struct Path:
         if len(kept) > 0 and is_drive(kept[0]):
             fail InvalidValue(message=f"`{cut_input(part)}` would leave `{cut_input(self.text)}`")
         for name in kept:
-            if name == "..":
+            # Windows drops a name's last dots and spaces, so `.. ` and `...` climb as `..` does.
+            dropped = name.endswith(".") or name.endswith(" ")
+            if name == ".." or (dropped and name.startswith("..")):
                 fail InvalidValue(
                     message=f"`{cut_input(part)}` would leave `{cut_input(self.text)}`",
+                )
+            if dropped or is_device(name):
+                fail InvalidValue(
+                    message=f"`{cut_input(part)}` can't be a path inside `{cut_input(self.text)}`",
                 )
         return self.join("/".join(kept))
 
@@ -100,3 +108,13 @@ def is_drive(name: str) -> bool:
     if len(name) < 2 or name[1] != ":": return False
     letter = name[0].code()
     return (letter >= 65 and letter <= 90) or (letter >= 97 and letter <= 122)
+
+## Whether Windows reads `name` as a device, like `CON`, `NUL` or `COM1`: alone or before any
+## extension, in any case, with spaces before the extension dropped, so `nul.txt` and `CON .log`
+## are devices too.
+def is_device(name: str) -> bool:
+    stem = name.split(".")[0].rstrip().upper()
+    if stem == "CON" or stem == "PRN" or stem == "AUX" or stem == "NUL": return True
+    if len(stem) != 4 or not (stem.startswith("COM") or stem.startswith("LPT")): return False
+    last = stem[3]
+    return "123456789¹²³".find(last) is not None

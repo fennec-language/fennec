@@ -10674,6 +10674,7 @@ def main(net: Net, signals: Signals, stdout: Stdout):
 /// Waits until the live count a program writes to `report`, as `FENNEC_LIVE_REPORT` asks, says it's
 /// serving at least `at_least` connections, so a test acts once the server has taken them rather
 /// than after a guess at how long that takes. Fails if it never does.
+#[cfg(unix)]
 pub(crate) fn serving(report: &Path, at_least: usize) {
     let started = std::time::Instant::now();
     loop {

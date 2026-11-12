@@ -18801,6 +18801,69 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A struct kept in place that holds a list, read out of a dict by `values()` or `items()`, or out
+/// of a list by `enumerate` or `zip`, is copied with an owner of its own for what it holds. The
+/// copy used to share the list with no owner of its own, so it read freed memory once the dict
+/// let the list go: the first value's list read as `None`, and printing them could crash.
+#[test]
+fn a_struct_copied_out_of_a_dict_owns_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("struct_values_owned")?;
+    let program = dir.join("struct_values_owned.fen");
+    std::fs::write(&program, STRUCT_VALUES_OWNED)?;
+    let executable = dir.join("struct_values_owned");
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let mut args = vec!["build"];
+        args.extend_from_slice(how);
+        let (source, output) =
+            (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+        args.extend([source.as_str(), "-o", output.as_str()]);
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        assert!(ran.status.success(), "{how:?}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), STRUCT_VALUES_PRINT, "{how:?}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(
+            said.lines().any(|line| line.starts_with("copies ") && line.ends_with(" live 0")),
+            "{how:?}: {said}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const STRUCT_VALUES_PRINT: &str = r"[7] [7] [[7], [7]]
+[7] [[7], [7]]
+[7]
+[7] [7]
+[Holder(items=[1, 2], n=2)]
+";
+
+const STRUCT_VALUES_OWNED: &str = r#"struct Holder:
+    items: list[int]
+    n: int
+
+def main(stdout: Stdout):
+    mut h = dict[str, Holder]()
+    for line in ["ab", "cd"]:
+        h[line] = Holder(items=[7], n=1)
+    vals = h.values()
+    stdout.print(vals[0].items, vals[1].items, [x.items for x in h.values()])
+    pairs = h.items()
+    stdout.print(pairs[0][1].items, [p[1].items for p in pairs])
+    numbered = enumerate(vals)
+    stdout.print(numbered[1][1].items)
+    zipped = zip(vals, vals)
+    stdout.print(zipped[0][0].items, zipped[1][1].items)
+    mut by_int = dict[int, Holder]()
+    by_int[0] = Holder(items=[1, 2], n=2)
+    stdout.print(by_int.values())
+    return
+"#;
+
 /// All of `std.crypto`, of text and of bytes.
 #[test]
 fn crypto_matches_what_was_pinned() -> std::io::Result<()> {

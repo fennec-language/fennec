@@ -349,7 +349,7 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
-    /// A source's `lend x else:` cleanup runs on a failure and on a crash, in `main` and in a
+    /// A source's `lend x except:` cleanup runs on a failure and on a crash, in `main` and in a
     /// launched task.
     #[test]
     fn it_cleans_up_after_failures_and_crashes() {

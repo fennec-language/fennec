@@ -1169,7 +1169,7 @@ struct Table:
     others = dict[int, int]()
 
 def next(key: int) -> int:
-    key + 1
+    return key + 1
 
 def same(table: shared Table, key: int):
     lock table as ref held:
@@ -1248,7 +1248,7 @@ struct Tally:
     counts = dict[int, int]()
 
 def made(n: int) -> list[int]:
-    [n, n]
+    return [n, n]
 
 def counter(tally: shared Tally):
     lock tally as ref held:
@@ -1283,7 +1283,7 @@ def looped(tally: shared Tally, times: int):
 def allocating(tally: shared Tally):
     lock tally as ref held:
         held.a = 5
-        held.b = made(held.a).len()
+        held.b = len(made(held.a))
 
 def together(tally: shared Tally, other: shared Tally):
     lock tally, other as ref one, ref two:

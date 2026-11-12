@@ -32,11 +32,11 @@ export struct Notes:
 
     ## The note with `id`, or `None` if there isn't one.
     def get(self, id: str) -> Note?:
-        self.items.get(id)
+        return self.items.get(id)
 
     ## Removes the note with `id`, saying whether there was one.
     def remove(ref self, id: str) -> bool:
-        (self.items.pop(id) else None) is not None
+        return (self.items.pop(id) else None) is not None
 
     ## The notes whose title or body has `words` in it, oldest first.
     def find(self, words: str) -> list[Note]:
@@ -46,8 +46,8 @@ export struct Notes:
                 words,
             ) is not None or note.body.find(words) is not None
         ]
-        sorted(found, key=note => note.created.nanos)
+        return sorted(found, key=note => note.created.nanos)
 
     ## How many notes there are.
     def count(self) -> int:
-        self.items.len()
+        return len(self.items)

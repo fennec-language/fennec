@@ -5,9 +5,9 @@ struct Point:
 def named(point: Point) -> str:
     match point:
         case Point(x=0, z=0):
-            "origin"
+            return "origin"
         case _:
-            "elsewhere"
+            return "elsewhere"
 
 def main(stdout: Stdout):
     stdout.print(named(Point(x=0, y=0)))

@@ -9,11 +9,12 @@ struct Command:
 def parse_command(line: str) -> Command?:
     found = Regex(r"^\s*(\w+)\s+(?:(\d+)\s+)?(\w+)\s*$").match(line)
     if found is None: return None
-    Command(verb=found[1] else "", target=found[3] else "", count=int(found[2] else "1") else 1)
+    count = int(found[2] else "1") except InvalidValue(): 1
+    return Command(verb=found[1] else "", target=found[3] else "", count=count)
 
 test "names with letters only are found whole" for word: str:
     names = Regex(r"[a-z]+").find_all(word)
-    assert all(name.text.len() > 0 for name in names)
+    assert all(len(name.text) > 0 for name in names)
 
 ## Why `pattern` can't be a `Regex`, or "built" if it can.
 def refused(pattern: str) -> str:
@@ -37,7 +38,8 @@ def main(stdout: Stdout):
     log = "hp=30 mp=7 xp=1250 gold=99"
     stat = Regex(r"(\w+)=(\d+)")
     for found in stat.find_all(log):
-        stdout.print(found[1], int(found[2] else "0") else 0, found.start, found.end)
+        amount = int(found[2] else "0") except InvalidValue(): 0
+        stdout.print(found[1], amount, found.start, found.end)
 
     stdout.print(stat.replace(log, r"\1: \2"))
     stdout.print(Regex(r"\s*[,;]\s*").split("sword, shield;bow ,  arrows"))
@@ -47,7 +49,7 @@ def main(stdout: Stdout):
     # Patterns written in the program are checked before it runs. One built while it runs
     # might not be valid, so making it gives a result.
     for pattern in ["[0-9]+", "[0-9+"]:
-        regex = Regex(pattern) else as error:
+        regex = Regex(pattern) except error:
             stdout.print(pattern, "->", error.message)
             continue
         stdout.print(pattern, "finds", [hit.text for hit in regex.find_all("a1b22")])

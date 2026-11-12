@@ -9,7 +9,7 @@ import enemies
 extend Enemy:
     ## Whether it has no health left.
     def is_down(self) -> bool:
-        self.health <= 0
+        return self.health <= 0
 
 error Dodged:
     name: str
@@ -17,7 +17,7 @@ error Dodged:
 def hit(ref enemy: enemies.Enemy, amount: int) -> int fails Dodged:
     if amount == 0: fail Dodged(enemy.name)
     enemy.health -= amount
-    enemy.health
+    return enemy.health
 
 test "hitting takes health away":
     mut enemy = enemies.spawn("dummy", Vec3.zero, 100)

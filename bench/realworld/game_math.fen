@@ -14,7 +14,7 @@ def cloud(count: int) -> list[Vec3]:
             seed = (seed * 1103515245 + 12345) % 2147483648
             parts[at] = float(seed) / 2147483648.0 * 20.0 - 10.0
         points.append(Vec3(x=parts[0], y=parts[1], z=parts[2]))
-    points
+    return points
 
 def main(stdout: Stdout):
     points = cloud(50000)

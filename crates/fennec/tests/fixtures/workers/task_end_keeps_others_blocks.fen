@@ -1,11 +1,11 @@
-from std.concurrent import Inbox, Closed, Crashed, Timeout
+from std.concurrent import Closed, Crashed, Inbox, Timeout
 
 def build(base: str, count: int) -> str:
-    f"{base}{base}{count}"
+    return f"{base}{base}{count}"
 
 def churn(base: str) -> int:
     temporary = build(base, 1)
-    temporary.len()
+    return len(temporary)
 
 def first_task(inbox: Inbox[int], base: str, stdout: Stdout):
     stdout.print("A freed, length", churn(base))
@@ -18,11 +18,11 @@ def second_task(inbox: Inbox[int], base: str, stdout: Stdout):
     for message in inbox:
         if message == 1:
             held = build(base, 2)
-            stdout.print("B built", held.len())
+            stdout.print("B built", len(held))
         else:
-            stdout.print("B holds:", held.len(), "[", held[0:12], "]")
+            stdout.print("B holds:", len(held), "[", held[0:12], "]")
             joined = held + "!"
-            stdout.print("B joined:", joined.len(), "[", joined[0:12], "]")
+            stdout.print("B joined:", len(joined), "[", joined[0:12], "]")
             stdout.print("B same:", held == build(base, 2))
             stdout.print(held)
 

@@ -21,7 +21,7 @@ test "a launched task's lines and the test's own each arrive whole"(stdout: Stdo
     tasks = [f"task {n}" for n in range(300)]
     tests = [f"test {n}" for n in range(300)]
     lines = stdout.sorted_lines()
-    assert lines.len() == 600
+    assert len(lines) == 600
     for line in lines:
         assert line in tasks or line in tests
 
@@ -29,6 +29,6 @@ test "a parallel loop's lines each arrive whole, wherever they ran"(stdout: Stdo
     looped(stdout, [n for n in range(300)])
     items = [f"item {n}" for n in range(300)]
     lines = stdout.sorted_lines()
-    assert lines.len() == 300
+    assert len(lines) == 300
     for line in lines:
         assert line in items

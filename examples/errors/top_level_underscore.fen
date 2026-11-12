@@ -1,6 +1,6 @@
 # A top-level name is private to its kit already: `_` marks a private field or method.
 def _clamped(n: int) -> int:
-    max(0, n)
+    return max(0, n)
 
 def main(stdout: Stdout):
     stdout.print(_clamped(-3))

@@ -1,14 +1,14 @@
 from std.concurrent import Crashed
 
 def child(number: int) -> int:
-    number * 2
+    return number * 2
 
 def round_of(number: int) -> int fails Crashed:
     with launch(() => child(number))?:
         pass
-    number
+    return number
 
 def main(stdout: Stdout) fails Crashed:
     numbers = [at for at in range(5000)]
     made = [round_of(number)? for number in parallel(numbers)]
-    stdout.print(made.len(), sum(made))
+    stdout.print(len(made), sum(made))

@@ -9,7 +9,7 @@ enum Light:
     Green
 
     def default() -> Light:
-        .Red
+        return .Red
 
 enum Coin:
     Heads
@@ -19,13 +19,13 @@ struct Money:
     cents: int
 
     def <(self, other: Money) -> bool:
-        self.cents < other.cents
+        return self.cents < other.cents
 
     def /(self, parts: int) -> Money:
-        Money(cents=self.cents // parts)
+        return Money(cents=self.cents // parts)
 
     def %(self, parts: int) -> Money:
-        Money(cents=self.cents % parts)
+        return Money(cents=self.cents % parts)
 
 struct Score:
     value: int where value >= 0
@@ -34,21 +34,21 @@ struct Player:
     name: str
 
     def greet(self) -> str:
-        f"hi, {self.name}"
+        return f"hi, {self.name}"
 
 def find(name: str) -> Player?:
     if name == "Kit": return Player(name="Kit")
-    None
+    return None
 
 def parse(text: str) -> int fails NotANumber:
     if not text.isdigit(): fail NotANumber(text=text)
-    int(text) else 0
+    return int(text) else 0
 
 def call(make: () -> int) -> int:
-    make()
+    return make()
 
 def combine(join: (int, int) -> int, a: int, b: int) -> int:
-    join(a, b)
+    return join(a, b)
 
 def main(stdout: Stdout):
     # A named constructor that takes nothing can be used without parentheses.
@@ -65,7 +65,6 @@ def main(stdout: Stdout):
     # `where` rules: literals are checked as the program is read; anything else gives a result.
     for value in [5, -1]:
         stdout.print(Score(value=value))
-
 
     # `?.` skips a method call on None.
     stdout.print(
@@ -87,7 +86,7 @@ def main(stdout: Stdout):
     stdout.print({"a": 1}, {1, 2}, [1], (1,))
 
     # A function can return a result it made itself.
-    _ = parse("twelve") else as why:
+    _ = parse("twelve") except why:
         stdout.print(parse("12") else -1, why)
         -1
 

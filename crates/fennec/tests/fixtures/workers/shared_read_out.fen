@@ -12,13 +12,13 @@ struct Notes:
         self.tags.append([note.id, note.id + " again"])
 
     def all(self) -> list[Note]:
-        [note for note in self.items]
+        return [note for note in self.items]
 
     def all_tags(self) -> list[list[str]]:
-        [tags for tags in self.tags]
+        return [tags for tags in self.tags]
 
     def direct(self) -> list[Note]:
-        self.items
+        return self.items
 
 def main(stdout: Stdout):
     shared notes = Notes()
@@ -37,4 +37,4 @@ def main(stdout: Stdout):
     for tags in all_tags:
         stdout.print(tags[1])
     for note in direct:
-        stdout.print(note.id, note.id.len())
+        stdout.print(note.id, len(note.id))

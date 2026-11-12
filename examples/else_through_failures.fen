@@ -9,21 +9,21 @@ struct Part:
 
     def bigger(self) -> Part fails Lost:
         if self.size > 1: fail Lost(why="too big")
-        Part(name=self.name, size=self.size + 1)
+        return Part(name=self.name, size=self.size + 1)
 
 def find(n: int) -> Part fails Lost:
     if n > 1: fail Lost(why="no such part")
-    Part(name="gear")
+    return Part(name="gear")
 
 def maybe(n: int) -> Part?:
     if n > 1: return None
-    Part(name="cog")
+    return Part(name="cog")
 
 def main(stdout: Stdout):
     stdout.print(find(1).name else "?", find(2).name else "?")
     stdout.print(find(1).name.upper() else "", find(2).name.upper() else "none")
     # A second step that can fail needs its own `else`.
-    part = find(1) else Part(name="spare")
+    part = find(1) except Lost(): Part(name="spare")
     stdout.print(part.bigger().size else 0)
     stdout.print(maybe(1).name else "?", maybe(2).name else "?")
     stdout.print((find(2).size else 10) + 1)

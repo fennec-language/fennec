@@ -1,6 +1,6 @@
 def total(count: int) -> int:
     sum_so_far = sum(at for at in range(count))
-    sum_so_far
+    return sum_so_far
 
 test "a total adds everything":
     assert total(4) == 6

@@ -1,9 +1,9 @@
-source af9e2775126665a76de5f35843be9bcd3639e8feaa2f6c87fc1801aa866d0d7b
+source e9781300a57e3f2adf18a7ce55b1bc564837fea46b488ce16db90db9415fd2d3
 code 1
 stdout 0
-stderr 122
+stderr 130
 error: this Id is from another Table
  --> <dir>/other_table_store.fen:8:5
   |
 8 |     ours[kit] = "den"
-  |     ^^^^^^^^^
+  |     ^^^^^^^^^^^^^^^^^

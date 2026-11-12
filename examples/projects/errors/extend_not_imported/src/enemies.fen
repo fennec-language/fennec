@@ -2,4 +2,4 @@ struct Enemy:
     health = 100
 
 def spawn() -> Enemy:
-    Enemy()
+    return Enemy()

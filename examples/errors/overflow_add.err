@@ -1,8 +1,8 @@
 error: this calculation overflows an int
- --> examples/errors/overflow_add.fen:2:5
+ --> examples/errors/overflow_add.fen:2:12
   |
-2 |     last + 1
-  |     ^^^^^^^^
+2 |     return last + 1
+  |            ^^^^^^^^
   |
   = help: ints are 64-bit; check the values involved, or use floats for very large numbers
   = in `next_id`

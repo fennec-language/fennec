@@ -28,12 +28,12 @@ from std.sql import SqlError, SqlRows, SqlValue, rows_as
 ## `with sqlite.open(fs, "index.db")? as db:`. It's closed when the block ends.
 export def open(fs: Fs, path: str) -> with Database fails SqlError:
     db = opened(fs, path)?
-    lend db else:
+    lend db except:
         db._close()
     db._close()
 
 def opened(fs: Fs, path: str) -> Database fails SqlError:
-    fs._sqlite_open(path) else as err:
+    return fs._sqlite_open(path) except err:
         fail .Failed(reason=err.message())
 
 ## A SQLite database, lent by `sqlite.open`. Its methods written in Rust, each private to it, run
@@ -44,20 +44,20 @@ export struct Database:
     ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
     def execute(self, query: Template[SqlValue]) -> int fails SqlError:
         sent = statement(query)
-        self._execute(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
+        return self._execute(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
 
     ## Runs a query and gives each row it found as a `T`: a struct's fields by the columns' names,
     ## or one column's value as an `int`, `str` or the like.
     def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError:
         sent = statement(query)
         rows = self._query(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
-        rows_as[T](rows)?
+        return rows_as[T](rows)?
 
     ## A transaction, lent for a `with` block: `with db.transaction()? as tx:`. What it changes is
     ## kept when the block ends, and none of it if the block fails.
     def transaction(self) -> with Transaction fails SqlError:
         tx = self._begin()?
-        lend tx else:
+        lend tx except:
             tx._rollback()
         tx._commit()?
 
@@ -69,13 +69,13 @@ export struct Transaction:
     ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
     def execute(self, query: Template[SqlValue]) -> int fails SqlError:
         sent = statement(query)
-        self._execute(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
+        return self._execute(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
 
     ## Runs a query and gives each row it found as a `T`, as `Database.query` does.
     def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError:
         sent = statement(query)
         rows = self._query(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
-        rows_as[T](rows)?
+        return rows_as[T](rows)?
 
 ## A query as SQLite takes it: the template's text with a `?` for each value, and the values
 ## apart, each in the list of its kind, with `kinds` saying which: 0 for an `int`, 1 a `float`, 2
@@ -92,7 +92,7 @@ def statement(query: Template[SqlValue]) -> SqliteStatement:
     mut text = ""
     for at, part in enumerate(query.strings):
         text += part
-        if at < query.values.len():
+        if at < len(query.values):
             text += "?"
     mut sent = SqliteStatement(text=text, kinds=[], ints=[], floats=[], texts=[], blobs=[])
     # Each `is` on its own, with no `else`, so each narrows the value to one type.
@@ -112,4 +112,4 @@ def statement(query: Template[SqlValue]) -> SqliteStatement:
         if value is bytes:
             sent.kinds.append(3)
             sent.blobs.append(value)
-    sent
+    return sent

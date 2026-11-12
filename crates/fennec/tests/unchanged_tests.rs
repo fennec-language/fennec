@@ -149,10 +149,10 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
 /// A program whose test takes one branch of a function, written to `dir`.
 fn with_branches(dir: &Path, taken: &str, untaken: &str, interface: &str) -> std::io::Result<()> {
     let source = format!(
-        "def taken() -> int:\n    {taken}\n\ndef untaken() -> int:\n    {untaken}\n\n\
+        "def taken() -> int:\n    return {taken}\n\ndef untaken() -> int:\n    return {untaken}\n\n\
          def choose(x: int) -> int:\n    if x > 0:\n        return taken()\n    return untaken()\n\n\
          interface Sized:\n    def size(self) -> int\n\n\
-         struct Box:\n    n: int\n\n    def size(self) -> int:\n        {interface}\n\n\
+         struct Box:\n    n: int\n\n    def size(self) -> int:\n        return {interface}\n\n\
          def size_of[T: Sized](s: T) -> int:\n    return s.size()\n\n\
          test \"branch\":\n    assert choose(1) == 1\n\n\
          test \"through an interface\":\n    assert size_of(Box(n=1)) == 1\n"
@@ -185,7 +185,7 @@ fn a_test_of_inlined_code_still_knows_what_it_ran() {
     let dir = scratch("inlined").unwrap();
     let source = |body: &str| {
         format!(
-            "def small(x: int) -> int:\n    x + {body}\n\ndef twice(x: int) -> int:\n    return small(x) + small(x)\n\n\
+            "def small(x: int) -> int:\n    return x + {body}\n\ndef twice(x: int) -> int:\n    return small(x) + small(x)\n\n\
              test \"t\":\n    assert twice(1) > 0\n"
         )
     };
@@ -201,7 +201,7 @@ fn a_property_test_depends_on_all_it_can_reach() {
     let dir = scratch("property").unwrap();
     let source = |untaken: &str| {
         format!(
-            "def untaken() -> int:\n    {untaken}\n\ndef choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    return x\n\n\
+            "def untaken() -> int:\n    return {untaken}\n\ndef choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    return x\n\n\
              test \"any\" for x: int:\n    assert choose(0) == 0\n"
         )
     };
@@ -609,7 +609,7 @@ fn a_property_test_that_passes_failures_up_shrinks_when_an_assert_fails() {
         return;
     }
     let dir = scratch("llvm-shrinking-failures-up").unwrap();
-    let text = "test \"files\" (fs: Fs) for n: int:\n    there = fs.read_text(\"seen\") else \"no\"\n    \
+    let text = "test \"files\" (fs: Fs) for n: int:\n    there = fs.read_text(\"seen\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): \"no\"\n    \
                 assert there == \"no\"\n    fs.write_text(\"seen\", \"1\")?\n    assert n < 100\n";
     std::fs::write(dir.join("game.fen"), text).unwrap();
     let ran = run_tests(&dir, &["--all"]).unwrap();
@@ -732,7 +732,7 @@ fn only_what_a_test_ran_through_llvm_can_make_it_run_again() {
     let game = dir.join("game.fen");
     let source = |untaken: &str, taken: &str| {
         format!(
-            "def untaken() -> int:\n    {untaken}\n\ndef taken() -> int:\n    {taken}\n\n\
+            "def untaken() -> int:\n    return {untaken}\n\ndef taken() -> int:\n    return {taken}\n\n\
              def choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    return taken()\n\n\
              test \"small\":\n    assert choose(0) >= 1\n"
         )

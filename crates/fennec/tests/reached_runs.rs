@@ -42,7 +42,7 @@ fn a_mistake_main_doesnt_reach_stops_the_run_even_after_a_run_that_passed() {
     for _ in 0..2 {
         assert_eq!(stdout(&run(&home, &game).unwrap()), "42\n");
     }
-    std::fs::write(&game, SOURCE.replace("    2\n", "    \"two\"\n")).unwrap();
+    std::fs::write(&game, SOURCE.replace("    return 2\n", "    return \"two\"\n")).unwrap();
     for _ in 0..2 {
         let rejected = run(&home, &game).unwrap();
         assert!(!rejected.status.success());
@@ -113,12 +113,12 @@ fn what_main_reaches_checks_wherever_the_whole_program_does() {
     assert!(compared > 50, "only {compared} programs were compared");
 }
 
-/// A call in a `lend`'s cleanup, written `except:` or `else:`, is reached: `fennec run` runs the
-/// program `fennec build` builds, rather than refusing it as calling what "doesn't exist".
+/// A call in a `lend`'s cleanup, `lend x except:`, is reached: `fennec run` runs the program
+/// `fennec build` builds, rather than refusing it as calling what "doesn't exist".
 #[test]
 fn a_call_in_a_lends_cleanup_is_reached() {
     let dir = scratch("lend-cleanup").unwrap();
-    for cleanup in ["except", "else"] {
+    for cleanup in ["except"] {
         let source = format!(
             "struct Tally:\n    count: int\n\ndef noted(code: int, stdout: Stdout):\n    stdout.print(\"noted\", code)\n\n\
              def guarded(code: int, stdout: Stdout) -> with Tally:\n    stdout.print(\"open\", code)\n    \
@@ -215,7 +215,7 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(dir.join("kit.toml"), manifest).unwrap();
-    let lib = |value: &str| format!("def value() -> int:\n    {value}\n");
+    let lib = |value: &str| format!("def value() -> int:\n    return {value}\n");
     std::fs::write(dir.join("src/lib.fen"), lib("1")).unwrap();
     let main = "from lib import value\n\ndef main(stdout: Stdout):\n    stdout.print(value())\n    stdout.print([1][value()])\n";
     std::fs::write(dir.join("src/main.fen"), main).unwrap();

@@ -3,11 +3,11 @@
 ## minus; `**`; then calls, attributes, indexing, `?` and `?.`. Mirrors
 ## `crates/syntax/src/parser/expr.rs`.
 
-from span import Span, Diagnostic
-from token import FPart, Tok, is_reserved
+from ast import Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp
 from lexer import byte_length, lex
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
-from parser import Parser, is_field_word, is_name, describe
+from parser import Parser, describe, is_field_word, is_name
+from span import Diagnostic, Span
+from token import FPart, Tok, is_reserved
 
 ## What an expression made at its top, outside any parentheses.
 enum Formed:
@@ -34,11 +34,9 @@ extend Parser:
     def expr_made(ref self) -> (Expr, Formed) fails Diagnostic:
         at_top = self.value_at_top
         self.value_at_top = False
-        if self.at_match():
-            return (self.match_expr()?, .Plain)
+        if self.at_match(): return (self.match_expr()?, .Plain)
         lambda = self.lambda()?
-        if lambda is not None:
-            return (lambda, .Plain)
+        if lambda is not None: return (lambda, .Plain)
         value = self.or_expr()?
         if self.eat_keyword("if"):
             cond = self.or_expr()?
@@ -49,9 +47,14 @@ extend Parser:
                     help="write `a if condition else b`",
                 )
             otherwise, made = self.expr_made()?
-            if made == .Fallback:
-                fail mixed_else(otherwise)
-            return (Expr(kind=.Cond(value, cond=cond, otherwise=otherwise), span=value.span.to(otherwise.span)), .Conditional)
+            if made == .Fallback: fail mixed_else(otherwise)
+            return (
+                Expr(
+                    kind=.Cond(value, cond=cond, otherwise=otherwise),
+                    span=value.span.to(otherwise.span),
+                ),
+                .Conditional,
+            )
         if self.eat_keyword("else"):
             mut default = Expr(kind=.Nothing, span=self.span())
             if self.at_leaving():
@@ -69,10 +72,12 @@ extend Parser:
                 default = self.leaving_block(failure)?
             else:
                 inner, made = self.expr_made()?
-                if made == .Conditional:
-                    fail mixed_else(inner)
+                if made == .Conditional: fail mixed_else(inner)
                 default = inner
-            return (Expr(kind=.Else(value, default=default), span=value.span.to(default.span)), .Fallback)
+            return (
+                Expr(kind=.Else(value, default=default), span=value.span.to(default.span)),
+                .Fallback,
+            )
         if self.at_keyword("except"):
             if not at_top:
                 fail Diagnostic(
@@ -81,7 +86,13 @@ extend Parser:
                     help="give the call a line of its own, as `got = f() except why:`, and use `got` here",
                 )
             handler = self.except_handler()?
-            return (Expr(kind=.Else(value, default=handler, is_except=True), span=value.span.to(handler.span)), .Fallback)
+            return (
+                Expr(
+                    kind=.Else(value, default=handler, is_except=True),
+                    span=value.span.to(handler.span),
+                ),
+                .Fallback,
+            )
         return (value, .Plain)
 
     ## What follows `except`, written in as the same one-case `match` an `else` block is: any
@@ -102,7 +113,8 @@ extend Parser:
                     if name != "_":
                         at = self.advance().span
                         return self.named_handler(start, name, at)?
-                case _: pass
+                case _:
+                    pass
         if self.at_punct(":"):
             fail Diagnostic(
                 message="`except` names the failure it handles",
@@ -129,7 +141,11 @@ extend Parser:
     ## `except why:` and its block, of statements, or of `case` arms, which are a `match why:`
     ## in the block.
     def named_handler(ref self, start: Span, failure: str, at: Span) -> Expr fails Diagnostic:
-        arms_follow = self.peek_at(1) == .Newline and self.peek_at(2) == .Indent and self.peek_at(3) == .Name("case")
+        arms_follow = (
+            self.peek_at(1) == .Newline
+            and self.peek_at(2) == .Indent
+            and self.peek_at(3) == .Name("case")
+        )
         if not arms_follow:
             handler = self.leaving_block(failure)?
             return Expr(kind=handler.kind, span=start.to(handler.span))
@@ -152,7 +168,10 @@ extend Parser:
         return leaving_match(start, [Stmt(kind=.Expr(matched), span=over)], span, failure=failure)
 
     def at_leaving(self) -> bool:
-        return self.peek() in [.Keyword("continue"), .Keyword("break"), .Keyword("return"), .Keyword("fail")]
+        return (
+            self.peek()
+            in [.Keyword("continue"), .Keyword("break"), .Keyword("return"), .Keyword("fail")]
+        )
 
     ## `continue`, `break`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
     ## every engine and analysis already follows out of the expression.
@@ -161,9 +180,12 @@ extend Parser:
         word = self.peek()
         _ = self.advance()
         kind: StmtKind = match word:
-            case .Keyword("continue"): .Continue
-            case .Keyword("break"): .Break
-            case .Keyword("fail"): .Fail(self.expr()?)
+            case .Keyword("continue"):
+                .Continue
+            case .Keyword("break"):
+                .Break
+            case .Keyword("fail"):
+                .Fail(self.expr()?)
             case _:
                 if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
                     .Return(None)
@@ -191,8 +213,7 @@ extend Parser:
             self.pos += 1
         elif self.at_punct("("):
             found = self.paren_params()
-            if found is None:
-                return None
+            if found is None: return None
             names, used = found
             params = names
             self.pos += used
@@ -208,17 +229,17 @@ extend Parser:
         mut at = 1
         while True:
             match self.peek_at(at):
-                case .Name(name): params.append(name)
-                case .Punct(")"): break
-                case _: return None
+                case .Name(name):
+                    params.append(name)
+                case .Punct(")"):
+                    break
+                case _:
+                    return None
             at += 1
-            if self.peek_at(at) == .Punct(")"):
-                break
-            if self.peek_at(at) != .Punct(","):
-                return None
+            if self.peek_at(at) == .Punct(")"): break
+            if self.peek_at(at) != .Punct(","): return None
             at += 1
-        if self.peek_at(at + 1) != .Punct("=>"):
-            return None
+        if self.peek_at(at + 1) != .Punct("=>"): return None
         return (params, at + 2)
 
     def or_expr(ref self) -> Expr fails Diagnostic:
@@ -246,8 +267,7 @@ extend Parser:
         mut chain = None
         while True:
             op = comparison_op(self.peek(), second=self.peek_at(1))
-            if op is None:
-                break
+            if op is None: break
             self.pos += 2 if op == .NotIn or op == .IsNot else 1
             rhs = self.bit_or()?
             pair = binary(op, lhs=lhs, rhs=rhs)
@@ -294,8 +314,7 @@ extend Parser:
         mut lhs = self.unary()?
         while True:
             op = term_op(self.peek())
-            if op is None:
-                break
+            if op is None: break
             _ = self.advance()
             lhs = binary(op, lhs=lhs, rhs=self.unary()?)
         return lhs
@@ -309,8 +328,7 @@ extend Parser:
             operand = self.unary()?
             return Expr(kind=.Unary(.BitNot, operand), span=start.to(operand.span))
         base = self.postfix()?
-        if self.eat_punct("**"):
-            return binary(.Pow, lhs=base, rhs=self.unary()?)
+        if self.eat_punct("**"): return binary(.Pow, lhs=base, rhs=self.unary()?)
         return base
 
     def postfix(ref self) -> Expr fails Diagnostic:
@@ -322,7 +340,10 @@ extend Parser:
                 expr = Expr(kind=.Call(expr, args), span=span)
             elif self.eat_punct("."):
                 name = self.field_name("a name after `.`")?
-                expr = Expr(kind=.Attr(expr, name, optional=False), span=expr.span.to(self.prev_span()))
+                expr = Expr(
+                    kind=.Attr(expr, name, optional=False),
+                    span=expr.span.to(self.prev_span()),
+                )
             elif self.eat_punct("["):
                 expr = self.index(expr)?
             elif self.eat_punct("?"):
@@ -354,10 +375,8 @@ extend Parser:
         if is_slice and not self.at_punct("]"):
             end = self.expr()?
         span = object.span.to(self.expect_punct("]")?)
-        if is_slice:
-            return Expr(kind=.Slice(object, start=start, end=end), span=span)
-        if start is None:
-            fail self.unexpected("an index")
+        if is_slice: return Expr(kind=.Slice(object, start=start, end=end), span=span)
+        if start is None: fail self.unexpected("an index")
         return Expr(kind=.Index(object, index=start), span=span)
 
     ## Arguments up to (not including) `)`. A single argument followed by `for` is a generator
@@ -367,15 +386,18 @@ extend Parser:
         while not self.at_punct(")"):
             is_mut = self.eat_ref("an argument")
             mut name = None
-            if not is_mut and self.peek_at(1) == .Punct("=") and (is_name(self.peek()) or is_field_word(self.peek())):
+            if (
+                not is_mut
+                and self.peek_at(1) == .Punct("=")
+                and (is_name(self.peek()) or is_field_word(self.peek()))
+            ):
                 name = self.field_name("an argument name")?
                 self.pos += 1
             mut value = self.expr()?
             if len(args) == 0 and name is None and not is_mut and self.at_keyword("for"):
                 value = self.comprehension(.Generator, elem=value, value=None)?
             args.append(Arg(name=name, is_mut=is_mut, value=value))
-            if not self.eat_punct(","):
-                break
+            if not self.eat_punct(","): break
         return args
 
     ## The `for names in iter if cond` part of a comprehension, after its element.
@@ -387,27 +409,35 @@ extend Parser:
         if self.eat_keyword("if"):
             cond = self.or_expr()?
         span = elem.span.to(self.prev_span())
-        return Expr(kind=.Comprehension(kind, elem=elem, value=value, names=names, iter=iter, cond=cond), span=span)
+        return Expr(
+            kind=.Comprehension(kind, elem=elem, value=value, names=names, iter=iter, cond=cond),
+            span=span,
+        )
 
     def atom(ref self) -> Expr fails Diagnostic:
         token = self.advance()
         span = token.span
         kind = match token.tok:
-            case .Int(value): ExprKind.Int(value)
-            case .Float(value): ExprKind.Float(value)
-            case .Duration(nanos): ExprKind.Duration(nanos)
-            case .Str(text): ExprKind.Str(text)
-            case .FStr(parts): ExprKind.FStr(fstring_parts(parts)?)
-            case .TStr(parts): return template(parts, span)?
-            case .Name(name): ExprKind.Name(name)
-            case .Keyword(word): self.keyword_atom(word, span)?
+            case .Int(value):
+                ExprKind.Int(value)
+            case .Float(value):
+                ExprKind.Float(value)
+            case .Duration(nanos):
+                ExprKind.Duration(nanos)
+            case .Str(text):
+                ExprKind.Str(text)
+            case .FStr(parts):
+                ExprKind.FStr(fstring_parts(parts)?)
+            case .TStr(parts):
+                return template(parts, span)?
+            case .Name(name):
+                ExprKind.Name(name)
+            case .Keyword(word):
+                self.keyword_atom(word, span)?
             case .Punct(text):
-                if text == "(":
-                    return self.parenthesized(span)?
-                if text == "[":
-                    return self.list(span)?
-                if text == "{":
-                    return self.braces(span)?
+                if text == "(": return self.parenthesized(span)?
+                if text == "[": return self.list(span)?
+                if text == "{": return self.braces(span)?
                 if text != ".":
                     self.pos -= 1
                     fail Diagnostic(message=f"expected a value, found `{text}`", span=span)
@@ -419,9 +449,12 @@ extend Parser:
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
     def keyword_atom(ref self, word: str, span: Span) -> ExprKind fails Diagnostic:
         match word:
-            case "True": return .Bool(True)
-            case "False": return .Bool(False)
-            case "None": return .Nothing
+            case "True":
+                return .Bool(True)
+            case "False":
+                return .Bool(False)
+            case "None":
+                return .Nothing
             case _:
                 if is_reserved(word):
                     self.pos -= 1
@@ -440,11 +473,9 @@ extend Parser:
                 return Expr(kind=made.kind, span=start.to(self.expect_punct(")")?))
             items.append(item)
             trailing_comma = self.eat_punct(",")
-            if not trailing_comma:
-                break
+            if not trailing_comma: break
         span = start.to(self.expect_punct(")")?)
-        if len(items) == 1 and not trailing_comma:
-            return items[0]
+        if len(items) == 1 and not trailing_comma: return items[0]
         return Expr(kind=.Tuple(items), span=span)
 
     def list(ref self, start: Span) -> Expr fails Diagnostic:
@@ -455,15 +486,13 @@ extend Parser:
                 comprehension = self.comprehension(.List, elem=item, value=None)?
                 return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("]")?))
             items.append(item)
-            if not self.eat_punct(","):
-                break
+            if not self.eat_punct(","): break
         span = start.to(self.expect_punct("]")?)
         return Expr(kind=.List(items), span=span)
 
     ## `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
     def braces(ref self, start: Span) -> Expr fails Diagnostic:
-        if self.at_punct("}"):
-            return Expr(kind=.Dict([]), span=start.to(self.advance().span))
+        if self.at_punct("}"): return Expr(kind=.Dict([]), span=start.to(self.advance().span))
         first = self.expr()?
         is_dict = self.eat_punct(":")
         mut first_value = None
@@ -488,24 +517,39 @@ extend Parser:
 ## The comparison that `first` (and `second`, for `not in` and `is not`) start, if any.
 def comparison_op(first: Tok, second: Tok) -> BinOp?:
     match first:
-        case .Punct("=="): return .Eq
-        case .Punct("!="): return .NotEq
-        case .Punct("<"): return .Lt
-        case .Punct("<="): return .LtEq
-        case .Punct(">"): return .Gt
-        case .Punct(">="): return .GtEq
-        case .Keyword("in"): return .In
-        case .Keyword("not"): return .NotIn if second == .Keyword("in") else None
-        case .Keyword("is"): return .IsNot if second == .Keyword("not") else .Is
-        case _: return None
+        case .Punct("=="):
+            return .Eq
+        case .Punct("!="):
+            return .NotEq
+        case .Punct("<"):
+            return .Lt
+        case .Punct("<="):
+            return .LtEq
+        case .Punct(">"):
+            return .Gt
+        case .Punct(">="):
+            return .GtEq
+        case .Keyword("in"):
+            return .In
+        case .Keyword("not"):
+            return .NotIn if second == .Keyword("in") else None
+        case .Keyword("is"):
+            return .IsNot if second == .Keyword("not") else .Is
+        case _:
+            return None
 
 def term_op(tok: Tok) -> BinOp?:
     match tok:
-        case .Punct("*"): return .Mul
-        case .Punct("/"): return .Div
-        case .Punct("//"): return .FloorDiv
-        case .Punct("%"): return .Mod
-        case _: return None
+        case .Punct("*"):
+            return .Mul
+        case .Punct("/"):
+            return .Div
+        case .Punct("//"):
+            return .FloorDiv
+        case .Punct("%"):
+            return .Mod
+        case _:
+            return None
 
 def binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr:
     return Expr(kind=.Binary(op, lhs=lhs, rhs=rhs), span=lhs.span.to(rhs.span))
@@ -515,7 +559,8 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart] fails Diagnostic:
     mut parsed = []
     for part in parts:
         match part:
-            case .Text(text): parsed.append(FStrPart.Text(text))
+            case .Text(text):
+                parsed.append(FStrPart.Text(text))
             case .Code(source, offset, spec):
                 parsed.append(FStrPart.Code(interpolated(source, offset, "f-string")?, spec))
     return parsed
@@ -534,8 +579,7 @@ def interpolated(source: str, offset: int, what: str) -> Expr fails Diagnostic:
     mut parser = Parser.over(lex(code, offset + skipped)?)
     expr = parser.expr()?
     _ = parser.eat(.Newline)
-    if not parser.at(.Eof):
-        fail parser.unexpected("`}`")
+    if not parser.at(.Eof): fail parser.unexpected("`}`")
     parser.check_old_mut()?
     return expr
 
@@ -549,7 +593,8 @@ def template(parts: list[FPart], span: Span) -> Expr fails Diagnostic:
     mut text = ""
     for part in parts:
         match part:
-            case .Text(more): text += more
+            case .Text(more):
+                text += more
             case .Code(source, offset, spec):
                 strings.append(text)
                 text = ""
@@ -586,12 +631,9 @@ struct Made:
         inner = max(end - start - 1, 0)
         at = self.at
         self.at += 1
-        if at < inner:
-            return Span(start=start, end=start + inner - at)
-        if at < 2 * inner:
-            return Span(start=start + 1 + at - inner, end=end)
-        if at == 2 * inner:
-            return Span(start=start, end=start)
+        if at < inner: return Span(start=start, end=start + inner - at)
+        if at < 2 * inner: return Span(start=start + 1 + at - inner, end=end)
+        if at == 2 * inner: return Span(start=start, end=start)
         return Span(start=end, end=end)
 
     ## A list of text written in the source, as string literals.
@@ -605,8 +647,10 @@ struct Made:
 ## Whether a statement leaves where it is: what an `else:` block has to end with.
 def leaves_by(kind: StmtKind) -> bool:
     match kind:
-        case .Continue | .Break | .Return(_) | .Fail(_): return True
-        case _: return False
+        case .Continue | .Break | .Return(_) | .Fail(_):
+            return True
+        case _:
+            return False
 
 ## What a default that leaves parses to: a `match` with one case, holding the statements that
 ## leave, which every engine and analysis already follows out of the expression.

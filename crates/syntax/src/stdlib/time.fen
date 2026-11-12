@@ -115,7 +115,9 @@ export struct Time:
                 message=f"{hour}:{Time._padded(minute, width=2)}:{Time._padded(second, width=2)} isn't a time of day",
             )
         days = Time._days_from_date(year, month=month, day=day)
-        return Time(nanos=days * 86_400_000_000_000 + (hour * 3600 + minute * 60 + second) * 1_000_000_000)
+        return Time(
+            nanos=days * 86_400_000_000_000 + (hour * 3600 + minute * 60 + second) * 1_000_000_000,
+        )
 
     ## The moment RFC 3339 text says, like `2026-11-06T21:55:56Z` or
     ## `2026-11-06T23:55:56.25+02:00`. `t` and `z` may be lowercase, and a space may stand for the
@@ -341,7 +343,9 @@ export struct Time:
 
     ## The name of the day of the week `weekday` counts, from 0 for Monday.
     def _day_name(weekday: int) -> str:
-        return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][weekday]
+        return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
+            weekday
+        ]
 
     ## The name of a month, from 1 for January.
     def _month_name(month: int) -> str:
@@ -358,7 +362,9 @@ extend Time:
 
     def deserialize(ref src: Deserializer) -> Time fails ParseError:
         text = src.text()?
-        return Time.parse(text) except ParseError(): fail src.here(f"is `{text}`, which isn't an RFC 3339 time")
+        return Time.parse(text) except ParseError(): fail src.here(
+            f"is `{text}`, which isn't an RFC 3339 time",
+        )
 
 extend Duration:
     def serialize(self, ref out: Serializer):

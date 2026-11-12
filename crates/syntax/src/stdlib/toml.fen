@@ -86,7 +86,11 @@ struct TomlParser:
             elif b < 128 or b >= 192:
                 column += 1
             at += 1
-        return ParseError(message=f"{message}, at line {line}, column {column}", line=line, column=column)
+        return ParseError(
+            message=f"{message}, at line {line}, column {column}",
+            line=line,
+            column=column,
+        )
 
     def skip_spaces(ref self):
         while self.byte() == 32 or self.byte() == 9:
@@ -435,8 +439,9 @@ struct TomlParser:
             and self.digit_at(3)
             and text_byte(self.source, self.at + 4) == 45
         )
-        return date or (
-            self.digit_at(0) and self.digit_at(1) and text_byte(self.source, self.at + 2) == 58
+        return (
+            date
+            or (self.digit_at(0) and self.digit_at(1) and text_byte(self.source, self.at + 2) == 58)
         )
 
     ## Reads exactly `width` digits making a number from `low` to `high`.
@@ -523,7 +528,10 @@ struct TomlParser:
                 return .Int(n=n)
         if has_any(unsigned, 46, 101, 69):
             if not float_ok(unsigned): fail self.bad_at(unknown, at)
-            x = float(without_underscores(token)) except InvalidValue(): fail self.bad_at(unknown, at)
+            x = float(without_underscores(token)) except InvalidValue(): fail self.bad_at(
+                unknown,
+                at,
+            )
             # TOML writes `inf` for that. A number too big for a float didn't say it.
             if x == 1e308 * 10.0 or x == -1e308 * 10.0:
                 fail self.bad_at(f"{quoted_input(token)} is too big for a float", at)

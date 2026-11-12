@@ -1,4 +1,4 @@
-from std.concurrent import Inbox, Closed, Crashed, Timeout
+from std.concurrent import Closed, Crashed, Inbox, Timeout
 
 def build(base: str, count: int) -> str:
     return f"{base}{base}{count}"

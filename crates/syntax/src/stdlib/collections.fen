@@ -984,7 +984,9 @@ export struct Grid[T]:
     ## any outside the grid.
     def neighbors(self, at: (int, int)) -> list[(int, int)]:
         x, y = at
-        return [near for near in [(x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y)] if self.contains(near)]
+        return [
+            near for near in [(x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y)] if self.contains(near)
+        ]
 
     ## The cells that share an edge or a corner with `(x, y)`, clockwise from the top left,
     ## leaving out any outside the grid.

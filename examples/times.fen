@@ -100,7 +100,14 @@ test "a time saves as RFC 3339 text and a duration as its nanoseconds"():
     assert problem.message == "`at` is `yesterday`, which isn't an RFC 3339 time"
 
 def main(stdout: Stdout, clock: Clock):
-    moment = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56) except InvalidValue(): Time()
+    moment = Time.utc(
+        year=2026,
+        month=11,
+        day=6,
+        hour=21,
+        minute=55,
+        second=56,
+    ) except InvalidValue(): Time()
     stdout.print(moment, moment.nanos, moment.weekday(), moment.day_of_year())
     stdout.print(moment.format("%d/%m/%Y %H:%M:%S"), next_due(moment, every=Duration.hours(48)))
     stdout.print(Duration.minutes(90), Duration.seconds(0.25), is_date(2026, month=11, day=6))

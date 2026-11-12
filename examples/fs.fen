@@ -11,7 +11,8 @@ def describe(found: Metadata) -> str:
 
 ## The `.fen` files under `folder`, at any depth, in the order `walk` gives them.
 def sources(fs: Fs, folder: str) -> list[str]:
-    found = fs.walk(folder) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): []
+    found = fs.walk(folder) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(
+    ): []
     return [path.text for path in found if path.text.endswith(".fen")]
 
 test "walk goes into every folder, a folder before what's in it"(fs: Fs):
@@ -27,13 +28,16 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print("the root is", describe(fs.metadata("/")?))
 
     # These paths don't exist, so each call fails without changing anything.
-    paths = fs.list_dir("no/such/folder") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
+    paths = fs.list_dir("no/such/folder") except .NotFound() | .PermissionDenied() | .AlreadyExists(
+    ) | .Other():
         stdout.print("there's no folder to list")
         []
     stdout.print(len(paths), "paths")
     stdout.print(sources(fs, folder="no/such/folder"))
-    fs.remove("no/such/folder/save.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
+    fs.remove("no/such/folder/save.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists(
+    ) | .Other():
         stdout.print("there's nothing to remove")
-    _ = fs.metadata("no/such/folder/save.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
+    _ = fs.metadata("no/such/folder/save.txt") except .NotFound() | .PermissionDenied(
+    ) | .AlreadyExists() | .Other():
         stdout.print("there's nothing to look at")
         return

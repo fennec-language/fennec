@@ -2,9 +2,9 @@
 ## the declarations: every written type in a signature, field, test input or typed name has
 ## to mean something, and every type parameter's bounds have to be interfaces.
 
+from ast import Expr, ExprKind, Field, FnDef, Generic, Module, Stmt, StmtKind, TypeExpr
+from check.program import FnEntry, Program, TypeKind, built_in_types, unknown_type
 from span import Diagnostic
-from ast import Module, FnDef, Generic, Field, TypeExpr, Stmt, StmtKind, Expr, ExprKind
-from check.program import Program, FnEntry, TypeKind, built_in_types, unknown_type
 
 ## Checks a module against the standard library's modules. Returns every problem found,
 ## in source order.
@@ -48,8 +48,7 @@ struct Checker:
     ## type parameters bound to something that isn't an interface.
     def check_declarations(ref self):
         for key, entry in self.program.functions.items():
-            if entry.prelude:
-                continue
+            if entry.prelude: continue
             function = entry.function
             names = generic_names(self.program.generics_of(entry))
             for param in function.params:
@@ -94,14 +93,15 @@ struct Checker:
     def check_arrow(ref self, function: FnDef):
         ret = function.ret
         arrow = function.arrow
-        if ret is None or arrow is None:
-            return
+        if ret is None or arrow is None: return
         if ret.name in ["None", "nothing"] and len(ret.args) == 0 and not ret.optional:
-            self.diagnostics.append(Diagnostic(
-                message=f"`{function.name}` gives back nothing, so it has no arrow",
-                span=arrow.to(ret.span),
-                help="a `def` with no `->` gives back nothing: remove the arrow and what follows it",
-            ))
+            self.diagnostics.append(
+                Diagnostic(
+                    message=f"`{function.name}` gives back nothing, so it has no arrow",
+                    span=arrow.to(ret.span),
+                    help="a `def` with no `->` gives back nothing: remove the arrow and what follows it",
+                ),
+            )
 
     def check_fields(ref self, fields: list[Field], generics: list[str]):
         for field in fields:
@@ -114,15 +114,13 @@ struct Checker:
     ## A parameter's type. An interface alone is fine here, since each call gives it a type of
     ## its own.
     def check_param(ref self, written: TypeExpr?, generics: list[str]):
-        if written is None:
-            return
+        if written is None: return
         by_itself = len(written.args) == 0 and not written.optional
         if not by_itself or written.name in generics or not self.program.is_interface(written.name):
             self.check_written(written, generics)
 
     def check_written(ref self, written: TypeExpr?, generics: list[str]):
-        if written is None:
-            return
+        if written is None: return
         _ = self.program.resolve_in(written, generics) except problem:
             self.diagnostics.append(problem)
             return
@@ -133,7 +131,8 @@ struct Checker:
         names = generic_names(generics)
         for stmt in stmts:
             match stmt.kind:
-                case .Expr(expr): self.check_expr(expr, generics)
+                case .Expr(expr):
+                    self.check_expr(expr, generics)
                 case .Assign(target, _, value, _, ty):
                     self.check_written(ty, names)
                     self.check_expr(target, generics)
@@ -157,14 +156,19 @@ struct Checker:
                 case .Return(value):
                     if value is not None:
                         self.check_expr(value, generics)
-                case .Fail(value): self.check_expr(value, generics)
+                case .Fail(value):
+                    self.check_expr(value, generics)
                 case .Lend(value, otherwise):
                     self.check_expr(value, generics)
                     self.check_body(otherwise, generics)
-                case .Yield(value): self.check_expr(value, generics)
-                case .Assert(value): self.check_expr(value, generics)
-                case .Def(function): self.check_function(function, generics + function.generics)
-                case _: pass
+                case .Yield(value):
+                    self.check_expr(value, generics)
+                case .Assert(value):
+                    self.check_expr(value, generics)
+                case .Def(function):
+                    self.check_function(function, generics + function.generics)
+                case _:
+                    pass
 
     ## The types a call gives in brackets anywhere in `expr`, like `Draft` in
     ## `json.loads[Draft](text)` or `Token` in `list[Token]()`, and the bodies of its `match`es.
@@ -181,17 +185,23 @@ struct Checker:
                     case .Attr(object, _, _):
                         self.check_static_types(object)
                         self.check_expr(callee, generics)
-                    case _: self.check_expr(callee, generics)
+                    case _:
+                        self.check_expr(callee, generics)
                 for arg in args:
                     self.check_expr(arg.value, generics)
             case .FStr(parts):
                 for part in parts:
                     match part:
-                        case .Code(code, _): self.check_expr(code, generics)
-                        case _: pass
-            case .List(items): self.check_exprs(items, generics)
-            case .Tuple(items): self.check_exprs(items, generics)
-            case .Set(items): self.check_exprs(items, generics)
+                        case .Code(code, _):
+                            self.check_expr(code, generics)
+                        case _:
+                            pass
+            case .List(items):
+                self.check_exprs(items, generics)
+            case .Tuple(items):
+                self.check_exprs(items, generics)
+            case .Set(items):
+                self.check_exprs(items, generics)
             case .Dict(pairs):
                 for key, value in pairs:
                     self.check_expr(key, generics)
@@ -203,7 +213,8 @@ struct Checker:
                 self.check_expr(iter, generics)
                 if cond is not None:
                     self.check_expr(cond, generics)
-            case .Unary(_, operand): self.check_expr(operand, generics)
+            case .Unary(_, operand):
+                self.check_expr(operand, generics)
             case .Binary(_, lhs, rhs):
                 self.check_expr(lhs, generics)
                 self.check_expr(rhs, generics)
@@ -218,7 +229,8 @@ struct Checker:
                 self.check_expr(value, generics)
                 if context is not None:
                     self.check_expr(context, generics)
-            case .Attr(object, _, _): self.check_expr(object, generics)
+            case .Attr(object, _, _):
+                self.check_expr(object, generics)
             case .Index(object, index):
                 self.check_expr(object, generics)
                 self.check_expr(index, generics)
@@ -228,14 +240,16 @@ struct Checker:
                     self.check_expr(start, generics)
                 if end is not None:
                     self.check_expr(end, generics)
-            case .Lambda(_, body): self.check_expr(body, generics)
+            case .Lambda(_, body):
+                self.check_expr(body, generics)
             case .Match(subject, arms):
                 self.check_expr(subject, generics)
                 for arm in arms:
                     if arm.guard is not None:
                         self.check_expr(arm.guard, generics)
                     self.check_body(arm.body, generics)
-            case _: pass
+            case _:
+                pass
 
     def check_exprs(ref self, exprs: list[Expr], generics: list[Generic]):
         for expr in exprs:
@@ -264,15 +278,19 @@ struct Checker:
                                     help=f"write one type for each of its parameters, as `{name}[{listed}]`",
                                 ),
                             )
-                    case _: pass
-            case _: pass
+                    case _:
+                        pass
+            case _:
+                pass
 
     ## `for field in fields(T):`, when `fields` is the language's own: `T` has to be a type.
     def check_fields_of(ref self, iter: Expr, generics: list[Generic]):
         match iter.kind:
             case .Call(callee, args):
                 match callee.kind:
-                    case .Name(called) if called == "fields" and called not in self.program.functions:
+                    case .Name(
+                        called,
+                    ) if called == "fields" and called not in self.program.functions:
                         if len(args) == 1 and args[0].name is None and not args[0].is_mut:
                             match args[0].value.kind:
                                 case .Name(of):
@@ -283,16 +301,25 @@ struct Checker:
                                         and of not in self.program.aliases
                                     ):
                                         self.diagnostics.append(unknown_type(of, iter.span))
-                                case _: pass
-                    case _: pass
-            case _: pass
+                                case _:
+                                    pass
+                    case _:
+                        pass
+            case _:
+                pass
 
     def takes_types(self, object: Expr) -> bool:
         match object.kind:
             case .Name(name):
-                return name in ["list", "dict", "set"] or name[0] >= "A" and name[0] <= "Z" or name in self.program.functions
-            case .Attr(_, _, _): return True
-            case _: return False
+                return (
+                    name in ["list", "dict", "set"]
+                    or name[0] >= "A" and name[0] <= "Z"
+                    or name in self.program.functions
+                )
+            case .Attr(_, _, _):
+                return True
+            case _:
+                return False
 
 def generic_names(generics: list[Generic]) -> list[str]:
     return [generic.name for generic in generics]
@@ -313,10 +340,10 @@ def bracket_types(index: Expr) -> list[TypeExpr]:
         # its `(` rather than at its first item.
         case .Tuple(items) if len(items) > 0 and items[0].span.start == index.span.start:
             return as_types(items, sizes=False) else []
-        case _: pass
+        case _:
+            pass
     one = as_type(index)
-    if one is None:
-        return []
+    if one is None: return []
     return [one]
 
 ## The type a default makes with its type arguments, like `list[Token]` for `list[Token]()`.
@@ -324,14 +351,18 @@ def made_type(default: Expr) -> TypeExpr?:
     match default.kind:
         case .Call(callee, _):
             match callee.kind:
-                case .Index(_, _): return as_type(callee)
-                case _: return None
-        case _: return None
+                case .Index(_, _):
+                    return as_type(callee)
+                case _:
+                    return None
+        case _:
+            return None
 
 ## An expression read as a type: `Token`, or `list[Token]`, or `dict[str, int]`.
 def as_type(expr: Expr) -> TypeExpr?:
     match expr.kind:
-        case .Name(name): return TypeExpr(name=name, args=[], optional=False, span=expr.span)
+        case .Name(name):
+            return TypeExpr(name=name, args=[], optional=False, span=expr.span)
         case .Index(object, index):
             match object.kind:
                 case .Name(name):
@@ -339,38 +370,39 @@ def as_type(expr: Expr) -> TypeExpr?:
                     match index.kind:
                         # `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple,
                         # whose span starts at its `(` rather than at its first item.
-                        case .Tuple(items) if len(items) > 0 and items[0].span.start == index.span.start:
+                        case .Tuple(items) if len(items) > 0 and items[
+                            0
+                        ].span.start == index.span.start:
                             found = as_types(items, sizes=True)
-                            if found is None:
-                                return None
+                            if found is None: return None
                             args = found
                         case _:
                             found = as_type(index)
-                            if found is None:
-                                return None
+                            if found is None: return None
                             args.append(found)
                     return TypeExpr(name=name, args=args, optional=False, span=expr.span)
-                case _: return None
+                case _:
+                    return None
         case .Tuple(items):
             found = as_types(items, sizes=False)
-            if found is None:
-                return None
+            if found is None: return None
             return TypeExpr(name="tuple", args=found, optional=False, span=expr.span)
-        case _: return None
-
+        case _:
+            return None
 
 ## A type in brackets with others, or a number there: an array's size, `16` in
 ## `array[float, 16]`.
 def as_type_or_size(item: Expr) -> TypeExpr?:
     match item.kind:
-        case .Int(size): return TypeExpr(name=f"{size}", args=[], optional=False, span=item.span)
-        case _: return as_type(item)
+        case .Int(size):
+            return TypeExpr(name=f"{size}", args=[], optional=False, span=item.span)
+        case _:
+            return as_type(item)
 
 def as_types(items: list[Expr], sizes: bool) -> list[TypeExpr]?:
     mut types = []
     for item in items:
         found = as_type_or_size(item) if sizes else as_type(item)
-        if found is None:
-            return None
+        if found is None: return None
         types.append(found)
     return types

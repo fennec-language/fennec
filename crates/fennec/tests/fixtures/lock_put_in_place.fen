@@ -14,8 +14,7 @@ struct Table:
 def bump(table: shared Table, key: int, failing: bool) fails Boom:
     lock table as ref held:
         held.counts[key] = (held.counts.get(key) else 0) + 1
-        if failing:
-            fail Boom(step=key)
+        if failing: fail Boom(step=key)
 
 ## Adds 1000 to `key`'s count in place, puts a key that isn't there by the old path, which marks the
 ## dict, then adds 1 to `key`'s count again, which the runtime writes where it is, failing after if
@@ -25,8 +24,7 @@ def bump_around_new(table: shared Table, key: int, failing: bool) fails Boom:
         held.counts[key] = (held.counts.get(key) else 0) + 1000
         held.counts[key + 50] = 1
         held.counts[key] = (held.counts.get(key) else 0) + 1
-        if failing:
-            fail Boom(step=key)
+        if failing: fail Boom(step=key)
 
 ## Adds 1000 to `key`'s count in place, then puts keys that aren't there, which grow the dict by the
 ## old path, failing after if `failing`.
@@ -35,8 +33,7 @@ def bump_then_grow(table: shared Table, key: int, failing: bool) fails Boom:
         held.counts[key] = (held.counts.get(key) else 0) + 1000
         for n in range(100, 140):
             held.counts[n] = n
-        if failing:
-            fail Boom(step=key)
+        if failing: fail Boom(step=key)
 
 ## Adds 1 to `key`'s count with the dict held a second time, by a local, all through.
 def bump_held_twice(table: shared Table, key: int) -> int:

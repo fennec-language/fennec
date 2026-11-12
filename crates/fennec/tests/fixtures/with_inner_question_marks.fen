@@ -11,17 +11,14 @@ struct Box:
     value: int
 
 def capped(n: int, limit: int) -> int fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
     return n
 
 def check(n: int, limit: int) fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
 
 def maybe(n: int, limit: int) -> int? fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
     return None if n == 0 else n
 
 def boxed(n: int, limit: int) -> Box fails Refused:

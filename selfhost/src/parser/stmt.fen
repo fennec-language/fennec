@@ -1,16 +1,15 @@
 ## Statements and blocks. Mirrors `crates/syntax/src/parser/stmt.rs`.
 
-from span import Span, Diagnostic
-from token import Tok, is_reserved
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, WithName
+from ast import Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp, WithName
 from parser import Parser, is_name
 from parser.expr import leaving_match
+from span import Diagnostic, Span
+from token import Tok, is_reserved
 
 extend Parser:
     ## The body after a `:`: an indented block, or one simple statement on the same line.
     def block(ref self) -> list[Stmt] fails Diagnostic:
-        if not self.at(.Newline):
-            return [self.simple_stmt()?]
+        if not self.at(.Newline): return [self.simple_stmt()?]
         self.expect_block_start()?
         mut stmts = []
         while not self.eat(.Dedent) and not self.at(.Eof):
@@ -18,20 +17,14 @@ extend Parser:
         return stmts
 
     def stmt(ref self) -> Stmt fails Diagnostic:
-        if self.at_keyword("if"):
-            return self.if_stmt()?
-        if self.at_keyword("while"):
-            return self.while_stmt()?
-        if self.at_keyword("for"):
-            return self.for_stmt()?
-        if self.at_keyword("with"):
-            return self.with_stmt(False)?
+        if self.at_keyword("if"): return self.if_stmt()?
+        if self.at_keyword("while"): return self.while_stmt()?
+        if self.at_keyword("for"): return self.for_stmt()?
+        if self.at_keyword("with"): return self.with_stmt(False)?
         # `lend value`, or `lend value else:` with a block, in a `with` source.
-        if self.at_soft("lend") and starts_value(self.peek_at(1)):
-            return self.lend_stmt()?
+        if self.at_soft("lend") and starts_value(self.peek_at(1)): return self.lend_stmt()?
         # `lock scores as ref current:`, where a name follows `lock`.
-        if self.at_soft("lock") and is_name(self.peek_at(1)):
-            return self.with_stmt(True)?
+        if self.at_soft("lock") and is_name(self.peek_at(1)): return self.with_stmt(True)?
         if self.at_keyword("except"):
             fail Diagnostic(
                 message="`except` goes after the call it handles",
@@ -46,47 +39,52 @@ extend Parser:
     def simple_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.span()
         kind = match self.peek():
-            case .Keyword(word): self.keyword_stmt(word)?
+            case .Keyword(word):
+                self.keyword_stmt(word)?
             case .Name(word):
-                if self.is_python_only(word):
-                    fail python_only(word, start)
+                if self.is_python_only(word): fail python_only(word, start)
                 # `shared scores = Scores()`: a plain value made `shared`, written out.
                 if word == "shared" and is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("="):
                     declared = self.shared_declaration()?
                     return self.finished(declared, start)?
                 self.expr_or_assign()?
-            case _: self.expr_or_assign()?
+            case _:
+                self.expr_or_assign()?
         span = start.to(self.prev_span())
         self.end_line()?
         return Stmt(kind=kind, span=span)
 
     ## A simple statement that starts with the keyword `word`.
     def keyword_stmt(ref self, word: str) -> StmtKind fails Diagnostic:
-        if word == "mut":
-            return self.mut_declaration()?
-        if word == "ref":
-            return self.ref_declaration()?
+        if word == "mut": return self.mut_declaration()?
+        if word == "ref": return self.ref_declaration()?
         if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
             return self.expr_or_assign()?
         _ = self.advance()
         match word:
             case "return":
-                if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
-                    return .Return(None)
+                if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent): return .Return(None)
                 self.value_at_top = True
                 return .Return(self.expr()?)
-            case "fail": return .Fail(self.expr()?)
-            case "yield": return .Yield(self.expr()?)
-            case "assert": return self.asserted()?
-            case "break": return .Break
-            case "continue": return .Continue
-            case _: return .Pass
+            case "fail":
+                return .Fail(self.expr()?)
+            case "yield":
+                return .Yield(self.expr()?)
+            case "assert":
+                return self.asserted()?
+            case "break":
+                return .Break
+            case "continue":
+                return .Continue
+            case _:
+                return .Pass
 
     ## `raise x`, `try:` and `except x:` at the start of a statement: Python habits Fennec
     ## catches with a pointer to what to write instead.
     def is_python_only(self, word: str) -> bool:
-        return word in ["raise", "try", "except", "finally"] and not (
-            self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")]
+        return (
+            word in ["raise", "try", "except", "finally"]
+            and not (self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")])
         )
 
     ## `lend value`, or `lend value else:` and the block that runs when the caller's fails.
@@ -120,12 +118,10 @@ extend Parser:
         word = self.advance().span
         at = self.span()
         message = "`ref` declares a name for a place, like `ref unit = units[at]`"
-        if not is_name(self.peek()):
-            fail Diagnostic(message=message, span=at)
+        if not is_name(self.peek()): fail Diagnostic(message=message, span=at)
         name = self.name("a name after `ref`")?
         target = Expr(kind=.Name(name), span=at)
-        if self.peek() != .Punct("="):
-            fail Diagnostic(message=message, span=word.to(at))
+        if self.peek() != .Punct("="): fail Diagnostic(message=message, span=word.to(at))
         _ = self.advance()
         value = self.expr()?
         ty = TypeExpr(name="ref", args=[], optional=False, span=word)
@@ -141,7 +137,10 @@ extend Parser:
         _ = self.advance()
         target = self.expr()?
         if not is_name_expr(target):
-            fail Diagnostic(message="`mut` declares a new name, like `mut count = 0`", span=target.span)
+            fail Diagnostic(
+                message="`mut` declares a new name, like `mut count = 0`",
+                span=target.span,
+            )
         mut ty: TypeExpr? = None
         if self.eat_punct(":"):
             ty = self.type_expr()?
@@ -166,8 +165,7 @@ extend Parser:
             for item in items:
                 span = span.to(item.span)
             target = Expr(kind=.Tuple(items), span=span)
-        if not starts_assignment(self.peek()):
-            return .Expr(target)
+        if not starts_assignment(self.peek()): return .Expr(target)
         op = assignment_op(self.advance().tok)
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
@@ -211,8 +209,7 @@ extend Parser:
     ## case and nothing in it, which nothing else parses to.
     def asserted(ref self) -> StmtKind fails Diagnostic:
         value = self.expr()?
-        if not self.at_fails():
-            return .Assert(value)
+        if not self.at_fails(): return .Assert(value)
         _ = self.advance()
         at = self.span()
         pattern = self.pattern()?
@@ -252,8 +249,7 @@ extend Parser:
             if len(names) == 1 and self.eat_ref("a loop's name"):
                 ref_second = True
             names.append(self.name("a loop variable")?)
-        if not self.eat_keyword("in"):
-            fail self.unexpected("`in`")
+        if not self.eat_keyword("in"): fail self.unexpected("`in`")
         is_mut = ref_first or ref_second
         iter, body = self.condition_and_block()?
         return Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
@@ -263,8 +259,7 @@ extend Parser:
         mut names = [self.name("a loop variable")?]
         while self.eat_punct(","):
             names.append(self.name("a loop variable")?)
-        if not self.eat_keyword("in"):
-            fail self.unexpected("`in`")
+        if not self.eat_keyword("in"): fail self.unexpected("`in`")
         return names
 
     ## `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
@@ -282,13 +277,11 @@ extend Parser:
                 is_mut = self.eat_ref("a `with` name")
                 name = self.name("a name after `as`")?
                 names.append(WithName(name=name, is_mut=is_mut, span=at.to(self.prev_span())))
-                if not self.eat_punct(","):
-                    break
+                if not self.eat_punct(","): break
                 # `with a as ref x, b as ref y:`: the next value comes with its own name.
                 if len(names) == len(items) and not self.at_with_name():
                     items.append(self.expr()?)
-                    if not self.eat_keyword("as"):
-                        fail self.unexpected("`as` and a name for it")
+                    if not self.eat_keyword("as"): fail self.unexpected("`as` and a name for it")
         held = len(items)
         mut value = items[0]
         if held > 1:
@@ -316,42 +309,64 @@ extend Parser:
             )
         _ = self.expect_punct(":")?
         body = self.block()?
-        return Stmt(kind=.With(value, names=names, body=body, lock=lock), span=start.to(self.prev_span()))
+        return Stmt(
+            kind=.With(value, names=names, body=body, lock=lock),
+            span=start.to(self.prev_span()),
+        )
 
     ## Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
     ## value: `ref` or `mut`, or a name and then `,` or `:`.
     def at_with_name(self) -> bool:
-        if self.at_keyword("ref") or self.at_keyword("mut"):
-            return True
-        return is_name(self.peek()) and (self.peek_at(1) == .Punct(",") or self.peek_at(1) == .Punct(":"))
+        if self.at_keyword("ref") or self.at_keyword("mut"): return True
+        return (
+            is_name(self.peek())
+            and (self.peek_at(1) == .Punct(",") or self.peek_at(1) == .Punct(":"))
+        )
 
 def is_name_expr(expr: Expr) -> bool:
     match expr.kind:
-        case .Name(_): return True
-        case _: return False
+        case .Name(_):
+            return True
+        case _:
+            return False
 
 ## Whether `target` can go on the left of `=`, or of `+=` and the rest when not `plain`.
 def is_assignable(target: Expr, plain: bool) -> bool:
     match target.kind:
-        case .Name(_): return True
-        case .Index(_, _): return True
-        case .Attr(_, _, optional): return not optional
-        case .Tuple(items): return plain and all(is_name_expr(item) for item in items)
-        case _: return False
+        case .Name(_):
+            return True
+        case .Index(_, _):
+            return True
+        case .Attr(_, _, optional):
+            return not optional
+        case .Tuple(items):
+            return plain and all(is_name_expr(item) for item in items)
+        case _:
+            return False
 
 ## The operator `+=` and the rest apply, or None for a plain `=`.
 def assignment_op(tok: Tok) -> BinOp?:
     match tok:
-        case .Punct("+="): return .Add
-        case .Punct("-="): return .Sub
-        case .Punct("*="): return .Mul
-        case .Punct("/="): return .Div
-        case .Punct("&="): return .BitAnd
-        case .Punct("|="): return .BitOr
-        case .Punct("^="): return .BitXor
-        case .Punct("<<="): return .ShiftLeft
-        case .Punct(">>="): return .ShiftRight
-        case _: return None
+        case .Punct("+="):
+            return .Add
+        case .Punct("-="):
+            return .Sub
+        case .Punct("*="):
+            return .Mul
+        case .Punct("/="):
+            return .Div
+        case .Punct("&="):
+            return .BitAnd
+        case .Punct("|="):
+            return .BitOr
+        case .Punct("^="):
+            return .BitXor
+        case .Punct("<<="):
+            return .ShiftLeft
+        case .Punct(">>="):
+            return .ShiftRight
+        case _:
+            return None
 
 ## Whether a token makes what's before it the target of an assignment.
 def starts_assignment(tok: Tok) -> bool:
@@ -368,12 +383,21 @@ def python_only(word: str, span: Span) -> Diagnostic:
 ## Whether a value can start with this token, so `lend` before it starts a `lend`.
 def starts_value(tok: Tok) -> bool:
     match tok:
-        case .Name(_): return True
-        case .Int(_): return True
-        case .Float(_): return True
-        case .Duration(_): return True
-        case .Str(_): return True
-        case .FStr(_) | .TStr(_): return True
-        case .Keyword(word): return word in ["True", "False", "None", "not"]
-        case .Punct(text): return text in ["(", "[", "{", ".", "-"]
-        case _: return False
+        case .Name(_):
+            return True
+        case .Int(_):
+            return True
+        case .Float(_):
+            return True
+        case .Duration(_):
+            return True
+        case .Str(_):
+            return True
+        case .FStr(_) | .TStr(_):
+            return True
+        case .Keyword(word):
+            return word in ["True", "False", "None", "not"]
+        case .Punct(text):
+            return text in ["(", "[", "{", ".", "-"]
+        case _:
+            return False

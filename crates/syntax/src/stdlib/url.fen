@@ -196,7 +196,10 @@ export def unquote(text: str) -> str:
 ## `params` as a query, `name=value` pairs joined by `&`, each part escaped as an HTML form
 ## sends it, with `+` for a space: `{"q": "red fox"}` is `q=red+fox`.
 export def encode_query(params: dict[str, str]) -> str:
-    return "&".join([form_quoted(name) + "=" + form_quoted(value) for name, value in params.items()])
+    return "&".join([
+        form_quoted(name) + "=" + form_quoted(value) for name,
+        value in params.items()
+    ])
 
 ## A query's pairs, with their escapes read and `+` read as a space, in the order the query
 ## has them. A name with no `=` has the value "", and a name given twice keeps its first value,
@@ -247,9 +250,15 @@ def decoded(text: str, plus: bool) -> str:
     return bytes(out).decode() except InvalidValue(): text
 
 def is_unreserved(b: int) -> bool:
-    return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (
-        b >= 48 and b <= 57
-    ) or b == 45 or b == 46 or b == 95 or b == 126
+    return (
+        (b >= 65 and b <= 90)
+        or (b >= 97 and b <= 122)
+        or (b >= 48 and b <= 57)
+        or b == 45
+        or b == 46
+        or b == 95
+        or b == 126
+    )
 
 def hex_char(n: int) -> int:
     return n + 48 if n < 10 else n + 55

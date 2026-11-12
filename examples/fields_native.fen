@@ -116,13 +116,7 @@ def main(stdout: Stdout):
     bag.counts["c"] = 1
     bag.items[1].id = -1
     stdout.print(kept.items[0].near, bag.items[0].near, kept.numbers, bag.numbers)
-    stdout.print(
-        len(kept.counts),
-        len(bag.counts),
-        kept.items[1].id,
-        bag.items[1].id,
-        kept == bag,
-    )
+    stdout.print(len(kept.counts), len(bag.counts), kept.items[1].id, bag.items[1].id, kept == bag)
 
     last = bag.items.pop() else return
     stdout.print(bag.numbers.pop(), bag.numbers, last.id, len(bag.items))

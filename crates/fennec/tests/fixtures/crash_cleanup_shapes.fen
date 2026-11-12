@@ -9,8 +9,7 @@ error Wrapped:
     why: str
 
 def capped(n: int, limit: int) -> int fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
     return n
 
 def guarded(code: int, stdout: Stdout) -> with int fails Refused | Wrapped:

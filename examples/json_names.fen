@@ -19,7 +19,11 @@ def failure[T](run: () -> T fails ParseError) -> str:
     return "loaded"
 
 def ash() -> Player:
-    return Player(display_name="Ash", hit_points=12, main_weapon=Weapon(damage_bonus=2, max_range=1.5))
+    return Player(
+        display_name="Ash",
+        hit_points=12,
+        main_weapon=Weapon(damage_bonus=2, max_range=1.5),
+    )
 
 test "names are spelled the way the text expects":
     assert (

@@ -17,8 +17,7 @@ struct Random:
 
     def below(ref self, limit: int) -> int:
         self.state = (self.state * 1103515245 + 12345) % 2147483648
-        if limit <= 0:
-            return 0
+        if limit <= 0: return 0
         return (self.state // 65536) % limit
 
 ## One random change to both lists, as a method changes a shared value's fields through `ref`. With
@@ -80,8 +79,7 @@ def change(
             _ = names.pop(number)
     else:
         names[number] = f"a name long enough to be held in a block of its own, {random.below(100)}"
-    if boom:
-        fail Boom(step=len(words))
+    if boom: fail Boom(step=len(words))
 
 ## A case's changes under the lock, failing at step `crash_at` when it's one of them: inside the
 ## change at that step, or just before it, by turns.
@@ -89,8 +87,7 @@ def changed(holder: shared Holder, seed: int, steps: int, crash_at: int) fails B
     mut random = Random(state=seed)
     lock holder as ref held:
         for step in range(steps):
-            if step == crash_at and seed % 2 == 0:
-                fail Boom(step=step)
+            if step == crash_at and seed % 2 == 0: fail Boom(step=step)
             if random.below(3) == 0:
                 # Straight on the held value, not through a call.
                 held.words.append("direct")
@@ -99,7 +96,9 @@ def changed(holder: shared Holder, seed: int, steps: int, crash_at: int) fails B
                     _ = held.words.pop()
                 held.numbers[random.below(len(held.numbers))] = random.below(9)
                 held.counts[f"d{random.below(4)}"] = random.below(9)
-                held.names[random.below(4)] = "direct, and long enough to be held in a block of its own"
+                held.names[
+                    random.below(4)
+                ] = "direct, and long enough to be held in a block of its own"
                 if "d0" in held.counts:
                     _ = held.counts.pop("d0")
             change(
@@ -132,7 +131,8 @@ def modeled(
             names[random.below(4)] = "direct, and long enough to be held in a block of its own"
             if "d0" in counts:
                 _ = counts.pop("d0")
-        change(ref words, ref numbers, ref counts, ref names, ref random, boom=False) except Boom(): return
+        change(ref words, ref numbers, ref counts, ref names, ref random, boom=False) except Boom(
+        ): return
 
 def ran(holder: shared Holder, seed: int, steps: int, crash_at: int) -> bool:
     _ = changed(holder, seed=seed, steps=steps, crash_at=crash_at) except Boom():
@@ -169,7 +169,12 @@ def main(stdout: Stdout):
                 wrong += 1
                 if wrong < 4:
                     stdout.print("case", trial, held.words, words, held.numbers, numbers)
-                    stdout.print(held.counts.items(), counts.items(), held.names.items(), names.items())
+                    stdout.print(
+                        held.counts.items(),
+                        counts.items(),
+                        held.names.items(),
+                        names.items(),
+                    )
                 # Back in step with what the shared value holds, to find the next.
                 words = list(held.words)
                 numbers = list(held.numbers)

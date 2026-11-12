@@ -9,10 +9,8 @@ struct Config:
     size: int
 
 def load(text: str) -> Config fails Oops:
-    if text == "bad":
-        fail Oops(line=3)
-    if text == "worse":
-        fail Oops(line=4, why="worse")
+    if text == "bad": fail Oops(line=3)
+    if text == "worse": fail Oops(line=4, why="worse")
     return Config(size=len(text))
 
 test "fails as it should":

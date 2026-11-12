@@ -185,7 +185,8 @@ export shared UdpSocket:
     ## Each packet as it arrives, until the socket is closed or fails.
     def iter(self) -> Iterator[Packet]:
         while True:
-            packet = self.receive() except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): None
+            packet = self.receive() except .NotFound() | .Refused() | .TimedOut(
+            ) | .Closed | .Denied() | .Tls() | .Status() | .Other(): None
             if packet is None: return
             yield packet
 
@@ -252,7 +253,8 @@ export shared Server:
     ## loop goes on to the next.
     def iter(self) -> Iterator[Connection]:
         while True:
-            conn = accepted(self, timeout=None) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): return
+            conn = accepted(self, timeout=None) except .NotFound() | .Refused() | .TimedOut(
+            ) | .Closed | .Denied() | .Tls() | .Status() | .Other(): return
             yield conn
             conn.close()
 

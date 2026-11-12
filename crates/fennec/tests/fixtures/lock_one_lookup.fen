@@ -41,8 +41,7 @@ def change(table: shared Table, step: int, failing: bool) fails Boom:
         moved = held.counts.get(moving) else 0
         moving = moving + 1
         held.counts[moving] = moved + 3
-        if failing:
-            fail Boom(step=step)
+        if failing: fail Boom(step=step)
 
 def shown(table: shared Table) -> str:
     lock table as held:

@@ -237,6 +237,7 @@ test "a file opened to read can't be written, and one being made can't be read"(
 
 def main(stdout: Stdout, fs: Fs):
     # A failure is named where it happens, and the program carries on.
-    _ = fs.read_text("no/such/file.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
+    _ = fs.read_text("no/such/file.txt") except .NotFound() | .PermissionDenied() | .AlreadyExists(
+    ) | .Other():
         stdout.print("there's no such file")
         ""

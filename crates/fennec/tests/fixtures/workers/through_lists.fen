@@ -40,7 +40,13 @@ def grown(tree: Tree, n: int) -> Tree:
 
 def main(stdout: Stdout):
     long = "a name long enough to be held in a block of its own, not in place"
-    shared_tree = Tree.Many(items=[Tree.Leaf(value=1), Tree.Named(name=long, value=2), Tree.Many(items=[Tree.Named(name="short", value=3)])])
+    shared_tree = Tree.Many(
+        items=[
+            Tree.Leaf(value=1),
+            Tree.Named(name=long, value=2),
+            Tree.Many(items=[Tree.Named(name="short", value=3)]),
+        ],
+    )
     trees = [shared_tree, Tree.Leaf(value=4), shared_tree]
     totals = sorted([total_of(trees) + n for n in parallel(range(32))])
     stdout.print(totals[0], totals[31], len(totals))

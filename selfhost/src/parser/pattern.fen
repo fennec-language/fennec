@@ -1,19 +1,20 @@
 ## `match` expressions and their `case` patterns. Mirrors `crates/syntax/src/parser/pattern.rs`.
 
-from span import Span, Diagnostic
-from token import Tok
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp
 from parser import Parser, is_keyword_tok
+from span import Diagnostic, Span
+from token import Tok
 
 extend Parser:
     ## Whether `match` here starts a match rather than naming something called `match`.
     def at_match(self) -> bool:
-        if not self.at_soft("match"):
-            return False
+        if not self.at_soft("match"): return False
         next = self.peek_at(1)
-        if next == .Newline or next == .Eof:
-            return False
-        return next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
+        if next == .Newline or next == .Eof: return False
+        return (
+            next
+            not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
+        )
 
     def match_expr(ref self) -> Expr fails Diagnostic:
         start = self.advance().span
@@ -28,28 +29,32 @@ extend Parser:
     def arms(ref self) -> list[MatchArm] fails Diagnostic:
         mut arms = []
         while not self.eat(.Dedent) and not self.at(.Eof):
-            if not self.at_soft("case"):
-                fail self.unexpected("`case`")
+            if not self.at_soft("case"): fail self.unexpected("`case`")
             arm_start = self.advance().span
             pattern = self.pattern()?
             guard = self.guard()?
             _ = self.expect_punct(":")?
             body = self.block()?
-            arms.append(MatchArm(pattern=pattern, guard=guard, body=body, span=arm_start.to(self.prev_span())))
+            arms.append(
+                MatchArm(
+                    pattern=pattern,
+                    guard=guard,
+                    body=body,
+                    span=arm_start.to(self.prev_span()),
+                ),
+            )
         self.block_ended = True
         return arms
 
     ## `if condition` after a `case`'s pattern, if there is one.
     def guard(ref self) -> Expr? fails Diagnostic:
-        if self.eat_keyword("if"):
-            return self.expr()?
+        if self.eat_keyword("if"): return self.expr()?
         return None
 
     ## A pattern, or several separated by `|`, any of which matches.
     def pattern(ref self) -> Pattern fails Diagnostic:
         first = self.one_pattern()?
-        if not self.at_punct("|"):
-            return first
+        if not self.at_punct("|"): return first
         mut alternatives = [first]
         while self.eat_punct("|"):
             alternatives.append(self.one_pattern()?)
@@ -59,8 +64,7 @@ extend Parser:
         token = self.advance()
         match token.tok:
             case .Name(name):
-                if name == "_":
-                    return .Wildcard
+                if name == "_": return .Wildcard
                 if self.at_punct("."):
                     # `physics.Hit(amount)`: a case from a module imported whole.
                     mut dotted = name
@@ -72,20 +76,22 @@ extend Parser:
                     args, fields = self.pattern_args()?
                     return .Variant(name, False, args, fields)
                 return .Bind(name)
-            case .Int(value): return literal(.Int(value), token.span)
-            case .Float(value): return literal(.Float(value), token.span)
-            case .Str(text): return literal(.Str(text), token.span)
+            case .Int(value):
+                return literal(.Int(value), token.span)
+            case .Float(value):
+                return literal(.Float(value), token.span)
+            case .Str(text):
+                return literal(.Str(text), token.span)
             case .Keyword(word):
                 if word == "True" or word == "False":
                     return literal(.Bool(word == "True"), token.span)
-                if word == "None":
-                    return literal(.Nothing, token.span)
+                if word == "None": return literal(.Nothing, token.span)
                 # `case .Button(ref clicks):` changes the field where it is.
-                if word == "ref":
-                    return .RefBind(self.name("a name after `ref`")?)
+                if word == "ref": return .RefBind(self.name("a name after `ref`")?)
                 self.pos -= 1
                 fail self.unexpected("a pattern")
-            case .Punct(text): return self.punct_pattern(text, token.span)?
+            case .Punct(text):
+                return self.punct_pattern(text, token.span)?
             case _:
                 self.pos -= 1
                 fail self.unexpected("a pattern")
@@ -98,15 +104,17 @@ extend Parser:
             return .Variant(name, True, args, fields)
         if text == "-":
             match self.advance().tok:
-                case .Int(value): return literal(.Int(-value), span)
-                case .Float(value): return literal(.Float(-value), span)
-                case _: fail Diagnostic(message="expected a number after `-`", span=span)
+                case .Int(value):
+                    return literal(.Int(-value), span)
+                case .Float(value):
+                    return literal(.Float(-value), span)
+                case _:
+                    fail Diagnostic(message="expected a number after `-`", span=span)
         if text == "(":
             mut items = []
             while not self.at_punct(")"):
                 items.append(self.pattern()?)
-                if not self.eat_punct(","):
-                    break
+                if not self.eat_punct(","): break
             _ = self.expect_punct(")")?
             return .Tuple(items)
         self.pos -= 1
@@ -121,10 +129,15 @@ extend Parser:
             while not self.at_punct(")"):
                 start = self.span()
                 named = match self.peek():
-                    case .Name(_): self.peek_at(1) == .Punct("=")
-                    case _: False
+                    case .Name(_):
+                        self.peek_at(1) == .Punct("=")
+                    case _:
+                        False
                 if len(args) > 0 and named == (len(fields) == 0):
-                    fail Diagnostic(message="a pattern names every field it matches, or none of them", span=start)
+                    fail Diagnostic(
+                        message="a pattern names every field it matches, or none of them",
+                        span=start,
+                    )
                 if named:
                     field = self.name("a field")?
                     _ = self.advance()
@@ -132,8 +145,7 @@ extend Parser:
                         fail Diagnostic(message=f"this pattern names `{field}` twice", span=start)
                     fields.append(field)
                 args.append(self.pattern()?)
-                if not self.eat_punct(","):
-                    break
+                if not self.eat_punct(","): break
             _ = self.expect_punct(")")?
         return (args, fields)
 

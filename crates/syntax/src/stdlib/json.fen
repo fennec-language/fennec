@@ -951,7 +951,11 @@ struct JsonReader:
 
     def _not_base64(self) -> ParseError:
         if not self._explain: return no_reason()
-        return ParseError(message=f"{self._where()} should be bytes, written in base64", line=0, column=0)
+        return ParseError(
+            message=f"{self._where()} should be bytes, written in base64",
+            line=0,
+            column=0,
+        )
 
     ## The rest of a string with an escape in it, from just inside its opening quote.
     def _unescaped(ref self) -> str fails ParseError:
@@ -1147,7 +1151,11 @@ struct JsonReader:
     def _not_a_pair(self) -> ParseError:
         if not self._explain: return no_reason()
         _ = self._path
-        return ParseError(message=f"{self._where()} should be a [key, value] pair", line=0, column=0)
+        return ParseError(
+            message=f"{self._where()} should be a [key, value] pair",
+            line=0,
+            column=0,
+        )
 
     def record(ref self, name: str) fails ParseError:
         if self._space() != 123:
@@ -1323,7 +1331,11 @@ struct JsonReader:
                     line=0,
                     column=0,
                 )
-        return ParseError(message=f"{owner} has no field \"{key}\", but {where} has one", line=0, column=0)
+        return ParseError(
+            message=f"{owner} has no field \"{key}\", but {where} has one",
+            line=0,
+            column=0,
+        )
 
     def field_at(self) -> int:
         return self._place
@@ -1573,7 +1585,11 @@ struct JsonReader:
             elif b < 128 or b >= 192:
                 column += 1
             at += 1
-        return ParseError(message=f"{message}, at line {line}, column {column}", line=line, column=column)
+        return ParseError(
+            message=f"{message}, at line {line}, column {column}",
+            line=line,
+            column=column,
+        )
 
     ## Goes past one value inside `depth` arrays and objects, saying what's wrong with it if
     ## anything is. An array or object starting here is `depth + 1` deep.
@@ -1804,5 +1820,9 @@ export def load[T: Deserializable, R: Reader](
     extra: JsonExtra? = None,
 ) -> T fails ParseError | IoError:
     data = read_all(ref src)?
-    text = data.decode() except InvalidValue(): fail ParseError(message="the JSON isn't UTF-8 text", line=1, column=1)
+    text = data.decode() except InvalidValue(): fail ParseError(
+        message="the JSON isn't UTF-8 text",
+        line=1,
+        column=1,
+    )
     return native_loads[T](text, names=names, extra=extra)?

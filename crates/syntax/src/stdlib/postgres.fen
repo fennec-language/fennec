@@ -451,7 +451,9 @@ export def query_messages(query: Template[SqlValue]) -> bytes:
     mut execute = PgWriter()
     execute.text("")
     execute.int32(0)
-    return parse.done(80) + bind.done(66) + describe.done(68) + execute.done(69) + PgWriter().done(83)
+    return (
+        parse.done(80) + bind.done(66) + describe.done(68) + execute.done(69) + PgWriter().done(83)
+    )
 
 ## The number of Postgres's type for a value: `int8`, `float8`, `text`, `bytea` or `bool`.
 def type_of(value: SqlValue) -> int:
@@ -515,7 +517,9 @@ def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlEr
         rows.kinds.append(0)
         rows.at.append(0)
         return
-    text = cell.decode() except InvalidValue(): fail SqlError.Failed(reason="the server sent a cell that isn't UTF-8")
+    text = cell.decode() except InvalidValue(): fail SqlError.Failed(
+        reason="the server sent a cell that isn't UTF-8",
+    )
     # `bool`, then `int8`, `int2` and `int4`, `float4` and `float8`, and `bytea`.
     if kind == 16:
         rows.kinds.append(1)
@@ -547,7 +551,9 @@ def float_of(text: str) -> float fails SqlError:
     if text == "NaN": return float("nan") except InvalidValue(): 0.0
     if text == "Infinity": return 1e308 * 10.0
     if text == "-Infinity": return -1e308 * 10.0
-    return float(text) except InvalidValue(): fail SqlError.Failed(reason=f"the server sent `{text}` as a float")
+    return float(text) except InvalidValue(): fail SqlError.Failed(
+        reason=f"the server sent `{text}` as a float",
+    )
 
 ## `bytea` as Postgres writes it as text: `\x`, then two hex digits a byte.
 def hex_bytes(text: str) -> bytes fails SqlError:
@@ -681,7 +687,9 @@ def masked(text: str) -> str:
     return text[:start + 3] + authority[:colon + 1] + "****" + rest[at:]
 
 def set_twice(name: str) -> SqlError:
-    return SqlError.Failed(reason=f"`{name}` is set in the database URL and as an argument: set it in one")
+    return SqlError.Failed(
+        reason=f"`{name}` is set in the database URL and as an argument: set it in one",
+    )
 
 ## A wait written in a URL: whole milliseconds, seconds or minutes, like `500ms`, `5s` or `2m`.
 def duration_of(text: str) -> Duration fails SqlError:
@@ -746,9 +754,9 @@ def signed_in(
     password: Secret[str]?,
     weak: bool,
 ) -> PgDatabase fails SqlError:
-    conn = net._connect(found.host, found.port, tls=False, timeout=30s) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): fail SqlError.Failed(
-        reason=f"couldn't connect to {found.host}:{found.port}",
-    )
+    conn = net._connect(found.host, found.port, tls=False, timeout=30s) except .NotFound(
+    ) | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(
+    ): fail SqlError.Failed(reason=f"couldn't connect to {found.host}:{found.port}")
     db = PgDatabase(_conn=conn)
     db._opened(entropy, found, password, weak) except failure:
         conn.close()
@@ -799,7 +807,8 @@ export struct PgDatabase:
         _ = self._run(t"begin")?
         tx = PgTransaction(_db=self)
         lend tx except:
-            _ = self._run(t"rollback") except .Constraint() | .Busy() | .Column() | .Failed(): PgResult()
+            _ = self._run(t"rollback") except .Constraint() | .Busy() | .Column() | .Failed(
+            ): PgResult()
         kept = self._run(t"commit")?
         # A transaction that had a failure in it is rolled back by the commit, with no error.
         if kept.tag != "COMMIT":
@@ -904,7 +913,8 @@ export struct PgDatabase:
     ## Tells the server this is the end.
     def _goodbye(self):
         # Closing goes ahead whether or not the server hears it.
-        self._conn.write(terminate()) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): return
+        self._conn.write(terminate()) except .NotFound() | .Refused() | .TimedOut(
+        ) | .Closed | .Denied() | .Tls() | .Status() | .Other(): return
 
     ## Starts TLS when the settings ask for it, and signs in.
     def _opened(

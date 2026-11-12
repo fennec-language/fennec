@@ -28,7 +28,8 @@ def main(stdout: Stdout):
     ]
     match columns:
         case .Columns(names=names, types=types):
-            made = rows_of(names, types=types, rows=rows) except .Constraint() | .Busy() | .Column() | .Failed(): SqlRows(
+            made = rows_of(names, types=types, rows=rows) except .Constraint() | .Busy() | .Column(
+            ) | .Failed(): SqlRows(
                 columns=[],
                 kinds=[],
                 at=[],
@@ -50,13 +51,6 @@ def main(stdout: Stdout):
     stdout.print(failure_from_fields({"C": "40P01", "M": "deadlock detected"}).message())
     # A float column can hold what isn't a number, and that isn't a failure.
     nan = PgMessage.Row(cells=["NaN".encode()], present=[True])
-    ratios = rows_of(["ratio"], types=[701], rows=[nan]) except .Constraint() | .Busy() | .Column() | .Failed(): SqlRows(
-        columns=[],
-        kinds=[],
-        at=[],
-        ints=[],
-        floats=[],
-        texts=[],
-        blobs=[],
-    )
+    ratios = rows_of(["ratio"], types=[701], rows=[nan]) except .Constraint() | .Busy() | .Column(
+    ) | .Failed(): SqlRows(columns=[], kinds=[], at=[], ints=[], floats=[], texts=[], blobs=[])
     stdout.print(ratios.columns, ratios.kinds, ratios.floats)

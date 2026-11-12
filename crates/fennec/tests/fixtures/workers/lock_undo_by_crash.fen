@@ -15,8 +15,7 @@ struct Random:
 
     def below(ref self, limit: int) -> int:
         self.state = (self.state * 1103515245 + 12345) % 2147483648
-        if limit <= 0:
-            return 0
+        if limit <= 0: return 0
         return (self.state // 65536) % limit
 
 ## One random change to both lists, as a method changes a shared value's fields through `ref`. With
@@ -99,7 +98,9 @@ def changed(holder: shared Holder, seed: int, steps: int, crash_at: int):
                     _ = held.words.pop()
                 held.numbers[random.below(len(held.numbers))] = random.below(9)
                 held.counts[f"d{random.below(4)}"] = random.below(9)
-                held.names[random.below(4)] = "direct, and long enough to be held in a block of its own"
+                held.names[
+                    random.below(4)
+                ] = "direct, and long enough to be held in a block of its own"
                 if "d0" in held.counts:
                     _ = held.counts.pop("d0")
             change(
@@ -173,7 +174,12 @@ def main(stdout: Stdout):
                 wrong += 1
                 if wrong < 4:
                     stdout.print("case", trial, held.words, words, held.numbers, numbers)
-                    stdout.print(held.counts.items(), counts.items(), held.names.items(), names.items())
+                    stdout.print(
+                        held.counts.items(),
+                        counts.items(),
+                        held.names.items(),
+                        names.items(),
+                    )
                 # Back in step with what the shared value holds, to find the next.
                 words = list(held.words)
                 numbers = list(held.numbers)

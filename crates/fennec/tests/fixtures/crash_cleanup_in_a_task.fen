@@ -7,8 +7,7 @@ error Refused:
     code: int
 
 def capped(n: int, limit: int) -> int fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
     return n
 
 ## Says `text` on `done`, whether or not anything's there to hear it.
@@ -21,8 +20,7 @@ def lent(done: Sender[str], code: int) -> with int fails Refused:
         tell(done, text=f"cleanup {code}")
         kept = capped(code, limit=5)?
         for step in range(3):
-            if step == kept:
-                fail Refused(code=step)
+            if step == kept: fail Refused(code=step)
         tell(done, text=f"ended {kept}")
     tell(done, text="finished")
 

@@ -13,8 +13,7 @@ struct Tally:
 def alone(tally: shared Tally, step: int, failing: bool) fails Boom:
     lock tally as ref held:
         held.count += step
-        if failing:
-            fail Boom(step=step)
+        if failing: fail Boom(step=step)
 
 ## Two locks taken together: the first begins in native code, and the second asks the runtime,
 ## which makes the first one's log before its own.
@@ -23,8 +22,7 @@ def together(first: shared Tally, second: shared Tally, step: int, failing: bool
         one.count += 1
         two.count += 10
         one.names.append("kept")
-        if failing:
-            fail Boom(step=step)
+        if failing: fail Boom(step=step)
 
 def crashing(tally: shared Tally, at: int):
     lock tally as ref held:

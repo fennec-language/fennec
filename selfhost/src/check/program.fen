@@ -38,10 +38,10 @@ def built_in_interfaces() -> list[str]:
 
 def built_in_types() -> list[str]:
     return [
-        "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "str",
-        "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList",
-        "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin",
-        "Process", "Entropy", "Net", "Env", "Result", "->",
+        "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool",
+        "str", "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList", "Iterator",
+        "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process",
+        "Entropy", "Net", "Env", "Result", "->",
     ]
 
 ## Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -261,7 +261,12 @@ struct Program:
     def resolve_in(self, written: TypeExpr, generics: list[str]) -> Type fails Diagnostic:
         return self.resolve_within(written, generics, alias_depth())?
 
-    def resolve_within(self, written: TypeExpr, generics: list[str], depth: int) -> Type fails Diagnostic:
+    def resolve_within(
+        self,
+        written: TypeExpr,
+        generics: list[str],
+        depth: int,
+    ) -> Type fails Diagnostic:
         name = self.through_module(written.name)
         if self.is_interface(name): fail interface_as_type(name, written.span)
         # `fails ParseError | RangeError`: one of several errors.
@@ -289,11 +294,9 @@ struct Program:
         if name == "shared" and len(written.args) == 1:
             held = self.resolve_within(written.args[0], generics, depth)?
             return .Generic("shared", [held])
-        if name == "shared" and len(written.args) == 0:
-            return .Unknown
+        if name == "shared" and len(written.args) == 0: return .Unknown
         # `ref unit = units[at]`, which takes the place's type.
-        if name == "ref" and len(written.args) == 0:
-            return .Unknown
+        if name == "ref" and len(written.args) == 0: return .Unknown
         builtin = name in built_in_types()
         if (
             not builtin

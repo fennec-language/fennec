@@ -11,7 +11,10 @@ def text_of(cell: bytes) -> str:
 
 def sent(kind: str, body: list[int]) -> list[int]:
     size = len(body) + 4
-    return [kind.encode()[0], (size >> 24) & 255, (size >> 16) & 255, (size >> 8) & 255, size & 255] + body
+    return (
+        [kind.encode()[0], (size >> 24) & 255, (size >> 16) & 255, (size >> 8) & 255, size & 255]
+        + body
+    )
 
 ## Text as a message holds it, ended by a zero byte.
 def text(value: str) -> list[int]:

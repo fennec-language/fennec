@@ -7,8 +7,7 @@ error Refused:
     code: int
 
 def capped(n: int, limit: int) -> int fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
     return n
 
 def noted(name: str, value: int, stdout: Stdout) -> int:
@@ -24,26 +23,50 @@ def ward(stdout: Stdout) -> with int:
 
 def outermost(cap: int, stdout: Stdout) -> int fails Refused:
     with ward(stdout) as _:
-        return three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout))
+        return three(
+            noted("left", 1, stdout),
+            second=capped(noted("mid", 2, stdout), limit=cap)?,
+            third=noted("right", 3, stdout),
+        )
 
 def nested(cap: int, stdout: Stdout) -> int fails Refused:
     with ward(stdout) as _:
-        got = capped(three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout)), limit=999)?
+        got = capped(
+            three(
+                noted("left", 1, stdout),
+                second=capped(noted("mid", 2, stdout), limit=cap)?,
+                third=noted("right", 3, stdout),
+            ),
+            limit=999,
+        )?
         return got
 
 def operands(cap: int, stdout: Stdout) -> int fails Refused:
     with ward(stdout) as _:
-        return noted("left", 1, stdout) + capped(noted("mid", 2, stdout), limit=cap)? * noted("right", 3, stdout)
+        return (
+            noted("left", 1, stdout)
+            + capped(noted("mid", 2, stdout), limit=cap)? * noted("right", 3, stdout)
+        )
 
 def pieces(cap: int, stdout: Stdout) -> int fails Refused:
     with ward(stdout) as _:
         names = ["left", "mid", "right"]
-        stdout.print(f"{noted(names[0], 1, stdout)} {capped(noted(names[1], 2, stdout), limit=cap)?} {noted(names[2], 3, stdout)}")
-        items = [noted("first", 1, stdout), capped(noted("second", 2, stdout), limit=cap)?, noted("third", 3, stdout)]
+        stdout.print(
+            f"{noted(names[0], 1, stdout)} {capped(noted(names[1], 2, stdout), limit=cap)?} {noted(names[2], 3, stdout)}",
+        )
+        items = [
+            noted("first", 1, stdout),
+            capped(noted("second", 2, stdout), limit=cap)?,
+            noted("third", 3, stdout),
+        ]
         return len(items)
 
 def plain(cap: int, stdout: Stdout) -> int fails Refused:
-    return three(noted("left", 1, stdout), second=capped(noted("mid", 2, stdout), limit=cap)?, third=noted("right", 3, stdout))
+    return three(
+        noted("left", 1, stdout),
+        second=capped(noted("mid", 2, stdout), limit=cap)?,
+        third=noted("right", 3, stdout),
+    )
 
 def bump(ref count: int) -> int fails Refused:
     count += 10
@@ -79,11 +102,16 @@ def main(stdout: Stdout):
             stdout.print("shape", which)
             mut ran: int? = None
             ran = match which:
-                case 0: outermost(cap, stdout) except Refused(): None
-                case 1: nested(cap, stdout) except Refused(): None
-                case 2: operands(cap, stdout) except Refused(): None
-                case 3: pieces(cap, stdout) except Refused(): None
-                case _: plain(cap, stdout) except Refused(): None
+                case 0:
+                    outermost(cap, stdout) except Refused(): None
+                case 1:
+                    nested(cap, stdout) except Refused(): None
+                case 2:
+                    operands(cap, stdout) except Refused(): None
+                case 3:
+                    pieces(cap, stdout) except Refused(): None
+                case _:
+                    plain(cap, stdout) except Refused(): None
             stdout.print("gave", ran)
     written_value = written(stdout) except Refused(): -1
     grown_value = grown(stdout) except Refused(): -1

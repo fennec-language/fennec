@@ -16,8 +16,7 @@ def change(big: shared Big, value: int, refuse: bool) fails Refused:
         held.items.append(value)
         held.table[value] = value
         held.name += "!"
-        if refuse:
-            fail Refused(code=value)
+        if refuse: fail Refused(code=value)
 
 def crashing(big: shared Big, value: int):
     lock big as ref held:

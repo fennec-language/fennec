@@ -3,7 +3,8 @@ from std.concurrent import Closed, Crashed, Inbox, Timeout
 def sleeper(clock: Clock, fs: Fs, stdout: Stdout):
     clock.sleep(5s)
     stdout.print("sleeper woke")
-    data = fs.read_bytes("no such file") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): bytes([1])
+    data = fs.read_bytes("no such file") except .NotFound() | .PermissionDenied() | .AlreadyExists(
+    ) | .Other(): bytes([1])
     stdout.print("sleeper read", len(data))
 
 ## Waits on its inbox while the sleeper is stopped, and is told once it has been, so on one thread

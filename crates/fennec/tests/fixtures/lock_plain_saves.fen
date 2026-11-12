@@ -51,8 +51,7 @@ def change(many: shared Many, trial: int, failing: bool) fails Boom:
         held.field18 = trial + 17
         held.field19 = trial + 18
         held.seen = not held.seen
-        if failing:
-            fail Boom(step=trial)
+        if failing: fail Boom(step=trial)
 
 def show(many: shared Many) -> str:
     lock many as held:

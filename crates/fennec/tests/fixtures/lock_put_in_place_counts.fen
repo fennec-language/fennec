@@ -9,8 +9,7 @@ struct Table:
 def bump(table: shared Table, key: int, failing: bool) fails Boom:
     lock table as ref held:
         held.counts[key] = (held.counts.get(key) else 0) + 1
-        if failing:
-            fail Boom(step=key)
+        if failing: fail Boom(step=key)
 
 def bump_held_twice(table: shared Table, key: int) -> int:
     lock table as ref held:

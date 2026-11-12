@@ -55,10 +55,7 @@ def main(stdout: Stdout):
     stdout.print(words_value, words_value2)
     node_value = node(2) except TooBig(): Node(value=-1, next=None, names=[])
     node_value2 = node(9) except TooBig(): Node(value=-1, next=None, names=[])
-    stdout.print(
-        (node_value).value,
-        (node_value2).value,
-    )
+    stdout.print((node_value).value, (node_value2).value)
     wrapped_value = wrapped(1) except Wrapped(): "failed"
     wrapped_value2 = wrapped(9) except Wrapped(): "failed"
     stdout.print(wrapped_value, wrapped_value2)

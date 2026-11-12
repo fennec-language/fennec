@@ -174,7 +174,9 @@ export struct MemoryStream:
 
     ## Everything written, as text.
     def text(self) -> str fails IoError:
-        return self._data.decode() except InvalidValue(): fail .Other(reason="what was written isn't UTF-8 text")
+        return self._data.decode() except InvalidValue(): fail .Other(
+            reason="what was written isn't UTF-8 text",
+        )
 
 ## Everything left in `src`, read a chunk at a time.
 export def read_all[R: Reader](ref src: R) -> bytes fails IoError:

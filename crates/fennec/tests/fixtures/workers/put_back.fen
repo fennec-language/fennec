@@ -3,7 +3,9 @@ struct Tag:
     n: int
 
 def main(stdout: Stdout):
-    mut tags = [Tag(f"a name long enough to be held in a block of its own, {n}", n) for n in range(5_000)]
+    mut tags = [
+        Tag(f"a name long enough to be held in a block of its own, {n}", n) for n in range(5_000)
+    ]
     for ref tag in parallel(tags):
         if tag.n % 2 == 0:
             tag.n += 1

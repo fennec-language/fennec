@@ -18,7 +18,8 @@ def line_of(conn: Connection) -> str fails NetError:
 ## Every line a connection is sent, until the other side is done.
 ## A connection's lines, or none at all when it fails.
 def lines_or_empty(conn: Connection) -> list[str]:
-    lines = lines_of(conn) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): []
+    lines = lines_of(conn) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied(
+    ) | .Tls() | .Status() | .Other(): []
     return lines
 
 ## Bytes as text, or "" when they aren't UTF-8.
@@ -186,6 +187,7 @@ def main(stdout: Stdout, net: Net):
                     case .TimedOut(after=after):
                         stdout.print("nothing came in", after.as_millis(), "ms")
                         ""
-                    case .NotFound() | .Refused() | .Closed | .Denied() | .Tls() | .Status() | .Other():
+                    case .NotFound() | .Refused() | .Closed | .Denied() | .Tls() | .Status(
+                    ) | .Other():
                         stdout.print("something came")
                         ""

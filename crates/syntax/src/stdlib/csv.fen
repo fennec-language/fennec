@@ -65,7 +65,11 @@ def quoted_field(field: str, delimiter: str) -> str:
     return "\"" + field.replace("\"", "\"\"") + "\""
 
 def parse_problem(problem: str, line: int, column: int) -> ParseError:
-    return ParseError(message=f"{problem} at line {line}, column {column}", line=line, column=column)
+    return ParseError(
+        message=f"{problem} at line {line}, column {column}",
+        line=line,
+        column=column,
+    )
 
 ## Each row, with the line it starts on. It goes through the characters once, since
 ## finding a character by its position can mean walking from the start.
@@ -164,5 +168,9 @@ export def load[R: Reader](ref src: R, delimiter = ",") -> list[
     list[str]
 ] fails ParseError | IoError:
     data = read_all(ref src)?
-    text = data.decode() except InvalidValue(): fail ParseError(message="the CSV isn't UTF-8 text", line=1, column=1)
+    text = data.decode() except InvalidValue(): fail ParseError(
+        message="the CSV isn't UTF-8 text",
+        line=1,
+        column=1,
+    )
     return loads(text, delimiter)?

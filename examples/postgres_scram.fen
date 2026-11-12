@@ -9,7 +9,8 @@ def main(stdout: Stdout):
     decode_value = scram.first().decode() except InvalidValue(): ""
     stdout.print(decode_value)
     server_first = "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
-    proof = scram.answer(server_first.encode()) except .Constraint() | .Busy() | .Column() | .Failed(): bytes([])
+    proof = scram.answer(server_first.encode()) except .Constraint() | .Busy() | .Column(
+    ) | .Failed(): bytes([])
     decode_value2 = proof.decode() except InvalidValue(): ""
     stdout.print(decode_value2)
     # The server's signature, which only a server that knows the password could make.

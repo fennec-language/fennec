@@ -19,8 +19,7 @@ def counted(tally: shared Tally, key: int, between: int, failing: bool) fails Bo
         elif between == 3:
             held.counts[key + 1] = 7
         held.counts[key] = seen + 1
-        if failing:
-            fail Boom(step=between)
+        if failing: fail Boom(step=between)
 
 def show(tally: shared Tally) -> str:
     lock tally as held:

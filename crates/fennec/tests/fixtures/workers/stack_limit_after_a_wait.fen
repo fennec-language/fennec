@@ -1,8 +1,7 @@
-from std.concurrent import Inbox, Closed, Crashed, Timeout
+from std.concurrent import Closed, Crashed, Inbox, Timeout
 
 def deep(n: int, text: str) -> int:
-    if n == 0:
-        return len(text)
+    if n == 0: return len(text)
     more = f"{n}"
     below = deep(n - 1, more)
     return below + len(more) - len(more) + 1

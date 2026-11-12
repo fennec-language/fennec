@@ -119,7 +119,8 @@ test "only the server's exact signature proves it knows the password"():
 
 test "a sign-in whose answer was refused can't then be checked"():
     mut scram = PgScram.started(Secret.of("pencil"), nonce="abc")
-    _ = scram.answer(f"r=xyz,s={SALT},i=4096".encode()) except .Constraint() | .Busy() | .Column() | .Failed(): bytes([])
+    _ = scram.answer(f"r=xyz,s={SALT},i=4096".encode()) except .Constraint() | .Busy() | .Column(
+    ) | .Failed(): bytes([])
     assert (
         why(() => scram.check(SERVER_LAST.encode())?)
         == "the server sent its SCRAM proof before the exchange"

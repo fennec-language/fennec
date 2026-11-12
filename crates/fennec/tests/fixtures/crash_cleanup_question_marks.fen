@@ -6,13 +6,11 @@ error Refused:
     code: int
 
 def capped(n: int, limit: int) -> int fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
     return n
 
 def check(n: int, limit: int) fails Refused:
-    if n > limit:
-        fail Refused(code=n)
+    if n > limit: fail Refused(code=n)
 
 def guarded(code: int, stdout: Stdout) -> with int fails Refused:
     lend code except:
@@ -21,8 +19,7 @@ def guarded(code: int, stdout: Stdout) -> with int fails Refused:
         stdout.print("kept", kept)
         stdout.print("deeper", capped(kept, limit=10)?)
         for step in range(2):
-            if step == code:
-                fail Refused(code=step)
+            if step == code: fail Refused(code=step)
         def inner() -> int fails Refused:
             return capped(code, limit=5)?
         inner_value = inner() except Refused(): -1

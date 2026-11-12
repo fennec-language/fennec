@@ -4,6 +4,11 @@
 //! pointed at an empty folder, and its files are read out of git's objects. Nothing is checked
 //! out, so no filter, hook or attribute of the repository ever runs. Only `kit.toml` and what's
 //! under `src` are taken, and a link or a submodule there is refused.
+//!
+//! What's taken is bounded before any of it is read: git says each file's size, and a kit whose
+//! files come to more than the store takes is refused, so a dependency with a file of 20 GB can't
+//! take the machine's memory. Two files whose names differ only by case are refused too: git holds
+//! both, but a Mac or Windows keeps one, so the same pin would build different code there.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,13 +18,26 @@ use crate::Files;
 
 /// The files of the kit at `folder` in the repository at `url`, as of `commit`. `work` is a
 /// scratch folder of the caller's, which this removes when it's done.
-pub(crate) fn fetch(url: &str, commit: &str, folder: Option<&str>, work: &Path) -> Result<Files, String> {
-    let fetched = fetch_into(url, commit, folder, work);
+/// `most` is how many bytes its files may come to.
+pub(crate) fn fetch(
+    url: &str,
+    commit: &str,
+    folder: Option<&str>,
+    work: &Path,
+    most: u64,
+) -> Result<Files, String> {
+    let fetched = fetch_into(url, commit, folder, work, most);
     let _ = std::fs::remove_dir_all(work);
     fetched
 }
 
-fn fetch_into(url: &str, commit: &str, folder: Option<&str>, work: &Path) -> Result<Files, String> {
+fn fetch_into(
+    url: &str,
+    commit: &str,
+    folder: Option<&str>,
+    work: &Path,
+    most: u64,
+) -> Result<Files, String> {
     // Paths as `git` takes them, which on Windows isn't the verbatim form `canonicalize` gives.
     let work = crate::plain(work);
     let plain_url = crate::plain_text(url);
@@ -47,8 +65,10 @@ fn fetch_into(url: &str, commit: &str, folder: Option<&str>, work: &Path) -> Res
         return Err(format!("{url} has no commit {commit}"));
     }
     let prefix = folder.map(|folder| format!("{folder}/")).unwrap_or_default();
-    let listing = git.run(&["ls-tree", "-r", "-z", "--full-tree", commit])?;
+    // With `-l`, each file's size, so none is read before what they come to is known.
+    let listing = git.run(&["ls-tree", "-r", "-l", "-z", "--full-tree", commit])?;
     let mut wanted = Vec::new();
+    let mut total: u64 = 0;
     for item in listing.split(|byte| *byte == 0).filter(|item| !item.is_empty()) {
         let item = String::from_utf8_lossy(item);
         let Some((about, path)) = item.split_once('\t') else { continue };
@@ -56,12 +76,23 @@ fn fetch_into(url: &str, commit: &str, folder: Option<&str>, work: &Path) -> Res
         if inside != "kit.toml" && !inside.starts_with("src/") {
             continue;
         }
-        let mut words = about.split(' ');
-        let (Some(mode), Some(kind), Some(object)) = (words.next(), words.next(), words.next()) else {
+        let mut words = about.split_whitespace();
+        let (Some(mode), Some(kind), Some(object), Some(size)) =
+            (words.next(), words.next(), words.next(), words.next())
+        else {
             return Err(format!("git listed `{item}`, which isn't a file"));
         };
         match (mode, kind) {
-            ("100644" | "100755", "blob") => wanted.push((inside.to_owned(), object.to_owned())),
+            ("100644" | "100755", "blob") => {
+                let size: u64 = size.parse().map_err(|_| format!("git listed `{item}` with no size"))?;
+                total = total.saturating_add(size);
+                if total > most {
+                    return Err(format!(
+                        "{url} at {commit} has more under `src` than a kit may, {most} bytes, so none of it is read"
+                    ));
+                }
+                wanted.push((inside.to_owned(), object.to_owned()));
+            }
             ("120000", _) => {
                 return Err(format!("{url} has a link at {path}, and a kit's files can't be links"));
             }
@@ -71,6 +102,11 @@ fn fetch_into(url: &str, commit: &str, folder: Option<&str>, work: &Path) -> Res
     if !wanted.iter().any(|(path, _)| path == "kit.toml") {
         let at = folder.map_or_else(|| "at its top".to_owned(), |folder| format!("in `{folder}`"));
         return Err(format!("{url} at {commit} has no kit.toml {at}, so there's no kit there"));
+    }
+    if let Some((one, other)) = crate::same_but_for_case(wanted.iter().map(|(path, _)| path.as_str())) {
+        return Err(format!(
+            "{url} has both {one} and {other}, which differ only by case: a Mac or Windows keeps one of them, so the kit would build differently there"
+        ));
     }
     let objects: Vec<&str> = wanted.iter().map(|(_, object)| object.as_str()).collect();
     let contents = git.read_objects(&objects)?;

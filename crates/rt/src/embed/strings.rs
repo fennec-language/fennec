@@ -124,7 +124,13 @@ fn copy_text(state: &State, address: i64, words: &mut Vec<u64>) -> Option<(usize
 }
 
 /// `grow` with the bytes added already copied out of their block.
-fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_chars: u64) -> Option<i64> {
+pub(super) fn grow_by(
+    state: &mut State,
+    text: i64,
+    added: &[u64],
+    extra: usize,
+    extra_chars: u64,
+) -> Option<i64> {
     let at = u64::try_from(text).ok()?;
     let block = state.heap.block(at)?;
     let (length, chars) = (usize::try_from(*block.get(2)?).ok()?, *block.get(3)?);
@@ -521,10 +527,10 @@ const WORD_BYTES: usize = 8;
 const LOW_BITS: u64 = u64::from_ne_bytes([1; 8]);
 const HIGH_BITS: u64 = LOW_BITS << 7;
 
-/// Whether `part`, of at most a word's bytes, is in `whole`, with nothing copied: a word at a
-/// time to where `part`'s first byte is, then whether the rest follows. It takes one look per
+/// Where `part`, of one to eight bytes, first is in `whole`, in bytes, with nothing copied: a word
+/// at a time to where `part`'s first byte is, then whether the rest follows. It takes one look per
 /// place, so it's linear whatever the strings hold.
-fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> bool {
+fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> Option<usize> {
     let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
     let (part, first) = (part & mask, part & 0xff);
     for (at, word) in whole.iter().enumerate() {
@@ -536,18 +542,34 @@ fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> bo
         while places != 0 {
             let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
             if at * 8 + byte + size > length {
-                return false;
+                return None;
             }
             let next = whole.get(at + 1).map_or(0, |next| u64::from_le(*next));
             let shift = byte * 8;
             let found = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
             if found & mask == part {
-                return true;
+                return Some(at * 8 + byte);
             }
             places &= places - 1;
         }
     }
-    false
+    None
+}
+
+/// How many characters the first `bytes` bytes of a string's words hold: the bytes that don't carry
+/// on a character begun before them, whose top two bits are `10`, counted eight at a time.
+fn chars_before(words: &[u64], bytes: usize) -> usize {
+    let mut count = 0;
+    for (at, word) in words.iter().enumerate().take(bytes.div_ceil(8)) {
+        let taken = (bytes - at * 8).min(8);
+        let mask = if taken == 8 { u64::MAX } else { (1 << (taken * 8)) - 1 };
+        let word = u64::from_le(*word);
+        // A byte's top bit set and the one below it clear: shifted up a place, each byte's second
+        // bit lands on its own top bit.
+        let carries_on = word & !(word << 1) & HIGH_BITS & mask;
+        count += taken - usize::try_from(carries_on.count_ones()).unwrap_or(0);
+    }
+    count
 }
 
 /// Whether `part`'s bytes are in `whole`'s, each given where it is. Bytes are the same question as
@@ -561,7 +583,7 @@ pub(super) fn bytes_contain(whole: (&[u64], usize), (part, size): (&[u64], usize
     }
     if size <= WORD_BYTES {
         let first = part.first().map_or(0, |word| u64::from_le(*word));
-        return word_in_place(whole, first, size);
+        return word_in_place(whole, first, size).is_some();
     }
     // Longer ones are rare, and `str`'s search stays linear however the two repeat themselves.
     let text_of = |(words, length): (&[u64], usize)| {
@@ -885,44 +907,100 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     })
 }
 
-/// One of the string methods, run on a string block with string blocks as its arguments.
-fn method(state: &State, address: i64, name: &str, args: &[i64], at: Span) -> Result<Value, Diagnostic> {
-    let lost = || Diagnostic::new("the native code lost a string", at);
-    let whole = text(state, address).ok_or_else(lost)?;
-    let args =
-        args.iter().map(|arg| text(state, *arg).map(|text| Value::str(&text))).collect::<Option<Vec<_>>>();
-    crate::collections::str_method(&whole, name, &args.ok_or_else(lost)?, at)
+thread_local! {
+    /// The bytes a string block's text is copied into to be read as a `str`, and a second string's,
+    /// like the part a `find` looks for, kept to save making them anew for each call.
+    static READ: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static READ_PART: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// A string method that gives a string, as a block owned once.
-fn text_method(address: i64, name: &str, args: &[i64]) -> i64 {
-    super::made_with(name, |state| match method(state, address, name, args, Span::default()) {
-        Ok(Value::Str(text)) => text_address(state, &text),
-        _ => 0,
-    })
+/// Copies a string block's text into `bytes` a word at a time. False when `address` isn't a
+/// string's block.
+fn copy_out(state: &State, address: i64, bytes: &mut Vec<u8>) -> bool {
+    bytes.clear();
+    let block = u64::try_from(address).ok().and_then(|at| state.heap.block(at));
+    let Some(block) = block.filter(|block| super::heap::is_text(state, block)) else { return false };
+    let (length, _) = lengths(block);
+    for word in block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8)) {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
+    true
+}
+
+/// Runs `with` on a string block's text, copied out into bytes kept for it, with nothing else
+/// made: no `String`, no value. None when `address` isn't a string's block.
+fn read_text<R>(state: &mut State, address: i64, with: impl FnOnce(&mut State, &str) -> R) -> Option<R> {
+    let mut bytes = READ.take();
+    let done = copy_out(state, address, &mut bytes)
+        .then(|| std::str::from_utf8(&bytes).ok().map(|text| with(state, text)))
+        .flatten();
+    READ.set(bytes);
+    done
+}
+
+/// `read_text` for two strings at once, the second, `part`, often what's looked for in the first.
+fn read_two<R>(
+    state: &mut State,
+    (address, part): (i64, i64),
+    with: impl FnOnce(&mut State, &str, &str) -> R,
+) -> Option<R> {
+    let mut bytes = READ_PART.take();
+    let done = copy_out(state, part, &mut bytes)
+        .then(|| {
+            let part = std::str::from_utf8(&bytes).ok()?;
+            read_text(state, address, |state, text| with(state, text, part))
+        })
+        .flatten();
+    READ_PART.set(bytes);
+    done
 }
 
 /// `text.upper()`.
 pub extern "C" fn upper(address: i64) -> i64 {
-    text_method(address, "upper", &[])
+    super::made_with("upper", |state| {
+        read_text(state, address, |state, text| text_address(state, &text.to_uppercase())).unwrap_or(0)
+    })
 }
 
 /// `text.lower()`.
 pub extern "C" fn lower(address: i64) -> i64 {
-    text_method(address, "lower", &[])
+    super::made_with("lower", |state| {
+        read_text(state, address, |state, text| text_address(state, &text.to_lowercase())).unwrap_or(0)
+    })
 }
 
 /// `text.replace(old, new)`.
 pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
-    text_method(address, "replace", &[old, new])
+    super::made_with("replace", |state| {
+        let Some(new) = text(state, new) else { return 0 };
+        read_two(state, (address, old), |state, text, old| text_address(state, &text.replace(old, &new)))
+            .unwrap_or(0)
+    })
 }
 
 /// `text.find(part)`: which character `part` first starts at, or -1 when it isn't there.
 pub extern "C" fn find(address: i64, part: i64) -> i64 {
-    with(|state| match method(state, address, "find", &[part], Span::default()) {
-        Ok(Value::Int(at)) => at,
-        _ => -1,
+    with(|state| {
+        // A part of a word or less, as most are, is looked for where both strings are.
+        let looked_for = u64::try_from(part).ok().and_then(|at| state.heap.block(at));
+        if looked_for
+            .is_some_and(|block| super::heap::is_text(state, block) && lengths(block).0 <= WORD_BYTES)
+        {
+            let (whole, (words, size)) = (bytes_in_block(state, address), bytes_in_block(state, part));
+            if size == 0 {
+                return Some(0);
+            }
+            let first = words.first().map_or(0, |word| u64::from_le(*word));
+            let found = word_in_place(whole, first, size);
+            return Some(found.map_or(-1, |at| i64::try_from(chars_before(whole.0, at)).unwrap_or(-1)));
+        }
+        read_two(state, (address, part), |_, text, part| {
+            let before = text.find(part).and_then(|at| text.get(..at));
+            before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
+        })
     })
+    .unwrap_or(-1)
 }
 
 /// `text.split(separator)`, or `text.split()` when `separator` is 0: a list of str owned
@@ -930,11 +1008,63 @@ pub extern "C" fn find(address: i64, part: i64) -> i64 {
 pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
-        let separators: &[i64] = if separator == 0 { &[] } else { &[separator] };
-        let parts = method(state, address, "split", separators, at)?;
-        let element = super::text::string_element(state);
-        super::lists::write_list(state, &element, &parts).ok_or_else(|| lost(start, end))
+        let split = if separator == 0 {
+            read_text(state, address, |state, whole| split_into(state, whole, None, at))
+        } else {
+            read_two(state, (address, separator), |state, whole, between| {
+                split_into(state, whole, Some(between), at)
+            })
+        };
+        split.ok_or_else(|| lost(start, end))?
     })
+}
+
+/// `fennec_str_split_header(text, separator, start, end)`: `text.split(separator)` for a text and
+/// a separator given as their headers, inline or holding a block, so neither is made a block first.
+/// A separator of three zeros is none: `text.split()`.
+pub extern "C" fn split_header(
+    t0: u64,
+    t1: u64,
+    t2: u64,
+    s0: u64,
+    s1: u64,
+    s2: u64,
+    start: i64,
+    end: i64,
+) -> i64 {
+    attempt(|state: &mut State| {
+        let whole = super::text::text_of(state, &[t0, t1, t2]);
+        let between = (s0, s1, s2) != (0, 0, 0);
+        let between = between.then(|| super::text::text_of(state, &[s0, s1, s2]));
+        split_into(state, &whole, between.as_deref(), span(start, end))
+    })
+}
+
+/// The list `whole.split(between)` gives, or `whole.split()` without `between`, owned once. Each
+/// part goes straight into the list's items, with no list of values made on the way and dropped
+/// after. An empty separator fails, as the method says.
+fn split_into(state: &mut State, whole: &str, between: Option<&str>, at: Span) -> Result<i64, Diagnostic> {
+    if between == Some("") {
+        return crate::collections::str_method(whole, "split", &[Value::str("")], at).map(|_| 0);
+    }
+    let element = super::text::string_element(state);
+    let headers = *element == Element::Text;
+    let mut items = Vec::new();
+    let mut put = |state: &mut State, part: &str| {
+        if headers {
+            items.extend(super::text::header(state, part));
+        } else {
+            items.push(text_address(state, part).cast_unsigned());
+        }
+    };
+    let mut one = between.map(str::chars);
+    match (one.as_mut().and_then(Iterator::next), one.as_mut().and_then(Iterator::next), between) {
+        (_, _, None) => whole.split_whitespace().for_each(|part| put(state, part)),
+        // One character, like "/" or " ", is looked for as a character, which is quicker.
+        (Some(character), None, _) => whole.split(character).for_each(|part| put(state, part)),
+        (_, _, Some(between)) => whole.split(between).for_each(|part| put(state, part)),
+    }
+    Ok(super::lists::list_of_items(state, &element, &items))
 }
 
 #[cfg(test)]
@@ -1013,6 +1143,116 @@ mod place_tests {
         let empty = slice(text, 5, 2, 0, 0);
         with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
         finish();
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use std::rc::Rc;
+
+    use super::super::{Tables, finish, heap, lists, start, text, with};
+    use super::split;
+    use crate::packed::Element;
+
+    /// The parts `split` gave, read back from the list's items, headers or blocks' addresses.
+    fn parts(list: i64, headers: bool) -> Vec<String> {
+        with(|state| {
+            let block = state.heap.block(list.cast_unsigned()).unwrap_or_default();
+            if headers {
+                text::texts(state, lists::items(block, 3))
+            } else {
+                let items = lists::items(block, 1);
+                items.iter().map(|item| super::text(state, item.cast_signed()).unwrap_or_default()).collect()
+            }
+        })
+    }
+
+    /// `find`, `replace`, `upper` and `lower`, reading the text where it is, give what Rust's own
+    /// give: characters counted for `find`, wide characters too, and parts that aren't there.
+    #[test]
+    fn find_replace_upper_and_lower_give_what_rusts_own_give() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let read = |address: i64| with(|state| super::text(state, address)).unwrap_or_default();
+        let wholes = ["", "caf\u{e9} au lait, \u{e9}t\u{e9}", "GET /api/orders HTTP/1.1\r\nHost: x\r\n\r\n"];
+        let parts = ["", "a", "\u{e9}t\u{e9}", "\r\n\r\n", "absent", "orders", "orders HTTP/1.1", "t\u{e9}"];
+        for whole in wholes {
+            let address = string(whole);
+            for part in parts {
+                let expected = whole
+                    .find(part)
+                    .map_or(-1, |at| i64::try_from(whole.get(..at).unwrap().chars().count()).unwrap());
+                assert_eq!(super::find(address, string(part)), expected, "{whole:?} {part:?}");
+                for new in ["", "\u{1f98a}"] {
+                    let replaced = super::replace(address, string(part), string(new));
+                    assert_eq!(read(replaced), whole.replace(part, new), "{whole:?} {part:?} {new:?}");
+                }
+            }
+            assert_eq!(read(super::upper(address)), whole.to_uppercase());
+            assert_eq!(read(super::lower(address)), whole.to_lowercase());
+        }
+        finish();
+    }
+
+    /// An inline header packs its bytes as a block's words do, with its tag in its last byte, and
+    /// a block made from it holds its text and counts its characters.
+    #[test]
+    fn an_inline_header_made_a_block_keeps_its_text_and_characters() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        for short in ["", "a", "\u{e9}t\u{e9}", "eight by", "twenty-three bytes long", "\u{65e5}\u{1f98a}"] {
+            let header = text::inline(short.as_bytes());
+            let mut packed = [0_u8; 24];
+            packed[..short.len()].copy_from_slice(short.as_bytes());
+            packed[23] = 0x80 | u8::try_from(short.len()).unwrap();
+            let words: Vec<u64> =
+                packed.chunks(8).map(|eight| u64::from_le_bytes(eight.try_into().unwrap())).collect();
+            assert_eq!(header.to_vec(), words, "{short:?}");
+            let [a, b, c] = header;
+            let address = text::block(a, b, c);
+            with(|state| {
+                let block = state.heap.block(address.cast_unsigned()).unwrap_or_default();
+                assert_eq!(super::text(state, address).as_deref(), Some(short));
+                assert_eq!(block.get(3).copied(), Some(u64::try_from(short.chars().count()).unwrap()));
+            });
+        }
+        finish();
+    }
+
+    /// `split` gives what Rust's own split gives, by a separator or by runs of whitespace, short
+    /// parts and long, wide characters too, whether native code holds strings as headers or blocks.
+    #[test]
+    fn a_split_gives_the_parts_rusts_own_gives() {
+        let long = "a part long enough to need a block of its own";
+        let texts = [
+            String::new(),
+            "/".to_owned(),
+            "/api/orders/42".to_owned(),
+            "a//b/".to_owned(),
+            format!("\u{e9}t\u{e9}/{long}/\u{65e5}\u{672c}\u{1f98a}"),
+            "  spaced \t out\nwords  ".to_owned(),
+        ];
+        for headers in [true, false] {
+            let tables =
+                Tables { shapes: vec![Rc::new(Element::Str)], text_headers: headers, ..Tables::default() };
+            start(tables, crate::Inputs::default());
+            let slash = with(|state| heap::text_address(state, "/"));
+            for whole in &texts {
+                let address = with(|state| heap::text_address(state, whole));
+                let by_slash: Vec<&str> = whole.split('/').collect();
+                assert_eq!(parts(split(address, slash, 0, 0), headers), by_slash, "{whole:?}");
+                let by_space: Vec<&str> = whole.split_whitespace().collect();
+                assert_eq!(parts(split(address, 0, 0, 0), headers), by_space, "{whole:?}");
+                // The same given as headers, inline or holding a block, with none made a block.
+                let [t0, t1, t2] = with(|state| Some(text::header(state, whole))).unwrap();
+                let [s0, s1, s2] = with(|state| Some(text::header(state, "/"))).unwrap();
+                assert_eq!(parts(super::split_header(t0, t1, t2, s0, s1, s2, 0, 0), headers), by_slash);
+                assert_eq!(parts(super::split_header(t0, t1, t2, 0, 0, 0, 0, 0), headers), by_space);
+            }
+            let empty = with(|state| heap::text_address(state, ""));
+            assert_eq!(split(slash, empty, 0, 0), 0);
+            let (_, failure, _) = finish();
+            assert!(failure.is_some_and(|failure| failure.message.contains("wrong arguments")));
+        }
     }
 }
 
@@ -1214,6 +1454,63 @@ mod sized_tests {
         assert_eq!(bits, 42);
         for wrong in ["-1", "18446744073709551616", "1.5", ""] {
             assert_eq!(numbers::parse_u64(string(wrong), &mut bits), 0, "{wrong:?}");
+        }
+        finish();
+    }
+
+    /// `int`, `u64` and `float` read text as Rust's own `trim` then `parse` do, whether it's short
+    /// ASCII read where it is or anything else: every kind of whitespace around it, signs, too big,
+    /// not a number, and the edge of what's read in place.
+    #[test]
+    fn numbers_parse_as_rusts_own_trim_and_parse_do() {
+        begin();
+        let long_spaces = " ".repeat(38);
+        let texts = [
+            "42".to_owned(),
+            " -7 ".to_owned(),
+            "\t\n\u{b}\u{c}\r 12 \r\n".to_owned(),
+            "\u{a0}5\u{a0}".to_owned(),
+            "+3".to_owned(),
+            "9223372036854775807".to_owned(),
+            "9223372036854775808".to_owned(),
+            "-9223372036854775808".to_owned(),
+            "18446744073709551615".to_owned(),
+            "1.5".to_owned(),
+            " 2.5e3 ".to_owned(),
+            "nan".to_owned(),
+            String::new(),
+            "   ".to_owned(),
+            "4 2".to_owned(),
+            format!("{long_spaces}17"),
+            format!("{long_spaces}171"),
+            "\u{65e5}".to_owned(),
+        ];
+        for text in &texts {
+            let address = string(text);
+            let mut bits = 0;
+            let int = numbers::parse_int(address, &mut bits);
+            assert_eq!(
+                (int, if int == 1 { Some(bits) } else { None }),
+                match text.trim().parse::<i64>() {
+                    Ok(n) => (1, Some(n)),
+                    Err(_) => (0, None),
+                },
+                "int {text:?}"
+            );
+            let unsigned = numbers::parse_u64(address, &mut bits);
+            assert_eq!(unsigned == 1, text.trim().parse::<u64>().is_ok(), "u64 {text:?}");
+            if let Ok(n) = text.trim().parse::<u64>() {
+                assert_eq!(bits.cast_unsigned(), n);
+            }
+            let float = numbers::parse_float(address, &mut bits);
+            match text.trim().parse::<f64>() {
+                Ok(n) => assert_eq!(
+                    (float, f64::from_bits(bits.cast_unsigned()).to_bits()),
+                    (1, n.to_bits()),
+                    "float {text:?}"
+                ),
+                Err(_) => assert_eq!(float, 0, "float {text:?}"),
+            }
         }
         finish();
     }

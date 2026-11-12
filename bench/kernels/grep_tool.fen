@@ -1,0 +1,159 @@
+# A grep, as a developer's tool runs one over a project. The program first makes the project: a
+# tree of folders and source files, written from one seed through an `Fs` narrowed with `only`
+# to the tree's own folder, so nothing else on the disk can be touched. Then it walks the tree,
+# reads each file in chunks, cuts the chunks into lines, and matches every line against a few
+# `std.re` patterns: who has TODOs, timeouts, hex constants, and functions that get or put. It
+# counts matches by pattern, by file and by owner, and reports the busiest files and the first
+# match of each pattern.
+
+from std.re import Regex
+
+ROOT = "target/bench-grep-tool"
+PROJECTS = ["engine", "server", "tools", "editor"]
+FOLDERS = 4
+FILES = 6
+LINES = 60
+CHUNK = 4096
+OWNERS = ["fox", "kit", "tod", "vix", "reynard"]
+VERBS = ["get", "put", "load", "save", "send", "find"]
+NOUNS = ["user", "order", "item", "room", "tile", "path", "frame", "mesh"]
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# A source file's text, made from a generator's state.
+def source(seed: int) -> str:
+    mut state = seed
+    mut lines = list[str]()
+    for number in range(LINES):
+        state = next(state)
+        roll = below(state, top=100)
+        state = next(state)
+        verb = VERBS[below(state, top=len(VERBS))]
+        noun = NOUNS[below(state, top=len(NOUNS) * 7) % len(NOUNS)]
+        if roll < 12:
+            lines.append(f"fn {noun}_{verb}(id: u32, limit: u32) -> Result<{noun}, Error> {{")
+        elif roll < 20:
+            owner = OWNERS[number % len(OWNERS)]
+            lines.append(f"    // TODO({owner}): {verb} the {noun} without a copy")
+        elif roll < 27:
+            lines.append(f"    log.warn(\"{noun} {verb}: timeout after {state % 900 + 100}ms\")")
+        elif roll < 40:
+            lines.append(f"    let mask = {state % 65_536}; // {noun} flags")
+        elif roll < 55:
+            lines.append("    }")
+        elif roll < 60:
+            lines.append("")
+        else:
+            lines.append(f"    let {noun} = store.{verb}_{noun}(id + {roll}, limit)?;")
+    return "\n".join(lines) + "\n"
+
+# Writes the project's tree, every file at its own path under `ROOT`.
+def make_tree(tree: Fs, seed: int) fails IoError:
+    mut state = seed
+    for project in PROJECTS:
+        for folder in range(FOLDERS):
+            here = f"{ROOT}/{project}/part{folder}"
+            tree.make_dir(here)?
+            for file in range(FILES):
+                state = next(state)
+                tree.write_text(f"{here}/file{file}.src", source(state))?
+    return
+
+# What the patterns found in the whole tree.
+struct Counts:
+    lines = 0
+    bytes = 0
+    by_pattern = list[int]()
+    files_with = list[int]()
+    by_file = dict[str, int]()
+    owners = dict[str, int]()
+    first = list[str]()
+    places = 0
+
+# Matches one line against every pattern and counts what it finds.
+def match_line(
+    patterns: list[Regex],
+    path: str,
+    number: int,
+    line: str,
+    ref counts: Counts,
+    ref seen: list[bool],
+):
+    counts.lines += 1
+    for at, pattern in enumerate(patterns):
+        found = pattern.search(line) else continue
+        counts.by_pattern[at] += 1
+        counts.by_file[path] = (counts.by_file.get(path) else 0) + 1
+        counts.places = (counts.places * 31 + number * 7 + at + found.start) % 1_000_000_007
+        if not seen[at]:
+            seen[at] = True
+            counts.files_with[at] += 1
+        if len(counts.first[at]) == 0:
+            counts.first[at] = f"{path}:{number}: {line.strip()}"
+        if at == 0:
+            owner = found[1] else ""
+            counts.owners[owner] = (counts.owners.get(owner) else 0) + 1
+    return
+
+# Reads one file in chunks, cutting them into lines, and matches every line.
+def grep_file(tree: Fs, patterns: list[Regex], path: str, ref counts: Counts) fails IoError:
+    mut seen = [False for _ in patterns]
+    mut carry = ""
+    mut number = 0
+    with tree.open(path)? as file:
+        for chunk in file.chunks(CHUNK)?:
+            counts.bytes += len(chunk)
+            text = carry + chunk.decode().expect("the tree is ASCII")
+            lines = text.split("\n")
+            for line in lines[:-1]:
+                number += 1
+                match_line(patterns, path, number, line, ref counts, ref seen)
+            carry = lines[-1]
+    if len(carry) > 0:
+        number += 1
+        match_line(patterns, path, number, carry, ref counts, ref seen)
+    return
+
+def main(stdout: Stdout, fs: Fs) fails IoError:
+    fs.make_dir(ROOT)?
+    tree = fs.only(ROOT)
+    make_tree(tree, seed=17)?
+    patterns = [
+        Regex(r"TODO\((\w+)\)"),
+        Regex(r"\btimeout after \d+ms"),
+        Regex(r"mask = \d{3,5};"),
+        Regex(r"^fn \w+_(get|put)\("),
+    ]
+    mut counts = Counts(
+        by_pattern=[0 for _ in patterns],
+        files_with=[0 for _ in patterns],
+        first=["" for _ in patterns],
+    )
+    mut files = 0
+    for path in tree.walk(ROOT)?:
+        if not path.text.endswith(".src"): continue
+        files += 1
+        grep_file(tree, patterns, path.text, ref counts)?
+    stdout.print(files, "files", counts.lines, "lines", counts.bytes, "bytes")
+    for at, pattern in enumerate(patterns):
+        stdout.print(
+            pattern.pattern,
+            counts.by_pattern[at],
+            "lines in",
+            counts.files_with[at],
+            "files",
+        )
+        stdout.print("  first", counts.first[at])
+    busiest = sorted([(-count, path) for path, count in counts.by_file.items()])
+    for at in range(5):
+        stdout.print("busiest", busiest[at][1], -busiest[at][0])
+    for owner in sorted(counts.owners.keys()):
+        stdout.print("owner", owner, counts.owners[owner])
+    stdout.print("places", counts.places)
+    return

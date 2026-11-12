@@ -792,8 +792,22 @@ impl Emit<'_, '_, '_> {
                 }
             }
         }
-        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        let value = self.built_from(&pieces);
         for piece in &pieces {
+            match &piece.owned {
+                Some(Owned::Header(header)) => self.release_text(header),
+                Some(Owned::Block(block)) => self.release(block),
+                None => {}
+            }
+        }
+        self.assign(dest, &value)
+    }
+
+    /// A text made of pieces one after another: inline when it fits in a header, and otherwise
+    /// one block made at its size, each piece copied in once. Nothing given is let go of.
+    fn built_from(&mut self, pieces: &[Piece]) -> String {
+        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        for piece in pieces {
             let (more_bytes, more_chars) = (self.temp(), self.temp());
             self.line(&format!("{more_bytes} = add nuw nsw i64 {bytes}, {}", piece.size));
             self.line(&format!("{more_chars} = add nuw nsw i64 {chars}, {}", piece.chars));
@@ -807,7 +821,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&inline);
         let out = self.place_for_text();
         self.line(&format!("store {} zeroinitializer, ptr {out}", crate::headers::HEADER));
-        self.write_pieces(&out, &pieces, true);
+        self.write_pieces(&out, pieces, true);
         let (tag, byte, tag_at, from_inline) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{tag} = or i64 {bytes}, 128"));
         self.line(&format!("{byte} = trunc i64 {tag} to i8"));
@@ -821,7 +835,7 @@ impl Emit<'_, '_, '_> {
         let made = self.temp();
         self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
         let start = self.offset(&made, TEXT.unsigned_abs());
-        self.write_pieces(&start, &pieces, false);
+        self.write_pieces(&start, pieces, false);
         let (bytes_at, chars_at) =
             (self.offset(&made, TEXT_BYTES.unsigned_abs()), self.offset(&made, TEXT_CHARS.unsigned_abs()));
         self.line(&format!("store i64 {bytes}, ptr {bytes_at}{HEADER_ACCESS}"));
@@ -835,14 +849,22 @@ impl Emit<'_, '_, '_> {
             "{value} = phi {} [ {from_inline}, %{inline_end} ], [ {from_block}, %{block_end} ]",
             crate::headers::HEADER
         ));
-        for piece in &pieces {
-            match &piece.owned {
-                Some(Owned::Header(header)) => self.release_text(header),
-                Some(Owned::Block(block)) => self.release(block),
-                None => {}
-            }
-        }
-        self.assign(dest, &value)
+        value
+    }
+
+    /// `a + b` of texts that won't fit in a header together or aren't both inline: one block made
+    /// at the size of both, each copied in once, with neither boxed first.
+    pub(crate) fn joined_texts(&mut self, texts: &[&str]) -> String {
+        let pieces: Vec<Piece> = texts
+            .iter()
+            .map(|text| Piece {
+                from: self.header_bytes(text),
+                size: self.header_byte_length(text),
+                chars: self.header_chars(text),
+                owned: None,
+            })
+            .collect();
+        self.built_from(&pieces)
     }
 
     /// A literal's bytes, as a constant of the module's.
@@ -1628,7 +1650,30 @@ tagged:
                 self.line(&format!("store i64 {value}, ptr {place}"));
                 Ok(())
             }
-            // With no separator, on runs of spaces. An empty one fails.
+            // With no separator, on runs of spaces. An empty one fails. Headers go to the runtime
+            // as their words, so neither is made a block first; three zeros, which no header is,
+            // say there's no separator.
+            "str.split" if self.headers() => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+                let [s0, s1, s2] = match args.get(1) {
+                    Some(separator) => {
+                        let (separator, _) = self.operand(separator)?;
+                        [0, 1, 2].map(|at| self.header_word(&separator, at))
+                    }
+                    None => ["0".to_owned(), "0".to_owned(), "0".to_owned()],
+                };
+                self.declare(
+                    "declare ptr @fennec_str_split_header(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                );
+                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let parts = self.temp();
+                self.line(&format!(
+                    "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                self.assign(dest.ok_or("no result")?, &parts)
+            }
             "str.split" => {
                 let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let separator = match args.get(1) {

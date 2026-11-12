@@ -2508,6 +2508,61 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Reading a string with characters of more than one byte, in order, backwards and by place, runs
+/// the same checking proofs, which checks the string's cursor is inside it each time it's used.
+#[test]
+fn strings_read_by_place_run_the_same_checking_their_cursor() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def count(s: str) -> int:
+    mut n = 0
+    for i in range(s.len()):
+        if s[i] == "é" or s[i - 1] == "a":
+            n += 1
+    return n
+
+def backwards(s: str) -> str:
+    mut out = ""
+    mut i = s.len() - 1
+    while i >= 0:
+        out += s[i]
+        i -= 1
+    return out
+
+def main(stdout: Stdout):
+    s = "café naïve über alles, déjà vu"
+    stdout.print(count(s), backwards(s), s[7], s[-2], s[3], s[0])
+    return
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for proofs in ["0", "1"] {
+            let dir = folder("string_cursor")?;
+            let (program, executable) = (dir.join("cursor.fen"), dir.join("cursor"));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5 uv \u{e0}j\u{e9}d ,sella rebü evïan \u{e9}fac \u{ef} v \u{e9} c\n",
+                "{how:?} proofs {proofs}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
 /// A program whose code is handed every kind of fact runs the same built with them, with them
 /// stripped (`FENNEC_STRIP_FACTS=1`), and checking proofs, which checks the facts it can.
 #[test]

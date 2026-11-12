@@ -178,7 +178,12 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         other => Err(crate::methods::no_method(other, &name, at)),
     };
     // What a capability gives is an outside input, recorded and replayed (see `crate::replay`):
-    // all but `only`, which narrows what it's given.
+    // all but `only`, which narrows what it's given. What's been printed goes out first, in a
+    // recording and a replay alike, so the bursts standard output goes out in break at the same
+    // places, whatever the call does when it runs for real: a replay doesn't wait for input.
+    if crate::replay::active() {
+        super::write_kept_output();
+    }
     let result = match &receiver {
         Value::Capability(capability) if name != "only" => {
             crate::replay::value(format_args!("{capability:?}.{name}"), at, live)
@@ -241,6 +246,9 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         return attempt(|state: &mut State| done.map(|value| state.push(value)));
     }
     if let Some(method) = name.strip_prefix("File.") {
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
         let done = crate::replay::value(format_args!("{name}"), at, || {
             crate::stdlib::fs::real_file(handle, method, &given, at)
         });

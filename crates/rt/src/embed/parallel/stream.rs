@@ -61,6 +61,10 @@ struct Stream {
     reader: u16,
     /// The capture of the test reading the stream, if a test is, for what its chunks print.
     capture: Option<Arc<crate::fakes::Capture>>,
+    /// The stream, as a task of the one reading it, for naming its chunks' entries in a recording
+    /// or a replay: each chunk as a `parallel` call's range is, by where it starts. `None` in a
+    /// normal run.
+    task: Option<crate::replay::Task>,
     chunks: Mutex<Chunks>,
     /// Signalled whenever a chunk is done.
     done: Condvar,
@@ -106,6 +110,8 @@ impl Stream {
         let from = at * self.chunk;
         let to = (from + self.chunk).min(self.length);
         let since = threads::made_so_far();
+        let mut was = crate::replay::range(self.task.as_ref(), from);
+        crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
         super::super::swap_capture(&mut capture);
         let mut items = lists::new(self.element, number(to - from));
@@ -119,9 +125,11 @@ impl Stream {
         }
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
         // What it printed is written before the reader can see it's done, so what the reader
-        // prints after the stream comes after it, as for a range.
+        // prints after the stream comes after it, as for a range, and under the chunk's own name
+        // in a recording or a replay.
         super::super::write_kept_output();
         super::super::swap_capture(&mut capture);
+        crate::replay::swap(&mut was);
         Slot::Done { items, made, failure }
     }
 
@@ -190,6 +198,7 @@ pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i
         window,
         reader: threads::index(),
         capture: super::super::capture_here(),
+        task: crate::replay::child(),
         chunks: Mutex::new(Chunks { first: 0, slots, ended: false }),
         done: Condvar::new(),
     });

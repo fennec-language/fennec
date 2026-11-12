@@ -237,6 +237,11 @@ impl Run {
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
     fn keep_made(&self, Started { since, mut was, from, mut capture }: Started) {
+        // In a recording or a replay, what the range printed goes out as its own, under its name,
+        // before what was running is put back.
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
         crate::replay::swap(&mut was);
         super::swap_capture(&mut capture);
         if super::threads::index() != self.caller {

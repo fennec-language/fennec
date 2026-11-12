@@ -240,9 +240,11 @@ impl Output {
 /// Where a live run's output goes: the process's standard output, one call at a time.
 #[cfg(not(test))]
 fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    stdout.write_all(bytes)?;
-    stdout.flush()
+    crate::replay::writing(bytes, |bytes| {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(bytes)?;
+        stdout.flush()
+    })
 }
 
 /// What live runs have written, in tests, in the order they wrote it.
@@ -250,10 +252,11 @@ fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
 static WRITTEN: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
-#[expect(clippy::unnecessary_wraps, reason = "it stands for the real one, which can fail")]
 fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
-    WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(bytes);
-    Ok(())
+    crate::replay::writing(bytes, |bytes| {
+        WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(bytes);
+        Ok(())
+    })
 }
 
 impl Write for Output {

@@ -2242,6 +2242,101 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
         }
     }
     find_slot_takes(function, known);
+    find_put_back_takes(function, known);
+}
+
+/// `mut item = items[key]`, changed, then `items[key] = item`, for a list or a `Table`: the item
+/// is taken out rather than copied, as a `for ref` item is, when it goes back by the same key on
+/// every way on and nothing reads the list or `Table` meanwhile. The IR reads it into a temporary
+/// copied into the name, so both are taken: the copy only hands it over.
+fn find_put_back_takes(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for (at, inst) in block.insts.iter().enumerate() {
+            let InstKind::GetIndex { dest: read, object: Operand::Local(from), index } = &inst.kind else {
+                continue;
+            };
+            let Some(InstKind::Copy { dest: item, value: Operand::Local(copied) }) =
+                block.insts.get(at + 1).map(|next| &next.kind)
+            else {
+                continue;
+            };
+            let kept = matches!(
+                function.locals.get(from.0).map(|local| &local.ty),
+                Some(Type::List(_) | Type::Table(_))
+            );
+            if !kept
+                || copied != read
+                || read == from
+                || item == from
+                || [*read, *item]
+                    .iter()
+                    .any(|local| known.writes.get(local.0) != Some(&1) || known.taken.contains(&local.0))
+                || known.borrowed.contains(&item.0)
+                || known.reads.get(read.0) != Some(&1)
+            {
+                continue;
+            }
+            let Some((root, path)) = put_back_to(function, known, *item, index) else { continue };
+            if comes_from(function, known, *from, (root, &path))
+                && stays_apart(function, known, (start, at + 2), (*item, *from, index), (root, &path))
+            {
+                for local in [*read, *item] {
+                    known.taken.insert(local.0);
+                    known.items_taken.insert(local.0, (root, path.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// Where a local is put back, when that's one place and by a key equal to `index`: the same
+/// operand, or the same item read again of something nothing changes.
+fn put_back_to(
+    function: &Function,
+    known: &Analysis,
+    item: LocalId,
+    index: &Operand,
+) -> Option<(LocalId, Vec<String>)> {
+    let mut home: Option<(LocalId, &Vec<String>)> = None;
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        if let InstKind::SetIndex { object, path, index: at, value: Operand::Local(put) } = &inst.kind
+            && *put == item
+        {
+            if home.is_some() || !same_key(function, known, at, index) {
+                return None;
+            }
+            home = Some((*object, path));
+        }
+    }
+    home.map(|(root, path)| (root, path.clone()))
+}
+
+/// Whether two keys are equal wherever both are read: the same operand, or locals each written
+/// once by the same read of an item, of locals nothing writes again.
+fn same_key(function: &Function, known: &Analysis, one: &Operand, other: &Operand) -> bool {
+    if one == other {
+        return true;
+    }
+    let (Operand::Local(one), Operand::Local(other)) = (one, other) else { return false };
+    let once = |local: &LocalId| known.writes.get(local.0) == Some(&1);
+    let steady = |operand: &Operand| match operand {
+        Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
+        Operand::Int(_) | Operand::Str(_) | Operand::Bool(_) => true,
+        _ => false,
+    };
+    let read_by = |local: &LocalId| {
+        function.blocks.iter().flat_map(|block| &block.insts).find_map(|inst| match &inst.kind {
+            InstKind::GetIndex { dest, object, index } if dest == local => {
+                Some((object.clone(), index.clone()))
+            }
+            _ => None,
+        })
+    };
+    once(one)
+        && once(other)
+        && read_by(one).zip(read_by(other)).is_some_and(|((object, index), (object2, index2))| {
+            object == object2 && index == index2 && steady(&object) && steady(&index)
+        })
 }
 
 /// `for ref item in table`: the same for a `Table`'s slot, read into the loop's name and put

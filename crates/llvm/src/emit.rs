@@ -2972,8 +2972,11 @@ impl Emit<'_, '_, '_> {
             }
             return self.assign_memory(dest, &held, "");
         }
-        // A borrowing local takes no owner, so its copy needs none either.
-        if kind.counted() && !self.known.is_borrowed(dest) {
+        // A borrowing local takes no owner, so its copy needs none either. Nor does an item taken
+        // out, handed from the local that took it to the name it's changed under.
+        let handed_over =
+            self.known.is_taken(dest) && matches!(value, Operand::Local(from) if self.known.is_taken(*from));
+        if kind.counted() && !self.known.is_borrowed(dest) && !handed_over {
             match value {
                 Operand::Local(from)
                     if self.owns(*from)

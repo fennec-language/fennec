@@ -17513,9 +17513,9 @@ fn printed_and_counts(dir: &Path, name: &str, how: &[&str]) -> std::io::Result<(
 
 /// `ref` in a loop never copies, items that hold blocks of their own included: a dict, a list
 /// and a string. A `Table` gone through as a local, a parameter or a field, or by `enumerate`,
-/// a list in a field, and an item changed through `units[id]`: each item is taken out, changed
-/// where it is and put back, in either build. Each used to copy the whole item, its dict shared,
-/// every time round.
+/// a list in a field, an item changed through `units[id]`, and one copied out with `mut`,
+/// changed and put back where it was: each item is taken out, changed where it is and put back,
+/// in either build. Each used to copy the whole item, its dict shared, every time round.
 #[test]
 fn a_ref_loop_over_items_holding_blocks_copies_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -17525,7 +17525,7 @@ fn a_ref_loop_over_items_holding_blocks_copies_nothing() -> std::io::Result<()> 
     std::fs::write(dir.join("ref_loops_holding_blocks.fen"), REF_LOOPS_HOLDING_BLOCKS)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let (printed, counts) = printed_and_counts(&dir, "ref_loops_holding_blocks", how)?;
-        assert_eq!(printed, "25950 1000 3225 1000\n", "{how:?}");
+        assert_eq!(printed, "24110 1000 3225 2000\n", "{how:?}");
         assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
     }
     std::fs::remove_dir_all(&dir)?;
@@ -17560,6 +17560,22 @@ def march(ref world: World):
         unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
     return
 
+def hurt(ref units: Table[Unit], id: Id[Unit], by: int):
+    mut unit = units[id]
+    unit.hp -= by
+    if unit.hp <= 0:
+        unit.hp = 100
+        unit.bag["bone"] = (unit.bag.get("bone") else 0) + 1
+    units[id] = unit
+    return
+
+def wait(ref queue: list[Unit], at: int):
+    mut unit = queue[at]
+    unit.hp += 1
+    unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
+    queue[at] = unit
+    return
+
 def main(stdout: Stdout):
     mut world = World()
     mut ids = list[Id[Unit]]()
@@ -17573,6 +17589,9 @@ def main(stdout: Stdout):
             unit.bag["gold"] = (unit.bag.get("gold") else 0) + 2
         for id in ids:
             world.units[id].hp -= 1
+        for at, id in enumerate(ids):
+            hurt(ref world.units, id, by=at % 7)
+            wait(ref world.queue, at)
     mut hp = 0
     mut herbs = 0
     mut gold = 0
@@ -17779,6 +17798,126 @@ def main(stdout: Stdout) fails Closed | Crashed:
         by_id[id].bag["gold"] = 7
     show(stdout, "by id", by_id_backup)
     show(stdout, "by id changed", by_id)
+    return
+"#;
+
+/// `mut unit = units[id]`, changed, then `units[id] = unit`, for a `Table` and a list, takes the
+/// item out rather than copying it, and still means what a copy means. A copy of the collection
+/// kept first keeps what it had. A failure between taking the item and putting it back loses the
+/// change, as a copy's would be lost, and leaves the item as it was. A crash halfway under
+/// `lock ... as ref` puts back every item.
+#[test]
+fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("copied_out_put_back")?;
+    std::fs::write(dir.join("copied_out_put_back.fen"), COPIED_OUT_PUT_BACK)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "copied_out_put_back", how)?;
+        assert_eq!(
+            printed, "(988, 213) 790\n(950, 190) 190\nrefused too much\n(988, 213)\ncrashed\n(988, 213)\n",
+            "{how:?}"
+        );
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const COPIED_OUT_PUT_BACK: &str = r#"from std.collections import Id, Table
+from std.concurrent import Crashed
+
+error Refused:
+    why: str
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    tags: list[str]
+
+struct World:
+    units = Table[Unit]()
+    queue = list[Unit]()
+
+def hurt(ref units: Table[Unit], id: Id[Unit], by: int):
+    mut unit = units[id]
+    unit.hp -= by
+    if unit.hp <= 0:
+        unit.hp = 100
+        unit.bag["bone"] = (unit.bag.get("bone") else 0) + 1
+    unit.tags.append("hurt")
+    _ = unit.tags.pop()
+    units[id] = unit
+    return
+
+def wait(ref queue: list[Unit], at: int):
+    mut unit = queue[at]
+    unit.hp += 1
+    unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
+    queue[at] = unit
+    return
+
+def checked(by: int) -> int fails Refused:
+    if by > 50: fail Refused(why="too much")
+    return by
+
+# A failure between taking the item and putting it back: the change was made to a copy, so
+# it's lost, and the `Table` keeps the item as it was.
+def hurt_checked(ref units: Table[Unit], id: Id[Unit], by: int) fails Refused:
+    mut unit = units[id]
+    unit.hp -= 1
+    unit.hp -= checked(by)?
+    units[id] = unit
+    return
+
+def burn(world: shared World, ids: list[Id[Unit]]):
+    lock world as ref held:
+        for id in ids:
+            mut unit = held.units[id]
+            unit.hp += 1000
+            unit.bag["burn"] = 1
+            held.units[id] = unit
+            # A crash halfway: the lock puts back everything it changed.
+            assert unit.hp < 1050
+    return
+
+def burning(world: shared World, ids: list[Id[Unit]]) fails Crashed:
+    with launch(() => burn(world, ids))?:
+        pass
+    return
+
+def totals(units: Table[Unit]) -> (int, int):
+    mut hp = 0
+    mut items = 0
+    for unit in units:
+        hp += unit.hp
+        items += sum(unit.bag.values())
+    return (hp, items)
+
+def main(stdout: Stdout):
+    mut world = World()
+    mut ids = list[Id[Unit]]()
+    for n in range(20):
+        ids.append(world.units.add(Unit(hp=n * 5, bag={"gold": n}, tags=["a"])))
+        world.queue.append(Unit(hp=n, bag={"gold": n}, tags=["b"]))
+    kept = world
+    for round in range(30):
+        for at, id in enumerate(ids):
+            hurt(ref world.units, id, by=at % 7 + round % 3)
+            wait(ref world.queue, at)
+    stdout.print(totals(world.units), sum(unit.hp for unit in world.queue))
+    stdout.print(totals(kept.units), sum(unit.hp for unit in kept.queue))
+    hurt_checked(ref world.units, ids[3], by=60) except why:
+        case Refused(why):
+            stdout.print("refused", why)
+    stdout.print(totals(world.units))
+    shared burnt = world
+    burning(burnt, ids) except why:
+        case Crashed():
+            stdout.print("crashed")
+    lock burnt as held:
+        stdout.print(totals(held.units))
     return
 "#;
 

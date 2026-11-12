@@ -17,6 +17,13 @@ const MOST_REDIRECTS: usize = 10;
 /// The most a response's status line and headers can take, so a server can't send them forever.
 const MOST_IN_HEADERS: usize = 1 << 20;
 
+/// The most headers a response can have, as many as any real server sends and more, so a head of
+/// a million tiny ones can't be read.
+const MOST_HEADERS: usize = 1000;
+
+/// The most one line of a response's head can take, as curl has it.
+const MOST_HEAD_LINE: usize = 100 * 1024;
+
 /// The most a response's body can be unless `most_body=` says otherwise, so a server can't send
 /// one forever.
 pub(crate) const MOST_BODY: usize = 64 << 20;
@@ -419,6 +426,8 @@ struct Reader<'s> {
     head_bytes: usize,
     /// How many bytes the last line took, its ending included.
     last_line: usize,
+    /// How many bytes finding lines has looked at, each once, however slowly they come.
+    looked_at: usize,
     /// The most the body can be.
     most_body: usize,
 }
@@ -441,18 +450,26 @@ impl Reader<'_> {
         self.held.get(self.at..).unwrap_or_default()
     }
 
-    /// The next line, without its ending.
+    /// The next line, without its ending. What's held is looked through from where the last look
+    /// ended, so a line that comes a byte at a time is still looked at once.
     fn line(&mut self) -> Result<String, Failure> {
+        let mut looked = 0;
         loop {
-            if let Some(end) = self.rest().iter().position(|byte| *byte == b'\n') {
+            let found = self.rest().get(looked..).unwrap_or_default().iter().position(|byte| *byte == b'\n');
+            let now = self.rest().len();
+            self.looked_at += found.map_or(now - looked.min(now), |at| at + 1);
+            if let Some(at) = found {
+                let end = looked + at;
                 let line = self.rest().get(..end).unwrap_or_default();
                 let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line)).into_owned();
                 self.at += end + 1;
                 self.last_line = end + 1;
                 return Ok(line);
             }
-            if self.rest().len() > MOST_IN_HEADERS {
-                return Err(Failure::Other("the server sent too much before the response's body".to_owned()));
+            looked = now;
+            if now > MOST_HEAD_LINE {
+                let most = crate::embed::numbers::with_commas(MOST_HEAD_LINE);
+                return Err(Failure::Other(format!("a line the server sent is longer than {most} bytes")));
             }
             if !self.more()? {
                 return Err(Failure::Closed);
@@ -542,6 +559,7 @@ fn read_answer(
         cut_off: false,
         head_bytes: 0,
         last_line: 0,
+        looked_at: 0,
         most_body,
     };
     let (status, headers) = loop {
@@ -587,6 +605,10 @@ fn read_head(reader: &mut Reader<'_>) -> Result<(i64, Vec<(String, String)>), Fa
         let line = reader.head_line()?;
         if line.is_empty() {
             return Ok((status, headers));
+        }
+        if headers.len() == MOST_HEADERS {
+            let most = crate::embed::numbers::with_commas(MOST_HEADERS);
+            return Err(Failure::Other(format!("the server sent more than {most} headers")));
         }
         if let Some((name, value)) = line.split_once(':') {
             headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
@@ -978,6 +1000,7 @@ mod tests {
             cut_off: false,
             head_bytes: 0,
             last_line: 0,
+            looked_at: 0,
             most_body: super::MOST_BODY,
         };
         assert!(matches!(reader.all(), Err(Failure::Tls(_))));
@@ -986,6 +1009,104 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;
+
+    /// A server's answer that comes one byte to each read, as a slow or hostile one sends it.
+    struct Trickle {
+        tcp: std::net::TcpStream,
+        left: Vec<u8>,
+        at: usize,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+            let (Some(byte), Some(first)) = (self.left.get(self.at), into.first_mut()) else { return Ok(0) };
+            *first = *byte;
+            self.at += 1;
+            Ok(1)
+        }
+    }
+
+    impl Write for Trickle {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl super::Secure for Trickle {
+        fn tcp(&self) -> &std::net::TcpStream {
+            &self.tcp
+        }
+    }
+
+    /// A response's status and headers, or why they couldn't be read.
+    type Head = Result<(i64, Vec<(String, String)>), Failure>;
+
+    /// The head of `answer`, read a byte at a time, and how many bytes finding its lines looked at.
+    fn head_read_slowly(answer: Vec<u8>) -> (Head, usize) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let tcp = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut stream = super::Stream::Secure(Box::new(Trickle { tcp, left: answer, at: 0 }));
+        let timeout = Duration::from_secs(30);
+        let mut reader = super::Reader {
+            stream: &mut stream,
+            held: Vec::new(),
+            at: 0,
+            deadline: std::time::Instant::now() + timeout,
+            timeout,
+            cut_off: false,
+            head_bytes: 0,
+            last_line: 0,
+            looked_at: 0,
+            most_body: super::MOST_BODY,
+        };
+        let head = super::read_head(&mut reader);
+        (head, reader.looked_at)
+    }
+
+    /// A head that comes a byte at a time is looked through once, not once for each byte that
+    /// came: the work is counted, so a slow machine can't make this pass or fail.
+    #[test]
+    fn a_head_sent_a_byte_at_a_time_is_looked_at_once() {
+        let mut answer = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for n in 0..999 {
+            answer.extend_from_slice(format!("x-header-{n}: {}\r\n", "v".repeat(40)).as_bytes());
+        }
+        answer.extend_from_slice(b"\r\n");
+        let size = answer.len();
+        let (head, looked_at) = head_read_slowly(answer);
+        let (status, headers) = head.ok().unwrap();
+        assert_eq!((status, headers.len()), (200, 999));
+        // Each byte once. Looking from the start of the line on each byte, as before, looked at
+        // about 30 times as many.
+        assert_eq!(looked_at, size);
+    }
+
+    /// A head with more headers, or a longer line, than any real server sends is refused.
+    #[test]
+    fn a_head_past_its_limits_is_refused() {
+        let head_of = |count: usize, line: usize| {
+            let mut answer = b"HTTP/1.1 200 OK\r\n".to_vec();
+            for n in 0..count {
+                answer.extend_from_slice(format!("x-{n}: v\r\n").as_bytes());
+            }
+            answer.extend_from_slice(format!("x-long: {}\r\n\r\n", "v".repeat(line)).as_bytes());
+            head_read_slowly(answer).0
+        };
+        assert_eq!(head_of(999, 10).ok().map(|(_, headers)| headers.len()), Some(1000));
+        let Err(Failure::Other(many)) = head_of(1000, 10) else {
+            panic!("a thousand and one headers were read")
+        };
+        assert_eq!(many, "the server sent more than 1,000 headers");
+        assert!(head_of(0, 100 * 1024 - 20).is_ok());
+        let Err(Failure::Other(long)) = head_of(0, 100 * 1024) else {
+            panic!("a line past the most was read")
+        };
+        assert_eq!(long, "a line the server sent is longer than 102,400 bytes");
+    }
 
     use super::super::net::Failure;
     use super::{Answer, Request, Url, parse_url, percent_encoded, redirected, send, with_params};

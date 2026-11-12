@@ -839,18 +839,23 @@ fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, St
 /// An answer as a `Response`.
 fn answer_value(answer: http::Answer) -> Value {
     // A dict has each name once: a header sent again adds to the one there, as HTTP says it can.
+    // Each name's place is found by its hash, so many headers are joined in time that grows with
+    // how many there are.
     let mut joined: Vec<(String, String)> = Vec::new();
+    let mut places: HashMap<&str, usize> = HashMap::new();
     let mut cookies = Vec::new();
     for (name, value) in &answer.headers {
         if name == "set-cookie" {
             cookies.push(Value::str(value));
         }
-        match joined.iter_mut().find(|(seen, _)| seen == name) {
-            Some((_, held)) => {
+        if let Some(&at) = places.get(name.as_str()) {
+            if let Some((_, held)) = joined.get_mut(at) {
                 held.push_str(", ");
                 held.push_str(value);
             }
-            None => joined.push((name.clone(), value.clone())),
+        } else {
+            places.insert(name, joined.len());
+            joined.push((name.clone(), value.clone()));
         }
     }
     let headers: Vec<(Value, Value)> =
@@ -1918,6 +1923,24 @@ pub(crate) mod tests {
 
     use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// A response's headers become a dict with each name once, a name sent again joined to the
+    /// first with `, `, in the order the names first came, however many there are.
+    #[test]
+    fn many_headers_are_joined_by_name() {
+        let mut headers: Vec<(String, String)> =
+            (0..999).map(|n| (format!("x-{n}"), n.to_string())).collect();
+        headers.push(("x-7".to_owned(), "again".to_owned()));
+        headers.push(("set-cookie".to_owned(), "a=1".to_owned()));
+        let answer = super::http::Answer { status: 200, headers, body: Vec::new() };
+        let made = super::answer_value(answer);
+        let Value::Instance(made) = &made else { panic!("not a Response") };
+        let Some(Value::Dict(joined)) = made.field("headers") else { panic!("no headers") };
+        assert_eq!(joined.len(), 1000);
+        let shown = crate::format::repr(&Value::Dict(Rc::clone(joined)));
+        assert!(shown.starts_with("{\"x-0\": \"0\", \"x-1\": \"1\""), "{shown}");
+        assert!(shown.contains("\"x-7\": \"7, again\""), "{shown}");
+    }
 
     /// Native code keeps `tls=` on the method's name.
     #[test]

@@ -1687,6 +1687,8 @@ pub(crate) fn drain_on_stop(server: i64) -> Option<u64> {
     PLAIN_DRAINS.store(true, Ordering::SeqCst);
     let being_served = || SERVING.lock().unwrap_or_else(PoisonError::into_inner).clone();
     Some(crate::signals::on_stop(Box::new(move || {
+        // A read now sees the stop and drains. Said first, as what follows can let the program end.
+        crate::embed::live::stop_taken();
         let _ = TcpStream::connect_timeout(&address, Duration::from_secs(1));
         if let Some(stream) = being_served().filter(|stream| !stream.read_since_write.load(Ordering::SeqCst))
         {

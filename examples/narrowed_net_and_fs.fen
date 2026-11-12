@@ -3,9 +3,12 @@
 # out: a redirect elsewhere is refused too. `fs.read_only()` reads and never changes anything.
 # Each is still a `Net` or an `Fs`, so a kit takes it as it takes the whole one, and narrowing
 # again only takes more away. What's refused fails as the capability fails, with
-# `NetError.Denied` or `IoError.PermissionDenied`, saying why. `hosts` holds where a kit may
+# `NetError.Denied` or `IoError.PermissionDenied`, saying why. A database opened through a
+# read-only `Fs` is opened for reading only, and one that isn't there isn't made. `hosts` holds where a kit may
 # connect, by name: it isn't a guard against a name that leads to a private address.
+from std import sqlite
 from std.net import NetError, Response
+from std.sql import SqlError
 
 ## Why `run` failed, or "worked".
 def why_not[T](run: () -> T fails NetError) -> str:
@@ -84,6 +87,37 @@ test "a read-only Fs reads and changes nothing"(fs: Fs):
     assert why_io(() => fs.only("saves").read_only().make_dir("saves/x")?).startswith(
         "this Fs only reads",
     )
+
+## Why opening the database at `path` through `fs` failed, or "opened".
+def opening(fs: Fs, path: str) -> str:
+    _ = opened(fs, path) except why:
+        return f"{why}"
+    return "opened"
+
+## Opens the database at `path` through `fs`, then closes it.
+def opened(fs: Fs, path: str) fails IoError | SqlError:
+    with sqlite.open(fs, path)? as _:
+        pass
+
+## Why `run` failed, as a database says it, or "worked".
+def why_sql[T](run: () -> T fails SqlError) -> str:
+    _ = run() except why:
+        return f"{why}"
+    return "worked"
+
+test "a read-only Fs opens a database to read it, never to change it or make it"(fs: Fs):
+    with sqlite.open(fs, "notes.db")? as db:
+        _ = db.execute(t"create table notes (n integer)")?
+        _ = db.execute(t"insert into notes (n) values (1)")?
+    reader = fs.read_only()
+    with sqlite.open(reader, "notes.db")? as db:
+        assert db.query[int](t"select n from notes")? == [1]
+        assert (
+            why_sql(() => db.execute(t"insert into notes (n) values (2)")?).find("readonly")
+            is not None
+        )
+    assert opening(reader, "missing.db") != "opened"
+    assert not fs.exists("missing.db")?
 
 def main(stdout: Stdout):
     stdout.print("narrowed")

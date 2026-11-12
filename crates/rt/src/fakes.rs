@@ -179,14 +179,17 @@ impl TestWorld {
 
     /// `fs._sqlite_open(path)` in a test: the test's database in memory for `path`. Its file is
     /// there to see, empty, as a real one would be, and a folder that isn't there fails it.
-    pub(crate) fn open_database(&mut self, path: &str) -> Value {
+    /// Read only, through an `Fs` narrowed with `read_only`, one that isn't there isn't made.
+    pub(crate) fn open_database(&mut self, path: &str, read_only: bool) -> Value {
         let key = key(path);
-        if !matches!(self.nodes.get(&key), Some(Node::File(_)))
-            && let Err(reason) = self.write(path, &[])
-        {
+        let there = matches!(self.nodes.get(&key), Some(Node::File(_)));
+        if read_only && !there {
+            return crate::stdlib::fs::io_failed(&Fail::not_found(format!("{path} doesn't exist")));
+        }
+        if !there && let Err(reason) = self.write(path, &[]) {
             return crate::stdlib::fs::io_failed(&reason);
         }
-        crate::stdlib::sqlite::open_fake(&mut self.databases, &key)
+        crate::stdlib::sqlite::open_fake(&mut self.databases, &key, read_only)
     }
 
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Fail> {

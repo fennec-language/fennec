@@ -523,6 +523,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
+    /// Through an `Fs` narrowed to a folder and to reading, a database on the disk opens for
+    /// reading only, and one that isn't there isn't made.
+    #[test]
+    fn a_read_only_fs_opens_a_database_to_read_and_makes_none() {
+        use super::READ_ONLY;
+        let folder = scratch("read-only-db");
+        let made = crate::stdlib::sqlite::open_file(&format!("{folder}/kept.db"), false);
+        assert!(matches!(made, Value::Ok(_)), "{made:?}");
+        let fs = Rc::new(Limited {
+            capability: Capability::Fs,
+            allowed: vec![Rc::from(absolute(&folder)), Rc::from(READ_ONLY)],
+        });
+        let opened = call(&fs, "_sqlite_open", &[Value::str(&format!("{folder}/kept.db"))]);
+        assert!(matches!(opened, Value::Ok(_)), "{opened:?}");
+        let missing = call(&fs, "_sqlite_open", &[Value::str(&format!("{folder}/missing.db"))]);
+        assert!(matches!(missing, Value::Err(_)), "{missing:?}");
+        assert!(!std::path::Path::new(&format!("{folder}/missing.db")).exists(), "a database was made");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
     /// A path out of a narrowed `Fs`'s folder, by `..` or by a link inside it, is refused.
     #[test]
     fn a_narrowed_fs_refuses_what_lies_outside_its_folder() {

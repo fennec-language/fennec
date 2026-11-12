@@ -171,6 +171,44 @@ mod deps {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Loading a program never fetches: a kit kit.lock pins that isn't here says to run
+    /// `fennec fetch`, which fetches it. And a kit in the store whose files changed after it was
+    /// fetched, as a tool editing it would leave it, isn't the one pinned: loading refuses it, naming
+    /// it, and `fennec fetch` or `fennec update` fetches it again whole.
+    #[test]
+    fn loading_fetches_nothing_and_a_kit_changed_in_the_store_is_refused() {
+        let dir = folder("changed");
+        let (repository, commit) = physics(&dir);
+        let root = game(&dir, &from_git("physics", &repository, &commit));
+        let home = dir.join("home");
+        Kits::new(&home, false).update(&root).unwrap();
+        let loading = Kits::new(&home, false).for_loading();
+        let found = loading.ensure(&root).unwrap();
+        let stored = found[0].folder.join("src/lib.fen");
+        let pinned = std::fs::read_to_string(&stored).unwrap();
+        std::fs::write(&stored, pinned.replace("9.8", "1.0")).unwrap();
+        let changed = loading.ensure(&root).unwrap_err();
+        assert!(
+            changed.contains("the kit `physics` kept at") && changed.contains("isn't what kit.lock pins"),
+            "{changed}"
+        );
+        assert!(changed.contains("`fennec fetch` fetches it again"), "{changed}");
+        // Fetching puts it back whole, and loading takes it.
+        Kits::new(&home, false).ensure(&root).unwrap();
+        assert_eq!(std::fs::read_to_string(&stored).unwrap(), pinned);
+        assert_eq!(loading.ensure(&root).unwrap().len(), 1);
+        // So does `fennec update`, with kit.lock already pinning it.
+        std::fs::write(&stored, "changed\n").unwrap();
+        Kits::new(&home, false).update(&root).unwrap();
+        assert_eq!(std::fs::read_to_string(&stored).unwrap(), pinned);
+        // A kit that isn't here at all isn't fetched by loading.
+        std::fs::remove_dir_all(home.join("kits")).unwrap();
+        let missing = loading.ensure(&root).unwrap_err();
+        assert!(missing.contains("isn't on this machine yet: `fennec fetch` fetches every kit"), "{missing}");
+        assert!(!home.join("kits").exists(), "loading fetched a kit");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn offline_a_kit_in_the_store_is_used_and_a_missing_one_is_an_error() {
         let dir = folder("offline");

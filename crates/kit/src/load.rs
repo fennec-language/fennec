@@ -325,11 +325,15 @@ fn dependencies(root: &Path, manifest: &Manifest) -> Result<Dependencies, Proble
     if manifest.dependencies.is_empty() {
         return Ok(Dependencies::default());
     }
-    let store = fennec_deps::Kits::of_this_machine().ok_or_else(|| {
-        Problems::unplaced(
-            "error: there's no home folder to keep fetched kits in; set FENNEC_HOME\n".to_owned(),
-        )
-    })?;
+    // Loading fetches nothing: opening, checking or running a project reaches no host it names.
+    // `fennec fetch` gets what kit.lock pins, and each kit is checked against its pin here.
+    let store = fennec_deps::Kits::of_this_machine()
+        .ok_or_else(|| {
+            Problems::unplaced(
+                "error: there's no home folder to keep fetched kits in; set FENNEC_HOME\n".to_owned(),
+            )
+        })?
+        .for_loading();
     let found = store.ensure(root).map_err(|message| Problems::unplaced(format!("error: {message}\n")))?;
     let kits = found
         .into_iter()

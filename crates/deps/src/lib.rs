@@ -86,6 +86,19 @@ pub struct Kits {
     local_git_chains: bool,
     /// How many bytes a kit fetched from git may come to: `MOST_BYTES`, but for tests.
     most_bytes: u64,
+    /// Whether this is for loading a program, which never fetches: only `fennec fetch` and
+    /// `fennec update` reach the network. See `for_loading`.
+    loading: bool,
+}
+
+/// What the store holds for a pin.
+enum Kept {
+    /// Nothing.
+    Absent,
+    /// The kit, whole: its files hash to the pin.
+    Whole,
+    /// A folder whose files don't hash to the pin: changed since it was fetched.
+    Changed,
 }
 
 /// How many bytes a kit's files fetched from git may come to, all told: far more than any kit's
@@ -111,7 +124,13 @@ impl Kits {
     /// The store in the Fennec folder `home`. Offline, a kit that isn't there is an error rather
     /// than fetched.
     pub fn new(home: &Path, offline: bool) -> Self {
-        Kits { home: home.to_path_buf(), offline, local_git_chains: false, most_bytes: MOST_BYTES }
+        Kits {
+            home: home.to_path_buf(),
+            offline,
+            local_git_chains: false,
+            most_bytes: MOST_BYTES,
+            loading: false,
+        }
     }
 
     /// The store in this machine's Fennec folder, which fetches nothing with `FENNEC_OFFLINE` set
@@ -130,6 +149,35 @@ impl Kits {
     pub fn with_local_git_chains(mut self) -> Self {
         self.local_git_chains = true;
         self
+    }
+
+    /// This store, for loading a program: it never fetches. Opening a project, checking it or
+    /// running it reaches no host the repository names; `fennec fetch` gets what `kit.lock` pins,
+    /// and `fennec update` moves the pins.
+    #[must_use]
+    pub fn for_loading(mut self) -> Self {
+        self.loading = true;
+        self
+    }
+
+    /// What the store holds for the kit with this hash, its files hashed as they are now: a kit
+    /// changed in the store, by a tool or by hand, isn't the one pinned.
+    fn kept(&self, hash: &Hash) -> Kept {
+        let at = self.stored(hash);
+        if !at.is_dir() {
+            return Kept::Absent;
+        }
+        match read_files(&at) {
+            Some(files) if hash_of(&files) == *hash => Kept::Whole,
+            _ => Kept::Changed,
+        }
+    }
+
+    /// Takes a kit that changed in the store out of it, so it's fetched again whole.
+    fn take_out(&self, hash: &Hash) -> Result<(), String> {
+        let at = self.stored(hash);
+        std::fs::remove_dir_all(&at)
+            .map_err(|err| format!("couldn't take {} out of the store: {err}", at.display()))
     }
 
     /// This store, taking kits from git of at most `most` bytes, for tests that can't commit
@@ -166,7 +214,17 @@ impl Kits {
                 ));
             }
             let at = self.stored(&pin.hash);
-            if !at.is_dir() {
+            let kept = self.kept(&pin.hash);
+            if matches!(kept, Kept::Changed) {
+                if self.loading || self.offline {
+                    return Err(format!(
+                        "the kit `{name}` kept at {} isn't what kit.lock pins: its files changed after it was fetched, so it isn't built; `fennec fetch` fetches it again",
+                        at.display()
+                    ));
+                }
+                self.take_out(&pin.hash)?;
+            }
+            if !matches!(kept, Kept::Whole) {
                 let files = self.fetch(name, url, commit, folder)?;
                 let hash = hash_of(&files);
                 if hash != pin.hash {
@@ -194,10 +252,12 @@ impl Kits {
         let lock_text = std::fs::read_to_string(&lock_path).unwrap_or_default();
         let before = pins(&lock_text)?;
         let found = walk(root, self.local_git_chains, &mut |name, url, commit, folder| {
-            if let Some(pin) = before.iter().find(|pin| pin.name == name && pin.is(url, commit, folder))
-                && self.stored(&pin.hash).is_dir()
-            {
-                return Ok((pin.clone(), self.stored(&pin.hash)));
+            if let Some(pin) = before.iter().find(|pin| pin.name == name && pin.is(url, commit, folder)) {
+                match self.kept(&pin.hash) {
+                    Kept::Whole => return Ok((pin.clone(), self.stored(&pin.hash))),
+                    Kept::Changed => self.take_out(&pin.hash)?,
+                    Kept::Absent => {}
+                }
             }
             let files = self.fetch(name, url, commit, folder)?;
             let hash = hash_of(&files);
@@ -281,6 +341,11 @@ impl Kits {
     /// Fetches a kit from git, unless fetching is off.
     fn fetch(&self, name: &str, url: &str, commit: &str, folder: Option<&str>) -> Result<Files, String> {
         let place = lock::shown(url, commit, folder);
+        if self.loading {
+            return Err(format!(
+                "`{name}` from {place} isn't on this machine yet: `fennec fetch` fetches every kit kit.lock pins"
+            ));
+        }
         if self.offline {
             return Err(format!(
                 "`{name}` from {place} isn't on this machine yet, and fetching is off (`--offline` or FENNEC_OFFLINE)"
@@ -296,8 +361,10 @@ impl Kits {
     /// folder there.
     fn store(&self, hash: &Hash, files: &Files) -> Result<PathBuf, String> {
         let at = self.stored(hash);
-        if at.is_dir() {
-            return Ok(at);
+        match self.kept(hash) {
+            Kept::Whole => return Ok(at),
+            Kept::Changed => self.take_out(hash)?,
+            Kept::Absent => {}
         }
         if let Some((one, other)) = same_but_for_case(files.keys().map(String::as_str)) {
             return Err(format!("a kit can't have both {one} and {other}, which differ only by case"));

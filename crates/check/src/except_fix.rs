@@ -305,6 +305,31 @@ fn defined_name(item: &Item) -> Option<String> {
     }
 }
 
+/// Whether evaluating `expr` itself does nothing that can be seen: a literal, a name, a field read
+/// or something put together of those. A call, an index, arithmetic and `?` can each print, fail
+/// or crash, so moving a call past one could change what happens first.
+fn quiet(expr: &Expr) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Duration(_)
+            | ExprKind::Str(_)
+            | ExprKind::FStr(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None
+            | ExprKind::Name(_)
+            | ExprKind::Variant(_)
+            | ExprKind::List(_)
+            | ExprKind::Tuple(_)
+            | ExprKind::Dict(_)
+            | ExprKind::Set(_)
+            | ExprKind::Attr { optional: false, .. }
+            | ExprKind::Else { .. }
+            | ExprKind::Lambda { .. }
+    )
+}
+
 /// The hoist for one statement whose value is `value`, when it has any `else` to move.
 fn hoist_in(
     stmt: &Stmt,
@@ -315,7 +340,8 @@ fn hoist_in(
 ) -> Option<Diagnostic> {
     // The parts of the statement that may not run, or run later or many times.
     let mut held: Vec<Span> = Vec::new();
-    let mut calls: Vec<Span> = Vec::new();
+    // What runs and could print, fail or crash: anything but a literal, a name or a field read.
+    let mut loud: Vec<Span> = Vec::new();
     let mut elses: Vec<&Expr> = Vec::new();
     fennec_syntax::read::in_expr(value, &mut |inner| match &inner.kind {
         ExprKind::Lambda { .. } | ExprKind::Comprehension { .. } | ExprKind::Match { .. } => {
@@ -332,7 +358,7 @@ fn hoist_in(
             }
         }
         ExprKind::Else { default, .. } => held.push(default.span),
-        ExprKind::Call { .. } => calls.push(inner.span),
+        _ if !quiet(inner) => loud.push(inner.span),
         _ => {}
     });
     let within = |outer: Span, inner: Span| outer.start <= inner.start && inner.end <= outer.end;
@@ -358,8 +384,9 @@ fn hoist_in(
         let ExprKind::Else { value: failing, default, .. } = &found.kind else { continue };
         if held.iter().any(|outer| within(*outer, found.span) && *outer != found.span)
             || default.else_block().is_some()
-            // Anything that calls before it, outside what's moved already, would run after it.
-            || calls.iter().any(|call| call.end <= found.span.start && !moved.iter().any(|done| within(*done, *call)))
+            // Anything before it that can print, fail or crash, outside what's moved already,
+            // would run after it.
+            || loud.iter().any(|before| before.end <= found.span.start && !moved.iter().any(|done| within(*done, *before)))
         {
             return None;
         }

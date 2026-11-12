@@ -2374,6 +2374,50 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
 }
 
+/// An `else` on a failing call inside a statement gets a line of its own before it only when
+/// nothing before it in the statement can print, fail or crash, so what runs runs in the same
+/// order: each function here prints as it runs, and the migrated program prints what the old one
+/// did. A call or a `?` before it keeps it where it is, for a person to write.
+#[test]
+fn fix_migrate_moves_no_call_past_another() {
+    let dir = scratch("migrate-order").unwrap();
+    let program = dir.join("order.fen");
+    let path = program.to_string_lossy().into_owned();
+    let common = "error Bad:\n    Gone\n\n\
+        def noisy(n: int, stdout: Stdout) -> int:\n    stdout.print(\"noisy\", n)\n    return n\n\n\
+        def risky(n: int, stdout: Stdout) -> int fails Bad:\n    stdout.print(\"risky\", n)\n    if n == 0: fail .Gone\n    return n\n\n";
+    let moved = format!(
+        "{common}def main(stdout: Stdout):\n    \
+         stdout.print(\"first\", risky(1, stdout) else -1, risky(0, stdout) else -2, noisy(3, stdout))\n"
+    );
+    std::fs::write(&program, &moved).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        moved.replace(
+            "    stdout.print(\"first\", risky(1, stdout) else -1, risky(0, stdout) else -2, noisy(3, stdout))\n",
+            "    risky_value = risky(1, stdout) except .Gone: -1\n    risky_value2 = risky(0, stdout) except .Gone: -2\n    \
+             stdout.print(\"first\", risky_value, risky_value2, noisy(3, stdout))\n"
+        )
+    );
+    // The order the old program ran in: each argument left to right, then the print.
+    assert_eq!(text(&ran.stdout), "risky 1\nrisky 0\nnoisy 3\nfirst 1 -2 3\n", "{}", text(&ran.stderr));
+    let kept = format!(
+        "{common}def both(stdout: Stdout) -> int fails Bad:\n    \
+         return risky(6, stdout)? + (risky(7, stdout) else -7)\n\n\
+         def main(stdout: Stdout) fails Bad:\n    stdout.print(noisy(4, stdout), risky(5, stdout) else -5)\n    \
+         stdout.print(both(stdout))\n"
+    );
+    std::fs::write(&program, &kept).unwrap();
+    let _ = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(written.contains("    stdout.print(noisy(4, stdout), risky(5, stdout) else -5)\n"), "{written}");
+    assert!(written.contains("    return risky(6, stdout)? + (risky(7, stdout) else -7)\n"), "{written}");
+}
+
 /// `--migrate` makes only the migration's rewrites: a function nothing calls keeps its place,
 /// with only its `return` added, and a line the rewrite makes longer than `fennec fmt` keeps
 /// lines is left as it's written, in a file that was formatted before.

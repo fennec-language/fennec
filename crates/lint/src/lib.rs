@@ -16,6 +16,7 @@ mod items;
 mod lookups;
 mod loops;
 mod names;
+mod parallel;
 mod params;
 mod paths;
 mod rewrites;
@@ -136,6 +137,7 @@ fn in_each_file(module: &Module, sources: &Sources, facts: &Facts) -> Vec<Lint> 
     found.extend(flow::of(module, sources));
     found.extend(dead::of(module, sources, &extending));
     found.extend(loops::of(module, sources));
+    found.extend(parallel::of(module));
     found.extend(names::of(module, sources));
     found.extend(chains::of(module, sources));
     found.extend(paths::of(sources));

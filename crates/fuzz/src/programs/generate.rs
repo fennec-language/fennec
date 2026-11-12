@@ -1022,6 +1022,11 @@ impl Writer<'_> {
                 held.push(part);
                 continue;
             }
+            if roll == 2 && kind.keyed() && self.choice(2) == 0 {
+                let (at, n) = (self.choice(2), i64::from(self.byte() % 19) - 9);
+                steps.push(Alias::Drained { from, at, n });
+                continue;
+            }
             if roll == 2 && kind.walked() {
                 steps.push(Alias::Walked { from });
                 continue;

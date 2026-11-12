@@ -594,6 +594,33 @@ fn removed(value: &mut Kept, at: usize, n: i64) -> Option<String> {
     }
 }
 
+/// `value` with its key `at` set to a fresh value made from `n`, as `fresh_written` writes it,
+/// then its values as `print(value.values())` writes them.
+fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
+    let listed = |shown: Vec<String>| format!("[{}]", shown.join(", "));
+    match value {
+        Kept::Lists(lists) => {
+            *keyed(lists, at)? = vec![n, n];
+            Some(listed(lists.iter().map(|(_, items)| shown(&Value::Ints(items.clone()))).collect()))
+        }
+        Kept::Spots(points) => {
+            *keyed(points, at)? = (n, n);
+            Some(listed(points.iter().map(|(_, (x, y))| format!("Point(x={x}, y={y})")).collect()))
+        }
+        Kept::Keepers(holders) => {
+            *keyed(holders, at)? = (vec![n, n], n);
+            Some(listed(
+                holders.iter().map(|(_, (items, tag))| shown(&Value::Holder(items.clone(), *tag))).collect(),
+            ))
+        }
+        Kept::Counts(counts) => {
+            *keyed(counts, at)? = n;
+            Some(shown(&Value::Ints(counts.iter().map(|(_, count)| *count).collect())))
+        }
+        _ => None,
+    }
+}
+
 /// What `walk_written`'s line prints for `value`.
 fn walk_shown(value: &Kept) -> String {
     fn walked<T>(pairs: &[(String, T)], summed: impl Fn(&T) -> i64, shown: impl Fn(&T) -> i64) -> String {
@@ -1826,6 +1853,11 @@ impl Machine {
                     let given = kept.get(from).ok_or(Stop::Unsure)?;
                     let sums: Option<Vec<i64>> = (0..3).map(|i| handed(given, i)).collect();
                     let _ = writeln!(self.out, "sums {}", shown(&Value::Ints(sums.ok_or(Stop::Unsure)?)));
+                }
+                Alias::Drained { from, at, n } => {
+                    let mut last = kept.get(from).cloned().ok_or(Stop::Unsure)?;
+                    let values = drained(&mut last, at, n).ok_or(Stop::Unsure)?;
+                    let _ = writeln!(self.out, "values {values}");
                 }
                 Alias::Walked { from } => {
                     let walked = walk_shown(kept.get(from).ok_or(Stop::Unsure)?);

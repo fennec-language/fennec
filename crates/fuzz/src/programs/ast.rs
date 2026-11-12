@@ -390,6 +390,11 @@ impl Held {
         }
     }
 
+    /// Whether it's a dict whose values a fresh value can be put in at a key.
+    pub(crate) const fn keyed(self) -> bool {
+        matches!(self, Held::Lists | Held::Spots | Held::Keepers | Held::Counts)
+    }
+
     /// Whether it's a dict, or a table of items holding dicts, that a walk reads.
     pub(crate) const fn walked(self) -> bool {
         matches!(self, Held::Lists | Held::Spots | Held::Keepers | Held::Counts | Held::Rooms)
@@ -446,7 +451,10 @@ impl Aliasing {
                     held.push(held.get(from).and_then(|from| from.part()).unwrap_or(Held::Numbers));
                 }
                 Alias::Built { .. } => held.push(Held::Holder),
-                Alias::Written { .. } | Alias::Tasked { .. } | Alias::Walked { .. } => {}
+                Alias::Written { .. }
+                | Alias::Tasked { .. }
+                | Alias::Walked { .. }
+                | Alias::Drained { .. } => {}
             }
         }
         held
@@ -521,6 +529,10 @@ pub(crate) enum Alias {
     /// `spare{s} = from`, then `kept{n} = Holder(items=spare{s}, tag=n)`: a struct literal taking
     /// a list nothing reads again.
     Built { from: usize, n: i64 },
+    /// `mut last{s} = from`, its key `at` set to a fresh value made from `n`, then
+    /// `print(last{s}.values())` as the dict's last use, so the walk is all that holds what it
+    /// gives back once the dict is gone.
+    Drained { from: usize, at: usize, n: i64 },
 }
 
 /// How an `Aliased` step changes a name, each meaning what it says for the kinds that take it.

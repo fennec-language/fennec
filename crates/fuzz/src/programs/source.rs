@@ -786,6 +786,15 @@ fn aliased_written(aliasing: &Aliasing) -> String {
                     held.get(from).copied().unwrap_or(Held::Counts),
                 ));
             }
+            Alias::Drained { from, at, n } => {
+                let fresh = fresh_written(held.get(from).copied().unwrap_or(Held::Counts), n);
+                let _ = writeln!(
+                    out,
+                    "    mut last{s} = {}\n    last{s}[\"{}\"] = {fresh}\n    stdout.print(\"values\", last{s}.values())",
+                    alias_name(from),
+                    key_written(at)
+                );
+            }
         }
     }
     let _ = writeln!(out, "    stdout.print(\"ids\", table[first_id], table[second_id])");
@@ -827,16 +836,21 @@ fn room_written(at: usize) -> &'static str {
     if at == 0 { "room_a" } else { "room_b" }
 }
 
-/// `_ = to.remove(key)`, a walk of what's left of `to`, which holds `held`, then the key put
-/// back with a value made from `n`.
-fn removed_written(to: &str, held: Held, at: usize, n: i64) -> String {
-    let key = key_written(at);
-    let fresh = match held {
+/// A fresh value for a dict holding `held`, made from `n`.
+fn fresh_written(held: Held, n: i64) -> String {
+    match held {
         Held::Lists => format!("[{n}, {n}]"),
         Held::Spots => format!("Point(x={n}, y={n})"),
         Held::Keepers => format!("Holder(items=[{n}, {n}], tag={n})"),
         _ => n.to_string(),
-    };
+    }
+}
+
+/// `_ = to.remove(key)`, a walk of what's left of `to`, which holds `held`, then the key put
+/// back with a value made from `n`.
+fn removed_written(to: &str, held: Held, at: usize, n: i64) -> String {
+    let key = key_written(at);
+    let fresh = fresh_written(held, n);
     format!("    _ = {to}.remove(\"{key}\")\n{}    {to}[\"{key}\"] = {fresh}\n", walk_written(to, held))
 }
 

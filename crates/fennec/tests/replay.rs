@@ -354,6 +354,7 @@ fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<
     let mut record = std::process::Command::new(&executable)
         .env("FENNEC_RECORD", &log)
         .env("FENNEC_THREADS", "4")
+        .env("FENNEC_LIVE_REPORT", dir.join("live"))
         .stdout(std::process::Stdio::piped())
         .spawn()?;
     let mut out =
@@ -374,7 +375,8 @@ fn a_server_recorded_stopping_when_asked_replays_its_drain() -> std::io::Result<
     partway.write_all(b"GET /b HTTP/1.1\r\n")?;
     let mut stuck = connect()?;
     stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
-    std::thread::sleep(Duration::from_millis(300));
+    // The server has taken all three before it's asked to stop, as its live count says.
+    crate::llvm::serving(&dir.join("live"), 3);
     let sent = std::process::Command::new("kill").args(["-TERM", &record.id().to_string()]).status()?;
     assert!(sent.success(), "couldn't send SIGTERM");
     let mut rest = Vec::new();

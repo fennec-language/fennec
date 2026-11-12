@@ -36,6 +36,7 @@ mod kernels;
 mod llvm_suite;
 mod machine;
 mod measure;
+mod ops;
 mod other_twins;
 mod parallel;
 mod realworld;
@@ -154,6 +155,16 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|first| first == "llvm-suite") {
         return match llvm_suite(args.into_iter().skip(1)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|first| first == "ops") {
+        return match ops::run(args.into_iter().skip(1)) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,
             Err(message) => {

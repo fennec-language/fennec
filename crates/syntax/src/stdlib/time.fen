@@ -1,3 +1,5 @@
+from std.string import quoted_input
+
 ## A length of time, to the nanosecond. Written like `1.5s`, `16ms` or `1h30min`, or made with
 ## `Duration.seconds(0.5)`, `Duration.millis(16)` or `Duration(nanos=...)`. It prints the way
 ## it's written, as `16.666667ms` or `1h30min5s`.
@@ -332,7 +334,7 @@ export struct Time:
     ## The error for text that isn't RFC 3339, at the character it goes wrong at.
     def _not_rfc3339(text: str, at: int) -> ParseError:
         ParseError(
-            message=f"`{text}` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`",
+            message=f"{quoted_input(text)} isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`",
             line=1,
             column=at + 1,
         )

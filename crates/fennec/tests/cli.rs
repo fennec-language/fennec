@@ -3385,7 +3385,8 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
 }
 
 /// One program built for release in two folders, with two Fennec folders, a second apart, is the
-/// same bytes each time, as a signed release has to be to check by building it again: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
+/// same bytes each time, as a signed release has to be to check by building it again, and a dev
+/// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
 /// a single file built by its whole path. Nothing of where or when it was built goes in: the files
 /// it carries to show a failure in are named from the kit, not from the root of the disk, and its
 /// cache key goes by the runtime library's build, not by where that is or when it changed.
@@ -3446,6 +3447,23 @@ fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
         }
         assert!(made[0] == made[1], "a {what} built in two places came out different");
     }
+    // A dev build keeps the paths it was given, so it's the same bytes in the same folder, however
+    // far apart in time, with a Fennec folder of its own each time so nothing comes from a cache.
+    let place = &places[0];
+    let mut dev_builds = Vec::new();
+    for at in 0..2 {
+        let built = crate::executables::fennec_command()
+            .args(["build"])
+            .arg(place.join("game"))
+            .arg("-o")
+            .arg(place.join("dev"))
+            .env("FENNEC_HOME", dir.join(format!("dev-home{at}")))
+            .output_within()?;
+        assert!(built.status.success(), "{}", text(&built.stderr));
+        dev_builds.push(std::fs::read(place.join("dev"))?);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    assert!(dev_builds[0] == dev_builds[1], "a dev build in one folder came out different a second later");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

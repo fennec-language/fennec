@@ -1,0 +1,24 @@
+# `(f(x) for x in parallel(xs))` works out the items on the runtime's threads and gives them back
+# in the list's order, while later ones are still being worked out. The workers stay a window of
+# chunks ahead of the reader, so a slow reader holds them back rather than filling memory, and a
+# `break` lets the chunks running finish and starts no more.
+
+def simulate(seed: int) -> int:
+    mut x = seed
+    for step in range(1000):
+        x = (x * 1103515245 + 12345 + step) % 2147483648
+    return x % 1000
+
+def main(stdout: Stdout):
+    seeds = [n for n in range(64)]
+    results = (simulate(seed) for seed in parallel(seeds[:8]))
+    for result in results:
+        stdout.print(result)
+    mut first = 0
+    for value in (simulate(seed) * 2 for seed in parallel(seeds)):
+        if value > 1500:
+            first = value
+            break
+    stdout.print("the first over 1500:", first)
+    stdout.print("in all:", sum(part for part in (simulate(seed) for seed in parallel(seeds))))
+    return

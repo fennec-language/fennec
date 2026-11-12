@@ -290,3 +290,24 @@ fn a_view_and_a_trigger_in_main_work() -> Result<(), String> {
     }
     Ok(())
 }
+
+/// A test's databases go in a folder made new for it, named at random, so one a crashed run left
+/// behind, with its databases in it, is never taken for this test's.
+#[test]
+fn each_test_s_databases_go_in_a_new_folder_of_its_own() -> Result<(), String> {
+    let (mut first, mut second) = (Fakes::default(), Fakes::default());
+    handle_of(&open_fake(&mut first, "same.db"))?;
+    handle_of(&open_fake(&mut second, "same.db"))?;
+    let (Some(one), Some(two)) = (first.folder.clone(), second.folder.clone()) else {
+        return Err("a test opened a database with no folder for it".to_owned());
+    };
+    assert_ne!(one, two);
+    for folder in [&one, &two] {
+        let name = folder.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let random = name.strip_prefix("fennec-test-databases-").unwrap_or_default();
+        assert!(random.len() == 16 && random.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
+    drop((first, second));
+    assert!(!one.exists() && !two.exists(), "a test's folder outlived it");
+    Ok(())
+}

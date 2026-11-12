@@ -610,6 +610,15 @@ impl Heap {
         self.blocks.sizes()
     }
 
+    /// How many blocks are left that a run could still have freed: what a run that ends with any
+    /// left has leaked. Blocks kept for the whole run aren't among them, whenever they were made:
+    /// `live` leaves out only those made as it starts.
+    pub(crate) fn leftover(&self) -> usize {
+        self.blocks.freeable()
+    }
+
+    /// How many blocks are live but those made as it started, for tests.
+    #[cfg(test)]
     pub(crate) fn live(&self) -> usize {
         self.blocks.len().saturating_sub(self.statics)
     }

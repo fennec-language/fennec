@@ -99,3 +99,24 @@ fn a_header_by_default_is_the_empty_strings() {
     let empty = super::text::Text::default();
     assert_eq!(super::text::inline_bytes(&empty.words), Some(Vec::new()));
 }
+
+/// What a run leaves that it could have freed is what `FENNEC_COUNTS` says is live: a block kept for
+/// the whole run, like a case with no fields made the first time it's asked for, isn't among it,
+/// however late in the run it was made, and a block nothing let go of is.
+#[test]
+fn only_what_could_have_been_freed_is_left_over() {
+    let shapes = vec![std::rc::Rc::new(crate::packed::Element::Int)];
+    super::start(super::Tables { shapes, ..super::Tables::default() }, crate::Inputs::default());
+    let before = super::with(|state| state.heap.leftover());
+    let mut kept = vec![0_u64; 4].into_boxed_slice();
+    if let Some(count) = kept.first_mut() {
+        *count = super::heap::IMMORTAL;
+    }
+    super::with(|state| state.heap.insert(kept));
+    assert_eq!(super::with(|state| state.heap.leftover()), before, "kept for the run");
+    let forgotten = super::heap::alloc(0);
+    assert_eq!(super::with(|state| state.heap.leftover()), before + 1, "one nothing let go of");
+    super::heap::free(forgotten);
+    assert_eq!(super::with(|state| state.heap.leftover()), before);
+    super::finish();
+}

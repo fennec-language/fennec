@@ -265,11 +265,13 @@ export shared Server:
         self._stop_on(grace)
 
     ## Answers HTTP/1.1 with `respond`, each connection its own task, until the server is closed. A
-    ## connection is kept open for more requests unless either side says to close it, and one that
-    ## sends nothing for `timeout` is closed. A request that's too big, or isn't HTTP, is answered
-    ## with the 4xx status that says so, without calling `respond`. Given `until=signals`, it stops
-    ## when the program's asked to, as `stop_on` says: requests being answered are finished, within
-    ## `grace`, and then it returns.
+    ## connection is kept open for more requests unless either side says to close it. Each request,
+    ## head and body, has to come whole within `timeout`, however steadily its bytes come, or the
+    ## connection's closed: a client sending a byte at a time can't hold it open for longer. So a
+    ## server taking big uploads over slow links gives a longer `timeout`. A request that's too
+    ## big, or isn't HTTP, is answered with the 4xx status that says so, without calling
+    ## `respond`. Given `until=signals`, it stops when the program's asked to, as `stop_on` says:
+    ## requests being answered are finished, within `grace`, and then it returns.
     def serve(
         self,
         respond: (Request) -> Response,
@@ -345,6 +347,9 @@ BARE_LINE_FEED = "a line ended without a carriage return"
 ## long gets a 431. One ended by a bare line feed gets a 400: a proxy that takes one and a server
 ## that doesn't would read where a request ends differently.
 def next_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
+    # The whole request, its head and body, has to come within `timeout`, not each read of it, so
+    # a client sending a byte at a time can't hold the connection for longer than that.
+    connection._reads_within(timeout)
     read = read_request(connection, timeout) else as error:
         match error:
             case .Other(reason):

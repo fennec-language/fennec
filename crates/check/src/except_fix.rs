@@ -195,7 +195,7 @@ fn failure_fixes(
         Some(Err(_)) => return Vec::new(),
         None => None,
     };
-    let types: Option<HashMap<(u32, u32), &Type>> = checked.as_ref().map(|checked| {
+    let typed_exprs: Option<HashMap<(u32, u32), &Type>> = checked.as_ref().map(|checked| {
         checked
             .types
             .iter()
@@ -209,18 +209,20 @@ fn failure_fixes(
             if expr.span.in_prelude() != library {
                 return;
             }
-            if let Some(fix) = builtin_call(expr, types.as_ref(), sources) {
+            if let Some(fix) = builtin_call(expr, typed_exprs.as_ref(), sources) {
                 found.push(fix);
             }
             let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
             if !whole.contains(&(expr.span.start, expr.span.end)) {
                 return;
             }
-            let failing = match (&types, &checked) {
-                (Some(types), Some(checked)) => match types.get(&(value.span.start, value.span.end)) {
-                    Some(Type::Result(_, error)) => Some((error.as_ref(), &checked.signatures)),
-                    _ => return,
-                },
+            let failing = match (&typed_exprs, &checked) {
+                (Some(typed_exprs), Some(checked)) => {
+                    match typed_exprs.get(&(value.span.start, value.span.end)) {
+                        Some(Type::Result(_, error)) => Some((error.as_ref(), &checked.signatures)),
+                        _ => return,
+                    }
+                }
                 // Only a failure is named with `else as`.
                 _ if matches!(default.else_block(), Some((Some(_), _))) => None,
                 _ => return,

@@ -452,6 +452,26 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// Each file of the standard library has its own range of spans, so a span names the file it's
+    /// in and reads its own text, which `fennec fix --migrate --std` writes back by.
+    #[test]
+    fn each_library_file_has_its_own_spans() {
+        let files: Vec<(&str, &str)> = super::prelude_files().collect();
+        for (module, (name, text)) in super::prelude_modules().unwrap().iter().zip(&files) {
+            let Some(span) = module.items.iter().find_map(|item| match item {
+                crate::Item::Function(def) => Some(def.span),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let (found, found_text, base) = super::prelude_file_at(span).unwrap();
+            assert_eq!((found, found_text), (*name, *text));
+            let start = usize::try_from(span.start - base).unwrap();
+            let written = text.get(start..).unwrap_or_default();
+            assert!(written.starts_with("def") || written.starts_with('@'), "{name}: {written}");
+        }
+    }
+
     /// Each type the standard library extends has its Fennec methods in one file only: a
     /// built-in type's own, like `int.fen` for `int`, or the file that declares it.
     #[test]

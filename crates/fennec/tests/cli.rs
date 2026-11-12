@@ -2313,6 +2313,48 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
 }
 
+/// A program that doesn't check, like an example of a mistake, gets the rewrites that need no
+/// types: `return`, `except why:` for `else as why:`, and `len(x)`. The mistake stays.
+#[test]
+fn fix_migrate_rewrites_what_needs_no_types_in_a_program_that_doesnt_check() {
+    let dir = scratch("migrate-unchecked").unwrap();
+    let program = dir.join("mistake.fen");
+    let path = program.to_string_lossy().into_owned();
+    let old = "def size(items: list[int]) -> int:\n    items.len()\n\n\
+        def main(stdout: Stdout):\n    got = int(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
+        stdout.print(size([got]), nowhere)\n";
+    std::fs::write(&program, old).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("    items.len()", "    return len(items)").replace("else as why:", "except why:")
+    );
+}
+
+/// `--rust-strings` moves the programs in a Rust file's string literals, raw or plain, writing
+/// back only their changed lines in each literal's own quoting and indent.
+#[test]
+fn fix_migrate_rewrites_the_programs_in_rust_strings() {
+    let dir = scratch("migrate-rust-strings").unwrap();
+    let file = dir.join("tests.rs");
+    let path = file.to_string_lossy().into_owned();
+    let old = "fn raw() -> &'static str {\n    r#\"\n        def two() -> int:\n            1 + 1\n\n        \
+        def main(stdout: Stdout):\n            stdout.print(\"two\", two())\n    \"#\n}\n\n\
+        fn plain() -> &'static str {\n    \"def three() -> int:\\n    3\\n\\ndef main(stdout: Stdout):\\n    \
+        stdout.print(three())\\n\"\n}\n";
+    std::fs::write(&file, old).unwrap();
+    let fixed = fennec(&["fix", "--migrate", "--rust-strings", &path], "").unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("            1 + 1\n", "            return 1 + 1\n")
+            .replace("\\n    3\\n", "\\n    return 3\\n")
+    );
+}
+
 /// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
 /// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
 /// for the `with`, and then it runs.

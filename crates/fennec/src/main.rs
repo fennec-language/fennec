@@ -24,6 +24,7 @@ mod notices;
 mod parsed;
 mod report;
 mod run;
+mod rust_strings;
 mod test;
 mod test_inputs;
 mod trace;
@@ -153,6 +154,7 @@ fn main() -> ExitCode {
         ["fix"] => fix::fix(".", false),
         ["fix", "--migrate"] => fix::fix(".", true),
         ["fix", "--migrate", "--std"] => fix::migrate_std(),
+        ["fix", "--migrate", "--rust-strings", files @ ..] => rust_strings::migrate_files(files),
         ["fix", "--migrate", path] => fix::fix(path, true),
         ["fix", path] => fix::fix(path, false),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),

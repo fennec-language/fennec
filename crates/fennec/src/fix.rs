@@ -8,6 +8,20 @@ use std::process::ExitCode;
 /// How many rounds of fixes to make before giving up on reaching a program with none left.
 const ROUNDS: usize = 8;
 
+/// Whether to say nothing of what's fixed, for `--rust-strings`, which migrates a program for
+/// each literal through one scratch file.
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `fennec fix --migrate` on one file, saying nothing.
+pub(crate) fn migrate_quietly(path: &str) {
+    QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = migrate_forms(path);
+}
+
+fn quiet() -> bool {
+    QUIET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// With `migrate`, it makes only the rewrites to the forms of 2026-11-11, which the migration
 /// runs over every file at once.
 pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
@@ -132,8 +146,9 @@ fn migrate_syntax(path: &str) -> ExitCode {
             let Ok(module) = fennec_syntax::parse(&text) else { break };
             let mut sources = fennec_syntax::Sources::new();
             let base = sources.add(shown.clone(), text.clone());
-            let fixes = fennec_check::syntax_migration_fixes(&module, &sources);
-            let Some(fixed) = fennec_syntax::apply_fixes(&text, base, &fixes).filter(|fixed| *fixed != text)
+            let rewrites = fennec_check::syntax_migration_fixes(&module, &sources);
+            let Some(fixed) =
+                fennec_syntax::apply_fixes(&text, base, &rewrites).filter(|fixed| *fixed != text)
             else {
                 break;
             };
@@ -142,7 +157,9 @@ fn migrate_syntax(path: &str) -> ExitCode {
             }
         }
     }
-    eprintln!("note: {path} doesn't check, so only the rewrites that need no types were made");
+    if !quiet() {
+        eprintln!("note: {path} doesn't check, so only the rewrites that need no types were made");
+    }
     ExitCode::SUCCESS
 }
 
@@ -339,7 +356,9 @@ fn write_all(changed: Vec<(String, String)>) -> Result<(), ExitCode> {
             eprintln!("error: couldn't write {file}: {err}");
             return Err(ExitCode::FAILURE);
         }
-        println!("fixed {file}");
+        if !quiet() {
+            println!("fixed {file}");
+        }
     }
     Ok(())
 }

@@ -138,7 +138,7 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
 pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("{} has no method `{method}`", describe(ty)), span);
     match method {
-        "length" | "size" | "count" => diagnostic.with_help("use `.len()`"),
+        "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
         "push" | "add" => diagnostic.with_help("use `append`"),
         "trim" => diagnostic.with_help("use `strip()`"),
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),

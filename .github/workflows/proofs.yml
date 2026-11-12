@@ -6,7 +6,9 @@ name: Proofs
 # assertion that the proof held. A program that stops with "proof broken" has found a false proof:
 # the compiler left out a check that could fail, which is the worst kind of bug it can have. Once
 # `fennec` takes `FENNEC_STRIP_FACTS`, everything is built again with the facts handed to LLVM
-# stripped, and must print the same. The night's report is kept as `nightly-report`, which
+# stripped, and must print the same. Every example, kit, fixture and 50 random programs also run with
+# another hash seed, more threads and load, and recorded and replayed, and must print the same each
+# way (`.github/scripts/determinism.sh`). The night's report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
   schedule:
@@ -24,7 +26,7 @@ jobs:
   proofs:
     name: Every proof checked
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
     permissions:
       contents: read
       issues: write
@@ -51,6 +53,10 @@ jobs:
         id: programs
         if: always()
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 3600 --stuck 180 --found found | tee programs.txt
+      - name: Run every program four ways, which must print the same
+        id: determinism
+        if: always()
+        run: .github/scripts/determinism.sh target/release/fennec report.md 50
       - name: Run every test
         id: tests
         if: always()
@@ -70,6 +76,7 @@ jobs:
           BUILDS: ${{ steps.builds.outcome }}
           FUZZ: ${{ steps.fuzz.outcome }}
           PROGRAMS: ${{ steps.programs.outcome }}
+          DETERMINISM: ${{ steps.determinism.outcome }}
           TESTS: ${{ steps.tests.outcome }}
         run: |
           {
@@ -77,7 +84,7 @@ jobs:
             echo
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
-            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Tests: $TESTS."
+            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Tests: $TESTS."
             echo
             [ -f report.md ] && cat report.md
             echo
@@ -108,6 +115,6 @@ jobs:
           {
             cat nightly.md
             echo
-            echo "A program stopping with \"proof broken\" means the compiler left out a check that could fail. One printing otherwise with facts stripped means a fact handed to LLVM is wrong. What fuzzing found and the tests' output are in the run's artifact."
+            echo "A program stopping with \"proof broken\" means the compiler left out a check that could fail. One printing otherwise with facts stripped means a fact handed to LLVM is wrong. One printing otherwise with another seed, thread count or load, or when replayed, isn't deterministic. What fuzzing found and the tests' output are in the run's artifact."
           } > issue.md
           gh issue create --title "A proof the compiler made broke" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"

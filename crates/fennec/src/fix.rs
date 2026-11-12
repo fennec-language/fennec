@@ -8,6 +8,20 @@ use std::process::ExitCode;
 /// How many rounds of fixes to make before giving up on reaching a program with none left.
 const ROUNDS: usize = 8;
 
+/// Whether to say nothing of what's fixed, for `--rust-strings`, which migrates a program for
+/// each literal through one scratch file.
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `fennec fix --migrate` on one file, saying nothing.
+pub(crate) fn migrate_quietly(path: &str) {
+    QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = migrate_forms(path);
+}
+
+fn quiet() -> bool {
+    QUIET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// With `migrate`, it makes only the rewrites to the forms of 2026-11-11, which the migration
 /// runs over every file at once.
 pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
@@ -67,7 +81,7 @@ pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
 }
 
 /// `fennec fix --migrate`: the rewrites to the forms of 2026-11-11 and nothing else, so a
-/// lint's fix never rides along. The program has to check first. When a round's rewrites leave
+/// lint's fix never rides along. A program that doesn't check gets the ones that need no types. When a round's rewrites leave
 /// a problem with a fix, like a name a file now needs to import, that fix is made next.
 fn migrate_forms(path: &str) -> ExitCode {
     let mut first = true;
@@ -81,13 +95,14 @@ fn migrate_forms(path: &str) -> ExitCode {
         let program = match loaded {
             Ok(program) => program,
             // A rewrite can leave a file naming what it doesn't import, which loading finds.
+            Err(_) if first => return migrate_syntax(path),
             Err(problems) => {
                 let changed = problems.sources.fixed(&problems.diagnostics);
-                if first || changed.is_empty() {
+                if changed.is_empty() {
                     eprint!("{}", problems.render());
                     return ExitCode::FAILURE;
                 }
-                if let Err(code) = write_all(changed) {
+                if let Err(code) = write_rewritten(changed) {
                     return code;
                 }
                 continue;
@@ -95,11 +110,7 @@ fn migrate_forms(path: &str) -> ExitCode {
         };
         let (checks, diagnostics) = match fennec_check::check(&program.module) {
             Ok(_) => (true, fennec_check::migration_fixes(&program.module, &program.sources)),
-            Err(problems) if first => {
-                eprint!("{}", program.sources.render_all(&problems));
-                eprintln!("\nthe program has to check before it's moved to the new forms");
-                return ExitCode::FAILURE;
-            }
+            Err(_) if first => return migrate_syntax(path),
             Err(problems) => (false, problems),
         };
         first = false;
@@ -112,12 +123,76 @@ fn migrate_forms(path: &str) -> ExitCode {
             eprintln!("\nthe rewrites left these, which have no fix");
             return ExitCode::FAILURE;
         }
-        if let Err(code) = write_all(changed) {
+        if let Err(code) = write_rewritten(changed) {
             return code;
         }
     }
     eprintln!("error: rewrites kept showing more; run `fennec fix --migrate` again to go on");
     ExitCode::FAILURE
+}
+
+/// The rewrites that need no types, file by file, for a program that doesn't check, like an
+/// example of a mistake. A file that doesn't parse is left as it is.
+fn migrate_syntax(path: &str) -> ExitCode {
+    let mut files = Vec::new();
+    if let Err(err) = crate::fmt::collect(Path::new(path), true, &mut files) {
+        eprintln!("error: couldn't read {path}: {err}");
+        return ExitCode::FAILURE;
+    }
+    for file in files {
+        let shown = file.to_string_lossy().into_owned();
+        for _ in 0..ROUNDS {
+            let Ok(text) = std::fs::read_to_string(&file) else { break };
+            let Ok(module) = fennec_syntax::parse(&text) else { break };
+            let mut sources = fennec_syntax::Sources::new();
+            let base = sources.add(shown.clone(), text.clone());
+            let rewrites = fennec_check::syntax_migration_fixes(&module, &sources);
+            let Some(fixed) =
+                fennec_syntax::apply_fixes(&text, base, &rewrites).filter(|fixed| *fixed != text)
+            else {
+                break;
+            };
+            if let Err(code) = write_rewritten(vec![(shown.clone(), fixed)]) {
+                return code;
+            }
+        }
+    }
+    if !quiet() {
+        eprintln!("note: {path} doesn't check, so only the rewrites that need no types were made");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `fennec fix --migrate --std`, in the Fennec checkout: the standard library's own code, written
+/// back to `crates/syntax/src/stdlib`. It reads the library this `fennec` was built with, so
+/// after a round that changed something, build it again and run it again.
+pub(crate) fn migrate_std() -> ExitCode {
+    let Ok(module) = fennec_syntax::parse("def main(stdout: Stdout):\n    pass\n") else {
+        return ExitCode::FAILURE;
+    };
+    let mut by_file: std::collections::BTreeMap<&str, (&str, u32, Vec<fennec_syntax::Diagnostic>)> =
+        std::collections::BTreeMap::new();
+    for fix in fennec_check::std_migration_fixes(&module) {
+        let Some(at) = fix.fixes.first().map(|edit| edit.span) else { continue };
+        let Some((name, text, base)) = fennec_syntax::prelude_file_at(at) else { continue };
+        by_file.entry(name).or_insert_with(|| (text, base, Vec::new())).2.push(fix);
+    }
+    for (name, (text, base, fixes)) in by_file {
+        let file = format!("crates/syntax/src/stdlib/{name}.fen");
+        // What this `fennec` was built with has to be what's in the checkout, or the rewrites
+        // land in the wrong places.
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(text) {
+            eprintln!(
+                "error: {file} isn't what this `fennec` was built with: build it again from this checkout"
+            );
+            return ExitCode::FAILURE;
+        }
+        let Some(fixed) = fennec_syntax::apply_fixes(text, base, &fixes) else { continue };
+        if let Err(code) = write_rewritten(vec![(file, fixed)]) {
+            return code;
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// Makes the fixes a file's parse error carries, like writing `ref` for each `mut` on a
@@ -273,15 +348,26 @@ fn loop_over_copy(line: &str, source: &str) -> Option<(String, String)> {
     Some((named, looped))
 }
 
-/// Writes each changed file, saying so.
+/// Writes each changed file, saying so, formatted when it was before.
 fn write_all(changed: Vec<(String, String)>) -> Result<(), ExitCode> {
-    for (file, text) in changed {
+    let changed = changed.into_iter().map(|(file, text)| {
         let text = formatted_like_before(&file, text);
+        (file, text)
+    });
+    write_rewritten(changed.collect())
+}
+
+/// Writes each changed file as it was rewritten, saying so: the migration changes only the forms
+/// it moves, and never formats a line it didn't.
+fn write_rewritten(changed: Vec<(String, String)>) -> Result<(), ExitCode> {
+    for (file, text) in changed {
         if let Err(err) = std::fs::write(&file, text) {
             eprintln!("error: couldn't write {file}: {err}");
             return Err(ExitCode::FAILURE);
         }
-        println!("fixed {file}");
+        if !quiet() {
+            println!("fixed {file}");
+        }
     }
     Ok(())
 }

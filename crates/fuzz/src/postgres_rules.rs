@@ -11,55 +11,55 @@ from std.postgres import PgMessage, PgReader
 def shown(message: PgMessage) -> str:
     match message:
         case .AuthOk:
-            \"auth 0\"
+            return \"auth 0\"
         case .AuthCleartext:
-            \"auth 3\"
+            return \"auth 3\"
         case .AuthSasl(mechanisms=mechanisms):
-            f\"sasl {mechanisms.len()}\"
+            return f\"sasl {len(mechanisms)}\"
         case .AuthSaslContinue(data=data):
-            f\"auth 11 {data.len()}\"
+            return f\"auth 11 {len(data)}\"
         case .AuthSaslFinal(data=data):
-            f\"auth 12 {data.len()}\"
+            return f\"auth 12 {len(data)}\"
         case .AuthOther(code=code):
-            f\"auth {code}\"
+            return f\"auth {code}\"
         case .Setting(name=name, value=value):
-            f\"setting {name.len()} {value.len()}\"
+            return f\"setting {len(name)} {len(value)}\"
         case .BackendKey(process=process, secret=secret):
-            f\"key {process} {secret}\"
+            return f\"key {process} {secret}\"
         case .Ready(status=status):
-            f\"ready {status.len()}\"
+            return f\"ready {len(status)}\"
         case .Failed(fields=fields):
-            f\"failed {fields.len()}\"
+            return f\"failed {len(fields)}\"
         case .Notice(fields=fields):
-            f\"notice {fields.len()}\"
+            return f\"notice {len(fields)}\"
         case .Columns(names=names, types=types):
-            f\"columns {names.len()} {types.len()}\"
+            return f\"columns {len(names)} {len(types)}\"
         case .Row(cells=cells, present=present):
-            f\"row {cells.len()} {present.len()}\"
+            return f\"row {len(cells)} {len(present)}\"
         case .Done(tag=tag):
-            f\"done {tag.len()}\"
+            return f\"done {len(tag)}\"
         case .ParseComplete:
-            \"other 49\"
+            return \"other 49\"
         case .BindComplete:
-            \"other 50\"
+            return \"other 50\"
         case .NoData:
-            \"other 110\"
+            return \"other 110\"
         case .EmptyQuery:
-            \"other 73\"
+            return \"other 73\"
         case .Other(kind=kind):
-            f\"other {kind}\"
+            return f\"other {kind}\"
 
 def read_all(ref reader: PgReader) -> list[str]:
     mut said = list[str]()
-    while said.len() < 10000:
-        message = reader.next() else as _:
+    while len(said) < 10000:
+        message = reader.next() except .Constraint() | .Busy() | .Column() | .Failed():
             said.append(\"fail\")
             return said
         if message is None:
             said.append(\"end\")
             return said
         said.append(shown(message))
-    said
+    return said
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     data = fs.read_bytes(args[0])?
@@ -72,22 +72,22 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     mut said = list[str]()
     mut at = 0
     mut size = 1
-    while at < data.len():
-        end = at + size if at + size < data.len() else data.len()
+    while at < len(data):
+        end = at + size if at + size < len(data) else len(data)
         pieces.feed(data[at:end])
         at = end
         size = size % 7 + 1
         mut more = True
         while more:
-            message = pieces.next() else as _:
+            message = pieces.next() except .Constraint() | .Busy() | .Column() | .Failed():
                 said.append(\"fail\")
-                at = data.len() + 1
+                at = len(data) + 1
                 break
             if message is None:
                 more = False
             else:
                 said.append(shown(message))
-    if at == data.len() + 1:
+    if at == len(data) + 1:
         for line in said:
             stdout.print(line)
     else:

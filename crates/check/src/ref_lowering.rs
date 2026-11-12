@@ -37,7 +37,7 @@ use crate::types::Type;
 /// How a `for ref` written in goes through what it loops over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Through {
-    /// `range(items.len())`, with each item `items[at]`.
+    /// `range(len(items))`, with each item `items[at]`.
     Positions,
     /// `items.ids()`, with each item `items[id]`.
     Ids,

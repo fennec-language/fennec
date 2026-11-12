@@ -354,16 +354,11 @@ fn file_work(
             Ok(Given::Data(all))
         }
         ("read_chunk", OpenFile::Reading(reader)) => {
-            let mut chunk = vec![0; size.unwrap_or(0)];
-            let mut filled = 0;
-            while filled < chunk.len() {
-                let read = reader.read(chunk.get_mut(filled..).unwrap_or_default()).map_err(io)?;
-                if read == 0 {
-                    break;
-                }
-                filled += read;
-            }
-            chunk.truncate(filled);
+            // Up to `size` bytes, growing as they're read, so a `size` far past what the file
+            // holds makes no room for what isn't there.
+            let mut chunk = Vec::new();
+            let limit = u64::try_from(size.unwrap_or(0)).unwrap_or(u64::MAX);
+            reader.by_ref().take(limit).read_to_end(&mut chunk).map_err(io)?;
             Ok(Given::Data(chunk))
         }
         ("read_line", OpenFile::Reading(reader)) => {

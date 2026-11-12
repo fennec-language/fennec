@@ -50,7 +50,7 @@ struct Window:
     vsync = True
 
 def kit_toml() -> str:
-    "\n".join([
+    return "\n".join([
         "# The kit a Fennec project describes itself with.",
         "[kit]",
         "name = \"fox-run\"",
@@ -83,11 +83,10 @@ def kit_toml() -> str:
     ])
 
 def describe(text: str) -> str:
-    sample = toml.loads[Sample](text) else as why:
-        match why:
-            case ParseError(message=message):
-                return f"couldn't read it: {message}"
-    f"read {sample}"
+    sample = toml.loads[Sample](text) except why:
+        case ParseError(message=message):
+            return f"couldn't read it: {message}"
+    return f"read {sample}"
 
 def main(stdout: Stdout):
     manifest = toml.loads[Manifest](kit_toml())?
@@ -116,11 +115,10 @@ def main(stdout: Stdout):
 
 ## Why `text` can't be read as a `Sample`, or "" if it can.
 def why_not(text: str) -> str:
-    _ = toml.loads[Sample](text) else as why:
-        match why:
-            case ParseError(message=message):
-                return message
-    ""
+    _ = toml.loads[Sample](text) except why:
+        case ParseError(message=message):
+            return message
+    return ""
 
 test "tables a header or a dotted key names count toward how deep TOML may nest"():
     for deep in [600, 1000000]:

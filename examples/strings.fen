@@ -3,13 +3,13 @@ def main(stdout: Stdout):
     coins = 1234567
     health = 87.456
     stdout.print(f"{name} has {coins:,} coins and {health:.1f} HP")
-    stdout.print(f"{{literal braces}} and {name.len() * 2}")
+    stdout.print(f"{{literal braces}} and {len(name) * 2}")
 
     words = "fire ice  storm".split()
     stdout.print(words)
     stdout.print(", ".join(words).upper())
     stdout.print("ice" in words, "ICE".lower() == "ice")
-    stdout.print(name[0], name[-1], name.len())
+    stdout.print(name[0], name[-1], len(name))
     stdout.print("  padded  ".strip() + "!")
     stdout.print("a-b-c".split("-"), "file.toml".endswith(".toml"))
 
@@ -25,12 +25,8 @@ def main(stdout: Stdout):
     stdout.print("=" * 12, "ab" * 0 == "")
 
     # A character's code, and back. Text is UTF-8, so its bytes can outnumber its characters.
-    stdout.print(
-        "A".code(),
-        "é".code(),
-        "Fox".codes(),
-        str.from_code(97) else "?",
-        str.from_code(-1) else "?",
-    )
-    stdout.print("héllo".len(), "héllo".encode().len(), "héllo"[1])
+    letter = str.from_code(97) except InvalidValue(): "?"
+    no_letter = str.from_code(-1) except InvalidValue(): "?"
+    stdout.print("A".code(), "é".code(), "Fox".codes(), letter, no_letter)
+    stdout.print(len("héllo"), len("héllo".encode()), "héllo"[1])
     stdout.print("\x41\u00e9\U0001f98a", "tab\there")

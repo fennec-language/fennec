@@ -18,11 +18,11 @@ def transfer(bank: Bank, from_id: str, to_id: str, amount: int) -> bool:
         payee.balance += amount
     lock bank.audit as ref log:
         log.append(f"{from_id} -> {to_id}: {amount}")
-    True
+    return True
 
 def balance(account: shared Account) -> int:
     lock account as current:
-        current.balance
+        return current.balance
 
 test "a transfer moves money"():
     shared ana = Account(owner="ana", balance=10)

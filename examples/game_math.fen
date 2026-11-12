@@ -76,7 +76,7 @@ def vectors(stdout: Stdout, point: Vec3, arrow: Vec3, near: Vec4, far: Vec4):
     show3(stdout, "vec3 lerp", point.lerp(arrow, 0.7))
     show3(stdout, "vec3 min", point.min(arrow))
     show3(stdout, "vec3 max", point.max(arrow))
-    show3(stdout, "vec3 abs", point.abs())
+    show3(stdout, "vec3 abs", abs(point))
 
     show4(stdout, "vec4 add", near + far)
     show4(stdout, "vec4 sub", near - far)

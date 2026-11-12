@@ -331,18 +331,23 @@ impl Parser {
         Ok(Stmt { kind: StmtKind::With { value, names, body, lock }, span: start.to(self.prev_span()) })
     }
 
-    /// `lend value`, or `lend value else:` and the block that runs when the caller's fails.
+    /// `lend value`, or `lend value except:` and the block that runs when the caller's fails.
+    /// `lend value else:`, its form before 2026-11-11, is read too, for the checker to refuse
+    /// with what to write.
     fn lend_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
         let value = self.or_expr()?;
-        let otherwise = if self.eat_kw(Kw::Else) || self.eat_kw(Kw::Except) {
+        let (otherwise, except) = if self.eat_kw(Kw::Except) {
             self.expect_p(Punct::Colon)?;
-            self.block()?
+            (self.block()?, true)
+        } else if self.eat_kw(Kw::Else) {
+            self.expect_p(Punct::Colon)?;
+            (self.block()?, false)
         } else {
             self.end_line()?;
-            Vec::new()
+            (Vec::new(), true)
         };
-        Ok(Stmt { kind: StmtKind::Lend { value, otherwise }, span: start.to(self.prev_span()) })
+        Ok(Stmt { kind: StmtKind::Lend { value, otherwise, except }, span: start.to(self.prev_span()) })
     }
 
     /// `shared name = value`, written in as `name: shared = value`: a type of `shared` with

@@ -50,7 +50,7 @@ test "long text from outside is quoted by its start and its length"():
     head = "`abcdefghijabcdefghij…` (5,000 characters)"
     assert parse_error(() => json.loads[int](letters())?).startswith(head)
     # TOML says which character it stopped at, so it quotes none of the rest.
-    assert parse_error(() => toml.loads[Count](f"value = {letters()}")?).len() < 100
+    assert len(parse_error(() => toml.loads[Count](f"value = {letters()}")?)) < 100
     assert invalid(() => uuid.Uuid.parse(letters())?).startswith(head)
     assert invalid(() => url.parse(letters() + " ")?).startswith(
         "`abcdefghijabcdefghij…` (5,001 characters)",
@@ -63,10 +63,10 @@ test "long text from outside is quoted by its start and its length"():
 test "a long key from outside is cut in what a message says of it"():
     key = "k" * 5000
     said = parse_error(() => json.loads[dict[str, int]](f"{{\"{key}\": 1, \"{key}\": 2}}")?)
-    assert said.len() < 100
+    assert len(said) < 100
     assert said == "the text has `kkkkkkkkkkkkkkkkkkkk…` twice"
     toml_said = parse_error(() => toml.loads[dict[str, int]](f"{key} = 1\n{key} = 2")?)
-    assert toml_said.len() < 100
+    assert len(toml_said) < 100
 
 test "text 40 characters long or shorter is quoted whole, as before"():
     forty = "1" * 40

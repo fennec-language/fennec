@@ -9,4 +9,4 @@ def main(stdout: Stdout):
     for i in range(500_000):
         cell = Cell(x=i * 31 % 101, y=i * 17 % 103)
         seen[cell] = (seen.get(cell) else 0) + 1
-    stdout.print(seen.len(), seen[Cell(x=0, y=0)])
+    stdout.print(len(seen), seen[Cell(x=0, y=0)])

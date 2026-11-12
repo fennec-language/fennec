@@ -9,7 +9,7 @@ def sequence(length: int) -> str:
     for _ in range(length):
         seed = (seed * 3877 + 29573) % 139968
         letters.append("acgt"[seed * 4 // 139968])
-    "".join(letters)
+    return "".join(letters)
 
 def main(stdout: Stdout):
     dna = sequence(50_000)
@@ -22,7 +22,7 @@ def main(stdout: Stdout):
     ]
     for pattern in patterns:
         found = Regex(pattern).expect("the pattern is valid").find_all(dna)
-        stdout.print(pattern, found.len())
+        stdout.print(pattern, len(found))
     mut text = dna
     for pattern, with_text in [
         ("tHa[Nt]", "<4>"),
@@ -31,5 +31,5 @@ def main(stdout: Stdout):
         ("<[^>]*>", "|"),
     ]:
         text = Regex(pattern).expect("the pattern is valid").replace(text, with_text)
-    stdout.print(text.len())
-    stdout.print(Regex("ta+c").replace(dna, "x").len())
+    stdout.print(len(text))
+    stdout.print(len(Regex("ta+c").replace(dna, "x")))

@@ -133,20 +133,20 @@ def spin(limit: int) -> int:
     mut turns = 0
     while turns < limit:
         turns += 1
-    turns
+    return turns
 
 def counted(limit: int) -> int:
     mut turns = 0
     for n in range(limit):
         turns += n
-    turns
+    return turns
 
 def main(net: Net, stdout: Stdout) fails NetError:
     stdout.print(counted(3), [x * 2 for x in parallel([1, 2])])
     with net.listen(0)? as server:
         for conn in parallel(server):
             line = conn.read_line()? else \"\"
-            conn.write(f\"{spin(line.len())}\\n\")?
+            conn.write(f\"{spin(len(line))}\\n\")?
 ";
         let texts = texts(source)?;
         let ticks = |name: &str| {

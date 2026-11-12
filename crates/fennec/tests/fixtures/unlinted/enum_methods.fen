@@ -13,20 +13,20 @@ enum Light:
     def next(self) -> Light:
         match self:
             case .Red:
-                .Green(30.0)
+                return .Green(30.0)
             case .Green(_):
-                .Amber(False)
+                return .Amber(False)
             case .Amber(True):
-                .Red
+                return .Red
             case .Amber(_):
-                .Amber(True)
+                return .Amber(True)
 
     def wait(self) -> float:
         match self:
             case .Green(seconds):
-                seconds
+                return seconds
             case _:
-                1.5
+                return 1.5
 
     def cycle(ref self):
         self = self.next()
@@ -51,7 +51,7 @@ def main(stdout: Stdout):
         l = l.next()
     stdout.print(all)
     all.append(.Green(2.0))
-    stdout.print(all[-1] == .Green(0.0), all[-1] == .Green(2.0), all.len())
+    stdout.print(all[-1] == .Green(0.0), all[-1] == .Green(2.0), len(all))
     cell = Cell(3, col=4)
     picked = match cell:
         case Cell(0, c):

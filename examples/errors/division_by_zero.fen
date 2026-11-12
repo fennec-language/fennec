@@ -1,5 +1,5 @@
 def average(total: int, count: int) -> int:
-    total // count
+    return total // count
 
 def main(stdout: Stdout):
     stdout.print(average(10, 2))

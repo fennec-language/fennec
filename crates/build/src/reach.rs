@@ -309,7 +309,7 @@ impl Uses {
             }
             // What it lends, and its cleanup, `except:` or `else:`, which runs when the caller's
             // block fails and can call anything a body can.
-            StmtKind::Lend { value, otherwise } => {
+            StmtKind::Lend { value, otherwise, .. } => {
                 self.expr(value);
                 self.stmts(otherwise);
             }

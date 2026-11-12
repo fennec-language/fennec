@@ -26,7 +26,7 @@ def main(stdout: Stdout):
     stdout.print(sorted(same_name, key=(same_name) => -same_name))
 
     twice = sorted(sorted(ints), key=(n) => n * n)
-    stdout.print(twice, sorted(twice).len())
+    stdout.print(twice, len(sorted(twice)))
 
     mut grown = sorted([3, 1, 2])
     grown.append(0)

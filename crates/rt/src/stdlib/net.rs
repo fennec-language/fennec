@@ -856,18 +856,23 @@ fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, St
 /// An answer as a `Response`.
 fn answer_value(answer: http::Answer) -> Value {
     // A dict has each name once: a header sent again adds to the one there, as HTTP says it can.
+    // Each name's place is found by its hash, so many headers are joined in time that grows with
+    // how many there are.
     let mut joined: Vec<(String, String)> = Vec::new();
+    let mut places: HashMap<&str, usize> = HashMap::new();
     let mut cookies = Vec::new();
     for (name, value) in &answer.headers {
         if name == "set-cookie" {
             cookies.push(Value::str(value));
         }
-        match joined.iter_mut().find(|(seen, _)| seen == name) {
-            Some((_, held)) => {
+        if let Some(&at) = places.get(name.as_str()) {
+            if let Some((_, held)) = joined.get_mut(at) {
                 held.push_str(", ");
                 held.push_str(value);
             }
-            None => joined.push((name.clone(), value.clone())),
+        } else {
+            places.insert(name, joined.len());
+            joined.push((name.clone(), value.clone()));
         }
     }
     let headers: Vec<(Value, Value)> =
@@ -1748,6 +1753,8 @@ pub(crate) fn drain_on_stop(server: i64) -> Option<u64> {
     PLAIN_DRAINS.store(true, Ordering::SeqCst);
     let being_served = || SERVING.lock().unwrap_or_else(PoisonError::into_inner).clone();
     Some(crate::signals::on_stop(Box::new(move || {
+        // A read now sees the stop and drains. Said first, as what follows can let the program end.
+        crate::embed::live::stop_taken();
         let _ = TcpStream::connect_timeout(&address, Duration::from_secs(1));
         // Only a read waiting for a next message's first byte is ended: one that's taken in any
         // of a message goes on to the end of it, and its message is answered.
@@ -1934,6 +1941,24 @@ pub(crate) mod tests {
 
     use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// A response's headers become a dict with each name once, a name sent again joined to the
+    /// first with `, `, in the order the names first came, however many there are.
+    #[test]
+    fn many_headers_are_joined_by_name() {
+        let mut headers: Vec<(String, String)> =
+            (0..999).map(|n| (format!("x-{n}"), n.to_string())).collect();
+        headers.push(("x-7".to_owned(), "again".to_owned()));
+        headers.push(("set-cookie".to_owned(), "a=1".to_owned()));
+        let answer = super::http::Answer { status: 200, headers, body: Vec::new() };
+        let made = super::answer_value(answer);
+        let Value::Instance(made) = &made else { panic!("not a Response") };
+        let Some(Value::Dict(joined)) = made.field("headers") else { panic!("no headers") };
+        assert_eq!(joined.len(), 1000);
+        let shown = crate::format::repr(&Value::Dict(Rc::clone(joined)));
+        assert!(shown.starts_with("{\"x-0\": \"0\", \"x-1\": \"1\""), "{shown}");
+        assert!(shown.contains("\"x-7\": \"7, again\""), "{shown}");
+    }
 
     /// Native code keeps `tls=` on the method's name.
     #[test]
@@ -2560,7 +2585,39 @@ pub(crate) mod tests {
             let (port, server) = serving();
             let got =
                 handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
-            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate isn't for `fennec.example`");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
+
+        /// A clock two centuries on, when the tests' certificate has expired.
+        #[derive(Debug)]
+        struct Later;
+
+        impl rustls::time_provider::TimeProvider for Later {
+            fn current_time(&self) -> Option<rustls::pki_types::UnixTime> {
+                // 2200-01-01, past the certificate's end in 2126.
+                Some(rustls::pki_types::UnixTime::since_unix_epoch(Duration::from_hours(2_016_144)))
+            }
+        }
+
+        /// A certificate past its end is refused, however trusted its authority, saying so.
+        #[test]
+        fn an_expired_certificate_is_refused() {
+            let (port, server) = serving();
+            let mut roots = RootCertStore::empty();
+            for certificate in CertificateDer::pem_slice_iter(CA) {
+                roots.add(certificate.unwrap()).unwrap();
+            }
+            let config = ClientConfig::builder_with_details(provider(), Arc::new(Later))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate has expired");
             drop(got);
             assert!(server.join().unwrap().is_err());
         }
@@ -2575,7 +2632,8 @@ pub(crate) mod tests {
                 .with_root_certificates(RootCertStore::empty())
                 .with_no_client_auth();
             let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
-            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
+            assert_eq!(reason, "the server's certificate isn't from an authority this system trusts");
             drop(got);
             assert!(server.join().unwrap().is_err());
         }

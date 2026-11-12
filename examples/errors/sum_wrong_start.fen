@@ -2,7 +2,7 @@ struct Money:
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
 def main(stdout: Stdout):
     wallet = [Money(cents=150)]

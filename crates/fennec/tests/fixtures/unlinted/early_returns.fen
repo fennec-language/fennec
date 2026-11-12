@@ -3,8 +3,7 @@
 # nothing in it and a `pass` beside something else.
 
 def is_big(n: int) -> bool:
-    if n > 9:
-        return True
+    if n > 9: return True
     return False
 
 def is_small(n: int) -> bool:

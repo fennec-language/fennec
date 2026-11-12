@@ -1,7 +1,7 @@
 from enemies import spawn
 
 def strength(enemy: Enemy) -> int:
-    enemy.health
+    return enemy.health
 
 def main(stdout: Stdout):
     stdout.print(strength(spawn()))

@@ -19,9 +19,11 @@
 //! key can't change the launcher, which is what checks everything else. Each kind is signed in
 //! its own namespace, so a signature for one never counts for the other.
 
+mod private;
 mod sshsig;
 mod trust;
 
+pub use private::{Refused, private_folder};
 pub use trust::{kit_root, trusted, write_kit_file};
 
 use std::fmt::Write as _;

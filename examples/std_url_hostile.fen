@@ -60,7 +60,7 @@ test "a space or a control character is refused anywhere"():
 
 test "what's merely long, deep or odd reads, as its escapes are"():
     deep = url.parse("http://h/" + "a/" * 100_000)?
-    assert deep.path.len() == 200_001
+    assert len(deep.path) == 200_001
     many = url.parse("http://h/?" + "k=v&" * 50_000)?
     assert many.query == {"k": "v"}
     # An escape that isn't one is left as it's written, as Python leaves it.

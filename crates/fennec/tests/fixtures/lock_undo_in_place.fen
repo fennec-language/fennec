@@ -20,27 +20,27 @@ def changed(holder: shared Holder, fail_at: int) fails Boom:
         held.names[2] = "two, changed, and long enough to be held in a block of its own"
         _ = held.names.pop(1)
         held.names[9] = "nine"
-        if fail_at == 1:
-            fail Boom(step=1)
+        if fail_at == 1: fail Boom(step=1)
         for n in range(40):
             held.counts[f"grown {n}"] = n
             held.items[n % 3] = f"grown {n}"
-        if fail_at == 2:
-            fail Boom(step=2)
+        if fail_at == 2: fail Boom(step=2)
 
 def show(holder: shared Holder) -> str:
     lock holder as held:
-        f"{held.items} {held.counts.items()} {held.names.items()}"
+        return f"{held.items} {held.counts.items()} {held.names.items()}"
 
 def main(stdout: Stdout):
     shared holder = Holder(
-        items=["x", "y", "z"], counts={"a": 1, "b": 2, "c": 3}, names={1: "one", 2: "two"}
+        items=["x", "y", "z"],
+        counts={"a": 1, "b": 2, "c": 3},
+        names={1: "one", 2: "two"},
     )
     before = show(holder)
     for fail_at in [1, 2]:
-        _ = changed(holder, fail_at=fail_at) else:
+        _ = changed(holder, fail_at=fail_at) except Boom():
             stdout.print(show(holder) == before)
-    _ = changed(holder, fail_at=0) else:
+    _ = changed(holder, fail_at=0) except Boom():
         stdout.print("failed")
     stdout.print(before)
     stdout.print(show(holder))

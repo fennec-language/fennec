@@ -62,7 +62,7 @@ impl Walk<'_> {
             // A `with` holds what it opens to its own rules: a source that fails to open, or a
             // task that fails, fails the block.
             StmtKind::With { value, .. } => self.read(value),
-            StmtKind::Lend { value, otherwise } => {
+            StmtKind::Lend { value, otherwise, .. } => {
                 self.expr(value);
                 self.block(otherwise);
             }

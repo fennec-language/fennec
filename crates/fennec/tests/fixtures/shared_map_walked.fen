@@ -14,7 +14,7 @@ struct Log:
 
 def length(log: shared Log) -> int:
     lock log as held:
-        return held.map.len()
+        return len(held.map)
 
 def adding(log: shared Log, name: str):
     lock log as ref held:

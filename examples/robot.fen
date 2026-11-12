@@ -25,50 +25,50 @@ struct Robot:
 def turn(dir: Dir) -> Dir:
     match dir:
         case .North:
-            .East
+            return .East
         case .East:
-            .South
+            return .South
         case .South:
-            .West
+            return .West
         case .West:
-            .North
+            return .North
 
 def step(at: Cell, dir: Dir, count: int) -> Cell:
     match dir:
         case .North:
-            Cell(row=at.row - count, col=at.col)
+            return Cell(row=at.row - count, col=at.col)
         case .South:
-            Cell(row=at.row + count, col=at.col)
+            return Cell(row=at.row + count, col=at.col)
         case .East:
-            Cell(row=at.row, col=at.col + count)
+            return Cell(row=at.row, col=at.col + count)
         case .West:
-            Cell(row=at.row, col=at.col - count)
+            return Cell(row=at.row, col=at.col - count)
 
 def next_move(i: int, facing: Dir) -> Move:
     match i % 7:
         case 0:
-            .Turn
+            return .Turn
         case 1:
-            .Step(facing, i % 5)
+            return .Step(facing, i % 5)
         case 2:
-            .Jump(Cell(row=i % 13, col=i % 11))
+            return .Jump(Cell(row=i % 13, col=i % 11))
         case 3:
-            .Wait(i % 3)
+            return .Wait(i % 3)
         case _:
-            .Step(turn(facing), 1)
+            return .Step(turn(facing), 1)
 
 def apply(robot: Robot, move: Move) -> Robot:
     match move:
         case .Step(dir, 0):
-            Robot(at=robot.at, facing=dir, waited=robot.waited + 1)
+            return Robot(at=robot.at, facing=dir, waited=robot.waited + 1)
         case .Step(dir, count):
-            Robot(at=step(robot.at, dir=dir, count=count), facing=dir, waited=robot.waited)
+            return Robot(at=step(robot.at, dir=dir, count=count), facing=dir, waited=robot.waited)
         case .Jump(to):
-            Robot(at=to, facing=robot.facing, waited=robot.waited)
+            return Robot(at=to, facing=robot.facing, waited=robot.waited)
         case .Turn:
-            Robot(at=robot.at, facing=turn(robot.facing), waited=robot.waited)
+            return Robot(at=robot.at, facing=turn(robot.facing), waited=robot.waited)
         case .Wait(turns):
-            Robot(at=robot.at, facing=robot.facing, waited=robot.waited + turns)
+            return Robot(at=robot.at, facing=robot.facing, waited=robot.waited + turns)
 
 def main(stdout: Stdout):
     mut robot = Robot(at=Cell(row=0, col=0), facing=.North, waited=0)

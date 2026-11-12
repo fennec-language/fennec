@@ -23,4 +23,4 @@ export struct Match:
     ## Group `n`'s text: 0 for the whole match.
     def [](self, n: int) -> str?:
         if n == 0: return self.text
-        self.groups[n - 1]
+        return self.groups[n - 1]

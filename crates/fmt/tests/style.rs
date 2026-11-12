@@ -10,8 +10,8 @@ pub(crate) fn check(input: &str, expected: &str) {
 #[test]
 fn spaces_go_around_operators_and_after_commas() {
     check(
-        "def f(a:int,b:int)->int:\n    x=-a+b*2**-3//4%5\n    y = a  if a>b  else -(b)\n    x+=1\n    x\n",
-        "def f(a: int, b: int) -> int:\n    x = -a + b * 2 ** -3 // 4 % 5\n    y = a if a > b else -(b)\n    x += 1\n    x\n",
+        "def f(a:int,b:int)->int:\n    x=-a+b*2**-3//4%5\n    y = a  if a>b  else -(b)\n    x+=1\n    return x\n",
+        "def f(a: int, b: int) -> int:\n    x = -a + b * 2 ** -3 // 4 % 5\n    y = a if a > b else -(b)\n    x += 1\n    return x\n",
     );
     check(
         "def f(xs: list[int]):\n    ok = not xs and 3 not in xs or xs is not None\n",
@@ -34,8 +34,8 @@ fn calls_indexes_and_attributes_hug() {
 #[test]
 fn keyword_arguments_hug_their_equals() {
     check(
-        "def f():\n    Vec3(x = 1.0, y = 2.0)\n    sorted(names, key = name => name.len())\n",
-        "def f():\n    Vec3(x=1.0, y=2.0)\n    sorted(names, key=name => name.len())\n",
+        "def f():\n    Vec3(x = 1.0, y = 2.0)\n    sorted(names, key = name => len(name))\n",
+        "def f():\n    Vec3(x=1.0, y=2.0)\n    sorted(names, key=name => len(name))\n",
     );
 }
 
@@ -59,8 +59,8 @@ fn operator_methods_and_generics_are_written_tight() {
 #[test]
 fn a_keyword_method_name_is_written_tight() {
     check(
-        "struct Span:\n    low: int\n\n    def in (self, n: int) -> bool:\n        self.low <= n\n",
-        "struct Span:\n    low: int\n\n    def in(self, n: int) -> bool:\n        self.low <= n\n",
+        "struct Span:\n    low: int\n\n    def in (self, n: int) -> bool:\n        return self.low <= n\n",
+        "struct Span:\n    low: int\n\n    def in(self, n: int) -> bool:\n        return self.low <= n\n",
     );
 }
 
@@ -68,8 +68,8 @@ fn a_keyword_method_name_is_written_tight() {
 #[test]
 fn a_keyword_after_a_dot_is_written_as_a_name() {
     check(
-        "extend u8:\n    def from (x: int) -> u8:\n        u8(x)\n\ndef f() -> u8:\n    u8.from (3) else u8.from(4)\n",
-        "extend u8:\n    def from(x: int) -> u8:\n        u8(x)\n\ndef f() -> u8:\n    u8.from(3) else u8.from(4)\n",
+        "extend u8:\n    def from (x: int) -> u8:\n        return u8(x)\n\ndef f() -> u8:\n    return u8.from (3) else u8.from(4)\n",
+        "extend u8:\n    def from(x: int) -> u8:\n        return u8(x)\n\ndef f() -> u8:\n    return u8.from(3) else u8.from(4)\n",
     );
 }
 
@@ -161,8 +161,8 @@ fn declarations_get_one_blank_line_around_them() {
 #[test]
 fn an_annotation_stays_on_the_line_above_its_def() {
     check(
-        "from std.math import Vec3\n@hot\ndef step(n: int) -> int:\n    n\n## Moves.\n@hot\ndef other(n: int) -> int:\n    n\n",
-        "from std.math import Vec3\n\n@hot\ndef step(n: int) -> int:\n    n\n\n## Moves.\n@hot\ndef other(n: int) -> int:\n    n\n",
+        "from std.math import Vec3\n@hot\ndef step(n: int) -> int:\n    return n\n## Moves.\n@hot\ndef other(n: int) -> int:\n    return n\n",
+        "from std.math import Vec3\n\n@hot\ndef step(n: int) -> int:\n    return n\n\n## Moves.\n@hot\ndef other(n: int) -> int:\n    return n\n",
     );
     check("struct S:\n    @skip\n    x = 0\n    y = 1\n", "struct S:\n    @skip\n    x = 0\n    y = 1\n");
 }
@@ -325,8 +325,8 @@ fn enum_case_defaults_keep_their_spaces() {
 #[test]
 fn guard_clauses_sit_on_one_line_and_other_bodies_dont() {
     check(
-        "def f(x: int) -> int:\n    if x < 0:\n        return 0\n    if x > 9: fail TooBig(x)\n    if x == 5:\n        return 5\n    else:\n        return 6\n    if x == 3: return 3\n    elif x == 4: return 4\n    for i in range(3): print(i)\n    while True:\n        break\n    if x == 7:  # why\n        return 7\n    if x == 8:\n        # explain\n        return 8\n    x\n",
-        "def f(x: int) -> int:\n    if x < 0: return 0\n    if x > 9: fail TooBig(x)\n    if x == 5:\n        return 5\n    else:\n        return 6\n    if x == 3:\n        return 3\n    elif x == 4:\n        return 4\n    for i in range(3):\n        print(i)\n    while True:\n        break\n    if x == 7:  # why\n        return 7\n    if x == 8:\n        # explain\n        return 8\n    x\n",
+        "def f(x: int) -> int:\n    if x < 0:\n        return 0\n    if x > 9: fail TooBig(x)\n    if x == 5:\n        return 5\n    else:\n        return 6\n    if x == 3: return 3\n    elif x == 4: return 4\n    for i in range(3): print(i)\n    while True:\n        break\n    if x == 7:  # why\n        return 7\n    if x == 8:\n        # explain\n        return 8\n    return x\n",
+        "def f(x: int) -> int:\n    if x < 0: return 0\n    if x > 9: fail TooBig(x)\n    if x == 5:\n        return 5\n    else:\n        return 6\n    if x == 3:\n        return 3\n    elif x == 4:\n        return 4\n    for i in range(3):\n        print(i)\n    while True:\n        break\n    if x == 7:  # why\n        return 7\n    if x == 8:\n        # explain\n        return 8\n    return x\n",
     );
 }
 
@@ -341,15 +341,15 @@ fn imports_are_sorted_with_std_first() {
 #[test]
 fn long_statements_break_before_their_loosest_operators() {
     check(
-        "def f(enemy: Enemy, world: World) -> int:\n    total_damage_dealt_this_frame = enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor\n    if enemy.health_points_remaining > 0 and enemy.is_visible_to_the_player and not world.paused_by_menu:\n        return enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor_value\n    x = [score for score in all_the_scores_in_this_world if score > minimum_score_needed_to_qualify_here]\n    0\n",
-        "def f(enemy: Enemy, world: World) -> int:\n    total_damage_dealt_this_frame = (\n        enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor\n    )\n    if (\n        enemy.health_points_remaining > 0\n        and enemy.is_visible_to_the_player\n        and not world.paused_by_menu\n    ):\n        return (\n            enemy.base_damage * enemy.level_multiplier\n            + world.global_bonus_damage\n            - enemy.armor_value\n        )\n    x = [\n        score for score in all_the_scores_in_this_world if score > minimum_score_needed_to_qualify_here\n    ]\n    0\n",
+        "def f(enemy: Enemy, world: World) -> int:\n    total_damage_dealt_this_frame = enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor\n    if enemy.health_points_remaining > 0 and enemy.is_visible_to_the_player and not world.paused_by_menu:\n        return enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor_value\n    x = [score for score in all_the_scores_in_this_world if score > minimum_score_needed_to_qualify_here]\n    return 0\n",
+        "def f(enemy: Enemy, world: World) -> int:\n    total_damage_dealt_this_frame = (\n        enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor\n    )\n    if (\n        enemy.health_points_remaining > 0\n        and enemy.is_visible_to_the_player\n        and not world.paused_by_menu\n    ):\n        return (\n            enemy.base_damage * enemy.level_multiplier\n            + world.global_bonus_damage\n            - enemy.armor_value\n        )\n    x = [\n        score for score in all_the_scores_in_this_world if score > minimum_score_needed_to_qualify_here\n    ]\n    return 0\n",
     );
 }
 
 #[test]
 fn lists_of_plain_literals_fill_their_lines() {
     check(
-        "def f() -> list[float]:\n    m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0, 4.25, 100.0]\n    names = [\"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\", \"imp\"]\n    m\n",
-        "def f() -> list[float]:\n    m = [\n        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0,\n        4.25, 100.0,\n    ]\n    names = [\n        \"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\",\n        \"imp\",\n    ]\n    m\n",
+        "def f() -> list[float]:\n    m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0, 4.25, 100.0]\n    names = [\"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\", \"imp\"]\n    return m\n",
+        "def f() -> list[float]:\n    m = [\n        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0,\n        4.25, 100.0,\n    ]\n    names = [\n        \"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\",\n        \"imp\",\n    ]\n    return m\n",
     );
 }

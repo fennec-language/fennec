@@ -12,15 +12,15 @@ struct Particle:
 
 def first_negative(numbers: list[int]) -> int:
     mut i = 0
-    while i < numbers.len():
+    while i < len(numbers):
         if numbers[i] < 0: return i
         i += 1
-    -1
+    return -1
 
 def main(stdout: Stdout):
     mut numbers = [1, 2, 3, 4]
     kept = numbers
-    for i in range(numbers.len()):
+    for i in range(len(numbers)):
         numbers[i] *= 10
     stdout.print(numbers, kept)
 
@@ -32,9 +32,9 @@ def main(stdout: Stdout):
 
     mut particles = [Particle(x=float(i), speed=0.5) for i in range(3)]
     for step in range(2):
-        for i in range(particles.len()):
+        for i in range(len(particles)):
             particles[i].x += particles[i].speed
-    for i in range(particles.len()):
+    for i in range(len(particles)):
         particles[i].nudge(100.0)
     stdout.print(particles[0].x, particles[2].x)
 

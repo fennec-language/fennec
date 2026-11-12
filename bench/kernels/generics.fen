@@ -8,32 +8,32 @@ struct Circle:
     radius: float
 
     def area(self) -> float:
-        3.14159 * self.radius * self.radius
+        return 3.14159 * self.radius * self.radius
 
     def scaled(self, by: float) -> float:
-        self.area() * by * by
+        return self.area() * by * by
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
     def scaled(self, by: float) -> float:
-        self.area() * by * by
+        return self.area() * by * by
 
 def total[T: Shape](shapes: list[T], by: float) -> float:
     mut sum_of = 0.0
     for shape in shapes:
         sum_of += shape.area() + shape.scaled(by)
-    sum_of
+    return sum_of
 
 def largest[T](items: list[T], better: (T, T) -> bool) -> T:
     mut best = items[0]
     for item in items:
         if better(item, best):
             best = item
-    best
+    return best
 
 def main(stdout: Stdout):
     circles = [Circle(radius=float(i % 10)) for i in range(5000)]

@@ -221,6 +221,41 @@ fn narrowed_net(
     }
 }
 
+/// What makes `path` mean more on Windows than its text says, if anything: a `\\?\` or `\\.\`
+/// start, which turns off Windows' own reading of `..` and names; a part ending in `.` or a space,
+/// which Windows drops, so `.. ` is `..`; or a part that names a device, like `CON` or `NUL.txt`.
+/// It reads `/` and `\` both as separators, as Windows does, so it can be tested anywhere.
+fn windows_trick(path: &str) -> Option<String> {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let slashed = path.replace('\\', "/");
+    if slashed.starts_with("//?/") || slashed.starts_with("//./") {
+        return Some(
+            "it starts with `\\\\?\\` or `\\\\.\\`, which turns off how Windows reads a path".to_owned(),
+        );
+    }
+    for part in slashed.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            continue;
+        }
+        if part.ends_with('.') || part.ends_with(' ') {
+            let shown = cut(part);
+            return Some(format!("its part `{shown}` ends in `.` or a space, which Windows drops"));
+        }
+        // A device is its name alone or before any extension, in any case: `nul.txt` is `NUL`.
+        let stem = part.split('.').next().unwrap_or(part).trim_end().to_ascii_uppercase();
+        let numbered = |kind: &str| {
+            stem.strip_prefix(kind).is_some_and(|n| {
+                matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+            })
+        };
+        if DEVICES.contains(&stem.as_str()) || numbered("COM") || numbered("LPT") {
+            let shown = cut(part);
+            return Some(format!("its part `{shown}` names a device on Windows"));
+        }
+    }
+    None
+}
+
 /// A part of a path from outside as a message shows it: whole, or past 40 characters, its first 20
 /// and `…`, with control characters escaped.
 fn cut(part: &str) -> String {
@@ -336,6 +371,13 @@ fn narrowed_fs(
             return Ok(Limited::to(Capability::Fs, allowed));
         }
         return call(Capability::Fs, method, args);
+    }
+    // Windows reads some paths as more than their text says, so a narrowed `Fs` refuses them there.
+    if cfg!(windows)
+        && let Some(why) = windows_trick(&path)
+    {
+        let reason = format!("`{path}` can't be reached through this Fs on Windows: {why}");
+        return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
     }
     let full = absolute(&path);
     let followed = with_links_followed(&full);
@@ -622,6 +664,71 @@ mod tests {
         let fs = Rc::new(Limited { capability: Capability::Fs, allowed: vec![Rc::from(absolute("saves"))] });
         let reading = limited(narrowed(&fs, "read_only", &[], (true, Span::default()), &mut never).unwrap());
         assert!(reading.has(READ_ONLY) && reading.named().count() == 1);
+    }
+
+    /// What Windows reads as more than a path's text says is found anywhere, so it's tested here on
+    /// every system, though only a narrowed `Fs` on Windows refuses it.
+    #[test]
+    fn windows_tricks_in_a_path_are_found() {
+        use super::windows_trick;
+        for fine in [
+            "saves/game.json",
+            "saves\\game.json",
+            "a/./b/../c",
+            "C:/data/x",
+            "\\\\server\\share\\x",
+            "notes.txt",
+            ".hidden",
+            "console.txt",
+            "COM10",
+            "nullable",
+        ] {
+            assert_eq!(windows_trick(fine), None, "{fine}");
+        }
+        for (asked, said) in [
+            ("\\\\?\\C:\\data\\..\\x", "starts with"),
+            ("//?/C:/x", "starts with"),
+            ("\\\\.\\PhysicalDrive0", "starts with"),
+            ("saves/.. /secret", "ends in"),
+            ("saves\\x.\\y", "ends in"),
+            ("saves/secret.", "ends in"),
+            ("saves/CON", "device"),
+            ("saves/nul.txt", "device"),
+            ("Aux", "device"),
+            ("saves\\com1", "device"),
+            ("LPT9.log", "device"),
+            ("CON .txt", "device"),
+        ] {
+            let found = windows_trick(asked).unwrap_or_default();
+            assert!(found.contains(said), "{asked}: {found}");
+        }
+    }
+
+    /// On Windows, a narrowed `Fs` refuses what Windows reads as more than its text says, before it
+    /// looks at the disk: `.. ` climbing out, a device, and a path that turns Windows' reading off.
+    #[cfg(windows)]
+    #[test]
+    fn a_narrowed_fs_on_windows_refuses_its_tricks() {
+        let folder = scratch("windows-tricks");
+        std::fs::create_dir_all(format!("{folder}/inside")).unwrap();
+        std::fs::write(format!("{folder}/secret.txt"), "outside").unwrap();
+        std::fs::write(format!("{folder}/inside/fine.txt"), "inside").unwrap();
+        let fs = fs_in(&format!("{folder}/inside"));
+        for asked in [
+            format!("{folder}/inside/.. /secret.txt"),
+            format!("{folder}\\inside\\..\\secret.txt"),
+            format!("{folder}/inside/secret.txt."),
+            format!("{folder}/inside/CON"),
+            format!("{folder}/inside/nul.txt"),
+            format!("\\\\?\\{}\\inside\\..\\secret.txt", folder.replace('/', "\\")),
+        ] {
+            let read = call(&fs, "read_text", &[Value::str(&asked)]);
+            assert!(matches!(read, Value::Err(_)), "{asked}: {read:?}");
+        }
+        // Either separator, mixed, reaches what's inside.
+        let mixed = Value::str(&format!("{folder}\\inside/fine.txt"));
+        assert!(matches!(call(&fs, "read_text", &[mixed]), Value::Ok(_)));
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// On Windows, `\\` separates a path's parts too, so `..` written with it climbs as with `/`,

@@ -15,7 +15,7 @@ struct Shelf:
     writes = 0
 
     def [](self, at: int) -> Part:
-        self.parts[at]
+        return self.parts[at]
 
     def []=(ref self, at: int, part: Part):
         self.parts[at] = part
@@ -25,7 +25,7 @@ struct Numbers:
     values: list[int]
 
     def [](self, at: int) -> int:
-        self.values[at]
+        return self.values[at]
 
     def []=(ref self, at: int, value: int):
         self.values[at] = value
@@ -34,7 +34,7 @@ struct Room:
     shelf: Shelf
 
     def [](self, name: str) -> Shelf:
-        self.shelf
+        return self.shelf
 
     def []=(ref self, name: str, shelf: Shelf):
         self.shelf = shelf

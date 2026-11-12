@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Output;
 
-const SOURCE: &str = "def double(x: int) -> int:\n    x * 2\n\ndef triple(x: int) -> int:\n    x * 3\n\n\
+const SOURCE: &str = "def double(x: int) -> int:\n    return x * 2\n\ndef triple(x: int) -> int:\n    return x * 3\n\n\
     test \"doubling\":\n    assert double(2) == 4\n\ntest \"tripling\":\n    assert triple(2) == 6\n";
 
 /// A folder for a program and for Fennec's own files, with `SOURCE` written in it.
@@ -123,8 +123,8 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(dir.join("kit.toml"), manifest).unwrap();
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x * 2\n").unwrap();
-    std::fs::write(dir.join("src/other.fen"), "def one() -> int:\n    1\n").unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x * 2\n").unwrap();
+    std::fs::write(dir.join("src/other.fen"), "def one() -> int:\n    return 1\n").unwrap();
     let tests = "from maths import double as twice\nimport maths as numbers\nfrom other import one\n\n\
         test \"by alias\":\n    assert twice(2) == 4\n\ntest \"by module\":\n    assert numbers.double(1) == 2\n\n\
         test \"elsewhere\":\n    assert one() == 1\n";
@@ -140,7 +140,7 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
             .unwrap()
     };
     assert!(stdout(&run()).ends_with("3 passed, 0 failed\n"));
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x + x\n").unwrap();
     let edited = stdout(&run());
     assert_eq!(edited, "3 passed, 0 failed (2 run, 1 unchanged)\n");
     std::fs::remove_dir_all(&dir).unwrap();
@@ -149,11 +149,11 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
 /// A program whose test takes one branch of a function, written to `dir`.
 fn with_branches(dir: &Path, taken: &str, untaken: &str, interface: &str) -> std::io::Result<()> {
     let source = format!(
-        "def taken() -> int:\n    {taken}\n\ndef untaken() -> int:\n    {untaken}\n\n\
-         def choose(x: int) -> int:\n    if x > 0:\n        return taken()\n    untaken()\n\n\
+        "def taken() -> int:\n    return {taken}\n\ndef untaken() -> int:\n    return {untaken}\n\n\
+         def choose(x: int) -> int:\n    if x > 0:\n        return taken()\n    return untaken()\n\n\
          interface Sized:\n    def size(self) -> int\n\n\
-         struct Box:\n    n: int\n\n    def size(self) -> int:\n        {interface}\n\n\
-         def size_of[T: Sized](s: T) -> int:\n    s.size()\n\n\
+         struct Box:\n    n: int\n\n    def size(self) -> int:\n        return {interface}\n\n\
+         def size_of[T: Sized](s: T) -> int:\n    return s.size()\n\n\
          test \"branch\":\n    assert choose(1) == 1\n\n\
          test \"through an interface\":\n    assert size_of(Box(n=1)) == 1\n"
     );
@@ -185,7 +185,7 @@ fn a_test_of_inlined_code_still_knows_what_it_ran() {
     let dir = scratch("inlined").unwrap();
     let source = |body: &str| {
         format!(
-            "def small(x: int) -> int:\n    x + {body}\n\ndef twice(x: int) -> int:\n    small(x) + small(x)\n\n\
+            "def small(x: int) -> int:\n    return x + {body}\n\ndef twice(x: int) -> int:\n    return small(x) + small(x)\n\n\
              test \"t\":\n    assert twice(1) > 0\n"
         )
     };
@@ -201,7 +201,7 @@ fn a_property_test_depends_on_all_it_can_reach() {
     let dir = scratch("property").unwrap();
     let source = |untaken: &str| {
         format!(
-            "def untaken() -> int:\n    {untaken}\n\ndef choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    x\n\n\
+            "def untaken() -> int:\n    return {untaken}\n\ndef choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    return x\n\n\
              test \"any\" for x: int:\n    assert choose(0) == 0\n"
         )
     };
@@ -221,10 +221,10 @@ fn kit_with_tests(name: &str) -> std::io::Result<fennec_temp::Temp> {
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(dir.join("kit.toml"), manifest)?;
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x * 2\n")?;
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x * 2\n")?;
     std::fs::write(
         dir.join("src/uses.fen"),
-        "from maths import double\n\ndef twice(x: int) -> int:\n    double(x)\n\n\
+        "from maths import double\n\ndef twice(x: int) -> int:\n    return double(x)\n\n\
          test \"twice\":\n    assert twice(2) == 4\n",
     )?;
     std::fs::write(dir.join("src/other.fen"), "test \"other\":\n    assert 1 == 1\n")?;
@@ -251,7 +251,7 @@ fn a_kit_that_moves_keeps_what_passed() {
     let _ = std::fs::remove_dir_all(&moved);
     std::fs::rename(&dir, &moved).unwrap();
     assert_eq!(stdout(&test_kit(&moved).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
-    std::fs::write(moved.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    std::fs::write(moved.join("src/maths.fen"), "def double(x: int) -> int:\n    return x + x\n").unwrap();
     assert_eq!(stdout(&test_kit(&moved).unwrap()), "2 passed, 0 failed (1 run, 1 unchanged)\n");
     std::fs::remove_dir_all(&moved).unwrap();
 }
@@ -282,16 +282,16 @@ fn an_edit_to_a_body_runs_only_what_ran_it_across_files() {
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed\n");
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
 
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x + x\n").unwrap();
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed (1 run, 1 unchanged)\n");
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
 
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x * 3\n").unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x * 3\n").unwrap();
     let broken = test_kit(&dir).unwrap();
     assert_eq!(broken.status.code(), Some(1));
     assert_eq!(stdout(&broken), "  ✗ twice\n1 passed, 1 failed (1 run, 1 unchanged)\n");
 
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x + x\n").unwrap();
     assert!(test_kit(&dir).unwrap().status.success());
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -299,9 +299,9 @@ fn an_edit_to_a_body_runs_only_what_ran_it_across_files() {
 #[test]
 fn an_edit_that_breaks_a_caller_in_another_file_is_still_found() {
     for (edit, what) in [
-        ("def double(x: float) -> float:\n    x * 2.0\n", "a changed signature"),
+        ("def double(x: float) -> float:\n    return x * 2.0\n", "a changed signature"),
         (
-            "error Bad:\n    n: int\n\ndef double(x: int) -> int:\n    if x > 9: fail Bad(n=x)\n    x * 2\n",
+            "error Bad:\n    n: int\n\ndef double(x: int) -> int:\n    if x > 9: fail Bad(n=x)\n    return x * 2\n",
             "a body that can now fail",
         ),
     ] {
@@ -332,7 +332,7 @@ fn locking_kit(name: &str) -> std::io::Result<fennec_temp::Temp> {
 /// `src/pause.fen`, with `settle` doing `first` before it gives back 1.
 fn settling(first: &str) -> String {
     format!(
-        "def settle(clock: Clock) -> int:\n    {first}\n    1\n\n\
+        "def settle(clock: Clock) -> int:\n    {first}\n    return 1\n\n\
          test \"settles\"(clock: Clock):\n    assert settle(clock) == 1\n"
     )
 }
@@ -359,7 +359,7 @@ fn a_body_edit_that_waits_under_another_files_lock_fails_the_tests() {
 fn a_mistake_in_an_edited_body_is_reported() {
     let dir = kit_with_tests("kit_mistake").unwrap();
     assert!(test_kit(&dir).unwrap().status.success());
-    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + \"a\"\n").unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    return x + \"a\"\n").unwrap();
     let broken = test_kit(&dir).unwrap();
     assert_eq!(broken.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&broken.stderr).starts_with("error"), "{broken:?}");
@@ -383,7 +383,7 @@ fn a_new_file_and_a_new_test_are_noticed() {
 /// `double` with a doc comment holding the given example.
 fn documented(example: &str) -> String {
     format!(
-        "## Doubles a number.\n##\n## ```\n{example}## ```\ndef double(x: int) -> int:\n    x * 2\n\n\
+        "## Doubles a number.\n##\n## ```\n{example}## ```\ndef double(x: int) -> int:\n    return x * 2\n\n\
          test \"doubling\":\n    assert double(2) == 4\n"
     )
 }
@@ -438,7 +438,7 @@ fn only_a_closed_fence_of_fennec_in_a_doc_comment_is_an_example() {
     let game = dir.join("game.fen");
     let write = |doc: &str| {
         let source = format!(
-            "{doc}def double(x: int) -> int:\n    x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n"
+            "{doc}def double(x: int) -> int:\n    return x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n"
         );
         std::fs::write(&game, source)
     };
@@ -462,7 +462,8 @@ fn only_a_closed_fence_of_fennec_in_a_doc_comment_is_an_example() {
     assert!(!unclosed.status.success());
     assert!(String::from_utf8_lossy(&unclosed.stderr).contains("never closed"));
     // Text that looks like one in a string, or a comment after code, isn't one.
-    let text = "def words() -> str:\n    \"## ```\" ## ```\n\ntest \"words\":\n    assert words() != \"\"\n";
+    let text =
+        "def words() -> str:\n    return \"## ```\" ## ```\n\ntest \"words\":\n    assert words() != \"\"\n";
     std::fs::write(&game, text).unwrap();
     let in_a_string = run_tests(&dir, &["--all"]).unwrap();
     assert_eq!(
@@ -480,7 +481,7 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
     let helpers = dir.join("src/maths.fen");
     let text = std::fs::read_to_string(&helpers).unwrap();
     let documented = format!(
-        "{text}\n## A private helper's example.\n##\n## ```\n## assert hidden() == 3\n## ```\ndef hidden() -> int:\n    3\n"
+        "{text}\n## A private helper's example.\n##\n## ```\n## assert hidden() == 3\n## ```\ndef hidden() -> int:\n    return 3\n"
     );
     std::fs::write(&helpers, documented).unwrap();
     let first = test_kit(&dir).unwrap();
@@ -516,8 +517,8 @@ fn tests_through_llvm_pass_and_fail_as_pinned() {
     let game = dir.join("game.fen");
     let source = |wrong: &str| {
         format!(
-            "struct Unit:\n    size: int\n\ndef grown(unit: Unit) -> int:\n    unit.size + 1\n\n\
-             ## An example.\n##\n## ```\n## assert double(2) == 4\n## ```\ndef double(x: int) -> int:\n    x * 2\n\n\
+            "struct Unit:\n    size: int\n\ndef grown(unit: Unit) -> int:\n    return unit.size + 1\n\n\
+             ## An example.\n##\n## ```\n## assert double(2) == 4\n## ```\ndef double(x: int) -> int:\n    return x * 2\n\n\
              test \"struct\":\n    assert grown(Unit(size=1)) == 2\n\n\
              test \"list\":\n    numbers = [1, 2, 3]\n    assert sum(numbers) == 6\n\n\
              test \"may fail\":\n    assert double(2) == {wrong}\n\n\
@@ -547,8 +548,8 @@ fn failing_tests_say_why_through_llvm_and_run_once() {
         return;
     }
     let dir = scratch("llvm-failures").unwrap();
-    let text = "error Broke:\n    why: str\n\ndef double(x: int) -> int:\n    x * 3\n\n\
-                def parse(text: str) -> int fails Broke:\n    if text == \"\":\n        fail Broke(why=\"empty\")\n    int(text) else 0\n\n\
+    let text = "error Broke:\n    why: str\n\ndef double(x: int) -> int:\n    return x * 3\n\n\
+                def parse(text: str) -> int fails Broke:\n    if text == \"\":\n        fail Broke(why=\"empty\")\n    return int(text) except InvalidValue(): 0\n\n\
                 test \"a comparison\":\n    assert double(2) == 4\n\n\
                 test \"a plain condition\":\n    ready = double(1) > 10\n    assert ready\n\n\
                 test \"a failure passed up\":\n    assert parse(\"\")? == 1\n\n\
@@ -609,7 +610,7 @@ fn a_property_test_that_passes_failures_up_shrinks_when_an_assert_fails() {
         return;
     }
     let dir = scratch("llvm-shrinking-failures-up").unwrap();
-    let text = "test \"files\" (fs: Fs) for n: int:\n    there = fs.read_text(\"seen\") else \"no\"\n    \
+    let text = "test \"files\" (fs: Fs) for n: int:\n    there = fs.read_text(\"seen\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): \"no\"\n    \
                 assert there == \"no\"\n    fs.write_text(\"seen\", \"1\")?\n    assert n < 100\n";
     std::fs::write(dir.join("game.fen"), text).unwrap();
     let ran = run_tests(&dir, &["--all"]).unwrap();
@@ -627,8 +628,8 @@ fn a_test_reaching_a_dict_of_lists_passes() {
     let dir = scratch("llvm-tests-refused").unwrap();
     let game = dir.join("game.fen");
     // LLVM once refused a dict of lists, and the test ran another way. Now it's built.
-    let text = "def lengths() -> dict[str, list[int]]:\n    {\"a\": [1, 2]}\n\ntest \"plain\":\n    assert 1 + 1 == 2\n\n\
-                test \"a dict of lists\":\n    assert lengths()[\"a\"].len() == 2\n";
+    let text = "def lengths() -> dict[str, list[int]]:\n    return {\"a\": [1, 2]}\n\ntest \"plain\":\n    assert 1 + 1 == 2\n\n\
+                test \"a dict of lists\":\n    assert len(lengths()[\"a\"]) == 2\n";
     std::fs::write(&game, text).unwrap();
     let ran = run_tests(&dir, &["--all"]).unwrap();
     assert_eq!(stdout(&ran), "2 passed, 0 failed\n", "{}", String::from_utf8_lossy(&ran.stderr));
@@ -732,8 +733,8 @@ fn only_what_a_test_ran_through_llvm_can_make_it_run_again() {
     let game = dir.join("game.fen");
     let source = |untaken: &str, taken: &str| {
         format!(
-            "def untaken() -> int:\n    {untaken}\n\ndef taken() -> int:\n    {taken}\n\n\
-             def choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    taken()\n\n\
+            "def untaken() -> int:\n    return {untaken}\n\ndef taken() -> int:\n    return {taken}\n\n\
+             def choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    return taken()\n\n\
              test \"small\":\n    assert choose(0) >= 1\n"
         )
     };

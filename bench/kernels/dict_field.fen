@@ -11,4 +11,4 @@ def main(stdout: Stdout):
     mut counter = Counter(counts={})
     for i in range(2_500_000):
         counter.bump(i * 7919 % 64)
-    stdout.print(counter.counts.len(), counter.counts[0], counter.counts[63])
+    stdout.print(len(counter.counts), counter.counts[0], counter.counts[63])

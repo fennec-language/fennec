@@ -14,7 +14,7 @@ struct Reader:
     at = 0
 
     def skip_space(ref self):
-        while self.at < self.text.len() and self.text[self.at] == " ":
+        while self.at < len(self.text) and self.text[self.at] == " ":
             self.at += 1
 
     def expect_text(ref self) -> str:
@@ -24,14 +24,14 @@ struct Reader:
             self.at += 1
         found = self.text[start:self.at]
         self.at += 1
-        found
+        return found
 
     def number(ref self) -> int:
         mut value = 0
-        while self.at < self.text.len() and self.text[self.at].isdigit():
+        while self.at < len(self.text) and self.text[self.at].isdigit():
             value = value * 10 + self.text[self.at].code() - 48
             self.at += 1
-        value
+        return value
 
     def items(ref self) -> Json:
         self.at += 1
@@ -44,7 +44,7 @@ struct Reader:
                 self.at += 1
                 self.skip_space()
         self.at += 1
-        .Items(values=values)
+        return .Items(values=values)
 
     def fields(ref self) -> Json:
         self.at += 1
@@ -61,7 +61,7 @@ struct Reader:
                 self.at += 1
                 self.skip_space()
         self.at += 1
-        .Fields(names=names, values=values)
+        return .Fields(names=names, values=values)
 
     def value(ref self) -> Json:
         self.skip_space()
@@ -78,7 +78,7 @@ struct Reader:
         if first == "n":
             self.at += 4
             return .Null
-        .Number(value=self.number())
+        return .Number(value=self.number())
 
 def printed(value: Json, ref out: list[str]):
     match value:
@@ -119,7 +119,7 @@ def document(records: int) -> str:
             f"\"tags\": [\"a\", \"b\", {i % 7}], \"at\": {{\"x\": {i * 3}, \"y\": {i * 5}}}}}",
         )
     parts.append("]")
-    "".join(parts)
+    return "".join(parts)
 
 def main(stdout: Stdout):
     text = document(300)
@@ -129,5 +129,5 @@ def main(stdout: Stdout):
         value = reader.value()
         mut out = []
         printed(value, ref out)
-        total += "".join(out).len()
-    stdout.print(text.len(), total)
+        total += len("".join(out))
+    stdout.print(len(text), total)

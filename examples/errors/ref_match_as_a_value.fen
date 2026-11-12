@@ -8,7 +8,7 @@ def bump(ref slot: Slot) -> int:
             count += 1
         case .Empty:
             pass
-    0
+    return 0
 
 def main(stdout: Stdout):
     mut slot = Slot.Held(count=1)

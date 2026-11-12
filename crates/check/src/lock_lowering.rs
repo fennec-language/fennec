@@ -225,7 +225,7 @@ impl Lowering<'_> {
             | StmtKind::Yield(value)
             | StmtKind::Assert(value)
             | StmtKind::Return(Some(value)) => self.exprs(value),
-            StmtKind::Lend { value, otherwise } => {
+            StmtKind::Lend { value, otherwise, .. } => {
                 self.exprs(value);
                 self.stmts(otherwise);
             }

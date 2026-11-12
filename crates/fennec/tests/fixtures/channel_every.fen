@@ -78,12 +78,12 @@ def behind(when_behind: Behind) -> int fails Closed | Crashed | Timeout:
                     hits.send(0)?
                     gate.send(1)?
             total = replies.receive() else fail Closed()
-    total
+    return total
 
 def main(stdout: Stdout) fails Closed | Crashed | Timeout:
     fan_out(stdout)?
     stdout.print(behind(.DropOldest)?)
-    total = behind(.Fail) else as problem:
+    total = behind(.Fail) except problem:
         stdout.print("failed:", problem)
         return
     stdout.print("kept up", total)

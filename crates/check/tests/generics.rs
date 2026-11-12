@@ -21,13 +21,13 @@ struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
 struct Rock:
     weight = 1
 
     def area(self) -> int:
-        1
+        return 1
 ";
 
 fn with_shapes(program: &str) -> Vec<String> {
@@ -38,17 +38,17 @@ fn with_shapes(program: &str) -> Vec<String> {
 fn type_parameters_are_chosen_by_each_call() {
     let program = "
         def first[T](items: list[T]) -> T:
-            items[0]
+            return items[0]
 
         def pair[A, B](a: A, b: B) -> (A, B):
-            (a, b)
+            return (a, b)
 
         def main(stdout: Stdout):
             stdout.print(first([1]) + 1, first(['a']).upper(), pair(1, 'a')[1].upper())
             stdout.print(first([1]) + 'a')
     ";
     assert_eq!(problems(program), ["can't use `+` on an int and a str @ first([1]) + \"a\""]);
-    let program = "def first[T](items: list[T]) -> T:\n    items[0]\n";
+    let program = "def first[T](items: list[T]) -> T:\n    return items[0]\n";
     assert_eq!(returns(program, "first"), Ok(Type::Param("T".to_owned())));
 }
 
@@ -56,7 +56,7 @@ fn type_parameters_are_chosen_by_each_call() {
 fn a_type_parameter_fits_only_one_type_per_call() {
     let program = "
         def same[T](a: T, b: T) -> T:
-            a
+            return a
 
         def main(stdout: Stdout):
             stdout.print(same(1, 'a'))
@@ -68,7 +68,7 @@ fn a_type_parameter_fits_only_one_type_per_call() {
 fn types_can_be_written_in_brackets_when_nothing_shows_them() {
     let program = "
         def make[T]() -> list[T]:
-            []
+            return []
 
         def main(stdout: Stdout):
             stdout.print(make())
@@ -82,7 +82,7 @@ fn types_can_be_written_in_brackets_when_nothing_shows_them() {
 fn values_of_a_type_parameter_can_do_only_what_its_bounds_say() {
     let program = "
         def total[T: Shape](shapes: list[T]) -> float:
-            sum(shape.area() for shape in shapes)
+            return sum(shape.area() for shape in shapes)
 
         def wrong[T: Shape](shape: T):
             shape.perimeter()
@@ -91,10 +91,10 @@ fn values_of_a_type_parameter_can_do_only_what_its_bounds_say() {
             value.area()
 
         def compare[T](a: T, b: T) -> bool:
-            a < b or a == b
+            return a < b or a == b
 
         def ordered[T: Ordered](a: T, b: T) -> bool:
-            a < b and a == b
+            return a < b and a == b
 
         def main(stdout: Stdout):
             stdout.print(total([Circle(radius=1.0)]))
@@ -118,7 +118,7 @@ fn values_of_a_type_parameter_can_do_only_what_its_bounds_say() {
 fn an_interface_is_not_a_type() {
     let program = "
         def biggest(shapes: list[Shape]) -> float:
-            0.0
+            return 0.0
     ";
     assert_eq!(with_shapes(program), ["`Shape` is an interface, not a type @ Shape"]);
     assert_eq!(
@@ -133,10 +133,10 @@ fn an_interface_is_not_a_type() {
 fn calls_check_their_types_fit_the_bounds() {
     let program = "
         def total[T: Shape](shapes: list[T]) -> float:
-            sum(shape.area() for shape in shapes)
+            return sum(shape.area() for shape in shapes)
 
         def largest[T: Ordered & Hashable](items: list[T]) -> T:
-            max(items)
+            return max(items)
 
         def main(stdout: Stdout):
             stdout.print(total([Rock()]), total([1]), total([Circle(radius=1.0), Circle(radius=2.0)]))
@@ -160,7 +160,7 @@ fn calls_check_their_types_fit_the_bounds() {
 fn one_call_holds_one_type_for_a_type_parameter() {
     let program = "
         def biggest[T: Shape](shapes: list[T]) -> float:
-            max(shape.area() for shape in shapes)
+            return max(shape.area() for shape in shapes)
 
         def main(stdout: Stdout):
             stdout.print(biggest([Circle(radius=1.0), Square(side=1.0)]))
@@ -175,13 +175,13 @@ fn one_call_holds_one_type_for_a_type_parameter() {
 fn generic_functions_call_each_other() {
     let program = "
         def area_of[T: Shape](shape: T) -> float:
-            shape.area()
+            return shape.area()
 
         def total[T: Shape](shapes: list[T]) -> float:
-            sum(area_of(shape) for shape in shapes)
+            return sum(area_of(shape) for shape in shapes)
 
         def loose[T](value: T) -> float:
-            area_of(value)
+            return area_of(value)
 
         def main(stdout: Stdout):
             stdout.print(total([Square(side=1.0)]))
@@ -199,9 +199,9 @@ fn generic_types_fill_in_their_parameters() {
                 self.items.append(item)
 
             def top(self) -> T?:
-                if self.items.len() == 0:
+                if len(self.items) == 0:
                     return None
-                self.items[-1]
+                return self.items[-1]
 
         struct Ranking[T: Ordered]:
             best = list[T]()
@@ -240,10 +240,10 @@ fn a_generic_type_built_where_one_is_expected_takes_its_types_from_there() {
             plain: list[T]
 
         def show(box: Box[int | str]) -> int:
-            1
+            return 1
 
         def count(held: Held[int | str]) -> int:
-            held.items.len()
+            return len(held.items)
 
         def main(stdout: Stdout):
             name = 'x'
@@ -274,10 +274,10 @@ fn generic_types_need_their_types_written() {
 fn function_types_let_arrow_functions_be_passed_to_your_own_functions() {
     let program = "
         def apply(f: (int) -> int, n: int) -> int:
-            f(n)
+            return f(n)
 
         def combine(f: (int, int) -> int) -> int:
-            f(1, 2)
+            return f(1, 2)
 
         def main(stdout: Stdout):
             stdout.print(apply(n => n * 2, 3) + 1, combine((a, b) => a + b))
@@ -308,16 +308,16 @@ fn self_in_an_interface_is_the_type_that_fits_it() {
             x = 0
 
         def twice[T: Addable](x: T) -> T:
-            x + x
+            return x + x
 
         def size[T: Signed](x: T) -> T:
-            x.abs() + x
+            return abs(x) + x
 
         def first[T: Before](xs: list[T]) -> T:
-            min(xs)
+            return min(xs)
 
         def any_first[T](xs: list[T]) -> T:
-            max(xs)
+            return max(xs)
 
         def main(stdout: Stdout):
             stdout.print(twice(1) + 'a', twice('a') + 1, size(1.5) + 'a')
@@ -326,7 +326,7 @@ fn self_in_an_interface_is_the_type_that_fits_it() {
     assert_eq!(
         problems(program),
         [
-            "can't use `+` on a T and a T @ x.abs() + x",
+            "can't use `+` on a T and a T @ abs(x) + x",
             "`max` compares its items with `<`, but `T` could be any type @ max(xs)",
             "can't use `+` on an int and a str @ twice(1) + \"a\"",
             "can't use `+` on a str and an int @ twice(\"a\") + 1",
@@ -358,9 +358,9 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
             size: int
 
         def main(stdout: Stdout):
-            stdout.print(Tree(size=1).len())
+            stdout.print(len(Tree(size=1)))
     ";
-    assert_eq!(problems(wrong), ["`Tree` has no method `len` @ Tree(size=1).len()"]);
+    assert_eq!(problems(wrong), ["`Tree` has no method `len` @ len(Tree(size=1))"]);
 }
 
 #[test]
@@ -387,11 +387,11 @@ fn a_test_receives_capabilities_by_type() {
 #[test]
 fn only_a_tests_own_body_reads_what_it_printed() {
     let help = "only a test's own body can read what it printed, from the `Stdout` it received";
-    let helper = "def read(out: Stdout) -> str:\n    out.captured()\n";
+    let helper = "def read(out: Stdout) -> str:\n    return out.captured()\n";
     assert_eq!(problems(helper), ["`Stdout` has no method `captured` @ out.captured()"]);
     assert_eq!(helps(helper), [help]);
     assert_eq!(in_main("stdout.captured()"), ["`Stdout` has no method `captured` @ stdout.captured()"]);
-    let sorted = "def read(out: Stdout) -> list[str]:\n    out.sorted_lines()\n";
+    let sorted = "def read(out: Stdout) -> list[str]:\n    return out.sorted_lines()\n";
     assert_eq!(problems(sorted), ["`Stdout` has no method `sorted_lines` @ out.sorted_lines()"]);
     assert_eq!(helps(sorted), [help]);
     assert_eq!(
@@ -411,13 +411,13 @@ fn hashable_and_ordered_imply_eq_but_other_bounds_dont() {
             def name(self) -> str
 
         def hashed[T: Hashable](a: T, b: T) -> bool:
-            a == b
+            return a == b
 
         def ordered[T: Ordered](a: T, b: T) -> bool:
-            a == b
+            return a == b
 
         def named[T: Named](a: T, b: T) -> bool:
-            a == b
+            return a == b
     ";
     assert_eq!(problems(program), ["`T` could be any type, so `==` might not work on it @ a == b"]);
 }
@@ -470,18 +470,17 @@ struct Fake:
 
     def field[T](ref self, at: int) -> T?:
         self.n += at
-        None
+        return None
 
 def read[S: Source](ref src: S) -> int:
-    src.field[int](0) else 7
+    return src.field[int](0) else 7
 
 ";
 
 #[test]
 fn a_method_takes_its_own_types_in_brackets() {
     let text = format!(
-        "{SOURCE}struct Pair[A]:\n    first: A\n\n    def with_second[B](self, second: B) -> (A, B):\n        \
-         (self.first, second)\n\ndef main(stdout: Stdout):\n    mut fake = Fake()\n    \
+        "{SOURCE}struct Pair[A]:\n    first: A\n\n    def with_second[B](self, second: B) -> (A, B):\n        return (self.first, second)\n\ndef main(stdout: Stdout):\n    mut fake = Fake()\n    \
          stdout.print(read(ref fake), fake.field[str](2) else \"none\", Pair(first=1).with_second[str](\"two\"))\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
@@ -501,7 +500,7 @@ fn a_method_takes_its_own_types_in_brackets() {
 #[test]
 fn an_interfaces_generic_method_needs_a_generic_method_to_fit() {
     let text = format!(
-        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(ref self, at: int) -> int?:\n        None\n\n\
+        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(ref self, at: int) -> int?:\n        return None\n\n\
          def main(stdout: Stdout):\n    mut plain = Plain()\n    stdout.print(read(ref plain))\n"
     );
     assert_eq!(
@@ -519,36 +518,36 @@ struct Square:
     side = 1.0
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
 ";
 
 #[test]
 fn a_parameter_typed_by_an_interface_takes_any_type_that_fits_it() {
     let text = format!(
-        "{AREAS}def total(first: Shape, second: Shape) -> float:\n    first.area() + second.area()\n\n\
+        "{AREAS}def total(first: Shape, second: Shape) -> float:\n    return first.area() + second.area()\n\n\
          def main(stdout: Stdout):\n    stdout.print(total(Square(), Square(side=2.0)))\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     let text = format!(
-        "{AREAS}def main(stdout: Stdout):\n    stdout.print(total(5))\n\ndef total(first: Shape) -> float:\n    first.area()\n"
+        "{AREAS}def main(stdout: Stdout):\n    stdout.print(total(5))\n\ndef total(first: Shape) -> float:\n    return first.area()\n"
     );
     assert_eq!(problems(&text), ["an int isn't a `Shape`: it has no `area(self) -> float` @ total(5)"]);
-    let text = format!("{AREAS}def size(shape: Shape) -> float:\n    shape.side\n");
+    let text = format!("{AREAS}def size(shape: Shape) -> float:\n    return shape.side\n");
     assert_eq!(problems(&text), ["`Shape` has no field `side` @ shape.side"]);
 }
 
 #[test]
 fn an_interfaces_method_can_take_an_interface() {
     let saver = "interface Saver:\n    def save(self, shape: Shape) -> float\n\n\
-                 struct Doubler:\n    def save(self, shape: Shape) -> float:\n        shape.area() * 2.0\n\n\
-                 struct Written:\n    def save[S: Shape](self, shape: S) -> float:\n        shape.area()\n\n\
-                 def keep(saver: Saver, shape: Shape) -> float:\n    saver.save(shape)\n\n";
+                 struct Doubler:\n    def save(self, shape: Shape) -> float:\n        return shape.area() * 2.0\n\n\
+                 struct Written:\n    def save[S: Shape](self, shape: S) -> float:\n        return shape.area()\n\n\
+                 def keep(saver: Saver, shape: Shape) -> float:\n    return saver.save(shape)\n\n";
     let text = format!(
         "{AREAS}{saver}def main(stdout: Stdout):\n    stdout.print(keep(Doubler(), Square()), keep(Written(), Square()))\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
-    let text = format!("{AREAS}{saver}def bad(saver: Saver) -> float:\n    saver.save(5)\n");
+    let text = format!("{AREAS}{saver}def bad(saver: Saver) -> float:\n    return saver.save(5)\n");
     assert_eq!(problems(&text), ["an int isn't a `Shape`: it has no `area(self) -> float` @ saver.save(5)"]);
 }
 
@@ -556,8 +555,8 @@ fn an_interfaces_method_can_take_an_interface() {
 fn a_method_cant_ask_more_of_its_type_parameters_than_the_interface_does() {
     let text = format!(
         "{AREAS}interface Keeper:\n    def keep[T](self, value: T) -> float\n\n\
-         struct Picky:\n    def keep[T: Shape](self, value: T) -> float:\n        value.area()\n\n\
-         def hold[K: Keeper](keeper: K) -> float:\n    keeper.keep(1)\n\n\
+         struct Picky:\n    def keep[T: Shape](self, value: T) -> float:\n        return value.area()\n\n\
+         def hold[K: Keeper](keeper: K) -> float:\n    return keeper.keep(1)\n\n\
          def main(stdout: Stdout):\n    stdout.print(hold(Picky()))\n"
     );
     assert_eq!(
@@ -570,7 +569,7 @@ fn a_method_cant_ask_more_of_its_type_parameters_than_the_interface_does() {
 
 #[test]
 fn brackets_only_name_the_type_parameters_that_are_written() {
-    let shown = "def show[T](label: T, shape: Shape) -> float:\n    shape.area()\n\n";
+    let shown = "def show[T](label: T, shape: Shape) -> float:\n    return shape.area()\n\n";
     let text =
         format!("{AREAS}{shown}def main(stdout: Stdout):\n    stdout.print(show[str](\"x\", Square()))\n");
     assert_eq!(problems(&text), Vec::<String>::new());
@@ -581,7 +580,7 @@ fn brackets_only_name_the_type_parameters_that_are_written() {
         problems(&text),
         ["`show` takes 1 type in brackets, but this gives 2 @ show[str, Square](\"x\", Square())"]
     );
-    let text = "def one[T](value: T) -> T:\n    value\n\ndef main(stdout: Stdout):\n    stdout.print(one[int, str](1))\n";
+    let text = "def one[T](value: T) -> T:\n    return value\n\ndef main(stdout: Stdout):\n    stdout.print(one[int, str](1))\n";
     assert_eq!(problems(text), ["`one` takes 1 type in brackets, but this gives 2 @ one[int, str](1)"]);
 }
 
@@ -590,7 +589,7 @@ fn an_interface_is_only_a_parameters_type_by_itself() {
     for written in [
         "def f(shape: Shape?):\n    pass\n",
         "def f(shapes: list[Shape]):\n    pass\n",
-        "def f(shape: Square) -> Shape:\n    shape\n",
+        "def f(shape: Square) -> Shape:\n    return shape\n",
         "struct Holder:\n    shape: Shape\n",
     ] {
         let found = problems(&format!("{AREAS}{written}"));
@@ -651,14 +650,14 @@ const READS: &str =
 
 #[test]
 fn a_method_of_an_interface_can_say_how_it_fails() {
-    let fits = "struct Counter:\n    at = 0\n\n    def next(ref self) -> int fails Bad:\n        self.at += 1\n        self.at\n\n";
+    let fits = "struct Counter:\n    at = 0\n\n    def next(ref self) -> int fails Bad:\n        self.at += 1\n        return self.at\n\n";
     let text = format!(
-        "{READS}{fits}def two(ref source: Reads) -> int fails Bad:\n    source.next()? + source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut counter = Counter()\n    stdout.print(two(ref counter) else 0)\n"
+        "{READS}{fits}def two(ref source: Reads) -> int fails Bad:\n    return source.next()? + source.next()?\n\n\
+         def main(stdout: Stdout):\n    mut counter = Counter()\n    counted = two(ref counter) except Bad(): 0\n    stdout.print(counted)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
-    // What it gives back is a result, so `?` or `else` has to say what happens.
-    let text = format!("{READS}{fits}def one(ref source: Reads) -> int:\n    source.next()\n");
+    // What it gives back can fail, so `?` or `except` has to say what happens.
+    let text = format!("{READS}{fits}def one(ref source: Reads) -> int:\n    return source.next()\n");
     assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
     let text = "interface Reads:\n    def next(ref self) -> int fails Nope\n";
     assert_eq!(problems(text), ["`Nope` isn't a type @ Nope"]);
@@ -667,9 +666,9 @@ fn a_method_of_an_interface_can_say_how_it_fails() {
 #[test]
 fn a_type_has_to_fail_as_its_interfaces_method_says() {
     let text = format!(
-        "{READS}struct Sure:\n    def next(ref self) -> int:\n        1\n\n\
-         def two(ref source: Reads) -> int fails Bad:\n    source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut sure = Sure()\n    stdout.print(two(ref sure) else 0)\n"
+        "{READS}struct Sure:\n    def next(ref self) -> int:\n        return 1\n\n\
+         def two(ref source: Reads) -> int fails Bad:\n    return source.next()?\n\n\
+         def main(stdout: Stdout):\n    mut sure = Sure()\n    counted = two(ref sure) except Bad(): 0\n    stdout.print(counted)\n"
     );
     let found = problems(&text);
     assert_eq!(found.len(), 1, "{found:?}");
@@ -678,48 +677,49 @@ fn a_type_has_to_fail_as_its_interfaces_method_says() {
 
 #[test]
 fn self_reaches_an_extension_and_a_matchs_arms() {
-    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        Self(x=self.x)\n\n\
+    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        return Self(x=self.x)\n\n\
                 enum Shape:\n    Dot\n    Line(length: int)\n\n    def same(self) -> Self:\n        match self:\n            \
-                case .Line(length):\n                made = Self.Line(length=length)\n                made\n            \
-                case .Dot:\n                dot = Self.Dot\n                dot\n\n\
+                case .Line(length):\n                made = Self.Line(length=length)\n                return made\n            \
+                case .Dot:\n                dot = Self.Dot\n                return dot\n\n\
                 def main(stdout: Stdout):\n    stdout.print(Point().again().x, Shape.Dot.same())\n";
     assert_eq!(problems(text), Vec::<String>::new());
     // An extension's `Self` is its type, so it doesn't fit what's another.
-    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        1\n";
+    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        return 1\n";
     assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
 }
 
 #[test]
 fn self_in_a_types_own_method_is_that_type() {
-    let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n    def same(self, other: Self) -> list[Self]:\n        \
-                held: Self = other\n        [held, self]\n\n\
-                struct Box[T]:\n    item: T\n\n    def again(self) -> Self:\n        Box(item=self.item)\n\n\
+    let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        return Self(x=7)\n\n    def same(self, other: Self) -> list[Self]:\n        \
+                held: Self = other\n        return [held, self]\n\n\
+                struct Box[T]:\n    item: T\n\n    def again(self) -> Self:\n        return Box(item=self.item)\n\n\
                 def main(stdout: Stdout):\n    stdout.print(Point.make().x, Box(item=1).again().item)\n";
     assert_eq!(problems(text), Vec::<String>::new());
-    let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        1\n";
+    let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        return 1\n";
     assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
     // Outside a method, nothing is `Self`.
-    let text = "def same(x: Self) -> int:\n    1\n";
+    let text = "def same(x: Self) -> int:\n    return 1\n";
     assert_eq!(problems(text), ["`Self` isn't a type @ Self"]);
 }
 
-const MADE: &str = "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n";
+const MADE: &str = "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        return Part(x=7)\n\n";
 
 #[test]
 fn a_type_parameter_has_its_interfaces_functions() {
     let text = format!(
-        "{MADE}def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n"
+        "{MADE}def build[T: Made]() -> T:\n    return T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
-    let text = format!("{MADE}def build[T: Made]() -> T:\n    T.other()\n");
+    let text = format!("{MADE}def build[T: Made]() -> T:\n    return T.other()\n");
     assert_eq!(problems(&text), ["`T` has nothing called `other` @ T.other()"]);
-    let text = format!("{MADE}def build[T]() -> T:\n    T.make()\n");
+    let text = format!("{MADE}def build[T]() -> T:\n    return T.make()\n");
     assert_eq!(problems(&text), ["`T` has nothing called `make` @ T.make()"]);
-    let text = format!("{MADE}def build[T: Made]() -> int:\n    T.make()\n");
+    let text = format!("{MADE}def build[T: Made]() -> int:\n    return T.make()\n");
     assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
-    let text = "interface Sized:\n    def size(self) -> int\n\ndef build[T: Sized]() -> int:\n    T.size()\n";
+    let text =
+        "interface Sized:\n    def size(self) -> int\n\ndef build[T: Sized]() -> int:\n    return T.size()\n";
     assert_eq!(problems(text), ["`size` needs a `T` to call it on @ T.size()"]);
-    let text = "def build() -> int:\n    T.make()\n";
+    let text = "def build() -> int:\n    return T.make()\n";
     assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
 }
 
@@ -735,7 +735,7 @@ struct Part:
     x = 1
 
     def make() -> Self:
-        Self(x=7)
+        return Self(x=7)
 
 struct Rock:
     weight = 1
@@ -744,10 +744,10 @@ struct Pile[T: Made]:
     items: list[T]
 
     def make() -> Self:
-        Pile[T](items=[T.make()])
+        return Pile[T](items=[T.make()])
 
 def build[T: Made]() -> T:
-    T.make()
+    return T.make()
 ";
     let fits =
         format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Part]]().items.len())\n");
@@ -761,8 +761,8 @@ def build[T: Made]() -> T:
 #[test]
 fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
     let source = "interface Source:\n    def next(self) -> int\n\n\
-                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        self.left\n\n\
-                  def two(source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        return self.left\n\n\
+                  def two(source: Source) -> int:\n    return source.next() + source.next()\n\n\
                   def main(stdout: Stdout):\n    counter = Count()\n    stdout.print(two(counter))\n";
     let found = problems(source);
     assert_eq!(found.len(), 1, "{found:?}");
@@ -778,9 +778,9 @@ fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
 fn an_interfaces_mut_self_fits_a_method_that_changes_it_or_one_that_doesnt() {
     let empty: [&str; 0] = [];
     let source = "interface Source:\n    def next(ref self) -> int\n\n\
-                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        self.left\n\n\
-                  struct Fixed:\n    held = 7\n\n    def next(self) -> int:\n        self.held\n\n\
-                  def two(ref source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        return self.left\n\n\
+                  struct Fixed:\n    held = 7\n\n    def next(self) -> int:\n        return self.held\n\n\
+                  def two(ref source: Source) -> int:\n    return source.next() + source.next()\n\n\
                   def main(stdout: Stdout):\n    mut counter = Count()\n    mut fixed = Fixed()\n    \
                   stdout.print(two(ref counter), counter.left, two(ref fixed))\n";
     assert_eq!(problems(source), empty);
@@ -789,8 +789,8 @@ fn an_interfaces_mut_self_fits_a_method_that_changes_it_or_one_that_doesnt() {
 #[test]
 fn a_function_with_no_self_has_its_first_parameter_compared_too() {
     let source = "interface Made:\n    def make(size: int) -> Self\n\n\
-                  struct Part:\n    size = 1\n\n    def make(size: str) -> Self:\n        Self(size=size.len())\n\n\
-                  def build[T: Made]() -> T:\n    T.make(1)\n\n\
+                  struct Part:\n    size = 1\n\n    def make(size: str) -> Self:\n        return Self(size=len(size))\n\n\
+                  def build[T: Made]() -> T:\n    return T.make(1)\n\n\
                   def main(stdout: Stdout):\n    stdout.print(build[Part]().size)\n";
     let found = problems(source);
     assert_eq!(found.len(), 1, "{found:?}");
@@ -800,7 +800,7 @@ fn a_function_with_no_self_has_its_first_parameter_compared_too() {
 #[test]
 fn what_might_be_missing_can_be_saved_when_what_it_holds_can() {
     let empty: [&str; 0] = [];
-    let types = "struct Plain:\n    work: (int) -> int\n\ndef plains() -> list[Plain]:\n    []\n\ndef saved[T: Serializable](x: T) -> int:\n    1\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let types = "struct Plain:\n    work: (int) -> int\n\ndef plains() -> list[Plain]:\n    return []\n\ndef saved[T: Serializable](x: T) -> int:\n    return 1\n\ndef loaded[T: Deserializable]() -> int:\n    return 1\n";
     let body =
         "words: list[str?] = [None]\nstdout.print(saved(words), loaded[int?](), loaded[list[str?]]())\n";
     assert_eq!(crate::in_main_after(types, body), empty);
@@ -843,10 +843,10 @@ struct Quiet:
     size = 1
 
 def saved[T: Serializable](x: T) -> int:
-    1
+    return 1
 
 def loaded[T: Deserializable]() -> int:
-    1
+    return 1
 ";
 
 #[test]
@@ -894,7 +894,7 @@ fn what_cant_be_saved_names_where_it_is_and_the_fixes() {
 /// name, and a set's items and a dict's keys can't hold one.
 #[test]
 fn a_union_saves_when_its_members_are_named_types() {
-    let types = "struct Circle:\n    r = 1.0\n\nstruct Scene:\n    main: Circle | int\n    all: list[Circle | str]\n    named: dict[str, Circle | int]\n    picked: (Circle | int)? = None\n\nstruct Mixed:\n    held: list[int] | str\n\nstruct Keyed:\n    by: dict[int | str, int]\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let types = "struct Circle:\n    r = 1.0\n\nstruct Scene:\n    main: Circle | int\n    all: list[Circle | str]\n    named: dict[str, Circle | int]\n    picked: (Circle | int)? = None\n\nstruct Mixed:\n    held: list[int] | str\n\nstruct Keyed:\n    by: dict[int | str, int]\n\ndef loaded[T: Deserializable]() -> int:\n    return 1\n";
     let empty: [&str; 0] = [];
     assert_eq!(crate::in_main_after(types, "stdout.print(loaded[Scene]())\n"), empty);
     assert_eq!(
@@ -914,7 +914,7 @@ fn a_union_saves_when_its_members_are_named_types() {
 /// A tuple saves when each of its items does, but not one of a single item yet.
 #[test]
 fn a_tuple_saves_when_its_items_do() {
-    let types = "struct Holder:\n    run: () -> int\n\ndef loaded[T: Deserializable]() -> int:\n    1\n\ndef saved[T: Serializable](held: T) -> int:\n    1\n";
+    let types = "struct Holder:\n    run: () -> int\n\ndef loaded[T: Deserializable]() -> int:\n    return 1\n\ndef saved[T: Serializable](held: T) -> int:\n    return 1\n";
     let empty: [&str; 0] = [];
     assert_eq!(crate::in_main_after(types, "stdout.print(loaded[(int, str?),]())\n"), empty);
     let found = crate::in_main_after(types, "stdout.print(loaded[(int, Holder),]())\n");
@@ -932,10 +932,10 @@ fn a_type_writes_both_or_neither() {
     let one =
         "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n";
     assert_eq!(problems(one), ["`Spot` writes `def serialize` but not `def deserialize` @ struct Spot"]);
-    let other = "struct Spot:\n    x = 0\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    let other = "struct Spot:\n    x = 0\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        return Spot(x=src.int()?)\n";
     assert_eq!(problems(other), ["`Spot` writes `def deserialize` but not `def serialize` @ struct Spot"]);
     let empty: [&str; 0] = [];
-    let both = "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    let both = "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        return Spot(x=src.int()?)\n";
     assert_eq!(problems(both), empty);
 }
 
@@ -951,17 +951,17 @@ fn a_program_that_doesnt_save_isnt_given_the_methods() {
 /// field goes only where any type can, and nothing else is asked of a field.
 #[test]
 fn a_loop_over_fields_is_checked_once() {
-    let types = "def take[V](value: V) -> int:\n    1\n\n";
+    let types = "def take[V](value: V) -> int:\n    return 1\n\n";
     let body = |inside: &str| {
         problems(&format!(
-            "{types}def walk[T](value: T) -> int:\n    mut count = 0\n    for field in fields(T):\n        {inside}\n    count\n\n\
+            "{types}def walk[T](value: T) -> int:\n    mut count = 0\n    for field in fields(T):\n        {inside}\n    return count\n\n\
              def main(stdout: Stdout):\n    stdout.print(walk(3))\n"
         ))
         .into_iter()
         .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
         .collect::<Vec<String>>()
     };
-    assert_eq!(body("count += take(field.get(value)) + field.name.len()"), Vec::<String>::new());
+    assert_eq!(body("count += take(field.get(value)) + len(field.name)"), Vec::<String>::new());
     assert_eq!(body("count += field.size"), ["a field has a `name` and a `get(...)`, not `size`"]);
     assert_eq!(body("count += take(field.get(1.5))"), ["`get` reads a field of a T, not a float"]);
     assert_eq!(body("count += field.get(value) + 1"), ["can't use `+` on a FieldValue and an int"]);

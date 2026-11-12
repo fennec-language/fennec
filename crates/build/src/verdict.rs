@@ -222,8 +222,8 @@ mod tests {
         rows(parse(source).unwrap().items.iter())
     }
 
-    const SOURCE: &str = "struct P:\n    x: int\n\n    def get(self) -> int:\n        self.x\n\n\
-                          LIMIT = 1\n\ndef f(a: int) -> int:\n    a + 1\n\ntest \"t\":\n    assert f(1) == 2\n";
+    const SOURCE: &str = "struct P:\n    x: int\n\n    def get(self) -> int:\n        return self.x\n\n\
+                          LIMIT = 1\n\ndef f(a: int) -> int:\n    return a + 1\n\ntest \"t\":\n    assert f(1) == 2\n";
 
     fn changed(edited: &str) -> Option<Vec<String>> {
         changed_bodies(&of(SOURCE), &of(edited))
@@ -241,12 +241,12 @@ mod tests {
     fn what_can_reach_further_gives_up() {
         for (from, to, what) in [
             ("a: int", "a: float", "a parameter"),
-            ("-> int:\n    a", "-> float:\n    a", "a return type"),
+            ("-> int:\n    return a", "-> float:\n    return a", "a return type"),
             ("x: int", "x: float", "a field"),
             ("LIMIT = 1", "LIMIT = 2", "a constant"),
             ("def f(", "def renamed(", "a name"),
             ("a + 1", "a + other()?", "a body that can now fail"),
-            ("a + 1", "fail Oops()", "a body that can now fail"),
+            ("return a + 1", "fail Oops()", "a body that can now fail"),
             ("test \"t\"", "test \"t2\"", "a test's name"),
         ] {
             assert_eq!(changed(&SOURCE.replace(from, to)), None, "{what}");
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn a_body_that_could_already_fail_counts_whole() {
-        let source = "def f(a: int) -> int:\n    if a > 1: fail Oops()\n    a\n";
+        let source = "def f(a: int) -> int:\n    if a > 1: fail Oops()\n    return a\n";
         let edited = source.replace("a > 1", "a > 2");
         assert_eq!(changed_bodies(&of(source), &of(&edited)), None);
     }

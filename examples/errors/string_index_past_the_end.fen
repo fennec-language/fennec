@@ -1,5 +1,5 @@
 def first_after(word: str, at: int) -> str:
-    word[at + 1]
+    return word[at + 1]
 
 def main(stdout: Stdout):
     word = "naïve"

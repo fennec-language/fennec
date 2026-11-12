@@ -5,9 +5,9 @@ enum Light:
 def named(light: Light) -> str:
     match light:
         case .Gren:
-            "go"
+            return "go"
         case _:
-            "stop"
+            return "stop"
 
 def main(stdout: Stdout):
     stdout.print(named(.Red))

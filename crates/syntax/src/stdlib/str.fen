@@ -4,26 +4,26 @@ from std.intrinsics import stop
 extend str:
     ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
     def *(self, times: int) -> str:
-        "".join([self for _ in range(times)])
+        return "".join([self for _ in range(times)])
 
     ## Whether the text starts with `prefix`.
     def startswith(self, prefix: str) -> bool:
-        prefix.len() <= self.len() and self[:prefix.len()] == prefix
+        return len(prefix) <= len(self) and self[:len(prefix)] == prefix
 
     ## Whether the text ends with `suffix`.
     def endswith(self, suffix: str) -> bool:
-        size = self.len()
-        suffix.len() <= size and self[size - suffix.len():] == suffix
+        size = len(self)
+        return len(suffix) <= size and self[size - len(suffix):] == suffix
 
     ## Whether the text is one or more of the digits 0 to 9.
     def isdigit(self) -> bool:
-        self.len() > 0 and all(c >= "0" and c <= "9" for c in self)
+        return len(self) > 0 and all(c >= "0" and c <= "9" for c in self)
 
     ## The text's lines, without their endings, `\n` or `\r\n`. A last line ending adds no
     ## empty line after it.
     def lines(self) -> list[str]:
         parts = self.split("\n")
-        last = parts.len() - 1
+        last = len(parts) - 1
         mut found = []
         for at, part in enumerate(parts):
             if at == last:
@@ -33,51 +33,51 @@ extend str:
                 found.append(part[:-1])
             else:
                 found.append(part)
-        found
+        return found
 
     ## The text with `fill` after it to make it `width` characters, as it is if it's that long
     ## already: `"ab".ljust(4, fill=".")` is `"ab.."`.
     def ljust(self, width: int, fill = " ") -> str:
-        self + padding(fill, count=width - self.len())
+        return self + padding(fill, count=width - len(self))
 
     ## The text with `fill` before it to make it `width` characters: `"7".rjust(3)` is `"  7"`.
     def rjust(self, width: int, fill = " ") -> str:
-        padding(fill, count=width - self.len()) + self
+        return padding(fill, count=width - len(self)) + self
 
     ## The text in the middle of `width` characters, with `fill` either side, one more on the
     ## left when they can't be even and `width` is odd, as Python puts it.
     def center(self, width: int, fill = " ") -> str:
-        pad = width - self.len()
+        pad = width - len(self)
         if pad <= 0: return self
         left = pad // 2 + (1 if pad % 2 == 1 and width % 2 == 1 else 0)
-        padding(fill, count=left) + self + padding(fill, count=pad - left)
+        return padding(fill, count=left) + self + padding(fill, count=pad - left)
 
     ## The text with zeros before it to make it `width` characters, after a sign if it starts
     ## with one: `"-7".zfill(3)` is `"-07"`.
     def zfill(self, width: int) -> str:
         if self.startswith("-") or self.startswith("+"):
-            return self[:1] + "0" * (width - self.len()) + self[1:]
-        "0" * (width - self.len()) + self
+            return self[:1] + "0" * (width - len(self)) + self[1:]
+        return "0" * (width - len(self)) + self
 
     ## The text without `prefix` at its start, or as it is if it doesn't start with it.
     def removeprefix(self, prefix: str) -> str:
-        self[prefix.len():] if self.startswith(prefix) else self
+        return self[len(prefix):] if self.startswith(prefix) else self
 
     ## The text without `suffix` at its end, or as it is if it doesn't end with it.
     def removesuffix(self, suffix: str) -> str:
-        self[:self.len() - suffix.len()] if suffix != "" and self.endswith(suffix) else self
+        return self[:len(self) - len(suffix)] if suffix != "" and self.endswith(suffix) else self
 
     ## How many times `part` is in the text, not counting ones that overlap. "" is counted
     ## between every two characters and at each end.
     def count(self, part: str) -> int:
-        if part == "": return self.len() + 1
+        if part == "": return len(self) + 1
         mut found = 0
         mut rest = self
         while True:
             at = rest.find(part) else -1
             if at < 0: return found
             found += 1
-            rest = rest[at + part.len():]
+            rest = rest[at + len(part):]
 
     ## Where the last `part` in the text starts, or `None` if it isn't there.
     def rfind(self, part: str) -> int?:
@@ -88,13 +88,13 @@ extend str:
             if at < 0: return found
             found = start + at
             start += at + 1
-            if start > self.len(): return found
+            if start > len(self): return found
 
     ## The text with its first character in title case and the rest lower: `"fOX"` is `"Fox"`,
     ## and `"ßa"` is `"Ssa"`, as Python writes them.
     def capitalize(self) -> str:
         if self == "": return ""
-        title_case(self[:1]) + self[1:].lower()
+        return title_case(self[:1]) + self[1:].lower()
 
     ## Each word upper case first and lower after, a word being letters after anything else:
     ## `"red fox's den"` is `"Red Fox'S Den"`, as Python writes it.
@@ -105,7 +105,7 @@ extend str:
             letter = c.upper() != c.lower()
             out.append((c.lower() if after_letter else title_case(c)) if letter else c)
             after_letter = letter
-        "".join(out)
+        return "".join(out)
 
 ## Where a type's `def str(self, ref out: StrWriter)` writes how it prints. `print`, `str(x)`
 ## and f-strings call it, and so does printing a collection that holds the type.
@@ -122,7 +122,7 @@ export struct StrWriter:
 
     ## Everything written so far.
     def text(self) -> str:
-        "".join(self._parts)
+        return "".join(self._parts)
 
 ## `count` characters of `fill` repeated, cut to that many when `fill` is longer than one. An
 ## empty `fill` can't make any width, so it's a bug in the program, as Python says too.
@@ -130,7 +130,7 @@ def padding(fill: str, count: int) -> str:
     if fill == "":
         stop("a fill has to be at least one character, to pad text with")
     if count <= 0: return ""
-    (fill * count)[:count]
+    return (fill * count)[:count]
 
 ## The character `c` as it starts a word: upper case, but for a letter whose upper case is
 ## two, like `ß`'s `SS`, only the first of them is, as `Ss`, and the four letters that are two
@@ -141,12 +141,12 @@ def title_case(c: str) -> str:
     if c == "ǌ" or c == "Ǌ" or c == "ǋ": return "ǋ"
     if c == "ǳ" or c == "Ǳ" or c == "ǲ": return "ǲ"
     upper = c.upper()
-    if upper.len() > 1: return upper[:1] + upper[1:].lower()
-    upper
+    if len(upper) > 1: return upper[:1] + upper[1:].lower()
+    return upper
 
 extend str:
     def serialize(self, ref out: Serializer):
         out.text(self)
 
     def deserialize(ref src: Deserializer) -> str fails ParseError:
-        src.text()?
+        return src.text()?

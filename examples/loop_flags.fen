@@ -8,7 +8,7 @@ def pick(flag: bool, n: int) -> int:
             total += 1
         elif i == 2:
             break
-    total
+    return total
 
 def both(flag: bool, other: bool) -> str:
     mut out = ""
@@ -16,7 +16,7 @@ def both(flag: bool, other: bool) -> str:
         out += "y" if flag else "n"
         if other:
             out += "o"
-    out
+    return out
 
 def shadow(flag: bool) -> int:
     mut n = 0
@@ -25,12 +25,12 @@ def shadow(flag: bool) -> int:
         flag2 = i > 0
         if flag2:
             n += 10
-    n
+    return n
 
 def early(flag: bool) -> int:
     for i in range(5):
         if flag: return i
-    -1
+    return -1
 
 def chars(text: str) -> int:
     mut n = 0
@@ -41,7 +41,7 @@ def chars(text: str) -> int:
             n += 10
         elif char != "b":
             n += 100
-    n
+    return n
 
 def main(stdout: Stdout):
     stdout.print(
@@ -71,4 +71,4 @@ def main(stdout: Stdout):
         stdout.print(n % 3, n // 3)
 
 def len0() -> int:
-    "".len()
+    return len("")

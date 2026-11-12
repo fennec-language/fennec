@@ -1779,11 +1779,10 @@ def f() -> int:
   local _10: int
   local _11: bool
   local _12: bool
-  local _13: Enemy
+  local _13: Id[Enemy]
   local _14 enemy: Enemy
-  local _15: Id[Enemy]
-  local _16: Enemy
-  local _17: int
+  local _15: Enemy
+  local _16: int
   bb0:
     _0 = builtin Table()
     _1 = _0
@@ -1805,20 +1804,19 @@ def f() -> int:
     _12 = builtin Table.slot_live(_1, _10)
     branch _12 bb3 bb5
   bb3:
-    _13 = builtin Table.at_slot(_1, _10)
-    _14 = _13
-    _15 = builtin Table.slot_id(_1, _10)
+    _13 = builtin Table.slot_id(_1, _10)
+    _14 = builtin Table.at_slot(_1, _10)
     call Enemy.hit(_14)
     jump bb6
   bb4:
-    _16 = _1[_4]
-    _17 = _16.health
-    return _17
+    _15 = _1[_4]
+    _16 = _15.health
+    return _16
   bb5:
     _10 = _10 + 1
     jump bb1
   bb6:
-    _1[_15] = _14
+    _1[_13] = _14
     _10 = _10 + 1
     jump bb1
 "

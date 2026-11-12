@@ -312,7 +312,7 @@ fn function(number: usize) -> String {
     format!(
         "## Step {number} of the kit.\nexport def step_{number}(number: int) -> int:\n    \
          bigger = number + {number}\n    if bigger > 100:\n        return bigger - 1\n    \
-         doubled = bigger * 2\n    doubled + 1\n\n"
+         doubled = bigger * 2\n    return doubled + 1\n\n"
     )
 }
 
@@ -343,7 +343,7 @@ impl Kit {
         for (total, chunk) in (0..files).collect::<Vec<_>>().chunks(10).enumerate() {
             let calls: Vec<String> =
                 chunk.iter().map(|file| format!("step_{}(1)", file * FUNCTIONS_PER_FILE)).collect();
-            let _ = write!(main, "\ndef total_{total}() -> int:\n    {}\n", calls.join(" + "));
+            let _ = write!(main, "\ndef total_{total}() -> int:\n    return {}\n", calls.join(" + "));
         }
         let _ = write!(main, "\ndef main(stdout: Stdout):\n    stdout.print({})\n", totals.join(" + "));
         std::fs::write(dir.join("src/main.fen"), main)?;
@@ -485,7 +485,7 @@ impl Kit {
         let file = folder.join("many.fen");
         let mut text = String::new();
         for number in 0..ERRORED_FUNCTIONS {
-            let _ = write!(text, "def short_{number}() -> int:\n    qz = {number}\n    qz\n\n");
+            let _ = write!(text, "def short_{number}() -> int:\n    qz = {number}\n    return qz\n\n");
         }
         std::fs::write(&file, text).map_err(|err| err.to_string())?;
         let path = file.to_string_lossy().into_owned();

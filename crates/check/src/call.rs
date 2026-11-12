@@ -210,13 +210,13 @@ impl FnCx<'_> {
     }
 
     /// `failure_of` is only for tests: anywhere else a failure is named where it happens, with
-    /// `else as why:`. The standard library's own code may still call it.
+    /// `except why:`. The standard library's own code may still call it.
     fn test_only_function(&self, name: &str, span: Span) -> Option<Diagnostic> {
         let entry = self.checker.program.functions.get(name)?;
         if name != "failure_of" || !entry.prelude || self.in_a_test() || span.in_prelude() {
             return None;
         }
-        let help = "outside a test, name a failure where it happens with `x = f() else as why:`; a test checks one with `assert f() fails Oops()`";
+        let help = "outside a test, name a failure where it happens with `x = f() except why:`; a test checks one with `assert f() fails Oops()`";
         Some(Diagnostic::new("`failure_of` is only for tests", span).with_help(help))
     }
 
@@ -1068,7 +1068,7 @@ impl FnCx<'_> {
         signature.returns
     }
 
-    /// A global function, or `len(x)` or `abs(x)`, which aren't ones.
+    /// A global function: a builtin, or `len(x)` or `abs(x)`, which call `x`'s own method.
     fn call_global(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Type {
         if matches!(name, "len" | "abs") {
             self.method_as_function(name, callee, args, span)
@@ -1077,43 +1077,17 @@ impl FnCx<'_> {
         }
     }
 
-    /// `len(x)` or `abs(x)`, which Fennec doesn't have: these ask a value about itself, so
-    /// they're its own methods, `x.len()` and `x.abs()`. The fix moves them there.
+    /// `len(x)` or `abs(x)`: a builtin that asks a value about itself, so it calls the value's
+    /// own `def len` or `def abs`, as `str(x)` calls `def str`. It's written in as `x.len()`.
     fn method_as_function(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Type {
-        let mut diagnostic = Diagnostic::new(format!("`{name}` is a method: write `x.{name}()`"), span).with_help(
-            "the global functions are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`",
-        );
-        let mut value_type = Type::Unknown;
-        if let [arg] = args
-            && arg.name.is_none()
-            && !arg.is_mut
-        {
-            value_type = self.expr(&arg.value);
-            let value = arg.value.span;
-            // A dict or set gets parentheses too, since `{{` in an f-string is a brace.
-            let grouped = matches!(
-                arg.value.kind,
-                ExprKind::Dict(_)
-                    | ExprKind::Set(_)
-                    | ExprKind::Binary { .. }
-                    | ExprKind::Unary { .. }
-                    | ExprKind::Cond { .. }
-                    | ExprKind::Else { .. }
-                    | ExprKind::Lambda { .. }
-            );
-            let (open, close) = if grouped {
-                ("(".to_owned(), format!(").{name}()"))
-            } else {
-                (String::new(), format!(".{name}()"))
-            };
-            diagnostic = diagnostic
-                .with_fix(Span { start: callee.span.start, end: value.start }, open)
-                .with_fix(Span { start: value.end, end: span.end }, close);
-        } else {
+        let plain = matches!(args, [arg] if arg.name.is_none() && !arg.is_mut);
+        let ([arg], true) = (args, plain) else {
             self.ignore_args(args);
-        }
-        self.error(diagnostic);
-        if name == "len" { Type::Int } else { value_type }
+            self.error(Diagnostic::new(format!("`{name}` takes one value: `{name}(x)`"), span));
+            return if name == "len" { Type::Int } else { Type::Unknown };
+        };
+        self.checker.method_calls.insert((span.start, span.end));
+        self.method_call(&arg.value, name, (false, callee.span), (&[], &[]), span)
     }
 
     /// Whether a method from a conditional extension, like `count` from

@@ -6,7 +6,7 @@ use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_rt::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS, SORT_U64S};
 use fennec_syntax::Span;
 
-use crate::emit::{Emit, ITEM_ACCESS, LENGTH_ACCESS};
+use crate::emit::{Emit, ITEM_ACCESS};
 use crate::kinds::Kind;
 
 /// A loop that's underway: the slot holding its count, and where it goes back to and out to.
@@ -596,7 +596,7 @@ impl Emit<'_, '_, '_> {
         let text = text.to_owned();
         if name == "str.byte_len" {
             let (at, bytes) = (self.offset(&text, TEXT_BYTES.unsigned_abs()), self.temp());
-            self.line(&format!("{bytes} = load i64, ptr {at}{LENGTH_ACCESS}"));
+            self.load_length(&bytes, &at);
             return self.assign(dest, &bytes);
         }
         if name == "str.is_ascii" {
@@ -605,8 +605,8 @@ impl Emit<'_, '_, '_> {
                 self.offset(&text, TEXT_CHARS.unsigned_abs()),
             );
             let (bytes, chars, same) = (self.temp(), self.temp(), self.temp());
-            self.line(&format!("{bytes} = load i64, ptr {bytes_at}{LENGTH_ACCESS}"));
-            self.line(&format!("{chars} = load i64, ptr {chars_at}{LENGTH_ACCESS}"));
+            self.load_length(&bytes, &bytes_at);
+            self.load_length(&chars, &chars_at);
             self.line(&format!("{same} = icmp eq i64 {bytes}, {chars}"));
             return self.assign(dest, &same);
         }

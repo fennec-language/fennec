@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+fennec-dist.workspace = true
 fennec-blake3.workspace = true
 fennec-check.workspace = true
 fennec-deps.workspace = true

@@ -68,7 +68,7 @@ pub(crate) fn saving_handles(function: &Function) -> Vec<usize> {
 
 /// The handles a function locks to read, which a crash gives back, in the order they're first
 /// locked, beside the handles that save their changes, and the cleanups a crash runs, each a
-/// closure from a `lend x else:`, in the order they're first set: a crash goes through them all
+/// closure from a `lend x except:`, in the order they're first set: a crash goes through them all
 /// innermost first.
 pub(crate) fn given_back_on_crash(function: &Function) -> Vec<usize> {
     let saving = saving_handles(function);

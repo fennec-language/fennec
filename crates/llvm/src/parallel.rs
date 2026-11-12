@@ -522,8 +522,24 @@ impl Emit<'_, '_, '_> {
                 let (handle, _) = self.operand(&Operand::Local(*conn))?;
                 self.socket_method(dest, &handle, "Connection.peer", &[], span)
             }
+            ("parallel.label", [Operand::Local(conn)]) => {
+                let (handle, _) = self.operand(&Operand::Local(*conn))?;
+                self.socket_method(dest, &handle, "Connection._label", &[], span)
+            }
             ("parallel.map", [list, range]) => {
                 self.parallel_map(dest.ok_or("a map keeps nothing")?, list, range)
+            }
+            ("parallel.stream", [list, range]) => {
+                self.parallel_stream(dest.ok_or("a stream keeps nothing")?, list, range)
+            }
+            ("parallel.stream_next", [stream]) => {
+                self.stream_next(dest.ok_or("a stream's next chunk is kept nowhere")?, stream)
+            }
+            ("parallel.stream_end", [stream]) => {
+                let (handle, _) = self.operand(stream)?;
+                self.declare("declare void @fennec_stream_end(i64) nounwind");
+                self.line(&format!("call void @fennec_stream_end(i64 {handle})"));
+                Ok(())
             }
             ("parallel.sum", [list, range, start]) => {
                 self.parallel_sum(dest.ok_or("a sum keeps nothing")?, (list, range, start), span)
@@ -688,6 +704,50 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{made} = call ptr @{call}(ptr {list}, ptr {shim}, i64 {env}, i64 {element})"));
         self.leave_if_failed();
         self.assign(dest, &made)
+    }
+
+    /// `dest = parallel.stream(list, range)`: the runtime's stream of what `range` makes of the
+    /// list's items, a chunk at a time on the pool, read with `parallel.stream_next`. The list and
+    /// the range's closure stay the reader's, kept by the generator reading it until it ends it.
+    fn parallel_stream(&mut self, dest: LocalId, list: &Operand, range: &Operand) -> Result<(), String> {
+        let Some(fennec_check::Type::Arrow(params, _)) = self.function.type_of(range) else {
+            return Err("a stream's range isn't a function".to_owned());
+        };
+        let out = params.last().ok_or("a stream's range has nowhere to put its items")?;
+        let item = list_item(&self.module.kind(out)?)?;
+        let call = format!("fennec_parallel_stream{}", self.waiting(range));
+        let (list, env) = self.list_and_env(list, range)?;
+        let symbol = element_symbol(self.module.layouts, item);
+        self.module.shared.elements.insert(symbol.clone(), item);
+        self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
+        let shim = self.shim(Shape::Into);
+        self.declare(&format!("declare i64 @{call}(ptr, ptr, i64, i64) nounwind"));
+        let (element, started) = (self.temp(), self.temp());
+        self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
+        self.line(&format!("{started} = call i64 @{call}(ptr {list}, ptr {shim}, i64 {env}, i64 {element})"));
+        self.assign(dest, &started)
+    }
+
+    /// `dest = parallel.stream_next(stream)`: the stream's next chunk of items, in order, or none
+    /// once there are no more. A chunk that failed ends the stream, which lets the chunks running
+    /// finish and starts no more, before the failure passes up.
+    fn stream_next(&mut self, dest: LocalId, stream: &Operand) -> Result<(), String> {
+        let (handle, _) = self.operand(stream)?;
+        self.declare("declare i64 @fennec_stream_next(i64, ptr) nounwind");
+        self.declare("declare void @fennec_stream_end(i64) nounwind");
+        self.module.add_helper(
+            "fen_stream_failed",
+            "define internal void @fen_stream_failed(i64 %stream, i1 %failed) #0 {\nentry:\n  br i1 %failed, label %end, label %done\nend:\n  call void @fennec_stream_end(i64 %stream)\n  br label %done\ndone:\n  ret void\n}\n\n".to_owned(),
+        );
+        let slot = self.temp();
+        let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
+        let (status, failed, chunk) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{status} = call i64 @fennec_stream_next(i64 {handle}, ptr {slot})"));
+        self.line(&format!("{failed} = icmp ne i64 {status}, 0"));
+        self.line(&format!("call void @fen_stream_failed(i64 {handle}, i1 {failed})"));
+        self.leave_if(&failed);
+        self.line(&format!("{chunk} = load ptr, ptr {slot}"));
+        self.assign(dest, &chunk)
     }
 
     /// `dest = parallel.sum(list, range, start)`: each range's partial, added in the runtime's

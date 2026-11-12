@@ -2,7 +2,7 @@
 //! build rather than something the program reads when it runs, so it takes no `Fs` capability,
 //! and from here on the program just holds the bytes.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use fennec_syntax::{Blob, Diagnostic, Expr, ExprKind, Item, Module, Span, visit};
 
@@ -133,14 +133,15 @@ impl Place<'_> {
     /// The folder nothing embedded can be outside of, as it really is on disk: the kit's, which
     /// holds the nearest `kit.toml`, or for a file with no kit, its own folder. Whether it's a kit's
     /// comes with it.
-    fn edge(&self, folder: &Path) -> (std::path::PathBuf, bool) {
+    fn edge(&self, folder: &Path) -> (PathBuf, bool) {
         let real = |at: &Path| std::fs::canonicalize(at).unwrap_or_else(|_| at.to_path_buf());
         if let Some(root) = self.root {
             return (real(root), true);
         }
         let own = real(folder);
-        match own.ancestors().find(|at| at.join("kit.toml").is_file()) {
-            Some(kit) => (kit.to_path_buf(), true),
+        // Reached only through folders nobody else can write to: see `fennec_dist::kit_root`.
+        match fennec_dist::kit_root(&own) {
+            Some(kit) => (kit, true),
             None => (own, false),
         }
     }
@@ -169,7 +170,8 @@ impl Place<'_> {
                 .with_help("`embed_folder` takes a folder; `embed_file` takes one file"));
         }
         let mut found = Found::default();
-        let walk = Walk { edge: &edge, kit, span, overlay: self.overlay };
+        let walk =
+            Walk { edge: &edge, kit, span, overlay: self.overlay, seen: std::cell::RefCell::default() };
         walk.folder(&real, &beside, "", path, &mut found)?;
         found.0.sort_by(|first, second| first.0.cmp(&second.0));
         Ok(found)
@@ -204,6 +206,9 @@ struct Walk<'a> {
     kit: bool,
     span: Span,
     overlay: &'a Overlay,
+    /// The real folders read so far. A link can lead back to one, as `assets/loop -> .` does, and
+    /// reading it again would read it again inside that, without end.
+    seen: std::cell::RefCell<std::collections::HashSet<PathBuf>>,
 }
 
 impl Walk<'_> {
@@ -220,6 +225,13 @@ impl Walk<'_> {
         let unreadable = |err: std::io::Error| {
             Diagnostic::new(format!("couldn't read `{written}` to embed: {err}"), self.span)
         };
+        if !self.seen.borrow_mut().insert(real.to_path_buf()) {
+            return Err(Diagnostic::new(
+                format!("`{written}` is a folder this embeds already, reached again through a link"),
+                self.span,
+            )
+            .with_help("a link back to a folder would have it read again inside itself without end; take the link out"));
+        }
         let mut names: Vec<String> = std::fs::read_dir(real)
             .map_err(unreadable)?
             .filter_map(|entry| entry.ok()?.file_name().into_string().ok())

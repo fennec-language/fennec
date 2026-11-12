@@ -130,7 +130,7 @@ struct Units:
     _live = Buffer[bool]()
 
     def len(self) -> int:
-        return self._items.len()
+        return len(self._items)
 
     def is_live(self, i: int) -> bool:
         return self._live[i]
@@ -142,7 +142,7 @@ def step(ref units: Units, dt: float):
     for ref unit in units:
         unit.pos += unit.vel * dt
 ```
-- `for ref unit in units:` means `for i in range(units.len()):`, skipping positions that aren't live, with `unit` as a `ref` to `units[i]` inside.
+- `for ref unit in units:` means `for i in range(len(units)):`, skipping positions that aren't live, with `unit` as a `ref` to `units[i]` inside.
 - `units` stays locked for the whole loop, as any path behind a `ref` is, so the body can't add or remove items or reach other elements. Nothing is copied or counted, and `unit` can't escape.
 - Positions are `int`s. A grid maps an `int` position to its own cell.
 - `Table`'s positions are its storage slots, and dead ones are skipped. A plain `for` still reads through `def iter(self)` with `yield`.
@@ -273,7 +273,7 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So a float sum gives identical bits on every machine and thread count.
 *Why:* Float results don't drift between runs or machines.
 
-**Float reductions add in one fixed pattern on every platform.** `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions keep 8 running totals, item `i` going to total `i % 8`, and then combine the totals pairwise. The pattern is the same on every machine and in every build, so the bits are too. It replaces anything fast-math offered for reductions. Chris decided this on 2026-11-07. Built for `sum`: a list of floats is summed by std's own `math.fixed_sum`, which isn't exported, written in plain Fennec with its eight totals as eight names, which only `sum` calls, and a sum one item at a time, over a generator, keeps the same eight totals in every engine, so the two give the same bits. The start is added last. `examples/float_sums.fen` holds the bits, which arm64, x86-64 and WebAssembly all give, in every engine and in `--release`. A sum over `parallel(...)` keeps its own fixed tree, below. Ints add as before, since their sum is exact. `math.dot(a, b)` over two lists adds the same way, so it's `sum(a[at] * b[at] for at in range(a.len()))` to the bit. One exception, decided on 2026-11-07: `std.math`'s fixed sums of four, in `Vec4.dot`, `Quat.dot`, `Quat *`, `Mat4.mul_vec4`, `transform_point` and the determinant, keep glam's left-to-right order. That order is as fixed, a sum of four gains no speed from eight totals, and `std.math` matches glam bit for bit. Its sums of two and three already add in the pattern's order.
+**Float reductions add in one fixed pattern on every platform.** `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions keep 8 running totals, item `i` going to total `i % 8`, and then combine the totals pairwise. The pattern is the same on every machine and in every build, so the bits are too. It replaces anything fast-math offered for reductions. Chris decided this on 2026-11-07. Built for `sum`: a list of floats is summed by std's own `math.fixed_sum`, which isn't exported, written in plain Fennec with its eight totals as eight names, which only `sum` calls, and a sum one item at a time, over a generator, keeps the same eight totals in every engine, so the two give the same bits. The start is added last. `examples/float_sums.fen` holds the bits, which arm64, x86-64 and WebAssembly all give, in every engine and in `--release`. A sum over `parallel(...)` keeps its own fixed tree, below. Ints add as before, since their sum is exact. `math.dot(a, b)` over two lists adds the same way, so it's `sum(a[at] * b[at] for at in range(len(a)))` to the bit. One exception, decided on 2026-11-07: `std.math`'s fixed sums of four, in `Vec4.dot`, `Quat.dot`, `Quat *`, `Mat4.mul_vec4`, `transform_point` and the determinant, keep glam's left-to-right order. That order is as fixed, a sum of four gains no speed from eight totals, and `std.math` matches glam bit for bit. Its sums of two and three already add in the pattern's order.
 *Why:* Eight totals fill a vector unit and hide the latency of each add, so a sum runs at the speed fast-math would give, without letting the compiler reorder anything. Pairwise combining is also more accurate than one long left-to-right chain.
 
 **`math.fma(a, b, c)` is an explicit fused multiply-add,** `a * b + c` rounded once. It's exactly rounded, so it gives the same bits everywhere, and on a chip without the instruction it's only slower, never different. It's the one way a scalar fused operation happens, as `.fma` is for `Simd`. Chris decided this on 2026-11-07. Planned, not built yet.
@@ -539,7 +539,7 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
-**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves, or gives a value, as above. Chris decided this on 2026-11-08. Built, with a block that leaves.
+**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves, or gives a value, as above. Chris decided this on 2026-11-08. Replaced on 2026-11-11: it's written `except name:` now.
 ```fennec
 score = load_score(path) else as failure:
     stdout.print(failure)
@@ -554,8 +554,8 @@ score = load_score(path) else as failure:
 ```fennec
 def visible(world: World) -> list[Enemy]:
     def in_view(enemy: Enemy) -> bool:
-        enemy.distance_to(world.camera) < world.view_range
-    [e for e in world.enemies if in_view(e)]
+        return enemy.distance_to(world.camera) < world.view_range
+    return [e for e in world.enemies if in_view(e)]
 
 enemies.sort(key=e => e.health)          # an arrow's type comes from where it's passed
 
@@ -621,7 +621,7 @@ alive = enemy.is_alive()
 ```fennec
 def literal(tok: Tok) -> ExprKind:
     match tok:
-        case .Int(value): .Int(value)   # the return type makes it ExprKind.Int
+        case .Int(value): return .Int(value)   # the return type makes it ExprKind.Int
 ```
 Only with no expected type is a name shared by two enums ambiguous, and the error lists them. The search covers only the enums a file can see: its own and those it imports.
 *Why:* The type is usually right there, as in Swift. Otherwise adding an unrelated file could break code that never imports it.
@@ -766,7 +766,7 @@ struct Inventory:
     _items: SortedMap[str, int]
 
     def in(self, name: str) -> bool:
-        name in self._items
+        return name in self._items
 ```
 `key in m` calls the right-hand value's `def in`, and `not in` follows from it. `list`, `dict`, `set` and `str` define it in `std` the same way, so there's no hook.
 *Why:* User collections like `SortedMap` then read like built-in ones, with no `map.has(key)`.
@@ -780,13 +780,13 @@ struct Inventory:
 ```fennec
 def collect_leaves(tree: Tree) -> list[Tree]:
     def visit(node: Tree, ref leaves: list[Tree]):
-        if node.children.len() == 0:
+        if len(node.children) == 0:
             leaves.append(node)
         for child in node.children:
             visit(child, ref leaves)
     mut leaves = []
     visit(tree, ref leaves)
-    leaves
+    return leaves
 ```
 This reverses the decision that a directly called nested function can change outer names, and the earlier rule that closures which don't escape may change captured `mut` names.
 *Why:* It was the one place something changed through a hidden link, with nothing at the call to show it. Now one rule covers it, and most counters are `sum(...)` anyway.
@@ -975,7 +975,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`std.sqlite` is SQLite itself, compiled in, under `std.sql`.** `with sqlite.open(fs, path)? as db:` opens a file in WAL mode, `db.execute(t"...")` and `db.query[T](t"...")` take only templates, binding each value as a parameter, and `with db.transaction()? as tx:` commits at the block's end and rolls back in `lend else:`. Rows read into a `T` through the same `deserialize` JSON uses, a struct's fields by the columns' names, and a column that doesn't fit, or a field with no column, fails as `SqlError.Column` with its name. Unknown columns are refused, as unknown JSON keys are. A transaction takes a connection of its own and the database's one writer at its start (`begin immediate`), so `parallel` rounds can share one database. SQLite never waits on a lock itself: a query that finds the writer taken gives its blocking thread back, and its task pauses and tries again for up to 5 seconds, so waiting tasks never hold the threads the writer needs. In a test, each path is a database of the test's own, fresh for each test, kept in a temporary folder that's gone when the test ends, and `--real` uses the path itself. Both are WAL files, so a test sees what a program does: a query outside a transaction reads what was there before the transaction, while it's still going. `std.sql` holds `SqlValue`, `SqlError` and the `Sql` interface, and gives drivers `SqlRows`, which a driver fills with what its database sent back, and `sql.rows_as[T](rows)`, which reads each row into a `T`, so every driver maps rows to types the same way. `std.postgres` is built on it, in Fennec over `std.net`. Its messages have no network of their own, so the same code runs against a socket or against bytes a test wrote. Built: Postgres's messages, signing in with SCRAM-SHA-256 (checked against RFC 7677's own exchange), a query as Parse, Bind, Describe, Execute and Sync, with each value bound apart and rows read by column type, and a connection lending `execute`, `query[T]` and `transaction`, tested against a real Postgres 17. `postgres.connect(net, entropy, url, password=secret)` lends a `PgPool` of `pool_size` connections, 10 unless it's set, kept by the pools of `std.concurrent`, with `transaction()` and `borrow()` waiting up to `wait`, `30s` unless it's set, then failing with `Timeout`. One connects at once, so a wrong URL or password fails at the `with`. The URL may set `pool_size` and `wait`, each in it or as an argument but not both, and a URL with a password in it has to be a `Secret`, with a plain one refused, at compile time when it's written in the source, so a password never shows where a URL is printed. Failures show the URL with its password as `****`. A connection handed back after a block that failed is rolled back and checked with a query of the pool's own, and replaced if the server doesn't answer as it should within 2 seconds. Given a password, a server has to prove it knows it: one that lets the client in with no proof is refused, and one that asks for the password as it is never gets it, unless `allow_weak_sign_in=True` says that's how the server is set up. A commit the server answers with anything but `COMMIT` fails, since that's how it says a failure in the transaction rolled it all back. A connection runs one query at a time and a `lock` can't be held across the network, so one task uses a connection at a time, and tasks in `parallel` each borrow one from the pool. A transaction runs on its database's connection. Its connection is TLS unless `tls=False` says otherwise: it asks with Postgres's `SSLRequest`, reads exactly one byte, and starts TLS over the same socket with `start_tls`, the certificate checked against what the system trusts and the host. A server that won't take TLS is refused, never spoken to in the clear, and there's no mode that falls back. The tests that need a server read `FENNEC_TEST_POSTGRES`, and with none set they check only that the driver builds and reports a refused connection; CI has a Postgres service for them. It lives in `std` until first-party kits have a home. Built, natively: `query` needs native code, as `std.pack` does.
+**`std.sqlite` is SQLite itself, compiled in, under `std.sql`.** `with sqlite.open(fs, path)? as db:` opens a file in WAL mode, `db.execute(t"...")` and `db.query[T](t"...")` take only templates, binding each value as a parameter, and `with db.transaction()? as tx:` commits at the block's end and rolls back in `lend except:`. Rows read into a `T` through the same `deserialize` JSON uses, a struct's fields by the columns' names, and a column that doesn't fit, or a field with no column, fails as `SqlError.Column` with its name. Unknown columns are refused, as unknown JSON keys are. A transaction takes a connection of its own and the database's one writer at its start (`begin immediate`), so `parallel` rounds can share one database. SQLite never waits on a lock itself: a query that finds the writer taken gives its blocking thread back, and its task pauses and tries again for up to 5 seconds, so waiting tasks never hold the threads the writer needs. In a test, each path is a database of the test's own, fresh for each test, kept in a temporary folder that's gone when the test ends, and `--real` uses the path itself. Both are WAL files, so a test sees what a program does: a query outside a transaction reads what was there before the transaction, while it's still going. `std.sql` holds `SqlValue`, `SqlError` and the `Sql` interface, and gives drivers `SqlRows`, which a driver fills with what its database sent back, and `sql.rows_as[T](rows)`, which reads each row into a `T`, so every driver maps rows to types the same way. `std.postgres` is built on it, in Fennec over `std.net`. Its messages have no network of their own, so the same code runs against a socket or against bytes a test wrote. Built: Postgres's messages, signing in with SCRAM-SHA-256 (checked against RFC 7677's own exchange), a query as Parse, Bind, Describe, Execute and Sync, with each value bound apart and rows read by column type, and a connection lending `execute`, `query[T]` and `transaction`, tested against a real Postgres 17. `postgres.connect(net, entropy, url, password=secret)` lends a `PgPool` of `pool_size` connections, 10 unless it's set, kept by the pools of `std.concurrent`, with `transaction()` and `borrow()` waiting up to `wait`, `30s` unless it's set, then failing with `Timeout`. One connects at once, so a wrong URL or password fails at the `with`. The URL may set `pool_size` and `wait`, each in it or as an argument but not both, and a URL with a password in it has to be a `Secret`, with a plain one refused, at compile time when it's written in the source, so a password never shows where a URL is printed. Failures show the URL with its password as `****`. A connection handed back after a block that failed is rolled back and checked with a query of the pool's own, and replaced if the server doesn't answer as it should within 2 seconds. Given a password, a server has to prove it knows it: one that lets the client in with no proof is refused, and one that asks for the password as it is never gets it, unless `allow_weak_sign_in=True` says that's how the server is set up. A commit the server answers with anything but `COMMIT` fails, since that's how it says a failure in the transaction rolled it all back. A connection runs one query at a time and a `lock` can't be held across the network, so one task uses a connection at a time, and tasks in `parallel` each borrow one from the pool. A transaction runs on its database's connection. Its connection is TLS unless `tls=False` says otherwise: it asks with Postgres's `SSLRequest`, reads exactly one byte, and starts TLS over the same socket with `start_tls`, the certificate checked against what the system trusts and the host. A server that won't take TLS is refused, never spoken to in the clear, and there's no mode that falls back. The tests that need a server read `FENNEC_TEST_POSTGRES`, and with none set they check only that the driver builds and reports a refused connection; CI has a Postgres service for them. It lives in `std` until first-party kits have a home. Built, natively: `query` needs native code, as `std.pack` does.
 *Why:* SQLite is the most tested database there is, and porting it isn't realistic, so it's compiled in from its own C source behind a reviewed, safe wrapper whose `unsafe` stays its own, with its handles in a table as sockets' are. Hoard keeps its index in it.
 
 **Postgres picks TLS by its host.** A loopback host, like `localhost`, `127.0.0.1` or `::1`, connects in the clear by default. Any other host needs TLS with the server's certificate verified, and a server that won't take it is refused, with no fallback. The URL's `sslmode=` can say otherwise, as `disable`, `require`, `verify-ca` or `verify-full`. `prefer` and `allow` are refused, since each may fall back to the clear without saying so. Chris decided this. Not built yet: today every host asks for verified TLS unless `tls=False` says otherwise.
@@ -1011,7 +1011,7 @@ from std.net import Connection, NetError
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
         for conn in parallel(server):
-            echo(conn) else as error:
+            echo(conn) except error:
                 stdout.print(f"{conn.peer} dropped: {error}")
                 continue
             stdout.print(f"{conn.peer} left")
@@ -1036,7 +1036,7 @@ def weather(net: Net, city: str) -> Weather fails NetError:
         fail NetError.Status(response.status)
     return json.loads[Weather](response.text())?
 ```
-- `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=` and `timeout=` work on every call.
+- `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=`, `timeout=` and `most_body=`, the most a response's body can be, 64 MB unless given, work on every call.
 - A `Response` has `status`, `headers` and `body`, plus `text()`, `ok()` for a 2xx status, and `json[T]()`. A 404 is a response, not an error, since what it means is the caller's to say.
 - Redirects are followed, up to 10. TLS checks certificates, and there's no option to stop it: a test uses the fake instead.
 
@@ -1072,10 +1072,10 @@ error NetError:
 **`int(text)` and `float(text)` fail with `InvalidValue`** when the text isn't a number or doesn't fit, handled with `?` or `except`. To be replaced, as Chris locked on 2026-11-11: text is read with `int.parse(text)` and `float.parse(text)`, which fail with `InvalidValue`, and `T(x)` never fails, so `int(text)` becomes a compile error that shows `int.parse`. Not built yet. `int(3.7)` still truncates to `3`. `int()` of NaN, or of a float too big for an int, stops the program, like overflow.
 *Why:* Text often comes from input, so a bad number is expected and must be handled. A NaN reaching `int()` is a bug in the program.
 
-**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `s.encode().len()` is the length in bytes.
+**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `len(s.encode())` is the length in bytes.
 *Why:* A lexer needs character codes and byte lengths, and strings are stored as UTF-8 already, so the bytes cost nothing.
 
-**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `.len()` gives its length, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. `data.hex()` writes them as hex digits, like `"89504e47"`, with `data.hex(" ")` putting a separator between bytes, and `bytes.fromhex(text)` reads them back, failing with `InvalidValue`, both as in Python. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
+**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `len(b)` gives its length, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. `data.hex()` writes them as hex digits, like `"89504e47"`, with `data.hex(" ")` putting a separator between bytes, and `bytes.fromhex(text)` reads them back, failing with `InvalidValue`, both as in Python. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
 *Why:* Files, hashes and network data are bytes, and keeping them apart from `str` means text is checked once, when it's decoded. A byte out of range is a mistake in the program, while text that isn't UTF-8 comes from outside and has to be handled. Printing bytes the way they're written means a printed value can be pasted back into code.
 
 **Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`.
@@ -1385,7 +1385,7 @@ total = sum(row.amount for row in rows)
 ```
 - It's a handle: `b = a` is two names for one generator. A second use is a compile error where that can be proved. Otherwise it fails at run time with `this generator has already been used`, never quietly giving nothing. Built: a second use on every way on from the first is the compile error, by any of its names; a use in only some branches, or in a loop's body, is left to the run.
 - A chain of stages is fused into one loop where possible. `map` can come later, and `filter` isn't added for now.
-- It isn't a list: `gen()[0]` and `gen().len()` are compile errors. `list(gen())` keeps the items.
+- It isn't a list: `gen()[0]` and `len(gen())` are compile errors. `list(gen())` keeps the items.
 - What it sees is fixed when it's made, as with a nested `def`. `(x * k for x in xs)` works out `xs` at once and copies `k`.
 - Written right inside `sum`, `min`, `max`, `sorted`, `list`, `set`, `dict`, `any` or `all`, it runs in place, and may read anything, but it can't change the names around it, which is a compile error: use a loop for that. Built. This replaces the rule that such a generator can change the names around it.
 - `yield` is allowed inside `with`. A generator left partway closes what it holds when its owner goes away.
@@ -1403,8 +1403,8 @@ struct Ring:
     start = 0
 
     def iter(self) -> Iterator[int]:
-        for at in range(self.slots.len()):
-            yield self.slots[(self.start + at) % self.slots.len()]
+        for at in range(len(self.slots)):
+            yield self.slots[(self.start + at) % len(self.slots)]
 ```
 - `for ref` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `Table` keep `for ref`.
 - A loop over `iter` fuses into a plain loop where it can, as any stage does.
@@ -1518,7 +1518,7 @@ test "saves the score"(fs: Fs, clock: Clock):
     save_score(fs, clock, 120)?
     assert fs.read_text("score.txt")? == "120"
 ```
-The fakes are an in-memory `Fs`, a fixed `Clock`, an `Entropy` with fixed output, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI. The Den only ever uses fakes.
+The fakes are an in-memory `Fs`, a fixed `Clock`, an `Entropy` with fixed output, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI.
 *Why:* Tests are fast and give the same result every run, and they can't touch the machine unless someone asks. The same signature as `main` means nothing new to learn.
 
 **Benchmarks are `bench "name":` blocks,** written next to the code they measure, like `test` blocks, and left out of release builds.
@@ -1592,7 +1592,7 @@ These are default lints, and the Den requires them.
 
 **The Den keeps every kit's source permanently.** Installing never touches the git host. Versions are immutable: a bad one can be yanked, never deleted or replaced. Because everything is keyed by its hash, anyone can mirror the Den, and the hashes in `kit.lock` prove a mirror served the real thing.
 
-**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, compiled to WebAssembly and run in Wasmtime, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
+**The Den scans, lints and reports, and never runs a kit's code.** It re-runs formatting and lints, scans the source, and shows a diff of the kit's capabilities and API against the previous version. It runs no tests and builds none of the kit's programs: kit authors run their own tests, and CI badges can show the results. Kits have no build scripts, so publishing or installing one runs nothing. Native kits, which in v1 only the Fennec project can publish, are tested under sanitizers in the project's own CI. Chris decided this on 2026-11-11, under Untrusted code: nothing runs code nobody has read. This replaces running each kit's tests in Wasmtime.
 
 **An existing AI model reviews each release's diff,** and its findings are shown. There's no custom fine-tuned model.
 
@@ -1610,7 +1610,7 @@ These are default lints, and the Den requires them.
 
 **Each version has a size cap,** around 10 MB of source, and publishing is rate-limited.
 
-**Later, breaking dependents is caught before release.** v1 defers this. Before a new version is published, the Den runs the tests of the kits that depend on it directly against that version, within a compute budget, and reports which ones break.
+**Later, breaking dependents is caught before release.** v1 defers this. Before a new version is published, the Den checks the kits that depend on it directly against that version's API, without running them, and reports which ones would break.
 *Why:* An author learns "this release breaks 14 kits" before releasing it, not from bug reports.
 
 **The Den can be searched by type,** through `fennec search` and its website.
@@ -1803,7 +1803,7 @@ def brighten(i: int, ref pixels: GpuBuffer[f32], amount: f32):
 
 def main(stdout: Stdout, gpu: Gpu):
     mut image = gpu.upload(load_pixels())
-    gpu.run(brighten, count=image.len(), ref image, 0.2)
+    gpu.run(brighten, count=len(image), ref image, 0.2)
     pixels = gpu.download(image)            # waits for the GPU here
 ```
 - A kernel can't allocate, recurse, use capabilities, or use strings, lists or dicts. It works on numbers, `Simd` values, structs of numbers and `GpuBuffer`s.

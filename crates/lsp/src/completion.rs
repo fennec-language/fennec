@@ -270,7 +270,11 @@ impl<'a> Known<'a> {
     /// The text a declaration is written in, with the span's bytes in it.
     pub(crate) fn place(&self, span: Span, written: Written) -> Option<(&'a str, usize, usize)> {
         let (text, base) = match written {
-            Written::Library(text) => (text, Span::PRELUDE),
+            // Each library file's spans start where its own range does.
+            Written::Library(text) => {
+                let base = fennec_syntax::prelude_file_at(span).map_or(Span::PRELUDE, |(_, _, base)| base);
+                (text, base)
+            }
             Written::Program => {
                 let (_, text, base) = self.sources.file_at(span)?;
                 (text, base)

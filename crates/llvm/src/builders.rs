@@ -46,6 +46,7 @@ pub(crate) fn builders<'p>(
     for function in &program.constants {
         other_ways.insert(function.name.as_str());
     }
+    #[expect(clippy::iter_over_hash_type, reason = "what's found goes into a set")]
     for function in functions.values() {
         for inst in function.blocks.iter().flat_map(|block| &block.insts) {
             if let InstKind::MakeClosure { function: made, .. } = &inst.kind {
@@ -55,6 +56,10 @@ pub(crate) fn builders<'p>(
     }
     loop {
         let mut dropped: Vec<(&str, usize)> = Vec::new();
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "a round reads what the last one left and only drops from sets, so it settles the same in any order"
+        )]
         for (name, function) in functions {
             // Even with nothing of its own kept, what it gives the functions it calls counts.
             let mine = kept.get(name).cloned().unwrap_or_default();

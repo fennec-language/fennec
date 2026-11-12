@@ -51,6 +51,18 @@ test "escapes and queries go both ways"():
         == "https://example.com/search?q=fox+%26+hound"
     )
 
+test "a name given twice keeps its first value, and query_all gives every one"():
+    found = url.parse("https://h/?tag=a&n=1&tag=b&tag=")?
+    assert found.query == {"tag": "a", "n": "1"}
+    assert found.query_all("tag") == ["a", "b", ""]
+    assert found.query_all("n") == ["1"]
+    assert found.query_all("missing").len() == 0
+    assert url.decode_query("a=1&a=2") == {"a": "1"}
+    # A query changed since it was read gives what it holds now.
+    changed = copy(found, query={"tag": "z"})
+    assert changed.query_all("tag") == ["z"]
+    assert Url(query={"q": "fox"}).query_all("q") == ["fox"]
+
 test "any query text comes back as it was" for name: str, value: str:
     assert url.decode_query(url.encode_query({name: value})) == {name: value}
 

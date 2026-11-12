@@ -117,6 +117,9 @@ pub(crate) struct Analysis {
     /// Reads of a list's item, by block and place in it, that a guard proves in range: see
     /// `find_guarded_reads`.
     guarded_reads: HashSet<(usize, usize)>,
+    /// The int parameters every call gives a known range, with it (see `param_ranges`). A build
+    /// that checks proofs checks each on the way in.
+    pub(crate) param_ranges: Vec<(usize, Range)>,
 }
 
 /// What's known about every function, and which can fail.
@@ -507,8 +510,10 @@ fn analyze(
     function: &Function,
     changes: &dyn Fn(&str) -> Vec<usize>,
     keeps: &dyn Fn(&str, usize) -> bool,
+    params: &[Range],
 ) -> Analysis {
     let mut known = Analysis::empty(function.locals.len());
+    known.param_ranges = given_ranges(function, params);
     let grown = count_uses(function, (changes, keeps), &mut known);
     find_maybe_marked(function, &mut known);
     find_reads_again(function, &mut known);
@@ -585,13 +590,7 @@ fn analyze(
         }
     }
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
-    let multi = written_ranges(function, changes, &known, &stepped);
-    let mut facts = Facts::of(function, changes);
-    for (block, written) in function.blocks.iter().enumerate() {
-        for inst in &written.insts {
-            note(function, (&mut facts, &multi), &mut known, &stepped, (block, &inst.kind));
-        }
-    }
+    let (facts, multi) = ranges(function, changes, &mut known, &stepped);
     find_guarded_steps(function, (&facts, &multi), &mut known);
     // A length only says something about a list that keeps it.
     let writes = known.writes.clone();
@@ -1093,7 +1092,7 @@ fn written_ranges(
     }
     let mut guess: HashMap<usize, Range> = HashMap::new();
     for _ in 0..6 {
-        let given = writes_under(function, changes, stepped, &candidates, &guess);
+        let given = writes_under(function, changes, (stepped, &known.param_ranges), &candidates, &guess);
         // A write of something not known at all leaves its local out.
         let next: HashMap<usize, Range> = given.into_iter().filter(|(_, range)| *range != FULL).collect();
         let held = next.iter().all(|(local, range)| {
@@ -1114,16 +1113,188 @@ fn written_ranges(
     HashMap::new()
 }
 
+/// The parameters given a range, as `analyze` keeps them: each int one nothing in the function
+/// writes, with what's known of it, where that's anything.
+fn given_ranges(function: &Function, params: &[Range]) -> Vec<(usize, Range)> {
+    params
+        .iter()
+        .copied()
+        .enumerate()
+        .take(function.params)
+        .filter(|(at, range)| {
+            *range != FULL
+                && function.locals.get(*at).is_some_and(|local| local.ty == Type::Int)
+                && !function.mut_params.contains(at)
+        })
+        .collect()
+}
+
+/// What's known of a function's ints: the facts, with its parameters' ranges in, and the ranges
+/// of ints written more than once. A count stepped once a turn of a loop is bounded by the loop's
+/// turns, which the facts say, so finding one notes everything again with it known.
+fn ranges(
+    function: &Function,
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    known: &mut Analysis,
+    stepped: &HashSet<usize>,
+) -> (Facts, HashMap<usize, Range>) {
+    let mut multi = written_ranges(function, changes, known, stepped);
+    let mut facts = noted(function, changes, known, stepped, &multi);
+    let once_a_turn = stepped_once_a_turn(function, known, &facts);
+    if !once_a_turn.is_empty() {
+        multi.extend(once_a_turn);
+        facts = noted(function, changes, known, stepped, &multi);
+    }
+    (facts, multi)
+}
+
+/// The facts of a function, with what each instruction says noted.
+fn noted(
+    function: &Function,
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    known: &mut Analysis,
+    stepped: &HashSet<usize>,
+    multi: &HashMap<usize, Range>,
+) -> Facts {
+    let mut facts = Facts::of(function, changes);
+    for &(at, range) in &known.param_ranges {
+        facts.note_param(LocalId(at), range);
+    }
+    for (block, written) in function.blocks.iter().enumerate() {
+        for inst in &written.insts {
+            note(function, (&mut facts, multi), known, stepped, (block, &inst.kind));
+        }
+    }
+    facts
+}
+
+/// Where a counted loop tests its count: the block, and the blocks it goes to while the count
+/// is below its limit, and after.
+fn count_test(function: &Function, count: &fennec_ir::Count) -> Option<(usize, usize, usize)> {
+    let held = Operand::Local(count.count);
+    let at = function.blocks.iter().position(|block| {
+        let Terminator::Branch { cond: Operand::Local(cond), .. } = &block.end else { return false };
+        block.insts.iter().any(|inst| {
+            matches!(&inst.kind, InstKind::Binary { dest, op: BinOp::Lt, lhs, rhs: Operand::Local(stop) }
+                if dest == cond && *lhs == held && *stop == count.stop)
+        })
+    })?;
+    match function.blocks.get(at).map(|block| &block.end) {
+        Some(Terminator::Branch { then, otherwise, .. }) => Some((at, then.0, otherwise.0)),
+        _ => None,
+    }
+}
+
+/// The blocks reachable from `from`'s successors, leaving out the edge `cut` (from, to).
+fn reached(function: &Function, from: usize, cut: (usize, usize)) -> HashSet<usize> {
+    let next = |at: usize| {
+        function.blocks.get(at).map_or_else(Vec::new, |block| {
+            block.end.targets().iter().map(|target| target.0).filter(|to| (at, *to) != cut).collect()
+        })
+    };
+    let mut seen = HashSet::new();
+    let mut waiting = next(from);
+    while let Some(at) = waiting.pop() {
+        if seen.insert(at) {
+            waiting.extend(next(at));
+        }
+    }
+    seen
+}
+
+/// Ints set to a number once, before a counted loop, and stepped by a number once a turn of it,
+/// written nowhere else: each stays between its start and where as many steps as the loop has
+/// turns take it, like `mut j = 0` and `j += 1` beside `for x in v`. The loop mustn't run again,
+/// as it would inside another, and the step mustn't be in a loop of its own inside it.
+fn stepped_once_a_turn(function: &Function, known: &Analysis, facts: &Facts) -> HashMap<usize, Range> {
+    let mut found = HashMap::new();
+    for (local, info) in function.locals.iter().enumerate().skip(function.params) {
+        if info.ty != Type::Int
+            || known.writes.get(local) != Some(&2)
+            || known.given_mut.contains(&local)
+            || function.counts.iter().any(|count| count.count.0 == local)
+        {
+            continue;
+        }
+        let (mut start, mut step, mut other) = (None, None, false);
+        for (at, block) in function.blocks.iter().enumerate() {
+            for inst in &block.insts {
+                let mut writes_it = false;
+                visit(&inst.kind, |_| {}, |written| writes_it |= written.0 == local);
+                if !writes_it {
+                    continue;
+                }
+                match &inst.kind {
+                    InstKind::Copy { value: Operand::Int(first), .. } if start.is_none() => {
+                        start = Some((at, *first));
+                    }
+                    InstKind::Binary { op, lhs: Operand::Local(from), rhs: Operand::Int(by), .. }
+                        if from.0 == local && *by != 0 && step.is_none() =>
+                    {
+                        match op {
+                            BinOp::Add => step = Some((at, *by)),
+                            BinOp::Sub if *by != i64::MIN => step = Some((at, -*by)),
+                            _ => other = true,
+                        }
+                    }
+                    _ => other = true,
+                }
+            }
+        }
+        let (Some((start_at, first)), Some((step_at, by)), false) = (start, step, other) else { continue };
+        for count in function.counts.iter().filter(|count| !count.down) {
+            let Some((test, body, _)) = count_test(function, count) else { continue };
+            // The block that steps the count and goes back to the test.
+            let back = function.blocks.iter().position(|block| {
+                matches!(&block.end, Terminator::Jump(to) if to.0 == test)
+                    && block.insts.iter().any(|inst| {
+                        matches!(&inst.kind, InstKind::Binary { dest, op: BinOp::Add, lhs: Operand::Local(from), rhs: Operand::Int(1) }
+                            if *dest == count.count && *from == count.count)
+                    })
+            });
+            let Some(back) = back else { continue };
+            let cut = (back, test);
+            let from_test = reached(function, test, cut);
+            // The loop runs once: nothing but its own step comes back to its test. The start
+            // runs once, before it, and the step once a turn, inside it.
+            let in_body = reached(function, body, (test, body));
+            let once = !from_test.contains(&test)
+                && !reached(function, start_at, (usize::MAX, usize::MAX)).contains(&start_at)
+                && !from_test.contains(&start_at)
+                && start_at != test
+                && (step_at == body || in_body.contains(&step_at))
+                && reached(function, step_at, cut).contains(&back)
+                && !reached(function, step_at, cut).contains(&step_at);
+            if !once {
+                continue;
+            }
+            let Some((low, high)) = facts.range_in(count.count, body) else { continue };
+            let turns = (i128::from(high) - i128::from(low) + 1).max(0);
+            let (first, by) = (i128::from(first), i128::from(by));
+            let ends = [first, first + by * turns, 0];
+            let (Some(least), Some(most)) = (ends.iter().min(), ends.iter().max()) else { continue };
+            if let (Ok(least), Ok(most)) = (i64::try_from(*least), i64::try_from(*most)) {
+                found.insert(local, (least, most));
+            }
+            break;
+        }
+    }
+    found
+}
+
 /// The range of every value written to each candidate, with each candidate read taken to be in
 /// its guessed range, or anything at all where there's none.
 fn writes_under(
     function: &Function,
     changes: &dyn Fn(&str) -> Vec<usize>,
-    stepped: &HashSet<usize>,
+    (stepped, params): (&HashSet<usize>, &[(usize, Range)]),
     candidates: &HashSet<usize>,
     guess: &HashMap<usize, Range>,
 ) -> HashMap<usize, Range> {
     let mut facts = Facts::of(function, changes);
+    for &(at, range) in params {
+        facts.note_param(LocalId(at), range);
+    }
     let mut scratch = Analysis::empty(function.locals.len());
     let mut given: HashMap<usize, Range> = HashMap::new();
     for (block, written) in function.blocks.iter().enumerate() {
@@ -2602,6 +2773,7 @@ impl Analysis {
             walk_items: HashMap::new(),
             pairs: HashMap::new(),
             guarded_reads: HashSet::new(),
+            param_ranges: Vec::new(),
         }
     }
 
@@ -3263,6 +3435,136 @@ fn keeps_parameter(function: &Function, at: usize, kept: &HashMap<&str, Vec<bool
     })
 }
 
+/// How many rounds `param_ranges` narrows what's known of parameters through: a helper's
+/// helper's helper is known after three.
+const PARAM_ROUNDS: usize = 4;
+
+/// What every call gives each function's int parameters. A function something other than a call
+/// by name may call, like `main`, a closure, a generator or one nothing calls, may be given
+/// anything. Every round starts from what the last found, knowing nothing at first, and finds
+/// each call's arguments with its function's parameters as that says. So each round's ranges
+/// hold of every call wherever it stops; rounds go on only while they say more.
+fn param_ranges<'p>(
+    program: &'p Program,
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    keeps: &dyn Fn(&str, usize) -> bool,
+) -> HashMap<&'p str, Vec<Range>> {
+    let every = || program.functions.iter().chain(&program.constants);
+    let params: HashMap<&str, usize> =
+        every().map(|function| (function.name.as_str(), function.params)).collect();
+    let other_ways = called_other_ways(program);
+    let mut known: HashMap<&str, Vec<Range>> = HashMap::new();
+    let mut calls: HashMap<&str, Vec<(&str, Vec<Range>)>> = HashMap::new();
+    let mut changed: HashSet<&str> = every().map(|function| function.name.as_str()).collect();
+    for _ in 0..PARAM_ROUNDS {
+        for function in every().filter(|function| changed.contains(function.name.as_str())) {
+            let given = known.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
+            calls.insert(function.name.as_str(), call_ranges(function, (changes, keeps), given));
+        }
+        let mut next: HashMap<&str, Vec<Range>> = HashMap::new();
+        let mut anything: HashSet<&str> = HashSet::new();
+        for function in every() {
+            for (callee, args) in calls.get(function.name.as_str()).into_iter().flatten() {
+                if params.get(callee) != Some(&args.len()) {
+                    anything.insert(callee);
+                    continue;
+                }
+                match next.get_mut(callee) {
+                    Some(held) => {
+                        for (range, arg) in held.iter_mut().zip(args) {
+                            *range = (range.0.min(arg.0), range.1.max(arg.1));
+                        }
+                    }
+                    None => {
+                        next.insert(callee, args.clone());
+                    }
+                }
+            }
+        }
+        next.retain(|name, ranges| {
+            !other_ways.contains(name)
+                && !anything.contains(name)
+                && ranges.iter().any(|range| *range != FULL)
+        });
+        changed = every()
+            .map(|function| function.name.as_str())
+            .filter(|name| next.get(name) != known.get(name))
+            .collect();
+        known = next;
+        if changed.is_empty() {
+            break;
+        }
+    }
+    known
+}
+
+/// The functions something other than a direct call may call, so whose parameters may be
+/// anything: `main`, a closure's or a generator's, a constant's, and one no call in the program
+/// names, like a test.
+fn called_other_ways(program: &Program) -> HashSet<&str> {
+    let every = || program.functions.iter().chain(&program.constants);
+    let mut other_ways: HashSet<&str> = HashSet::from(["main"]);
+    let mut called = HashSet::new();
+    for inst in every().flat_map(|function| &function.blocks).flat_map(|block| &block.insts) {
+        match &inst.kind {
+            InstKind::Call { function, .. } => {
+                called.insert(function.as_str());
+            }
+            InstKind::MakeClosure { function, .. } => {
+                other_ways.insert(function.as_str());
+            }
+            InstKind::MakeGenerator { generator, .. } => {
+                other_ways.insert(generator.as_str());
+            }
+            InstKind::Resume { known: Some(name), .. } | InstKind::Constant { name, .. } => {
+                other_ways.insert(name.as_str());
+            }
+            _ => {}
+        }
+    }
+    for def in &program.generators {
+        other_ways.insert(def.name.as_str());
+        other_ways.insert(def.resume.as_str());
+        other_ways.extend(def.abandon.as_deref());
+    }
+    for function in every().filter(|function| !called.contains(function.name.as_str())) {
+        other_ways.insert(function.name.as_str());
+    }
+    other_ways
+}
+
+/// What each direct call in a function gives its callee, by argument, with the function's own
+/// parameters in the ranges given.
+fn call_ranges<'p>(
+    function: &'p Function,
+    (changes, keeps): (Changes<'_>, Keeps<'_>),
+    params: &[Range],
+) -> Vec<(&'p str, Vec<Range>)> {
+    let has_calls = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .any(|inst| matches!(&inst.kind, InstKind::Call { args, .. } if !args.is_empty()));
+    if !has_calls {
+        return Vec::new();
+    }
+    let mut known = Analysis::empty(function.locals.len());
+    known.param_ranges = given_ranges(function, params);
+    count_uses(function, (changes, keeps), &mut known);
+    let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
+    let (facts, multi) = ranges(function, changes, &mut known, &stepped);
+    let mut found = Vec::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for inst in &block.insts {
+            if let InstKind::Call { function: callee, args, .. } = &inst.kind {
+                let given = args.iter().map(|arg| range_of(&facts, &multi, arg, at)).collect();
+                found.push((callee.as_str(), given));
+            }
+        }
+    }
+    found
+}
+
 pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let every = || program.functions.iter().chain(&program.constants);
     let functions: HashMap<&str, &Function> =
@@ -3272,8 +3574,13 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let keeps = |callee: &str, at: usize| {
         kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
     };
-    let analyses: HashMap<&str, Analysis> =
-        every().map(|function| (function.name.as_str(), analyze(function, &changes, &keeps))).collect();
+    let params = param_ranges(program, &changes, &keeps);
+    let analyses: HashMap<&str, Analysis> = every()
+        .map(|function| {
+            let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
+            (function.name.as_str(), analyze(function, &changes, &keeps, given))
+        })
+        .collect();
     let mut generators = HashMap::new();
     for def in &program.generators {
         generators.insert(def.name.as_str(), def);
@@ -3338,7 +3645,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
         let at = function.locals.iter().position(|local| local.name.as_deref() == Some("unit"));
         Ok(known.taken_over_loop(LocalId(at.ok_or("no `unit`")?)))
     }
@@ -3365,7 +3672,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
         Ok(!known.room_enough.is_empty())
     }
 
@@ -3396,7 +3703,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
         Ok((0..function.locals.len()).filter(|at| known.is_taken(LocalId(*at))).count())
     }
 

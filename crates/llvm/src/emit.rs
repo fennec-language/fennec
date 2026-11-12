@@ -965,6 +965,23 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
         }
+        // What every call gives a parameter, which what's proven from it leans on.
+        if self.checks_proofs() && !self.known.param_ranges.is_empty() {
+            let span = function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.insts)
+                .map(|inst| inst.span)
+                .find(|span| *span != Span::default())
+                .unwrap_or_default();
+            for (at, (low, high)) in self.known.param_ranges.clone() {
+                let (below, above, outside) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{below} = icmp slt i64 %p{at}, {low}"));
+                self.line(&format!("{above} = icmp sgt i64 %p{at}, {high}"));
+                self.line(&format!("{outside} = or i1 {below}, {above}"));
+                self.proof_held(&outside, "a parameter is in the range every call gives it", span);
+            }
+        }
         // A dict nothing but its own lookups and puts ever holds (see `held_by_itself`).
         for local in held_by_itself(function) {
             let slot = self.slot(LocalId(local));
@@ -3794,10 +3811,11 @@ def main(stdout: Stdout):
     }
 
     /// A product of two ints proven not negative is checked as an unsigned one, as Rust checks a
-    /// `usize`'s. One whose ints may be negative keeps the signed check.
+    /// `usize`'s: two lengths, which can be big enough to overflow. One whose ints may be negative
+    /// keeps the signed check.
     #[test]
     fn only_a_product_of_ints_that_arent_negative_checks_unsigned() -> Result<(), String> {
-        let source = "def area(w: int, h: int) -> int:\n    return w * h\n\ndef scaled(x: int) -> int:\n    return x * 3\n\ndef main(stdout: Stdout):\n    for i in range(5):\n        stdout.print(area(i, h=i + 1))\n    stdout.print(scaled(-4))\n    return\n";
+        let source = "def area(w: int, h: int) -> int:\n    return w * h\n\ndef scaled(x: int) -> int:\n    return x * 3\n\ndef main(stdout: Stdout):\n    xs = [1, 2, 3]\n    stdout.print(area(xs.len(), h=xs.len()))\n    stdout.print(scaled(xs[0] - 5))\n    return\n";
         let area = text_of(source, "area")?;
         assert!(area.contains("@llvm.umul.with.overflow.i64(") && !area.contains("@llvm.smul"), "{area}");
         let scaled = text_of(source, "scaled")?;

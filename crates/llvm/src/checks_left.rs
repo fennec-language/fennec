@@ -215,11 +215,16 @@ mod tests {
 
     /// The checks `go` keeps, by kind, with the source each is on.
     fn kept(body: &str) -> Result<Vec<(CheckKind, String)>, String> {
+        kept_in(body, "go")
+    }
+
+    /// The checks a function keeps, by kind, with the source each is on.
+    fn kept_in(body: &str, function: &str) -> Result<Vec<(CheckKind, String)>, String> {
         let program = lowered(body)?;
         let on = |start: u32, end: u32| body.get(start as usize..end as usize).unwrap_or_default().to_owned();
         Ok(checks_left(&program)
             .into_iter()
-            .filter(|check| check.function == "go")
+            .filter(|check| check.function == function)
             .map(|check| (check.what, on(check.span.start, check.span.end)))
             .collect())
     }
@@ -420,6 +425,52 @@ mod tests {
         assert!(has(CheckKind::MissingKey, "names[\"a\"]"), "{found:?}");
         assert!(has(CheckKind::Bounds, "fixed[at]"), "{found:?}");
         assert!(!found.iter().any(|(_, on)| on == "fixed[2]"), "{found:?}");
+        Ok(())
+    }
+
+    /// A helper given positions in a list, and a count stepped once a turn of a loop over one,
+    /// keeps only its product's check: its sums can't overflow, and what it divides by can't be
+    /// 0. The step of the count needs no check either.
+    const HELPER: &str = "def go(i: int, j: int) -> float:\n    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef row(v: list[float], i: int) -> float:\n    mut total = 0.0\n    mut j = 0\n    for x in v:\n        total += go(i, j=j) * x\n        j += 1\n    return total\n\ndef main(stdout: Stdout):\n    v = [1.0, 2.0]\n    stdout.print([row(v, i) for i in range(v.len())])\n    return\n";
+
+    #[test]
+    fn a_helper_given_positions_keeps_only_its_products_check() -> Result<(), String> {
+        let found = kept(HELPER)?;
+        assert_eq!(found, [(CheckKind::Overflow, "i + j) * (i + j + 1".to_owned())]);
+        let row = kept_in(HELPER, "row")?;
+        assert!(!row.iter().any(|(what, _)| *what == CheckKind::Overflow), "{row:?}");
+        Ok(())
+    }
+
+    /// What a helper is given is only known where every call is seen: one something else may
+    /// call, through a closure here, or given what isn't known, keeps its checks.
+    #[test]
+    fn a_helper_called_other_ways_keeps_its_checks() -> Result<(), String> {
+        let whole = kept(HELPER)?.len();
+        let through = HELPER
+            .replace("    v = [1.0, 2.0]\n", "    v = [1.0, 2.0]\n    f = go\n    stdout.print(f(-5, 3))\n");
+        assert!(kept(&through)?.len() > whole, "{:?}", kept(&through)?);
+        let given = HELPER.replace(
+            "    v = [1.0, 2.0]\n",
+            "    v = [1.0, 2.0]\n    stdout.print(go(v.len() - 9223372036854775807, j=0))\n",
+        );
+        assert!(kept(&given)?.len() > whole, "{:?}", kept(&given)?);
+        Ok(())
+    }
+
+    /// A count stepped once a turn stays within the loop's turns. One stepped twice a turn, in a
+    /// loop of its own inside, or one whose loop runs again in an outer loop, isn't known.
+    #[test]
+    fn a_count_stepped_once_a_turn_needs_no_check() -> Result<(), String> {
+        let once =
+            "def go(v: list[int]) -> int:\n    mut j = 0\n    for x in v:\n        j += 1\n    return j\n";
+        assert_eq!(kept(once)?, []);
+        let twice = "def go(v: list[int]) -> int:\n    mut j = 0\n    for x in v:\n        for y in v:\n            j += 1\n    return j\n";
+        assert_eq!(kept(twice)?.len(), 1, "{:?}", kept(twice)?);
+        let again = "def go(v: list[int]) -> int:\n    mut j = 0\n    while v.len() > 0:\n        for x in v:\n            j += 1\n    return j\n";
+        assert_eq!(kept(again)?.len(), 1, "{:?}", kept(again)?);
+        let set = "def go(v: list[int], k: int) -> int:\n    mut j = 0\n    for x in v:\n        j += 1\n        if x > 3:\n            j = k\n    return j\n";
+        assert_eq!(kept(set)?.len(), 1, "{:?}", kept(set)?);
         Ok(())
     }
 }

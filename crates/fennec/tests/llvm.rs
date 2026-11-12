@@ -18070,10 +18070,10 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
         let at = if how.contains(&"--release") { "" } else { "<dir>/" };
         assert!(said.contains(&format!(" --> {at}raised_chain.fen:5:20\n")), "{how:?}: {said}");
         assert!(
-            said.ends_with(
-                "  = in `find`\n  = called from `look` at <dir>/raised_chain.fen:9:12\n  \
-                 = called from `main` at <dir>/raised_chain.fen:12:18\n"
-            ),
+            said.ends_with(&format!(
+                "  = in `find`\n  = called from `look` at {at}raised_chain.fen:9:12\n  \
+                 = called from `main` at {at}raised_chain.fen:12:18\n"
+            )),
             "{how:?}: {said}"
         );
         let (_, said, _) = both_built_unpinned("bouncing_chain", bouncing, how)?;

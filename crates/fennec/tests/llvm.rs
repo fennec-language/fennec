@@ -18119,16 +18119,16 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     )?;
     same_as_pinned(
         "zero",
-        &format!("def f(n: int) -> int:\n    10 // n{print_after}    stdout.print(f(0))\n"),
+        &format!("def f(n: int) -> int:\n    return 10 // n{print_after}    stdout.print(f(0))\n"),
     )?;
     same_as_pinned(
         "outside",
-        &format!("def f(n: int) -> int:\n    [1, 2][n]{print_after}    stdout.print(f(2))\n"),
+        &format!("def f(n: int) -> int:\n    return [1, 2][n]{print_after}    stdout.print(f(2))\n"),
     )?;
     same_message_as_pinned(
         "before",
         &format!(
-            "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    a[0]{print_after}    stdout.print(f(-3))\n"
+            "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    return a[0]{print_after}    stdout.print(f(-3))\n"
         ),
     )?;
     // A format Fennec doesn't have is caught when the program's checked, before anything runs.
@@ -18136,7 +18136,7 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     let program = dir.join("spec.fen");
     std::fs::write(
         &program,
-        format!("def f(n: int) -> int:\n    n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
+        format!("def f(n: int) -> int:\n    return n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
     )?;
     let output = dir.join("spec").to_string_lossy().into_owned();
     let built = fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &output], &dir)?;
@@ -18145,7 +18145,7 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     same_as_pinned(
         "deep",
-        &format!("def f(n: int) -> int:\n    f(n + 1) + 1{print_after}    stdout.print(f(0))\n"),
+        &format!("def f(n: int) -> int:\n    return f(n + 1) + 1{print_after}    stdout.print(f(0))\n"),
     )
 }
 

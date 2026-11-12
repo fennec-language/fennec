@@ -13,9 +13,9 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, KEYS, Kept, LEDGER,
-    Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming, TABLE, Turn,
-    Turning, Writing, XS, YS, alias_name, starting,
+    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, KEYS,
+    Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
+    TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
 
 /// A value while the program runs.
@@ -1445,6 +1445,7 @@ impl Machine {
             Stmt::Turned(turning) => self.turned(turning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
+            Stmt::Constants(constants) => self.constants(constants)?,
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1797,6 +1798,40 @@ impl Machine {
                 let _ = writeln!(self.out, "{}", shown(&Value::Ints(plus.ok_or(Stop::Unsure)?)));
             }
         }
+        Ok(())
+    }
+
+    /// What `constants{id}` prints: each use of the constants sees them as they started, and its
+    /// own changes to its copies, whichever thread it runs on.
+    fn constants(&mut self, constants: &Constants) -> Ran<()> {
+        let Constants { base, reads, main_first, launch_first, .. } = *constants;
+        let next = checked(base.checked_add(1))?;
+        let used = |n: i64| -> Ran<String> {
+            let x = checked(base.checked_add(n))?;
+            Ok(format!(
+                "{n} 0 {{\"a\": {base}, \"n\": {n}}} [{base}, {next}, {n}] [{n}, {next}, {n}] Point(x={x}, y=1) \
+                 {{\"a\": {base}, \"m\": {n}}} 0 [{base}, {next}] {{\"a\": {base}}} Point(x={base}, y=1)"
+            ))
+        };
+        for _ in 0..reads {
+            let _ = writeln!(self.out, "2 1 0 {base}");
+        }
+        if main_first {
+            let _ = writeln!(self.out, "main {}", used(1)?);
+        }
+        let launched = format!("task {}\n", used(2)?);
+        let mut parallel = String::new();
+        for i in 0..3 {
+            let _ = writeln!(parallel, "parallel {}", used(i)?);
+        }
+        if launch_first {
+            self.out.push_str(&launched);
+            self.out.push_str(&parallel);
+        } else {
+            self.out.push_str(&parallel);
+            self.out.push_str(&launched);
+        }
+        let _ = writeln!(self.out, "after {} [{base}, {next}] {{\"a\": {base}}} 0", used(3)?);
         Ok(())
     }
 

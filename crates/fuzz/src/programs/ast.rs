@@ -562,6 +562,21 @@ pub(crate) enum Writing {
     Removed,
 }
 
+/// A `Constants` statement: module constants holding a list, a dict, an empty list of pairs and
+/// a struct, made from `base`, read `reads` times on the main thread first, then used and
+/// changed in copies by `used{id}(n)`: on the main thread first when `main_first`, in a launched
+/// task and in `parallel`'s bodies, in the order `launch_first` says, then on the main thread
+/// again. A struct's fields default to the constants and are changed through `ref self`
+/// methods. Each use must see the constants as they started, and its changes as made.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Constants {
+    pub(crate) id: usize,
+    pub(crate) base: i64,
+    pub(crate) reads: i64,
+    pub(crate) main_first: bool,
+    pub(crate) launch_first: bool,
+}
+
 /// How a `Streamed` stream is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamRead {
@@ -842,6 +857,9 @@ pub(crate) enum Stmt {
     /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then
     /// all printed.
     Aliased(Aliasing),
+    /// `constants{id}(stdout)`: module constants read on the main thread, then used and changed
+    /// in copies there, in a launched task and in `parallel`'s bodies.
+    Constants(Constants),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

@@ -5,9 +5,9 @@
 use std::fmt::Write as _;
 
 use super::ast::{
-    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Held, KEYS, Kept,
-    LEDGER, Leave, Nested, Op, Place, Program, ROOMS, RefPlace, STARTING, Stmt, StreamMap, StreamRead,
-    Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
+    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
+    KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, RefPlace, STARTING, Stmt, StreamMap,
+    StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 
 /// What every program starts with, for its body to use.
@@ -934,6 +934,54 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
     }
 }
 
+/// `constants{id}`, the function a `Constants` calls, after the constants, the struct whose
+/// fields default to them, and the function using them that it runs on each thread.
+fn constants_written(constants: &Constants) -> String {
+    let Constants { id, base, reads, main_first, launch_first } = *constants;
+    let mut out = format!(
+        "NUMBERS{id} = [{base}, {}]\nCOUNTS{id} = {{\"a\": {base}}}\nNOTHING{id} = list[(str, int)]()\nSPOT{id} = \
+         Point(x={base}, y=1)\n\nstruct Bin{id}:\n    at = 0\n    items = NOTHING{id}\n    counts = COUNTS{id}\n    \
+         numbers = NUMBERS{id}\n\n    def pushed(ref self, n: int):\n        self.items.append((\"x\", n))\n        \
+         self.counts[\"n\"] = n\n        self.numbers.append(n)\n\n    def top(ref self) -> int:\n        last = \
+         self.items.pop() else return -1\n        return last[1]\n\n",
+        base + 1
+    );
+    let _ = write!(
+        out,
+        "def used{id}(n: int) -> str:\n    mut bin = Bin{id}()\n    bin.pushed(n)\n    top = bin.top()\n    mut mine = \
+         NUMBERS{id}\n    mine.append(n)\n    mine[0] = n\n    mut spot = SPOT{id}\n    spot.moved(n)\n    mut counts = \
+         COUNTS{id}\n    counts[\"m\"] = n\n    return f\"{{top}} {{len(bin.items)}} {{bin.counts}} {{bin.numbers}} {{mine}} \
+         {{spot}} {{counts}} {{len(NOTHING{id})}} {{NUMBERS{id}}} {{COUNTS{id}}} {{SPOT{id}}}\"\n\ndef tasked{id}(stdout: \
+         Stdout):\n    stdout.print(\"task\", used{id}(2))\n    return\n\n"
+    );
+    let _ = writeln!(out, "def constants{id}(stdout: Stdout) fails Crashed:");
+    for _ in 0..reads {
+        let _ = writeln!(
+            out,
+            "    stdout.print(len(NUMBERS{id}), len(COUNTS{id}), len(NOTHING{id}), SPOT{id}.x)"
+        );
+    }
+    if main_first {
+        let _ = writeln!(out, "    stdout.print(\"main\", used{id}(1))");
+    }
+    let launched = format!("    with launch(() => tasked{id}(stdout))?:\n        pass\n");
+    let parallel = format!(
+        "    for line in [used{id}(i) for i in parallel(range(3))]:\n        stdout.print(\"parallel\", line)\n"
+    );
+    if launch_first {
+        out.push_str(&launched);
+        out.push_str(&parallel);
+    } else {
+        out.push_str(&parallel);
+        out.push_str(&launched);
+    }
+    let _ = writeln!(
+        out,
+        "    stdout.print(\"after\", used{id}(3), NUMBERS{id}, COUNTS{id}, len(NOTHING{id}))\n    return\n"
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -1585,6 +1633,15 @@ impl Writer {
             Stmt::Streamed(streaming) => {
                 let _ = write!(self.helpers, "{}", streamed_written(streaming));
                 self.line(indent, &format!("streamed{}(stdout)", streaming.id));
+            }
+            Stmt::Constants(constants) => {
+                let _ = write!(self.helpers, "{}", constants_written(constants));
+                self.handled(
+                    indent,
+                    &format!("constants{}(stdout)", constants.id),
+                    &["Crashed"],
+                    "stdout.print(\"crashed\")",
+                );
             }
             Stmt::Aliased(aliasing) => {
                 let _ = write!(self.helpers, "{}", aliased_written(aliasing));

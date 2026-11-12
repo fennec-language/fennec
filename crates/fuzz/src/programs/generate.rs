@@ -14,9 +14,9 @@
 )]
 
 use super::ast::{
-    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Held, Leave,
-    Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming, TYPES,
-    Turn, Turning, Ty, Via, Writing,
+    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
+    Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
+    TYPES, Turn, Turning, Ty, Via, Writing,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -39,6 +39,12 @@ const PARALLEL_STREAMS: bool = true;
 /// branches before each merges. Off, no input reads the byte that picks it, so kept inputs still
 /// write what they did.
 const ALIASING: bool = false;
+
+/// Whether random programs read module constants of lists, dicts and structs on the main thread,
+/// then use and change copies of them, through a struct's field defaults too, in launched tasks
+/// and `parallel`'s bodies. Off until the runtime's count fix for never-freed blocks lands;
+/// off, no input reads the byte that picks it.
+const CONSTANTS_IN_TASKS: bool = false;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -598,6 +604,7 @@ impl Writer<'_> {
             26 if PARALLEL_STREAMS && !self.threadless && self.choice(4) == 0 => self.streams(body),
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 => self.change_counts(body),
+            27 if CONSTANTS_IN_TASKS && !self.threadless && self.choice(4) == 0 => self.constants(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
@@ -993,6 +1000,18 @@ impl Writer<'_> {
             _ => StreamRead::Loop(None),
         };
         body.push(Stmt::Streamed(Streaming { id, items, map, read }));
+    }
+
+    /// Module constants read on the main thread `reads` times, then used and changed in copies
+    /// on the main thread, in a launched task and in `parallel`'s bodies, in an order of its own.
+    fn constants(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 20);
+        let reads = i64::from(self.byte() % 4);
+        let main_first = self.choice(2) == 0;
+        let launch_first = self.choice(2) == 0;
+        body.push(Stmt::Constants(Constants { id, base, reads, main_first, launch_first }));
     }
 
     /// Copies of collections and of their parts, each name then changed through the ways of

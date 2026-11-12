@@ -472,7 +472,15 @@ fn builtin_call(
             !chained
                 && !matches!(types.get(&(object.span.start, object.span.end)), None | Some(Type::Unknown))
         }
-        None => !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase)),
+        // With no types, only a receiver with no call in it, which can't be a step that fails
+        // or is missing.
+        None => {
+            let mut calls = false;
+            fennec_syntax::read::in_expr(object, &mut |inner| {
+                calls |= matches!(inner.kind, ExprKind::Call { .. })
+            });
+            !calls && !matches!(&object.kind, ExprKind::Name(named) if named.starts_with(char::is_uppercase))
+        }
     };
     if !value {
         return None;

@@ -6,25 +6,18 @@
 # the bench kernels make. A function not listed here mustn't go unchecked anywhere, and the
 # kernels' counts must match: a fix lowers them, written with FENNEC_UPDATE_UNCHECKED=1.
 #
-# What a failed call hands back before anything reads the flag, from how emitted code declares
-# each (2026-11-12). A failure gives back the type's default (`attempt`), so:
-# - A block's address, 46 functions: null. Using it before the check reads address 0, undefined
-#   in LLVM's terms. The finds (dict_find_by_value, dict_find_slice) are read as maybe-null
-#   already; the rest aren't. Step 2's first PR makes each give back a safe block, or checks it.
-#   alloc args_list block_text bytes_builder bytes_decode bytes_decode_problem bytes_grow
-#   dict_add_new_slice dict_find_by_value dict_find_slice dict_new dict_set dict_set_header
-#   float_text int_text list_extend list_grow list_new list_pop_unshare list_reserve list_slice
-#   list_sorted list_sorted_by list_truncate list_unshare list_with_room not_a_number notes_shown
-#   regex_problem set_clear str_append str_char_at str_codes str_concat str_encode str_from_code
-#   str_from_code_problem str_join str_lower str_replace str_reversed str_strip str_upper
-#   str_with_room text_block unshare
-# - A plain value, 18 functions: zero. Wrong until the check, but nothing read through it.
-#   args_len box_equal box_to_value clock_now dict_popped error_of list_contains notes_add
-#   notes_frame notes_list parse_float parse_int regex_groups regex_is_valid str_compare str_find
-#   text_contains unwrap
-# - Nothing, 7 functions: constant_kept free input native_freed native_made trace_allocated, and
-#   text_of, which writes a string's header through a pointer: what a failed one leaves there is
-#   for step 2 to make safe too.
+# Which of these really fail, as the runtime lane read them (2026-11-12). 46 give back a block's
+# address, and none of the 46 sets the failure flag: they run under `with`, not `attempt`, and a
+# too-big allocation stops the program in the runtime. They're here only because NEVER_FAIL
+# doesn't list them yet. Null comes from them in two ways:
+# - As a normal answer emitted code already tests: str_from_code and bytes_decode (a code that
+#   isn't a character, bytes that aren't UTF-8), and dict_find_by_value and dict_find_slice (not
+#   found).
+# - Only on what a compiler bug would give them, or with no runtime on the thread: the other 42.
+#   The runtime lane's next change makes each stop the program as a bug rather than give back 0,
+#   and lists all 46 as never failing, which takes them off this file.
+# text_of, which gives back nothing and writes a header, has its one bad path (no runtime) made an
+# empty inline header in the same change.
 fennec_alloc in-cant-fail 14
 fennec_alloc unchecked 10
 fennec_args_len unchecked 0

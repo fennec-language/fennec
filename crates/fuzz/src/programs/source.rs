@@ -951,10 +951,14 @@ fn constants_written(constants: &Constants) -> String {
         "def used{id}(n: int) -> str:\n    mut bin = Bin{id}()\n    bin.pushed(n)\n    top = bin.top()\n    mut mine = \
          NUMBERS{id}\n    mine.append(n)\n    mine[0] = n\n    mut spot = SPOT{id}\n    spot.moved(n)\n    mut counts = \
          COUNTS{id}\n    counts[\"m\"] = n\n    return f\"{{top}} {{len(bin.items)}} {{bin.counts}} {{bin.numbers}} {{mine}} \
-         {{spot}} {{counts}} {{len(NOTHING{id})}} {{NUMBERS{id}}} {{COUNTS{id}}} {{SPOT{id}}}\"\n\ndef tasked{id}(stdout: \
-         Stdout):\n    stdout.print(\"task\", used{id}(2))\n    return\n\n"
+         {{spot}} {{counts}} {{len(NOTHING{id})}} {{NUMBERS{id}}} {{COUNTS{id}}} {{SPOT{id}}}\"\n\nstruct Said{id}:\n    \
+         texts: list[str]\n\ndef tasked{id}(said: shared Said{id}):\n    text = used{id}(2)\n    lock said as ref held:\n        \
+         held.texts.append(text)\n    return\n\n"
     );
     let _ = writeln!(out, "def constants{id}(stdout: Stdout) fails Crashed:");
+    // The task hands back what it worked out rather than printing it, so what's checked is what
+    // it saw, whatever order the threads' output comes in.
+    let _ = writeln!(out, "    shared said = Said{id}(texts=list[str]())");
     for _ in 0..reads {
         let _ = writeln!(
             out,
@@ -964,7 +968,10 @@ fn constants_written(constants: &Constants) -> String {
     if main_first {
         let _ = writeln!(out, "    stdout.print(\"main\", used{id}(1))");
     }
-    let launched = format!("    with launch(() => tasked{id}(stdout))?:\n        pass\n");
+    let launched = format!(
+        "    with launch(() => tasked{id}(said))?:\n        pass\n    lock said as held:\n        for text in held.texts:\n            \
+         stdout.print(\"task\", text)\n"
+    );
     let parallel = format!(
         "    for line in [used{id}(i) for i in parallel(range(3))]:\n        stdout.print(\"parallel\", line)\n"
     );

@@ -9,11 +9,14 @@
 //! instructions too.
 //!
 //! `fennec-bench pin` measures the targets again, from the twins that sit beside the kernels.
+//! `fennec-bench rehash` writes only the hashes again, for a change to the kernels' text that
+//! isn't new work.
 //! Everyday runs don't build or run the twins.
 //!
 //! ```text
 //! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR] [--targets DIR] [--report-only]
 //! fennec-bench pin [--fennec PATH] [--kernels DIR] [--targets DIR]
+//! fennec-bench rehash [--fennec PATH] [--kernels DIR] [--targets DIR]
 //! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
@@ -163,6 +166,16 @@ fn main() -> ExitCode {
         return match budgets(args.into_iter().skip(1)) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|first| first == "rehash") {
+        args.remove(0);
+        return match options(args.into_iter()).and_then(|options| rehash(&options)) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 eprintln!("error: {message}");
                 ExitCode::FAILURE
@@ -320,6 +333,43 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
     targets::write(&path, &pinned, &compiler)?;
     targets::write(&targets::unchecked_path(&options.targets), &unchecked, &compiler)?;
     println!("pinned {} kernels in {}", pinned.len(), path.display());
+    Ok(())
+}
+
+/// `fennec-bench rehash`: after a change to the kernels' text that isn't new work, like moving
+/// them to the language's new forms, writes each one's source hash as it now is, and what the
+/// self-hosted front end now prints, which is its input, in every architecture's targets. The
+/// counts and times pinned before stay: re-pin with `pin` when the work changes.
+fn rehash(options: &Options) -> std::result::Result<(), String> {
+    let (_, kernels) = prepared(options)?;
+    let dirs = [options.targets.clone(), options.targets.join("unchecked")];
+    let files = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path());
+    for file in files.filter(|file| file.extension().is_some_and(|ext| ext == "txt")) {
+        let text = std::fs::read_to_string(&file)
+            .map_err(|err| format!("couldn't read {}: {err}", file.display()))?;
+        let compiler = text
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("# Pinned with "))
+            .and_then(|line| line.strip_suffix('.'))
+            .ok_or_else(|| format!("{} doesn't say what pinned it", file.display()))?
+            .to_owned();
+        let mut targets = targets::read(&file)?;
+        for kernel in &kernels {
+            let Some(target) = targets.get_mut(&kernel.name) else { continue };
+            target.source = kernel.source_hash()?;
+            if let Some(printed) = kernel.front_end_output(&options.fennec)? {
+                target.output = kernels::hash(&printed);
+            }
+        }
+        targets::write(&file, &targets, &compiler)?;
+        println!("rehashed {}", file.display());
+    }
     Ok(())
 }
 

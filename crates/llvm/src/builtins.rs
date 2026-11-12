@@ -701,6 +701,13 @@ impl Emit<'_, '_, '_> {
             ("str.chars", [text]) => result(dest).and_then(|dest| self.chars(dest, text)),
             ("dict.get", _) => result(dest).and_then(|dest| self.dict_get(dest, args)),
             ("dict.pop", [_, _]) => self.dict_pop(dest, args, span),
+            // Only gone through in order, a dict's keys, values or items are never made: the
+            // loop walks its entries.
+            ("dict.items" | "dict.keys" | "dict.values", [_])
+                if dest.is_some_and(|dest| self.known.map_walks.contains_key(&dest.0)) =>
+            {
+                Ok(())
+            }
             ("dict.items", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "items")),
             ("dict.keys", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "keys")),
             ("dict.values", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "values")),

@@ -115,6 +115,8 @@ pub(crate) struct Analysis {
     pub(crate) map_walks: HashMap<usize, LocalId>,
     /// What such a loop reads each time round: which map, and whether it's a pair to take apart.
     pub(crate) walk_items: HashMap<usize, (LocalId, bool)>,
+    /// Of those, the ones reading a dict's keys rather than its values.
+    pub(crate) walk_keys: HashSet<usize>,
     /// Pairs read from those, never made: the list, and the index the pair is at.
     pub(crate) pairs: HashMap<usize, (LocalId, Operand)>,
     /// Reads of a list's item, by block and place in it, that a guard proves in range: see
@@ -2938,6 +2940,7 @@ impl Analysis {
             last_copies: HashSet::new(),
             enumerated: HashMap::new(),
             map_walks: HashMap::new(),
+            walk_keys: HashSet::new(),
             walk_items: HashMap::new(),
             pairs: HashMap::new(),
             guarded_reads: HashSet::new(),
@@ -3193,7 +3196,13 @@ fn walk_leaves_alone(function: &Function, made: LocalId, map: LocalId, read_at: 
             }
     };
     from_start.intersection(&to_read).all(|at| {
-        let skipped = if *at == start && !to_read_comes_back(&to_read, &before, start) { first } else { 0 };
+        // What comes before the walk's asked for in its own block always runs before it's asked
+        // for again, which starts the walk over, so only a read in that block can see it.
+        let skipped = if *at == start && (read_at != start || !to_read_comes_back(&to_read, &before, start)) {
+            first
+        } else {
+            0
+        };
         function
             .blocks
             .get(*at)
@@ -3251,7 +3260,10 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
             }
         }
         let of_text = function.locals.get(list.0).is_some_and(|local| local.ty == Type::Str);
-        let walks = matches!(name.as_str(), "Table.items" | "Table.values");
+        let walks = matches!(
+            name.as_str(),
+            "Table.items" | "Table.values" | "dict.items" | "dict.values" | "dict.keys"
+        );
         // A loop over a map can't change it, as the checker sees to, so a walk only needs nothing
         // to change it from when this was asked for until its loop's done. Something else can
         // reach a map through a `shared` handle, so unless it's known steady, the local holds an
@@ -3309,7 +3321,9 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 .all(|(_, _, walked_at, _)| walk_leaves_alone(function, *made, *list, *walked_at));
         }
         // Each pair is only taken apart, after it's read, in its block.
-        for (pair, _, at, index) in pairs.iter().filter(|_| name != "Table.values") {
+        for (pair, _, at, index) in
+            pairs.iter().filter(|_| !matches!(name.as_str(), "Table.values" | "dict.values" | "dict.keys"))
+        {
             let Some(block) = function.blocks.get(*at) else { continue };
             let later = block.insts.get(index + 1..).unwrap_or_default();
             let mut uses = 0;
@@ -3336,7 +3350,10 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 known.map_walks.insert(local.0, *list);
             }
             for (item, _, _, _) in pairs {
-                known.walk_items.insert(item.0, (*list, name == "Table.items"));
+                known.walk_items.insert(item.0, (*list, name.ends_with(".items")));
+                if name == "dict.keys" {
+                    known.walk_keys.insert(item.0);
+                }
             }
         } else if fine {
             for local in &group {

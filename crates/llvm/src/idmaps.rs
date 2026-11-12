@@ -731,6 +731,10 @@ impl Emit<'_, '_, '_> {
     /// How many items a map being walked has, which is how many times its loop goes round.
     pub(crate) fn walked_live(&mut self, map: LocalId) -> Result<String, String> {
         let kind = self.kind_of(map)?.clone();
+        if matches!(kind, Kind::Dict(..)) {
+            let (block, _) = self.operand(&Operand::Local(map))?;
+            return Ok(self.dict_length(&block));
+        }
         let parts = self.parts(&kind)?;
         let (block, _) = self.operand(&Operand::Local(map))?;
         let fields = self.offset(&block, FIELDS_OFFSET);
@@ -800,6 +804,9 @@ impl Emit<'_, '_, '_> {
     /// A part of the pair a walk is on: its `Id`, or its item.
     pub(crate) fn walked_part(&mut self, dest: LocalId, pair: LocalId, part: usize) -> Result<(), String> {
         let (map, _) = self.known.walk_items.get(&pair.0).copied().ok_or("a walk with no map")?;
+        if matches!(self.kind_of(map)?, Kind::Dict(..)) {
+            return self.dict_walked_part(dest, pair, map, part);
+        }
         let (slot_place, generation_place) =
             self.walks.get(&pair.0).cloned().ok_or("a pair read before it's made")?;
         let (at, generation) = (self.temp(), self.temp());

@@ -18285,6 +18285,98 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A dict's `values()`, `keys()` and `items()`, gone through by a `for`, a comprehension or a
+/// `sum`, are read where they are, its entries walked in order past those removed, rather than
+/// made as a list each time: two hundred rounds of each make nothing more than one. `sum` over
+/// one is the loop it stands for. The same goes for a dict reached through an item a loop over
+/// a `Table` reads.
+#[test]
+fn a_dicts_views_are_walked_where_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("dict_views_walked")?;
+    std::fs::write(dir.join("dict_views_walked.fen"), DICT_VIEWS_WALKED)?;
+    std::fs::write(dir.join("dict_in_items.fen"), DICT_IN_ITEMS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "dict_views_walked", how)?;
+        assert_eq!(printed, DICT_VIEWS_PRINT, "{how:?}");
+        assert!(count(&counts, "allocations") < Some(60) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+        let (printed, counts) = printed_and_counts(&dir, "dict_in_items", how)?;
+        assert_eq!(printed, "515000\n", "{how:?}");
+        assert!(count(&counts, "allocations") < Some(400), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const DICT_VIEWS_PRINT: &str = r#"671400 42
+[123, 129, 132, 135, 138, 141, 144]
+["k1", "k2", "k3"] [("k1", 3), ("k2", 6)]
+kitden 12
+0.875 6
+0 []
+"#;
+
+const DICT_VIEWS_WALKED: &str = r#"struct Unit:
+    hp: int
+    name: str
+
+def main(stdout: Stdout):
+    mut d = dict[str, int]()
+    for n in range(50):
+        d[f"k{n}"] = n * 3
+    for n in range(0, 50, 7):
+        _ = d.pop(f"k{n}")
+    mut total = 0
+    for _ in range(200):
+        total += sum(d.values())
+        for key in d.keys():
+            total += len(key)
+        for key, value in d.items():
+            total += len(key) * value % 7
+        for value in d.values():
+            total -= value % 3
+    stdout.print(total, len(d))
+    stdout.print([value for value in d.values() if value > 120])
+    stdout.print([key for key in d.keys()][0:3], [pair for pair in d.items()][0:2])
+    mut units = {"a": Unit(hp=3, name="fox"), "b": Unit(hp=5, name="kit")}
+    _ = units.pop("a")
+    units["c"] = Unit(hp=7, name="den")
+    mut names = ""
+    for unit in units.values():
+        names += unit.name
+    stdout.print(names, sum(unit.hp for unit in units.values()))
+    floats = {1: 0.5, 2: 0.25, 3: 0.125}
+    stdout.print(sum(floats.values()), sum(floats.keys()))
+    empty = dict[str, int]()
+    stdout.print(sum(empty.values()), [k for k in empty.keys()])
+    return
+"#;
+
+const DICT_IN_ITEMS: &str = r#"from std.collections import Table
+
+struct E:
+    n: int
+    inventory: dict[str, int]
+
+def carried(es: Table[E]) -> int:
+    mut total = 0
+    for e in es:
+        total += sum(e.inventory.values())
+    return total
+
+def main(stdout: Stdout):
+    mut es = Table[E]()
+    for n in range(100):
+        _ = es.add(E(n=n, inventory={"gold": n, "arrow": 2}))
+    mut t = 0
+    for _ in range(100):
+        t += carried(es)
+    stdout.print(t)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

@@ -1482,6 +1482,9 @@ impl Emit<'_, '_, '_> {
             return self.array_get(dest, (object, shape), index, span);
         }
         if let Some((map, _)) = self.known.walk_items.get(&dest.0).copied() {
+            if matches!(self.kind_of(map)?, Kind::Dict(..)) {
+                return self.dict_walk_to_next(dest, map, index, span);
+            }
             return self.walk_to_next(dest, map, index, span);
         }
         // A pair from an `enumerate` never made isn't made either: where it points in the list

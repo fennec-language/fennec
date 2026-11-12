@@ -1827,6 +1827,130 @@ found:
         self.assign(dest, &list)
     }
 
+    /// Where a dict's entries start, and how many have been used, removed ones included.
+    fn entries_of(&mut self, dict: &str) -> (String, String) {
+        let (mask_at, mask, count, used_at, used, slots, entries) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{mask_at} = getelementptr inbounds i8, ptr {dict}, i64 {MASK}"));
+        self.line(&format!("{mask} = load i64, ptr {mask_at}"));
+        self.line(&format!("{count} = add i64 {mask}, 1"));
+        self.line(&format!("{used_at} = getelementptr inbounds i8, ptr {dict}, i64 {USED}"));
+        self.line(&format!("{used} = load i64, ptr {used_at}"));
+        self.line(&format!("{slots} = getelementptr inbounds i8, ptr {dict}, i64 {}", header_bytes()));
+        self.line(&format!("{entries} = getelementptr inbounds i64, ptr {slots}, i64 {count}"));
+        (entries, used)
+    }
+
+    /// An entry of a dict, by where it is among the entries.
+    fn entry_at(&mut self, entries: &str, key_word: Word, at: &str) -> String {
+        let entry_at = self.temp();
+        self.line(&format!(
+            "{entry_at} = getelementptr inbounds [{} x i64], ptr {entries}, i64 {at}",
+            entry_words(key_word)
+        ));
+        entry_at
+    }
+
+    /// Reads a key or a value of an entry into a local.
+    fn read_entry_part(
+        &mut self,
+        dest: LocalId,
+        entry_at: &str,
+        (key_word, value_word): (Word, Word),
+        key: bool,
+    ) -> Result<(), String> {
+        let (word, offset) = if key { (key_word, ENTRY_KEY) } else { (value_word, entry_value(key_word)) };
+        let kind = self.word_kind(word).ok_or("a dict part this backend doesn't take yet")?;
+        let at = self.temp();
+        self.line(&format!("{at} = getelementptr inbounds i8, ptr {entry_at}, i64 {offset}"));
+        let at = self.value_place(&kind, &at);
+        self.read_into(dest, &kind, &at, "")
+    }
+
+    /// Goes on to a dict's next entry that hasn't been removed, for a loop over its keys, values or
+    /// items that never makes the list. The loop counts the dict's entries and nothing here
+    /// changes it, so there's always one, and running off the end stops rather than trusting
+    /// that. A count of 0 starts again, in case it's gone through more than once.
+    pub(crate) fn dict_walk_to_next(
+        &mut self,
+        dest: LocalId,
+        dict: LocalId,
+        index: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        let (block, kind) = self.operand(&Operand::Local(dict))?;
+        let Kind::Dict(key_word, value_word) = kind else {
+            return Err("a walk over something else".to_owned());
+        };
+        let (entries, used) = self.entries_of(&block);
+        let (next_place, entry_place) = (self.place_for(&Kind::Int), self.place_for(&Kind::Int));
+        let (count, _) = self.operand(index)?;
+        let (saved, first, start) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{saved} = load i64, ptr {next_place}"));
+        self.line(&format!("{first} = icmp eq i64 {count}, 0"));
+        self.line(&format!("{start} = select i1 {first}, i64 0, i64 {saved}"));
+        let before = self.current.clone();
+        let (head, inside, again, found, past) = (
+            self.label("walk"),
+            self.label("walk_in"),
+            self.label("walk_on"),
+            self.label("walked"),
+            self.label("walk_past"),
+        );
+        let (going, within, step) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        self.line(&format!("{going} = phi i64 [ {start}, %{before} ], [ {step}, %{again} ]"));
+        self.line(&format!("{within} = icmp slt i64 {going}, {used}"));
+        self.line(&format!("br i1 {within}, label %{inside}, label %{past}, !prof !8"));
+        self.start_block(&past);
+        self.stop("a loop over a dict went past its entries", span);
+        self.start_block(&inside);
+        let entry_at = self.entry_at(&entries, key_word, &going);
+        let (hash, removed) = (self.temp(), self.temp());
+        self.line(&format!("{hash} = load i64, ptr {entry_at}"));
+        self.line(&format!("{removed} = icmp eq i64 {hash}, {REMOVED}"));
+        self.line(&format!("{step} = add i64 {going}, 1"));
+        self.line(&format!("br i1 {removed}, label %{again}, label %{found}"));
+        self.start_block(&again);
+        self.line(&format!("br label %{head}"));
+        self.start_block(&found);
+        self.line(&format!("store i64 {step}, ptr {next_place}"));
+        self.line(&format!("store i64 {going}, ptr {entry_place}"));
+        self.walks.insert(dest.0, (entry_place, String::new()));
+        if self.known.walk_items.get(&dest.0).is_some_and(|(_, pair)| *pair) {
+            // A pair never made holds nothing, so letting go of it lets go of nothing.
+            let (held, text) = (self.slot(dest), self.text_of(&self.kind_of(dest)?.clone()));
+            let dest_kind = self.kind_of(dest)?.clone();
+            if dest_kind.in_memory() || dest_kind.counted() {
+                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+            }
+            return Ok(());
+        }
+        let key = self.known.walk_keys.contains(&dest.0);
+        self.read_entry_part(dest, &entry_at, (key_word, value_word), key)
+    }
+
+    /// A part of the pair a walk over a dict's items is on: its key, or its value.
+    pub(crate) fn dict_walked_part(
+        &mut self,
+        dest: LocalId,
+        pair: LocalId,
+        dict: LocalId,
+        part: usize,
+    ) -> Result<(), String> {
+        let (entry_place, _) = self.walks.get(&pair.0).cloned().ok_or("a pair read before it's made")?;
+        let (block, kind) = self.operand(&Operand::Local(dict))?;
+        let Kind::Dict(key_word, value_word) = kind else {
+            return Err("a walk over something else".to_owned());
+        };
+        let (entries, _) = self.entries_of(&block);
+        let at = self.temp();
+        self.line(&format!("{at} = load i64, ptr {entry_place}"));
+        let entry_at = self.entry_at(&entries, key_word, &at);
+        self.read_entry_part(dest, &entry_at, (key_word, value_word), part == 0)
+    }
+
     /// A key or value from where a dict keeps it: a plain struct key is in a block of its own.
     fn dict_part(&mut self, kind: &Kind, at: &str) -> String {
         if kind.in_memory() {

@@ -135,7 +135,7 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
             crate::verdict::KitFacts::of(crate::verdict::KitNames::of(&program.module.items), &signatures)
         }
         Err(diagnostics) => {
-            eprint!("{}", program.sources.render_all(&diagnostics));
+            eprint!("{}", program.render(&diagnostics));
             return Err(ExitCode::FAILURE);
         }
     };

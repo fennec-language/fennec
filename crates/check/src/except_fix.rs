@@ -12,6 +12,7 @@
 //! it's left to be written by hand, as the migration's refusal of it will say.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Sources, Span, Stmt, StmtKind};
 
@@ -232,7 +233,169 @@ fn failure_fixes(
             }
         });
     }
+    if let (Some(typed_exprs), Some(checked)) = (&typed_exprs, &checked) {
+        for module in modules {
+            found.extend(hoisted(module, (typed_exprs, &checked.signatures), sources, library));
+        }
+    }
     found
+}
+
+/// Each `else` on a call that can fail inside a statement's expression, where `except` can't
+/// stand, written on a line of its own before the statement, into a name the statement then
+/// reads: `stdout.print(load(n) else -1)` becomes `load_value = load(n) except .Bad(): -1` and
+/// `stdout.print(load_value)`. Only where moving the call first changes nothing: not inside an
+/// arrow function, a comprehension, a conditional, the right of `and` or `or`, or another
+/// `else`'s value, and with nothing before it in the statement that calls anything.
+fn hoisted(
+    module: &Module,
+    (types, signatures): (&HashMap<(u32, u32), &Type>, &crate::Signatures),
+    sources: &Sources,
+    library: bool,
+) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    // The file's own names, which a new local mustn't hide.
+    let top: HashSet<String> = module.items.iter().filter_map(defined_name).collect();
+    let mut bodies: Vec<&[Stmt]> = Vec::new();
+    for item in &module.items {
+        match item {
+            Item::Function(def) => bodies.push(&def.body),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                bodies.extend(def.methods.iter().map(|def| def.body.as_slice()));
+            }
+            Item::Extend(extension) => bodies.extend(extension.methods.iter().map(|def| def.body.as_slice())),
+            Item::Test(test) => bodies.push(&test.body),
+            _ => {}
+        }
+    }
+    for body in bodies {
+        let mut stmts = Vec::new();
+        statements(body, &mut stmts);
+        // The names the body uses already, which a new one takes a number past.
+        let mut taken = top.clone();
+        fennec_syntax::read::in_stmts(body, &mut |expr| {
+            if let ExprKind::Name(name) = &expr.kind {
+                taken.insert(name.clone());
+            }
+        });
+        for stmt in stmts {
+            if stmt.span.in_prelude() != library {
+                continue;
+            }
+            let (StmtKind::Expr(value) | StmtKind::Return(Some(value)) | StmtKind::Assign { value, .. }) =
+                &stmt.kind
+            else {
+                continue;
+            };
+            if let Some(fix) = hoist_in(stmt, value, (types, signatures), sources, &mut taken) {
+                found.push(fix);
+            }
+        }
+    }
+    found
+}
+
+/// The name an item declares at the top of a file.
+fn defined_name(item: &Item) -> Option<String> {
+    match item {
+        Item::Function(def) => Some(def.name.clone()),
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some(def.name.clone()),
+        Item::Const { name, .. } | Item::TypeAlias { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The hoist for one statement whose value is `value`, when it has any `else` to move.
+fn hoist_in(
+    stmt: &Stmt,
+    value: &Expr,
+    (types, signatures): (&HashMap<(u32, u32), &Type>, &crate::Signatures),
+    sources: &Sources,
+    taken: &mut HashSet<String>,
+) -> Option<Diagnostic> {
+    // The parts of the statement that may not run, or run later or many times.
+    let mut held: Vec<Span> = Vec::new();
+    let mut calls: Vec<Span> = Vec::new();
+    let mut elses: Vec<&Expr> = Vec::new();
+    fennec_syntax::read::in_expr(value, &mut |inner| match &inner.kind {
+        ExprKind::Lambda { .. } | ExprKind::Comprehension { .. } | ExprKind::Match { .. } => {
+            held.push(inner.span);
+        }
+        ExprKind::Cond { then, cond, otherwise } => held.extend([then.span, cond.span, otherwise.span]),
+        ExprKind::Binary { op: fennec_syntax::BinOp::And | fennec_syntax::BinOp::Or, rhs, .. } => {
+            held.push(rhs.span);
+        }
+        ExprKind::Else { value: failing, default, except: false } => {
+            held.push(default.span);
+            if matches!(types.get(&(failing.span.start, failing.span.end)), Some(Type::Result(..))) {
+                elses.push(inner);
+            }
+        }
+        ExprKind::Else { default, .. } => held.push(default.span),
+        ExprKind::Call { .. } => calls.push(inner.span),
+        _ => {}
+    });
+    let within = |outer: Span, inner: Span| outer.start <= inner.start && inner.end <= outer.end;
+    // The statement's own `else` that's all of its value is the other rewrite's.
+    elses.retain(|found| {
+        found.span != value.span
+            || !matches!(
+                stmt.kind,
+                StmtKind::Expr(_) | StmtKind::Return(_) | StmtKind::Assign { op: None, .. }
+            )
+    });
+    let text = Text::of(sources, stmt.span)?;
+    let line = text.get(Span { start: text.base, end: stmt.span.start })?;
+    let indent = line.rsplit('\n').next().unwrap_or_default();
+    if !indent.trim().is_empty() {
+        return None;
+    }
+    let mut lines = String::new();
+    let mut diagnostic =
+        Diagnostic::new("a failure is handled with `except` on a line of its own", stmt.span);
+    let mut moved: Vec<Span> = Vec::new();
+    for found in elses {
+        let ExprKind::Else { value: failing, default, .. } = &found.kind else { continue };
+        if held.iter().any(|outer| within(*outer, found.span) && *outer != found.span)
+            || default.else_block().is_some()
+            // Anything that calls before it, outside what's moved already, would run after it.
+            || calls.iter().any(|call| call.end <= found.span.start && !moved.iter().any(|done| within(*done, *call)))
+        {
+            return None;
+        }
+        let Some(Type::Result(_, error)) = types.get(&(failing.span.start, failing.span.end)) else {
+            return None;
+        };
+        let patterns: Vec<String> =
+            failures(error, signatures)?.into_iter().map(|(_, pattern)| pattern).collect();
+        let base = match &failing.kind {
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Name(name) => name.rsplit('.').next().unwrap_or(name).to_owned(),
+                ExprKind::Attr { name, .. } => name.clone(),
+                _ => "got".to_owned(),
+            },
+            _ => "got".to_owned(),
+        };
+        let mut name = format!("{base}_value");
+        let mut number = 2;
+        while taken.contains(&name) {
+            name = format!("{base}_value{number}");
+            number += 1;
+        }
+        taken.insert(name.clone());
+        let called = text.get(failing.span)?;
+        let instead = text.get(default.span)?.trim();
+        let _ = writeln!(lines, "{indent}{name} = {called} except {}: {instead}", patterns.join(" | "));
+        diagnostic = diagnostic.with_fix(Span { start: failing.span.start, end: default.span.end }, name);
+        moved.push(found.span);
+    }
+    if moved.is_empty() {
+        return None;
+    }
+    // Where the statement's line starts, ahead of anything written at the statement itself, as
+    // the `return` its `def` may get.
+    let line_start = stmt.span.start - u32::try_from(indent.len()).ok()?;
+    Some(diagnostic.with_fix(Span { start: line_start, end: line_start }, lines))
 }
 
 /// `x.len()` or `x.abs()` on a value, written as the builtin, `len(x)` or `abs(x)`. One holding
@@ -701,7 +864,7 @@ mod tests {
         let base = sources.add("forms.fen", source);
         let module = fennec_syntax::parse(source).unwrap();
         let fixes = super::migration_fixes(&module, &sources);
-        let written = fennec_syntax::apply_fixes(source, base, &fixes).unwrap();
+        let written = fennec_syntax::apply_fixes(source, base, &fixes).unwrap_or_else(|| source.to_owned());
         let rewritten = fennec_syntax::parse(&written).unwrap();
         assert!(crate::check_typed(&rewritten).is_ok(), "{written}");
         written
@@ -775,7 +938,7 @@ mod tests {
     }
 
     /// A case that names the failure again, `case error:`, becomes `case _:` with `error`
-    /// given `why`, and `x += f() else d`, where `except` can't stand, is left as it is.
+    /// given `why`, and `x += f() else d`, where `except` can't stand, gets a line of its own.
     #[test]
     fn a_case_naming_the_failure_again_reads_why() {
         let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
@@ -784,10 +947,31 @@ mod tests {
             got = load(n) else as why:\n        match why:\n            case .Long(size):\n                return size\n            \
             case problem:\n                stdout.print(problem)\n                return -1\n    return got + total\n\n\
             def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
-        let expected = "    total += load(n) else 1\n    got = load(n) except why:\n        case .Long(size):\n            \
+        let expected = "    load_value = load(n) except .Empty | .Long(): 1\n    total += load_value\n    got = load(n) except why:\n        case .Long(size):\n            \
             return size\n        case _:\n            problem = why\n            stdout.print(problem)\n            return -1\n";
         let migrated = migrated(source);
         assert!(migrated.contains(expected), "{migrated}");
+    }
+
+    /// An `else` on a failing call inside a statement goes on a line of its own before it, into a
+    /// name the statement reads, one for each, in order, and a `def`'s last line still gets its
+    /// `return`. One inside an arrow function, or after a call that runs first, stays.
+    #[test]
+    fn an_else_inside_a_statement_goes_on_a_line_of_its_own() {
+        let source = "error Bad:\n    Empty\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shout(stdout: Stdout) -> int:\n    stdout.print(\"!\")\n    return 0\n\n\
+            def both(n: int) -> int:\n    (load(n) else 0) + (load(n + 1) else 1)\n\n\
+            def main(stdout: Stdout):\n    stdout.print(\"a\", load(1) else -1, load(2) else -2)\n    \
+            stdout.print(both(2), shout(stdout), load(3) else 0)\n";
+        let once = migrated(source);
+        let twice = migrated(&once);
+        assert!(
+            twice.contains("    load_value = load(1) except .Empty: -1\n    load_value2 = load(2) except .Empty: -2\n    stdout.print(\"a\", load_value, load_value2)\n"),
+            "{twice}"
+        );
+        assert!(twice.contains("    load_value = load(n) except .Empty: 0\n    load_value2 = load(n + 1) except .Empty: 1\n    return (load_value) + (load_value2)\n"), "{twice}");
+        assert!(twice.contains("stdout.print(both(2), shout(stdout), load(3) else 0)"), "{twice}");
     }
 
     /// A def's last value gets `return`, and a def that gives nothing is left as it is.

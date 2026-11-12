@@ -4339,6 +4339,38 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `int.parse` reads a short int written plainly where its text is, and leaves everything else
+/// to the runtime: so each of these reads as Rust's `trim().parse::<i64>()` reads it, on either
+/// side of 18 digits, with a sign, with space around it, past the top, and in a block.
+#[test]
+fn an_int_read_from_text_is_read_the_same_however_its_written() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "int_read_plainly",
+        "def main(stdout: Stdout):
+    texts = [
+        \"0\", \"-0\", \"7\", \"-7\", \"007\", \"123456789012345678\", \"-123456789012345678\",
+        \"1234567890123456789\", \"-9223372036854775808\", \"9223372036854775807\",
+        \"9223372036854775808\", \" 42 \", \"+5\", \"4_2\", \"\", \"-\", \"--1\", \"12a\", \"a12\",
+        \"\u{661}\u{662}\", \"000000000000000000000000000042\", \"-00000000000000000000000000042\",
+    ]
+    for text in texts:
+        n = int.parse(text) except problem:
+            stdout.print(\"failed:\", problem.message)
+            continue
+        stdout.print(n)
+",
+        "0\n0\n7\n-7\n7\n123456789012345678\n-123456789012345678\n\
+         1234567890123456789\n-9223372036854775808\n9223372036854775807\n\
+         failed: \"9223372036854775808\" isn't an int\n42\n5\n\
+         failed: \"4_2\" isn't an int\nfailed: \"\" isn't an int\nfailed: \"-\" isn't an int\n\
+         failed: \"--1\" isn't an int\nfailed: \"12a\" isn't an int\nfailed: \"a12\" isn't an int\n\
+         failed: \"\u{661}\u{662}\" isn't an int\n42\n-42\n",
+    )
+}
+
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
 /// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
 /// `saturating_` methods, worked out on its 64 bits without going past them.
@@ -20055,6 +20087,49 @@ fn string_methods_the_runtime_runs_match_what_was_pinned() -> std::io::Result<()
     stdout.print("a b  c".split(), "a,b,,c".split(","), "".split(), "xyx".split("y"))
 "#,
     )
+}
+
+/// `split` hands the runtime its text and separator as their headers: each inline or in a
+/// block, with none, and with an empty one, which fails as the method says.
+#[test]
+fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "split_headers",
+        r#"def main(stdout: Stdout):
+    long_separator = " and then, after all of that, "
+    long_text = "first and then, after all of that, second and then, after all of that, third"
+    stdout.print("a b".split(" "), long_text.split(long_separator), "a b".split(long_separator))
+    stdout.print(long_text.split(), "  spaced   out  ".split(), "".split(), "x".split("x"))
+    empty = len(long_text) - len(long_text)
+    stdout.print(long_text[:empty].split(","), "short".split(long_text[:empty] + ","))
+    stdout.print("a,b".split("a,b,c"[:empty + 1]))
+    return
+"#,
+        "[\"a\", \"b\"] [\"first\", \"second\", \"third\"] [\"a b\"]\n\
+         [\"first\", \"and\", \"then,\", \"after\", \"all\", \"of\", \"that,\", \"second\", \"and\", \"then,\", \"after\", \"all\", \"of\", \"that,\", \"third\"] [\"spaced\", \"out\"] [] [\"\", \"\"]\n\
+         [\"\"] [\"short\"]\n\
+         [\"\", \",b\"]\n",
+    )?;
+    // An empty separator, made where it runs, fails as the method says.
+    let dir = folder("split_empty_separator")?;
+    let (program, executable) = (dir.join("empty.fen"), dir.join("empty"));
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    text = \"a,b\"\n    stdout.print(text.split(text[:len(text) - 3]))\n",
+    )?;
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stderr).lines().next(),
+        Some("error: `split` was called with the wrong arguments")
+    );
+    Ok(())
 }
 
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.

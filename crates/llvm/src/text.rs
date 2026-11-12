@@ -1650,7 +1650,30 @@ tagged:
                 self.line(&format!("store i64 {value}, ptr {place}"));
                 Ok(())
             }
-            // With no separator, on runs of spaces. An empty one fails.
+            // With no separator, on runs of spaces. An empty one fails. Headers go to the runtime
+            // as their words, so neither is made a block first; three zeros, which no header is,
+            // say there's no separator.
+            "str.split" if self.headers() => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+                let [s0, s1, s2] = match args.get(1) {
+                    Some(separator) => {
+                        let (separator, _) = self.operand(separator)?;
+                        [0, 1, 2].map(|at| self.header_word(&separator, at))
+                    }
+                    None => ["0".to_owned(), "0".to_owned(), "0".to_owned()],
+                };
+                self.declare(
+                    "declare ptr @fennec_str_split_header(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                );
+                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let parts = self.temp();
+                self.line(&format!(
+                    "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                self.assign(dest.ok_or("no result")?, &parts)
+            }
             "str.split" => {
                 let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let separator = match args.get(1) {

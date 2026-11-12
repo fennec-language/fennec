@@ -367,7 +367,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// An inline header's length in bytes: what byte 23 holds below its top bit.
-    fn inline_length(&mut self, header: &str) -> String {
+    pub(crate) fn inline_length(&mut self, header: &str) -> String {
         let last = self.header_word(header, 2);
         let (shifted, length) = (self.temp(), self.temp());
         self.line(&format!("{shifted} = lshr i64 {last}, 56"));

@@ -109,8 +109,10 @@ fn quickest(program: &str) -> Duration {
 
 /// Formatting takes time in proportion to the program: four times the lines takes about four
 /// times as long, where work that grows with the square would take sixteen. A busy machine slows
-/// both sizes alike, so their ratio holds where a limit in seconds wouldn't.
+/// both sizes alike, so their ratio holds where a limit in seconds wouldn't. It reads a clock, so
+/// it's no required check: the nightly Proofs run runs it, in release.
 #[test]
+#[ignore = "timing: the nightly Proofs run runs it"]
 fn formats_a_big_program_in_time_in_proportion() {
     let (small, big) = (big_program(10_000).unwrap(), big_program(40_000).unwrap());
     assert!(fennec_fmt::format(&big).unwrap().lines().count() >= 40_000);

@@ -22,6 +22,7 @@ cargo build --release -p fennec -p fennec-bench
 | Object-heavy code with dispatch | `richards`, `deltablue` |
 | Shared state under a lock | `locks`, a counter and a dict changed under `lock ... as ref` in a loop |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
+| A game server's tick | `game_tick`: a `Table` of entities with inventory dicts, commands through a channel, a grid lookup with `parallel` over its cells, and a `pack` snapshot |
 | Game AI | `pathfind`: A* on a 512 by 512 map for many units, with a `Heap` of structs ordered by `<` and a dict of the cells visited |
 | Physics | `physics`: balls in a box as lists of `std.math`'s `Vec3`, filed in a grid by a counting sort for the broad phase, and pushed apart and bounced |
 | A developer's tool | `grep_tool`: a tree of source files written and walked through an `Fs` narrowed with `only`, read in chunks and matched line by line with `std.re` |

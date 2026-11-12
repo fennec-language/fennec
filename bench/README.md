@@ -22,6 +22,7 @@ cargo build --release -p fennec -p fennec-bench
 | Object-heavy code with dispatch | `richards`, `deltablue` |
 | Shared state under a lock | `locks`, a counter and a dict changed under `lock ... as ref` in a loop |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
+| A game server's tick | `game_tick`: a `Table` of entities with inventory dicts, commands through a channel, a grid lookup with `parallel` over its cells, and a `pack` snapshot |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 | A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |
 

@@ -66,15 +66,19 @@ pub(super) fn inline_word(word: u64, length: u8) -> [u64; 3] {
     [word, 0, u64::from(INLINE | length) << 56]
 }
 
-/// An inline header holding `bytes`, which are 23 or fewer. They're copied a byte at a time,
-/// which for so few is quicker than a call to copy them.
+/// An inline header holding `bytes`, which are 23 or fewer, packed a word at a time.
 pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
-    let mut packed = [0_u8; 24];
     let length = bytes.len().min(INLINE_BYTES);
-    for (to, from) in packed.iter_mut().zip(bytes.iter().take(length)) {
-        *to = *from;
+    let mut words = [0_u64; 3];
+    for (word, chunk) in words.iter_mut().zip(bytes.get(..length).unwrap_or_default().chunks(8)) {
+        let mut eight = [0_u8; 8];
+        eight.get_mut(..chunk.len()).unwrap_or_default().copy_from_slice(chunk);
+        *word = u64::from_le_bytes(eight);
     }
-    packed_header(packed, length)
+    // The tag goes in the last byte, which 23 bytes leave free.
+    let [first, second, mut last] = words;
+    last |= u64::from(INLINE | u8::try_from(length).unwrap_or(0)) << 56;
+    [first, second, last]
 }
 
 /// The header of `packed`, whose first `length` bytes, 23 or fewer, are a text's, with its tag
@@ -141,6 +145,11 @@ pub(super) fn texts(state: &State, words: &[u64]) -> Vec<String> {
     words.as_chunks::<3>().0.iter().map(|header| text_of(state, header)).collect()
 }
 
+/// Whether a byte of UTF-8 carries on a character begun before it.
+fn is_continuation(byte: u8) -> bool {
+    byte & 0xC0 == 0x80
+}
+
 /// `fennec_text_block(a, b, c)`: a string's block, owned once, for the runtime's string calls,
 /// which take blocks. An inline string is copied into a new block; a string in a block gives
 /// that block, with one more owner.
@@ -148,8 +157,10 @@ pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     let words = [a, b, c];
     super::made_with("fennec_text_block", |state| {
         if let Some(bytes) = inline_bytes(&words) {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            return text_from_bytes(state, text.as_bytes(), text.chars().count());
+            // A header's bytes are a string's, already UTF-8, so its characters are its bytes
+            // that don't carry on one before them.
+            let chars = bytes.iter().filter(|byte| !is_continuation(**byte)).count();
+            return text_from_bytes(state, &bytes, chars);
         }
         let address = block_of(&words).unwrap_or(0);
         retain(state, address);

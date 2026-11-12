@@ -10875,7 +10875,7 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = peak {
+    if let Some(peak) = measured(peak) {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
@@ -10946,10 +10946,20 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    if let Some(peak) = peak {
+    if let Some(peak) = measured(peak) {
         assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
+}
+
+/// The peak `with_peak_memory` read, which only Windows, with no `/usr/bin/time`, goes without.
+/// Anywhere else a peak that wasn't read fails, so a memory limit is never passed unchecked.
+fn measured(peak: Option<u64>) -> Option<u64> {
+    assert!(
+        peak.is_some() || cfg!(windows),
+        "no peak memory was read: /usr/bin/time is missing, or what it printed has changed"
+    );
+    peak
 }
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.

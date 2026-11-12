@@ -1,12 +1,17 @@
 //! A lint over emitted code: every call to a runtime function that can fail is followed by its
 //! check. The runtime notes a failure in a flag and gives back a zero (`attempt`), so a call
-//! whose flag nothing reads carries on with that zero as if it were a value. Which functions can
-//! fail is the runtime's to say, in `fennec_runtime::CAN_FAIL`.
+//! whose flag nothing reads carries on with that zero as if it were a value, and the failure is
+//! said later, somewhere else, if at all. Every runtime function can fail but those in
+//! `fennec_runtime::NEVER_FAIL`, so one left off that list costs a check, not a missed failure.
 //!
 //! From each such call, every way on must reach the check, or leave as a failure does, before it
 //! calls anything else or gives back as a function that didn't fail. Letting go of what's held
 //! comes first on some ways, which calls only what frees. And the call must be in a function that
-//! can fail: one that can't leaves by `unreachable`, which a failure there would reach.
+//! can fail: one emitted as unable to has nowhere to send a failure, so nothing checks there.
+//!
+//! What emitted code doesn't check yet is held to a ratchet, `unchecked_runtime_calls.txt`: no
+//! runtime function may go unchecked that isn't listed, and the bench kernels' counts may only
+//! fall.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,9 +32,22 @@ fn only_lets_go(callee: &str) -> bool {
         || callee.ends_with("_drop")
 }
 
-/// Each call in `text` to a function in `can_fail` that a way on from it doesn't check: the
-/// function it's in, the callee, and the line.
-pub fn unchecked_failures(text: &str, never_fail: &[&str]) -> Vec<String> {
+/// A call to a runtime function that can fail, which nothing checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unchecked {
+    /// The function it's in.
+    pub function: String,
+    /// The runtime function it calls.
+    pub callee: String,
+    /// Whether that's because the function it's in was emitted as unable to fail, rather than
+    /// because a way on from the call doesn't check.
+    pub in_function_that_cant_fail: bool,
+    /// Why not, and the line.
+    pub said: String,
+}
+
+/// Each call in `text` to a runtime function not in `never_fail` that nothing checks.
+pub fn unchecked_failures(text: &str, never_fail: &[&str]) -> Vec<Unchecked> {
     let never_fail: BTreeSet<&str> = never_fail.iter().copied().collect();
     let can_fail = |callee: &str| callee.starts_with("fennec_") && !never_fail.contains(callee);
     let mut found = Vec::new();
@@ -40,20 +58,16 @@ pub fn unchecked_failures(text: &str, never_fail: &[&str]) -> Vec<String> {
                 if !can_fail(callee) {
                     continue;
                 }
+                let missed = |in_function_that_cant_fail: bool, said: String| Unchecked {
+                    function: function.name.to_owned(),
+                    callee: callee.to_owned(),
+                    in_function_that_cant_fail,
+                    said,
+                };
                 if !function.flagged {
-                    found.push(format!(
-                        "{}: `{}` can fail in a function that can't: {}",
-                        function.name,
-                        callee,
-                        line.trim()
-                    ));
+                    found.push(missed(true, format!("in a function that can't fail: {}", line.trim())));
                 } else if let Err(why) = checked_after(&function, label, at + 1) {
-                    found.push(format!(
-                        "{}: `{}` isn't checked ({why}): {}",
-                        function.name,
-                        callee,
-                        line.trim()
-                    ));
+                    found.push(missed(false, format!("{why}: {}", line.trim())));
                 }
             }
         }
@@ -169,42 +183,81 @@ fn checked_after(function: &Function<'_>, label: &str, at: usize) -> Result<(), 
 mod tests {
     use super::*;
 
-    const CAN_FAIL: [&str; 2] = ["fennec_str_slice", "fennec_out_of_range"];
+    /// What the unit tests take as never failing: letting go, as most of the runtime can't.
+    const NEVER: [&str; 2] = ["fennec_free", "fennec_mark"];
 
     /// A call followed by its check, after letting go of a temporary, passes; one followed by
-    /// other work first, or that gives back without one, doesn't. Leaving as a failure does
-    /// passes.
+    /// other work first, or that gives back without one, doesn't, nor does one in a function
+    /// that can't fail. Leaving as a failure does passes, and a call that never fails needs no
+    /// check.
     #[test]
     fn a_call_that_can_fail_needs_its_check() {
         let checked = "define void @f(ptr %t, ptr swifterror %err) #0 {\nentry:\n  %s = call ptr @fennec_str_slice(ptr %t)\n  br i1 %gone, label %let, label %on\nlet:\n  call void @fennec_free(ptr %t)\n  br label %on\non:\n  %flag_at = load ptr, ptr @fennec_failed, !invariant.load !1\n  ret void\n}\n";
-        assert_eq!(unchecked_failures(checked, &CAN_FAIL), Vec::<String>::new());
-        let other = checked.replace("call void @fennec_free(ptr %t)", "call void @fennec_print_str(ptr %s)");
-        assert_eq!(unchecked_failures(&other, &CAN_FAIL).len(), 1, "{other}");
+        assert_eq!(unchecked_failures(checked, &NEVER), []);
+        let other = checked.replace(
+            "call void @fennec_free(ptr %t)",
+            "call void @fennec_mark()\n  call void @fennec_print_str(ptr %s)",
+        );
+        // The slice's way on calls another first; the print's reaches the check.
+        let missed = unchecked_failures(&other, &NEVER);
+        assert_eq!(missed.len(), 1, "{other}");
+        assert!(
+            missed[0].callee == "fennec_str_slice" && !missed[0].in_function_that_cant_fail,
+            "{missed:?}"
+        );
         let back = "define void @f(ptr %t, ptr swifterror %err) #0 {\nentry:\n  %s = call ptr @fennec_str_slice(ptr %t)\n  ret void\n}\n";
-        assert_eq!(unchecked_failures(back, &CAN_FAIL).len(), 1);
+        assert_eq!(unchecked_failures(back, &NEVER).len(), 1);
         let unflagged = back.replace(", ptr swifterror %err", "");
-        assert!(unchecked_failures(&unflagged, &CAN_FAIL)[0].contains("can't"), "{unflagged}");
+        let missed = unchecked_failures(&unflagged, &NEVER);
+        assert!(missed.len() == 1 && missed[0].in_function_that_cant_fail, "{missed:?}");
         let leaves = "define void @f(i64 %i, ptr swifterror %err) #0 {\nentry:\n  call void @fennec_out_of_range(i64 %i)\n  br label %prop\nprop:\n  ret void\n}\n";
-        assert_eq!(unchecked_failures(leaves, &CAN_FAIL), Vec::<String>::new());
+        assert_eq!(unchecked_failures(leaves, &NEVER), []);
     }
 
-    /// The runtime's own list of what can fail, read from its source.
-    fn runtime_can_fail() -> Vec<&'static str> {
+    /// The runtime's list of what never fails, read from its source.
+    fn never_fail() -> Vec<&'static str> {
         let source = include_str!("../../runtime/src/lib.rs");
         let list = source.split("pub const NEVER_FAIL").nth(1).unwrap_or("").split("];").next().unwrap_or("");
         list.split('"').skip(1).step_by(2).collect()
     }
 
-    /// Every example, test program and kernel checks the runtime's flag after each call that can
-    /// set it, as emitted.
+    /// Which way a call goes unchecked, as the ratchet's file names it.
+    fn kind(missed: &Unchecked) -> &'static str {
+        if missed.in_function_that_cant_fail { "in-cant-fail" } else { "unchecked" }
+    }
+
+    type Key = (String, String);
+
+    /// The ratchet's file: what's knowingly left unchecked, each with how many calls the bench
+    /// kernels make that way.
+    fn allowed(text: &str) -> BTreeMap<Key, usize> {
+        text.lines()
+            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let (callee, kind, count) = (words.next()?, words.next()?, words.next()?.parse().ok()?);
+                Some(((callee.to_owned(), kind.to_owned()), count))
+            })
+            .collect()
+    }
+
+    /// No runtime function goes unchecked in any example, test program or kernel that the
+    /// ratchet's file doesn't list, and the kernels' unchecked calls are exactly as many as it
+    /// says: a fix lowers them, and `FENNEC_UPDATE_UNCHECKED=1` writes the file as it now is.
+    /// Counted over the kernels alone, so that adding an example never moves them.
     #[test]
-    fn every_program_checks_what_the_runtime_can_fail_at() {
-        let can_fail = runtime_can_fail();
-        assert!(can_fail.len() > 40 && can_fail.contains(&"fennec_str_slice"), "{can_fail:?}");
+    fn no_runtime_call_goes_unchecked_past_the_ratchet() {
+        let never_fail = never_fail();
+        assert!(never_fail.len() > 20 && never_fail.contains(&"fennec_sin"), "{never_fail:?}");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut found = Vec::new();
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("unchecked_runtime_calls.txt");
+        let allowed = allowed(&std::fs::read_to_string(&file).unwrap_or_default());
+        let (mut anywhere, mut counted, mut new) =
+            (BTreeSet::new(), BTreeMap::<Key, usize>::new(), Vec::new());
         let mut emitted = 0;
-        for folder in ["examples", "crates/fennec/tests/fixtures", "bench/kernels"] {
+        for (folder, counts) in
+            [("examples", false), ("crates/fennec/tests/fixtures", false), ("bench/kernels", true)]
+        {
             let Ok(entries) = std::fs::read_dir(root.join(folder)) else { continue };
             let mut paths: Vec<_> = entries.filter_map(Result::ok).map(|entry| entry.path()).collect();
             paths.sort();
@@ -215,14 +268,69 @@ mod tests {
                 let program = fennec_ir::lower(&module, &checked);
                 let Ok((units, _, _)) = crate::emit(&program) else { continue };
                 emitted += 1;
-                for unit in &units {
-                    for missed in unchecked_failures(&unit.text, &can_fail) {
-                        found.push(format!("{}: {missed}", path.display()));
+                for missed in units.iter().flat_map(|unit| unchecked_failures(&unit.text, &never_fail)) {
+                    let key = (missed.callee.clone(), kind(&missed).to_owned());
+                    if !allowed.contains_key(&key) {
+                        new.push(format!(
+                            "{}: {} in {}, {}",
+                            path.display(),
+                            missed.callee,
+                            missed.function,
+                            missed.said
+                        ));
                     }
+                    if counts {
+                        *counted.entry(key.clone()).or_default() += 1;
+                    }
+                    anywhere.insert(key);
                 }
             }
         }
         assert!(emitted >= 150, "only {emitted} programs emitted");
-        assert!(found.is_empty(), "{} unchecked:\n{}", found.len(), found.join("\n"));
+        if std::env::var_os("FENNEC_UPDATE_UNCHECKED").is_some_and(|on| on == "1") {
+            let mut text = String::from(HEADER);
+            for key in &anywhere {
+                let count = counted.get(key).copied().unwrap_or(0);
+                text.push_str(&format!("{} {} {count}\n", key.0, key.1));
+            }
+            std::fs::write(&file, text)
+                .unwrap_or_else(|err| panic!("couldn't write {}: {err}", file.display()));
+            return;
+        }
+        assert!(
+            new.is_empty(),
+            "{} calls nothing checks, of runtime functions unchecked_runtime_calls.txt doesn't list. Check each, or list it, knowingly, with FENNEC_UPDATE_UNCHECKED=1:\n{}",
+            new.len(),
+            new.join("\n")
+        );
+        let moved: Vec<String> = allowed
+            .iter()
+            .filter(|(key, count)| {
+                counted.get(*key).copied().unwrap_or(0) != **count || !anywhere.contains(*key)
+            })
+            .map(|(key, count)| {
+                format!(
+                    "{} {}: {count} listed, {} in the kernels",
+                    key.0,
+                    key.1,
+                    counted.get(key).copied().unwrap_or(0)
+                )
+            })
+            .collect();
+        assert!(
+            moved.is_empty(),
+            "the kernels' unchecked calls aren't what unchecked_runtime_calls.txt says. More is a new unchecked call; fewer is a fix, to write down with FENNEC_UPDATE_UNCHECKED=1:\n{}",
+            moved.join("\n")
+        );
     }
+
+    const HEADER: &str = "\
+# Runtime calls emitted code doesn't check yet, held to a ratchet by
+# crates/llvm/src/failure_checks.rs: every runtime function not in fennec_runtime::NEVER_FAIL can
+# fail, so a call to one needs the failure flag read after it. Each line is a runtime function, how
+# it goes unchecked (`unchecked`: a way on from the call doesn't read the flag; `in-cant-fail`: the
+# function it's in was emitted as unable to fail, so nothing checks there), and how many such calls
+# the bench kernels make. A function not listed here mustn't go unchecked anywhere, and the
+# kernels' counts must match: a fix lowers them, written with FENNEC_UPDATE_UNCHECKED=1.
+";
 }

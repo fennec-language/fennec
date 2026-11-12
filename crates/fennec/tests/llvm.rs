@@ -18387,6 +18387,7 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
     }
     let dir = folder("text_grown")?;
     std::fs::write(dir.join("text_grown.fen"), TEXT_GROWN)?;
+    std::fs::write(dir.join("text_chained.fen"), TEXT_CHAINED)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let (printed, counts) = printed_and_counts(&dir, "text_grown", how)?;
         assert_eq!(printed, TEXT_GROWN_PRINTS, "{how:?}");
@@ -18394,6 +18395,10 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
             count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
             "{how:?}: {counts}"
         );
+        // `route = route + "/" + part` grows by each piece in turn, unless a later piece reads the
+        // text itself, which would then see it grown already.
+        let (printed, _) = printed_and_counts(&dir, "text_chained", how)?;
+        assert_eq!(printed, "GET /a!/1!/b!xGET /a!/1!/b! GET /a!/1!/b! ab-ab qq!\n", "{how:?}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -18401,6 +18406,21 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
+
+const TEXT_CHAINED: &str = r#"def main(stdout: Stdout):
+    mut route = "GET "
+    for part in ["a", "1", "b"]:
+        route = route + "/" + part + "!"
+    kept = route
+    route = route + "x" + route
+    mut n = 0
+    mut text = "ab"
+    text = f"{text}-{text}"
+    mut other = "q"
+    other = other + f"{other}!"
+    stdout.print(route, kept, text, other)
+    return
+"#;
 
 const TEXT_GROWN: &str = r#"def main(stdout: Stdout):
     mut text = ""

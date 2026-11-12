@@ -439,23 +439,56 @@ struct Lowering<'a> {
     retyped: Vec<(Span, Type)>,
 }
 
-/// What `name = value` adds to `name`'s text, when `value` is `name + piece` or an f-string that
-/// starts with `name` as it is: the piece, or the rest of the f-string.
-fn grown_by(name: &str, value: &Expr) -> Option<Expr> {
+/// What `name = value` adds to `name`'s text, in order, when `value` is `name + a + b ...` or an
+/// f-string that starts with `name` as it is: the pieces, or the rest of the f-string. Each is
+/// worked out after the ones before it, as the whole would be.
+fn grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
+    let pieces = pieces_grown_by(name, value)?;
+    // A piece after the first that reads the text itself would see it grown by the ones before.
+    let mentions = |piece: &Expr| {
+        let mut found = false;
+        let mut looked = piece.clone();
+        found |= matches!(&looked.kind, ExprKind::Name(held) if held == name);
+        fennec_syntax::visit::in_expr(&mut looked, &mut |inner| {
+            found |= matches!(&inner.kind, ExprKind::Name(held) if held == name);
+        });
+        found
+    };
+    (!pieces.iter().skip(1).any(mentions)).then_some(pieces)
+}
+
+fn pieces_grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
     match &value.kind {
-        ExprKind::Binary { op: BinOp::Add, lhs, rhs } if matches!(&lhs.kind, ExprKind::Name(held) if held == name) => {
-            Some((**rhs).clone())
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } => {
+            if matches!(&lhs.kind, ExprKind::Name(held) if held == name) {
+                return Some(vec![(**rhs).clone()]);
+            }
+            let mut pieces = grown_by_adding(name, lhs)?;
+            pieces.push((**rhs).clone());
+            Some(pieces)
         }
         ExprKind::FStr(parts) => match parts.split_first() {
             Some((fennec_syntax::FStrPart::Expr { expr, spec: None }, rest))
                 if !rest.is_empty() && matches!(&expr.kind, ExprKind::Name(held) if held == name) =>
             {
-                Some(Expr { kind: ExprKind::FStr(rest.to_vec()), span: value.span })
+                Some(vec![Expr { kind: ExprKind::FStr(rest.to_vec()), span: value.span }])
             }
             _ => None,
         },
         _ => None,
     }
+}
+
+/// The pieces of `name + a + b ...` after `name`, when that's what it is.
+fn grown_by_adding(name: &str, value: &Expr) -> Option<Vec<Expr>> {
+    let ExprKind::Binary { op: BinOp::Add, lhs, rhs } = &value.kind else { return None };
+    let mut pieces = if matches!(&lhs.kind, ExprKind::Name(held) if held == name) {
+        Vec::new()
+    } else {
+        grown_by_adding(name, lhs)?
+    };
+    pieces.push((**rhs).clone());
+    Some(pieces)
 }
 
 impl<'a> Lowering<'a> {
@@ -788,9 +821,12 @@ impl<'a> Lowering<'a> {
             && !declares
             && let ExprKind::Name(name) = &target.kind
             && self.lookup(name).is_some_and(|held| self.local_type(held) == Type::Str)
-            && let Some(piece) = grown_by(name, value)
+            && let Some(pieces) = grown_by(name, value)
         {
-            return self.assign(target, (Some(BinOp::Add), false), &piece, span);
+            for piece in &pieces {
+                self.assign(target, (Some(BinOp::Add), false), piece, span)?;
+            }
+            return Ok(());
         }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);

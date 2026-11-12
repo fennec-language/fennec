@@ -8,13 +8,13 @@ error Lost:
 def risky(n: int) -> int fails Bad | Lost:
     if n < 0: fail Bad(why="negative")
     if n == 0: fail .Gone
-    n
+    return n
 
 def main(stdout: Stdout):
-    value = risky(1) else as why:
-        match why:
-            case .Gon:
-                0
-            case _:
-                1
+    value = risky(1) except why:
+        case .Gon:
+            0
+        case _:
+            stdout.print(why)
+            1
     stdout.print(value)

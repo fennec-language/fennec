@@ -14,7 +14,7 @@ struct Player:
 def find(name: str) -> Player?:
     if name == '':
         return None
-    Player(name=name)
+    return Player(name=name)
 ";
 
 fn with_find(body: &str) -> Vec<String> {
@@ -194,7 +194,7 @@ fn assigning_a_value_counts_as_checking() {
         def b(names: list[str]):
             mut best = find('')
             for name in names:
-                if best is None or name.len() > best.name.len():
+                if best is None or len(name) > len(best.name):
                     best = Player(name=name)
             best.name
 
@@ -325,23 +325,22 @@ enum Shape:
 
 def area(shape: Shape) -> float:
     match shape:
-        case .Rect(height=h, width=w): w * h
-        case .Circle(radius=r): r * r
+        case .Rect(height=h, width=w): return w * h
+        case .Circle(radius=r): return r * r
 
 def label(point: Point) -> str:
     match point:
-        case Point(y=name): name
-        case Point(x, y): y
+        case Point(y=name): return name
+        case Point(x, y): return y
 
 def checked(text: str) -> str fails InvalidValue:
     fail InvalidValue(message=text)
 
 def read() -> str:
-    text = checked(\"a\") else as why:
-        match why:
-            case InvalidValue(message=why):
-                return why
-    text
+    text = checked(\"a\") except why:
+        case InvalidValue(message=why):
+            return why
+    return text
 ";
     assert_eq!(fields(program), ["can't mix int and float in `*`"]);
     let unknown = "
@@ -350,7 +349,7 @@ struct Point:
 
 def f(point: Point) -> int:
     match point:
-        case Point(z=a): a
+        case Point(z=a): return a
 ";
     assert_eq!(fields(unknown), ["`Point` has no field `z`: it has `x`"]);
     let positional = "
@@ -358,11 +357,10 @@ def checked(text: str) -> str fails InvalidValue:
     fail InvalidValue(message=text)
 
 def read() -> str:
-    text = checked(\"a\") else as why:
-        match why:
-            case InvalidValue(why):
-                return why
-    text
+    text = checked(\"a\") except why:
+        case InvalidValue(why):
+            return why
+    return text
 ";
     assert_eq!(
         fields(positional),
@@ -379,11 +377,10 @@ def checked(text: str) -> str fails InvalidValue:
     fail InvalidValue(message=text)
 
 def read() -> str:
-    text = checked(\"a\") else as why:
-        match why:
-            case InvalidValue():
-                return \"failed\"
-    text
+    text = checked(\"a\") except why:
+        case InvalidValue():
+            return \"failed\"
+    return text
 ";
     assert_eq!(fields(none_read), Vec::<String>::new());
 }
@@ -464,7 +461,7 @@ fn match_cases_bind_typed_values() {
             n
 
         def a(n: int):
-            value = risky(n) else as error:
+            value = risky(n) except error:
                 error + 1
             value + 'a'
 
@@ -502,7 +499,7 @@ fn a_list_written_where_a_list_of_optionals_goes_is_one() {
         def f() -> int:
             mut numbers: list[int?] = [1, 2]
             numbers.append(None)
-            numbers[0] + 1
+            return numbers[0] + 1
     ";
     assert_eq!(problems(program).len(), 1, "{:?}", problems(program));
     assert!(problems(program)[0].contains("numbers[0]"), "{:?}", problems(program));
@@ -519,7 +516,7 @@ fn what_a_mut_parameter_can_make_none_is_checked_again() {
             if held is not None:
                 cleared(ref held)
                 return held + 1
-            0
+            return 0
     ";
     assert_eq!(problems(program), ["this might be None @ held"]);
     let keeps_what_it_knows = "
@@ -531,7 +528,7 @@ fn what_a_mut_parameter_can_make_none_is_checked_again() {
             if held is not None:
                 bumped(ref held)
                 return held + 1
-            0
+            return 0
     ";
     assert_eq!(problems(keeps_what_it_knows), Vec::<String>::new());
 }
@@ -613,7 +610,7 @@ def run(names: list[str]):
 #[test]
 fn an_else_chain_stops_at_a_failing_step_too() {
     let empty: [&str; 0] = [];
-    let types = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n    def again(self) -> Part fails Lost:\n        self\n\ndef find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    Part()\n";
+    let types = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n    def again(self) -> Part fails Lost:\n        return self\n\ndef find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    return Part()\n";
     let kept = |body: &str| crate::in_main_after(types, &format!("{body}\nstdout.print(1)\n"));
     for body in [
         "name: str = find(1).name else \"?\"\nstdout.print(name)",

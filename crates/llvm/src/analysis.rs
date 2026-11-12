@@ -3893,7 +3893,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
 mod tests {
     use super::*;
 
-    const TYPES: &str = "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n    log: list[int]\n\nerror Bad:\n    why: str\n\ndef total(units: list[Unit]) -> int:\n    units.len()\n\ndef size(world: World) -> int:\n    world.log.len()\n\n";
+    const TYPES: &str = "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n    log: list[int]\n\nerror Bad:\n    why: str\n\ndef total(units: list[Unit]) -> int:\n    return len(units)\n\ndef size(world: World) -> int:\n    return len(world.log)\n\n";
 
     /// Whether the `unit` of a function called `go` is taken out for its loop's whole body.
     fn taken(body: &str) -> Result<bool, String> {
@@ -3912,8 +3912,8 @@ mod tests {
         for body in [
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.tags.append(1)\n",
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        if unit.hp == 0:\n            continue\n        unit.tags.append(1)\n        if unit.hp == 1:\n            break\n        unit.hp = 2\n",
-            "def go(ref units: list[Unit]) -> int:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return unit.tags.len()\n    0\n",
-            "def go(ref units: list[Unit]) -> int fails Bad:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    0\n",
+            "def go(ref units: list[Unit]) -> int:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return len(unit.tags)\n    return 0\n",
+            "def go(ref units: list[Unit]) -> int fails Bad:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    return 0\n",
             "def go(ref world: World):\n    for ref unit in world.units:\n        unit.tags.append(1)\n",
             "def go(ref world: World):\n    for ref unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
         ] {
@@ -3939,7 +3939,7 @@ mod tests {
     /// appends somewhere other than its body's first block, so those keep the check.
     #[test]
     fn only_a_list_filled_within_its_room_skips_the_check() -> Result<(), String> {
-        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    xs.len()\n");
+        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    return len(xs)\n");
         for body in ["    xs = [i * 2 for i in range(n)]\n", "    xs = [i for i in range(1, n)]\n"] {
             assert!(within_room(&filled(body))?, "kept the check: {body}");
         }
@@ -3983,11 +3983,11 @@ mod tests {
     fn a_for_mut_item_is_not_taken_when_the_body_can_read_its_list() -> Result<(), String> {
         for body in [
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.tags.append(units[0].hp)\n",
-            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += units.len()\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += len(units)\n",
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += total(units)\n",
-            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += world.units.len()\n",
+            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += len(world.units)\n",
             "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += size(world)\n",
-            "def go(units: list[Unit]) -> int:\n    mut found = 0\n    for unit in units:\n        found += unit.hp\n    found\n",
+            "def go(units: list[Unit]) -> int:\n    mut found = 0\n    for unit in units:\n        found += unit.hp\n    return found\n",
         ] {
             assert!(!taken(body)?, "taken: {body}");
         }

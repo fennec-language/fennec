@@ -6,11 +6,15 @@ use std::process::ExitCode;
 
 /// `fennec update`, in the kit around `path`.
 pub(crate) fn update(path: &str) -> ExitCode {
-    let Some(root) = Path::new(path)
-        .canonicalize()
-        .ok()
-        .and_then(|from| from.ancestors().find(|dir| dir.join("kit.toml").is_file()).map(Path::to_path_buf))
-    else {
+    // Reached only through folders that are trusted: see `fennec_dist::kit_root`.
+    let found = match fennec_dist::kit_root(Path::new(path)) {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("error: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(root) = found else {
         eprintln!(
             "error: there's no kit.toml in {path} or any folder above it, so there's nothing to update"
         );
@@ -46,8 +50,8 @@ pub(crate) fn update(path: &str) -> ExitCode {
 fn lock_layouts(root: &Path) -> Result<String, String> {
     let shown = root.to_string_lossy();
     let mut program = fennec_kit::load(root, &shown, fennec_kit::Entry::Main)?;
-    let signatures = fennec_check::check_and_resolve(&mut program.module)
-        .map_err(|problems| program.sources.render_all(&problems))?;
+    let signatures =
+        fennec_check::check_and_resolve(&mut program.module).map_err(|problems| program.render(&problems))?;
     let lowered = fennec_ir::lower(&program.module, &signatures);
     if lowered.layouts.is_empty() {
         return Ok(String::new());

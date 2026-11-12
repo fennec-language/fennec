@@ -12,31 +12,31 @@ enum Tok:
 def describe(tok: Tok) -> str:
     match tok:
         case .Int(_) | .Float(_):
-            "a number"
+            return "a number"
         case .Name(word) if word in ["def", "if", "match"]:
-            "the keyword " + word
+            return "the keyword " + word
         case .Name(word):
-            "the name " + word
+            return "the name " + word
         case .Eof:
-            "the end"
+            return "the end"
 
 def size(n: int) -> str:
     match n:
         case 0:
-            "none"
+            return "none"
         case 1 | 2 | 3:
-            "a few"
+            return "a few"
         case many if many < 0:
-            "less than none"
+            return "less than none"
         case _:
-            "lots"
+            return "lots"
 
 def first_word(found: str?) -> str:
     match found:
-        case text if text is not None and text.len() > 0:
-            text.split()[0]
+        case text if text is not None and len(text) > 0:
+            return text.split()[0]
         case _:
-            "(nothing)"
+            return "(nothing)"
 
 def main(stdout: Stdout):
     for tok in [Tok.Int(1), Tok.Float(2.5), Tok.Name("match"), Tok.Name("fox"), Tok.Eof]:

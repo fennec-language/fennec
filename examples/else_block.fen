@@ -7,7 +7,7 @@ error LookupError:
 def price(prices: dict[str, int], name: str) -> int fails LookupError:
     found = prices.get(name) else:
         fail .Missing(name)
-    found
+    return found
 
 def main(stdout: Stdout):
     prices = {"apple": 3, "pear": 5}
@@ -27,7 +27,7 @@ def main(stdout: Stdout):
         name = queue.get(at) else break
         stdout.print(f"next: {name}")
         at += 1
-    total = price(prices, "fig") else:
+    total = price(prices, "fig") except .Missing():
         stdout.print("couldn't price the fig")
         return
     stdout.print(total)

@@ -1,7 +1,7 @@
 type SqlValue = int | str
 
 def count(query: Template[SqlValue]) -> int:
-    query.values.len()
+    return len(query.values)
 
 def main(stdout: Stdout):
     name = "ash"

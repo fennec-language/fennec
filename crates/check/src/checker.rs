@@ -1204,7 +1204,7 @@ mod tests {
     fn a_type_a_library_module_imports_isnt_the_programs() {
         let library = fennec_syntax::prelude_modules().unwrap_or_default();
         let importer = fennec_syntax::parse("from std.time import Duration\n").unwrap();
-        let program = fennec_syntax::parse("def wait(pause: Duration) -> int:\n    1\n").unwrap();
+        let program = fennec_syntax::parse("def wait(pause: Duration) -> int:\n    return 1\n").unwrap();
         let declared = super::with_library(library.iter().chain([&importer]), &program);
         let problems: Vec<String> = crate::imports::unimported(&program, &declared)
             .into_iter()

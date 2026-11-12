@@ -50,7 +50,10 @@ pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
             lints.extend(fennec_lint::self_compares(&program.module, &program.sources));
             let mut diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
             diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
-            let changed = program.sources.fixed(&diagnostics);
+            // `x.len()` as `len(x)`, the one rewrite of 2026-11-11 a program that checks can still use.
+            diagnostics.extend(fennec_check::migration_fixes(&program.module, &program.sources));
+            program.no_fixes_in_dependencies(&mut diagnostics);
+            let changed = program.own_changes(program.sources.fixed(&diagnostics));
             if changed.is_empty() {
                 return ExitCode::SUCCESS;
             }
@@ -63,7 +66,11 @@ pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
         fennec_check::add_pattern_fixes(&mut diagnostics, &program.sources);
         fennec_check::add_capability_fixes(&mut diagnostics, &program.module, &program.sources);
         diagnostics.extend(fennec_check::result_fixes(&program.module, &program.sources));
-        let changed = program.sources.fixed(&diagnostics);
+        // A form of before 2026-11-11 is refused: its rewrite is the fix.
+        diagnostics.extend(fennec_check::migration_fixes(&program.module, &program.sources));
+        // A tool changes only the kit it's run in: a problem in a dependency has no fix here.
+        program.no_fixes_in_dependencies(&mut diagnostics);
+        let changed = program.own_changes(program.sources.fixed(&diagnostics));
         if changed.is_empty() {
             eprint!("{}", program.sources.render_all(&diagnostics));
             eprintln!("\nthese have no fix `fennec fix` can make");
@@ -108,13 +115,15 @@ fn migrate_forms(path: &str) -> ExitCode {
                 continue;
             }
         };
-        let (checks, diagnostics) = match fennec_check::check(&program.module) {
+        // Typed as written, old forms and all, which `check` refuses.
+        let (checks, mut diagnostics) = match fennec_check::check_typed(&program.module) {
             Ok(_) => (true, fennec_check::migration_fixes(&program.module, &program.sources)),
             Err(_) if first => return migrate_syntax(path),
             Err(problems) => (false, problems),
         };
         first = false;
-        let changed = program.sources.fixed(&diagnostics);
+        program.no_fixes_in_dependencies(&mut diagnostics);
+        let changed = program.own_changes(program.sources.fixed(&diagnostics));
         if changed.is_empty() {
             if checks {
                 return ExitCode::SUCCESS;

@@ -1,7 +1,7 @@
 error: index 5 is out of range for length 5
- --> examples/errors/string_index_past_the_end.fen:2:5
+ --> examples/errors/string_index_past_the_end.fen:2:12
   |
-2 |     word[at + 1]
-  |     ^^^^^^^^^^^^
+2 |     return word[at + 1]
+  |            ^^^^^^^^^^^^
   = in `first_after`
   = called from `main` at examples/errors/string_index_past_the_end.fen:7:18

@@ -8,16 +8,16 @@ struct Square:
     side = 1.0
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
 struct Circle:
     radius = 1.0
 
     def area(self) -> float:
-        3.0 * self.radius * self.radius
+        return 3.0 * self.radius * self.radius
 
 def total(first: Shape, second: Shape) -> float:
-    first.area() + second.area()
+    return first.area() + second.area()
 
 # An interface's own methods can take one too, and each type that fits it writes the same thing.
 interface Scale:
@@ -25,17 +25,17 @@ interface Scale:
 
 struct Doubled:
     def scaled(self, shape: Shape) -> float:
-        shape.area() * 2.0
+        return shape.area() * 2.0
 
 def scaled_twice(scale: Scale, shape: Shape) -> float:
     mut shapes = []
     shapes.append(shape)
     shapes.append(shape)
-    sum(scale.scaled(each) for each in shapes)
+    return sum(scale.scaled(each) for each in shapes)
 
 def grown(ref shape: Square, by: float) -> float:
     shape.side += by
-    shape.area()
+    return shape.area()
 
 def main(stdout: Stdout):
     stdout.print(

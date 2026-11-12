@@ -19,23 +19,22 @@ def counted(tally: shared Tally, key: int, between: int, failing: bool) fails Bo
         elif between == 3:
             held.counts[key + 1] = 7
         held.counts[key] = seen + 1
-        if failing:
-            fail Boom(step=between)
+        if failing: fail Boom(step=between)
 
 def show(tally: shared Tally) -> str:
     lock tally as held:
-        f"{held.counts.items()}"
+        return f"{held.counts.items()}"
 
 def main(stdout: Stdout):
     shared tally = Tally(counts={1: 10, 2: 20, 3: 30})
     for between in [0, 1, 2, 3]:
         before = show(tally)
-        _ = counted(tally, key=2, between=between, failing=True) else as why:
+        _ = counted(tally, key=2, between=between, failing=True) except why:
             stdout.print(why.step, show(tally) == before)
-        _ = counted(tally, key=2, between=between, failing=False) else:
+        _ = counted(tally, key=2, between=between, failing=False) except Boom():
             stdout.print("failed")
         stdout.print(show(tally))
     for _ in range(1000):
-        _ = counted(tally, key=1, between=0, failing=False) else:
+        _ = counted(tally, key=1, between=0, failing=False) except Boom():
             stdout.print("failed")
     stdout.print(show(tally))

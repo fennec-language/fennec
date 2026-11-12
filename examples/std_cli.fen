@@ -7,12 +7,12 @@ def greet() -> Cli:
     cli = cli.flag("loud", short="l", help="shout it")
     cli = cli.option("times", short="t", help="how many times", default="1")
     cli = cli.option("to", help="who it's from")
-    cli.positional("names", help="who to greet", required=False, many=True)
+    return cli.positional("names", help="who to greet", required=False, many=True)
 
 def problem(run: () -> CliArgs fails CliError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "no problem"
+    return "no problem"
 
 test "flags and options are read in any order":
     given = greet().parse(["ash", "--loud", "--times", "3", "vex", "--to=kit"])?
@@ -88,7 +88,7 @@ test "the help lists everything":
 
 def main(stdout: Stdout, args: Args):
     cli = greet()
-    given = cli.parse([arg for arg in args]) else as why:
+    given = cli.parse([arg for arg in args]) except why:
         stdout.print(f"{why.message}; `--help` lists what it takes")
         return
     if given.wants_help:
@@ -97,8 +97,8 @@ def main(stdout: Stdout, args: Args):
         say_hello(stdout, given)
 
 def say_hello(stdout: Stdout, given: CliArgs):
-    names = given.many() if given.many().len() > 0 else ["world"]
-    times = int(given.value("times") else "1") else 1
+    names = given.many() if len(given.many()) > 0 else ["world"]
+    times = int(given.value("times") else "1") except InvalidValue(): 1
     for _ in range(times):
         for name in names:
             line = f"hello, {name}"

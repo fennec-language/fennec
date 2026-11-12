@@ -55,11 +55,11 @@ struct Scheduler:
                 v2=v2,
             ),
         )
-        self.newest = self.tasks.len() - 1
+        self.newest = len(self.tasks) - 1
 
     def add_packet(ref self, link: int, id: int, kind: int) -> int:
         self.packets.append(Packet(link=link, id=id, kind=kind, a2=array[int, 4]()))
-        self.packets.len() - 1
+        return len(self.packets) - 1
 
     def schedule(ref self):
         mut at = self.newest
@@ -79,27 +79,27 @@ struct Scheduler:
             self.tasks[at].runnable = self.tasks[at].queue != NONE
         match self.tasks[at].kind:
             case .Idle:
-                self.run_idle(at)
+                return self.run_idle(at)
             case .Worker:
-                self.run_worker(at, packet=packet)
+                return self.run_worker(at, packet=packet)
             case .Handler:
-                self.run_handler(at, packet=packet)
+                return self.run_handler(at, packet=packet)
             case .Device:
-                self.run_device(at, packet=packet)
+                return self.run_device(at, packet=packet)
 
     def release(ref self, id: int) -> int:
         self.tasks[id].held = False
         if self.tasks[id].priority > self.tasks[self.current].priority: return id
-        self.current
+        return self.current
 
     def hold_current(ref self) -> int:
         self.holds += 1
         self.tasks[self.current].held = True
-        self.tasks[self.current].link
+        return self.tasks[self.current].link
 
     def suspend_current(ref self) -> int:
         self.tasks[self.current].suspended = True
-        self.current
+        return self.current
 
     def send(ref self, packet: int) -> int:
         to = self.packets[packet].id
@@ -112,7 +112,7 @@ struct Scheduler:
             if self.tasks[to].priority > self.tasks[self.current].priority: return to
         else:
             self.tasks[to].queue = self.appended(packet, queue=self.tasks[to].queue)
-        self.current
+        return self.current
 
     def appended(ref self, packet: int, queue: int) -> int:
         self.packets[packet].link = NONE
@@ -121,7 +121,7 @@ struct Scheduler:
         while self.packets[last].link != NONE:
             last = self.packets[last].link
         self.packets[last].link = packet
-        queue
+        return queue
 
     def run_idle(ref self, at: int) -> int:
         self.tasks[at].v2 -= 1
@@ -132,7 +132,7 @@ struct Scheduler:
             return self.release(DEVICE_A)
         # 53_256 is 0xD008.
         self.tasks[at].v1 = (state >> 1) ^ 53_256
-        self.release(DEVICE_B)
+        return self.release(DEVICE_B)
 
     def run_device(ref self, at: int, packet: int) -> int:
         if packet != NONE:
@@ -141,7 +141,7 @@ struct Scheduler:
         waiting = self.tasks[at].v1
         if waiting == NONE: return self.suspend_current()
         self.tasks[at].v1 = NONE
-        self.send(waiting)
+        return self.send(waiting)
 
     def run_worker(ref self, at: int, packet: int) -> int:
         if packet == NONE: return self.suspend_current()
@@ -155,7 +155,7 @@ struct Scheduler:
                 next = 1
             self.tasks[at].v2 = next
             self.packets[packet].a2[i] = next
-        self.send(packet)
+        return self.send(packet)
 
     def run_handler(ref self, at: int, packet: int) -> int:
         if packet != NONE:
@@ -176,7 +176,7 @@ struct Scheduler:
             else:
                 self.tasks[at].v1 = self.packets[work].link
                 return self.send(work)
-        self.suspend_current()
+        return self.suspend_current()
 
 def simulate() -> (int, int):
     mut scheduler = Scheduler(tasks=[], packets=[])
@@ -196,7 +196,7 @@ def simulate() -> (int, int):
     scheduler.add_task(.Device, priority=4000, queue=NONE, v1=NONE, v2=0)
     scheduler.add_task(.Device, priority=5000, queue=NONE, v1=NONE, v2=0)
     scheduler.schedule()
-    (scheduler.queued, scheduler.holds)
+    return (scheduler.queued, scheduler.holds)
 
 def main(stdout: Stdout):
     mut queued = 0

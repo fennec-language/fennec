@@ -184,7 +184,7 @@ fn writing_to_stdout_matches_what_was_pinned() -> std::io::Result<()> {
 def maybe(present: bool) -> str?:
     if present:
         return "here"
-    None
+    return None
 
 def main(stdout: Stdout):
     stdout.write("no newline, ")
@@ -215,17 +215,17 @@ enum Held:
     Full(data: bytes)
 
 def first(data: bytes) -> int:
-    data[0]
+    return data[0]
 
 def maybe(present: bool) -> bytes?:
     if present:
         return bytes([9, 8])
-    None
+    return None
 
 def main(stdout: Stdout):
     empty = bytes()
     data = bytes([0, 1, 127, 128, 255])
-    stdout.print(empty, empty.len(), data, data.len())
+    stdout.print(empty, len(empty), data, len(data))
     stdout.print(data[0], data[-1], data[3], first(data))
     stdout.print(data[1:3], data[:2], data[3:], data[-2:], data[:-2], data[10:], data[3:1])
     stdout.print(data + bytes([7]), empty + empty, data == bytes([0, 1, 127, 128, 255]), data != data)
@@ -238,16 +238,16 @@ def main(stdout: Stdout):
     stdout.print(total, list(data), sum(list(data)))
     text = "héllo wörld"
     encoded = text.encode()
-    stdout.print(encoded, encoded.len(), text.len())
-    back = encoded.decode() else as error:
+    stdout.print(encoded, len(encoded), len(text))
+    back = encoded.decode() except error:
         stdout.print(error.message)
         return
     stdout.print(back, back == text)
-    bad = bytes([255, 254]).decode() else as error:
+    bad = bytes([255, 254]).decode() except error:
         error.message
     stdout.print(bad)
     for hex in ["00ff", "00 FF", "", "abc", "zz", "a é"]:
-        made = bytes.fromhex(hex) else as error:
+        made = bytes.fromhex(hex) except error:
             stdout.print(error.message)
             continue
         stdout.print(made)
@@ -258,7 +258,7 @@ def main(stdout: Stdout):
     stdout.print(packets[0].data, packets[1].data, packets)
     mut many = [data, empty, encoded]
     many.append(bytes([3]))
-    stdout.print(many[0], many[-1], many.len(), many)
+    stdout.print(many[0], many[-1], len(many), many)
     for held in [Held.Empty, Held.Full(data=bytes([1]))]:
         match held:
             case .Empty:
@@ -267,14 +267,14 @@ def main(stdout: Stdout):
                 stdout.print(inner, inner[0], held)
     stdout.print(maybe(True), maybe(False), maybe(True) is None, maybe(False) is None)
     got = maybe(True) else bytes()
-    stdout.print(got, got.len())
+    stdout.print(got, len(got))
     pair = (data[:1], 3)
     stdout.print(pair)
     stdout.print(f"{data[:1]} and {empty}", str(data[:2]))
     mut grown = bytes()
     for at in range(300):
         grown = grown + bytes([at % 256])
-    stdout.print(grown.len(), grown[299], grown[255], grown[:3])
+    stdout.print(len(grown), grown[299], grown[255], grown[:3])
     named = {"a": 1}
     stdout.print(named["a"], grown[:9].hex())
 "#,
@@ -342,14 +342,14 @@ struct World:
 def main(stdout: Stdout):
     mut log = Log()
     log.add("short")
-    stdout.print(log.text, log.text.len())
+    stdout.print(log.text, len(log.text))
     held = log.text
     log.add(" and a good deal longer than a header can hold")
     stdout.print(held, log.text)
     kept = log.text
     log.text += " été"
     log.text += log.text
-    stdout.print(kept, log.text, log.text.len())
+    stdout.print(kept, log.text, len(log.text))
     mut world = World()
     for at in range(100):
         world.log.text += str(at)
@@ -357,7 +357,7 @@ def main(stdout: Stdout):
     stdout.print(world.log.text, world.log.hp)
     copy = world
     world.log.text += "!"
-    stdout.print(copy.log.text.len(), world.log.text.len())
+    stdout.print(len(copy.log.text), len(world.log.text))
     stdout.print(str(-12), str(0), str(9007199254740993), str(1.5), str(2.0), str(-0.0), str(1e300), str(-1.7976931348623157e308))
 "#,
     )
@@ -379,7 +379,7 @@ struct Unit:
 def maybe(at: int) -> int fails Bad:
     if at == 1:
         fail Bad("from a call")
-    at
+    return at
 
 def by_fail(ref units: list[Unit], at: int) -> int fails Bad:
     for ref unit in units:
@@ -387,23 +387,25 @@ def by_fail(ref units: list[Unit], at: int) -> int fails Bad:
         unit.hp += 1
         if unit.hp == 2:
             fail Bad("stop")
-    0
+    return 0
 
 def by_try(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(8)
         unit.hp += maybe(unit.hp)?
-    0
+    return 0
 
 def main(stdout: Stdout):
     mut units = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
-    stdout.print(by_fail(ref units, 9) else -1, units)
+    by_fail_value = by_fail(ref units, 9) except Bad(): -1
+    stdout.print(by_fail_value, units)
     mut others = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
-    stdout.print(by_try(ref others) else -2, others)
+    by_try_value = by_try(ref others) except Bad(): -2
+    stdout.print(by_try_value, others)
 "#;
     same_as_pinned("failing_out_of_for_mut", shared)?;
     // Out of two loops at once, held to its pinned outcome.
-    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int fails Bad:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
+    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int fails Bad:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    return 0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    nested_value = nested(ref grid) except Bad(): -3\n    stdout.print(nested_value, grid)\n";
     let dir = folder("failing_out_of_two_loops")?;
     let program = dir.join("two_loops.fen");
     std::fs::write(&program, nested)?;
@@ -438,20 +440,20 @@ def check(n: int) fails Odd:
 def first_odd(limit: int) -> int:
     mut at = 0
     while at < limit:
-        check(at) else:
+        check(at) except Odd():
             return at
         at += 1
-    -1
+    return -1
 
 def main(stdout: Stdout):
     mut kept = 0
     for n in range(6):
-        check(n) else:
+        check(n) except Odd():
             continue
         kept += 1
     mut seen = 0
     for n in [2, 4, 5, 6]:
-        check(n) else:
+        check(n) except Odd():
             break
         seen += 1
     stdout.print(kept, seen, first_odd(10), first_odd(0))
@@ -510,31 +512,30 @@ struct World:
 def risky(n: int) -> int fails Bad:
     if n > 5:
         fail Bad("big")
-    n
+    return n
 
 def load(n: int) -> World fails Bad:
     if n > 5:
         fail Bad("no world")
-    World(size=n)
+    return World(size=n)
 
 def find(names: list[str], name: str) -> int?:
     for at, held in enumerate(names):
         if held == name:
             return at
-    None
+    return None
 
 def main(stdout: Stdout):
-    small = risky(9) else as why:
+    small = risky(9) except why:
         stdout.print(f"failed: {why.why}")
         0
     stdout.print(small)
-    world = load(8) else as why:
-        match why:
-            case Bad(text):
-                stdout.print(text)
-        World(size=1)
+    world = load(8) except why:
+        case Bad(text):
+            stdout.print(text)
+            World(size=1)
     stdout.print(world.size)
-    kept = load(2) else:
+    kept = load(2) except Bad():
         World(size=-1)
     stdout.print(kept.size)
     where = find(["a", "b"], "c") else:
@@ -542,7 +543,7 @@ def main(stdout: Stdout):
         -1
     stdout.print(where)
     for turn in range(3):
-        held = risky(turn * 4) else:
+        held = risky(turn * 4) except Bad():
             continue
         stdout.print(held)
 "#;
@@ -752,19 +753,22 @@ def cached(n: int) -> Entry? fails Bad:
         fail Bad("broken")
     if n > 2:
         return None
-    Entry(size=n)
+    return Entry(size=n)
 
 def lookup(n: int) -> int fails Bad:
     entry = cached(n)? else Entry(size=-1)
-    entry.size
+    return entry.size
 
 def main(stdout: Stdout):
-    stdout.print(lookup(1) else -9, lookup(3) else -9, lookup(7) else -9)
-    held = cached(7) else as why:
+    lookup_value = lookup(1) except Bad(): -9
+    lookup_value2 = lookup(3) except Bad(): -9
+    lookup_value3 = lookup(7) except Bad(): -9
+    stdout.print(lookup_value, lookup_value2, lookup_value3)
+    held = cached(7) except why:
         stdout.print(f"failed: {why.why}")
         None
     stdout.print(held is None)
-    other = cached(1) else as why:
+    other = cached(1) except Bad():
         Entry(size=0)
     found = other else Entry(size=-2)
     stdout.print(found.size)
@@ -786,12 +790,12 @@ const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
         current.append(4)
         sum(current)
     mut count = lock scores as current:
-        current.len()
+        len(current)
     count += 1
     stdout.print(total, count)
     kept = lock scores as ref current:
         current.append(9)
-        if current.len() > 3:
+        if len(current) > 3:
             stdout.print("long")
         current[0]
     stdout.print(kept)
@@ -854,15 +858,15 @@ fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
 
 def inc(ref i: int) -> int:
     i += 1
-    i * 10
+    return i * 10
 
 def text(ref k: str) -> int:
     k = \"b\"
-    5
+    return 5
 
 def bump(ref t: Total) -> int:
     t.v = 10
-    2
+    return 2
 
 def main(stdout: Stdout):
     mut xs = [0, 0, 0]
@@ -945,7 +949,7 @@ def replaced(ref xs: list[int]):
     xs = [7]
 
 def emptied(ref xs: list[int]):
-    while xs.len() > 0:
+    while len(xs) > 0:
         _ = xs.pop()
 
 def retext(ref text: str, by: str):
@@ -967,7 +971,7 @@ def cleared(ref value: int?):
     value = None
 
 def some(value: int) -> int?:
-    value
+    return value
 
 def cleared_text(ref value: str?):
     value = None
@@ -983,7 +987,7 @@ def param_index(ref at: int, ref xs: list[int]) -> int:
     bump(ref at)
     xs[at] = 20
     bump(ref at)
-    xs[at]
+    return xs[at]
 
 def main(stdout: Stdout):
     # An index, as a position and as a length.
@@ -992,7 +996,7 @@ def main(stdout: Stdout):
     stdout.print(xs[i])
     bump(ref i)
     stdout.print(xs[i])
-    mut n = xs.len()
+    mut n = len(xs)
     bump(ref n)
     stdout.print(n, xs[n - 2])
 
@@ -1002,19 +1006,19 @@ def main(stdout: Stdout):
 
     # A list's length, kept across a change.
     mut ys = [1, 2, 3]
-    size = ys.len()
+    size = len(ys)
     grown(ref ys)
-    stdout.print(size, ys.len(), ys[size])
+    stdout.print(size, len(ys), ys[size])
     shrunk(ref ys)
     shrunk(ref ys)
-    stdout.print(ys.len(), ys[-1])
+    stdout.print(len(ys), ys[-1])
     replaced(ref ys)
-    stdout.print(ys.len(), ys)
+    stdout.print(len(ys), ys)
 
     # A loop's list changing in its body, by index up to a length read once.
     mut zs = [1, 2, 3, 4]
-    for at in range(zs.len()):
-        if at < zs.len():
+    for at in range(len(zs)):
+        if at < len(zs):
             zs[at] += 1
         shrunk(ref zs)
     stdout.print(zs)
@@ -1026,23 +1030,23 @@ def main(stdout: Stdout):
     stdout.print(first, lists[0])
     inner = lists[1]
     emptied(ref lists[1])
-    stdout.print(inner, inner.len(), lists[1].len())
+    stdout.print(inner, len(inner), len(lists[1]))
 
     # A struct's list and index, through `mut self` and a `mut` argument.
     mut box = Box([1, 2, 3], 0, "old")
     held = box.items
     box.more(4)
-    stdout.print(held.len(), box.items.len(), box.items[box.at])
+    stdout.print(len(held), len(box.items), box.items[box.at])
     box.next()
     stdout.print(box.items[box.at], box.at)
     box.fewer()
     box.fewer()
-    stdout.print(box.items.len(), box.items[-1])
+    stdout.print(len(box.items), box.items[-1])
     box.swapped()
     stdout.print(box.items, held)
     name = box.name
     box.renamed("newer")
-    stdout.print(name, box.name, box.name.len())
+    stdout.print(name, box.name, len(box.name))
     newbox(ref box)
     stdout.print(box.items, box.at, box.name)
 
@@ -1053,7 +1057,7 @@ def main(stdout: Stdout):
     boxes[0].next()
     stdout.print(boxes[0].items[boxes[0].at], other.items, other.at)
     newbox(ref boxes[1])
-    stdout.print(boxes[1].items, boxes[1].name, boxes.len())
+    stdout.print(boxes[1].items, boxes[1].name, len(boxes))
     mut pair = Pair(Box([1], 0, "l"), right=Box([2], 0, "r"))
     pair.left.more(6)
     pair.left.next()
@@ -1062,17 +1066,17 @@ def main(stdout: Stdout):
 
     # A string: its length, its characters, and where reading it had got to.
     mut text = "héllo wörld, with some more words"
-    before = text.len()
+    before = len(text)
     c = text[6]
     stdout.print(before, c, text[7])
     retext(ref text, "日本語のテキストです")
-    stdout.print(text.len(), text[1], text[7])
+    stdout.print(len(text), text[1], text[7])
     longer(ref text)
-    stdout.print(text.len(), text[-1], text[3])
+    stdout.print(len(text), text[-1], text[3])
     retext(ref text, "ascii now")
-    stdout.print(text.len(), text[2], text)
+    stdout.print(len(text), text[2], text)
     mut chars = 0
-    for at in range(text.len()):
+    for at in range(len(text)):
         chars += 1 if text[at] == "a" else 0
         if at == 2:
             retext(ref text, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -1089,11 +1093,11 @@ def main(stdout: Stdout):
         for extra in range(50):
             added(ref d, f"k{extra}")
         d["b"] = 60
-    stdout.print(d["b"], d.len())
+    stdout.print(d["b"], len(d))
     if "b" in d:
         removed(ref d, "b")
         d["b"] = 70
-    stdout.print(d["b"], d.len())
+    stdout.print(d["b"], len(d))
 
     # An optional and a case, known and then changed.
     # An optional known to hold something, given to what can make it `None`.
@@ -1104,7 +1108,7 @@ def main(stdout: Stdout):
         stdout.print(before_clear, maybe is None)
     mut text_maybe: str? = "held"
     if text_maybe is not None:
-        size_before = text_maybe.len()
+        size_before = len(text_maybe)
         cleared_text(ref text_maybe)
         stdout.print(size_before, text_maybe is None)
     mut places: list[int?] = []
@@ -1117,7 +1121,7 @@ def main(stdout: Stdout):
     match shape:
         case .Line(size, tags):
             reshaped(ref shape)
-            stdout.print(size, tags, tags.len())
+            stdout.print(size, tags, len(tags))
         case .Dot:
             stdout.print("dot")
     match shape:
@@ -1187,7 +1191,7 @@ def more_facts(stdout: Stdout):
     chain[0] = 2
     via(ref chain)
     chain[2] = 5
-    stdout.print(chain, chain.len(), chain[-1])
+    stdout.print(chain, len(chain), chain[-1])
 
     # A list being filled, given away part of the way.
     mut filled = []
@@ -1209,7 +1213,7 @@ def more_facts(stdout: Stdout):
     mut lists = [[1], [2]]
     for ref one in lists:
         grown(ref one)
-        one[0] = one.len()
+        one[0] = len(one)
     stdout.print(lists)
     mut limit = 3
     mut ran = 0
@@ -1235,33 +1239,33 @@ def more_facts(stdout: Stdout):
 
     # A string growing where it is: its length, its characters, where reading got to.
     mut long = "é" * 40
-    stdout.print(long.len(), long[35], long[20])
+    stdout.print(len(long), long[35], long[20])
     longer(ref long)
-    stdout.print(long.len(), long[40], long[39])
+    stdout.print(len(long), long[40], long[39])
     appended_twice(ref long)
-    stdout.print(long.len(), long[42], long[41], long[0])
+    stdout.print(len(long), long[42], long[41], long[0])
     mut plain = "a" * 40
-    stdout.print(plain.len(), plain[39])
+    stdout.print(len(plain), plain[39])
     longer(ref plain)
-    stdout.print(plain.len(), plain[40], plain[39], plain[20])
+    stdout.print(len(plain), plain[40], plain[39], plain[20])
     mut short = "ab"
-    stdout.print(short.len(), short[1])
+    stdout.print(len(short), short[1])
     longer(ref short)
-    stdout.print(short.len(), short[2], short)
+    stdout.print(len(short), short[2], short)
     for round in range(30):
         longer(ref short)
-    stdout.print(short.len(), short[31], short[1])
+    stdout.print(len(short), short[31], short[1])
 
     # In places, read before and after.
     mut names = ["é" * 30, "b"]
-    stdout.print(names[0].len(), names[0][29])
+    stdout.print(len(names[0]), names[0][29])
     longer(ref names[0])
-    stdout.print(names[0].len(), names[0][30], names[1])
+    stdout.print(len(names[0]), names[0][30], names[1])
     mut held = Box([1], 0, "é" * 30)
-    stdout.print(held.name.len(), held.name[25])
+    stdout.print(len(held.name), held.name[25])
     longer(ref held.name)
     held.renamed(held.name + "z")
-    stdout.print(held.name.len(), held.name[31], held.name[25])
+    stdout.print(len(held.name), held.name[31], held.name[25])
 
     # Numbers known to fit or not to be zero, until they're changed.
     mut one_half = 2.0
@@ -1291,7 +1295,7 @@ fn what_a_mut_argument_changes_fails_as_it_should() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
-    for at in range(xs.len()):
+    for at in range(len(xs)):
         stdout.print(xs[at])
         shrunk(ref xs)
 ",
@@ -1306,7 +1310,7 @@ def main(stdout: Stdout):
 
 def main(stdout: Stdout):
     mut box = Box([1, 2, 3])
-    for at in range(box.items.len()):
+    for at in range(len(box.items)):
         stdout.print(box.items[at])
         box.fewer()
 ",
@@ -1343,7 +1347,7 @@ def main(stdout: Stdout):
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
-    for at in range(xs.len()):
+    for at in range(len(xs)):
         mut i = at
         stdout.print(xs[i])
         bumped(ref i)
@@ -1361,25 +1365,25 @@ def main(stdout: Stdout):
 /// changes have to hold at once.
 const READ_THEN_CHANGED: &str = r#"def bump(ref at: int) -> int:
     at += 1
-    at
+    return at
 
 def pair(a: int, b: int) -> str:
-    f"{a}/{b}"
+    return f"{a}/{b}"
 
 def three(a: int, b: int, c: int) -> str:
-    f"{a}/{b}/{c}"
+    return f"{a}/{b}/{c}"
 
 def listed(a: list[int], b: int) -> str:
-    f"{a}/{b}"
+    return f"{a}/{b}"
 
 def put(a: int, ref item: int, ref at: int) -> str:
     at += 1
     item += 100
-    f"{a}"
+    return f"{a}"
 
 def maybe_cleared(a: int, ref value: int?) -> int:
     value = None
-    a
+    return a
 
 def main(stdout: Stdout):
     # An index read as an argument, then changed by a later one.
@@ -1409,7 +1413,7 @@ def main(stdout: Stdout):
     # A list read as an argument, then changed by a later one, and its length.
     mut zs = [1, 2, 3]
     stdout.print(listed(zs, zs.pop() else 0), zs)
-    stdout.print(zs, zs.pop(), zs.len())
+    stdout.print(zs, zs.pop(), len(zs))
 
     # An optional given to what can clear it, its value held in a name first.
     mut maybe: int? = 3
@@ -1448,7 +1452,7 @@ struct Unit:
         self.hp += 1
 
     def grown_by(ref self, values: list[int]):
-        self.tags.append(values.len())
+        self.tags.append(len(values))
         for value in values:
             self.tags.append(value)
 
@@ -1459,7 +1463,7 @@ struct Unit:
 
     def renamed(ref self, name: str):
         self.name = self.name + name
-        self.inner.grow(name.len())
+        self.inner.grow(len(name))
 
     def replaced(ref self):
         self = unit(self.hp * 2)
@@ -1472,11 +1476,11 @@ struct Unit:
         if value < 0:
             fail Bad("negative")
         self.tags.append(value)
-        value
+        return value
 
     def tried(ref self, value: int) -> int fails Bad:
         self.hp += 100
-        self.checked(value)?
+        return self.checked(value)?
 
 struct Band:
     units: list[Unit]
@@ -1501,26 +1505,26 @@ struct Holder:
     ruled: list[Ruled]
 
 def unit(hp: int) -> Unit:
-    Unit(hp, [hp], Inner([hp]), f"u{hp}")
+    return Unit(hp, [hp], Inner([hp]), f"u{hp}")
 
 def band() -> Band:
-    Band([unit(1), unit(2)], unit(3), [[unit(4), unit(5)], [unit(6), unit(7)]])
+    return Band([unit(1), unit(2)], unit(3), [[unit(4), unit(5)], [unit(6), unit(7)]])
 
 def show(stdout: Stdout, units: list[Unit]):
     for one in units:
         stdout.print(one.hp, one.tags, one.inner.tags, one.name)
 
 def ruled_at(size: int) -> Ruled:
-    Ruled(size, []).expect("a size that's allowed")
+    return Ruled(size, []).expect("a size that's allowed")
 
 def swap_ends(ref a: list[int], ref b: list[int]):
-    a.append(b.len())
-    b.append(a.len())
+    a.append(len(b))
+    b.append(len(a))
 
 def try_all(ref units: list[Unit]) -> int fails Bad:
     _ = units[0].tried(1)?
     _ = units[1].tried(-1)?
-    units[0].tried(2)?
+    return units[0].tried(2)?
 
 def main(stdout: Stdout):
     # One owner, and each shape of place.
@@ -1586,7 +1590,7 @@ def main(stdout: Stdout):
     # Built-ins changing a place, given what comes from what's changed.
     mut lists = [unit(1), unit(2), unit(3)]
     lists[0].tags.append(lists[1].hp)
-    lists[0].tags.append(lists[0].tags.len())
+    lists[0].tags.append(len(lists[0].tags))
     lists[1].tags.extend(lists[0].tags)
     lists[1].tags.extend(lists[1].tags)
     lists[2].inner.tags.append(lists[1].tags.pop() else 0)
@@ -1624,7 +1628,7 @@ def main(stdout: Stdout):
     # In a loop, through a loop's item, and with the rule checked after.
     mut looped = [unit(1), unit(2)]
     for round in range(3):
-        for at_now in range(looped.len()):
+        for at_now in range(len(looped)):
             looped[at_now].grow(round)
     for ref one in looped:
         one.inner.grow(9)
@@ -1637,7 +1641,7 @@ def main(stdout: Stdout):
 
     # A failure leaves what was done before it.
     mut failing = [unit(1), unit(2)]
-    got = try_all(ref failing) else as bad:
+    got = try_all(ref failing) except bad:
         stdout.print(bad.why)
         show(stdout, failing)
         return
@@ -1662,7 +1666,7 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     }
     let types = "struct Row:\n    tags: list[int]\n\nstruct Queue:\n    items = list[int]()\n    \
                  rows = [Row(tags=[1])]\n\n    def push(ref self, item: int):\n        self.items.append(item)\n\n    \
-                 def pop(ref self) -> int:\n        self.items.pop() else 0\n\n    \
+                 def pop(ref self) -> int:\n        return self.items.pop() else 0\n\n    \
                  def first(ref self, item: int):\n        self.items.insert(0, item)\n\n    \
                  def more(ref self, others: list[int]):\n        self.items.extend(others)\n\n    \
                  def nested(ref self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
@@ -1712,7 +1716,7 @@ fn changing_a_dict_or_an_item_in_a_shared_value_copies_nothing() -> std::io::Res
             "put",
             "    for n in range(2000):\n        lock table as ref held:\n            held.counts[f\"k{n % 50}\"] = n\n            \
              held.names[n % 50] = f\"a name long enough for a block of its own {n}\"\n    \
-             lock table as held:\n        seen = held.counts.len() + held.names.len()\n",
+             lock table as held:\n        seen = len(held.counts) + len(held.names)\n",
         ),
         (
             "pop",
@@ -1820,16 +1824,16 @@ def refused(big: shared Big) -> int fails Refused:
         held.items.append(0)
         held.name += \"!\"
         fail Refused(code=1)
-    1
+    return 1
 
 def main(stdout: Stdout):
     shared big = Big(items=[n for n in range(10_000)], table={1: 2}, name=\"big\")
     for i in range(100):
         lock big as ref held:
             held.items.append(i)
-    gone = refused(big) else 0
+    gone = refused(big) except Refused(): 0
     lock big as held:
-        stdout.print(held.items.len(), gone, held.items[-1] + held.items.len() - 99, held.name.len())
+        stdout.print(len(held.items), gone, held.items[-1] + len(held.items) - 99, len(held.name))
 ";
 
 /// Random changes to lists in a `shared` value under `lock ... as ref`, failing at a random step:
@@ -1995,7 +1999,7 @@ fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std
     if !ready() {
         return Ok(());
     }
-    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) else 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) else:\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
+    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) except InvalidValue(): 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) except Boom():\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
     let dir = folder("lock_found_counts")?;
     let program = dir.join("found.fen");
     std::fs::write(&program, source)?;
@@ -2178,7 +2182,7 @@ fn a_dict_held_only_by_itself_and_ones_held_twice_give_what_they_should() -> std
         return Ok(());
     }
     let source = r"def keep(d: dict[int, int]) -> int:
-    return d.len()
+    return len(d)
 
 def alone(n: int) -> int:
     mut counts: dict[int, int] = {}
@@ -2264,23 +2268,23 @@ fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::
     if !ready() {
         return Ok(());
     }
-    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(ref self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
+    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(ref self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    return Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
     for (name, body) in [
         (
             "item",
-            "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].grow(n)\n    stdout.print(xs[0].tags.len())\n",
+            "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].grow(n)\n    stdout.print(len(xs[0].tags))\n",
         ),
         (
             "deep",
-            "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].inner.grow(n)\n    stdout.print(xs[0].inner.tags.len())\n",
+            "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].inner.grow(n)\n    stdout.print(len(xs[0].inner.tags))\n",
         ),
         (
             "grid",
-            "    mut grid = [[unit()], [unit()]]\n    for n in range(2000):\n        grid[n % 2][0].grow(n)\n        grid[n % 2][-1].inner.grow(n)\n    stdout.print(grid[0][0].tags.len())\n",
+            "    mut grid = [[unit()], [unit()]]\n    for n in range(2000):\n        grid[n % 2][0].grow(n)\n        grid[n % 2][-1].inner.grow(n)\n    stdout.print(len(grid[0][0].tags))\n",
         ),
         (
             "method",
-            "    mut band = Band([unit(), unit()])\n    for n in range(2000):\n        band.grow(n % 2, n)\n    stdout.print(band.units[0].tags.len())\n",
+            "    mut band = Band([unit(), unit()])\n    for n in range(2000):\n        band.grow(n % 2, n)\n    stdout.print(len(band.units[0].tags))\n",
         ),
     ] {
         let counts = counts_of(&format!("place_{name}"), &format!("{types}{body}"))?;
@@ -2339,10 +2343,10 @@ def main(stdout: Stdout):
     stdout.print(items)
 
     mut w = 0
-    while w < items.len():
+    while w < len(items):
         items[w] = 0
         bump(ref w)
-        if w < items.len():
+        if w < len(items):
             items[w] = 7
         bump(ref w)
     stdout.print(items)
@@ -2371,7 +2375,7 @@ struct Cursor:
     at: int
 
 def pick(xs: list[int], cursor: Cursor) -> int:
-    xs[cursor.at]
+    return xs[cursor.at]
 
 def stepped_down(xs: list[int]) -> int:
     mut at = 0
@@ -2387,33 +2391,33 @@ def walk(nodes: list[Node], start: int) -> int:
     while at != NONE:
         seen += 1
         at = nodes[at].next
-    seen
+    return seen
 
 def last_of(nodes: list[Node], at: int) -> int:
-    nodes[at].next
+    return nodes[at].next
 
 def down(xs: list[int]) -> int:
-    mut i = xs.len() - 1
+    mut i = len(xs) - 1
     mut total = 0
     while i >= 0:
         total += xs[i]
         i -= 1
-    total
+    return total
 
 def down_too_far(xs: list[int]) -> int:
-    mut i = xs.len() - 1
+    mut i = len(xs) - 1
     mut total = 0
     while i > -3:
         total += xs[i]
         i -= 1
-    total
+    return total
 
 def main(stdout: Stdout):
     nodes = [Node(next=2), Node(next=NONE), Node(next=1)]
     stdout.print(walk(nodes, start=0), last_of(nodes, at=NONE))
     stdout.print(down([1, 2, 3]), down_too_far([1, 2, 3]))
     xs = [10, 20, 30]
-    read = json.loads[Cursor]("{\"at\": -1}") else Cursor(at=0)
+    read = json.loads[Cursor]("{\"at\": -1}") except ParseError(): Cursor(at=0)
     stdout.print(pick(xs, Cursor(at=1)), pick(xs, read))
     stdout.print(stepped_down(xs))
 "#;
@@ -2477,7 +2481,7 @@ def counted(v: list[int]) -> int:
 
 def main(stdout: Stdout):
     v = [1.0, 2.0, 3.0]
-    rows = [row(v, i) for i in range(v.len())]
+    rows = [row(v, i) for i in range(len(v))]
     stdout.print(f"{rows[0] + rows[1] + rows[2]:.6f}")
     stdout.print(shifted(3, b=4), shifted(-9, b=2), counted([5, 6, 7]))
     big = 9223372036854775800
@@ -2522,14 +2526,14 @@ fn strings_read_by_place_run_the_same_checking_their_cursor() -> std::io::Result
     }
     let source = r#"def count(s: str) -> int:
     mut n = 0
-    for i in range(s.len()):
+    for i in range(len(s)):
         if s[i] == "é" or s[i - 1] == "a":
             n += 1
     return n
 
 def backwards(s: str) -> str:
     mut out = ""
-    mut i = s.len() - 1
+    mut i = len(s) - 1
     while i >= 0:
         out += s[i]
         i -= 1
@@ -2575,7 +2579,7 @@ fn facts_stripped_or_checked_run_the_same() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + seen.len()\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(xs.len())\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
+    let source = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + len(seen)\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(len(xs))\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         for (setting, on) in
             [("FENNEC_STRIP_FACTS", "0"), ("FENNEC_STRIP_FACTS", "1"), ("FENNEC_CHECK_PROOFS", "1")]
@@ -2698,10 +2702,10 @@ const REPLACING_ITS_SOURCE: &str = r#"struct Unit:
     tags: list[int]
 
 def hurt(unit: Unit, by: int) -> Unit:
-    Unit(unit.name, unit.hp - by, unit.tags)
+    return Unit(unit.name, unit.hp - by, unit.tags)
 
 def renamed(unit: Unit) -> Unit:
-    Unit(unit.name + "!", unit.hp, [unit.hp, unit.tags.len()])
+    return Unit(unit.name + "!", unit.hp, [unit.hp, len(unit.tags)])
 
 struct Crowd:
     numbers: list[int]
@@ -2709,7 +2713,7 @@ struct Crowd:
     units: list[Unit]
 
     def size(self) -> int:
-        self.numbers.len()
+        return len(self.numbers)
 
     def step(ref self):
         self.numbers = [number - self.by for number in self.numbers]
@@ -2718,7 +2722,7 @@ struct Outer:
     crowd: Crowd
 
 struct Ruled:
-    numbers: list[int] where numbers.len() > 0
+    numbers: list[int] where len(numbers) > 0
 
 def doubled(ref numbers: list[int]):
     numbers = [number * 2 for number in numbers]
@@ -2757,7 +2761,7 @@ def main(stdout: Stdout):
 
     # What's worked out reads the list, so it sees it as it was before.
     mut seen = [1, 2, 3]
-    seen = [number + seen[0] + seen.len() for number in seen]
+    seen = [number + seen[0] + len(seen) for number in seen]
     stdout.print(seen)
     mut first_last = [1, 2, 3]
     first_last = [first_last[-1] for number in first_last]
@@ -2831,11 +2835,11 @@ const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
     for round in range(3):
         numbers = [i * 2 + round for i in range(1000)]
         names = [f"n{i}" for i in range(50)]
-        total += numbers[999] + numbers.len() + names[49].len()
+        total += numbers[999] + len(numbers) + len(names[49])
     stdout.print(total)
     zeros = [0 for _ in range(4)]
     grid = [[r * 10 + c for c in range(3)] for r in range(3)]
-    stdout.print(zeros, grid, [row.len() for row in grid])
+    stdout.print(zeros, grid, [len(row) for row in grid])
     mut shared = []
     mut seen = []
     for i in range(6):
@@ -2854,7 +2858,7 @@ const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
     stdout.print(twice)
     mut read = []
     for i in range(5):
-        read.append(read.len() + i)
+        read.append(len(read) + i)
     stdout.print(read)
 "#;
 
@@ -2888,7 +2892,7 @@ struct Box:
     next: list[Box]
 
 def grow(ref units: list[Unit], by: int):
-    for at in range(units.len()):
+    for at in range(len(units)):
         units[at].tags.append(by)
 
 def main(stdout: Stdout):
@@ -2903,7 +2907,7 @@ def main(stdout: Stdout):
     units[-1].tags.append(11)
     stdout.print(units, snapshot, shared, item, tags)
     # An argument read from the same place, and from another item.
-    units[0].tags.append(units[0].tags.len())
+    units[0].tags.append(len(units[0].tags))
     units[0].tags.append(units[1].tags[0])
     stdout.print(units)
     # An index that changes between the read and the write isn't this at all.
@@ -2931,7 +2935,7 @@ def main(stdout: Stdout):
     )?;
     let counts = counts_of(
         "local_item_field_counts",
-        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for at in range(units.len()):\n            units[at].tags.append(round)\n    stdout.print(units[0].tags.len())\n",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for at in range(len(units)):\n            units[at].tags.append(round)\n    stdout.print(len(units[0].tags))\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
@@ -2944,35 +2948,35 @@ const CHARACTER_PLACES: &str = r#"def long_text() -> str:
     mut parts = ["héllo wörld "]
     for i in range(40):
         parts.append(f"ça {i} 日本語 🦊 ")
-    "".join(parts)
+    return "".join(parts)
 
 def show_all(text: str) -> str:
     mut out = []
-    for at in range(text.len()):
+    for at in range(len(text)):
         out.append(text[at])
-    "".join(out)
+    return "".join(out)
 
 def main(stdout: Stdout):
     text = long_text()
-    stdout.print(text.len(), show_all(text) == text)
+    stdout.print(len(text), show_all(text) == text)
     # Backward, forward, jumps, ends, negative.
     mut seen = []
-    mut back = text.len() - 1
+    mut back = len(text) - 1
     while back >= 0:
         seen.append(text[back])
         back -= 1
-    stdout.print(seen[0], seen[1], seen[seen.len() - 1], seen.len())
-    stdout.print(text[0], text[1], text[-1], text[-2], text[5], text[100], text[3], text[text.len() - 1])
+    stdout.print(seen[0], seen[1], seen[len(seen) - 1], len(seen))
+    stdout.print(text[0], text[1], text[-1], text[-2], text[5], text[100], text[3], text[len(text) - 1])
     mut jumps = []
     for at in [0, 200, 1, 199, 50, 51, 49, -1, -200, 7]:
         jumps.append(text[at])
     stdout.print(jumps)
     # Slices: every way of bounding one, inside, past the ends, empty, backward.
     stdout.print(text[:5], text[5:], text[1:6], text[-5:], text[:-200], text[-3:-1], text[3:3], text[9:2])
-    stdout.print(text[0:100000], text[-100000:3], text[200:205], text[205:200], text[:].len())
+    stdout.print(text[0:100000], text[-100000:3], text[200:205], text[205:200], len(text[:]))
     mut pieces = []
     mut piece_at = 0
-    while piece_at < text.len():
+    while piece_at < len(text):
         pieces.append(text[piece_at:piece_at + 3])
         piece_at += 37
     stdout.print(pieces)
@@ -2991,13 +2995,13 @@ def main(stdout: Stdout):
     mut grown = "é"
     for i in range(200):
         grown += "ü" if i % 3 == 0 else "a"
-        if grown[-1] != grown[grown.len() - 1]:
+        if grown[-1] != grown[len(grown) - 1]:
             stdout.print("wrong")
-    stdout.print(grown.len(), grown[100], grown[-1], grown[150:153])
+    stdout.print(len(grown), grown[100], grown[-1], grown[150:153])
     # Strings let go of, their addresses free for new ones with other text.
     for round in range(200):
         made = f"é{round} ümläut ümläut ümläut ümläut ümläut"
-        last = made[made.len() - 1]
+        last = made[len(made) - 1]
         middle = made[10]
         if last != "t":
             stdout.print("wrong", round, last)
@@ -3008,8 +3012,8 @@ def main(stdout: Stdout):
     mut before = moved[2]
     for i in range(300):
         moved += "日"
-        before = moved[moved.len() - 2]
-    stdout.print(moved.len(), before, moved[1], moved[2], moved[3], moved[299], moved[-1], moved[1:4])
+        before = moved[len(moved) - 2]
+    stdout.print(len(moved), before, moved[1], moved[2], moved[3], moved[299], moved[-1], moved[1:4])
     # The address of a string let go of, used by another with different text, at the same place.
     mut wrong = 0
     for round in range(400):
@@ -3024,7 +3028,7 @@ def main(stdout: Stdout):
     stdout.print(wrong)
     # Inline strings, read directly, and the same text as a block.
     short = "日本é"
-    stdout.print(short[0], short[1], short[2], short[-1], short[1:], short[:1], short.len())
+    stdout.print(short[0], short[1], short[2], short[-1], short[1:], short[:1], len(short))
     # Other things on non-ASCII text.
     stdout.print(text[:20].upper(), text[3:9].find("w"), text[:8] + "é", f"{text[:4]}!", text[:4] == "héll", text[1] == "é")
     stdout.print(text[100000])
@@ -3049,42 +3053,42 @@ fn a_strings_length_is_read_again_when_it_changes_beside_a_field() -> std::io::R
 
     def read(ref self) -> int:
         mut total = 0
-        while self.at < self.text.len():
+        while self.at < len(self.text):
             if self.text[self.at] == "x":
                 total += 1
             self.at += 1
-            self.seen = self.text.len()
-        total
+            self.seen = len(self.text)
+        return total
 
     def read_growing(ref self) -> int:
         mut total = 0
-        while self.at < self.text.len() and self.text.len() < 400:
+        while self.at < len(self.text) and len(self.text) < 400:
             if self.text[self.at] == "a":
                 self.text += "ax"
             self.at += 1
-            total += self.text.len()
-        total
+            total += len(self.text)
+        return total
 
     def read_replacing(ref self) -> int:
         mut total = 0
-        while self.at < self.text.len():
+        while self.at < len(self.text):
             if self.at == 2:
                 self.text = "a replacement long enough to have its own block of text"
-            total += self.text.len()
+            total += len(self.text)
             self.at += 1
-        total
+        return total
 
 def main(stdout: Stdout):
     mut one = Reader(text="xaxax long enough to have a block of its own")
     stdout.print(one.read(), one.at, one.seen)
     mut two = Reader(text="a string long enough to have a block of its own ")
-    stdout.print(two.read_growing(), two.at, two.text.len())
+    stdout.print(two.read_growing(), two.at, len(two.text))
     mut three = Reader(text="short")
     stdout.print(three.read_replacing(), three.at, three.text)
     mut four = Reader(text="short")
     for round in range(40):
         four.grow("é" if round % 7 == 0 else "ab")
-        stdout.print(four.text.len(), four.text[four.at - 1], four.at)
+        stdout.print(len(four.text), four.text[four.at - 1], four.at)
     mut readers = [Reader(text="xx long enough to have a block of its own"), Reader(text="x")]
     for ref reader in readers:
         reader.grow("x")
@@ -3118,7 +3122,7 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     }
     same_as_pinned(
         "character_steps",
-        "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(text.len()):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(text.len() - 3):\n        pieces += text[at:at + 3].len()\n    stdout.print(found, pieces)\n",
+        "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(len(text)):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(len(text) - 3):\n        pieces += len(text[at:at + 3])\n    stdout.print(found, pieces)\n",
     )
 }
 
@@ -3135,15 +3139,15 @@ fn reading_characters_by_position_matches_what_was_pinned() -> std::io::Result<(
         r#"def words(text: str) -> list[str]:
     mut found = []
     mut at = 0
-    while at < text.len():
-        while at < text.len() and text[at] == " ":
+    while at < len(text):
+        while at < len(text) and text[at] == " ":
             at += 1
         start = at
-        while at < text.len() and text[at] != " ":
+        while at < len(text) and text[at] != " ":
             at += 1
         if at > start:
             found.append(text[start:at])
-    found
+    return found
 
 def main(stdout: Stdout):
     text = "fóx ünïcode 日本語 🦊🦊 and plain ascii past an inline header é"
@@ -3151,12 +3155,12 @@ def main(stdout: Stdout):
     stdout.print(words(""), words("é"), words(" é 🦊 "))
     mut seen = []
     for at in [0, 0, 1, 1, 2, 5, 4, 30, 29, 31, -1, -2, -60, 2, 3, 13, 12, 14, 15, 16, 17]:
-        if -text.len() <= at and at < text.len():
+        if -len(text) <= at and at < len(text):
             seen.append(f"{at}={text[at]}")
     stdout.print("".join(seen))
     stdout.print(text[4:11], text[12:15], text[16:18], text[-1:], text[:3], text[5])
     mut total = 0
-    for at in range(text.len()):
+    for at in range(len(text)):
         total += text[at].code()
         if at % 7 == 0:
             total += text[at // 2].code()
@@ -3179,7 +3183,7 @@ fn reading_again_and_slicing_back_in_text_that_isnt_ascii() -> std::io::Result<(
         r#"def main(stdout: Stdout):
     text = "ab日c🦊de é f" + "x" * 8 + "ñ"
     mut out = []
-    for at in range(text.len()):
+    for at in range(len(text)):
         first = text[at]
         again = text[at]
         out.append(f"{first}{again}")
@@ -3187,7 +3191,7 @@ fn reading_again_and_slicing_back_in_text_that_isnt_ascii() -> std::io::Result<(
             if at >= back:
                 out.append(text[at - back:at])
     stdout.print("|".join(out))
-    stdout.print(text[0], text[4], text[9], text[3], text[-1], text[-1], text[text.len() - 1], text[2], text[2])
+    stdout.print(text[0], text[4], text[9], text[3], text[-1], text[-1], text[len(text) - 1], text[2], text[2])
 "#,
         "aa|bb|a|日日|b|ab|cc|日|b日|ab日|🦊🦊|c|日c|b日c|dd|🦊|c🦊|日c🦊|ee|d|🦊d|c🦊d|  |e|de|🦊de|éé| |e |de |  |é| é|e é|ff| |é | é |xx|f| f|é f|xx|x|fx| fx|xx|x|xx|fxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|xx|x|xx|xxx|ññ|x|xx|xxx\na 🦊   c ñ ñ ñ 日 日\n",
     )
@@ -3214,7 +3218,7 @@ fn looping_over_characters_matches_what_was_pinned() -> std::io::Result<()> {
             out.append("*")
         else:
             out.append(c)
-    "".join(out)
+    return "".join(out)
 
 def until(text: str, stop: str) -> int:
     mut seen = 0
@@ -3224,12 +3228,12 @@ def until(text: str, stop: str) -> int:
         if c == "a":
             continue
         seen += 1
-    seen
+    return seen
 
 def main(stdout: Stdout):
     for text in ["", "a", "short ascii", "héllo wörld 🦊 and 日本", "a much longer ASCII text than any inline header can hold",
                  "a much longer text than a header holds, ending in é", "🦊🦊🦊🦊🦊🦊🦊🦊🦊", "x1 y2 z3 " * 20]:
-        stdout.print(kinds(text), until(text, stop="z"), until(text, stop="🦊"), text.len())
+        stdout.print(kinds(text), until(text, stop="z"), until(text, stop="🦊"), len(text))
     mut joined = []
     for c in "nested é":
         for d in "ab":
@@ -3238,7 +3242,7 @@ def main(stdout: Stdout):
     mut changed = 0
     for c in "rename ü inside":
         more = c + "!"
-        changed += more.len()
+        changed += len(more)
     stdout.print(changed)
     words = ["plain", "wörd", "日本語", "long enough ascii word to need a block of its own"]
     stdout.print([sum(1 for c in w if c != "o") for w in words])
@@ -3257,7 +3261,7 @@ fn indexing_and_slicing_a_string_that_isnt_ascii_matches_what_was_pinned() -> st
         "wide_slices",
         r#"def main(stdout: Stdout):
     text = "héllo wörld, ünïcode ✓ and 🦊 fox; then plain ascii after all that"
-    n = text.len()
+    n = len(text)
     mut parts = []
     for a in [0, 1, 5, 21, 26, 27, 28, 40, 64, 65, -1, -5, -30, -70, 70]:
         for b in [0, 2, 6, 22, 27, 28, 29, 45, 64, 65, -1, -3, -40, 100]:
@@ -3284,8 +3288,8 @@ fn reading_text_that_isnt_ascii_makes_nothing() -> std::io::Result<()> {
         return Ok(());
     }
     let made =
-        "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    stdout.print(text.len())\n";
-    let read = "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    mut found = 0\n    mut size = 0\n    for at in range(text.len() - 2):\n        if text[at] == \"日\":\n            found += 1\n        size += text[at:at + 2].len()\n    stdout.print(found, size)\n";
+        "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    stdout.print(len(text))\n";
+    let read = "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    mut found = 0\n    mut size = 0\n    for at in range(len(text) - 2):\n        if text[at] == \"日\":\n            found += 1\n        size += len(text[at:at + 2])\n    stdout.print(found, size)\n";
     let (made, read) = (counts_of("text_made", made)?, counts_of("text_read", read)?);
     assert_eq!(count(&read, "allocations"), count(&made, "allocations"), "{made} / {read}");
     Ok(())
@@ -3311,7 +3315,7 @@ enum Token:
     Many(items: list[int])
 
 def total(units: list[Unit]) -> int:
-    sum(unit.hp for unit in units)
+    return sum(unit.hp for unit in units)
 
 def by_fail(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
@@ -3319,14 +3323,14 @@ def by_fail(ref units: list[Unit]) -> int fails Bad:
         unit.hp += 1
         if unit.hp == 2:
             fail Bad("stop")
-    0
+    return 0
 
 def by_return(ref units: list[Unit]) -> int:
     for ref unit in units:
         unit.tags.append(8)
         if unit.hp == 1:
-            return unit.tags.len()
-    -1
+            return len(unit.tags)
+    return -1
 
 def grow(ref units: list[Unit], by: int):
     for ref unit in units:
@@ -3340,7 +3344,7 @@ def step(ref world: World):
     world.turn += 1
 
 def make() -> list[Unit]:
-    [Unit([1], "first name long enough not to be inline", 0), Unit([2], "b", 1), Unit([3], "c", 5)]
+    return [Unit([1], "first name long enough not to be inline", 0), Unit([2], "b", 1), Unit([3], "c", 5)]
 
 def main(stdout: Stdout):
     # Copies taken before the loop keep what they had.
@@ -3354,7 +3358,8 @@ def main(stdout: Stdout):
     stdout.print(units, shared, kept, item, tags)
     # Ways out.
     mut a = make()
-    stdout.print(by_fail(ref a) else -1, a)
+    by_fail_value = by_fail(ref a) except Bad(): -1
+    stdout.print(by_fail_value, a)
     mut b = make()
     stdout.print(by_return(ref b), b)
     mut c = make()
@@ -3369,8 +3374,8 @@ def main(stdout: Stdout):
     # The list read in the body sees what was written back so far.
     mut d = make()
     for ref unit in d:
-        unit.tags.append(d[0].tags.len())
-        unit.hp += d.len() + total(d)
+        unit.tags.append(len(d[0].tags))
+        unit.hp += len(d) + total(d)
     stdout.print(d)
     # A copy of the item, or of what it holds, made inside.
     mut e = make()
@@ -3399,7 +3404,7 @@ def main(stdout: Stdout):
     # Nested.
     mut grid = [[1, 2], [3], []]
     for ref row in grid:
-        row.append(row.len())
+        row.append(len(row))
         for ref cell in row:
             cell *= 2
     stdout.print(grid)
@@ -3431,7 +3436,7 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     same_as_pinned("for_mut_items", FOR_MUT_ITEMS)?;
     let counts = counts_of(
         "for_mut_counts",
-        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for ref unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for ref unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(len(units[0].tags))\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
@@ -3462,10 +3467,10 @@ struct World:
     turn: int
 
 def total(units: list[Unit]) -> int:
-    sum(unit.health for unit in units)
+    return sum(unit.health for unit in units)
 
 def total_in(world: World) -> int:
-    total(world.units)
+    return total(world.units)
 
 def main(stdout: Stdout):
     mut units = [Unit(health=10, seen=0), Unit(health=20, seen=0)]
@@ -3526,7 +3531,7 @@ def read_after(box: shared Bag) -> int:
         items[0] = items[1] * 2
         ref slot = held.items[0]
         x = slot + 1
-        x
+        return x
 
 def undone(box: shared Bag) fails Nope:
     lock box as ref held:
@@ -3542,7 +3547,7 @@ def main(stdout: Stdout):
     lock b as held:
         stdout.print(held)
     stdout.print(read_after(b))
-    undone(b) else as why:
+    undone(b) except why:
         stdout.print("failed:", why.why)
     lock b as held:
         stdout.print(held)
@@ -3568,7 +3573,7 @@ struct World:
     score: int
 
 def total(units: list[Unit]) -> int:
-    sum(unit.health for unit in units)
+    return sum(unit.health for unit in units)
 
 def hit(ref unit: Unit, by: int):
     unit.health -= by
@@ -3594,12 +3599,55 @@ def main(stdout: Stdout):
     first.health += bonus
     stdout.print(first.health)
     for turn in range(3):
-        ref last = world.units[world.units.len() - 1]
+        ref last = world.units[len(world.units) - 1]
         if turn == 1:
             continue
         last.health += turn
     stdout.print(world.units[1].health)
 "#;
+
+/// A `ref` case whose body returns puts the case back before the function returns, and the
+/// function returns what the body did, on every way through: a `def` that ends in such a
+/// `match` gives its value with `return` in each case, as every `def` does since 2026-11-11.
+#[test]
+fn a_ref_case_that_returns_puts_the_case_back_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_returns",
+        r"enum Slot:
+    Empty
+    Held(count: int)
+
+def bump(ref slot: Slot) -> int:
+    match slot:
+        case .Held(ref count):
+            count += 1
+            return count
+        case .Empty:
+            return 0
+
+def bump_or_keep(ref slot: Slot, keep: bool) -> int:
+    match slot:
+        case .Held(ref count):
+            count += 1
+            if keep:
+                return count
+        case .Empty:
+            pass
+    return -1
+
+def main(stdout: Stdout):
+    mut slot = Slot.Held(count=1)
+    stdout.print(bump(ref slot), bump(ref slot), slot)
+    mut empty = Slot.Empty
+    stdout.print(bump(ref empty), empty)
+    stdout.print(bump_or_keep(ref slot, True), bump_or_keep(ref slot, False), slot)
+",
+        "2 3 Slot.Held(count=3)\n0 Slot.Empty\n4 -1 Slot.Held(count=5)\n",
+    )
+}
 
 /// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively,
 /// as the language says: a case that finishes, one that leaves by `return`, and one that fails,
@@ -3634,7 +3682,7 @@ def click(ref widgets: list[Widget], widget_id: int, times: int) -> int:
             value *= 2.0
         case _:
             pass
-    0
+    return 0
 
 def capped(ref kind: Kind) fails TooMany:
     match kind:
@@ -3650,10 +3698,10 @@ def main(stdout: Stdout):
     stdout.print(widgets[0].kind, widgets[1].kind, widgets[2].kind)
     mut kind = Kind.Button(clicks=1, label="go")
     mut first = "fine"
-    capped(ref kind) else as failure:
+    capped(ref kind) except failure:
         first = f"{failure}"
     mut second = "fine"
-    capped(ref kind) else as failure:
+    capped(ref kind) except failure:
         second = f"{failure}"
     stdout.print(first, second)
     stdout.print(kind)
@@ -3702,7 +3750,7 @@ fn isdigit_matches_what_was_pinned() -> std::io::Result<()> {
     for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
         stdout.print(text, text.isdigit())
     mut found = 0
-    for at in range(long.len()):
+    for at in range(len(long)):
         if long[at].isdigit():
             found += 1
     stdout.print(found)
@@ -3725,7 +3773,7 @@ const REMAINDER_IN_RANGE: &str = r#"def stirred(n: int) -> int:
     mut x = n % 2_147_483_646 + 1
     for _ in range(100):
         x = x * 48_271 % 2_147_483_647
-    x % 1_000
+    return x % 1_000
 
 def main(stdout: Stdout):
     lowest = -9223372036854775807 - 1
@@ -3781,7 +3829,7 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
     }
     let program = |last: &str| {
         format!(
-            "def closing(low: int, high: int) -> (int, int):\n    mut a = low\n    mut b = high\n    while a < b:\n        a += 1\n        b -= 1\n    (a, b)\n\ndef counted(limit: int, start: int) -> int:\n    mut count = start\n    while count < limit and count % 1000 != 999:\n        count += 1\n    count\n\ndef stirred(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed % 10\n    total\n\ndef main(stdout: Stdout):\n    highest = 9223372036854775807\n    lowest = -9223372036854775807 - 1\n    stdout.print(closing(highest - 9, high=highest), closing(lowest, high=lowest + 7), closing(5, high=1))\n    stdout.print(counted(highest, start=highest - 5), counted(10, start=3), stirred(1000))\n    mut x = highest - 1\n    if x < highest:\n        x += 1\n    stdout.print(x)\n    {last}\n"
+            "def closing(low: int, high: int) -> (int, int):\n    mut a = low\n    mut b = high\n    while a < b:\n        a += 1\n        b -= 1\n    return (a, b)\n\ndef counted(limit: int, start: int) -> int:\n    mut count = start\n    while count < limit and count % 1000 != 999:\n        count += 1\n    return count\n\ndef stirred(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed % 10\n    return total\n\ndef main(stdout: Stdout):\n    highest = 9223372036854775807\n    lowest = -9223372036854775807 - 1\n    stdout.print(closing(highest - 9, high=highest), closing(lowest, high=lowest + 7), closing(5, high=1))\n    stdout.print(counted(highest, start=highest - 5), counted(10, start=3), stirred(1000))\n    mut x = highest - 1\n    if x < highest:\n        x += 1\n    stdout.print(x)\n    {last}\n"
         )
     };
     same_as_expected_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
@@ -3837,7 +3885,7 @@ fn a_product_that_overflows_still_fails_as_pinned() -> std::io::Result<()> {
     }
     let program = |a: &str, b: &str| {
         format!(
-            "def scaled(i: int, j: int) -> float:\n    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef main(stdout: Stdout):\n    mut total = 0.0\n    for i in range(50):\n        for j in range(50):\n            total += scaled(i, j=j)\n    stdout.print(f\"{{total:.6f}}\")\n    big = {a}\n    stdout.print(big * {b})\n"
+            "def scaled(i: int, j: int) -> float:\n    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef main(stdout: Stdout):\n    mut total = 0.0\n    for i in range(50):\n        for j in range(50):\n            total += scaled(i, j=j)\n    stdout.print(f\"{{total:.6f}}\")\n    big = {a}\n    stdout.print(big * {b})\n"
         )
     };
     for (name, a, b) in [
@@ -3862,7 +3910,7 @@ fn sized_integers_work_out_as_their_sizes_say() -> std::io::Result<()> {
     let printed = printed_by(
         "sized_integers",
         "def mix(a: u8, b: u8) -> u8:
-    u8((u16(a) * 7 + u16(b)) % 251)
+    return u8((u16(a) * 7 + u16(b)) % 251)
 
 def main(stdout: Stdout):
     mut pixel: u8 = 250
@@ -3875,8 +3923,8 @@ def main(stdout: Stdout):
     for k in range(10):
         acc = mix(acc, b=u8(k))
     stdout.print(acc, int(acc) + 1000, u16(pixel) * 200, small / 7)
-    bytes: list[u8] = [1, 2, 255]
-    stdout.print(bytes, bytes[2] == 255, i32(low) * 1000, 3 * i32(low) < 0)
+    octets: list[u8] = [1, 2, 255]
+    stdout.print(octets, octets[2] == 255, i32(low) * 1000, 3 * i32(low) < 0)
 ",
     )?;
     assert_eq!(
@@ -3905,10 +3953,10 @@ def mixed(text: str) -> u64:
     mut hash = u64(7347990519673328018) * 2 + 1
     for c in text:
         hash = (hash ^ u64(c.code())) >> 1
-    hash
+    return hash
 
 def scaled(by: f32) -> f32:
-    by * 2.0
+    return by * 2.0
 
 def main(stdout: Stdout):
     half: u64 = 9223372036854775807
@@ -3995,7 +4043,7 @@ fn u64s_and_f32s_sort_by_their_values() -> std::io::Result<()> {
     stdout.print(sorted([(half + 1, "b"), (u64(1), "a"), (big, "c")]))
     stdout.print(sorted([f32(2.5), f32(-1.0), f32(0.1), f32(3.0)]))
     named = ["ccc", "a", "bb"]
-    stdout.print(sorted(named, key=(s) => u64(s.len())), sorted(named, key=(s) => f32(s.len())))
+    stdout.print(sorted(named, key=(s) => u64(len(s))), sorted(named, key=(s) => f32(len(s))))
 "#;
     let printed = printed_by("u64_sort", source)?;
     let (low, top) = ("0, 5, 7, 9223372036854775808, 18446744073709551615", "9223372036854775809");
@@ -4025,24 +4073,24 @@ def past_the_end(xs: list[int]) -> int:
     mut at = 0
     neg(ref at)
     mut total = 0
-    while at + 2 <= xs.len():
+    while at + 2 <= len(xs):
         total += xs[at] + xs[at + 1]
         at += 2
-    total
+    return total
 
 def after_a_guard(x0: int, b: int) -> int:
     mut x = x0
     if x < b:
         bump(ref x)
         return x + 1
-    0
+    return 0
 
 def down_after_a_guard(x0: int, b: int) -> int:
     mut x = x0
     if x > b:
         drop(ref x)
         return x - 1
-    0
+    return 0
 
 ";
 
@@ -4095,7 +4143,7 @@ fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def n() -> int:\n    7\n\ndef main(stdout: Stdout):\n    v = (n() % 5) + 1\n    mut d = float(v)\n    d = 0.0\n    stdout.print(1.0 / d)\n";
+    let source = "def n() -> int:\n    return 7\n\ndef main(stdout: Stdout):\n    v = (n() % 5) + 1\n    mut d = float(v)\n    d = 0.0\n    stdout.print(1.0 / d)\n";
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let dir = folder("divisor_written_again")?;
         let program = dir.join("divides.fen");
@@ -4128,11 +4176,11 @@ fn a_number_on_the_left_takes_the_size_on_the_right() -> std::io::Result<()> {
     let dir = "literal_left_of_a_size";
     let source = "def big() -> u64:
     half: u64 = 9223372036854775807
-    half + half
+    return half + half
 
 def large() -> f32:
     f: f32 = 16777216.0
-    f
+    return f
 
 def main(stdout: Stdout):
     b = big()
@@ -4155,7 +4203,7 @@ fn a_float_remainder_is_exact() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "float_remainder",
-        "def number(x: float) -> float:\n    x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
+        "def number(x: float) -> float:\n    return x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
         "1.0 0.0999999999999997 0.5 -0.5\n0.0 1.0 0.09999999999999998\n",
     )
 }
@@ -4265,14 +4313,19 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
     let printed = printed_by(
         "sized_from_outside",
         "def main(stdout: Stdout):
-    stdout.print(u8.from(200) else u8(0), u8.parse(\"17\") else u8(0), i8.from(-5) else i8(0), u32.parse(\"4294967295\") else u32(0))
+    from_value = u8.from(200) except InvalidValue(): u8(0)
+    parse_value = u8.parse(\"17\") except InvalidValue(): u8(0)
+    from_value2 = i8.from(-5) except InvalidValue(): i8(0)
+    parse_value2 = u32.parse(\"4294967295\") except InvalidValue(): u32(0)
+    stdout.print(from_value, parse_value, from_value2, parse_value2)
     for text in [\"300\", \"-1\", \"seven\"]:
-        n = u8.parse(text) else as problem:
+        n = u8.parse(text) except problem:
             stdout.print(\"failed:\", problem.message)
             continue
         stdout.print(\"fit\", n)
-    small = u8.parse(\"250\") else u8(0)
-    stdout.print(small + 5, i16.from(40000) else i16(-1))
+    small = u8.parse(\"250\") except InvalidValue(): u8(0)
+    sized = i16.from(40000) except InvalidValue(): i16(-1)
+    stdout.print(small + 5, sized)
 ",
     )?;
     assert_eq!(
@@ -4297,13 +4350,13 @@ fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Resu
     let printed = printed_by(
         "u64_from_outside",
         "def said(run: () -> u64 fails InvalidValue) -> str:
-    n = run() else as why:
+    n = run() except why:
         return f\"[{why.message}]\"
-    f\"{n}\"
+    return f\"{n}\"
 
 def main(stdout: Stdout):
-    top = u64.parse(\"18446744073709551615\") else u64(0)
-    half = u64.parse(\"9223372036854775808\") else u64(0)
+    top = u64.parse(\"18446744073709551615\") except InvalidValue(): u64(0)
+    half = u64.parse(\"9223372036854775808\") except InvalidValue(): u64(0)
     stdout.print(top, half, said(() => u64.parse(\"42\")?), said(() => u64.from(7)?), said(() => u64.from(-1)?), said(() => u64.parse(\"18446744073709551616\")?), said(() => u64.parse(\"-3\")?), said(() => u64.parse(\"seven\")?))
     stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
     stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
@@ -4365,7 +4418,7 @@ fn numbers_calls_and_printing_match_what_was_pinned() -> std::io::Result<()> {
     }
     same_as_pinned(
         "numbers",
-        "from std.math import sqrt\n\ndef fib(n: int) -> int:\n    if n < 2: return n\n    fib(n - 1) + fib(n - 2)\n\ndef main(stdout: Stdout):\n    stdout.print(\"fib\", fib(20), sqrt(2.0), 1.5 > 1.0)\n    stdout.print(7 // -2, 7 % -2, -7 // 2, -7 % 2, -(3))\n    mut total = 0\n    for i in range(5):\n        total += i * i\n    stdout.print(total)\n",
+        "from std.math import sqrt\n\ndef fib(n: int) -> int:\n    if n < 2: return n\n    return fib(n - 1) + fib(n - 2)\n\ndef main(stdout: Stdout):\n    stdout.print(\"fib\", fib(20), sqrt(2.0), 1.5 > 1.0)\n    stdout.print(7 // -2, 7 % -2, -7 // 2, -7 % 2, -(3))\n    mut total = 0\n    for i in range(5):\n        total += i * i\n    stdout.print(total)\n",
     )
 }
 
@@ -4387,7 +4440,7 @@ fn an_ints_text_of_every_length_matches_what_was_pinned() -> std::io::Result<()>
         power *= 10
     biggest = 9223372036854775807
     stdout.print(str(biggest), str(-biggest - 1), f"{-biggest - 1}", str(0), str(-0))
-    stdout.print(out, out.len())
+    stdout.print(out, len(out))
 "#,
     )
 }
@@ -4402,7 +4455,7 @@ fn a_value_nothing_keeps_matches_what_was_pinned() -> std::io::Result<()> {
     same_as_pinned(
         "discarded",
         r#"def doubled(xs: list[int]) -> list[int]:
-    [x * 2 for x in xs]
+    return [x * 2 for x in xs]
 
 def main(stdout: Stdout):
     scores = [3, 1, 2]
@@ -4424,7 +4477,7 @@ fn a_std_constant_reads_both_ways_as_pinned() -> std::io::Result<()> {
     }
     same_as_pinned(
         "std_constants",
-        "from std import string\nfrom std.string import DIGITS, PUNCTUATION\n\ndef main(stdout: Stdout):\n    stdout.print(string.DIGITS, DIGITS, string.DIGITS == DIGITS)\n    stdout.print(string.ASCII_LETTERS.len(), PUNCTUATION.len(), string.WHITESPACE.len())\n    stdout.print([c for c in \"a1b2\" if string.DIGITS.find(c) is not None])\n",
+        "from std import string\nfrom std.string import DIGITS, PUNCTUATION\n\ndef main(stdout: Stdout):\n    stdout.print(string.DIGITS, DIGITS, string.DIGITS == DIGITS)\n    stdout.print(len(string.ASCII_LETTERS), len(PUNCTUATION), len(string.WHITESPACE))\n    stdout.print([c for c in \"a1b2\" if string.DIGITS.find(c) is not None])\n",
     )
 }
 
@@ -4442,20 +4495,20 @@ fn more_small_calls_match_what_was_pinned() -> std::io::Result<()> {
     y: int
 
 def main(args: Args, stdout: Stdout):
-    stdout.print(list(args).len())
+    stdout.print(len(list(args)))
     for arg in args:
-        stdout.print(arg.len() > 0)
+        stdout.print(len(arg) > 0)
     stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
     stdout.print("héllo".codes(), "".codes(), "€".code())
     for code in [65, 233, 8364, -1, 55296, 1114112]:
-        text = str.from_code(code) else as error:
+        text = str.from_code(code) except error:
             stdout.print(error.message)
             continue
-        stdout.print(text, text.len())
+        stdout.print(text, len(text))
     mut numbers = {1: 2, 3: 4}
     shared = numbers
     numbers.clear()
-    stdout.print(numbers, shared, numbers.len())
+    stdout.print(numbers, shared, len(numbers))
     numbers[5] = 6
     stdout.print(numbers)
     mut names = {"a": "b", "a long string that is held in a block": "c"}
@@ -4470,7 +4523,7 @@ def main(args: Args, stdout: Stdout):
     stdout.print(ints, kept)
     ints.clear()
     ints.add(7)
-    stdout.print(ints, ints.len())
+    stdout.print(ints, len(ints))
     mut words = {"a", "b", "a long string that is held in a block"}
     words.discard("a")
     words.discard("nope")
@@ -4480,7 +4533,7 @@ def main(args: Args, stdout: Stdout):
     keys.discard(Key(x=1, y=2))
     keys.discard(Key(x=9, y=9))
     keys.remove(Key(x=3, y=4))
-    stdout.print(keys, keys.len())
+    stdout.print(keys, len(keys))
 "#,
     )
 }
@@ -4524,7 +4577,7 @@ fn sorting_by_tuple_keys_matches_what_was_pinned() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     words = ["bramble", "kit", "ash", "a long word that sits in a block", "kit"]
-    stdout.print(sorted(words, key=(word) => (word.len(), word)))
+    stdout.print(sorted(words, key=(word) => (len(word), word)))
     stdout.print(sorted([3, 1, 2], key=(n) => (n % 2, -n)))
     stdout.print(sorted([1.5, -2.5], key=(x) => (x, 1)))
     units = [Unit(name="b", hp=2), Unit(name="a", hp=2), Unit(name="c", hp=1), Unit(name="d", hp=2)]
@@ -4557,15 +4610,15 @@ struct Score:
     name: str
 
     def <(self, other: Score) -> bool:
-        self.points > other.points
+        return self.points > other.points
 
 def main(stdout: Stdout):
     scores = [Score(points=3, name="ash"), Score(points=7, name="vex"), Score(points=3, name="kit"), Score(points=9, name="bo")]
     stdout.print([score.name for score in sorted(scores)])
     empty: list[Score] = []
-    stdout.print(sorted(empty).len(), [score.name for score in sorted([Score(points=1, name="one")])])
-    later = Uuid.parse("018f2a6e-0000-7000-8000-000000000002") else Uuid()
-    first = Uuid.parse("018f2a6e-0000-7000-8000-000000000001") else Uuid()
+    stdout.print(len(sorted(empty)), [score.name for score in sorted([Score(points=1, name="one")])])
+    later = Uuid.parse("018f2a6e-0000-7000-8000-000000000002") except InvalidValue(): Uuid()
+    first = Uuid.parse("018f2a6e-0000-7000-8000-000000000001") except InvalidValue(): Uuid()
     stdout.print(sorted([later, first]) == [first, later])
 "#,
     )
@@ -4584,9 +4637,9 @@ fn bits_sorts_and_choices_match_what_was_pinned() -> std::io::Result<()> {
 def name(flag: bool) -> str:
     match flag:
         case True:
-            "yes"
+            return "yes"
         case False:
-            "no"
+            return "no"
 
 struct Bag:
     numbers: list[int]
@@ -4601,7 +4654,7 @@ def main(stdout: Stdout):
     items.sort(key=n => -n)
     stdout.print(items, shared)
     mut words = ["pear", "fig", "a word long enough to be held in a block"]
-    words.sort(key=word => word.len())
+    words.sort(key=word => len(word))
     stdout.print(words)
     words.sort()
     stdout.print(words)
@@ -4626,18 +4679,18 @@ fn lists_keep_value_semantics_as_pinned() -> std::io::Result<()> {
         r"def changed(items: list[int]) -> list[int]:
     mut copy = items
     copy[0] = 99
-    copy
+    return copy
 
 def grown(ref items: list[int]):
     items.append(7)
     items[0] = 5
 
 def same(items: list[int]) -> list[int]:
-    items
+    return items
 
 def show(items: list[int], stdout: Stdout):
     mut at = 0
-    while at < items.len():
+    while at < len(items):
         stdout.print(items[at])
         at += 1
 
@@ -4665,8 +4718,8 @@ def main(stdout: Stdout):
     mut h = [1, 2]
     for _ in range(3):
         k = h
-        h.append(k.len())
-        stdout.print(k.len(), h.len())
+        h.append(len(k))
+        stdout.print(len(k), len(h))
 ",
     )
 }
@@ -4684,7 +4737,7 @@ struct Holder:
     slots: array[dict[str, int], 2] = [{}, {}]
 
 def make(first: str) -> array[str, 3]:
-    [first, first + "!", first + "?"]
+    return [first, first + "!", first + "?"]
 
 def bump(ref values: array[float, 4]):
     for ref value in values:
@@ -4698,7 +4751,7 @@ def main(stdout: Stdout):
     copied = words
     words[0] = "changed"
     words[-1] = "last"
-    stdout.print(words, copied, words == copied, "hi!" in words, "nope" not in words, words.len())
+    stdout.print(words, copied, words == copied, "hi!" in words, "nope" not in words, len(words))
     stdout.print(f"{words} and {copied[1]}", str(copied))
 
     mut floats = array[float, 4]()
@@ -4772,7 +4825,7 @@ def main(stdout: Stdout):
     copy = big
     big[0] = -1
     big[-1] = 99
-    stdout.print(sum(big), sum(copy), big.len(), big[9998], copy[0], big == copy)
+    stdout.print(sum(big), sum(copy), len(big), big[9998], copy[0], big == copy)
     mut holder = Big()
     holder.values[5] = 5
     stdout.print(sum(holder.values), holder.values[5], holder.values[6])
@@ -4813,7 +4866,7 @@ fn a_failure_inside_std_points_at_the_call_as_pinned() -> std::io::Result<()> {
     }
     same_as_expected_in_both_builds(
         "std_failure_at_the_call",
-        "def shuffled(xs: list[int]) -> list[int]:\n    mut out = xs\n    out.swap(0, 7)\n    out\n\ndef main(stdout: Stdout):\n    stdout.print(shuffled([1, 2, 3]))\n",
+        "def shuffled(xs: list[int]) -> list[int]:\n    mut out = xs\n    out.swap(0, 7)\n    return out\n\ndef main(stdout: Stdout):\n    stdout.print(shuffled([1, 2, 3]))\n",
     )
 }
 
@@ -4833,7 +4886,7 @@ fn an_array_of_numbers_allocates_nothing() -> std::io::Result<()> {
         for row in range(2):
             for col in range(2):
                 out.m[row * 2 + col] = self.m[row * 2] * other.m[col] + self.m[row * 2 + 1] * other.m[2 + col]
-        out
+        return out
 
 def main(stdout: Stdout):
     mut product = Mat2()
@@ -4863,7 +4916,7 @@ struct Log:
         self.note = line + \" was last\"
 
     def seen(self) -> int:
-        self.lines.len()
+        return len(self.lines)
 
 struct Holder:
     log: shared Log
@@ -4881,7 +4934,7 @@ def changed(holder: Holder) -> Holder:
     mut mine = holder
     mine.tag += 1
     add_through(mine.log, \"from a copy\")
-    mine
+    return mine
 
 def main(stdout: Stdout):
     shared first = Log()
@@ -4931,7 +4984,7 @@ def transfer(source: shared Account, target: shared Account, amount: int) -> boo
         if x.total < amount: return False
         x.total -= amount
         y.add(amount)
-    True
+    return True
 
 def main(stdout: Stdout):
     shared two = Account(total=10)
@@ -4996,7 +5049,7 @@ def through_holder(holder: Holder) -> int:
         return held.total
 
 def called(read: () -> int) -> int:
-    read()
+    return read()
 
 def main(stdout: Stdout):
     shared one = Box()
@@ -5129,7 +5182,7 @@ struct Account:
     total = 0
 
     def ==(self, other: Account) -> bool:
-        self.total > 100
+        return self.total > 100
 
 def main(stdout: Stdout):
     shared a = Account(total=1)
@@ -5196,7 +5249,7 @@ def swap(a: shared Account, b: shared Account) -> bool:
         held = first.owner
         first.owner = second.owner
         second.owner = held
-    True
+    return True
 
 def fill(account: shared Account, count: int):
     lock account as ref held:
@@ -5212,7 +5265,7 @@ def main(stdout: Stdout):
     fill(bo, count=100)
     lock ana, bo as first, second:
         stdout.print(first.balance, first.owner, first.log)
-        stdout.print(second.balance, second.owner, second.log.len())
+        stdout.print(second.balance, second.owner, len(second.log))
 "#,
     )
 }
@@ -5235,11 +5288,11 @@ def transfer(bank: Bank, from_id: str, to_id: str, amount: int) -> bool:
         payee.balance += amount
     lock bank.audit as ref log:
         log.append(f\"{from_id} -> {to_id}: {amount}\")
-    True
+    return True
 
 def balance(account: shared Account) -> int:
     lock account as current:
-        current.balance
+        return current.balance
 
 def main(stdout: Stdout):
     shared ana = Account(owner=\"ana\", balance=10)
@@ -5272,28 +5325,30 @@ error Shut:
 def capped(n: int) -> int fails Refused:
     if n < 0:
         fail Refused(code=n)
-    n
+    return n
 
 def closed(n: int) -> int fails Shut:
     if n > 5:
         fail Shut(why="big")
-    n
+    return n
 
 def only_refused() -> str fails Refused:
-    f"{capped(-3)?}"
+    return f"{capped(-3)?}"
 
 def either(run: () -> str fails Refused | Shut) -> str:
-    run() else as why:
-        match why:
-            case Refused(code): f"refused {code}"
-            case Shut(why=reason): f"shut {reason}"
+    return run() except why:
+        case Refused(code):
+            f"refused {code}"
+        case Shut(why=reason):
+            f"shut {reason}"
 
 def each(step: (int) -> int fails Refused | Shut, n: int) -> str:
-    stepped = step(n) else as why:
-        match why:
-            case Refused(code): return f"refused {code}"
-            case Shut(why=reason): return f"shut {reason}"
-    f"{stepped}"
+    stepped = step(n) except why:
+        case Refused(code):
+            return f"refused {code}"
+        case Shut(why=reason):
+            return f"shut {reason}"
+    return f"{stepped}"
 
 def main(stdout: Stdout):
     stdout.print(either(only_refused), each(n => closed(n)? + 1, 9), each(n => closed(n)? + 1, 2))
@@ -5320,14 +5375,15 @@ fn an_arrow_functions_question_mark_passes_its_failure_up_natively() -> std::io:
 def half(n: int) -> int fails Bad:
     if n < 0:
         fail Bad(why="neg")
-    n // 2
+    return n // 2
 
 def twice(run: () -> int fails Bad) -> int fails Bad:
-    run()? + run()?
+    return run()? + run()?
 
 def main(stdout: Stdout) fails Bad:
     stdout.print(twice(() => half(8)? + 1)?)
-    stdout.print(twice(() => half(-2)?) else 99)
+    twice_value = twice(() => half(-2)?) except Bad(): 99
+    stdout.print(twice_value)
 "#,
         "10\n99\n",
     )
@@ -5356,28 +5412,28 @@ def nothing(flag: int) fails Boom:
         fail Boom(reason=\"nothing \" + str(flag))
 
 def run(flag: int, stdout: Stdout) -> str:
-    text = risky(flag) else as problem:
+    text = risky(flag) except problem:
         stdout.print(\"saw\", problem.reason)
         return \"left\"
-    nothing(flag) else as trouble:
+    nothing(flag) except trouble:
         stdout.print(\"also\", trouble.reason)
         return \"unreached\"
     return text
 
 def again(stdout: Stdout) fails Boom:
     for flag in [1, 0, 2]:
-        made = risky(flag) else as problem:
+        made = risky(flag) except problem:
             stdout.print(\"skip\", problem.reason)
             continue
         stdout.print(made)
-    made = risky(0) else as problem:
+    made = risky(0) except problem:
         fail problem
     stdout.print(made)
 
 def main(stdout: Stdout):
     stdout.print(run(0, stdout))
     stdout.print(run(1, stdout))
-    again(stdout) else as problem:
+    again(stdout) except problem:
         stdout.print(\"failed\", problem.reason)
         return
     stdout.print(\"ok\")
@@ -5406,7 +5462,7 @@ def closed(name: str) -> int fails Shut:
     fail Shut(name=name)
 
 def opened(name: str, stdout: Stdout) -> with str fails Shut:
-    lend name else:
+    lend name except:
         n = closed(name)?
         stdout.print("not here", n)
 
@@ -5415,7 +5471,7 @@ def used(stdout: Stdout) fails Shut | Other:
         fail Other(why="in the block")
 
 def main(stdout: Stdout):
-    used(stdout) else as why:
+    used(stdout) except why:
         stdout.print("failed", why, why.notes())
         return
     stdout.print("worked")
@@ -5460,7 +5516,7 @@ def numbers(limit: int) -> Iterator[int] fails Boom:
 
 def opened(stdout: Stdout) -> with int fails Boom:
     stdout.print(\"open\")
-    lend 7 else:
+    lend 7 except:
         stdout.print(\"cleanup ran\")
     stdout.print(\"closed\")
 
@@ -5517,7 +5573,7 @@ def put_back(ref kind: Kind) fails Boom:
             pass
 
 def closing_fails() -> with int fails Boom:
-    lend 1 else:
+    lend 1 except:
         fail Boom(at=99)
 
 def noted(stdout: Stdout) fails Boom:
@@ -5548,16 +5604,16 @@ def ran(stdout: Stdout, run: int) fails Boom:
             noted(stdout)?
 
 def main(stdout: Stdout):
-    value = inner_returns(stdout) else as problem:
+    value = inner_returns(stdout) except problem:
         problem.at
     stdout.print(value)
     for run in [0, 1, 2, 3, 4, 6]:
-        ran(stdout, run) else as problem:
+        ran(stdout, run) except problem:
             stdout.print(\"failed\", problem.at, problem.notes())
             continue
         stdout.print(\"no failure\")
     mut kind = Kind.Button(clicks=1)
-    put_back(ref kind) else as problem:
+    put_back(ref kind) except problem:
         stdout.print(\"failed\", problem.at, problem.notes(), clicks_of(kind))
         return
     stdout.print(\"no failure\")
@@ -5678,12 +5734,12 @@ fn a_crash_runs_the_cleanups_of_the_blocks_it_leaves() -> std::io::Result<()> {
         return Ok(());
     }
     let source = r#"def lent(stdout: Stdout, name: str) -> with int:
-    lend 1 else:
+    lend 1 except:
         stdout.print(f"cleanup {name}")
     stdout.print(f"done {name}")
 
 def breaks(stdout: Stdout) -> with int:
-    lend 0 else:
+    lend 0 except:
         stdout.print("cleanup that crashes")
         xs = [0]
         stdout.print(xs[7])
@@ -5833,7 +5889,7 @@ fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> st
     if !ready() {
         return Ok(());
     }
-    let source = "error Refused:\n    code: int\n\ndef capped(n: int, limit: int) -> int fails Refused:\n    if n > limit:\n        fail Refused(code=n)\n    n\n\ndef guarded(code: int, stdout: Stdout) -> with int fails Refused:\n    lend code else:\n        stdout.print(\"cleanup\", code)\n        kept = [capped(step, limit=code)? for step in range(3)]\n        stdout.print(\"kept\", kept.len())\n    stdout.print(\"released\", code)\n\ndef crashes(code: int, stdout: Stdout) fails Refused:\n    with guarded(code, stdout)? as held:\n        values = [1]\n        stdout.print(values[held])\n\ndef main(stdout: Stdout):\n    crashes(4, stdout) else:\n        stdout.print(\"failed\")\n";
+    let source = "error Refused:\n    code: int\n\ndef capped(n: int, limit: int) -> int fails Refused:\n    if n > limit:\n        fail Refused(code=n)\n    return n\n\ndef guarded(code: int, stdout: Stdout) -> with int fails Refused:\n    lend code except:\n        stdout.print(\"cleanup\", code)\n        kept = [capped(step, limit=code)? for step in range(3)]\n        stdout.print(\"kept\", len(kept))\n    stdout.print(\"released\", code)\n\ndef crashes(code: int, stdout: Stdout) fails Refused:\n    with guarded(code, stdout)? as held:\n        values = [1]\n        stdout.print(values[held])\n\ndef main(stdout: Stdout):\n    crashes(4, stdout) except Refused():\n        stdout.print(\"failed\")\n";
     let dir = folder("crash_cleanup_comprehension")?;
     let program = dir.join("comprehension.fen");
     std::fs::write(&program, source)?;
@@ -5900,11 +5956,11 @@ fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
 
 ## Says `text` on `done`, whether or not anything's there to hear it.
 def tell(done: Sender[str], text: str):
-    done.send(text) else:
+    done.send(text) except Closed():
         pass
 
 def lent(done: Sender[str]) -> with int:
-    lend 7 else:
+    lend 7 except:
         tell(done, text="crashed")
     tell(done, text="finished")
 
@@ -5918,7 +5974,7 @@ def print_nothing(n: int):
 
 ## Runs a job in a task of its own, and says how its task ended.
 def ran(done: Sender[str], at: int) -> str:
-    _ = launched(done, at=at) else:
+    _ = launched(done, at=at) except Crashed():
         return "crashed"
     return "ended"
 
@@ -5983,7 +6039,7 @@ struct Mat2:
     d: float
 
     def *(self, other: Mat2) -> Mat2:
-        Mat2(
+        return Mat2(
             a=self.a * other.a + self.b * other.c,
             b=self.a * other.b + self.b * other.d,
             c=self.c * other.a + self.d * other.c,
@@ -5992,10 +6048,10 @@ struct Mat2:
 
 extend Mat2:
     def *(self, other: Vec2) -> Vec2:
-        Vec2(x=self.a * other.x + self.b * other.y, y=self.c * other.x + self.d * other.y)
+        return Vec2(x=self.a * other.x + self.b * other.y, y=self.c * other.x + self.d * other.y)
 
     def *(self, other: float) -> Mat2:
-        Mat2(a=self.a * other, b=self.b * other, c=self.c * other, d=self.d * other)
+        return Mat2(a=self.a * other, b=self.b * other, c=self.c * other, d=self.d * other)
 
 def main(stdout: Stdout):
     turn = Mat2(a=0.0, b=-1.0, c=1.0, d=0.0)
@@ -6125,8 +6181,10 @@ def main(stdout: Stdout):
     spots = {Reached(x=1, y=2): "tree"}
     text = json.dumps(spots)
     stdout.print(text)
-    stdout.print((json.loads[dict[Reached, str]](text) else {}) == spots)
-    stdout.print((pack.loads[dict[Reached, str]](pack.dumps(spots)) else {}) == spots)
+    got_value = json.loads[dict[Reached, str]](text) except ParseError(): {}
+    stdout.print((got_value) == spots)
+    got_value2 = pack.loads[dict[Reached, str]](pack.dumps(spots)) except ParseError(): {}
+    stdout.print((got_value2) == spots)
     stdout.print(pack.dumps(Reached(x=1, y=2))[4:12])
 "#,
         &wanted,
@@ -6153,7 +6211,8 @@ struct Player:
 def main(stdout: Stdout):
     text = json.dumps(Player(display_name="a"), names=JsonNames.CamelCase)
     stdout.print(text)
-    stdout.print(json.loads[Player](text, names=JsonNames.CamelCase) else Player(display_name="b"))
+    got_value = json.loads[Player](text, names=JsonNames.CamelCase) except ParseError(): Player(display_name="b")
+    stdout.print(got_value)
 "#,
         "{\"displayName\": \"a\"}\nPlayer(display_name=\"a\")\n",
     )
@@ -6216,7 +6275,7 @@ fn a_default_left_out_in_a_source_written_in_twice_is_given_once() -> std::io::R
         lend added(self.start)
 
 def added(n: int, more = 1) -> int:
-    n + more
+    return n + more
 
 def main(stdout: Stdout):
     counter = Counter(start=1)
@@ -6248,12 +6307,13 @@ struct Held[T]:
     value: T
 
 def holding[T, E](make: () -> T fails E) -> with Held[T] fails Nope:
-    value = make() else fail Nope(why="no")
-    lend Held[T](value=value) else:
+    value = make() except why:
+        fail Nope(why="no")
+    lend Held[T](value=value) except:
         pass
 
 def one() -> int fails Nope:
-    1
+    return 1
 
 def main(stdout: Stdout) fails Nope:
     with holding(one)? as held:
@@ -6275,11 +6335,11 @@ def started[T, E](make: () -> T fails E) fails Crashed:
         pass
 
 def ran[T, E](make: () -> T fails E):
-    _ = make() else:
+    _ = make() except E():
         return
 
 def one() -> int fails Nope:
-    1
+    return 1
 
 def main(stdout: Stdout) fails Crashed:
     started(one)?
@@ -6291,8 +6351,8 @@ def main(stdout: Stdout) fails Crashed:
     Ok(())
 }
 
-/// `with src else fail E` on a source whose body has an `x else fail` and a `with launch(...)?`:
-/// both fail with `E` once it's written in, and the launch stays one.
+/// A source whose body has an `x else fail` and a `with launch(...)?` fails with its own error,
+/// and a source over it passes that up with `?`: the launch stays one.
 #[test]
 fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -6305,31 +6365,28 @@ fn a_source_failing_instead_holds_its_else_fails_and_its_launch() -> std::io::Re
 error Outer:
     why: str
 
-error Inner:
-    why: str
-
 def work():
     pass
 
 def given(bad: bool) -> int?:
-    None if bad else 1
+    return None if bad else 1
 
-def inner_source(bad: bool) -> with int fails Inner | Crashed:
-    first = given(bad) else fail Inner(why="none")
+def inner_source(bad: bool) -> with int fails Outer | Crashed:
+    first = given(bad) else fail Outer(why="the inner source failed")
     with launch(() => work())?:
         lend first
 
-def outer_source(bad: bool) -> with int fails Outer:
-    with inner_source(bad) else fail Outer(why="the inner source failed") as n:
+def outer_source(bad: bool) -> with int fails Outer | Crashed:
+    with inner_source(bad)? as n:
         lend n + 1
 
-def run(bad: bool, stdout: Stdout) fails Outer:
+def run(bad: bool, stdout: Stdout) fails Outer | Crashed:
     with outer_source(bad)? as n:
         stdout.print("got", n)
 
 def main(stdout: Stdout):
     for bad in [False, True]:
-        _ = run(bad, stdout) else as why:
+        _ = run(bad, stdout) except why:
             stdout.print("failed", why)
             continue
         stdout.print("worked")
@@ -6356,9 +6413,9 @@ fn a_case_names_a_unions_error_and_later_cases_hold_what_is_left() -> std::io::R
     def said(self) -> str:
         match self:
             case .Stuck(name):
-                f"stuck {name}"
+                return f"stuck {name}"
             case .Jammed:
-                "jammed"
+                return "jammed"
 
 error Late:
     waited: int
@@ -6370,17 +6427,17 @@ def run(n: int) fails Shut | Late:
 
 def main(stdout: Stdout):
     for n in [0, 1, 2, 3]:
-        _ = run(n) else as why:
-            match why:
-                case Late(waited=_):
-                    stdout.print("late")
-                    continue
-                case Shut.Stuck(name=name):
-                    stdout.print("named", name)
-                    continue
-                case error:
-                    stdout.print(error.said())
-                    continue
+        _ = run(n) except why:
+            case Late(waited=_):
+                stdout.print("late")
+                continue
+            case Shut.Stuck(name=name):
+                stdout.print("named", name)
+                continue
+            case _:
+                error = why
+                stdout.print(error.said())
+                continue
         stdout.print("went through")
 "#,
     )?;
@@ -6412,7 +6469,7 @@ def middle(n: int, stdout: Stdout) -> with int fails Boom:
     stdout.print("middle closed")
 
 def outer(n: int, stdout: Stdout) -> with int fails Boom:
-    lend n else:
+    lend n except:
         stdout.print("outer's cleanup")
     stdout.print("outer closed")
 
@@ -6423,7 +6480,7 @@ def used(n: int, stdout: Stdout) fails Boom:
 
 def main(stdout: Stdout):
     for n in [1, -1]:
-        _ = used(n, stdout) else as why:
+        _ = used(n, stdout) except why:
             stdout.print("failed", why)
             continue
         stdout.print("worked")
@@ -6454,11 +6511,11 @@ struct Conn:
     def made(self, n: int) -> int fails Boom:
         if n < 0:
             fail Boom()
-        n + self.n
+        return n + self.n
 
     def opened(self, n: int) -> with int fails Boom:
         got = self.made(n)?
-        lend got else:
+        lend got except:
             pass
 
 def main(stdout: Stdout) fails Boom:
@@ -6473,9 +6530,9 @@ def main(stdout: Stdout) fails Boom:
     Ok(())
 }
 
-/// `with src else fail E as x:` fails with `E` however the source fails: while opening, as here,
-/// or while finishing. A source can wrap another this way and say only its own error, and the
-/// block's own failures pass up as they are.
+/// A source wrapping another says only its own error when the other fails with it: the failure
+/// is replaced inside the source, and the wrapper passes it up with `?`, while opening, as here,
+/// or while finishing.
 #[test]
 fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
     if !ready() {
@@ -6483,25 +6540,22 @@ fn a_with_else_fail_gives_its_own_failure_natively() -> std::io::Result<()> {
     }
     let printed = printed_by(
         "with_else_fail",
-        "error First:
-    Broke(why: str)
-
-error Second:
+        "error Second:
     Lost(why: str)
 
-def inner(fine: bool) -> with int fails First:
-    if not fine: fail .Broke(why=\"inner\")
-    lend 1 else:
+def inner(fine: bool) -> with int fails Second:
+    if not fine: fail .Lost(why=\"outer\")
+    lend 1 except:
         pass
 
 def outer(fine: bool) -> with int fails Second:
-    with inner(fine) else fail .Lost(why=\"outer\") as held:
-        lend held + 1 else:
+    with inner(fine)? as held:
+        lend held + 1 except:
             pass
 
 def main(stdout: Stdout):
     for fine in [True, False]:
-        _ = used(fine, stdout) else as problem:
+        _ = used(fine, stdout) except problem:
             stdout.print(\"failed\", problem)
             continue
         stdout.print(\"worked\")
@@ -6540,36 +6594,36 @@ struct Lite:
     name: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len()
+        return len(text)
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="lite") else:
+        lend Transaction(log="lite") except:
             pass
 
 struct Postgres:
     host: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 2
+        return len(text) * 2
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="pg") else:
+        lend Transaction(log="pg") except:
             pass
 
 def saved[D: Database](db: D) -> str fails Nope:
     with db.transaction()? as tx:
         count = db.run("abc")?
         return f"{tx.log} {count}"
-    ""
+    return ""
 
 def twice[D: Database](db: D) -> str fails Nope:
     first = saved(db)?
-    f"{first}/{saved(db)?}"
+    return f"{first}/{saved(db)?}"
 
 def plain(db: Database) -> int fails Nope:
     with db.transaction()? as tx:
-        return tx.log.len()
-    0
+        return len(tx.log)
+    return 0
 
 def main(stdout: Stdout) fails Nope:
     stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Lite(name="c"))?)
@@ -6597,7 +6651,7 @@ struct Lite:
     name: str
 
     def session(self) -> with Session:
-        lend Session(log="lite") else:
+        lend Session(log="lite") except:
             pass
 
 def direct(store: Lite, text: str) -> str:
@@ -6607,19 +6661,19 @@ def direct(store: Lite, text: str) -> str:
 def branched(store: Lite, long: bool) -> int:
     if long:
         with store.session() as session:
-            return session.log.len() * 10
+            return len(session.log) * 10
     else:
         with store.session() as session:
-            return session.log.len()
+            return len(session.log)
 
 def matched(store: Lite, n: int) -> int:
     match n:
         case 0:
             with store.session() as session:
-                return session.log.len() * 100
+                return len(session.log) * 100
         case _:
             with store.session() as session:
-                return session.log.len() + n
+                return len(session.log) + n
 
 def main(stdout: Stdout):
     store = Lite(name="a")
@@ -6654,28 +6708,36 @@ def held(code: int) -> with Tally fails Refused:
 
 def counted(code: int) -> int fails Refused:
     with held(code)? as tally:
-        tally.count
+        return tally.count
 
 def branched(code: int, twice: bool) -> int fails Refused:
     if twice:
         with held(code)? as tally:
-            tally.count * 2
+            return tally.count * 2
     else:
         with held(code)? as tally:
-            tally.count
+            return tally.count
 
 def matched(code: int) -> str fails Refused:
     match code:
         case 0:
-            "none"
+            return "none"
         case _:
             with held(code)? as tally:
-                f"tally {tally.count}"
+                return f"tally {tally.count}"
 
 def main(stdout: Stdout):
-    stdout.print(counted(4) else 0, counted(3) else 0)
-    stdout.print(branched(4, twice=True) else 0, branched(5, twice=False) else 0, branched(3, twice=True) else -1)
-    stdout.print(matched(0) else "failed", matched(6) else "failed", matched(3) else "failed")
+    counted_value = counted(4) except Refused(): 0
+    counted_value2 = counted(3) except Refused(): 0
+    stdout.print(counted_value, counted_value2)
+    branched_value = branched(4, twice=True) except Refused(): 0
+    branched_value2 = branched(5, twice=False) except Refused(): 0
+    branched_value3 = branched(3, twice=True) except Refused(): -1
+    stdout.print(branched_value, branched_value2, branched_value3)
+    matched_value = matched(0) except Refused(): "failed"
+    matched_value2 = matched(6) except Refused(): "failed"
+    matched_value3 = matched(3) except Refused(): "failed"
+    stdout.print(matched_value, matched_value2, matched_value3)
 "#,
         "4 0\n8 5 -1\nnone tally 6 failed\n",
     )
@@ -6707,18 +6769,18 @@ struct Db:
         if user == \"\":
             fail DbError(why=\"who?\")
         log.lines.append(f\"open {self.name} for {user}\")
-        lend f\"{self.name}:{user}\" else:
+        lend f\"{self.name}:{user}\" except:
             log.lines.append(f\"failed {user}\")
         log.lines.append(f\"close {user}\")
 
 def scoped(ref log: Log, label: str) -> with int:
     log.lines.append(f\"enter {label}\")
-    lend label.len()
+    lend len(label)
     log.lines.append(f\"leave {label}\")
 
 def check(n: int) -> int fails DbError:
     if n == 3: fail DbError(why=\"three\")
-    n
+    return n
 
 struct Probe:
     held: int
@@ -6727,8 +6789,8 @@ struct Probe:
         if self.held > 5: fail DbError(why=\"big\")
 
 def probe(held: int, ref log: Log) -> with Probe fails DbError:
-    lend Probe(held=held) else:
-        _ = log.lines.len()
+    lend Probe(held=held) except:
+        _ = len(log.lines)
         log.lines.append(f\"probe {held} failed\")
 
 def poked(held: int, ref log: Log) fails DbError:
@@ -6743,25 +6805,28 @@ def first_big(db: Db, ref log: Log, limit: int) -> int fails DbError:
             for n in range(10):
                 if check(n)? + size > limit:
                     return n
-    -1
+    return -1
 
 def count(db: Db, ref log: Log) -> int fails DbError:
     mut total = 0
     while True:
         with db.session(\"bo\", ref log)? as session:
-            total += session.len()
+            total += len(session)
             if total > 10:
                 break
-    total
+    return total
 
 def main(stdout: Stdout):
     db = Db(name=\"main\")
     mut log = Log()
-    stdout.print(first_big(db, ref log, limit=5) else -9)
-    stdout.print(first_big(db, ref log, limit=50) else -9)
-    stdout.print(count(db, ref log) else -9)
+    first_big_value = first_big(db, ref log, limit=5) except DbError(): -9
+    stdout.print(first_big_value)
+    first_big_value2 = first_big(db, ref log, limit=50) except DbError(): -9
+    stdout.print(first_big_value2)
+    count_value = count(db, ref log) except DbError(): -9
+    stdout.print(count_value)
     for held in [1, 9]:
-        _ = poked(held, ref log) else as error:
+        _ = poked(held, ref log) except error:
             stdout.print(error.why)
             continue
         stdout.print(\"poked\")
@@ -6785,7 +6850,7 @@ def made() -> int fails Boom:
     return 5
 
 def held_open(stdout: Stdout) -> with int fails Boom:
-    conn = made() else as problem:
+    conn = made() except problem:
         fail problem
     lend conn
     stdout.print(\"done\", conn)
@@ -6793,13 +6858,13 @@ def held_open(stdout: Stdout) -> with int fails Boom:
 def later(stdout: Stdout) -> with int fails Boom:
     conn = 3
     lend conn
-    found = made() else as problem:
+    found = made() except problem:
         fail problem
     stdout.print(found + conn)
 
 def bound_then_assigned(stdout: Stdout) -> with int fails Boom:
     lend 1
-    got = made() else as conn:
+    got = made() except conn:
         fail conn
     stdout.print(\"conn\", got)
     conn = 2
@@ -6839,7 +6904,7 @@ def opened(name: str, ref log: Log) -> with str fails Refused:
     if name == "bad":
         fail Refused(who=name)
     log.lines.append(f"open {name}")
-    lend name else:
+    lend name except:
         log.lines.append(f"undo {name}")
     log.lines.append(f"close {name}")
 
@@ -6853,17 +6918,20 @@ def both(first: str, second: str, ref log: Log) -> int fails Refused:
         log.lines.append(f"use {left} {right}")
         if right == "c":
             fail Refused(who="late")
-    1
+    return 1
 
 def main(stdout: Stdout):
     mut log = Log()
-    stdout.print(both("a", "b", ref log) else -1)
+    both_value = both("a", "b", ref log) except Refused(): -1
+    stdout.print(both_value)
     stdout.print(log.lines)
     log.lines.clear()
-    stdout.print(both("a", "bad", ref log) else -1)
+    both_value2 = both("a", "bad", ref log) except Refused(): -1
+    stdout.print(both_value2)
     stdout.print(log.lines)
     log.lines.clear()
-    stdout.print(both("a", "c", ref log) else -1)
+    both_value3 = both("a", "c", ref log) except Refused(): -1
+    stdout.print(both_value3)
     stdout.print(log.lines)
     log.lines.clear()
     with pair(ref log) as reader, writer:
@@ -6919,7 +6987,7 @@ struct File:
         self.lines.append(line)
 
     def written(self) -> int:
-        self.lines.len()
+        return len(self.lines)
 
 def create(name: str, stdout: Stdout) -> with shared File fails WriteError:
     shared file = File(lines=[])
@@ -6932,10 +7000,11 @@ def save(stdout: Stdout) -> int fails WriteError:
         lock file as ref held:
             held.write_line(\"fox\")?
             held.write_line(\"den\")?
-    1
+    return 1
 
 def main(stdout: Stdout):
-    stdout.print(save(stdout) else -1)
+    save_value = save(stdout) except WriteError(): -1
+    stdout.print(save_value)
 ";
 
 /// Changing an item in place is only safe once the list is alone: another copy of the list
@@ -6975,11 +7044,11 @@ def main(stdout: Stdout):
     stdout.print(shown.id, list_only[0].id, two[0].id)
     holder.packets.append(a)
     holder.packets[2].id = 5
-    stdout.print(holder.packets.len(), keep.packets.len(), holder.packets[2].id, a.id)
+    stdout.print(len(holder.packets), len(keep.packets), holder.packets[2].id, a.id)
     mut kept = holder
     copied = kept
     kept.packets.append(a)
-    stdout.print(kept.packets.len(), copied.packets.len())
+    stdout.print(len(kept.packets), len(copied.packets))
     mut nested = kept
     other = nested
     nested.packets[0].data[1] = 123
@@ -7042,11 +7111,11 @@ def main(stdout: Stdout):
     stdout.print(f"{short}{short}{short}{short}{short}{short}{short}{short}")
     stdout.print(f"ünï{short}çø{long}{n}")
     stdout.print(f"exactly twenty-three!{short}"[0:5])
-    stdout.print(f"{short} is {short.len()} chars")
+    stdout.print(f"{short} is {len(short)} chars")
     mut total = 0
     for i in range(1000):
         line = f"{i}: {short}-{long}" if i % 2 == 0 else f"{i}{i}"
-        total += line.len()
+        total += len(line)
     stdout.print(total)
 "#;
 
@@ -7070,14 +7139,14 @@ struct Line:
 def moved(p: Point, by: float) -> Point:
     mut q = p
     q.x = q.x + by
-    q
+    return q
 
 def nudge(ref p: Point):
     p.y = p.y + 1.0
     p.on = not p.on
 
 def pair(n: int) -> (int, float):
-    (n + 1, float(n) / 2.0)
+    return (n + 1, float(n) / 2.0)
 
 def main(stdout: Stdout):
     a = Point(x=1.0, y=2.0, on=True)
@@ -7092,7 +7161,7 @@ def main(stdout: Stdout):
     mut points = [a, b]
     points[1].x = 7.0
     points.append(c)
-    stdout.print(points[1].x, b.x, points.len(), points[2].on)
+    stdout.print(points[1].x, b.x, len(points), points[2].on)
     shown = points[0]
     points[0].y = -3.0
     stdout.print(shown.y, points[0].y)
@@ -7332,27 +7401,27 @@ fn an_earlier_operand_keeps_its_value_when_a_later_one_changes_it() -> std::io::
     def grow(ref self) -> int:
         self.items.append(9)
         self.count = self.count + 1
-        self.count
+        return self.count
 
 struct Pair:
     first: list[int]
     second: int
 
 def show(a: list[int], b: int) -> str:
-    f"{a} {b}"
+    return f"{a} {b}"
 
 def take(ref a: list[int]) -> int:
-    a.pop() else 0
+    return a.pop() else 0
 
 def pair(a: int, b: int) -> str:
-    f"{a} {b}"
+    return f"{a} {b}"
 
 def bump(ref a: int) -> int:
     a = a + 1
-    a
+    return a
 
 def through(called: (list[int], int) -> str, ref items: list[int]) -> str:
-    called(items, items.pop() else 0)
+    return called(items, items.pop() else 0)
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
@@ -7365,7 +7434,7 @@ def main(stdout: Stdout):
     mut d = {1: 2, 3: 4}
     stdout.print(d, d.pop(1), d)
     mut e = {1: 2, 3: 4}
-    stdout.print(e.len(), e.pop(1), e.len())
+    stdout.print(len(e), e.pop(1), len(e))
     mut n = 1
     stdout.print(pair(n, b=bump(ref n)), n)
     stdout.print(n, bump(ref n), n)
@@ -7380,7 +7449,7 @@ def main(stdout: Stdout):
     mut s = [1, 2]
     stdout.print(f"{s} {s.pop()} {s}")
     mut u = [1, 2]
-    stdout.print(show(u, show(u, u.pop() else 0).len()), u)
+    stdout.print(show(u, len(show(u, u.pop() else 0))), u)
     mut v = [1, 2]
     stdout.print(v[0], v.pop(0), v[0])
     mut w = [1, 2, 3]
@@ -7394,7 +7463,7 @@ def main(stdout: Stdout):
     mut j = [1]
     stdout.print(Pair(second=j.pop() else 0, first=j), j)
     mut m = [1, 2]
-    stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
+    stdout.print([m.pop(), len(m), m.pop(), len(m)], m)
     mut o = [1, 2]
     stdout.print(through((a, b) => show(a, b), ref o), o)
     mut t = {1: 1, 2: 2}
@@ -7550,13 +7619,13 @@ def main(stdout: Stdout):
     lists["c"] = [3]
     copied = lists
     lists["a"] = [9]
-    stdout.print(lists, copied, lists["a"], copied["a"][1], lists.len())
+    stdout.print(lists, copied, lists["a"], copied["a"][1], len(lists))
     lists["c"].append(4)
     stdout.print(lists["c"], copied["c"])
     stdout.print(lists.get("c"), lists.get("nope"), "a" in lists, "z" in lists)
     stdout.print(lists.keys(), lists.values(), lists.items())
     for key, value in lists.items():
-        stdout.print(key, value, value.len())
+        stdout.print(key, value, len(value))
     stdout.print(lists.pop("a"), lists)
     mut by_int = {1: ["one"], 2: ["two", "too"]}
     by_int[3] = ["three"]
@@ -7570,16 +7639,16 @@ def main(stdout: Stdout):
     stdout.print(sets, 1 in sets["s"])
     mut raw = {"b": bytes([1, 2])}
     raw["c"] = "hi".encode()
-    stdout.print(raw, raw["c"].len())
+    stdout.print(raw, len(raw["c"]))
     book = Book(title="t", pages={"one": [1], "two": [2, 2]})
     stdout.print(book, book.pages["two"], book.pages.keys())
     mut empty: dict[str, list[int]] = {}
     empty.clear()
-    stdout.print(empty, empty.get("a"), empty.len())
+    stdout.print(empty, empty.get("a"), len(empty))
     mut grown: dict[int, list[int]] = {}
     for at in range(100):
         grown[at] = [at, at + 1]
-    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
+    stdout.print(grown[99], len(grown), sum(sum(items) for items in grown.values()))
 "#,
     )
 }
@@ -7611,7 +7680,7 @@ fn keys_made_to_collide_dont_slow_a_dict_down() -> std::io::Result<()> {
     std::fs::write(
         &program,
         r#"def key_in(seen: dict[int, int], key: int) -> bool:
-    key in seen
+    return key in seen
 
 def main(stdout: Stdout, stdin: Stdin):
     mut seen: dict[int, int] = {}
@@ -7621,7 +7690,7 @@ def main(stdout: Stdout, stdin: Stdin):
         seen[key] = order
         order += 1
     total = sum(seen[key] for key in keys)
-    stdout.print(seen.len(), total, key_in(seen, keys[0]), key_in(seen, 1))
+    stdout.print(len(seen), total, key_in(seen, keys[0]), key_in(seen, 1))
 "#,
     )?;
     let run = crate::executables::fennec_command()
@@ -7697,7 +7766,7 @@ def main(stdout: Stdout):
     first = Cell(x=0, y=0)
     last = Cell(x=4999 % 71, y=4999 // 71)
     order = [cell.x * 100 + cell.y for cell in seen.keys()]
-    stdout.print(seen.len(), kept.len(), named.len(), total, seen[first], seen[last], kept.get(last) else -1)
+    stdout.print(len(seen), len(kept), len(named), total, seen[first], seen[last], kept.get(last) else -1)
     stdout.print(order[0], order[1], order[4999], named[Cell(x=3 % 71, y=3 // 71)])
 "#;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
@@ -7746,7 +7815,7 @@ const DICT_ITEM_THROUGH_COPY: &str = r#"struct Unit:
 def appended(given: dict[str, Unit], at: int) -> int:
     mut units = given
     units["a"].tags.append(at)
-    units["a"].tags.len()
+    return len(units["a"].tags)
 
 def doubled(given: dict[str, Unit], at: int) -> int:
     mut units = given
@@ -7755,7 +7824,7 @@ def doubled(given: dict[str, Unit], at: int) -> int:
     own = units[key].tags
     units[key].grown_by(own)
     units[key].hp += 1
-    units[key].tags.len() + units[key].hp
+    return len(units[key].tags) + units[key].hp
 
 def main(stdout: Stdout):
     given = {"a": Unit(1, [1, 2, 3]), "b": Unit(2, [4, 5, 6])}
@@ -7795,22 +7864,22 @@ def in_field(given: Box, at: int) -> int:
     mut b = given
     b.units["a"].tags.append(at)
     b.units["a"].hp += 1
-    b.units["a"].tags.len() + b.units["a"].hp
+    return len(b.units["a"].tags) + b.units["a"].hp
 
 def in_dicts(given: dict[str, dict[str, Unit]], at: int) -> int:
     mut dd = given
     dd["x"]["a"].tags.append(at)
-    dd["x"]["a"].tags.len()
+    return len(dd["x"]["a"].tags)
 
 def in_list_of_dicts(given: list[dict[str, Unit]], at: int) -> int:
     mut xs = given
     xs[0]["a"].tags.append(at)
-    xs[0]["a"].tags.len()
+    return len(xs[0]["a"].tags)
 
 def in_dict_of_lists(given: dict[str, list[Unit]], at: int) -> int:
     mut d = given
     d["a"][0].tags.append(at)
-    d["a"][0].tags.len()
+    return len(d["a"][0].tags)
 
 def main(stdout: Stdout):
     boxed = Box(units={"a": Unit(1, [1, 2, 3])}, n=0)
@@ -7864,7 +7933,7 @@ def main(stdout: Stdout, stdin: Stdin):
     for line in lines:
         if line.startswith("T"):
             key = line[1:]
-            texts[key] = key.len()
+            texts[key] = len(key)
         else:
             pairs[Pair(first=1, second=int(line[1:]).expect("a number"))] = 1
     mut whole = 0
@@ -7882,7 +7951,7 @@ def main(stdout: Stdout, stdin: Stdin):
     copied["added to the copy"] = 1
     copied["and another"] = 2
     _ = copied.pop("added to the copy") else 0
-    stdout.print(texts.len(), copied.len(), whole, sliced, paired, missing, pairs.len())
+    stdout.print(len(texts), len(copied), whole, sliced, paired, missing, len(pairs))
 "#,
     )?;
     let run = crate::executables::fennec_command()
@@ -7949,10 +8018,11 @@ fn sets_and_dicts_of_sized_numbers() -> std::io::Result<()> {
     mut small = set[u8]()
     zero: u8 = 0
     for n in [1, 2, 255, 2]:
-        small.add(u8.from(n) else zero)
+        from_value = u8.from(n) except InvalidValue(): zero
+        small.add(from_value)
     two: u8 = 2
     three: u8 = 3
-    stdout.print(sorted(list(small)), two in small, three in small, small.len())
+    stdout.print(sorted(list(small)), two in small, three in small, len(small))
     mut counts = dict[str, u8]()
     a: u8 = 1
     big: u8 = 200
@@ -7988,7 +8058,7 @@ fn sets_and_dicts_of_u64s_and_f32s() -> std::io::Result<()> {
     seen.add(big)
     seen.add(one)
     seen.add(big)
-    stdout.print(seen.len(), big in seen, seen)
+    stdout.print(len(seen), big in seen, seen)
     mut names = dict[u64, str]()
     names[big] = "top"
     names[one] = "one"
@@ -8075,10 +8145,10 @@ def main(stdout: Stdout):
     second = ids.add(Home(id=2))
     mut links = {first: second}
     links[second] = first
-    stdout.print(links[first] == second, links[second] == first, first in links, links.len())
+    stdout.print(links[first] == second, links[second] == first, first in links, len(links))
     mut homes = {"first": first}
     homes["second"] = second
-    stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
+    stdout.print(homes["second"] == second, homes.get("nope") is None, len(homes))
 "#,
     )
 }
@@ -8110,13 +8180,13 @@ fn dicts_sets_closures_and_tuples_match_what_was_pinned() -> std::io::Result<()>
     y: int
 
 def twice(n: int, change: (int) -> int) -> int:
-    change(change(n))
+    return change(change(n))
 
 def main(stdout: Stdout):
     mut counts: dict[int, int] = {}
     for i in range(50):
         counts[i % 7] = (counts.get(i % 7) else 0) + i
-    stdout.print(counts[3], counts.len(), 3 in counts, 99 in counts, (counts.get(99) else -1))
+    stdout.print(counts[3], len(counts), 3 in counts, 99 in counts, (counts.get(99) else -1))
     shared = counts
     counts[3] = 0
     stdout.print(counts[3], shared[3])
@@ -8129,11 +8199,11 @@ def main(stdout: Stdout):
     keys[Key(x=1, y=2)] = 5
     keys[Key(x=1, y=2)] = 6
     keys[Key(x=2, y=2)] = 7
-    stdout.print(keys[Key(x=1, y=2)], keys.len(), Key(x=9, y=9) in keys)
+    stdout.print(keys[Key(x=1, y=2)], len(keys), Key(x=9, y=9) in keys)
     mut seen = {1, 2}
     seen.add(2)
     seen.add(3)
-    stdout.print(seen.len(), 3 in seen, 4 in seen)
+    stdout.print(len(seen), 3 in seen, 4 in seen)
     offset = 3
     stdout.print(twice(1, (n) => n * 2 + offset))
     pairs = [(1, "one"), (2, "two")]
@@ -8145,17 +8215,17 @@ def main(stdout: Stdout):
         stdout.print(a, b)
     stdout.print(sum([1, 2, 3]), sum([0.5, 1.5]), all([True, False]), any([False, True]))
     mut stack = [1, 2, 3]
-    stdout.print(stack.pop(), stack.len())
+    stdout.print(stack.pop(), len(stack))
     stdout.print(sorted([3, 1, 2])[0], sorted(["b", "a"], key=(s) => s)[0])
     mut text = "abc"
     text += "def"
-    stdout.print(text, text.len(), text[1:3], "bc" in text, text < "b")
+    stdout.print(text, len(text), text[1:3], "bc" in text, text < "b")
     zeros = [0 for _ in range(5)]
     mut flags = [False for _ in range(3)]
     flags[1] = True
     mut none = [0 for _ in range(0 - 2)]
     none.append(7)
-    stdout.print(zeros.len(), zeros[4], flags, none)
+    stdout.print(len(zeros), zeros[4], flags, none)
     first = "abc"
     stdout.print("a" < "b", "ab" < "a", "" < "a", first <= "abc", "é" > "z", "abcdefghij" < "abcdefghik", "b" >= "abc")
     maybe: int? = None
@@ -8186,7 +8256,7 @@ fn a_generator_yielding_a_name_it_was_given_keeps_it() -> std::io::Result<()> {
     mut whole = ""
     for part in parts:
         whole = whole + part
-    whole
+    return whole
 
 def repeat(word: str, times: int) -> Iterator[str]:
     for _ in range(times):
@@ -8196,7 +8266,7 @@ def main(stdout: Stdout):
     small = "ab"
     big = "a string long enough to live in a block"
     n = 7
-    stdout.print(joined(small for _ in range(3)), joined(big for _ in range(2)).len())
+    stdout.print(joined(small for _ in range(3)), len(joined(big for _ in range(2))))
     stdout.print(joined(repeat("kit", times=2)), sum(n for _ in range(4)), list(n for _ in range(2)))
 "#,
     )
@@ -8252,10 +8322,10 @@ def joined(parts: Iterator[str]) -> str:
     mut whole = ""
     for part in parts:
         whole = whole + part
-    whole
+    return whole
 
 def apply(change: (int) -> str, x: int) -> str:
-    change(x)
+    return change(x)
 
 def twice(word: str) -> Iterator[str]:
     yield word
@@ -8280,7 +8350,7 @@ def main(stdout: Stdout):
     items = [1, 2]
     flag = True
     # closures returning a captured value as it is
-    stdout.print(apply((x) => small, 1), apply((x) => big, 1).len(), apply((x) => str(n), 1))
+    stdout.print(apply((x) => small, 1), len(apply((x) => big, 1)), apply((x) => str(n), 1))
     stdout.print(apply((x) => pair.name, 0), apply((x) => f"{items}", 0))
     # generator expressions yielding captures as they are, of each kind
     stdout.print(list(pair for _ in range(2)), list(items for _ in range(2)), list(flag for _ in range(2)))
@@ -8290,7 +8360,7 @@ def main(stdout: Stdout):
     stdout.print(joined(w for w in twice(small)), joined(small for w in twice("q")))
     # comprehensions inside generators, and generators inside comprehensions
     stdout.print(list([small, w] for w in twice("z")), [joined(small for _ in range(k)) for k in range(3)])
-    stdout.print(joined(s for s in [small, big] if s.len() < 5), sum(n for _ in range(3)))
+    stdout.print(joined(s for s in [small, big] if len(s) < 5), sum(n for _ in range(3)))
     # a closure inside a generator, and a generator inside a closure
     stdout.print(joined(apply((x) => small, 0) for _ in range(2)), apply((x) => joined(small for _ in range(x)), 2))
 "#,
@@ -8310,14 +8380,14 @@ fn generators_kept_for_later_match_what_was_pinned() -> std::io::Result<()> {
     mut whole = ""
     for part in parts:
         whole = whole + part
-    whole
+    return whole
 
 def words_of(word: str, times: int) -> Iterator[str]:
-    (word for _ in range(times))
+    return (word for _ in range(times))
 
 def later(word: str) -> Iterator[str]:
     made = word + "!"
-    (made for _ in range(2))
+    return (made for _ in range(2))
 
 def main(stdout: Stdout):
     small = "ab"
@@ -8365,10 +8435,10 @@ struct Ledger:
     lines = list[str]()
 
 def apply(run: () -> int) -> int:
-    run()
+    return run()
 
 def entry(ref ledger: Ledger) -> with str:
-    lend "x" else:
+    lend "x" except:
         ledger.lines.append("undo")
 
 def once() -> int:
@@ -8376,7 +8446,7 @@ def once() -> int:
     ledger.lines.append("first line, long enough for a block of its own")
     with entry(ref ledger) as label:
         assert label == "x"
-    ledger.lines.len()
+    return len(ledger.lines)
 
 def main(stdout: Stdout):
     rounds = 3
@@ -8384,7 +8454,7 @@ def main(stdout: Stdout):
     mut lines = 0
     for round in range(rounds):
         bag = Bag(items=[f"item {round}, long enough for a block of its own"])
-        total += apply(() => bag.items.len() + bag.items[0].len())
+        total += apply(() => len(bag.items) + len(bag.items[0]))
         lines += once()
     stdout.print(total, lines)
 "#;
@@ -8401,19 +8471,19 @@ fn closures_kept_in_lists_and_generators_match_what_was_pinned() -> std::io::Res
     same_as_expected_in_both_builds(
         "closures_kept",
         r#"def add(x: int) -> int:
-    x + 1
+    return x + 1
 
 def mul(x: int) -> int:
-    x * 2
+    return x * 2
 
 def made(k: int) -> (int) -> int:
     def plus(x: int) -> int:
-        x + k
-    plus
+        return x + k
+    return plus
 
 def counted(word: str) -> Iterator[int]:
     def size(x: int) -> int:
-        x + word.len()
+        return x + len(word)
     for n in range(3):
         yield size(n)
 
@@ -8427,16 +8497,16 @@ def main(stdout: Stdout):
     fs.append(mul)
     name = "a string long enough to live in a block"
     def named(x: int) -> int:
-        x + name.len()
+        return x + len(name)
     fs.append(named)
     for k in range(3):
         fs.append(made(k))
     for f in fs:
         stdout.print(f(3))
-    stdout.print(fs[2](0), fs.len())
+    stdout.print(fs[2](0), len(fs))
     copied = fs
     fs.append(add)
-    stdout.print(copied.len(), fs.len())
+    stdout.print(len(copied), len(fs))
     last = fs.pop()
     if last is not None:
         stdout.print(last(10))
@@ -8461,10 +8531,10 @@ fn functions_named_in_tuples_match_what_was_pinned() -> std::io::Result<()> {
     same_as_expected_in_both_builds(
         "functions_in_tuples",
         "def add(x: int) -> int:
-    x + 1
+    return x + 1
 
 def twice(x: int) -> int:
-    x * 2
+    return x * 2
 
 def main(stdout: Stdout):
     (g, n) = (add, 4)
@@ -8489,7 +8559,7 @@ fn a_generators_failure_passes_up_from_a_name_or_a_with() -> std::io::Result<()>
         yield at
 
 def source() -> with int:
-    lend 1 else:
+    lend 1 except:
         pass
 
 def in_a_name(limit: int) -> int fails IoError:
@@ -8497,14 +8567,14 @@ def in_a_name(limit: int) -> int fails IoError:
     made = checked(limit)?
     for at in made:
         seen += at
-    seen
+    return seen
 
 def in_with(limit: int) -> int fails IoError:
     mut seen = 0
     with source() as held:
         for at in checked(limit)?:
             seen += at + held
-    seen
+    return seen
 
 def nested(limit: int) -> int fails IoError:
     mut seen = 0
@@ -8512,16 +8582,16 @@ def nested(limit: int) -> int fails IoError:
         with source() as inner:
             for at in checked(limit)?:
                 seen += at + outer + inner
-    seen
+    return seen
 
 def listed(limit: int) -> list[int] fails IoError:
-    [at * 2 for at in checked(limit)?]
+    return [at * 2 for at in checked(limit)?]
 
 ## What `run` gave, or what it failed with.
 def said[T](run: () -> T fails IoError) -> str:
-    value = run() else as why:
+    value = run() except why:
         return f\"{why}\"
-    f\"{value}\"
+    return f\"{value}\"
 
 def main(stdout: Stdout):
     stdout.print(said(() => in_a_name(5)?), said(() => in_a_name(2)?))
@@ -8586,34 +8656,34 @@ def either(limit: int) -> Iterator[int] fails Named | TooBig:
         yield n
 
 def total(limit: int) -> int fails TooBig:
-    sum(n for n in checked(limit)?)
+    return sum(n for n in checked(limit)?)
 
 def joined(limit: int) -> str fails Named:
     mut out = ""
     for word in named(limit)?:
         out = out + word
-    out
+    return out
 
 def looped(limit: int) -> int fails Named | TooBig:
     mut count = 0
     for n in either(limit)?:
         count = count + n + 1
-    count
+    return count
 
 ## What `run` gave, or what it failed with.
 def said[T, E](run: () -> T fails E) -> str:
-    value = run() else as why:
+    value = run() except why:
         return f"{why}"
-    f"{value}"
+    return f"{value}"
 
 def total_or_why(limit: int, stdout: Stdout):
-    found = total(limit) else as why:
+    found = total(limit) except why:
         stdout.print("too big", why.at)
         return
     stdout.print(found)
 
 def joined_or_who(limit: int, stdout: Stdout):
-    text = joined(limit) else as why:
+    text = joined(limit) except why:
         stdout.print(why.who)
         return
     stdout.print(text)
@@ -8669,7 +8739,7 @@ def finishes(out: Stdout):
 def returns_from_it(out: Stdout) -> int:
     for n in holding(out, "returned from"):
         return n
-    0
+    return 0
 
 def main(stdout: Stdout):
     leaves_early(stdout)
@@ -8696,7 +8766,7 @@ fn an_abandoned_generator_runs_its_open_sources_cleanup() -> std::io::Result<()>
 
 def opened(name: str, stdout: Stdout) -> with Door:
     door = Door(name=name)
-    lend door else:
+    lend door except:
         stdout.print(\"failed\", name)
     stdout.print(\"closed\", name)
 
@@ -8781,7 +8851,7 @@ const ABANDONED_SOURCES: &str = r#"struct Door:
 
 def opened(name: str, stdout: Stdout) -> with Door:
     door = Door(name=name)
-    lend door else:
+    lend door except:
         stdout.print("failed", name)
     stdout.print("closed", name)
 
@@ -8802,7 +8872,7 @@ def kept(stdout: Stdout) -> int:
     for n in walk:
         if n == 1:
             return n
-    0
+    return 0
 
 def main(stdout: Stdout):
     for n in nested(stdout):
@@ -8884,20 +8954,20 @@ def broke(stdout: Stdout) fails Shut:
 def returned(stdout: Stdout) -> int fails Shut:
     for n in held("returned", stdout)?:
         return n
-    0
+    return 0
 
 def failing(stdout: Stdout) fails Shut | Other:
     for n in held("failing", stdout)?:
         fail Other(why="in the loop")
 
 def tell_broke(stdout: Stdout):
-    broke(stdout) else as why:
+    broke(stdout) except why:
         stdout.print("broke failed", why)
         return
     stdout.print("broke worked")
 
 def tell_returned(stdout: Stdout):
-    n = returned(stdout) else as why:
+    n = returned(stdout) except why:
         stdout.print("returned failed", why)
         return
     stdout.print("returned", n)
@@ -8905,7 +8975,7 @@ def tell_returned(stdout: Stdout):
 def main(stdout: Stdout):
     tell_broke(stdout)
     tell_returned(stdout)
-    failing(stdout) else as why:
+    failing(stdout) except why:
         stdout.print("failing failed", why, why.notes())
         return
     stdout.print("failing worked")
@@ -8939,20 +9009,20 @@ def broke(stdout: Stdout) fails Shut:
 def returned(stdout: Stdout) -> int fails Shut:
     for n in held("returned", stdout)?:
         return n
-    0
+    return 0
 
 def failing(stdout: Stdout) fails Shut | Other:
     for n in held("failing", stdout)?:
         fail Other.Inside(why="in the loop")
 
 def tell_broke(stdout: Stdout):
-    broke(stdout) else as why:
+    broke(stdout) except why:
         stdout.print("broke failed", why)
         return
     stdout.print("broke worked")
 
 def tell_returned(stdout: Stdout):
-    n = returned(stdout) else as why:
+    n = returned(stdout) except why:
         stdout.print("returned failed", why)
         return
     stdout.print("returned", n)
@@ -8960,7 +9030,7 @@ def tell_returned(stdout: Stdout):
 def main(stdout: Stdout):
     tell_broke(stdout)
     tell_returned(stdout)
-    failing(stdout) else as why:
+    failing(stdout) except why:
         stdout.print("failing failed", why, why.notes())
         return
     stdout.print("failing worked")
@@ -9017,7 +9087,7 @@ def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
 
 
 def quiet(stdout: Stdout):
-    walk = held("quiet", stdout) else as why:
+    walk = held("quiet", stdout) except why:
         stdout.print("opening failed", why)
         stdout.print("after quiet")
         return
@@ -9033,7 +9103,7 @@ def kept(stdout: Stdout) fails Shut:
 
 def main(stdout: Stdout):
     quiet(stdout)
-    kept(stdout) else as why:
+    kept(stdout) except why:
         stdout.print("kept failed", why)
         return
     stdout.print("kept worked")
@@ -9200,23 +9270,22 @@ def running(numbers: Iterator[int]) -> Iterator[int]:
 def first_over(limit: int, over: int) -> int:
     for n in odd_squares(count_up(limit)):
         if n > over: return n
-    0
+    return 0
 
 def half(n: int) -> int fails Fault:
     if n % 2 == 1: fail Fault(f"{n} is odd")
-    n // 2
+    return n // 2
 
 def show(n: int) -> str:
-    got = half(n) else as why:
-        match why:
-            case Fault(reason):
-                return reason
-    f"half is {got}"
+    got = half(n) except why:
+        case Fault(reason):
+            return reason
+    return f"half is {got}"
 
 def main(stdout: Stdout):
     stdout.print(sum(n for n in running(odd_squares(count_up(30)))))
     for word in words(3):
-        stdout.print(word, word.len())
+        stdout.print(word, len(word))
     stdout.print(first_over(100, over=50), first_over(5, over=50))
     kept = words(4)
     mut joined = ""
@@ -9231,11 +9300,11 @@ def main(stdout: Stdout):
     // The whole message, as it points at the generator and says what to do.
     same_as_pinned(
         "twice",
-        "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut sum = 0\n    for n in numbers:\n        sum += n\n    sum\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
+        "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut subtotal = 0\n    for n in numbers:\n        subtotal += n\n    return subtotal\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
     )?;
     same_message_as_pinned(
         "expect",
-        "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
+        "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    return n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
 }
 
@@ -9251,11 +9320,11 @@ fn regexes_match_what_was_pinned() -> std::io::Result<()> {
 def main(stdout: Stdout):
     words = Regex(r"(\w)(\w*)")
     for found in words.find_all("fox and éclair"):
-        stdout.print(found.text, found.start, found.end, found.groups.len(), found.groups[0], found.groups[1])
+        stdout.print(found.text, found.start, found.end, len(found.groups), found.groups[0], found.groups[1])
     optional = Regex(r"a(x)?b")
     for found in optional.find_all("ab axb"):
         stdout.print(found.text, found.groups[0] is None)
-    stdout.print(words.replace("fox den", r"\2\1"), Regex(" +").split("a  b c").len())
+    stdout.print(words.replace("fox den", r"\2\1"), len(Regex(" +").split("a  b c")))
     stdout.print(is_regex("("), is_regex("a+"))
     first = Regex(r"\d+").search("ab 42 7")
     if first is not None:
@@ -9333,25 +9402,25 @@ const FAILING_PARTWAY: &str = r#"error Refused:
     at: int
 
 def checked(items: list[str], at: int) -> str fails Refused:
-    if at >= items.len(): fail Refused(at=at)
-    items[at]
+    if at >= len(items): fail Refused(at=at)
+    return items[at]
 
 def round(at: int) -> int fails Refused:
     mut held = [f"held through the round {at}, long enough to need a block of its own"]
     held.append(f"and {at}, long enough to need a block of its own")
     first = checked(held, at % 3)?
     both = checked([f"left {at}, long enough to need a block of its own"], 0)? + checked([f"right {at}, long enough to need a block of its own"], at % 2)?
-    first.len() + both.len() + held.len()
+    return len(first) + len(both) + len(held)
 
 def main(stdout: Stdout):
     rounds = 3
     mut failed = 0
     mut failed_many = 0
     for at in range(rounds):
-        got = round(at) else -1
+        got = round(at) except Refused(): -1
         if got < 0:
             failed += 1
-        made = many(at) else -1
+        made = many(at) except Refused(): -1
         if made < 0:
             failed_many += 1
     stdout.print(failed, failed_many)
@@ -9412,7 +9481,7 @@ const READ_IN_A_LOOP: &str = r#"def main(stdout: Stdout):
         words = [f"w{round}", "bb", "ccc"]
         mut total = 0
         for at in range(5):
-            total += words[at % 3].len()
+            total += len(words[at % 3])
             if at == 4:
                 stdout.print(words[0])
         mut current = [f"c{round}"]
@@ -9421,7 +9490,7 @@ const READ_IN_A_LOOP: &str = r#"def main(stdout: Stdout):
             longer = current + [f"s{steps}"]
             current = longer
             steps += 1
-        stdout.print(total, current.len(), current[0])
+        stdout.print(total, len(current), current[0])
 "#;
 
 /// A value read in an `else` block a failure runs is kept for it, though the call that fails reads
@@ -9443,17 +9512,17 @@ const READ_WHERE_A_FAILURE_GOES: &str = r#"error Bad:
 
 def risky(n: int) -> int fails Bad:
     if n % 3 == 2: fail Bad(why=f"bad {n}")
-    n
+    return n
 
 def main(stdout: Stdout):
     rounds = 3
     for round in range(rounds):
         note = f"note {round}"
-        got = risky(note.len() + round) else as why:
+        got = risky(len(note) + round) except why:
             stdout.print(note, why.why)
             -1
         label = f"label {round}"
-        other = risky(round) else:
+        other = risky(round) except Bad():
             stdout.print(label)
             0
         stdout.print(got, other)
@@ -9478,7 +9547,7 @@ const READ_AROUND_A_LEND: &str = r#"struct Ledger:
 
 def entry(ref ledger: Ledger, name: str) -> with str:
     ledger.lines.append(f"open {name}")
-    lend name.upper() else:
+    lend name.upper() except:
         ledger.lines.append(f"undo {name}")
     ledger.lines.append(f"close {name}")
 
@@ -9489,8 +9558,8 @@ def main(stdout: Stdout):
         name = f"ann{round}"
         with entry(ref ledger, name) as label:
             stdout.print(label, name)
-        stdout.print(name.len())
-    stdout.print(ledger.lines.len(), ledger.lines[0])
+        stdout.print(len(name))
+    stdout.print(len(ledger.lines), ledger.lines[0])
 "#;
 
 /// A value an arrow function captures is kept for every call of it, though making the arrow is
@@ -9508,10 +9577,10 @@ fn a_value_an_arrow_captures_is_kept_for_its_calls() -> std::io::Result<()> {
 }
 
 const CAPTURED_BY_AN_ARROW: &str = r#"def apply(run: (int) -> str, n: int) -> str:
-    run(n)
+    return run(n)
 
 def count_with(run: () -> int) -> int:
-    run() + run()
+    return run() + run()
 
 def main(stdout: Stdout):
     rounds = 3
@@ -9519,7 +9588,7 @@ def main(stdout: Stdout):
         greeting = f"hi {round}"
         stdout.print(apply((x) => f"{greeting} {x}", 1), apply((x) => f"{greeting}!{x}", 2))
         items = [f"i{round}", "j"]
-        stdout.print(count_with(() => items.len()), items[0])
+        stdout.print(count_with(() => len(items)), items[0])
 "#;
 
 /// [`FAILING_PARTWAY`] with `many`, a function of 50 lines that each make a list and a string
@@ -9534,7 +9603,7 @@ fn failing_partway() -> String {
         lines
     });
     format!(
-        "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    total\n"
+        "{FAILING_PARTWAY}\ndef many(at: int) -> int fails Refused:\n    mut total = 0\n{lines}    return total\n"
     )
 }
 
@@ -9551,16 +9620,14 @@ fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Resul
     let mut body = String::new();
     let mut total: i64 = 0;
     for line in 0..lines {
-        let _ = writeln!(
-            body,
-            "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + f\"{{total}}\".len()"
-        );
+        let _ =
+            writeln!(body, "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + len(f\"{{total}}\")");
         let picked = if line % 2 == 0 { line } else { line + 1 };
         let written = i64::try_from(total.to_string().len()).unwrap_or(0);
         total += picked + written;
     }
     let source = format!(
-        "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+        "def at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    return total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
     );
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let dir = folder("huge_function")?;
@@ -9607,7 +9674,7 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
         total += line + written;
     }
     let source = format!(
-        "def twice[T](value: T) -> list[T]:\n    [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+        "def twice[T](value: T) -> list[T]:\n    return [value, value]\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    return total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
     );
     let dir = folder("huge_generic")?;
     let (program, executable) = (dir.join("huge.fen"), dir.join("huge"));
@@ -9641,10 +9708,10 @@ def kept_then_crash(at: int):
 
 def keys_then_crash(at: int):
     words = [f"word {i}, long enough to need a block of its own" for i in range(20)]
-    print_nothing(sorted(words, key=(word) => f"{word} {100 // (word.len() - 46)}"))
+    print_nothing(sorted(words, key=(word) => f"{word} {100 // (len(word) - 46)}"))
 
 def print_nothing(words: list[str]):
-    if words.len() == 12345:
+    if len(words) == 12345:
         pass
 
 def crashing(which: int) -> int fails Crashed:
@@ -9654,14 +9721,16 @@ def crashing(which: int) -> int fails Crashed:
     else:
         with launch(() => keys_then_crash(which))?:
             pass
-    0
+    return 0
 
 def main(stdout: Stdout):
     rounds = 3
     mut crashed = 0
     for _ in range(rounds):
-        crashed += crashing(0) else 1
-        crashed += crashing(1) else 1
+        crashing_value = crashing(0) except Crashed(): 1
+        crashed += crashing_value
+        crashing_value2 = crashing(1) except Crashed(): 1
+        crashed += crashing_value2
     stdout.print(crashed)
 "#;
 
@@ -9702,7 +9771,7 @@ def push(ref items: list[int], value: int):
     items.append(value)
 
 def twice(x: int) -> int:
-    x * 2
+    return x * 2
 
 struct Holder:
     bag = Bag()
@@ -9713,7 +9782,7 @@ struct Holder:
     def put(ref self, value: int, flag: bool):
         self.items.append(1 if flag else 0)
         self.items.append(sum([value for _ in range(2)]))
-        self.items.append(self.items.len() if flag else twice(value))
+        self.items.append(len(self.items) if flag else twice(value))
         self.bag.add(value if flag else -value)
         push(ref self.items, value * 3 if value > 1 else 7)
         self.items.extend([value for _ in range(1) if flag])
@@ -9728,11 +9797,11 @@ def main(stdout: Stdout):
     holder.put(9, flag=True)
     stdout.print(holder.items, holder.bag.items, holder.counts, holder.text)
     stdout.print(copy.items, copy.bag.items, copy.text)
-    zero = holder.items.len() - holder.items.len()
+    zero = len(holder.items) - len(holder.items)
     holder.items.append(10 // zero if zero > 0 else 3)
-    stdout.print(holder.items.len())
+    stdout.print(len(holder.items))
     holder.items.append(10 // zero)
-    stdout.print(holder.items.len())
+    stdout.print(len(holder.items))
 "#;
 
 /// The same changes, each in a loop: none of them copies the field, whatever its argument is.
@@ -9750,7 +9819,7 @@ fn a_field_changed_with_any_argument_is_never_copied() -> std::io::Result<()> {
     ];
     for shape in shapes {
         let source = format!(
-            "struct Bag:\n    items = list[int]()\n\n    def add(ref self, value: int):\n        self.items.append(value)\n\ndef push(ref items: list[int], value: int):\n    items.append(value)\n\nstruct Holder:\n    bag = Bag()\n    items = list[int]()\n\n    def put(ref self, value: int, flag: bool):\n        {shape}\n\n    def size(self) -> int:\n        self.items.len() + self.bag.items.len()\n\ndef main(stdout: Stdout):\n    mut holder = Holder()\n    for i in range(2000):\n        holder.put(i, i % 2 == 0)\n    stdout.print(holder.size())\n"
+            "struct Bag:\n    items = list[int]()\n\n    def add(ref self, value: int):\n        self.items.append(value)\n\ndef push(ref items: list[int], value: int):\n    items.append(value)\n\nstruct Holder:\n    bag = Bag()\n    items = list[int]()\n\n    def put(ref self, value: int, flag: bool):\n        {shape}\n\n    def size(self) -> int:\n        return len(self.items) + len(self.bag.items)\n\ndef main(stdout: Stdout):\n    mut holder = Holder()\n    for i in range(2000):\n        holder.put(i, i % 2 == 0)\n    stdout.print(holder.size())\n"
         );
         let counts = counts_of("changed_field", &source)?;
         assert_eq!(count(&counts, "copies"), Some(0), "{shape}: {counts}");
@@ -9788,7 +9857,7 @@ fn a_loop_over_a_variables_field_sees_the_variable_change() -> std::io::Result<(
     name = "bag"
 
 def grow(ref bag: Bag):
-    bag.items.append(bag.items.len())
+    bag.items.append(len(bag.items))
 
 def rename(ref bag: Bag, by: int):
     bag.name = f"{bag.name}-{by}"
@@ -9809,7 +9878,7 @@ def main(stdout: Stdout):
     other = Bag(items=[9])
     junk = [40, 50, 60]
     for item in held:
-        stdout.print(item, other.items.len(), junk[0])
+        stdout.print(item, len(other.items), junk[0])
     mut grown = Bag(items=[1, 2])
     for item in grown.items:
         stdout.print(item, grown.items)
@@ -9838,13 +9907,13 @@ fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::i
     assert!(counts.starts_with("copies 0 "), "{counts}");
     let counts = counts_of(
         "items",
-        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(ref self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(ref self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, other=i)\n    stdout.print(holder.vars[5].links.len())\n",
+        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(ref self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(ref self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, other=i)\n    stdout.print(len(holder.vars[5].links))\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     // A method written in Fennec changing a field: `self.inner.add(x)` and std's `extend`.
     let counts = counts_of(
         "methods",
-        "struct Inner:\n    items: list[int]\n\n    def add(ref self, item: int):\n        self.items.append(item)\n\nstruct Outer:\n    inner: Inner\n    items: list[int]\n\n    def push(ref self, item: int):\n        self.inner.add(item)\n\n    def grow(ref self, more: list[int]):\n        self.items.extend(more)\n\ndef main(stdout: Stdout):\n    mut outer = Outer(inner=Inner(items=[]), items=[])\n    for i in range(100):\n        outer.push(i)\n    for i in range(100):\n        outer.grow([i])\n    stdout.print(outer.inner.items.len(), outer.items.len())\n",
+        "struct Inner:\n    items: list[int]\n\n    def add(ref self, item: int):\n        self.items.append(item)\n\nstruct Outer:\n    inner: Inner\n    items: list[int]\n\n    def push(ref self, item: int):\n        self.inner.add(item)\n\n    def grow(ref self, more: list[int]):\n        self.items.extend(more)\n\ndef main(stdout: Stdout):\n    mut outer = Outer(inner=Inner(items=[]), items=[])\n    for i in range(100):\n        outer.push(i)\n    for i in range(100):\n        outer.grow([i])\n    stdout.print(len(outer.inner.items), len(outer.items))\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
@@ -9892,14 +9961,14 @@ struct Random:
 
     def below(ref self, limit: int) -> int:
         self.state = (self.state * 1103515245 + 12345) % 2147483648
-        (self.state // 65536) % limit
+        return (self.state // 65536) % limit
 
 def piece(ref random: Random) -> str:
     letters = ["a", "Z", "é", "ñ", "日", "€", "🦊", "𝄞", " ", "0"]
     mut text = ""
     for _ in range(random.below(8)):
-        text += letters[random.below(letters.len())]
-    text
+        text += letters[random.below(len(letters))]
+    return text
 
 def main(stdout: Stdout):
     mut random = Random(state=7)
@@ -9913,13 +9982,13 @@ def main(stdout: Stdout):
             part = piece(ref random)
             out.append(part)
             added = added + part
-            counted += part.len()
+            counted += len(part)
         joined = "".join(out)
-        if joined.len() != counted or joined.len() != added.len() or joined != added:
+        if len(joined) != counted or len(joined) != len(added) or joined != added:
             wrong += 1
-        if joined.len() > 0:
-            start = random.below(joined.len())
-            end = start + random.below(joined.len() - start + 1)
+        if len(joined) > 0:
+            start = random.below(len(joined))
+            end = start + random.below(len(joined) - start + 1)
             if joined[start:end] != added[start:end] or joined[start] != added[start]:
                 wrong += 1
             checked += 1
@@ -9934,7 +10003,7 @@ const PIECES_JOINED: &str = r#"def main(stdout: Stdout):
         out.append(f"<{i * 3}>")
         out.append("日本")
     text = "".join(out)
-    stdout.print(text.len())
+    stdout.print(len(text))
 "#;
 
 const PIECES_JOINED_EDGES: &str = r#"def joined(numbers: list[int], floats: list[float], words: list[str]) -> str:
@@ -9948,7 +10017,7 @@ const PIECES_JOINED_EDGES: &str = r#"def joined(numbers: list[int], floats: list
     for word in words:
         out.append(word)
         out.append(f"({word})")
-    "".join(out)
+    return "".join(out)
 
 def main(stdout: Stdout):
     numbers = [0, -1, 7, 1234567890, -9223372036854775807 - 1, 9223372036854775807]
@@ -9956,10 +10025,10 @@ def main(stdout: Stdout):
     words = ["é", "日本", "🦊", "fóx12", "ab", "ça va très bien", "x" * 30 + "é"]
     text = joined(numbers, floats=floats, words=words)
     stdout.print(text)
-    stdout.print(text.len(), text[-1], text[-2], text[text.len() // 2])
+    stdout.print(len(text), text[-1], text[-2], text[len(text) // 2])
     mut index = 0
     mut seen = 0
-    while index < text.len():
+    while index < len(text):
         if text[index] == "🦊":
             seen += 1
         index += 1
@@ -9982,7 +10051,7 @@ def main(stdout: Stdout):
     mut first = [1, 2, 3]
     second = first
     first.append(4)
-    stdout.print(total, first.len(), second.len())
+    stdout.print(total, len(first), len(second))
 ";
     let dir = folder("trace")?;
     let program = dir.join("trace.fen");
@@ -10017,7 +10086,7 @@ fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def main(stdout: Stdout):\n    mut items = [1]\n    for i in range(200):\n        items.append(i)\n    other = items\n    items.append(1)\n    stdout.print(other.len(), f\"{items.len()} long\")\n";
+    let source = "def main(stdout: Stdout):\n    mut items = [1]\n    for i in range(200):\n        items.append(i)\n    other = items\n    items.append(1)\n    stdout.print(len(other), f\"{len(items)} long\")\n";
     let plain = counts_of("trace_plain", source)?;
     let dir = folder("trace_counts")?;
     let program = dir.join("counts.fen");
@@ -10045,7 +10114,7 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
     let looped = counts_of(
         "packed_looped",
         &format!(
-            "{source}    mut total = 0\n    for _ in range(100):\n        for at in range(packed.len()):\n            for item in packed[at]:\n                total += item\n    stdout.print(total)\n"
+            "{source}    mut total = 0\n    for _ in range(100):\n        for at in range(len(packed)):\n            for item in packed[at]:\n                total += item\n    stdout.print(total)\n"
         ),
     )?;
     // Reading a list goes through its items in place, and the loop over `packed[at]` fuses
@@ -10156,7 +10225,7 @@ fn pieces_joined_once_match_what_was_pinned() -> std::io::Result<()> {
         out.append(">")
 
 def shown(items: list[str]) -> str:
-    "-".join(items)
+    return "-".join(items)
 
 def put(ref out: list[str], more: list[str]):
     for item in more:
@@ -10167,17 +10236,17 @@ def gathered(rows: list[list[str]]) -> list[str]:
     mut cells: list[str] = []
     for row in rows:
         put(ref cells, row)
-    cells
+    return cells
 
 def main(stdout: Stdout):
     mut out = ["start "]
     add(3, ref out)
     stdout.print("".join(out))
     mut empty: list[str] = []
-    stdout.print("".join(empty).len())
+    stdout.print(len("".join(empty)))
     mut looked = ["a", "b"]
     looked.append("c")
-    stdout.print(looked.len(), looked[2], shown(looked), "".join(looked))
+    stdout.print(len(looked), looked[2], shown(looked), "".join(looked))
     mut again = ["x"]
     first = "".join(again)
     again.append("y")
@@ -10203,10 +10272,10 @@ fn enumerates_match_what_was_pinned() -> std::io::Result<()> {
         return Ok(());
     }
     let source = r#"def total(names: list[str]) -> int:
-    mut sum = 0
+    mut subtotal = 0
     for at, name in enumerate(names):
-        sum += at * name.len()
-    sum
+        subtotal += at * len(name)
+    return subtotal
 
 def main(stdout: Stdout):
     names = ["fox", "kit", "den"]
@@ -10215,7 +10284,7 @@ def main(stdout: Stdout):
         if at > 0:
             stdout.print(at, name)
     pairs = enumerate(names)
-    stdout.print(pairs.len(), pairs[1])
+    stdout.print(len(pairs), pairs[1])
     mut grow = [1, 2, 3]
     grow_before = grow
     for at, n in enumerate(grow_before):
@@ -10279,17 +10348,17 @@ struct Bag:
     count = 0
 
 def load(text: str) -> Bag fails ParseError:
-    json.loads[Bag](text)?
+    return json.loads[Bag](text)?
 
 def main(stdout: Stdout):
     b = Bag(items=[Item(name="a", heals=1)], at=Point(x=1, y=2))
     text = json.dumps(b)
     stdout.print(text, json.dumps(b.at), json.dumps([1, 2]), json.dumps("q"), json.dumps(3))
-    back = load(text) else Bag(items=[], at=Point(x=0, y=0))
+    back = load(text) except ParseError(): Bag(items=[], at=Point(x=0, y=0))
     stdout.print(back.items[0].name, back.at.y, back.count)
-    points = json.loads[list[Point]]("[{\"x\": 3, \"y\": 4}]") else []
-    stdout.print(points.len(), points[0].x)
-    failed = load("{") else Bag(items=[], at=Point(x=9, y=9))
+    points = json.loads[list[Point]]("[{\"x\": 3, \"y\": 4}]") except ParseError(): []
+    stdout.print(len(points), points[0].x)
+    failed = load("{") except ParseError(): Bag(items=[], at=Point(x=9, y=9))
     stdout.print(failed.at.x)
 "#;
     for (name, how) in [("json", &["--llvm"][..]), ("json_release", &["--llvm", "--release"][..])] {
@@ -10314,19 +10383,21 @@ struct Spot:
     y: int
 
 def main(stdout: Stdout, env: Env):
-    named = json.loads[dict[str, int]]("{\"ash\": 1, \"vex\": 3}") else {}
+    named = json.loads[dict[str, int]]("{\"ash\": 1, \"vex\": 3}") except ParseError(): {}
     stdout.print(named, named["vex"])
-    levels = json.loads[dict[int, str]]("{\"1\": \"intro\", \"42\": \"boss\"}") else {}
+    levels = json.loads[dict[int, str]]("{\"1\": \"intro\", \"42\": \"boss\"}") except ParseError(): {}
     stdout.print(levels, levels[42])
     spots = {Spot(x=1, y=2): "tree", Spot(x=0, y=0): "rock"}
-    back = json.loads[dict[Spot, str]](json.dumps(spots)) else {}
+    back = json.loads[dict[Spot, str]](json.dumps(spots)) except ParseError(): {}
     stdout.print(back == spots, back[Spot(x=0, y=0)])
-    wrong = json.loads[dict[str, int]]("[1, 2]") else {"none": 0}
+    wrong = json.loads[dict[str, int]]("[1, 2]") except ParseError(): {"none": 0}
     stdout.print(wrong)
     corners = {(0, 0): "start", (3, 4): "end"}
-    stdout.print(json.loads[dict[(int, int), str]](json.dumps(corners)) else {}, corners)
+    got_value = json.loads[dict[(int, int), str]](json.dumps(corners)) except ParseError(): {}
+    stdout.print(got_value, corners)
     placed = {(Spot(x=1, y=2), "a"): 1}
-    stdout.print((json.loads[dict[(Spot, str), int]](json.dumps(placed)) else {}) == placed)
+    got_value2 = json.loads[dict[(Spot, str), int]](json.dumps(placed)) except ParseError(): {}
+    stdout.print((got_value2) == placed)
     stdout.print("PATH" in [name.upper() for name in env.all().keys()])
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
@@ -10376,7 +10447,7 @@ fn narrowed_capabilities_match_what_was_pinned() -> std::io::Result<()> {
     let source = r#"from std.process import Output
 
 def narrowed(process: Process) -> Process:
-    process.only("echo")
+    return process.only("echo")
 
 def main(stdout: Stdout, process: Process):
     mut kept = 0
@@ -10384,7 +10455,7 @@ def main(stdout: Stdout, process: Process):
         echo = narrowed(process)
         again = echo
         if i % 500 == 0:
-            found = again.run("echo", [f"{i}"]) else Output()
+            found = again.run("echo", [f"{i}"]) except .NotRun() | .LooksLikeAnOption() | .TimedOut() | .TooMuchOutput(): Output()
             stdout.print(found.stdout.strip())
         kept += 1
     stdout.print(kept)
@@ -10409,7 +10480,7 @@ fn arguments_and_the_clock_match_what_was_pinned() -> std::io::Result<()> {
 from std.time import Clock, Duration
 
 def main(stdout: Stdout, args: Args, clock: Clock):
-    stdout.print(args.len(), args.program != \"\")
+    stdout.print(len(args), args.program != \"\")
     for arg in args:
         stdout.print(arg)
     stdout.print(args[0], args[-1])
@@ -10447,23 +10518,24 @@ def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entrop
     only = fs.only(folder)
     stdout.print(only.read_text(file).expect(\"it works\"))
     # Outside its folder it can't look at all, which fails rather than saying no.
-    stdout.print(only.exists(\"/\") else True)
-    _ = only.read_text(\"/etc/hosts\") else as hosts:
+    exists_value = only.exists(\"/\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): True
+    stdout.print(exists_value)
+    _ = only.read_text(\"/etc/hosts\") except hosts:
         stdout.print(hosts.message().endswith(\"native-capabilities\"))
         \"\"
-    _ = fs.read_text(\"no such file\") else as missing:
+    _ = fs.read_text(\"no such file\") except missing:
         stdout.print(missing.message() != \"\")
         \"\"
     fs.remove(file).expect(\"it works\")
     fs.remove(folder).expect(\"it works\")
     done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
     stdout.print(done.status, done.stdout, done.stderr == \"\")
-    _ = process.run(\"no-such-program-at-all\", []) else as unknown:
+    _ = process.run(\"no-such-program-at-all\", []) except unknown:
         stdout.print(unknown.program())
         done
     echo = process.only(\"echo\")
     stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
-    _ = echo.run(\"ls\", []) else as refused:
+    _ = echo.run(\"ls\", []) except refused:
         stdout.print(refused.message())
         done
     stdout.print(stdin.lines())
@@ -10642,7 +10714,7 @@ fn stopping_server(
         "from std.net import Request, Response
 
 def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
+    return Response(status=200, body=request.path.encode())
 
 def main(net: Net, signals: Signals, stdout: Stdout):
     with net.listen(0)? as server:
@@ -10674,6 +10746,7 @@ def main(net: Net, signals: Signals, stdout: Stdout):
 /// Waits until the live count a program writes to `report`, as `FENNEC_LIVE_REPORT` asks, says it's
 /// serving at least `at_least` connections, so a test acts once the server has taken them rather
 /// than after a guess at how long that takes. Fails if it never does.
+#[cfg(unix)]
 pub(crate) fn serving(report: &Path, at_least: usize) {
     let started = std::time::Instant::now();
     loop {
@@ -10856,7 +10929,7 @@ struct Saves:
     folder: str
 
     def path(self, name: str) -> str:
-        self.folder + \"/\" + name
+        return self.folder + \"/\" + name
 
 def write(fs: Fs, path: str, text: str) fails IoError:
     with fs.create(path)? as file:
@@ -10866,7 +10939,7 @@ def read(saves: Saves, name: str) -> str fails IoError:
     mut text = \"\"
     with saves.fs.open(saves.path(name))? as file:
         text = file.read_text()?
-    text
+    return text
 
 def main(stdout: Stdout, fs: Fs):
     folder = \"fs-by-name\"
@@ -10877,7 +10950,7 @@ def main(stdout: Stdout, fs: Fs):
     only = fs.only(folder)
     write(only, path=folder + \"/b.txt\", text=\"den\").expect(\"it works\")
     stdout.print(read(Saves(fs=only, folder=folder), \"b.txt\").expect(\"it works\"))
-    write(only, path=\"outside.txt\", text=\"no\") else as outside:
+    write(only, path=\"outside.txt\", text=\"no\") except outside:
         stdout.print(\"outside what this Fs can reach\" in outside.message())
     stdout.print(fs.exists(\"outside.txt\").expect(\"it works\"))
     fs.remove(folder + \"/a.txt\").expect(\"it works\")
@@ -10934,12 +11007,13 @@ def blocked(fs: Fs) fails IoError:
         fs.write_text(\"taken.txt/inside.txt\", \"here first\")?
 
 def main(fs: Fs, stdout: Stdout):
-    blocked(fs) else as problem:
+    blocked(fs) except problem:
         stdout.print(\"the block failed:\", problem.message() != \"\")
-    stdout.print(fs.read_text(\"taken.txt/inside.txt\") else \"gone\")
+    read_text_value = fs.read_text(\"taken.txt/inside.txt\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): \"gone\"
+    stdout.print(read_text_value)
     # The file written beside the path, to take its place, is gone.
-    names = fs.list_dir(\".\") else []
-    stdout.print([name for name in names if str(name).endswith(\".fennec-partial\")].len())
+    names = fs.list_dir(\".\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): []
+    stdout.print(len([name for name in names if str(name).endswith(\".fennec-partial\")]))
 ",
     )?;
     let executable = dir.join("program");
@@ -10968,10 +11042,11 @@ def write_big(fs: Fs) -> int fails IoError:
     with fs.create(\"big.txt\")? as file:
         for _ in range({megabytes}):
             file.write_text(chunk)?
-    fs.metadata(\"big.txt\")?.size
+    return fs.metadata(\"big.txt\")?.size
 
 def main(stdout: Stdout, fs: Fs):
-    stdout.print(write_big(fs) else -1)
+    write_big_value = write_big(fs) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): -1
+    stdout.print(write_big_value)
 "
     )
 }
@@ -11038,10 +11113,11 @@ def hashes(fs: Fs) -> list[str] fails IoError:
         found.append(blake3(file.chunks(1000000)?))
     with fs.open(\"big.txt\")? as file:
         found.append(sha256(file.chunks(1000000)?))
-    found
+    return found
 
 def main(stdout: Stdout, fs: Fs):
-    for found in hashes(fs) else []:
+    hashes_value = hashes(fs) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): []
+    for found in hashes_value:
         stdout.print(found)
 ";
 
@@ -11127,11 +11203,16 @@ def work(fs: Fs, order: shared Order, at: int) -> int fails IoError:
                 file.write_text(chunk)?
     lock order as ref held:
         held.finished(at)
-    at
+    return at
+
+## What a round answered, or -1 when it fails.
+def answered_by(fs: Fs, order: shared Order, at: int) -> int:
+    done = work(fs, order, at) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): -1
+    return done
 
 def main(stdout: Stdout, fs: Fs):
     shared order = Order()
-    answered = [work(fs, order, at) else -1 for at in parallel([0, 1, 2, 3])]
+    answered = [answered_by(fs, order, at) for at in parallel([0, 1, 2, 3])]
     lock order as held:
         stdout.print(answered, held.done[3])
 ";
@@ -11175,23 +11256,23 @@ error TooBig:
 def checked(x: int) -> int fails TooBig:
     if x > 70_000 and x % 1000 == 7:
         fail TooBig(at=x, why=\"a reason long enough to live in a block of its own\")
-    x * 2
+    return x * 2
 
 def all_of(xs: list[int]) -> list[int] fails TooBig:
-    [checked(x)? for x in parallel(xs)]
+    return [checked(x)? for x in parallel(xs)]
 
 def main(stdout: Stdout):
     small = [i for i in range(50_000)]
     big = [i for i in range(100_000)]
-    made: list[int]? = all_of(small) else as error:
+    made: list[int]? = all_of(small) except error:
         stdout.print(\"failed\", error.at)
         None
     if made is not None:
-        stdout.print(made.len(), made[49_999])
-    all_made = all_of(big) else as error:
+        stdout.print(len(made), made[49_999])
+    all_made = all_of(big) except error:
         stdout.print(\"failed\", error.at, error.why)
         return
-    stdout.print(all_made.len())
+    stdout.print(len(all_made))
 ";
 
 #[test]
@@ -11325,20 +11406,20 @@ def all_entries(fs: Fs, path: str) -> list[Entry] fails SqlError:
     mut found = list[Entry]()
     with sqlite.open(fs, path)? as db:
         found = db.query[Entry](t"select path, size, status, note from entries order by path")?
-    found
+    return found
 
 test "rows come back as structs, their values bound"(fs: Fs):
     made(fs, "index.db")?
     sneaky = "a'; drop table entries; --"
     add(fs, "index.db", [Entry(path=sneaky, size=3, status=.Clean), Entry(path="b", size=10, status=.Changed)])?
     found = all_entries(fs, "index.db")?
-    assert found.len() == 2
+    assert len(found) == 2
     assert found[0].path == sneaky and found[0].size == 3 and found[0].status == .Clean
     assert found[1].path == "b" and found[1].status == .Changed and found[1].note is None
 
 test "each test has its own databases"(fs: Fs):
     made(fs, "index.db")?
-    assert all_entries(fs, "index.db")?.len() == 0
+    assert len(all_entries(fs, "index.db")?) == 0
 
 test "a transaction that fails keeps nothing"(fs: Fs):
     made(fs, "index.db")?
@@ -11351,7 +11432,7 @@ test "a transaction that fails keeps nothing"(fs: Fs):
         case _:
             assert False
     found = all_entries(fs, "index.db")?
-    assert found.len() == 1 and found[0].size == 1
+    assert len(found) == 1 and found[0].size == 1
 
 test "one column reads as one value"(fs: Fs):
     made(fs, "index.db")?
@@ -11422,7 +11503,7 @@ test "a driver's rows read through std.sql as SQLite's do":
         blobs=[],
     )
     found = sql.rows_as[Entry](rows)?
-    assert found.len() == 2 and found[0].note is None and found[1].note == "hi"
+    assert len(found) == 2 and found[0].note is None and found[1].note == "hi"
     assert found[1].status == .Changed and found[1].size == 10
 "#;
 
@@ -11541,17 +11622,22 @@ def round(db: sqlite.Database, at: int) -> int fails SqlError:
         mine = tx.query[int](t"select count(*) from items where round = {at}")?
         if mine != [20]: return -1
     seen = db.query[int](t"select count(*) from items")?
-    seen[0]
+    return seen[0]
+
+## A round's count, or -2 when it fails.
+def counted(db: sqlite.Database, at: int) -> int:
+    count = round(db, at) except .Constraint() | .Busy() | .Column() | .Failed(): -2
+    return count
 
 def rounds(fs: Fs, stdout: Stdout) fails SqlError:
     with sqlite.open(fs, "rounds.db")? as db:
         _ = db.execute(t"create table items (round integer, item integer)")?
-        counts = [round(db, at) else -2 for at in parallel(range(32))]
+        counts = [counted(db, at) for at in parallel(range(32))]
         stdout.print(min(counts) >= 20, max(counts) == 640)
         stdout.print(db.query[int](t"select count(*) from items")?, db.query[int](t"select count(distinct round) from items")?)
 
 def main(stdout: Stdout, fs: Fs):
-    rounds(fs, stdout) else as err:
+    rounds(fs, stdout) except err:
         stdout.print("it failed:", err.message())
         return
 "#;
@@ -11617,32 +11703,32 @@ struct PathOnly:
 def said(failure: SqlError) -> str:
     match failure:
         case .Constraint(reason=reason):
-            return f"constraint {reason.len() > 0}"
+            return f"constraint {len(reason) > 0}"
         case .Column(name=name, reason=reason):
             return f"column {name}: {reason}"
         case .Busy():
             return "busy"
         case .Failed(reason=reason):
-            return f"failed {reason.len() > 0}"
+            return f"failed {len(reason) > 0}"
 
 ## What `run` failed with, by `said`, or `worked` when it didn't fail.
 def told[T](run: () -> T fails SqlError, worked: str) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return said(why)
-    worked
+    return worked
 
 ## What a failure says, whichever kind it is.
 def said_of(error: SqlError | Timeout) -> str:
     match error:
         case Timeout(waited=_):
-            "no connection came free"
+            return "no connection came free"
         case Constraint(reason=reason) | Busy(reason=reason) | Failed(reason=reason):
-            reason
+            return reason
         case Column(name=name, reason=reason):
-            f"column {name}: {reason}"
+            return f"column {name}: {reason}"
 
 def rows_in(db: postgres.PgDatabase) -> int fails SqlError:
-    db.query[Count](t"select count(*) as total from fennec_entries")?[0].total
+    return db.query[Count](t"select count(*) as total from fennec_entries")?[0].total
 
 ## Adds a row in a transaction, then fails, so it's rolled back.
 def adds_then_fails(db: postgres.PgDatabase) fails SqlError:
@@ -11662,7 +11748,7 @@ struct Server:
 
 ## The server's URL, without its password, which goes in `password=`.
 def url_of(server: Server) -> str:
-    f"postgres://{server.user}@{server.host}:{server.port}/{server.database}"
+    return f"postgres://{server.user}@{server.host}:{server.port}/{server.database}"
 
 def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError | Timeout:
     with postgres.connect(net, entropy, url_of(server), password=server.secret, pool_size=1, tls=False)? as pool:
@@ -11678,7 +11764,7 @@ def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlErr
                 stdout.print(db.execute(t"insert into fennec_entries values ({path}, {size}, {weight}, {blob}, {seen})")?)
             least = 10
             for entry in db.query[Entry](t"select path, size, weight, blob, seen from fennec_entries where size >= {least} order by path")?:
-                stdout.print(entry.path, entry.size, entry.weight, entry.blob.len(), entry.blob[1], entry.seen)
+                stdout.print(entry.path, entry.size, entry.weight, len(entry.blob), entry.blob[1], entry.seen)
             # A value can't change what the query means, whatever it says.
             evil = "x'); drop table fennec_entries; --"
             none = bytes([])
@@ -11690,7 +11776,7 @@ def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlErr
             stdout.print(told(() => db.execute(t"select from no_such_table")?, worked="no error"))
             stdout.print(told(() => db.query[PathOnly](t"select path from fennec_entries")?, worked="read a column that isn't there"))
             # A transaction that fails changes nothing; one that ends is kept.
-            adds_then_fails(db) else as rolled_back:
+            adds_then_fails(db) except rolled_back:
                 stdout.print(said(rolled_back), rows_in(db)?)
             kept = "kept"
             with db.transaction()? as tx:
@@ -11699,7 +11785,7 @@ def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlErr
 
 ## Signs in with `secret`, and says how it went.
 def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) -> str:
-    _ = signed_in(server, secret=secret, net=net, entropy=entropy) else as error:
+    _ = signed_in(server, secret=secret, net=net, entropy=entropy) except error:
         return said_of(error)
     return "signed in"
 
@@ -11714,14 +11800,15 @@ def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
     who = address.split("@")[0]
     place = address.split("@")[1]
     rest = place.split(":")[1]
+    port = int(rest.split("/")[0]) except InvalidValue(): 5432
     server = Server(
         host=place.split(":")[0],
-        port=int(rest.split("/")[0]) else 5432,
+        port=port,
         user=who.split(":")[0],
         database=rest.split("/")[1],
         secret=Secret.of(who.split(":")[1]),
     )
-    _ = run(server, stdout=stdout, net=net, entropy=entropy) else as error:
+    _ = run(server, stdout=stdout, net=net, entropy=entropy) except error:
         stdout.print(said_of(error).startswith(f"couldn't connect to {server.host}:{server.port}"))
         return
     stdout.print("28P01" in signing_in(server, secret=Secret.of("not the password"), net=net, entropy=entropy))
@@ -11767,12 +11854,12 @@ def main(stdout: Stdout, process: Process, fs: Fs):
         \"sh\", [\"-c\", \"cat; pwd; printenv FENNEC_FOX\"], input=\"in\\n\", cwd=\"inside\", env={\"FENNEC_FOX\": \"red\"}
     ).expect(\"it works\")
     stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
-    _ = process.run(\"pwd\", [], cwd=\"no-such-folder\") else as nowhere:
+    _ = process.run(\"pwd\", [], cwd=\"no-such-folder\") except nowhere:
         stdout.print(nowhere.message())
         all
     only = process.only(\"cat\")
     stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
-    _ = only.run(\"pwd\", [], cwd=\"inside\") else as refused:
+    _ = only.run(\"pwd\", [], cwd=\"inside\") except refused:
         stdout.print(refused.message())
         all
     fs.remove(\"inside\").expect(\"it works\")
@@ -11810,10 +11897,10 @@ def main(stdout: Stdout, fs: Fs):
         stdout.print(path.text, fs.metadata(path).expect(\"it works\").is_dir)
     only = fs.only(\"tree/b\")
     stdout.print([path.text for path in only.walk(\"tree/b\").expect(\"it works\")])
-    _ = only.walk(\"tree\") else:
+    _ = only.walk(\"tree\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
         stdout.print(\"refused\")
         []
-    _ = fs.walk(\"no such folder\") else as missing:
+    _ = fs.walk(\"no such folder\") except missing:
         stdout.print(missing.message() != \"\")
         []
 ";
@@ -11855,15 +11942,15 @@ const REAL_NETWORK: &str = "from std.net import NetError, Connection, Server
 from std.time import Duration
 
 def reason[T](run: () -> T fails NetError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message()
-    \"it worked\"
+    return \"it worked\"
 
 def lines_of(connection: Connection) -> int fails NetError:
     mut count = 0
     for line in connection.lines()?:
-        count += line.len()
-    count
+        count += len(line)
+    return count
 
 def talk(net: Net, stdout: Stdout) -> int fails NetError:
     with net.listen(0)? as server:
@@ -11885,7 +11972,7 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 conn.close()
                 stdout.print(reason(() => conn.read_line()?))
                 stdout.print(reason(() => conn.write(\"gone\")?))
-    7
+    return 7
 
 def printed_lines(conn: Connection, stdout: Stdout) fails NetError:
     for line in conn.lines()?:
@@ -11912,11 +11999,11 @@ def looped(net: Net, stdout: Stdout) -> int fails NetError:
         server.close()
         stdout.print(reason(() => accepting(server, wait=1s)?))
         return port
-    0
+    return 0
 
 def main(net: Net, stdout: Stdout):
     stdout.print(reason(() => talk(net, stdout)?))
-    port = looped(net, stdout) else 0
+    port = looped(net, stdout) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(): 0
     stdout.print(reason(() => connecting(net, host=\"127.0.0.1\", port=port)?) == f\"`127.0.0.1` refused a connection on port {port}\")
 ";
 
@@ -11945,37 +12032,40 @@ def talk(net: Net, stdout: Stdout) fails NetError:
                 client.write(bytes([0, 255, 10, 65]))?
                 client.write(\"x\".encode())?
                 data = conn.read(4, timeout=2s)?
-                stdout.print(data, data.len(), data[1])
-                stdout.print(conn.read(1, timeout=2s)?.decode() else \"\")
-                stdout.print(conn.read(0)?.len())
+                stdout.print(data, len(data), data[1])
+                decode_value = conn.read(1, timeout=2s)?.decode() except InvalidValue(): \"\"
+                stdout.print(decode_value)
+                stdout.print(len(conn.read(0)?))
                 client.close()
-                stdout.print(conn.read(4, timeout=2s)?.len())
+                stdout.print(len(conn.read(4, timeout=2s)?))
     with net.udp(port=0)? as first:
         with net.udp()? as second:
             first.send_to(\"ping\", f\"127.0.0.1:{second.port}\")?
             packet = second.receive(timeout=2s)?
-            stdout.print(packet.data.decode() else \"\", packet.sender.endswith(str(first.port)))
+            decode_value2 = packet.data.decode() except InvalidValue(): \"\"
+            stdout.print(decode_value2, packet.sender.endswith(str(first.port)))
             second.send_to(bytes([1, 2, 3]), packet.sender)?
             answer = first.receive(timeout=2s)?
             stdout.print(answer.data, answer.data[0])
-            _ = first.receive(timeout=20ms) else as waited:
+            _ = first.receive(timeout=20ms) except waited:
                 stdout.print(waited.message())
                 answer
-            first.send_to(\"x\", \"no-such-host.invalid:9\") else as unsent:
+            first.send_to(\"x\", \"no-such-host.invalid:9\") except unsent:
                 stdout.print(unsent.message())
             first.send_to(\"last\", f\"127.0.0.1:{second.port}\")?
             for packet in second:
-                stdout.print(packet.data.decode() else \"\")
+                decode_value3 = packet.data.decode() except InvalidValue(): \"\"
+                stdout.print(decode_value3)
                 second.close()
 
 def main(net: Net, stdout: Stdout):
     mut talked_fine = True
-    talk(net, stdout) else as talked:
+    talk(net, stdout) except talked:
         stdout.print(talked.message())
         talked_fine = False
     if talked_fine:
         stdout.print(\"done\")
-    bound(net, port=99999) else:
+    bound(net, port=99999) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other():
         pass
 ";
 
@@ -12000,7 +12090,7 @@ fn an_http_server_s_refusal_reaches_a_client_still_sending() -> std::io::Result<
     let source = r"from std.net import Request, Response
 
 def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
+    return Response(status=200, body=request.path.encode())
 
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
@@ -12118,6 +12208,71 @@ fn connection_writes(said: &str) -> Option<u64> {
     words.next()?.parse().ok()
 }
 
+/// How many bytes a run allocated in all, from what it said under `FENNEC_COUNTS`.
+fn allocated_bytes(said: &str) -> Option<u64> {
+    let line = said.lines().find(|line| line.starts_with("copies "))?;
+    let mut words = line.split(' ');
+    words.by_ref().find(|word| *word == "allocated_bytes")?;
+    words.next()?.parse().ok()
+}
+
+/// A server reads a body that comes in many pieces into one buffer with room to grow, so a 10 MB
+/// upload allocates a few times its size, where joining each piece onto what came before with
+/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed.
+#[test]
+fn a_served_body_read_in_many_pieces_is_copied_about_once() -> std::io::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("served_body_once")?;
+    let server = built_in(
+        &dir,
+        "serve",
+        r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"{len(request.body)}".encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+"#,
+    )?;
+    let mut serving = Running(
+        Command::new(&server)
+            .env("FENNEC_COUNTS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(serving.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let size = 10_000_000_usize;
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    client.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    client.write_all(
+        format!("POST /up HTTP/1.1\r\ncontent-length: {size}\r\nconnection: close\r\n\r\n").as_bytes(),
+    )?;
+    // In pieces of 16 KiB, so the server reads it in hundreds.
+    for piece in vec![b'x'; size].chunks(16 * 1024) {
+        client.write_all(piece)?;
+    }
+    let mut answer = String::new();
+    client.read_to_string(&mut answer)?;
+    assert!(answer.ends_with("10000000"), "{answer}");
+    terminate(&serving)?;
+    let mut said = String::new();
+    serving.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?.read_to_string(&mut said)?;
+    std::fs::remove_dir_all(&dir)?;
+    let allocated = allocated_bytes(&said).unwrap_or(u64::MAX);
+    assert!(allocated < 8 * 10_000_000, "a 10 MB body allocated {allocated} bytes: {said}");
+    Ok(())
+}
+
 /// `source` built natively in `dir` as `name`.
 fn built_in(dir: &Path, name: &str, source: &str) -> std::io::Result<PathBuf> {
     let program = dir.join(format!("{name}.fen"));
@@ -12148,9 +12303,9 @@ fn a_response_goes_out_in_one_write() -> std::io::Result<()> {
 def respond(request: Request) -> Response:
     match request.path:
         case "/missing":
-            Response(status=404)
+            return Response(status=404)
         case _:
-            Response(status=200, body=f"at {request.path}".encode())
+            return Response(status=200, body=f"at {request.path}".encode())
 
 def main(net: Net, signals: Signals, stdout: Stdout):
     with net.listen(0)? as server:
@@ -12219,7 +12374,7 @@ fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
         r#"from std.net import NetError
 
 def main(net: Net, args: Args, stdout: Stdout) fails NetError:
-    port = int(args[0]) else 0
+    port = int(args[0]) except InvalidValue(): 0
     for path in ["/a", "/b"]:
         answer = net.post(f"http://127.0.0.1:{port}{path}", body="data", timeout=10s)?
         stdout.print(answer.status, answer.text())
@@ -12248,11 +12403,11 @@ def respond(request: Request) -> Response:
     match request.path:
         case "/hello":
             name = request.query.get("name") else "you"
-            Response(status=200, body=f"hello, {name}".encode())
+            return Response(status=200, body=f"hello, {name}".encode())
         case "/echo":
-            Response(status=201, headers={"x-method": request.method}, body=request.body)
+            return Response(status=201, headers={"x-method": request.method}, body=request.body)
         case _:
-            Response(status=404)
+            return Response(status=404)
 
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
@@ -12316,7 +12471,7 @@ fn an_http_server_answers_what_it_refuses_and_passes_over_blank_lines() -> std::
     let source = r"from std.net import Request, Response
 
 def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
+    return Response(status=200, body=request.path.encode())
 
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
@@ -12379,7 +12534,7 @@ fn served_on(threads: &str, name: &str, asked: &[u8]) -> std::io::Result<String>
     let source = r"from std.net import Request, Response
 
 def respond(request: Request) -> Response:
-    Response(status=200, body=request.path.encode())
+    return Response(status=200, body=request.path.encode())
 
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
@@ -12525,7 +12680,7 @@ fn a_str_parameter_written_under_a_lock() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "str_under_a_lock",
-        "struct Person:\n    name: str\n\ndef rename(person: shared Person, first: str, second: str):\n    lock person as ref current:\n        current.name = f\"{first}{second}\"\n\ndef main(stdout: Stdout):\n    shared person = Person(name=\"a\")\n    done = [at for at in parallel(range(2))]\n    rename(person, first=\"a name that is long enough \", second=\"to need a block of its own\")\n    lock person as held:\n        stdout.print(done.len(), held.name)\n",
+        "struct Person:\n    name: str\n\ndef rename(person: shared Person, first: str, second: str):\n    lock person as ref current:\n        current.name = f\"{first}{second}\"\n\ndef main(stdout: Stdout):\n    shared person = Person(name=\"a\")\n    done = [at for at in parallel(range(2))]\n    rename(person, first=\"a name that is long enough \", second=\"to need a block of its own\")\n    lock person as held:\n        stdout.print(len(done), held.name)\n",
         "2 a name that is long enough to need a block of its own\n",
     )
 }
@@ -12556,7 +12711,7 @@ def respond(request: Request, tally: shared Tally) -> Response:
             empty: list[int] = []
             held.count += empty[3]
     lock tally as current:
-        Response(status=200, body=f"{current.count} {current.last} {current.names}".encode())
+        return Response(status=200, body=f"{current.count} {current.last} {current.names}".encode())
 
 def main(net: Net, stdout: Stdout):
     shared tally = Tally(names=[])
@@ -12679,19 +12834,19 @@ fn http_requests_go_through_native_code() -> std::io::Result<()> {
 
 def ask(net: Net, stdout: Stdout) fails NetError:
     mut answer = net.get("http://127.0.0.1:{port}/a", params={{"q": "x y"}}, headers={{"X-Mine": "yes"}}, timeout=5s)?
-    stdout.print(answer.status, answer.ok(), answer.text(), answer.headers["x-why"], answer.body.len())
+    stdout.print(answer.status, answer.ok(), answer.text(), answer.headers["x-why"], len(answer.body))
     answer = net.post("http://127.0.0.1:{port}/b", body="data")?
     stdout.print(answer.status, answer.ok(), answer.text(), answer.headers["x-why"])
     answer = net.request("put", "http://127.0.0.1:{port}/c", body="bytes".encode())?
     stdout.print(answer.status, answer.text())
 
 def main(net: Net, stdout: Stdout):
-    ask(net, stdout) else as error:
+    ask(net, stdout) except error:
         stdout.print(error.message())
-    _ = net.get("http://127.0.0.1:1/") else as refused:
+    _ = net.get("http://127.0.0.1:1/") except refused:
         stdout.print(refused.message())
         Response(status=0)
-    _ = net.get("not a url") else as not_a_url:
+    _ = net.get("not a url") except not_a_url:
         stdout.print(not_a_url.message())
         Response(status=0)
 "#
@@ -12740,7 +12895,7 @@ def send(net: Net, stdout: Stdout) fails NetError:
     stdout.print(net.request("put", url, json="a \"quoted\" note")?.text())
 
 def main(net: Net, stdout: Stdout):
-    send(net, stdout) else as error:
+    send(net, stdout) except error:
         stdout.print(error.message())
 "#
         )
@@ -12833,7 +12988,7 @@ struct Tag:
         out.write(\"<\" + self.name + \">\")
 
 def main(stdout: Stdout, args: Args, process: Process):
-    stdout.print([Tag(name=\"a\")], {\"key\": 1}, args.len())
+    stdout.print([Tag(name=\"a\")], {\"key\": 1}, len(args))
     stdout.print(process.run(\"echo\", [\"hello\"]).expect(\"it runs\").stdout)
 ",
     )?;
@@ -12943,12 +13098,12 @@ fn fetches_in_parallel_wait_at_once_on_a_few_threads() -> std::io::Result<()> {
 def fetch(net: Net, port: int) -> str fails NetError:
     with net.connect(\"127.0.0.1\", port)? as conn:
         return conn.read_line()? else \"nothing\"
-    \"nothing\"
+    return \"nothing\"
 
 def main(net: Net, stdout: Stdout):
     items = [i for i in range(16)]
     lines = [fetch(net, {port}).expect(\"it answers\") for i in parallel(items)]
-    stdout.print(lines.len(), lines[0], lines[15])
+    stdout.print(len(lines), lines[0], lines[15])
 "
         ),
     )?;
@@ -13147,7 +13302,7 @@ def churn(turns: int) -> int:
     while n < turns:
         x = (x * 31 + 7) % 1000003
         n += 1
-    x
+    return x
 
 def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
@@ -13237,13 +13392,13 @@ fn rounds_that_crash_keep_nothing_of_theirs() -> std::io::Result<()> {
 
 def overflowed(n: int) -> int:
     big = 9223372036854775000
-    big + n * 1000
+    return big + n * 1000
 
 def answer(line: str) -> str:
     words = [f\"{line} {at}\" for at in range(8)]
-    seen = {word: word.len() for word in words}
-    said = f\"{words} {seen.len()}\"
-    f\"{overflowed(line.len())} {said}\"
+    seen = {word: len(word) for word in words}
+    said = f\"{words} {len(seen)}\"
+    return f\"{overflowed(len(line))} {said}\"
 
 def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
@@ -13346,10 +13501,10 @@ def crashing(stdout: Stdout) fails Closed | Crashed | Timeout:
         pass
 
 def counts(inbox: Inbox[int], stdout: Stdout):
-    mut sum = 0
+    mut received = 0
     for n in inbox:
-        sum += n
-    stdout.print(\"sum\", sum)
+        received += n
+    stdout.print(\"sum\", received)
 
 def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
     with launch((inbox) => audio(inbox, stdout)?, stop_after=5s, inbox_size=4)? as sounds:
@@ -13357,9 +13512,9 @@ def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
         sounds.send(.StopAll)?
     with launch(() => tick(stdout))?:
         pass
-    loud(stdout) else as too_loud:
+    loud(stdout) except too_loud:
         stdout.print(\"failed:\", too_loud)
-    crashing(stdout) else as crashed:
+    crashing(stdout) except crashed:
         stdout.print(\"failed:\", crashed)
     for round in range(200):
         with launch((inbox) => counts(inbox, stdout), inbox_size=8)? as numbers:
@@ -13502,10 +13657,10 @@ struct Box[T]:
 
 def boxed[T](value: T, fallback: T) -> T:
     with channel[Box[T]](size=1) as boxes:
-        boxes.send(Box[T](value=value)) else return fallback
+        boxes.send(Box[T](value=value)) except Closed(): return fallback
         got = boxes.receive() else return fallback
         return got.value
-    fallback
+    return fallback
 
 def main(stdout: Stdout):
     stdout.print(boxed(3, fallback=0), boxed("fox", fallback=""), boxed([1, 2], fallback=[]))
@@ -13566,7 +13721,7 @@ def words(stdout: Stdout) fails Closed | Timeout:
         ch.send(\"a string long enough to live in a block of its own\")?
         short = ch.receive() else fail Closed()
         long = ch.receive() else fail Closed()
-        stdout.print(short, long.len())
+        stdout.print(short, len(long))
 
 def jobs(stdout: Stdout) fails Closed | Timeout:
     with channel[Job](size=2) as ch:
@@ -13627,7 +13782,7 @@ error Refused:
 def checked(line: str) -> str fails Refused:
     if line == \"refuse\":
         fail Refused(line=line)
-    line
+    return line
 
 def serve(net: Net, stdout: Stdout) -> int fails NetError | Refused:
     with net.listen(0)? as server:
@@ -13635,10 +13790,10 @@ def serve(net: Net, stdout: Stdout) -> int fails NetError | Refused:
         for conn in parallel(server):
             line = conn.read_line()? else \"\"
             conn.write(f\"{checked(line)?}\\n\")?
-    0
+    return 0
 
 def main(net: Net, stdout: Stdout):
-    _ = serve(net, stdout) else as error:
+    _ = serve(net, stdout) except error:
         stdout.print(\"failed:\", error)
         return
     stdout.print(\"served\")
@@ -13802,11 +13957,14 @@ struct Board:
 
 def main(stdout: Stdout):
     text = json.dumps([Spot(x=1, tags=[\"a\"])])
-    stdout.print(text, json.loads[list[Spot]](text) else [])
-    stdout.print(toml.loads[Spot](toml.dumps(Spot(x=2, tags=[]))) else Spot(x=0, tags=[]))
+    got_value = json.loads[list[Spot]](text) except ParseError(): []
+    stdout.print(text, got_value)
+    got_value2 = toml.loads[Spot](toml.dumps(Spot(x=2, tags=[]))) except ParseError(): Spot(x=0, tags=[])
+    stdout.print(got_value2)
     board = Board(cells=Grid.of([[1, 2]]), scores=SortedMap.of([(\"b\", 2), (\"a\", 1)]), seen=SortedSet.of([3, 1]), queue=Deque.of([\"go\"]))
     saved = json.dumps(board)
-    stdout.print(saved, json.dumps(json.loads[Board](saved) else board) == saved)
+    got_value3 = json.loads[Board](saved) except ParseError(): board
+    stdout.print(saved, json.dumps(got_value3) == saved)
 ",
     )?;
     let executable = dir.join("formats");
@@ -13854,19 +14012,25 @@ def main(stdout: Stdout):
     path = Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))
     text = json.dumps(path)
     stdout.print(text)
-    stdout.print(json.loads[Path](text) else Path(steps=[], at=(0, (0, 0))))
+    got_value = json.loads[Path](text) except ParseError(): Path(steps=[], at=(0, (0, 0)))
+    stdout.print(got_value)
     orders = [Order.Hold, Order.Move(to=(2, 3))]
-    stdout.print(json.dumps(orders), (json.loads[list[Order]](json.dumps(orders)) else []) == orders)
+    orders_back = json.loads[list[Order]](json.dumps(orders)) except ParseError(): []
+    stdout.print(json.dumps(orders), orders_back == orders)
     corners = {(0, 0): \"start\", (3, 4): \"end\"}
-    stdout.print(json.dumps(corners), (json.loads[dict[(int, int), str]](json.dumps(corners)) else {}) == corners)
+    corners_back = json.loads[dict[(int, int), str]](json.dumps(corners)) except ParseError(): {}
+    stdout.print(json.dumps(corners), corners_back == corners)
     mut by_side = SortedMap[(int, int), str]()
     by_side[(2, 0)] = \"b\"
     by_side[(1, 0)] = \"a\"
     stdout.print(json.dumps(by_side))
     stdout.print(json.dumps((1, None, \"x\")))
-    stdout.print(json.loads[list[(int, int)]](\"[[1, 2, 3]]\") else [(0, 0)])
-    stdout.print((toml.loads[Path](toml.dumps(path)) else path) == path)
-    stdout.print((pack.loads[Path](pack.dumps(path)) else Path(steps=[], at=(0, (0, 0)))) == path)
+    got_value2 = json.loads[list[(int, int)]](\"[[1, 2, 3]]\") except ParseError(): [(0, 0)]
+    stdout.print(got_value2)
+    got_value3 = toml.loads[Path](toml.dumps(path)) except ParseError(): path
+    stdout.print((got_value3) == path)
+    got_value4 = pack.loads[Path](pack.dumps(path)) except ParseError(): Path(steps=[], at=(0, (0, 0)))
+    stdout.print((got_value4) == path)
 ",
     )?;
     let executable = dir.join("tuples");
@@ -13924,17 +14088,20 @@ from std import json, pack
 def counted(n: int) -> int?:
     if n > 0:
         return n
-    None
+    return None
 
 def main(stdout: Stdout):
     marks: list[(Spot, int?)] = [(Spot(x=1), counted(2)), (Spot(x=3), counted(0))]
     text = json.dumps(marks)
     stdout.print(text)
-    stdout.print((json.loads[list[(Spot, int?)]](text) else []) == marks)
+    marks_back = json.loads[list[(Spot, int?)]](text) except ParseError(): []
+    stdout.print(marks_back == marks)
     held = shapes.Held(pair=(Spot(x=5), (counted(0), \"a\")))
     saved = json.dumps(held)
-    stdout.print(saved, (json.loads[shapes.Held](saved) else held) == held)
-    stdout.print((pack.loads[shapes.Held](pack.dumps(held)) else shapes.Held(pair=(Spot(x=0), (counted(1), \"\")))) == held)
+    held_back = json.loads[shapes.Held](saved) except ParseError(): held
+    stdout.print(saved, held_back == held)
+    packed_back = pack.loads[shapes.Held](pack.dumps(held)) except ParseError(): shapes.Held(pair=(Spot(x=0), (counted(1), \"\")))
+    stdout.print(packed_back == held)
 ",
     )?;
     let executable = dir.join("marks");
@@ -13996,7 +14163,7 @@ def main(stdout: Stdout):
     mut pairs = []
     saved = pack.dumps(pairs)
     pairs.append((1, \"a\"))
-    stdout.print(pairs, saved.len() > 0, pack.dumps(pairs).len() > saved.len())
+    stdout.print(pairs, len(saved) > 0, len(pack.dumps(pairs)) > len(saved))
 ",
     )?;
     let executable = dir.join("later");
@@ -14030,10 +14197,12 @@ from std import pack
 def main(stdout: Stdout):
     pairs: list[(int, str)] = [(1, \"a\"), (-7, \"fén\"), (0, \"\")]
     empty: list[(int, str)] = []
-    back = pack.loads[list[(int, str)]](pack.dumps(pairs)) else []
+    back = pack.loads[list[(int, str)]](pack.dumps(pairs)) except ParseError(): []
     stdout.print(back, back == pairs)
-    stdout.print((pack.loads[list[(int, str)]](pack.dumps(empty)) else pairs) == empty)
-    stdout.print((pack.loads[list[(int, str)]](pack.dumps([1, 2])) else empty) == empty)
+    got_value = pack.loads[list[(int, str)]](pack.dumps(empty)) except ParseError(): pairs
+    stdout.print((got_value) == empty)
+    got_value2 = pack.loads[list[(int, str)]](pack.dumps([1, 2])) except ParseError(): empty
+    stdout.print((got_value2) == empty)
 ",
     )?;
     let executable = dir.join("loaded");
@@ -14083,26 +14252,28 @@ struct Unit:
     stats: dict[str, int]
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "read"
+    return "read"
 
 def main(stdout: Stdout):
     ash = Unit(name="Ash \"the\" fox\n", level=3, kind=.Owl(wise=True), pet=None, at=Spot(x=1), tags=["a", "é"], stats={"hp": 10})
     text = json.dumps(ash)
     stdout.print(text)
     stdout.print(json.dumps([ash, ash], indent=2))
-    back = json.loads[Unit](text) else ash
+    back = json.loads[Unit](text) except ParseError(): ash
     stdout.print(back == ash, json.dumps(back) == text)
     stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\"}")?))
     stdout.print(said(() => json.loads[Unit]("{\"name\": 1, \"level\": 2}")?))
     stdout.print(said(() => json.loads[Unit]("{\"name\": \"a\", \"at\": {\"x\": 1, \"z\": 2}, \"extra\": 1}")?))
     stdout.print(said(() => json.loads[Unit]("[1, 2")?))
     stdout.print(said(() => json.loads[list[int]]("[1, \"two\"]")?))
-    stdout.print(json.loads[Spot]("{\"x\": 1, \"x\": 2}") else Spot(x=0))
+    got_value = json.loads[Spot]("{\"x\": 1, \"x\": 2}") except ParseError(): Spot(x=0)
+    stdout.print(got_value)
     spot_text = toml.dumps(Spot(x=4))
     stdout.print(spot_text)
-    stdout.print(toml.loads[Spot](spot_text) else Spot(x=0))
+    got_value2 = toml.loads[Spot](spot_text) except ParseError(): Spot(x=0)
+    stdout.print(got_value2)
     stdout.print(said(() => toml.loads[Spot]("x = \"a\"")?))
 "#,
     )
@@ -14127,9 +14298,9 @@ struct Spot:
     y = 2.5
 
 def said(run: () -> Spot fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "read"
+    return "read"
 
 def main(stdout: Stdout):
     stdout.print(said(() => json.loads[Spot]("{\"x\": \"one\", \"x\": 2}")?))
@@ -14186,20 +14357,20 @@ struct Lite:
     name: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len()
+        return len(text)
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="lite") else:
+        lend Transaction(log="lite") except:
             pass
 
 struct Postgres:
     host: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 2
+        return len(text) * 2
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="pg") else:
+        lend Transaction(log="pg") except:
             pass
 
 type Store = Lite | Postgres
@@ -14208,7 +14379,7 @@ struct Mem:
     size: int
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 3
+        return len(text) * 3
 
 type Three = Lite | Postgres | Mem
 
@@ -14221,7 +14392,7 @@ def saved(store: Store) -> str fails Nope:
         with store.transaction()? as tx:
             count = store.run("abcd")?
             return f"{tx.log} {count}"
-    ""
+    return ""
 
 def ran(store: Three) -> int fails Nope:
     match store:
@@ -14258,19 +14429,19 @@ fn what_is_left_of_a_union_after_is_builds_natively() -> std::io::Result<()> {
     name: str
 
     def label(self) -> str:
-        f"lite {self.name}"
+        return f"lite {self.name}"
 
 struct Pg:
     host: str
 
     def label(self) -> str:
-        f"pg {self.host}"
+        return f"pg {self.host}"
 
 struct Mem:
     size: int
 
     def label(self) -> str:
-        f"mem {self.size}"
+        return f"mem {self.size}"
 
 type Three = Lite | Pg | Mem
 
@@ -14279,7 +14450,7 @@ def which(store: Three) -> str:
         return "lite"
     if store is Pg:
         return f"pg {store.host}"
-    f"mem {store.size}"
+    return f"mem {store.size}"
 
 def kind(store: Three) -> str:
     if store is Mem:
@@ -14294,17 +14465,17 @@ def kind(store: Three) -> str:
 def label(store: Three) -> str:
     if store is Lite:
         return "skip"
-    store.label()
+    return store.label()
 
 def two(store: Pg | Mem) -> str:
     if store is Pg:
         return store.host
-    which(store)
+    return which(store)
 
 def passed(store: Three) -> str:
     if store is Lite:
         return "lite"
-    two(store)
+    return two(store)
 
 def main(stdout: Stdout):
     stdout.print(which(Lite(name="a")), which(Pg(host="b")), which(Mem(size=1)))
@@ -14336,30 +14507,30 @@ struct Lite:
     name: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len()
+        return len(text)
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="lite") else:
+        lend Transaction(log="lite") except:
             pass
 
 struct Mem:
     size: int
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 3
+        return len(text) * 3
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log=f"mem{self.size}") else:
+        lend Transaction(log=f"mem{self.size}") except:
             pass
 
 struct Postgres:
     host: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 2
+        return len(text) * 2
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="pg") else:
+        lend Transaction(log="pg") except:
             pass
 
 type Store = Lite | Postgres
@@ -14373,7 +14544,7 @@ def saved(store: Store) -> str fails Nope:
     with store.transaction()? as tx:
         count = store.run("abc")?
         return f"{tx.log} {count}"
-    ""
+    return ""
 
 def three(store: Three) -> str fails Nope:
     mut seen = ""
@@ -14381,13 +14552,13 @@ def three(store: Three) -> str fails Nope:
         seen = tx.log
     with store.transaction()? as tx:
         seen = f"{seen}+{tx.log}"
-    seen
+    return seen
 
 def held(holder: Holder) -> int fails Nope:
     db = holder.db
     with db.transaction()? as tx:
-        return tx.log.len()
-    0
+        return len(tx.log)
+    return 0
 
 def main(stdout: Stdout) fails Nope:
     stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?)
@@ -14415,12 +14586,12 @@ struct Box[T]:
 def text_of(given: str | Secret[str]) -> (str, bool):
     if given is str:
         return (given, False)
-    (given.expose_secret(), True)
+    return (given.expose_secret(), True)
 
 def size(held: Box[int] | int) -> int:
     if held is int:
         return held
-    held.value * 10
+    return held.value * 10
 
 def main(stdout: Stdout):
     stdout.print(text_of("plain"), text_of(Secret.of("hidden"))[1])
@@ -14480,10 +14651,10 @@ def main(stdout: Stdout):
             items.append(250 + at)
         blob = Blob(data=bytes(items))
         text = json.dumps(blob)
-        back = json.loads[Blob](text) else Blob(data=bytes([]))
+        back = json.loads[Blob](text) except ParseError(): Blob(data=bytes([]))
         stdout.print(text, back.data == blob.data)
     stdout.print(toml.dumps(Blob(data="hello".encode())))
-    _ = json.loads[Blob]("{\"data\": \"ab=c\"}") else as bad:
+    _ = json.loads[Blob]("{\"data\": \"ab=c\"}") except bad:
         stdout.print(bad.message)
         Blob(data=bytes([]))
 "#,
@@ -14537,7 +14708,7 @@ struct Point:
     y = 0
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else:
+    _ = run() except ParseError():
         return "refused"
     return "loaded"
 
@@ -14574,7 +14745,7 @@ struct Entry:
 
 def main(stdout: Stdout):
     rows = SqlRows(columns=["size", "size"], kinds=[1, 1], at=[0, 1], ints=[1, 2], floats=[], texts=[], blobs=[])
-    found = sql.rows_as[Entry](rows) else:
+    found = sql.rows_as[Entry](rows) except .Constraint() | .Busy() | .Column() | .Failed():
         stdout.print("refused")
         return
     stdout.print("read", found)
@@ -14611,12 +14782,12 @@ def main(process: Process, stdout: Stdout) fails ProcessError:
     stdout.print(narrow.run(t"printf ok")?.stdout)
     # A value that would start an argument with `-` is refused, and nothing runs.
     upload = "--upload-pack=touch pwned"
-    _ = process.run(t"printf {upload}") else as refused:
+    _ = process.run(t"printf {upload}") except refused:
         stdout.print(refused.message())
         shown
     path = "-odd"
     stdout.print(process.run(t"SHOWER -- {path}")?.stdout.strip())
-    _ = narrow.run(t"cat") else as error:
+    _ = narrow.run(t"cat") except error:
         stdout.print(error.program())
         return
     stdout.print("ran")
@@ -14667,12 +14838,12 @@ fn small_std_answers_are_right_or_refused() -> std::io::Result<()> {
 from std.path import Path
 
 def said[T](run: () -> T fails InvalidValue) -> str:
-    _ = run() else:
+    _ = run() except InvalidValue():
         return "refused"
     return "loaded"
 
 def said_toml(text: str) -> str:
-    _ = toml.loads[dict[str, str]](text) else:
+    _ = toml.loads[dict[str, str]](text) except ParseError():
         return "refused"
     return "loaded"
 
@@ -14681,12 +14852,12 @@ def main(stdout: Stdout):
     stdout.print(Path("..").parent(), Path("a/..").parent(), Path("a/b").parent())
     root = Path("static")
     for asked in ["/a/b.txt", "a.txt", "/../secret", "a/../../b", "a\x00b", "a\\b"]:
-        found = root.inside(asked) else:
+        found = root.inside(asked) except InvalidValue():
             stdout.print("refused")
             continue
         stdout.print(found)
     stdout.print(said_toml("d = 2024-02-29\n"), said_toml("d = 2023-02-29\n"), said_toml("d = 2024-02-30\n"), said_toml("d = 2024-04-31\n"))
-    _ = csv.loads("a;;b\n", delimiter=";;") else:
+    _ = csv.loads("a;;b\n", delimiter=";;") except ParseError():
         stdout.print("refused")
         []
     stdout.print("a".ljust(4, fill="x"), "a".rjust(4, fill="x"), "a".center(3, fill="x"))
@@ -14713,8 +14884,8 @@ fn csv_dumps_writes_what_loads_reads_back_as_the_same_rows() -> std::io::Result<
         r#"from std import csv
 
 def back(rows: list[list[str]]) -> str:
-    text = csv.dumps(rows) else return "refused"
-    read = csv.loads(text) else:
+    text = csv.dumps(rows) except InvalidValue(): return "refused"
+    read = csv.loads(text) except ParseError():
         return "False"
     return str(read == rows)
 
@@ -14738,7 +14909,7 @@ fn csv_reads_only_the_first_byte_order_mark() -> std::io::Result<()> {
         r#"from std import csv
 
 def main(stdout: Stdout):
-    rows = csv.loads("﻿﻿a,b\n﻿c") else:
+    rows = csv.loads("﻿﻿a,b\n﻿c") except ParseError():
         stdout.print("refused")
         return
     stdout.print(rows == [["﻿a", "b"], ["﻿c"]])
@@ -14784,7 +14955,7 @@ fn a_response_cant_make_the_client_hold_without_end() -> std::io::Result<()> {
         Ok(())
     });
     let source = format!(
-        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    answer = net.get(\"http://127.0.0.1:{port}/\", timeout=10s) else:\n        return \"refused\"\n    return answer.text()\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
+        "from std.net import NetError\n\ndef said(net: Net) -> str:\n    answer = net.get(\"http://127.0.0.1:{port}/\", timeout=10s) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other():\n        return \"refused\"\n    return answer.text()\n\ndef main(net: Net, stdout: Stdout):\n    stdout.print(said(net), said(net), said(net))\n"
     );
     let printed = printed_by("client_holds", &source)?;
     server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
@@ -14811,7 +14982,7 @@ fn a_header_sent_twice_is_one_entry_and_keeps_every_value() -> std::io::Result<(
         )
     });
     let source = format!(
-        "def main(net: Net, stdout: Stdout) fails NetError:\n    answer = net.get(\"http://127.0.0.1:{port}/\")?\n    stdout.print(answer.headers.len())\n    stdout.print(answer.headers[\"x-tag\"])\n    stdout.print(answer.set_cookies)\n"
+        "def main(net: Net, stdout: Stdout) fails NetError:\n    answer = net.get(\"http://127.0.0.1:{port}/\")?\n    stdout.print(len(answer.headers))\n    stdout.print(answer.headers[\"x-tag\"])\n    stdout.print(answer.set_cookies)\n"
     )
     .replace("def main", "from std.net import NetError\n\ndef main");
     let printed = printed_by("headers_twice", &source)?;
@@ -14833,7 +15004,7 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") else as refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") except InvalidValue(): 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") except refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {
@@ -14855,12 +15026,12 @@ fn a_url_prints_as_written_and_a_host_stays_a_host() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     for text in ["mailto:a@b", "/a%2Fb", "/%ff", "http://x/a%20b", "file:///x", "https://me@example.com:8/a?b=1#c"]:
-        found = url.parse(text) else as error:
+        found = url.parse(text) except error:
             stdout.print("refused", text, error.message)
             continue
         stdout.print(str(found) == text, str(found))
     for text in ["http://a@b@c/", "http://good.com%2f.evil.com/", "http://a%40b/"]:
-        found = url.parse(text) else:
+        found = url.parse(text) except InvalidValue():
             stdout.print("refused")
             continue
         stdout.print("host", found.host)
@@ -14885,7 +15056,7 @@ error Refused:
     Denied(token: Secret[str])
 
 def word() -> Secret[str]:
-    Secret.of("hun" + "ter2")
+    return Secret.of("hun" + "ter2")
 
 def signs_in() fails Refused:
     fail .Denied(token=word())
@@ -14996,7 +15167,7 @@ fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> 
     std::os::unix::fs::symlink(place.join("outside"), place.join("inside/door"))?;
     let folder = place.to_string_lossy().into_owned();
     let source = format!(
-        "def read_out(fs: Fs, path: str) -> str:\n    text = fs.read_text(path) else:\n        return \"refused\"\n    return text\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\") else:\n        stdout.print(\"refused\")\n        return\n    stdout.print(\"wrote\")\n"
+        "def read_out(fs: Fs, path: str) -> str:\n    text = fs.read_text(path) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():\n        return \"refused\"\n    return text\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():\n        stdout.print(\"refused\")\n        return\n    stdout.print(\"wrote\")\n"
     );
     let printed = printed_by("fs_only_link", &source)?;
     let escaped = place.join("outside/new.txt").exists();
@@ -15100,11 +15271,11 @@ from std.sql import SqlError
 def said_of(error: SqlError | Timeout) -> str:
     match error:
         case Timeout(waited=_):
-            "no connection came free"
+            return "no connection came free"
         case Constraint(reason=reason) | Busy(reason=reason) | Failed(reason=reason):
-            reason
+            return reason
         case Column(name=name, reason=reason):
-            f"column {name}: {reason}"
+            return f"column {name}: {reason}"
 
 def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError | Timeout:
     with postgres.connect(net, entropy, f"postgres://u@127.0.0.1:{port}/d", password=Secret.of("pw"), allow_weak_sign_in=weak, pool_size=1, tls=False)? as db:
@@ -15113,7 +15284,7 @@ def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError | Time
 
 def main(stdout: Stdout, net: Net, entropy: Entropy):
     for at, port in enumerate(PORTS):
-        _ = run(port, weak=at >= STRICT, net=net, entropy=entropy) else as error:
+        _ = run(port, weak=at >= STRICT, net=net, entropy=entropy) except error:
             stdout.print(said_of(error))
             continue
         stdout.print("went through")
@@ -15189,7 +15360,7 @@ from std.postgres import PgMessage, PgReader
 def read(data: bytes) -> str:
     mut reader = PgReader()
     reader.feed(data)
-    message = reader.next() else as _:
+    message = reader.next() except .Constraint() | .Busy() | .Column() | .Failed():
         return "refused"
     _ = message else:
         return "refused"
@@ -15204,7 +15375,7 @@ def main(stdout: Stdout):
     stdout.print(read(bytes([75, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3])))
     stdout.print(read(bytes([49, 0, 0, 0, 5, 120])))
     rows = [PgMessage.Row(cells=[bytes([120])], present=[True])]
-    found = postgres.rows_of(["flag"], types=[16], rows=rows) else:
+    found = postgres.rows_of(["flag"], types=[16], rows=rows) except .Constraint() | .Busy() | .Column() | .Failed():
         stdout.print("refused")
         return
     stdout.print("read", found.ints)
@@ -15245,16 +15416,16 @@ fn pack_lock_leaves_the_layout_out_and_the_next_version_reads_by_it() -> std::io
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    let first = "from std import pack\n\nstruct Entry:\n    path: str\n    size: int\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    data = pack.dumps(Entry(path=\"a.txt\", size=12))\n    fs.write_bytes(\"entry.pack\", data)?\n    stdout.print(data.len())\n";
+    let first = "from std import pack\n\nstruct Entry:\n    path: str\n    size: int\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    data = pack.dumps(Entry(path=\"a.txt\", size=12))\n    fs.write_bytes(\"entry.pack\", data)?\n    stdout.print(len(data))\n";
     let long = ran(first)?;
     let updated = in_kit(&["update"])?;
     let said = String::from_utf8_lossy(&updated.stdout).into_owned();
     let lock = std::fs::read_to_string(kit.join("pack.lock"))?;
     let short = ran(first)?;
-    let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    found = pack.loads[Entry](fs.read_bytes(\"entry.pack\")?) else as error:\n        stdout.print(error.message)\n        return\n    stdout.print(found.path, found.size, found.tags)\n";
+    let next = "from std import pack\n\nstruct Entry:\n    path: str\n    size: float\n    tags = list[str]()\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    found = pack.loads[Entry](fs.read_bytes(\"entry.pack\")?) except error:\n        stdout.print(error.message)\n        return\n    stdout.print(found.path, found.size, found.tags)\n";
     let read = ran(next)?;
     // A version that can't load what was locked says so as it's checked, without failing.
-    let breaking = "from std import pack\n\nstruct Entry:\n    path: str\n    size: str\n    rank: int\n    note = \"\"\n\ndef main(stdout: Stdout):\n    stdout.print(pack.dumps(Entry(path=\"a\", size=\"1\", rank=2)).len())\n";
+    let breaking = "from std import pack\n\nstruct Entry:\n    path: str\n    size: str\n    rank: int\n    note = \"\"\n\ndef main(stdout: Stdout):\n    stdout.print(len(pack.dumps(Entry(path=\"a\", size=\"1\", rank=2))))\n";
     std::fs::write(&main, breaking)?;
     let checked = in_kit(&["check", "."])?;
     let warned = String::from_utf8_lossy(&checked.stderr).into_owned();
@@ -15295,7 +15466,7 @@ fn file_chunks_and_lines_fail_rather_than_end_early() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let folder = place.to_string_lossy().replace('\\', "\\\\");
     let source = format!(
-        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += chunk.len()\n    total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += line.len() + 1\n    count\n\ndef said(run: () -> int fails IoError) -> str:\n    n = run() else:\n        return \"failed\"\n    return f\"read {{n}}\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(() => chunked(fs, path=\"{folder}/folder\")?), said(() => chunked(fs, path=\"{folder}/good.txt\")?))\n    stdout.print(said(() => lined(fs, path=\"{folder}/bad.txt\")?), said(() => lined(fs, path=\"{folder}/good.txt\")?))\n"
+        "def chunked(fs: Fs, path: str) -> int fails IoError:\n    mut total = 0\n    with fs.open(path)? as file:\n        for chunk in file.chunks(4)?:\n            total += len(chunk)\n    return total\n\ndef lined(fs: Fs, path: str) -> int fails IoError:\n    mut count = 0\n    with fs.open(path)? as file:\n        for line in file.lines()?:\n            count += len(line) + 1\n    return count\n\ndef said(run: () -> int fails IoError) -> str:\n    n = run() except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():\n        return \"failed\"\n    return f\"read {{n}}\"\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(said(() => chunked(fs, path=\"{folder}/folder\")?), said(() => chunked(fs, path=\"{folder}/good.txt\")?))\n    stdout.print(said(() => lined(fs, path=\"{folder}/bad.txt\")?), said(() => lined(fs, path=\"{folder}/good.txt\")?))\n"
     );
     let printed = printed_by("iter_fail", &source)?;
     std::fs::remove_dir_all(&place)?;
@@ -15334,9 +15505,9 @@ from std.sql import SqlError
 
 ## What `settings` made of a URL, or why it couldn't.
 def described(url: str | Secret[str]) -> str:
-    found = postgres.settings(url) else as error:
+    found = postgres.settings(url) except error:
         return error.message()
-    f"{found.user} {found.host} {found.port} {found.database}"
+    return f"{found.user} {found.host} {found.port} {found.database}"
 
 def twice(url: Secret[str], net: Net, entropy: Entropy) fails SqlError:
     with postgres.connect(net, entropy, url, password=Secret.of("other"))? as _:
@@ -15346,7 +15517,7 @@ def main(stdout: Stdout, env: Env, net: Net, entropy: Entropy):
     written = env.get("FENNEC_DATABASE_URL") else "postgres://ann:hunter2@db.example/shop"
     stdout.print(described(written))
     stdout.print(described(Secret.of(written)))
-    twice(Secret.of(written), net=net, entropy=entropy) else as error:
+    twice(Secret.of(written), net=net, entropy=entropy) except error:
         stdout.print(error.message())
         return
     stdout.print("connected")
@@ -15373,7 +15544,7 @@ fn postgres_asks_for_tls_and_never_falls_back_to_the_clear() -> std::io::Result<
     let refused = postgres_tls_answering(b"N")?;
     let injected = postgres_tls_answering(b"SR\0\0\0\x08\0\0\0\0")?;
     let source = format!(
-        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, f\"postgres://u@localhost:{{port}}/d\", password=Secret.of(\"pw\"))? as _:\n        pass\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        _ = run(port, net=net, entropy=entropy) else as error:\n            stdout.print(error.message())\n            continue\n        stdout.print(\"went through\")\n"
+        "from std import postgres\nfrom std.crypto import Secret\nfrom std.sql import SqlError\n\ndef run(port: int, net: Net, entropy: Entropy) fails SqlError:\n    with postgres.connect(net, entropy, f\"postgres://u@localhost:{{port}}/d\", password=Secret.of(\"pw\"))? as _:\n        pass\n\ndef main(stdout: Stdout, net: Net, entropy: Entropy):\n    for port in [{refused}, {injected}]:\n        _ = run(port, net=net, entropy=entropy) except error:\n            stdout.print(error.message())\n            continue\n        stdout.print(\"went through\")\n"
     );
     let printed = printed_by("postgres_tls", &source)?;
     let lines: Vec<&str> = printed.lines().collect();
@@ -15416,15 +15587,15 @@ struct Link:
     next: Link? = None
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
     return "loaded"
 
 def changed(data: bytes, at: int, to: int) -> bytes:
     mut items = list[int]()
-    for b in range(data.len()):
+    for b in range(len(data)):
         items.append(to if b == at else data[b])
-    bytes(items)
+    return bytes(items)
 
 ## Where the value starts: after the header, and the layout saved with it.
 def body(data: bytes) -> int:
@@ -15435,7 +15606,7 @@ def body(data: bytes) -> int:
         n = n | ((data[at] & 127) << shift)
         shift += 7
         at += 1
-    at + 1 + (n | (data[at] << shift))
+    return at + 1 + (n | (data[at] << shift))
 
 def main(stdout: Stdout):
     units = [
@@ -15452,11 +15623,13 @@ def main(stdout: Stdout):
         Unit(name="", health=0, kind=.Medic, at=Place(x=1, y=2), items=[Item(name="x"), Item(name="y")], alive=False),
     ]
     data = pack.dumps(units)
-    back = pack.loads[list[Unit]](data) else []
-    stdout.print(data.len(), back == units, back[1].name, back[1].at.x, back[1].tags, back[0].items[0].weight)
-    stdout.print(pack.loads[float](pack.dumps(-0.1)) else 0.0, pack.loads[str](pack.dumps("")) else "x")
+    back = pack.loads[list[Unit]](data) except ParseError(): []
+    stdout.print(len(data), back == units, back[1].name, back[1].at.x, back[1].tags, back[0].items[0].weight)
+    got_value = pack.loads[float](pack.dumps(-0.1)) except ParseError(): 0.0
+    got_value2 = pack.loads[str](pack.dumps("")) except ParseError(): "x"
+    stdout.print(got_value, got_value2)
     stdout.print(said(() => pack.loads[list[Place]](data)?))
-    stdout.print(said(() => pack.loads[list[Unit]](data[0:data.len() - 1])?))
+    stdout.print(said(() => pack.loads[list[Unit]](data[0:len(data) - 1])?))
     stdout.print(said(() => pack.loads[int](bytes([1, 2, 3]))?))
     stdout.print(said(() => pack.loads[int](pack.dumps(5) + bytes([0]))?))
     stdout.print(said(() => pack.loads[str](pack.dumps("hello world"), limits=Limits(length=4))?))
@@ -15509,10 +15682,10 @@ struct Node:
 
 ## A number from the last, the same every run.
 def step(seed: int) -> int:
-    (seed * 1103515245 + 12345) % 2147483648
+    return (seed * 1103515245 + 12345) % 2147483648
 
 def tried(data: bytes, limits: Limits) -> int:
-    _ = pack.loads[Node](data, limits=limits) else:
+    _ = pack.loads[Node](data, limits=limits) except ParseError():
         return 0
     return 1
 
@@ -15525,7 +15698,7 @@ def body(data: bytes) -> int:
         n = n | ((data[at] & 127) << shift)
         shift += 7
         at += 1
-    at + 1 + (n | (data[at] << shift))
+    return at + 1 + (n | (data[at] << shift))
 
 def main(stdout: Stdout):
     tail = Node(name="tail", shape=.Dot, data=bytes([0, 255]), weights=[], names={})
@@ -15534,20 +15707,20 @@ def main(stdout: Stdout):
     )
     good = pack.dumps(node)
     small = Limits(depth=8, length=64)
-    stdout.print(good.len(), tried(good, Limits()), tried(good, small))
+    stdout.print(len(good), tried(good, Limits()), tried(good, small))
     # Every truncation fails.
     mut loaded = 0
-    for size in range(good.len()):
+    for size in range(len(good)):
         loaded += tried(good[0:size], Limits())
     stdout.print("truncated", loaded)
     mut items = list[int]()
-    for at in range(good.len()):
+    for at in range(len(good)):
         items.append(good[at])
     # Every byte changed, one at a time, to bytes from a seed.
     mut seed = 7
     loaded = 0
     mut runs = 0
-    for at in range(good.len()):
+    for at in range(len(good)):
         for _ in range(40):
             seed = step(seed)
             mut changed = items
@@ -15619,7 +15792,7 @@ struct Code:
         out.text(self.text)
 
     def deserialize(ref src: Deserializer) -> Code fails ParseError:
-        Code(text=src.text()?)
+        return Code(text=src.text()?)
 
 struct Node:
     name: str
@@ -15691,16 +15864,16 @@ struct ShortPair:
 def names(node: NewNode) -> list[str]:
     rest = node.next else NewNode(name="")
     if rest.name == "": return [node.name]
-    [node.name] + names(rest)
+    return [node.name] + names(rest)
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
     return "loaded"
 
 ## What `data` loads as, as an `After`.
 def show_after(data: bytes, stdout: Stdout):
-    found = pack.loads[After](data) else as error:
+    found = pack.loads[After](data) except error:
         stdout.print("failed:", error.message)
         return
     stdout.print(found.name, found.health, found.level, found.tags, found.pair, found.either, found.code.text)
@@ -15738,7 +15911,7 @@ def main(stdout: Stdout):
     # Data from before layouts loads into the same shape, and only that.
     first = without_layout(data)
     stdout.print(said(() => pack.loads[Before](first)?), said(() => pack.loads[After](first)?))
-    stdout.print(data.len(), first.len())
+    stdout.print(len(data), len(first))
 
 ## The same data as `FPK1` wrote it: the header, then the value, with no layout between.
 def without_layout(data: bytes) -> bytes:
@@ -15753,9 +15926,9 @@ def without_layout(data: bytes) -> bytes:
     mut items = [70, 80, 75, 49]
     for place in range(4, 12):
         items.append(data[place])
-    for place in range(start, data.len()):
+    for place in range(start, len(data)):
         items.append(data[place])
-    bytes(items)
+    return bytes(items)
 "#;
 
 /// `std.pack` loads data saved from an earlier version of a type by its names: fields moved,
@@ -15806,7 +15979,7 @@ def main(stdout: Stdout):
         out.add(Event(who=at, kind=Kind.Move if at % 2 == 0 else Kind.Say(text="hi")))
     data = out.bytes()
     one = pack.dumps(Event(who=1, kind=.Move))
-    stdout.print("stream", data.len(), "one value alone", one.len(), "a hundred alone", one.len() * 100)
+    stdout.print("stream", len(data), "one value alone", len(one), "a hundred alone", len(one) * 100)
     mut src = Unpacker.of(data)
     mut total = 0
     mut said = 0
@@ -15841,18 +16014,18 @@ def main(stdout: Stdout):
     # A stream fed a byte at a time gives each value once all of it has come.
     mut fed = Unpacker.stream()
     mut got = 0
-    for at in range(data.len()):
+    for at in range(len(data)):
         fed.feed(data[at:at + 1])
         while True:
             _ = fed.next[Event]()? else break
             got += 1
     stdout.print("fed", got)
     # Cut off, bytes that are all there are fail.
-    mut cut = Unpacker.of(data[0:data.len() - 1])
+    mut cut = Unpacker.of(data[0:len(data) - 1])
     mut read = 0
     mut failed = ""
     while True:
-        found = cut.next[Event]() else as error:
+        found = cut.next[Event]() except error:
             failed = error.message
             break
         if found is None: break
@@ -15864,7 +16037,7 @@ def main(stdout: Stdout):
     first = sending.take()
     sending.add(Event(who=2, kind=.Move))
     second = sending.take()
-    stdout.print(first.len(), second.len())
+    stdout.print(len(first), len(second))
 "#;
 
 /// A `pack.Packer` writes each type's layout once, so a hundred small values take an eighth of
@@ -15907,25 +16080,25 @@ def varint(n: int) -> list[int]:
         out.append((rest & 127) | 128)
         rest = rest >> 7
     out.append(rest)
-    out
+    return out
 
 ## Bytes that ask for `count` items that each take no bytes, from `start`, the header and a layout.
 def asking(start: bytes, count: int) -> bytes:
-    start + bytes(varint(count))
+    return start + bytes(varint(count))
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
     return "loaded"
 
 def main(stdout: Stdout):
     empty = pack.dumps([Hollow()])
-    start = empty[0:empty.len() - 1]
+    start = empty[0:len(empty) - 1]
     # The same shape: a list of what saves nothing.
     stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 2_000_000))?))
     # A layout written by hand, of structs with no fields, loaded by name into a bigger struct.
     layout = "l S 0".encode()
-    named = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, layout.len()]) + layout
+    named = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, len(layout)]) + layout
     stdout.print(said(() => pack.loads[list[Big]](asking(named, 2_000_000))?))
     # What's honest loads.
     stdout.print(said(() => pack.loads[list[Hollow]](asking(start, 1000))?))
@@ -15936,7 +16109,7 @@ def main(stdout: Stdout):
     # Fields filled from defaults count against the items a load may read.
     few = pack.Limits(length=500)
     one_byte = "l S 1 x b".encode()
-    filled = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, one_byte.len()]) + one_byte + bytes(varint(100)) + bytes([1 for _ in range(100)])
+    filled = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, len(one_byte)]) + one_byte + bytes(varint(100)) + bytes([1 for _ in range(100)])
     stdout.print(said(() => pack.loads[list[Big]](filled, limits=few)?))
 "#;
 
@@ -15994,13 +16167,13 @@ struct Shape:
         else:
             made = Shape(count=src.value[int]()?)
         src.end_member()?
-        made
+        return made
 
 struct Scene:
     shapes: list[Shape]
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
     return "loaded"
 
@@ -16013,26 +16186,26 @@ def body(data: bytes) -> int:
         n = n | ((data[at] & 127) << shift)
         shift += 7
         at += 1
-    at + 1 + (n | (data[at] << shift))
+    return at + 1 + (n | (data[at] << shift))
 
 def main(stdout: Stdout):
     scene = Scene(shapes=[Shape(kind=0, circle=Circle(radius=1.5)), Shape(kind=1, square=Square(side=2.0)), Shape(count=7)])
     text = json.dumps(scene)
     stdout.print(text)
-    back = json.loads[Scene](text) else Scene(shapes=[])
+    back = json.loads[Scene](text) except ParseError(): Scene(shapes=[])
     stdout.print(json.dumps(back) == text)
     written = toml.dumps(scene)
     stdout.print(written)
-    again = toml.loads[Scene](written) else Scene(shapes=[])
+    again = toml.loads[Scene](written) except ParseError(): Scene(shapes=[])
     stdout.print(json.dumps(again) == text)
     data = pack.dumps(scene)
-    packed = pack.loads[Scene](data) else Scene(shapes=[])
+    packed = pack.loads[Scene](data) except ParseError(): Scene(shapes=[])
     stdout.print(json.dumps(packed) == text)
     stdout.print(said(() => json.loads[Scene]("{\"shapes\": [{\"Triangle\": {}}]}")?))
     stdout.print(said(() => json.loads[Scene]("{\"shapes\": [5]}")?))
     stdout.print(said(() => toml.loads[Scene]("[[shapes]]\nTriangle = 1\n")?))
     mut items = list[int]()
-    for at in range(data.len()):
+    for at in range(len(data)):
         items.append(data[at])
     items[body(data) + 1] = 9
     stdout.print(said(() => pack.loads[Scene](bytes(items))?))
@@ -16078,7 +16251,7 @@ struct Log:
     picked: (Circle | int)? = None
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
     return "loaded"
 
@@ -16087,17 +16260,24 @@ def main(stdout: Stdout):
     empty = Scene(main=Circle(radius=0.0), shapes=[], named={})
     text = json.dumps(scene)
     stdout.print(text)
-    stdout.print((json.loads[Scene](text) else empty) == scene)
+    got_value = json.loads[Scene](text) except ParseError(): empty
+    stdout.print((got_value) == scene)
     stdout.print(toml.dumps(scene))
-    stdout.print((toml.loads[Scene](toml.dumps(scene)) else empty) == scene)
-    stdout.print((pack.loads[Scene](pack.dumps(scene)) else empty) == scene)
+    got_value2 = toml.loads[Scene](toml.dumps(scene)) except ParseError(): empty
+    stdout.print((got_value2) == scene)
+    got_value3 = pack.loads[Scene](pack.dumps(scene)) except ParseError(): empty
+    stdout.print((got_value3) == scene)
     log = Log(events=[Event.Spawn(Circle(radius=0.5)), Event.Quit], picked=4)
     stdout.print(json.dumps(log))
-    stdout.print((json.loads[Log](json.dumps(log)) else Log(events=[])) == log)
-    stdout.print((pack.loads[Log](pack.dumps(log)) else Log(events=[])) == log)
-    stdout.print((pack.loads[Log](pack.dumps(Log(events=[]))) else log).picked is None)
+    got_value4 = json.loads[Log](json.dumps(log)) except ParseError(): Log(events=[])
+    stdout.print((got_value4) == log)
+    got_value5 = pack.loads[Log](pack.dumps(log)) except ParseError(): Log(events=[])
+    stdout.print((got_value5) == log)
+    got_value6 = pack.loads[Log](pack.dumps(Log(events=[]))) except ParseError(): log
+    stdout.print((got_value6).picked is None)
     # A default that's one of a union's members, and what doesn't load.
-    stdout.print((json.loads[Scene]("{\"main\": {\"Circle\": {\"radius\": 1.0}}, \"shapes\": [], \"named\": {}}") else scene).count)
+    got_value7 = json.loads[Scene]("{\"main\": {\"Circle\": {\"radius\": 1.0}}, \"shapes\": [], \"named\": {}}") except ParseError(): scene
+    stdout.print((got_value7).count)
     stdout.print(said(() => json.loads[Scene]("{\"main\": {\"Triangle\": {}}, \"shapes\": [], \"named\": {}}")?))
     stdout.print(said(() => json.loads[Scene]("{\"main\": {\"radius\": 1.0}, \"shapes\": [], \"named\": {}}")?))
     stdout.print(said(() => json.loads[Log]("{\"events\": [], \"picked\": {\"str\": \"x\"}}")?))
@@ -16133,15 +16313,15 @@ struct World:
     last: Id[Unit]? = None
 
 def said[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as error:
+    _ = run() except error:
         return error.message
     return "loaded"
 
 def changed(data: bytes, at: int, to: int) -> bytes:
     mut items = list[int]()
-    for b in range(data.len()):
+    for b in range(len(data)):
         items.append(to if b == at else data[b])
-    bytes(items)
+    return bytes(items)
 
 ## Where the value starts: after the header, and the layout saved with it.
 def body(data: bytes) -> int:
@@ -16152,7 +16332,7 @@ def body(data: bytes) -> int:
         n = n | ((data[at] & 127) << shift)
         shift += 7
         at += 1
-    at + 1 + (n | (data[at] << shift))
+    return at + 1 + (n | (data[at] << shift))
 
 def main(stdout: Stdout):
     mut world = World()
@@ -16166,16 +16346,16 @@ def main(stdout: Stdout):
     world.last = ash
     # By position: the items in order, and the Id whose item has gone saved as missing.
     data = pack.dumps(world)
-    back = pack.loads[World](data) else World()
-    stdout.print(data.len(), back.units.len(), back.last is None, pack.dumps(back) == data)
+    back = pack.loads[World](data) except ParseError(): World()
+    stdout.print(len(data), len(back.units), back.last is None, pack.dumps(back) == data)
     for id in back.selected:
         unit = back.units[id]
         target = unit.target
         stdout.print(unit.name, back.units[target].name if target is not None else "-")
     # Slot for slot: the same slots and generations, and the Id whose item has gone still gone.
     exact = pack.dumps(world, exact=True)
-    mut same = pack.loads[World](exact) else World()
-    stdout.print(exact.len(), exact[3], same.units.len(), same.units[same.selected[1]].name)
+    mut same = pack.loads[World](exact) except ParseError(): World()
+    stdout.print(len(exact), exact[3], len(same.units), same.units[same.selected[1]].name)
     stdout.print(same.last is not None, (same.last else same.selected[0]) in same.units)
     # The next add takes the same slot, at the same generation, in both.
     _ = world.units.add(Unit(name="fox"))
@@ -16190,14 +16370,14 @@ def main(stdout: Stdout):
     mut seed = 11
     for good in [data, exact]:
         mut cut = 0
-        for size in range(good.len()):
+        for size in range(len(good)):
             if said(() => pack.loads[World](good[0:size])?) == "loaded":
                 cut += 1
         mut changes = 0
-        for at in range(good.len()):
+        for at in range(len(good)):
             for _ in range(30):
                 seed = (seed * 1103515245 + 12345) % 2147483648
-                loaded: World? = pack.loads[World](changed(good, at=at, to=(seed >> 16) & 255)) else as _:
+                loaded: World? = pack.loads[World](changed(good, at=at, to=(seed >> 16) & 255)) except ParseError():
                     None
                 if loaded is not None:
                     # What loads has every Id somewhere in its Table, or gone.
@@ -16254,10 +16434,10 @@ from std.net import NetError
 def listening(net: Net) -> bool fails NetError:
     with net.listen(0)? as server:
         return server.port > 0
-    False
+    return False
 
 def main(stdout: Stdout, net: Net):
-    up = listening(net) else:
+    up = listening(net) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other():
         stdout.print(\"failed\")
         return
     stdout.print(\"listening\", up)
@@ -16317,7 +16497,7 @@ def given(captured: list[Unit], at: int) -> int:
     copy_of[at % 2].tags.append(at)
     own_tags = copy_of[at % 2].tags
     copy_of[at % 2].grown_by(own_tags)
-    copy_of[at % 2].tags.len()
+    return len(copy_of[at % 2].tags)
 
 def main(stdout: Stdout):
     captured = [Unit(1, [1, 2, 3]), Unit(2, [4, 5, 6])]
@@ -16363,17 +16543,17 @@ struct Pack:
 def show(node: Node) -> str:
     match node:
         case .Leaf(name):
-            "L(" + name + ")"
+            return "L(" + name + ")"
         case .Branch(label, children):
             mut text = "B(" + label
             for child in children:
                 text += " " + show(child)
-            text + ")"
+            return text + ")"
 
 def last_use(given: Unit) -> Unit:
     mut u = given
     u = u
-    u
+    return u
 
 def main(stdout: Stdout):
     mut t = Node.Branch(label="a", children=list[Node]())
@@ -16390,7 +16570,7 @@ def main(stdout: Stdout):
     ys = last_use(Unit(hp=4, tags=[7]))
     other = [Node.Leaf(name="x"), Node.Leaf(name="y")]
     junk = [[9, 9, 9], [8, 8], [7]]
-    stdout.print(show(t), u, p, xs, ys, other.len(), junk.len())
+    stdout.print(show(t), u, p, xs, ys, len(other), len(junk))
     match tree:
         case .Pair(_, _, tags):
             stdout.print(tags)
@@ -16420,10 +16600,10 @@ struct Shelf:
     log: list[str]
 
     def weight_of(self, at: int) -> int:
-        self.items[at].weight
+        return self.items[at].weight
 
     def names(ref self, ref into: list[str]):
-        for at in range(self.items.len()):
+        for at in range(len(self.items)):
             item = self.items[at]
             if self.weight_of(at) > 1:
                 for tag in item.tags:
@@ -16431,7 +16611,7 @@ struct Shelf:
             into.append(item.name)
 
     def first_tags(self) -> list[str]:
-        self.items[0].tags
+        return self.items[0].tags
 
     def relabel(ref self):
         tags = self.items[0].tags
@@ -16441,9 +16621,9 @@ struct Shelf:
 def size(tree: Tree) -> int:
     match tree:
         case .Leaf:
-            1
+            return 1
         case .Node(left, right):
-            1 + size(left) + size(right)
+            return 1 + size(left) + size(right)
 
 def main(stdout: Stdout):
     mut shelf = Shelf(items=[Item(name="fox", tags=["a", "b"], weight=2), Item(name="kit", tags=["c"], weight=1)], log=[])
@@ -16483,7 +16663,7 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def find(names: list[str], wanted: str) -> str?:\n    for name in names:\n        if name == wanted: return name\n    None\n\nstruct Seen:\n    last: str?\n\ndef main(stdout: Stdout):\n    names = [\"fox\", \"kit\", \"den\"]\n    mut seen = Seen(last=None)\n    mut hits = 0\n    for at in range(1000):\n        found = find(names, names[at % 3])\n        if found is not None:\n            hits += 1\n        seen.last = found\n    stdout.print(hits, seen.last, find(names, \"owl\"))\n";
+    let source = "def find(names: list[str], wanted: str) -> str?:\n    for name in names:\n        if name == wanted: return name\n    return None\n\nstruct Seen:\n    last: str?\n\ndef main(stdout: Stdout):\n    names = [\"fox\", \"kit\", \"den\"]\n    mut seen = Seen(last=None)\n    mut hits = 0\n    for at in range(1000):\n        found = find(names, names[at % 3])\n        if found is not None:\n            hits += 1\n        seen.last = found\n    stdout.print(hits, seen.last, find(names, \"owl\"))\n";
     same_as_pinned("optional", source)?;
     let counts = counts_of("optional", source)?;
     let allocations = counts
@@ -16543,7 +16723,7 @@ fn a_release_build_optimized_as_a_whole_matches_what_was_pinned() -> std::io::Re
     if !ready() {
         return Ok(());
     }
-    let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(seen.len(), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
+    let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        return Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(len(seen), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
     let (ours, wanted) = both_built("release", source, &["--llvm", "--release"])?;
     assert_eq!((ours.0, ours.2), (wanted.0, wanted.2));
     assert_eq!(ours.1.lines().next(), wanted.1.lines().next());
@@ -16563,22 +16743,22 @@ fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
     y: float
 
 def same(a: float, b: float) -> bool:
-    a == b
+    return a == b
 
 def different(a: float, b: float) -> bool:
-    a != b
+    return a != b
 
 def less(a: float, b: float) -> bool:
-    a < b
+    return a < b
 
 def most(a: float, b: float) -> bool:
-    a <= b
+    return a <= b
 
 def more(a: float, b: float) -> bool:
-    a > b
+    return a > b
 
 def least(a: float, b: float) -> bool:
-    a >= b
+    return a >= b
 
 def main(stdout: Stdout):
     zero = 0.0
@@ -16646,7 +16826,7 @@ fn a_release_build_on_linux_needs_nothing_from_the_machine() -> std::io::Result<
         return Ok(());
     }
     let dir = folder("static")?;
-    let source = "def main(stdout: Stdout):\n    counts = {word: word.len() for word in \"a fox ran\".split()}\n    total = sum(n * 2 for n in parallel([1, 2, 3]))\n    stdout.print(counts, total)\n";
+    let source = "def main(stdout: Stdout):\n    counts = {word: len(word) for word in \"a fox ran\".split()}\n    total = sum(n * 2 for n in parallel([1, 2, 3]))\n    stdout.print(counts, total)\n";
     std::fs::write(dir.join("main.fen"), source)?;
     let built = crate::executables::fennec_command()
         .args(["build", "--release", "main.fen", "-o", "main"])
@@ -16777,10 +16957,10 @@ struct Tagged:
     name: str
 
 def same(a: float, b: float) -> bool:
-    a == b
+    return a == b
 
 def different(a: float, b: float) -> bool:
-    a != b
+    return a != b
 
 def main(stdout: Stdout):
     zero = 0.0
@@ -16839,25 +17019,25 @@ fn float_keys_match_what_was_pinned() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     mut floats = {1.5, 2.5}
-    stdout.print(floats, 1.5 in floats, 3.5 in floats, floats.len(), sorted(floats), sorted({"b", "a"}))
+    stdout.print(floats, 1.5 in floats, 3.5 in floats, len(floats), sorted(floats), sorted({"b", "a"}))
     floats.add(1.5)
     floats.add(3.5)
     floats.discard(2.5)
-    stdout.print(floats, floats.len(), list(floats), sum(x for x in floats))
+    stdout.print(floats, len(floats), list(floats), sum(x for x in floats))
     zero = 0.0
     mut zeros = {zero}
     negative = -zero
     stdout.print(negative in zeros, zero in zeros)
     zeros.add(negative)
-    stdout.print(zeros, zeros.len())
+    stdout.print(zeros, len(zeros))
     mut signed = {negative}
     signed.add(zero)
-    stdout.print(signed, signed.len(), zero in signed)
+    stdout.print(signed, len(signed), zero in signed)
     nan = 1e300 * 1e300 - 1e300 * 1e300
     mut nans = {nan}
     nans.add(nan)
     nans.add(-nan)
-    stdout.print(nans.len(), nan in nans, -nan in nans, 1.0 in nans)
+    stdout.print(len(nans), nan in nans, -nan in nans, 1.0 in nans)
     mut named = {1.5: "a", 2.5: "b"}
     named[1.5] = "c"
     named[0.0] = "z"
@@ -16867,7 +17047,7 @@ def main(stdout: Stdout):
     for at in range(100):
         key = float(at % 7) / 2.0
         counts[key] = (counts.get(key) else 0) + 1
-    stdout.print(counts.len(), counts[0.0], counts[3.0])
+    stdout.print(len(counts), counts[0.0], counts[3.0])
 "#,
     )
 }
@@ -16889,7 +17069,7 @@ enum Tag:
     Label(text: str)
 
 def joined(a: str, b: str) -> str:
-    a + b
+    return a + b
 
 def main(stdout: Stdout):
     mut pairs = {(1, "one"): [1], (2, "a long string in its own block"): [2]}
@@ -16899,26 +17079,26 @@ def main(stdout: Stdout):
     pairs[(3, joined("th", b="ree"))] = [3]
     kept = pairs
     pairs[(4, "four")] = []
-    stdout.print(pairs, pairs.len(), kept.len(), pairs.get((3, "three")), pairs.get((9, "no")))
+    stdout.print(pairs, len(pairs), len(kept), pairs.get((3, "three")), pairs.get((9, "no")))
     stdout.print(pairs.pop((1, "one")), pairs.keys(), kept == pairs, kept == kept)
     for key, value in pairs.items():
         stdout.print(key, value)
     mut people = {Named(id=1, name="ann"): 1}
     people[Named(id=2, name=joined("b", b="ob"))] = 2
-    stdout.print(people[Named(id=2, name="bob")], Named(id=1, name="ann") in people, people.len())
+    stdout.print(people[Named(id=2, name="bob")], Named(id=1, name="ann") in people, len(people))
     mut tags = {Tag.Plain, Tag.Label(text="x"), Tag.Label(text="x")}
     tags.add(Tag.Label(text=joined("y", b="z")))
     tags.discard(Tag.Label(text="x"))
-    stdout.print(tags, tags.len(), Tag.Label(text="yz") in tags, Tag.Plain in tags)
+    stdout.print(tags, len(tags), Tag.Label(text="yz") in tags, Tag.Plain in tags)
     zero = 0.0
     mut floats = {(zero, 1): "a"}
     floats[(-zero, 1)] = "b"
     floats[(1.5, 2)] = "c"
-    stdout.print(floats, floats.len(), floats[(-zero, 1)])
+    stdout.print(floats, len(floats), floats[(-zero, 1)])
     mut grown: dict[(int, str), int] = {}
     for at in range(200):
         grown[(at % 20, f"key {at % 20}")] = at
-    stdout.print(grown.len(), grown[(7, "key 7")], grown[(19, "key 19")])
+    stdout.print(len(grown), grown[(7, "key 7")], grown[(19, "key 19")])
 "#,
     )
 }
@@ -16936,10 +17116,10 @@ fn float_keys_hash_as_decided() -> std::io::Result<()> {
     mut zeros = {zero}
     stdout.print(minus in zeros)
     zeros.add(minus)
-    stdout.print(zeros.len(), {zero, 1.0} == {minus, 1.0})
+    stdout.print(len(zeros), {zero, 1.0} == {minus, 1.0})
     mut nans = {nan}
     nans.add(-nan)
-    stdout.print(nans.len(), -nan in nans)
+    stdout.print(len(nans), -nan in nans)
     named = {zero: 1}
     stdout.print(named.get(minus), named[minus])
     stdout.print([zero, nan] == [minus, -nan])
@@ -16986,12 +17166,12 @@ type Mark = Point | str
 
 def nan() -> float:
     big = 1e308 * 10.0
-    big - big
+    return big - big
 
 def counted() -> int:
     other = -nan()
     seen = {Point(x=0.0, y=1.0), Point(x=-0.0, y=1.0), Point(x=nan(), y=2.0), Point(x=other, y=2.0)}
-    seen.len()
+    return len(seen)
 
 SEEN = counted()
 
@@ -17002,18 +17182,18 @@ def main(stdout: Stdout):
     names[Point(x=-0.0, y=1.0)] = "negative zero"
     names[Point(x=missing, y=2.0)] = "nan"
     names[Point(x=other, y=2.0)] = "nan again"
-    stdout.print(names.len(), names[Point(x=0.0, y=1.0)], names[Point(x=missing, y=2.0)])
+    stdout.print(len(names), names[Point(x=0.0, y=1.0)], names[Point(x=missing, y=2.0)])
     stdout.print(Point(x=-0.0, y=1.0) in names, Point(x=0.5, y=1.0) in names)
     small = {Small(at=f32(0.0)), Small(at=f32(-0.0)), Small(at=f32(missing)), Small(at=f32(other))}
     readings = {Reading.Level(value=-0.0): 1, Reading.Level(value=0.0): 2, Reading.Off: 3}
     marks: set[Mark] = {Point(x=0.0, y=0.0), Point(x=-0.0, y=-0.0), "a"}
-    stdout.print(small.len(), readings.len(), readings[Reading.Level(value=0.0)], marks.len())
+    stdout.print(len(small), len(readings), readings[Reading.Level(value=0.0)], len(marks))
     stdout.print(SEEN, counted())
     zero = f32(0.0)
     stdout.print(Reading32.At(value=zero) == .At(value=-zero), Small(at=zero) == Small(at=-zero))
     stdout.print(Reading.Level(value=0.0) == .Level(value=-0.0), Reading32.At(value=f32(missing)) == .At(value=f32(other)))
     sized = {Reading32.At(value=zero): 1, Reading32.At(value=-zero): 2, Reading32.At(value=f32(missing)): 3, Reading32.At(value=f32(other)): 4}
-    stdout.print(sized.len(), sized[Reading32.At(value=zero)], {f32(0.0), f32(-0.0), f32(missing), f32(other)}.len())
+    stdout.print(len(sized), sized[Reading32.At(value=zero)], len({f32(0.0), f32(-0.0), f32(missing), f32(other)}))
 "#,
         "2 negative zero nan again\nTrue False\n2 2 2 2\n2 2\nTrue True\nTrue True\n2 2 2\n",
     )
@@ -17034,7 +17214,7 @@ fn operators_on_collections_match_what_was_pinned() -> std::io::Result<()> {
 def maybe(on: bool) -> Spot?:
     if on:
         return Spot(x=1, y="a")
-    None
+    return None
 
 def main(stdout: Stdout):
     a = [1, 2]
@@ -17115,7 +17295,7 @@ def main(stdout: Stdout):
     third = names.add(Named("c"))
     fourth = names.add(Named("d"))
     fifth = names.add(Named("e"))
-    stdout.print(first, second, third, fourth, fifth, names.len())
+    stdout.print(first, second, third, fourth, fifth, len(names))
     stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
     # A stale `Id` frees nothing, so it can't move where to look.
     _ = names.remove(ids[2])
@@ -17157,13 +17337,13 @@ def main(stdout: Stdout):
     third = names.add("a long name that sits in its own block")
     copied = names
     names.remove_where(name => name.startswith("k"))
-    stdout.print(names.values(), names.len(), copied.values(), copied.len(), names[first], names[third])
+    stdout.print(names.values(), len(names), copied.values(), len(copied), names[first], names[third])
     fourth = names.add("vex")
-    stdout.print(names.values(), names.len(), names[fourth])
+    stdout.print(names.values(), len(names), names[fourth])
     names.remove_where(name => False)
-    stdout.print(names.len())
+    stdout.print(len(names))
     names.remove_where(name => True)
-    stdout.print(names.values(), names.len(), names.get(first))
+    stdout.print(names.values(), len(names), names.get(first))
     mut units = Table[Unit]()
     weak = units.add(Unit(name="weak", hp=1))
     strong = units.add(Unit(name="strong", hp=9))
@@ -17173,17 +17353,17 @@ def main(stdout: Stdout):
     _ = numbers.add(1)
     _ = numbers.add(2)
     numbers.remove_where(n => n % 2 == 0)
-    stdout.print(numbers.values(), numbers.len())
+    stdout.print(numbers.values(), len(numbers))
     numbers.clear()
-    stdout.print(numbers.values(), numbers.len())
+    stdout.print(numbers.values(), len(numbers))
     gone = numbers.add(5)
-    stdout.print(numbers.values(), numbers.len(), numbers[gone])
+    stdout.print(numbers.values(), len(numbers), numbers[gone])
     mut cleared = names
     _ = cleared.add("again")
     cleared.clear()
-    stdout.print(cleared.len(), names.len(), cleared.values())
+    stdout.print(len(cleared), len(names), cleared.values())
     _ = numbers.remove(gone)
-    stdout.print(numbers.len())
+    stdout.print(len(numbers))
 "#,
     )
 }
@@ -17207,7 +17387,7 @@ struct Enemy:
     def take_damage(ref self, amount: int) -> int:
         self.health = self.health - amount
         self.tags.append("hit")
-        self.health
+        return self.health
 
 struct Node:
     value: int
@@ -17224,7 +17404,7 @@ def main(stdout: Stdout):
     stdout.print(world.enemies.modify(far, foe => foe.take_damage(25)))
     stdout.print(world.enemies[far], kept.enemies[far])
     _ = world.enemies.remove(near)
-    stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), world.enemies.len())
+    stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), len(world.enemies))
     mut numbers = Table[int]()
     one = numbers.add(1)
     _ = numbers.modify(one, n => n * 5)
@@ -17236,7 +17416,7 @@ def main(stdout: Stdout):
     nodes[root].value = 9
     copied = nodes
     nodes[root].children.append(root)
-    stdout.print(nodes[root].value, nodes[root].children.len(), copied[root].children.len())
+    stdout.print(nodes[root].value, len(nodes[root].children), len(copied[root].children))
 "#,
     )
 }
@@ -17259,15 +17439,15 @@ def total(numbers: Table[int]) -> int:
         sum_of += number + numbers[id]
     for number in numbers.values():
         sum_of += number
-    sum_of
+    return sum_of
 
 def named(units: Table[Unit]) -> str:
     mut parts = []
     for id, unit in units.items():
-        parts.append(f"{unit.name}:{unit.tags.len()}:{units[id].name}")
+        parts.append(f"{unit.name}:{len(unit.tags)}:{units[id].name}")
     for unit in units.values():
         parts.append(unit.name)
-    ",".join(parts)
+    return ",".join(parts)
 
 def main(stdout: Stdout):
     mut numbers = Table[int]()
@@ -17277,9 +17457,9 @@ def main(stdout: Stdout):
     _ = numbers.remove(ids[3])
     _ = numbers.remove(ids[4])
     _ = numbers.remove(ids[7])
-    stdout.print(total(numbers), numbers.len())
+    stdout.print(total(numbers), len(numbers))
     _ = numbers.add(100)
-    stdout.print(total(numbers), numbers.len())
+    stdout.print(total(numbers), len(numbers))
 
     mut units = Table[Unit]()
     first = units.add(Unit("first", [1]))
@@ -17325,7 +17505,7 @@ def main(stdout: Stdout):
     for again in range(2):
         for id, number in pairs:
             stdout.print(again, number, numbers[id])
-    stdout.print(pairs.len())
+    stdout.print(len(pairs))
 
     # Changed after it's asked for and before it's gone through, which sees it as it was.
     mut changing = Table[int]()
@@ -17387,7 +17567,7 @@ def first_low(ref world: World) -> str:
             enemy.name = enemy.name + "!"
             found = enemy.name
             break
-    found
+    return found
 
 def main(stdout: Stdout):
     mut world = World()
@@ -17404,7 +17584,7 @@ def main(stdout: Stdout):
     mut total = 0
     for enemy in world.enemies:
         total += enemy.hp
-    stdout.print(total, world.enemies.len())
+    stdout.print(total, len(world.enemies))
 "#;
 
 #[test]
@@ -18788,16 +18968,16 @@ def main(stdout: Stdout):
     a = units.add(Unit(name="fox", health=10))
     b = units.add(Unit(name="kit", health=5))
     units[a].health -= 3
-    stdout.print(units[a].health, units.len(), units.get(b) is None)
+    stdout.print(units[a].health, len(units), units.get(b) is None)
     gone = units.remove(b)
-    stdout.print(units.get(b) is None, units.len(), a == a, a == b)
+    stdout.print(units.get(b) is None, len(units), a == a, a == b)
     stdout.print(a in units, b in units, a not in units, b not in units)
     c = units.add(Unit(name="den", health=7))
     stdout.print(b in units, c in units)
     ids: list[Id[Unit]] = units.ids()
     for id, unit in units.items():
         stdout.print(unit.name, unit.health)
-    stdout.print(ids.len(), units.values().len(), c == b)
+    stdout.print(len(ids), len(units.values()), c == b)
     if gone is not None:
         stdout.print(gone.name)
 "#,
@@ -18825,7 +19005,7 @@ def main(stdout: Stdout):
     fox = ours.add("fox")
     kit = theirs.add("kit")
     stdout.print(fox == kit, ours.get(kit) is None, kit in ours, fox in theirs)
-    stdout.print(theirs.remove(fox) is None, theirs.len(), ours[fox])
+    stdout.print(theirs.remove(fox) is None, len(theirs), ours[fox])
     mut copied = ours
     copied[fox] = "den"
     stdout.print(copied[fox], ours[fox], fox in copied)
@@ -18840,7 +19020,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_pinned(
         "other_table_store",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(len(ours))\n",
     )?;
     // Saved, an `Id` has to be from the `Table` saved with it.
     same_message_as_pinned(
@@ -18893,11 +19073,11 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
         r#"def main(stdout: Stdout):
     text = "abcabcabd"
     mut counts: dict[str, int] = {}
-    for at in range(text.len() - 1):
+    for at in range(len(text) - 1):
         piece = text[at:at + 2]
         counts[piece] = (counts.get(piece) else 0) + 1
     for size in [1, 3]:
-        for at in range(text.len()):
+        for at in range(len(text)):
             part = text[at:at + size]
             counts[part] = (counts.get(part) else 0) + 1
     tail = text[-3:]
@@ -19180,16 +19360,16 @@ error Inner:
 
 def inner(n: int) -> int fails Inner:
     if n > 1: fail Inner(what="too many")
-    n
+    return n
 
 def outer(n: int) -> int fails Wrapped:
-    inner(n)? from Wrapped(why="inner failed")
+    return inner(n)? from Wrapped(why="inner failed")
 
 ## What `run` read, or what its failure says.
 def shown(run: () -> Tool fails ParseError) -> str:
-    read = run() else as error:
+    read = run() except error:
         return error.message
-    f"{read}"
+    return f"{read}"
 
 def main(stdout: Stdout):
     stdout.print(crypto.sha256("abc"), crypto.blake3("abc"))
@@ -19200,7 +19380,9 @@ def main(stdout: Stdout):
     stdout.print(toml.dumps(tool) else "no")
     stdout.print(shown(() => toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n")?))
     stdout.print(shown(() => toml.loads[Tool]("not toml")?))
-    stdout.print(outer(1) else -1, outer(2) else -1)
+    outer_value = outer(1) except Wrapped(): -1
+    outer_value2 = outer(2) except Wrapped(): -1
+    stdout.print(outer_value, outer_value2)
 "#,
     )
 }
@@ -19224,10 +19406,10 @@ fn std_pieces_the_proof_program_uses_match_what_was_pinned() -> std::io::Result<
     for row in grid:
         for n in row:
             sum_of += n
-    stdout.print(grid, copy_of, sum_of, grid[2].len())
+    stdout.print(grid, copy_of, sum_of, len(grid[2]))
     mut counts: dict[str, int] = {"a": 1, "b": 2}
     gone = counts.pop("a")
-    stdout.print(gone, counts.len(), "a" in counts)
+    stdout.print(gone, len(counts), "a" in counts)
 "#,
     )?;
     // std's `PriorityQueue`, which compares tuples and pops from a dict.
@@ -19239,8 +19421,8 @@ def main(stdout: Stdout):
     mut queue: PriorityQueue[str, int] = PriorityQueue()
     for n in [5, 1, 4, 2, 3]:
         queue.push(f"job{n}", n)
-    stdout.print(queue.peek() else "none", queue.len())
-    while queue.len() > 0:
+    stdout.print(queue.peek() else "none", len(queue))
+    while len(queue) > 0:
         stdout.print(queue.pop() else "none")
 "#,
     )?;
@@ -19268,7 +19450,7 @@ def main(stdout: Stdout):
     stdout.print(gone, last, items)
     mut spots = [Spot(x=9, y=0.5, on=False, team=.Red), one]
     first = spots.pop(0)
-    stdout.print(f"{first}", spots.len())
+    stdout.print(f"{first}", len(spots))
 "#,
     )?;
     // std's `Random`, drawn as pinned, ending in its failure.
@@ -19355,7 +19537,7 @@ struct Box:
         self.packets[at].link = 6
 
 def handed_back(b: Box) -> list[int]:
-    b.items
+    return b.items
 
 def main(stdout: Stdout):
     mut b = Box(items=[0, 0], saved=[], packets=[Packet(a2=[0], link=0), Packet(a2=[0], link=0)])
@@ -19417,10 +19599,10 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
         return Ok(());
     }
     let raised = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
-                  if name == \"\": fail Missing(name=\"nobody\")\n    name.len()\n\n\
-                  def look(name: str) -> int fails Missing:\n    find(name)? + 1\n\n\
+                  if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
+                  def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
                   def main(stdout: Stdout) fails Missing:\n    stdout.print(look(\"\")?)\n";
-    let bouncing = "def ping(n: int) -> int:\n    pong(n + 1)\n\ndef pong(n: int) -> int:\n    ping(n + 1)\n\n\
+    let bouncing = "def ping(n: int) -> int:\n    return pong(n + 1)\n\ndef pong(n: int) -> int:\n    return ping(n + 1)\n\n\
                     def main(stdout: Stdout):\n    stdout.print(ping(0))\n";
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let (_, said, code) = both_built_unpinned("raised_chain", raised, how)?;
@@ -19430,7 +19612,7 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
         assert!(said.contains(&format!(" --> {at}raised_chain.fen:5:20\n")), "{how:?}: {said}");
         assert!(
             said.ends_with(&format!(
-                "  = in `find`\n  = called from `look` at {at}raised_chain.fen:9:5\n  \
+                "  = in `find`\n  = called from `look` at {at}raised_chain.fen:9:12\n  \
                  = called from `main` at {at}raised_chain.fen:12:18\n"
             )),
             "{how:?}: {said}"
@@ -19472,20 +19654,22 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     let print_after = "\n\ndef main(stdout: Stdout):\n    stdout.print(\"before\")\n";
     same_as_pinned(
         "overflow",
-        &format!("def f(n: int) -> int:\n    n * 9223372036854775807{print_after}    stdout.print(f(3))\n"),
+        &format!(
+            "def f(n: int) -> int:\n    return n * 9223372036854775807{print_after}    stdout.print(f(3))\n"
+        ),
     )?;
     same_as_pinned(
         "zero",
-        &format!("def f(n: int) -> int:\n    10 // n{print_after}    stdout.print(f(0))\n"),
+        &format!("def f(n: int) -> int:\n    return 10 // n{print_after}    stdout.print(f(0))\n"),
     )?;
     same_as_pinned(
         "outside",
-        &format!("def f(n: int) -> int:\n    [1, 2][n]{print_after}    stdout.print(f(2))\n"),
+        &format!("def f(n: int) -> int:\n    return [1, 2][n]{print_after}    stdout.print(f(2))\n"),
     )?;
     same_message_as_pinned(
         "before",
         &format!(
-            "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    a[0]{print_after}    stdout.print(f(-3))\n"
+            "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    return a[0]{print_after}    stdout.print(f(-3))\n"
         ),
     )?;
     // A format Fennec doesn't have is caught when the program's checked, before anything runs.
@@ -19493,7 +19677,7 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     let program = dir.join("spec.fen");
     std::fs::write(
         &program,
-        format!("def f(n: int) -> int:\n    n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
+        format!("def f(n: int) -> int:\n    return n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
     )?;
     let output = dir.join("spec").to_string_lossy().into_owned();
     let built = fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &output], &dir)?;
@@ -19502,7 +19686,7 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     same_as_pinned(
         "deep",
-        &format!("def f(n: int) -> int:\n    f(n + 1) + 1{print_after}    stdout.print(f(0))\n"),
+        &format!("def f(n: int) -> int:\n    return f(n + 1) + 1{print_after}    stdout.print(f(0))\n"),
     )
 }
 
@@ -19515,7 +19699,7 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
     let program = dir.join("edit.fen");
     let source = |line: &str| {
         format!(
-            "{line}def big(n: int) -> int:\n    mut total = n\n    for i in range(n):\n        total = total + i * 2 + 1\n        total = total + big_two(i)\n    total\n\ndef big_two(n: int) -> int:\n    if n > 1: return big_two(n - 1) + 3\n    n * 3 + 5 + n * 7 + n * 9 + n * 11 + n * 13 + n * 15 + n * 17 + n * 19 + n * 21 + n * 23 + n * 25 + n * 27 + n * 29 + n * 31 + n * 33\n\ndef main(stdout: Stdout):\n    stdout.print(big(3))\n"
+            "{line}def big(n: int) -> int:\n    mut total = n\n    for i in range(n):\n        total = total + i * 2 + 1\n        total = total + big_two(i)\n    return total\n\ndef big_two(n: int) -> int:\n    if n > 1: return big_two(n - 1) + 3\n    return n * 3 + 5 + n * 7 + n * 9 + n * 11 + n * 13 + n * 15 + n * 17 + n * 19 + n * 21 + n * 23 + n * 25 + n * 27 + n * 29 + n * 31 + n * 33\n\ndef main(stdout: Stdout):\n    stdout.print(big(3))\n"
         )
     };
     let (path, out) =
@@ -19543,11 +19727,11 @@ fn strips_match_what_was_pinned() -> std::io::Result<()> {
         "strips",
         r#"def main(stdout: Stdout):
     for s in ["", "   ", "x", " x", "x ", "\t a b \n", "\x0b\x0cq\r", "héllo  ", "  ünï  ", "abc", "  long text with spaces inside   "]:
-        stdout.print(f"[{s.strip()}] [{s.lstrip()}] [{s.rstrip()}] {s.strip().len()}")
+        stdout.print(f"[{s.strip()}] [{s.lstrip()}] [{s.rstrip()}] {len(s.strip())}")
     mut total = 0
     for i in range(1000):
         line = f"  {i} " if i % 2 == 0 else f"{i}"
-        total += line.strip().len()
+        total += len(line.strip())
     stdout.print(total)
 "#,
     )
@@ -19582,7 +19766,7 @@ fn strings_let_go_of_match_what_was_pinned() -> std::io::Result<()> {
     mut parts = ["a", "a much longer string than a header holds", "b", "c"]
     _ = parts.pop()
     _ = parts.pop(0)
-    parts.remove_where((s) => s.len() > 10)
+    parts.remove_where((s) => len(s) > 10)
     stdout.print(parts)
     names: dict[str, str] = {"one": "uno", "long": "a value longer than twenty-three bytes"}
     for key in ["one", "long", "none"]:
@@ -19613,20 +19797,20 @@ fn string_keys_in_place_match_what_was_pinned() -> std::io::Result<()> {
         counts[made] = (counts.get(made) else 0) + 100
     for word in "the quick brown fox jumps over the lazy dog and a much longer word than a header holds".split():
         counts[word] = (counts.get(word) else 0) + 1
-    stdout.print(counts.len(), counts[""], counts["abc"], counts[held], counts[letters[:23]], counts[letters[:24]])
-    stdout.print(counts.pop("the"), counts.pop(letters[:24]), counts.len())
+    stdout.print(len(counts), counts[""], counts["abc"], counts[held], counts[letters[:23]], counts[letters[:24]])
+    stdout.print(counts.pop("the"), counts.pop(letters[:24]), len(counts))
     counts["the"] = 7
     counts[letters[:24]] = 8
-    stdout.print(counts["the"], counts[letters[:24]], counts.len(), list(counts.keys())[-2:])
+    stdout.print(counts["the"], counts[letters[:24]], len(counts), list(counts.keys())[-2:])
     mut order: list[str] = []
     for key in counts.keys():
-        if key.len() < 3:
+        if len(key) < 3:
             order.append(key)
     stdout.print(order, counts.get("missing") else -1)
     mut seen: set[str] = {"dog"}
     for word in ["fox", "fox", "a much longer word than a header holds", "dog"]:
         seen.add(word)
-    stdout.print(seen.len(), "fox" in seen, "cat" in seen)
+    stdout.print(len(seen), "fox" in seen, "cat" in seen)
 "#,
     )
 }
@@ -19645,36 +19829,36 @@ fn new_string_keys_go_in_as_pinned() -> std::io::Result<()> {
     dna = "acgtacgtttgacca" * 300
     for size in [1, 3, 12, 23, 24, 30]:
         mut counts: dict[str, int] = {}
-        for at in range(dna.len() - size + 1):
+        for at in range(len(dna) - size + 1):
             piece = dna[at:at + size]
             counts[piece] = (counts.get(piece) else 0) + 1
         mut best = 0
         for key, value in counts.items():
             best = max(best, value)
-        stdout.print(size, counts.len(), best, counts.get(dna[:size]) else -1)
+        stdout.print(size, len(counts), best, counts.get(dna[:size]) else -1)
     mut words: dict[str, float] = {}
     for at in range(200):
         words[f"w{at % 37}"] = float(at) * 0.5
         words[f"a much longer key than a header holds {at % 5}"] = 1.0
-    stdout.print(words.len(), words["w3"], sorted(words.keys())[:4])
+    stdout.print(len(words), words["w3"], sorted(words.keys())[:4])
     mut seen: set[str] = set()
     for at in range(100):
         seen.add(dna[at:at + 4])
-    stdout.print(seen.len(), "acgt" in seen)
+    stdout.print(len(seen), "acgt" in seen)
     mut shared: dict[str, int] = {"x": 1}
     copy = shared
     for at in range(50):
         shared[dna[at:at + 2]] = at
-    stdout.print(shared.len(), copy.len(), copy)
+    stdout.print(len(shared), len(copy), copy)
     mut flags: dict[str, bool] = {}
     for at in range(40):
         flags[f"{at % 9}"] = at % 2 == 0
     stdout.print(flags)
     uni = "éacgtü" * 20
     mut by: dict[str, int] = {}
-    for at in range(uni.len() - 3):
+    for at in range(len(uni) - 3):
         by[uni[at:at + 3]] = at
-    stdout.print(by.len(), by["acg"])
+    stdout.print(len(by), by["acg"])
 "#,
     )
 }
@@ -19694,7 +19878,7 @@ fn string_keys_of_every_length_match_what_was_pinned() -> std::io::Result<()> {
     mut by_slice: dict[str, int] = {}
     mut by_word: dict[str, int] = {}
     for size in range(31):
-        for at in range(text.len() - size + 1):
+        for at in range(len(text) - size + 1):
             piece = text[at:at + size]
             by_slice[piece] = (by_slice.get(piece) else 0) + 1
             word = "".join([text[i] for i in range(at, at + size)])
@@ -19703,7 +19887,7 @@ fn string_keys_of_every_length_match_what_was_pinned() -> std::io::Result<()> {
     for key, count in by_slice.items():
         if (by_word.get(key) else -1) == count:
             agree += 1
-    stdout.print(by_slice.len(), by_word.len(), agree, by_slice.get("") else -1, by_slice.get(text[3:20]) else -1)
+    stdout.print(len(by_slice), len(by_word), agree, by_slice.get("") else -1, by_slice.get(text[3:20]) else -1)
     mut again = 0
     for size in [0, 1, 7, 8, 9, 15, 16, 17, 22, 23, 24, 29]:
         again += by_slice.get(text[5:5 + size]) else 0
@@ -19759,7 +19943,7 @@ fn a_list_taken_eight_items_a_turn_matches_what_was_pinned() -> std::io::Result<
     same_as_expected_in_both_builds(
         "eight_a_turn",
         r"def eights(items: list[float]) -> float:
-    n = items.len()
+    n = len(items)
     mut a0 = 0.0
     mut a1 = 0.0
     mut a2 = 0.0
@@ -19782,15 +19966,15 @@ fn a_list_taken_eight_items_a_turn_matches_what_was_pinned() -> std::io::Result<
     while at < n:
         a0 += items[at]
         at += 1
-    ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))
+    return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))
 
 def past(items: list[float]) -> float:
     mut at = 0
     mut total = 0.0
-    while at + 2 <= items.len():
+    while at + 2 <= len(items):
         total += items[at] + items[at + 2]
         at += 2
-    total
+    return total
 
 def main(stdout: Stdout):
     for length in [0, 1, 7, 8, 9, 15, 16, 17, 1000]:
@@ -19821,7 +20005,7 @@ fn short_copies_match_what_was_pinned() -> std::io::Result<()> {
     mut grown = "a block long enough that it isn't a header at all: "
     for size in range(27):
         grown += "x" * size
-    stdout.print(grown, grown.len())
+    stdout.print(grown, len(grown))
 "#,
     )
 }
@@ -19853,18 +20037,18 @@ enum Wrap:
     Inner(token: Token)
 
 def word(text: str) -> Token:
-    .Word(text)
+    return .Word(text)
 
 def describe(token: Token) -> str:
     match token:
         case .Blank:
-            "blank"
+            return "blank"
         case .Word(text):
-            f"word {text}"
+            return f"word {text}"
         case .Num(value):
-            f"num {value}"
+            return f"num {value}"
         case .Many(items, label):
-            f"{label}: {items.len()} items, first {items[0]}"
+            return f"{label}: {len(items)} items, first {items[0]}"
 
 def replace(ref token: Token, text: str):
     token = .Word(text)
@@ -19876,12 +20060,12 @@ def pick(at: int) -> Token?:
         return .Word("a string long enough that it can't be held inline")
     if at == 2:
         return .Word("short")
-    .Many([at], "label")
+    return .Many([at], "label")
 
 def someone(at: int) -> Person?:
     if at == 0:
         return None
-    Person("somebody with a name long enough to be a block of its own", at)
+    return Person("somebody with a name long enough to be a block of its own", at)
 
 def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
@@ -19918,7 +20102,7 @@ def main(stdout: Stdout):
         list_of.append(word(f"item number {at} long enough not to be held inline"))
     list_of[0] = .Num(9)
     popped = list_of.pop() else return
-    stdout.print(list_of.len(), describe(list_of[0]), describe(list_of[50]), describe(popped))
+    stdout.print(len(list_of), describe(list_of[0]), describe(list_of[50]), describe(popped))
     # First case holding a string, moved out and let go of at the end.
     mut first = First.Named(long)
     moved = first
@@ -19976,13 +20160,13 @@ def get(at: int) -> int fails Failure:
         fail .Why("a reason long enough to be held as a block of its own")
     if at == 1:
         fail .Plain
-    at
+    return at
 
 def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
     # Failures holding them.
     for at in range(3):
-        value = get(at) else as failure:
+        value = get(at) except failure:
             stdout.print("err", failure)
             continue
         stdout.print("ok", value)
@@ -19990,11 +20174,11 @@ def main(stdout: Stdout):
     d = Doc(.Word(long), [Token.Blank, Token.Num(2), Token.Word("x")], long)
     text = json.dumps(d)
     stdout.print(text)
-    back = json.loads[Doc](text) else Doc(.Blank, [], "")
+    back = json.loads[Doc](text) except ParseError(): Doc(.Blank, [], "")
     stdout.print(back == d, back)
-    token = json.loads[Token](json.dumps(Token.Word(long))) else Token.Blank
+    token = json.loads[Token](json.dumps(Token.Word(long))) except ParseError(): .Blank
     stdout.print(token)
-    tokens = json.loads[list[Token]](json.dumps(d.tokens)) else []
+    tokens = json.loads[list[Token]](json.dumps(d.tokens)) except ParseError(): []
     stdout.print(tokens)
     # An expected value whose error is one.
     stdout.print(get(5).expect("five is fine"))
@@ -20044,25 +20228,25 @@ struct Wrapped:
 def printed(value: Json) -> str:
     match value:
         case .Null:
-            "null"
+            return "null"
         case .Flag(flag):
-            "true" if flag else "false"
+            return "true" if flag else "false"
         case .Number(number):
-            str(number)
+            return str(number)
         case .Text(text):
-            f"'{text}'"
+            return f"'{text}'"
         case .Items(values):
-            ",".join([printed(item) for item in values])
+            return ",".join([printed(item) for item in values])
         case .Fields(names, values):
             mut parts = []
             for at, name in enumerate(names):
                 parts.append(f"{name}={printed(values[at])}")
-            ";".join(parts)
+            return ";".join(parts)
 
 def document(depth: int) -> Json:
     if depth == 0:
         return .Number(7)
-    .Fields(
+    return .Fields(
         ["a much longer name than fits in a header", "b"],
         [Json.Items([document(depth - 1), Json.Null, Json.Flag(True)]), Json.Text("é")],
     )
@@ -20071,47 +20255,47 @@ def count(tree: Tree) -> int:
     mut total = 1
     for child in tree.children:
         total += count(child)
-    total
+    return total
 
 def deep(depth: int) -> Tree:
     mut tree = Tree("leaf", [])
     for at in range(depth):
         tree = Tree("node", [tree])
-    tree
+    return tree
 
 def depth_of(tree: Tree) -> int:
     mut held = tree
     mut seen = 0
-    while held.children.len() > 0:
+    while len(held.children) > 0:
         held = held.children[0]
         seen += 1
-    seen
+    return seen
 
 def total(expr: Expr) -> int:
     match expr:
         case .Number(value):
-            value
+            return value
         case .Add(parts):
-            sum(total(part) for part in parts)
+            return sum(total(part) for part in parts)
         case .Named(name, value):
-            name.len() + sum(total(part) for part in value.parts)
+            return len(name) + sum(total(part) for part in value.parts)
 
 def changed(value: Json) -> Json:
     match value:
         case .Items(values):
             mut more = values
             more.append(Json.Null)
-            .Items(more)
+            return .Items(more)
         case _:
-            value
+            return value
 
 def main(stdout: Stdout):
     made = document(3)
     stdout.print(printed(made))
     held = made
     other = changed(made)
-    stdout.print(printed(held) == printed(made), printed(other).len())
-    stdout.print(printed(changed(.Items([made, made]))).len())
+    stdout.print(printed(held) == printed(made), len(printed(other)))
+    stdout.print(len(printed(changed(.Items([made, made])))))
     stdout.print(made == held, made == .Null, Json.Number(1) == .Number(1))
     stdout.print(Json.Text("a") == .Text("a"), Json.Items([Json.Null]) == .Items([Json.Null]))
 
@@ -20120,7 +20304,7 @@ def main(stdout: Stdout):
     items.append(document(1))
     items[0] = .Text("replaced")
     last = items.pop() else return
-    stdout.print(items.len(), copied.len(), printed(items[0]), printed(copied[0]), printed(last))
+    stdout.print(len(items), len(copied), printed(items[0]), printed(copied[0]), printed(last))
     stdout.print(items)
 
     mut tree = Tree("root", [])
@@ -20131,7 +20315,7 @@ def main(stdout: Stdout):
     tree.children[1].add("more")
     tree.children[1].children[0].add("deeper")
     stdout.print(count(tree), count(kept), tree.children[1].children[0].children[0].label)
-    stdout.print(tree == kept, kept.children[1].children.len())
+    stdout.print(tree == kept, len(kept.children[1].children))
     stdout.print(depth_of(deep(20000)))
 
     root = Folder("root", [File("f", Holder(1, [Folder("sub", [File("g", Holder(2, []))])]))])
@@ -20170,7 +20354,7 @@ fn a_case_with_no_fields_allocates_nothing() -> std::io::Result<()> {
         return Ok(());
     }
     let source = format!(
-        "{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    mut leaves = []\n    for _ in range(1000):\n        leaves.append(Tree.Leaf)\n    stdout.print(leaves.len(), count(build(0)))\n"
+        "{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    mut leaves = []\n    for _ in range(1000):\n        leaves.append(Tree.Leaf)\n    stdout.print(len(leaves), count(build(0)))\n"
     );
     let counts = counts_of("shared_leaves_counted", &source)?;
     assert!(count(&counts, "allocations") < Some(30), "{counts}");
@@ -20216,16 +20400,16 @@ def build(depth: int, tag: int) -> Named:
     if depth == 0:
         if tag % 3 == 0: return .Empty
         return .Leaf(name=f"leaf number {tag} with a name long enough for a block")
-    .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), label=f"p{tag}")
+    return .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), label=f"p{tag}")
 
 def size(tree: Named) -> int:
     match tree:
         case .Leaf(name):
-            name.len()
+            return len(name)
         case .Pair(left, right, label):
-            size(left) + size(right) + label.len()
+            return size(left) + size(right) + len(label)
         case .Empty:
-            1
+            return 1
 
 def main(stdout: Stdout):
     total = sum(size(build(10, tag=n)) for n in range(3))
@@ -20262,18 +20446,18 @@ def build(depth: int, tag: int) -> Doc:
             names.append(f"word {tag} {n} long enough to sit in a block of its own")
             counts.append(n * tag)
         return .Words(names=names, counts=counts)
-    .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), title=f"t{tag}")
+    return .Pair(left=build(depth - 1, tag=tag * 2), right=build(depth - 1, tag=tag * 2 + 1), title=f"t{tag}")
 
 def size(doc: Doc) -> int:
     match doc:
         case .Words(names, counts):
             mut more = names
             more.append("x")
-            sum(name.len() for name in more) + sum(counts) + names.len()
+            return sum(len(name) for name in more) + sum(counts) + len(names)
         case .Pair(left, right, title):
-            size(left) + size(right) + title.len()
+            return size(left) + size(right) + len(title)
         case .Empty:
-            1
+            return 1
 
 def main(stdout: Stdout):
     rounds = 3
@@ -20298,14 +20482,14 @@ const SHARED_LEAVES_TREE: &str = "enum Tree:
 
 def build(depth: int) -> Tree:
     if depth == 0: return .Leaf
-    .Node(left=build(depth - 1), right=build(depth - 1))
+    return .Node(left=build(depth - 1), right=build(depth - 1))
 
 def count(tree: Tree) -> int:
     match tree:
         case .Leaf:
-            1
+            return 1
         case .Node(left, right):
-            1 + count(left) + count(right)
+            return 1 + count(left) + count(right)
 
 ";
 
@@ -20323,7 +20507,7 @@ const SHARED_LEAVES_MAIN: &str = r#"def main(stdout: Stdout):
     total = sum(count(tree) for tree in trees)
     stdout.print(total)
     leaves = []
-    stdout.print(leaves.len(), Tree.Leaf == build(0))
+    stdout.print(len(leaves), Tree.Leaf == build(0))
 "#;
 
 #[test]
@@ -20373,16 +20557,16 @@ def placeholders(query: Template[SqlValue]) -> str:
     mut sent = ""
     for at, text in enumerate(query.strings):
         sent += text
-        if at < query.values.len():
+        if at < len(query.values):
             value = query.values[at]
             if value is int:
                 sent += f"<int {value}>"
             else:
                 sent += f"<str {value}>"
-    sent
+    return sent
 
 def order(up: bool) -> LiteralStr:
-    "asc" if up else "desc"
+    return "asc" if up else "desc"
 
 def main(stdout: Stdout):
     name = "ash"
@@ -20419,13 +20603,13 @@ fn a_generic_over_an_iterator_takes_its_type_from_it() -> std::io::Result<()> {
     mut n = 0
     for _ in items:
         n += 1
-    n
+    return n
 
 def last_of[T](items: Iterator[T], otherwise: T) -> T:
     mut last = otherwise
     for item in items:
         last = item
-    last
+    return last
 
 def main(stdout: Stdout):
     stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
@@ -20444,10 +20628,10 @@ struct Held[T]:
 def show(box: Box[int | str]) -> str:
     value = box.value
     if value is int: return f"int {value + 1}"
-    f"str {value}"
+    return f"str {value}"
 
 def count(held: Held[int | str]) -> str:
-    f"{held.items.len()} {show(held.items[1])} {held.plain.len()}"
+    return f"{len(held.items)} {show(held.items[1])} {len(held.plain)}"
 
 def main(stdout: Stdout):
     name = "x"
@@ -20472,45 +20656,45 @@ def main(stdout: Stdout):
     stdout.print(counts.get(key) else 7)
     stdout.print("fox" in counts, 5 in counts, "owl" not in counts)
     _ = counts.pop("fox")
-    stdout.print(counts.len(), counts)
+    stdout.print(len(counts), counts)
     mut shapes: list[Shape] = []
     shapes.append(Circle(radius=1.0))
     shapes.append(Square(side=2.0))
-    stdout.print(shapes.len())
+    stdout.print(len(shapes))
     mut seen: set[int | str] = {1}
     seen.add("a")
     seen.add(2)
     seen.add("a")
-    stdout.print(seen.len(), "a" in seen, 3 in seen)
+    stdout.print(len(seen), "a" in seen, 3 in seen)
 "#;
 
 const UNIONS_HOLDING_BLOCKS: &str = r#"struct Circle:
     radius: float
 
     def area(self) -> float:
-        3.0 * self.radius * self.radius
+        return 3.0 * self.radius * self.radius
 
     def name(self) -> str:
-        "circle"
+        return "circle"
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
     def name(self) -> str:
-        "square"
+        return "square"
 
 struct Label:
     text: str
     tags: list[str]
 
     def area(self) -> float:
-        float(self.text.len())
+        return float(len(self.text))
 
     def name(self) -> str:
-        f"label {self.text}"
+        return f"label {self.text}"
 
 type Shape = Circle | Square | Label
 
@@ -20520,23 +20704,23 @@ struct Holder:
 
 def describe(value: int | str) -> str:
     if value is int: return f"int {value}"
-    f"str {value.upper()}"
+    return f"str {value.upper()}"
 
 def measure(value: float | int) -> str:
     if value is float: return f"float {value}"
-    f"int {value}"
+    return f"int {value}"
 
 def biggest(shapes: list[Shape]) -> Shape:
     mut best = shapes[0]
     for shape in shapes:
         if shape.area() > best.area():
             best = shape
-    best
+    return best
 
 def maybe(at: int, shapes: list[Shape]) -> Shape?:
-    if at < shapes.len():
+    if at < len(shapes):
         return shapes[at]
-    None
+    return None
 
 def main(stdout: Stdout):
     mut shapes: list[Shape] = []
@@ -20555,7 +20739,7 @@ def main(stdout: Stdout):
         if shape is Circle:
             circles += 1
         if shape is Label:
-            letters += shape.tags.len() + shape.text.len()
+            letters += len(shape.tags) + len(shape.text)
     stdout.print(total, circles, letters)
     big = biggest(shapes)
     stdout.print(big.name())
@@ -20592,7 +20776,7 @@ fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
     }
     let counts = counts_of(
         "unions_in_place",
-        "struct Circle:\n    radius: float\n\nstruct Square:\n    side: float\n\ndef area(shape: Circle | Square) -> float:\n    if shape is Circle: return 3.0 * shape.radius * shape.radius\n    shape.side * shape.side\n\ndef main(stdout: Stdout):\n    mut shapes: list[Circle | Square] = []\n    for i in range(1000):\n        if i % 2 == 0:\n            shapes.append(Circle(radius=float(i % 7)))\n        else:\n            shapes.append(Square(side=float(i % 5)))\n    mut total = 0.0\n    for shape in shapes:\n        total += area(shape)\n    stdout.print(total)\n",
+        "struct Circle:\n    radius: float\n\nstruct Square:\n    side: float\n\ndef area(shape: Circle | Square) -> float:\n    if shape is Circle: return 3.0 * shape.radius * shape.radius\n    return shape.side * shape.side\n\ndef main(stdout: Stdout):\n    mut shapes: list[Circle | Square] = []\n    for i in range(1000):\n        if i % 2 == 0:\n            shapes.append(Circle(radius=float(i % 7)))\n        else:\n            shapes.append(Square(side=float(i % 5)))\n    mut total = 0.0\n    for shape in shapes:\n        total += area(shape)\n    stdout.print(total)\n",
     )?;
     assert!(count(&counts, "allocations") < Some(30), "{counts}");
     assert_eq!(count(&counts, "copies"), Some(0), "{counts}");
@@ -20613,7 +20797,7 @@ fn a_parallel_comprehension_whose_item_can_fail_matches_what_was_pinned() -> std
     same_as_expected_in_both_builds(
         "parallel_tries",
         r#"def doubled(text: str) -> int fails InvalidValue:
-    int(text)? * 2
+    return int(text)? * 2
 
 def main(stdout: Stdout) fails InvalidValue:
     texts = ["1", "2", "3"]
@@ -20634,7 +20818,7 @@ fn parallel_bodies_that_wait_match_what_was_pinned() -> std::io::Result<()> {
 
 def rest(clock: Clock, x: int) -> int:
     clock.sleep(1ms)
-    x * 10
+    return x * 10
 
 def main(stdout: Stdout, clock: Clock):
     mut xs = [1, 2, 3, 4]
@@ -20664,11 +20848,11 @@ fn parallel_loops_over_enums_holding_blocks_match_what_was_pinned() -> std::io::
 def describe(token: Token) -> str:
     match token:
         case .Blank:
-            "blank"
+            return "blank"
         case .Word(text):
-            text
+            return text
         case .Many(items, label):
-            f"{label} {items.len()}"
+            return f"{label} {len(items)}"
 
 def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
@@ -20679,9 +20863,9 @@ def main(stdout: Stdout):
     stdout.print([describe(item) for item in parallel(tokens)])
     mut more = [Token.Word(long + "!") for at in range(200)]
     for ref item in parallel(more):
-        if describe(item).len() > 10:
+        if len(describe(item)) > 10:
             item = .Blank
-    stdout.print(more[0], more[199], sum(describe(item).len() for item in parallel(more)))
+    stdout.print(more[0], more[199], sum(len(describe(item)) for item in parallel(more)))
 "#,
     )
 }
@@ -20701,12 +20885,12 @@ fn a_value_passed_both_ways_matches_what_was_pinned() -> std::io::Result<()> {
 def both(items: list[int], ref others: list[int]) -> int:
     others.append(9)
     others[0] = 7
-    items.len() * 10 + items[0]
+    return len(items) * 10 + items[0]
 
 def bags(bag: Bag, ref other: Bag) -> str:
     other.count = 5
     other.label = "a label long enough to be held in a block"
-    f"{bag.label} {bag.count}"
+    return f"{bag.label} {bag.count}"
 
 def main(stdout: Stdout):
     mut twice = [1, 2]
@@ -20754,7 +20938,7 @@ fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Resu
     }
     let printed = printed_by(
         "typed_empty_list",
-        "def main(stdout: Stdout):\n    stdout.print(list[int](), list[int]().len())\n",
+        "def main(stdout: Stdout):\n    stdout.print(list[int](), len(list[int]()))\n",
     )?;
     assert_eq!(printed, "[] 0\n");
     let printed = printed_by(
@@ -20764,8 +20948,7 @@ fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Resu
     assert_eq!(printed, "[] 1\n");
     let printed = printed_by(
         "typed_empties",
-        "EMPTY = list[int]()\n\ndef main(stdout: Stdout):\n    mut d = dict[str, int]()\n    d[\"a\"] = 1\n    s = set[str]()\n    \
-         stdout.print(EMPTY, d, s, [1].len() > list[int]().len())\n",
+        "EMPTY = list[int]()\n\ndef main(stdout: Stdout):\n    mut d = dict[str, int]()\n    d[\"a\"] = 1\n    s = set[str]()\n    stdout.print(EMPTY, d, s, len([1]) > len(list[int]()))\n",
     )?;
     assert_eq!(printed, "[] {\"a\": 1} set() True\n");
     Ok(())
@@ -20789,14 +20972,14 @@ struct Squad:
     rows: list[list[int]]
 
 def picked(at: int) -> int:
-    at % 2
+    return at % 2
 
 def drained(ref items: list[str]) -> int:
     mut count = 0
     while True:
         item = items.pop() else break
-        count += item.len()
-    count
+        count += len(item)
+    return count
 
 def main(stdout: Stdout):
     mut numbers = [1, 2]
@@ -20851,9 +21034,9 @@ def main(stdout: Stdout):
         mut person = Person(long, 1)
         rename(ref person, long + "!")
         keep = Person(long + "?", 3)
-        total += person.name.len()
+        total += len(person.name)
         set_person(ref person, keep)
-        total += person.name.len() + keep.name.len()
+        total += len(person.name) + len(keep.name)
         mut token = Token.Word(long)
         retext(ref token, long + "!")
         other = Token.Word(long + "?")
@@ -20868,7 +21051,7 @@ def main(stdout: Stdout):
         early = tokens.pop(0)
         _ = tokens.pop(0)
         tokens.remove_where((item) => item == .Blank)
-        total += gone.name.len() + first.name.len() + people.len() + tokens.len()
+        total += len(gone.name) + len(first.name) + len(people) + len(tokens)
         if same or last == early:
             total += 1
     stdout.print(total)
@@ -20890,7 +21073,7 @@ fn keys_holding_strings_build_natively() -> std::io::Result<()> {
 def main(stdout: Stdout):
     mut by_person: dict[Person, int] = {}
     by_person[Person("a string long enough that it can't be held inline", 1)] = 1
-    stdout.print(by_person.len())
+    stdout.print(len(by_person))
 "#;
     let dir = folder("keys_holding_strings")?;
     let program = dir.join("keys_holding_strings.fen");
@@ -20912,7 +21095,7 @@ fn a_constant_is_worked_out_once() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    total\n\n\
+    let source = "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    return total\n\n\
                   SLOW = slow()\n\ndef main(stdout: Stdout):\n    mut seen = 0\n    for i in range(300000):\n        \
                   seen += SLOW + i\n    stdout.print(seen)\n";
     let dir = folder("constant_once")?;
@@ -20941,9 +21124,9 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>")?;
     let allocations = |calls: u32| -> std::io::Result<(String, u64)> {
         let source = format!(
-            "def site() -> EmbeddedFolder:\n    embed_folder(\"site\")\n\n\
+            "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
              def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += files.len() + (files.get(\"index.html\") else bytes()).len()\n    \
+             files = site()\n        total += len(files) + (files.get(\"index.html\") else bytes()).len()\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
@@ -20984,7 +21167,7 @@ fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    let source = "WAIT = 2s\n\ndef waited(n: int) -> int:\n    int(WAIT.as_millis()) + n\n\n\
+    let source = "WAIT = 2s\n\ndef waited(n: int) -> int:\n    return int(WAIT.as_millis()) + n\n\n\
                   def main(stdout: Stdout):\n    mut totals = [0, 1, 2, 3]\n    for ref t in parallel(totals):\n        \
                   t = waited(t)\n    stdout.print(totals)\n";
     assert_eq!(printed_by("struct_constant_ahead", source)?, "[2000, 2001, 2002, 2003]\n");
@@ -21006,7 +21189,7 @@ enum Shape:
     Named(words: list[str])
 
 WORDS = ["a", "b"]
-LENGTHS = {word: word.len() for word in WORDS}
+LENGTHS = {word: len(word) for word in WORDS}
 ORIGIN = Point(x=0, tags=["start"])
 NAMED = Shape.Named(words=["n"])
 TEXT = f"{WORDS[0]} and a long tail of text"
@@ -21015,7 +21198,7 @@ def changed() -> list[str]:
     mut mine = WORDS
     mine.append("c")
     mine[0] = "z"
-    mine
+    return mine
 
 def main(stdout: Stdout):
     stdout.print(changed(), changed(), WORDS)
@@ -21028,10 +21211,10 @@ def main(stdout: Stdout):
     stdout.print(point, ORIGIN)
     match NAMED:
         case .Named(words):
-            stdout.print(words.len())
+            stdout.print(len(words))
         case .Dot:
             pass
-    stdout.print(NAMED, TEXT, TEXT.len())
+    stdout.print(NAMED, TEXT, len(TEXT))
 "#;
     same_as_pinned("constant_reads", source)
 }
@@ -21049,7 +21232,7 @@ fn conversions_match_what_was_pinned() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     for x in [2.5, -2.5, 3.5, 0.49, -0.51, 7.0]:
-        stdout.print(int(x), round(x), floor(x), ceil(x), x.abs())
+        stdout.print(int(x), round(x), floor(x), ceil(x), abs(x))
     stdout.print(PI > 3.14, PI < 3.15)
     stdout.print(range(5), range(2, 6), range(10, 0, -3), range(0, 10, 4), range(3, 3), range(5, 0))
     stdout.print(sorted(range(4), key=(n) => -n), range(-3, 3, 2))
@@ -21129,15 +21312,15 @@ error Held:
 
 def short(n: int) -> int fails Short:
     if n > 1: fail Short(why="too big")
-    n
+    return n
 
 def coded(n: int) -> int fails Coded:
     if n > 1: fail Coded(code=n)
-    n
+    return n
 
 def held(n: int) -> int fails Held:
     if n > 1: fail Held(items=[n, n], table={"k": n})
-    n
+    return n
 
 def check(n: int) fails Short:
     if n > 3: fail Short(why="the end")
@@ -21255,12 +21438,12 @@ enum Light:
 def seen(present: bool) -> int?:
     if present:
         return 3
-    None
+    return None
 
 def named(present: bool) -> str?:
     if present:
         return \"hi\"
-    None
+    return None
 ";
     let conditions = [
         "1 + 1 == 3",
@@ -21268,7 +21451,7 @@ def named(present: bool) -> str?:
         "2.5 <= 1.5",
         "True != True",
         "\"a\\nb\" == \"c\\\"d\"",
-        "[1].len() >= 2",
+        "len([1]) >= 2",
         "\"q\" in [\"a\"]",
         "Plain(x=1, y=2.0) == Plain(x=2, y=2.0)",
         "Point(x=1, label=\"p\") == Point(x=2, label=\"q\")",
@@ -21327,11 +21510,11 @@ def check(n: int) fails Bad:
 
 def main(stdout: Stdout):
     for n in [1, 2]:
-        _ = check(n) else as why:
+        _ = check(n) except why:
             stdout.print(why.why)
             continue
         stdout.print("fine", n)
-    check(5) else as why:
+    check(5) except why:
         stdout.print("again", why.why)
 "#;
 
@@ -21342,7 +21525,7 @@ fn a_failed_assert_that_something_fails_says_what_happened() -> std::io::Result<
     if !ready() {
         return Ok(());
     }
-    let setup = "error Oops:\n    line: int\n\nstruct Config:\n    size: int\n\ndef load(text: str) -> Config fails Oops:\n    if text == \"bad\":\n        fail Oops(line=4)\n    Config(size=text.len())\n";
+    let setup = "error Oops:\n    line: int\n\nstruct Config:\n    size: int\n\ndef load(text: str) -> Config fails Oops:\n    if text == \"bad\":\n        fail Oops(line=4)\n    return Config(size=len(text))\n";
     for (asserted, said) in [
         ("load(\"bad\") fails Oops(line=3)", "= help: it failed with Oops(line=4)"),
         ("load(\"good\") fails Oops()", "= help: it gave Config(size=4)"),
@@ -21610,10 +21793,10 @@ def counted(values: list[int?]) -> int:
     for value in values:
         if value is not None:
             found += value
-    found
+    return found
 
 def made() -> list[str?]:
-    ["given back", None]
+    return ["given back", None]
 
 def main(stdout: Stdout):
     mut numbers: list[int?] = [1, 2]
@@ -21676,30 +21859,30 @@ struct Lite:
     name: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len()
+        return len(text)
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="lite") else:
+        lend Transaction(log="lite") except:
             pass
 
 struct Postgres:
     host: str
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 2
+        return len(text) * 2
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="pg") else:
+        lend Transaction(log="pg") except:
             pass
 
 struct Mem:
     size: int
 
     def run(self, text: str) -> int fails Nope:
-        text.len() * 3
+        return len(text) * 3
 
     def transaction(self) -> with Transaction fails Nope:
-        lend Transaction(log="mem") else:
+        lend Transaction(log="mem") except:
             pass
 
 type Store = Lite | Postgres | Mem
@@ -21718,7 +21901,7 @@ def saved(store: Store) -> str fails Nope:
             with store.transaction()? as tx:
                 count = store.run("abc")?
                 return f"{tx.log} {count} {store.size}"
-    ""
+    return ""
 
 def main(stdout: Stdout) fails Nope:
     stdout.print(saved(Lite(name="a"))?, saved(Postgres(host="b"))?, saved(Mem(size=4))?)
@@ -21745,7 +21928,7 @@ def main(stdout: Stdout):
     boxed: Box[int | str] = Box(value="ash")
     items: list[int | str] = ["ash", 1]
     stdout.print(held, boxed.value, items[0], items[1], items)
-    stdout.print(f"{boxed.value} {items[0]}", str(items[0]), str(boxed.value).len())
+    stdout.print(f"{boxed.value} {items[0]}", str(items[0]), len(str(boxed.value)))
     numbers: Box[int | str] = Box(value=3)
     floats: Box[float | str] = Box(value=1.5)
     flags: list[bool | str] = [True, "no"]
@@ -21786,16 +21969,16 @@ fn optional_strings_in_lists_match_what_was_pinned() -> std::io::Result<()> {
     same_as_pinned(
         "optional_strings_in_lists",
         r#"def first(words: list[str]) -> str?:
-    if words.len() > 0:
+    if len(words) > 0:
         return words[0]
-    None
+    return None
 
 def main(stdout: Stdout):
     mut found = []
     found.append(first(["short"]))
     found.append(first([]))
     found.append(first(["a string long enough that it has a block of its own"]))
-    stdout.print(found, found.len())
+    stdout.print(found, len(found))
     for item in found:
         stdout.print(item else "missing")
 "#,
@@ -21812,9 +21995,9 @@ fn optional_strings_compare_as_pinned() -> std::io::Result<()> {
     same_as_pinned(
         "optional_strings_compare",
         r#"def first(words: list[str]) -> str?:
-    if words.len() > 0:
+    if len(words) > 0:
         return words[0]
-    None
+    return None
 
 def main(stdout: Stdout):
     long = "a string long enough that it has a block of its own"
@@ -21841,15 +22024,15 @@ fn an_optional_of_an_optional_is_the_optional_as_pinned() -> std::io::Result<()>
         r#"from std.collections import SortedMap
 
 def first[T](items: list[T]) -> T?:
-    if items.len() > 0:
+    if len(items) > 0:
         return items[0]
-    None
+    return None
 
 def words() -> list[str?]:
-    ["kit", None]
+    return ["kit", None]
 
 def numbers() -> list[int?]:
-    [None, 3]
+    return [None, 3]
 
 def main(stdout: Stdout):
     stdout.print(first(words()), first(words()[1:]) is None, first(numbers()) is None)
@@ -21857,7 +22040,7 @@ def main(stdout: Stdout):
     map[1] = None
     map[2] = "kit"
     stdout.print(map.get(1) is None, map.get(2), map.get(3) is None)
-    stdout.print(map.remove(2), map.remove(1) is None, map.len())
+    stdout.print(map.remove(2), map.remove(1) is None, len(map))
 "#,
     )
 }
@@ -21871,7 +22054,7 @@ fn a_main_giving_back_a_result_matches_what_was_pinned() -> std::io::Result<()> 
     same_as_pinned(
         "main_gives_back",
         r#"def number(text: str) -> int fails InvalidValue:
-    int(text)?
+    return int(text)?
 
 def main(stdout: Stdout):
     stdout.print(number("12")?)
@@ -21899,60 +22082,58 @@ error Plain:
 
 def weak(level: int) -> int fails TooWeak:
     if level < 5: fail TooWeak(level)
-    level
+    return level
 
 def named(name: str) -> str fails NotFound:
     if name == "": fail NotFound(name)
-    name
+    return name
 
 def challenge(name: str, level: int) -> str fails NotFound | TooWeak:
     who = named(name)?
     power = weak(level)?
-    f"{who} at {power}"
+    return f"{who} at {power}"
 
 def three(name: str, level: int, code: int) -> str fails NotFound | Plain | TooWeak:
     if code > 0: fail Plain(code)
-    challenge(name, level)?
+    return challenge(name, level)?
 
 ## Whether `challenge` fails with `error`, compared with the failure on the left.
 def fails_with(name: str, level: int, error: NotFound | TooWeak) -> bool:
-    _ = challenge(name, level) else as why:
+    _ = challenge(name, level) except why:
         return why == error
-    False
+    return False
 
 ## The same, compared with the failure on the right.
 def fails_by(name: str, level: int, error: NotFound | TooWeak) -> bool:
-    _ = challenge(name, level) else as why:
+    _ = challenge(name, level) except why:
         return error == why
-    False
+    return False
 
 def main(stdout: Stdout):
     for name, level in [("ash", 7), ("kit", 1), ("", 9)]:
-        text = challenge(name, level) else as why:
-            match why:
-                case TooWeak(level):
-                    stdout.print("weak", level)
-                    continue
-                case _:
-                    error = why
-                    stdout.print("other", error, f"{error}")
-                    continue
+        text = challenge(name, level) except why:
+            case TooWeak(level):
+                stdout.print("weak", level)
+                continue
+            case _:
+                error = why
+                stdout.print("other", error, f"{error}")
+                continue
         stdout.print(text)
     for code in [0, 3]:
-        text = three("", level=1, code=code) else as why:
-            match why:
-                case Plain(code):
-                    stdout.print("plain", code)
-                    continue
-                case NotFound(name):
-                    stdout.print("not found", name.len())
-                    continue
-                case _:
-                    error = why
-                    stdout.print("other", error)
-                    continue
+        text = three("", level=1, code=code) except why:
+            case Plain(code):
+                stdout.print("plain", code)
+                continue
+            case NotFound(name):
+                stdout.print("not found", len(name))
+                continue
+            case _:
+                error = why
+                stdout.print("other", error)
+                continue
         stdout.print(text)
-    kit = three("kit", level=1, code=0) else as error:
+    kit = three("kit", level=1, code=0) except error:
         f"{error}"
     stdout.print(kit)
     stdout.print(fails_with("kit", 1, error=TooWeak(level=1)))
@@ -21961,8 +22142,8 @@ def main(stdout: Stdout):
     stdout.print(not fails_with("kit", 1, error=TooWeak(level=1)))
     stdout.print(fails_with("ash", 7, error=TooWeak(level=1)))
     stdout.print(fails_with("", 1, error=NotFound(name="")))
-    found = challenge("kit", 9) else "failed"
-    missing = challenge("", 9) else "failed"
+    found = challenge("kit", 9) except NotFound() | TooWeak(): "failed"
+    missing = challenge("", 9) except NotFound() | TooWeak(): "failed"
     stdout.print(found, missing)
 "#,
     )
@@ -21985,12 +22166,12 @@ error TooWeak:
 def pick(level: int) -> int fails NotFound | TooWeak:
     if level < 0: fail NotFound(\"x\")
     if level < 5: fail TooWeak(level)
-    level
+    return level
 
 def main(stdout: Stdout) -> int:
     stdout.print(pick(9)?)
     stdout.print(pick(1)?)
-    0
+    return 0
 ",
     )
 }
@@ -22004,7 +22185,7 @@ fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     same_message_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:
-    int(text)?
+    return int(text)?
 
 def main(stdout: Stdout):
     stdout.print("first")
@@ -22037,7 +22218,7 @@ fn failing_calls_alone_in_a_function_fail_as_pinned() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     empty: list[int] = []
-    stdout.print(empty.len())
+    stdout.print(len(empty))
     stdout.print({call})
 "
             ),
@@ -22053,37 +22234,37 @@ struct Words:
     place = 0
 
     def next(ref self) -> str fails ParseError:
-        if self.at >= self.parts.len():
+        if self.at >= len(self.parts):
             fail ParseError(message="out of words", line=0, column=self.at)
         self.at += 1
-        self.parts[self.at - 1]
+        return self.parts[self.at - 1]
 
     def int(ref self) -> int fails ParseError:
         word = self.next()?
-        n = int(word) else:
+        n = int(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
-        n
+        return n
 
     def float(ref self) -> float fails ParseError:
         word = self.next()?
-        x = float(word) else:
+        x = float(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
-        x
+        return x
 
     def bool(ref self) -> bool fails ParseError:
-        self.next()? == "yes"
+        return self.next()? == "yes"
 
     def text(ref self) -> str fails ParseError:
-        self.next()?
+        return self.next()?
 
     def bytes(ref self) -> bytes fails ParseError:
-        self.next()?.encode()
+        return self.next()?.encode()
 
     def at_item(self, at: int, message: str) -> ParseError:
-        ParseError(message=f"item {at} {message}", line=0, column=0)
+        return ParseError(message=f"item {at} {message}", line=0, column=0)
 
     def here(self, message: str) -> ParseError:
-        ParseError(message=message, line=0, column=0)
+        return ParseError(message=message, line=0, column=0)
 
     def saw_id(ref self, kind: str, position: int):
         pass
@@ -22092,22 +22273,22 @@ struct Words:
         pass
 
     def tag(ref self, kind: str) -> int:
-        0
+        return 0
 
     def none_next(ref self) -> bool:
-        self.at < self.parts.len() and self.parts[self.at] == "-"
+        return self.at < len(self.parts) and self.parts[self.at] == "-"
 
     def exact(self) -> bool:
-        False
+        return False
 
     def ordered(ref self, name: str) -> bool fails ParseError:
-        False
+        return False
 
     def end_ordered(ref self):
         pass
 
     def map_count(ref self) -> int fails ParseError:
-        -1
+        return -1
 
     def end_map(ref self):
         pass
@@ -22116,32 +22297,32 @@ struct Words:
         pass
 
     def item[T: Deserializable](ref self) -> T fails ParseError:
-        T.deserialize(ref self)?
+        return T.deserialize(ref self)?
 
     def end_items(ref self) fails ParseError:
         pass
 
     def none(ref self) -> bool fails ParseError:
-        if self.at < self.parts.len() and self.parts[self.at] == "-":
+        if self.at < len(self.parts) and self.parts[self.at] == "-":
             self.at += 1
             return True
-        False
+        return False
 
     def value[T: Deserializable](ref self) -> T fails ParseError:
-        T.deserialize(ref self)?
+        return T.deserialize(ref self)?
 
     def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         mut found = list[T]()
         for _ in range(self.int()?):
             found.append(T.deserialize(ref self)?)
-        found
+        return found
 
     def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         mut found = list[(K, V)]()
         for _ in range(self.int()?):
             key = K.deserialize(ref self)?
             found.append((key, V.deserialize(ref self)?))
-        found
+        return found
 
     def record(ref self, name: str) fails ParseError:
         word = self.next()?
@@ -22161,13 +22342,13 @@ struct Words:
         fail ParseError(message=f"no field `{word}`", line=0, column=self.at)
 
     def field_at(self) -> int:
-        self.place
+        return self.place
 
     def missing(self, name: str) -> ParseError:
-        ParseError(message=f"`{name}` is missing", line=0, column=self.at)
+        return ParseError(message=f"`{name}` is missing", line=0, column=self.at)
 
     def rule(self, message: str) -> ParseError:
-        ParseError(message=f"in the text, {message}", line=0, column=self.at)
+        return ParseError(message=f"in the text, {message}", line=0, column=self.at)
 
     def enum_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         word = self.next()?
@@ -22218,14 +22399,14 @@ struct Unit:
 
 def read(text: str) -> Unit fails ParseError:
     mut src = Words(parts=text.split(" "))
-    src.value[Unit]()?
+    return src.value[Unit]()?
 
 def shown(text: str) -> str:
-    unit = read(text) else as error:
+    unit = read(text) except error:
         return f"failed: {error.message} at {error.column}"
     orders = " ".join([str(order) for order in unit.orders])
     pet = unit.pet else "no pet"
-    f"{unit.name} {unit.health} {pet} {unit.pace} {unit.ready} {unit.tags} {unit.seen.len()} {unit.scores} {orders}"
+    return f"{unit.name} {unit.health} {pet} {unit.pace} {unit.ready} {unit.tags} {len(unit.seen)} {unit.scores} {orders}"
 
 def main(stdout: Stdout):
     stdout.print(shown("Unit name ash hp 3 pet - pace 0.5 ready yes tags 2 a b seen 2 7 7 scores 1 hits 9 orders 2 Hold Move Move x 4 end end end"))
@@ -22238,8 +22419,8 @@ def main(stdout: Stdout):
     stdout.print(shown("Unit tags 2 a"))
     stdout.print(shown("Unit name ash hp -1 end"))
     mut src = Words(parts="Pair left 1 right 2 end".split(" "))
-    pair = src.value[Pair[int]]() else Pair(left=0, right=0)
-    skipped = read("Unit name ash end") else Unit(name="none", pet=None)
+    pair = src.value[Pair[int]]() except ParseError(): Pair(left=0, right=0)
+    skipped = read("Unit name ash end") except ParseError(): Unit(name="none", pet=None)
     stdout.print(pair.left, pair.right, skipped.visits)
 "#;
 
@@ -22283,12 +22464,12 @@ fn a_type_parameter_used_only_in_a_body_is_given_by_the_call() -> std::io::Resul
         return Ok(());
     }
     let source = "interface Made:\n    def make() -> Self\n\n    def measure(self) -> int\n\n\
-                  struct Part:\n    size = 3\n\n    def make() -> Self:\n        Self(size=4)\n\n    \
-                  def measure(self) -> int:\n        self.size\n\n\
-                  struct Other:\n    size = 8\n\n    def make() -> Self:\n        Self(size=9)\n\n    \
-                  def measure(self) -> int:\n        self.size\n\n\
-                  def build[T: Made]() -> T:\n    T.make()\n\n\
-                  def named[T: Made](text: str) -> str:\n    made = build[T]()\n    f\"{text} {made.measure()}\"\n\n\
+                  struct Part:\n    size = 3\n\n    def make() -> Self:\n        return Self(size=4)\n\n    \
+                  def measure(self) -> int:\n        return self.size\n\n\
+                  struct Other:\n    size = 8\n\n    def make() -> Self:\n        return Self(size=9)\n\n    \
+                  def measure(self) -> int:\n        return self.size\n\n\
+                  def build[T: Made]() -> T:\n    return T.make()\n\n\
+                  def named[T: Made](text: str) -> str:\n    made = build[T]()\n    return f\"{text} {made.measure()}\"\n\n\
                   def main(stdout: Stdout):\n    stdout.print(named[Part](\"part\"), named[Other](\"other\"))\n";
     let dir = folder("body_only_type_param")?;
     let program = dir.join("told.fen");
@@ -22309,12 +22490,12 @@ fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
         return Ok(());
     }
     let source = "interface Made:\n    def make() -> Self\n\n\
-                  struct Part:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n\
-                  struct Other:\n    name = \"\"\n\n    def make() -> Self:\n        Self(name=\"other\")\n\n\
-                  def build[T: Made]() -> T:\n    T.make()\n\n\
-                  def twice[T: Made]() -> list[T]:\n    [build[T](), T.make()]\n\n\
+                  struct Part:\n    x = 1\n\n    def make() -> Self:\n        return Self(x=7)\n\n\
+                  struct Other:\n    name = \"\"\n\n    def make() -> Self:\n        return Self(name=\"other\")\n\n\
+                  def build[T: Made]() -> T:\n    return T.make()\n\n\
+                  def twice[T: Made]() -> list[T]:\n    return [build[T](), T.make()]\n\n\
                   def main(stdout: Stdout):\n    stdout.print(build[Part]().x, build[Other]().name)\n    \
-                  made: Part = build()\n    stdout.print(made.x, twice[Other]().len())\n";
+                  made: Part = build()\n    stdout.print(made.x, len(twice[Other]()))\n";
     let dir = folder("type_param_function")?;
     let program = dir.join("made.fen");
     std::fs::write(&program, source)?;
@@ -22342,7 +22523,7 @@ struct Money:
     cents: int
 
     def <(self, other: Money) -> bool:
-        self.cents > other.cents
+        return self.cents > other.cents
 
 struct Spot:
     x: int
@@ -22352,7 +22533,7 @@ def main(stdout: Stdout):
     stdout.print(max(1, 3, 2), min(1, 3, 2), max(1.5, -0.5), min(-0.0, 0.0), max("a", "b long enough for a block"))
     stdout.print(max([3, 1, 3]), min([3, 1, 1]), max([0.5, 2.5]), min(["pear", "apple"]), max([False, True]))
     stdout.print(max([(1, "b"), (2, "a"), (2, "b")]), min([(1, 2.5), (1, 1.5)]))
-    stdout.print(max(["aa", "bbb", "ccc"], key=word => word.len()), min(["aa", "bbb", "c"], key=word => word.len()))
+    stdout.print(max(["aa", "bbb", "ccc"], key=word => len(word)), min(["aa", "bbb", "c"], key=word => len(word)))
     stdout.print(max([1, 2, 3], key=n => -n), min([1.5, -2.5], key=n => n * n), max([1, 2], key=n => str(n)))
     wallet = [Money(cents=5), Money(cents=2), Money(cents=9)]
     stdout.print(max(wallet), min(wallet), max(wallet[0], wallet[1]), min(wallet[0], wallet[1]))
@@ -22386,16 +22567,16 @@ fn a_function_failing_only_in_max_min_or_remove_builds() -> std::io::Result<()> 
     same_as_expected_in_both_builds(
         "fails_only_in_max",
         r#"def top(values: list[int]) -> int:
-    max(values)
+    return max(values)
 
 def smallest(values: list[int]) -> int:
-    min(values)
+    return min(values)
 
 def longest(words: list[str]) -> str:
-    max(words, key=word => word.len())
+    return max(words, key=word => len(word))
 
 def shortest(words: list[str]) -> str:
-    min(words, key=word => word.len())
+    return min(words, key=word => len(word))
 
 def gone(ref values: list[int]):
     values.remove(9)
@@ -22448,29 +22629,35 @@ fn numbers_and_sets_from_text_match_what_was_pinned() -> std::io::Result<()> {
         r#"from std.re import Regex
 
 def add(a: str, b: str) -> int fails InvalidValue:
-    int(a)? + int(b)?
+    return int(a)? + int(b)?
 
 def main(stdout: Stdout):
     for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
-        n = int(text) else as error:
+        n = int(text) except error:
             stdout.print(error.message)
             continue
         stdout.print(n)
     for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
-        x = float(text) else as error:
+        x = float(text) except error:
             stdout.print(error.message)
             continue
         stdout.print(x)
-    stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
-    stdout.print(add("1", b="2") else -1, add("1", b="two") else -1)
+    int_value = int("12") except InvalidValue(): 0
+    int_value2 = int("x") except InvalidValue(): -1
+    float_value = float("0.5") except InvalidValue(): 0.0
+    float_value2 = float("y") except InvalidValue(): -1.5
+    stdout.print(int_value, int_value2, float_value, float_value2)
+    add_value = add("1", b="2") except InvalidValue(): -1
+    add_value2 = add("1", b="two") except InvalidValue(): -1
+    stdout.print(add_value, add_value2)
     for pattern in ["[0-9]+", "[0-9+"]:
-        regex = Regex(pattern) else as error:
+        regex = Regex(pattern) except error:
             stdout.print(error.message)
             continue
         stdout.print(regex.pattern)
-    stdout.print(list("héllo"), list(""), set("hello").len(), "l" in set("hello"), set(""))
+    stdout.print(list("héllo"), list(""), len(set("hello")), "l" in set("hello"), set(""))
     stdout.print(set([3, 1, 3, 2, 1]), set(["b", "a", "b", "a key long enough for a block", "a key long enough for a block"]))
-    stdout.print(set([(1, 2), (1, 2), (3, 4)]).len())
+    stdout.print(len(set([(1, 2), (1, 2), (3, 4)])))
 "#,
     )
 }
@@ -22610,7 +22797,7 @@ struct Point:
     y: int
 
 def parsed(text: str) -> int fails InvalidValue:
-    int(text)?
+    return int(text)?
 
 test \"floats stay small\" for x: float:
     assert x < 3.5

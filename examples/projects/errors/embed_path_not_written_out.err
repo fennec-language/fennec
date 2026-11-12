@@ -1,7 +1,7 @@
 error: `embed_file` takes one path, written out as a string
- --> examples/projects/errors/embed_path_not_written_out/src/main.fen:4:29
+ --> examples/projects/errors/embed_path_not_written_out/src/main.fen:4:33
   |
-4 |     stdout.print(embed_file(name).len())
-  |                             ^^^^
+4 |     stdout.print(len(embed_file(name)))
+  |                                 ^^^^
   |
   = help: what it names is read when the program is built, before anything has run; to choose a file while it runs, read it with `std.fs`

@@ -4,7 +4,7 @@ struct Token:
     _secret: str
 
     def matches(self, guess: str) -> bool:
-        guess == self._secret
+        return guess == self._secret
 
 def main(stdout: Stdout):
     stdout.print("unreachable")

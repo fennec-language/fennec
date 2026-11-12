@@ -5,10 +5,10 @@ struct Box:
     width: int
 
     def size(self) -> int:
-        self.width
+        return self.width
 
 def total[T: Sized](item: T) -> int:
-    T.size()
+    return T.size()
 
 def main(stdout: Stdout):
     stdout.print(total(Box(width=2)))

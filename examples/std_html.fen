@@ -14,13 +14,13 @@ struct Visitor:
 
 ## One row of a list.
 def row(item: str) -> Html fails HtmlError:
-    html.render(t"<li>{item}</li>")?
+    return html.render(t"<li>{item}</li>")?
 
 ## A page greeting `visitor`, with a list made in a loop.
 def page(visitor: Visitor, items: list[str]) -> Html fails HtmlError:
     rows = [row(item)? for item in items]
     listed = html.join(rows)
-    html.render(
+    return html.render(
         t"<p class=\"hello\">Hello, {visitor.name}</p><a href=\"{visitor.site}\">site</a><ul>{listed}</ul>",
     )?
 
@@ -97,9 +97,9 @@ LINK_REFUSED = "`{bad}` can't go there: a link has to be `http`, `https`, `mailt
 
 ## Why `page` couldn't be made, in words, or "" if it could.
 def refusal(page: Template[HtmlValue]) -> str:
-    _ = html.render(page) else as error:
+    _ = html.render(page) except error:
         return error.message()
-    ""
+    return ""
 
 test "a value inside a script fails"():
     code = "alert(1)"
@@ -137,7 +137,7 @@ test "a format spec fails rather than being dropped"():
     assert refusal(t"<td>{price:.2f}</td>").startswith("`{price}` has a format spec")
 
 def main(stdout: Stdout):
-    made = page(Visitor(name="Ann & Bo", site="https://example.com"), ["one", "<two>"]) else as why:
+    made = page(Visitor(name="Ann & Bo", site="https://example.com"), ["one", "<two>"]) except why:
         stdout.print(why.message())
         return
     stdout.print(made)

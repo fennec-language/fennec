@@ -1,7 +1,7 @@
 error: `sorted` has no parameter called `kye`
  --> examples/errors/sorted_unknown_parameter.fen:3:36
   |
-3 |     stdout.print(sorted(names, kye=name => name.len()))
-  |                                    ^^^^^^^^^^^^^^^^^^
+3 |     stdout.print(sorted(names, kye=name => len(name)))
+  |                                    ^^^^^^^^^^^^^^^^^
   |
   = help: did you mean `key=`?

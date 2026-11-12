@@ -1,7 +1,7 @@
 error: can't choose from an empty list
- --> examples/errors/random_choice_empty.fen:4:5
+ --> examples/errors/random_choice_empty.fen:4:12
   |
-4 |     rng.choice(names)
-  |     ^^^^^^^^^^^^^^^^^
+4 |     return rng.choice(names)
+  |            ^^^^^^^^^^^^^^^^^
   = in `pick`
   = called from `main` at examples/errors/random_choice_empty.fen:9:18

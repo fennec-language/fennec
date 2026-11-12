@@ -1,10 +1,10 @@
 from std.collections import Table
 
 def square(n: int) -> int:
-    n * n
+    return n * n
 
 def cube(n: int) -> int:
-    n * n * n
+    return n * n * n
 
 def main(stdout: Stdout):
     # Sets and dicts are equal when they hold the same things, in any order.

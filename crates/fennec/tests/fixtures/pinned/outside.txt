@@ -1,12 +1,12 @@
-source 77e535e2229ae3ecb9f94a593e81eef44db5b8bba6e90609035cc47cd289cdbf
+source 786f75c98193adbc5b66cda84d836fa0a5c49dccbe42bb4812739698fd49db3c
 code 1
 stdout 7
 before
-stderr 171
+stderr 186
 error: index 2 is out of range for length 2
- --> <dir>/outside.fen:2:5
+ --> <dir>/outside.fen:2:12
   |
-2 |     [1, 2][n]
-  |     ^^^^^^^^^
+2 |     return [1, 2][n]
+  |            ^^^^^^^^^
   = in `f`
   = called from `main` at <dir>/outside.fen:6:18

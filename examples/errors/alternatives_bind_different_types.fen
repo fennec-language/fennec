@@ -5,7 +5,7 @@ enum Shape:
 def size(shape: Shape) -> str:
     match shape:
         case .Circle(size) | .Grid(size):
-            f"{size}"
+            return f"{size}"
 
 def main(stdout: Stdout):
     stdout.print(size(.Circle(size=1.0)))

@@ -5,10 +5,10 @@ struct Money:
     cents: int
 
     def abs(self) -> int:
-        self.cents.abs()
+        return abs(self.cents)
 
 def size[T: Signed](x: T) -> T:
-    x.abs()
+    return abs(x)
 
 def main(stdout: Stdout):
     stdout.print(size(Money(cents=1)))

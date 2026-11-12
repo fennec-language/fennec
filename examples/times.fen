@@ -8,7 +8,7 @@ from std.time import Duration, Time
 
 ## When a task done at `done` is due again, `every` later, as a date to show.
 def next_due(done: Time, every: Duration) -> str:
-    (done + every).format("%a %d %b %Y")
+    return (done + every).format("%a %d %b %Y")
 
 test "a moment prints as RFC 3339 text and reads back"():
     landing = Time.utc(year=1969, month=7, day=20, hour=20, minute=17, second=40)?
@@ -38,9 +38,9 @@ test "text that isn't RFC 3339 fails where it goes wrong"():
 
 ## Whether the calendar has this date, in the years a `Time` holds.
 def is_date(year: int, month: int, day: int) -> bool:
-    _ = Time.utc(year, month=month, day=day) else:
+    _ = Time.utc(year, month=month, day=day) except InvalidValue():
         return False
-    True
+    return True
 
 test "the calendar has leap days where it should"():
     assert is_date(2024, month=2, day=29) and is_date(2000, month=2, day=29)
@@ -78,7 +78,7 @@ test "durations print as they're written"():
     assert str(250us) == "250us"
     assert str(40ns) == "40ns"
     assert str(Duration()) == "0s"
-    assert str(Duration(nanos=-2_000_000_000).abs()) == "2s"
+    assert str(abs(Duration(nanos=-2_000_000_000))) == "2s"
 
 test "a test's clock starts in 2000 and moves only as it sleeps"(clock: Clock):
     assert str(clock.time()) == "2000-01-01T00:00:00Z"
@@ -100,7 +100,14 @@ test "a time saves as RFC 3339 text and a duration as its nanoseconds"():
     assert problem.message == "`at` is `yesterday`, which isn't an RFC 3339 time"
 
 def main(stdout: Stdout, clock: Clock):
-    moment = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56) else Time()
+    moment = Time.utc(
+        year=2026,
+        month=11,
+        day=6,
+        hour=21,
+        minute=55,
+        second=56,
+    ) except InvalidValue(): Time()
     stdout.print(moment, moment.nanos, moment.weekday(), moment.day_of_year())
     stdout.print(moment.format("%d/%m/%Y %H:%M:%S"), next_due(moment, every=Duration.hours(48)))
     stdout.print(Duration.minutes(90), Duration.seconds(0.25), is_date(2026, month=11, day=6))

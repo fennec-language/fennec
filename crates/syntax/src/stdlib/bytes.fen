@@ -4,4 +4,4 @@ extend bytes:
         out.bytes(self)
 
     def deserialize(ref src: Deserializer) -> bytes fails ParseError:
-        src.bytes()?
+        return src.bytes()?

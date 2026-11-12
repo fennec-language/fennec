@@ -31,7 +31,7 @@ fn printed(source: &str, name: &str) -> Result<String, String> {
 #[test]
 fn embedded_bytes_are_a_constant_operand_named_by_their_hash() {
     let data = fennec_syntax::Blob::from(vec![1, 2, 3]);
-    let mut module = fennec_syntax::parse("def blob() -> bytes:\n    \"here\"\n").unwrap();
+    let mut module = fennec_syntax::parse("def blob() -> bytes:\n    return \"here\"\n").unwrap();
     fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
         if matches!(expr.kind, fennec_syntax::ExprKind::Str(_)) {
             expr.kind = fennec_syntax::ExprKind::Bytes(data.clone());
@@ -46,7 +46,7 @@ fn embedded_bytes_are_a_constant_operand_named_by_their_hash() {
 
 #[test]
 fn operators_and_tail_values() {
-    let source = "def lerp(a: float, b: float, t: float) -> float:\n    a + (b - a) * t\n";
+    let source = "def lerp(a: float, b: float, t: float) -> float:\n    return a + (b - a) * t\n";
     assert_eq!(
         printed(source, "lerp").unwrap(),
         "fn lerp(_0, _1, _2) -> float
@@ -103,7 +103,7 @@ fn loops_and_changing_names() {
     while True:
         n += 1
         if n == limit: break
-    n
+    return n
 ";
     assert_eq!(
         printed(source, "count").unwrap(),
@@ -134,7 +134,7 @@ fn loops_and_changing_names() {
 
 #[test]
 fn and_or_and_conditional_values_branch() {
-    let source = "def pick(a: bool, b: bool) -> int:\n    1 if a and b else 2\n";
+    let source = "def pick(a: bool, b: bool) -> int:\n    return 1 if a and b else 2\n";
     assert_eq!(
         printed(source, "pick").unwrap(),
         "fn pick(_0, _1) -> int
@@ -180,7 +180,7 @@ fn names_in_sibling_blocks_are_different_locals() {
 #[test]
 fn something_generic_nothing_uses_isnt_lowered() {
     let source = "def first[T](items: list[T]) -> T:
-    items[0]
+    return items[0]
 ";
     let program = lowered(source).unwrap();
     let why: Vec<String> =
@@ -217,10 +217,10 @@ fn lists_are_written_out_read_changed_and_looped_over() {
     mut items = [1, limit]
     items.append(3)
     items[0] += 1
-    mut sum = 0
+    mut subtotal = 0
     for item in items:
-        sum += item
-    sum + items[1]
+        subtotal += item
+    return subtotal + items[1]
 ";
     assert_eq!(
         printed(source, "total").unwrap(),
@@ -230,7 +230,7 @@ fn lists_are_written_out_read_changed_and_looped_over() {
   local _2 items: list[int]
   local _3: int
   local _4: int
-  local _5 sum: int
+  local _5 subtotal: int
   local _6: list[int]
   local _7: int
   local _8: int
@@ -316,7 +316,7 @@ def fill(ref bag: Bag):
 #[test]
 fn the_standard_librarys_fennec_functions_come_in_as_theyre_reached() {
     let source = "def starts(text: str) -> bool:
-    text.startswith(\"a\")
+    return text.startswith(\"a\")
 ";
     let program = lowered(source).unwrap();
     assert_eq!(program.external, Vec::<String>::new());
@@ -327,7 +327,7 @@ fn the_standard_librarys_fennec_functions_come_in_as_theyre_reached() {
 #[test]
 fn in_and_not_in_ask_the_engines() {
     let source = "def has(items: list[int], text: str) -> bool:
-    1 in items and \"a\" not in text
+    return 1 in items and \"a\" not in text
 ";
     let printed = printed(source, "has").unwrap();
     assert!(printed.contains("builtin list.contains(_0, 1)"), "{printed}");
@@ -348,7 +348,7 @@ def moved(body: Body, by: float) -> Body:
     mut next = body
     next.pos.x = next.pos.x + by
     next.mass *= 2.0
-    next
+    return next
 ";
     assert_eq!(
         printed(source, "moved").unwrap(),
@@ -382,13 +382,13 @@ fn methods_take_their_object_first_and_arguments_land_in_their_fields() {
     y: int
 
     def origin() -> Point:
-        Point(y=0, x=0)
+        return Point(y=0, x=0)
 
     def sum(self) -> int:
-        self.x + self.y
+        return self.x + self.y
 
 def total() -> int:
-    Point.origin().sum()
+    return Point.origin().sum()
 ";
     assert_eq!(
         printed(source, "Point.origin").unwrap(),
@@ -415,17 +415,17 @@ def total() -> int:
 #[test]
 fn for_counts_in_a_local_of_its_own() {
     let source = "def total(n: int) -> int:
-    mut sum = 0
+    mut subtotal = 0
     for i in range(n, 0, -1):
         if i == 3: continue
-        sum += i
-    sum
+        subtotal += i
+    return subtotal
 ";
     assert_eq!(
         printed(source, "total").unwrap(),
         "fn total(_0) -> int
   local _0 n: int
-  local _1 sum: int
+  local _1 subtotal: int
   local _2: int
   local _3: int
   local _4: bool
@@ -477,11 +477,11 @@ fn a_leading_dot_case_takes_its_enum_from_the_typed_tree() {
         "{TOKENS}def literal(tok: Tok) -> ExprKind:
     match tok:
         case .Int(value):
-            .Int(value)
+            return .Int(value)
         case .Name(text):
-            .Name(text)
+            return .Name(text)
         case .Eof:
-            .Negative(0)
+            return .Negative(0)
 "
     );
     assert_eq!(
@@ -532,9 +532,9 @@ fn alternatives_share_their_names_and_a_guard_falls_through() {
         "{TOKENS}def size(tok: Tok) -> int:
     match tok:
         case .Int(n) | .Name(n) if False:
-            0
+            return 0
         case _:
-            1
+            return 1
 "
     )
     .replace("Name(text: str)\n    Eof", "Name(text: int)\n    Eof");
@@ -581,7 +581,7 @@ fn a_match_can_be_a_value_and_values_can_be_tested() {
             \"none\"
         case _:
             \"some\"
-    text + \"!\"
+    return text + \"!\"
 ";
     let printed = printed(source, "name").unwrap();
     assert!(printed.contains("_2 = _0 == 0"), "{printed}");
@@ -602,17 +602,17 @@ enum Light:
     def next(self) -> Light:
         match self:
             case .Red:
-                .Green
+                return .Green
             case .Green:
-                .Red
+                return .Red
 
 def x_of(point: Point) -> int:
     match point:
         case Point(x, _):
-            x
+            return x
 
 def twice(light: Light) -> Light:
-    light.next().next()
+    return light.next().next()
 ";
     let program = lowered(source).unwrap();
     assert_eq!(program.not_lowered, []);
@@ -631,7 +631,7 @@ def load(path: str) -> str fails Denied | Missing:
         fail Missing(path)
     if path == \"root\":
         fail Denied(path)
-    path
+    return path
 
 ";
 
@@ -679,7 +679,7 @@ fn fail_and_success_are_written_out() {
 #[test]
 fn question_mark_leaves_with_the_error() {
     let source = format!(
-        "{FILES}def twice(path: str) -> str fails Denied | Missing:\n    text = load(path)?\n    text + text\n"
+        "{FILES}def twice(path: str) -> str fails Denied | Missing:\n    text = load(path)?\n    return text + text\n"
     );
     assert_eq!(
         printed(&source, "twice").unwrap(),
@@ -716,13 +716,12 @@ fn question_mark_leaves_with_the_error() {
 fn matching_a_failure_sees_each_error_and_looks_through_ok() {
     let source = format!(
         "{FILES}def show(path: str) -> str:
-    text = load(path) else as why:
-        match why:
-            case Missing(name):
-                name
-            case _:
-                \"denied\"
-    text
+    text = load(path) except why:
+        case Missing(name):
+            name
+        case _:
+            str(why)
+    return text
 "
     );
     let printed = printed(&source, "show").unwrap();
@@ -736,7 +735,7 @@ fn a_name_known_not_to_be_none_is_unwrapped_where_its_read() {
     let source = "def next(count: int?) -> int:
     if count is None:
         return 0
-    count + 1
+    return count + 1
 ";
     assert_eq!(
         printed(source, "next").unwrap(),
@@ -772,7 +771,7 @@ def fill(ref slot: Slot, value: int?) -> int:
     kept = None
     if kept is None:
         return 3
-    value else 3
+    return value else 3
 ";
     let printed = printed(source, "fill").unwrap();
     for line in ["= some 1", "_0.held = none", "= some 2", "_3 = none", "is none", "as some"] {
@@ -788,29 +787,29 @@ fn a_union_is_tagged_by_its_member_and_tested_and_read_by_it() {
     radius: float
 
     def area(self) -> float:
-        self.radius
+        return self.radius
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side
+        return self.side
 
 def radius(s: Circle | Square) -> float:
     if s is Circle:
         return s.radius
-    0.0
+    return 0.0
 
 def named(s: Circle | Square) -> str:
     match s:
-        case Circle(radius): \"circle\"
-        case Square(side): \"square\"
+        case Circle(radius): return \"circle\"
+        case Square(side): return \"square\"
 
 def area(s: Circle | Square) -> float:
-    s.area()
+    return s.area()
 
 def made() -> Circle | Square:
-    Square(side=1.0)
+    return Square(side=1.0)
 ";
     assert_eq!(lowered(source).unwrap().not_lowered, []);
     let printed = |name: &str| printed(source, name).unwrap();
@@ -835,11 +834,11 @@ fn matching_an_optional_tests_for_none_first() {
     let source = "def name(code: int?) -> str:
     match code:
         case None:
-            \"none\"
+            return \"none\"
         case 1 | 2:
-            \"low\"
+            return \"low\"
         case n:
-            \"other\"
+            return \"other\"
 ";
     assert_eq!(lowered(source).unwrap().not_lowered, []);
 }
@@ -912,7 +911,7 @@ fn the_validator_finds_malformed_ir() {
 
 #[test]
 fn a_comprehension_is_a_loop_that_fills_a_collection() {
-    let source = "def evens(xs: list[int]) -> list[int]:\n    [x * 2 for x in xs if x > 0]\n";
+    let source = "def evens(xs: list[int]) -> list[int]:\n    return [x * 2 for x in xs if x > 0]\n";
     assert_eq!(
         printed(source, "evens").unwrap(),
         "fn evens(_0) -> list[int]
@@ -955,7 +954,7 @@ fn a_comprehension_is_a_loop_that_fills_a_collection() {
 
 #[test]
 fn dict_and_set_comprehensions() {
-    let source = "def f(xs: list[int]) -> dict[int, str]:\n    {x: str(x) for x in {x for x in xs}}\n";
+    let source = "def f(xs: list[int]) -> dict[int, str]:\n    return {x: str(x) for x in {x for x in xs}}\n";
     let text = printed(source, "f").unwrap();
     for expected in ["= dict {}", "= set {}", "builtin set.add(ref", "builtin list(", "] = "] {
         assert!(text.contains(expected), "no `{expected}` in {text}");
@@ -967,11 +966,11 @@ fn tuples_unpack_in_assignments_and_loops() {
     let source = "def f(pairs: dict[str, int]) -> int:
     mut total = 0
     for key, value in pairs.items():
-        total += value + key.len()
+        total += value + len(key)
     mut a = total
     mut b = 1
     a, b = (b, a)
-    a + (a, b)[1]
+    return a + (a, b)[1]
 ";
     let text = printed(source, "f").unwrap();
     for expected in ["builtin dict.items(", "key: str", "= tuple (", ".0", ".1"] {
@@ -986,7 +985,7 @@ fn dicts_and_slices_read_and_change_items() {
     seen[\"a\"] = 1
     if \"b\" in seen:
         return xs[1:]
-    xs[:2]
+    return xs[:2]
 ";
     let text = printed(source, "f").unwrap();
     for expected in ["[\"a\"] = ", "builtin dict.contains(", "= _0[1:]", "= _0[:2]"] {
@@ -1000,14 +999,14 @@ fn a_types_own_operators_are_calls() {
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(self.cents + other.cents)
+        return Money(self.cents + other.cents)
 
     def <(self, other: Money) -> bool:
-        self.cents < other.cents
+        return self.cents < other.cents
 
 def f(ref a: Money, b: Money) -> bool:
     a += b
-    a >= b
+    return a >= b
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1033,7 +1032,7 @@ fn equality_works_on_every_value() {
     x: int
 
 def f(a: P, b: P, c: list[int], d: int?) -> bool:
-    a == b and c != [1] and d == 3 and c < c
+    return a == b and c != [1] and d == 3 and c < c
 ";
     let text = printed(source, "f").unwrap();
     for expected in ["= _0 == _1", "!= ", "= some 3", " < _2"] {
@@ -1044,13 +1043,13 @@ def f(a: P, b: P, c: list[int], d: int?) -> bool:
 #[test]
 fn named_arguments_land_in_their_parameters_and_run_in_order() {
     let source = "def g(a: int, b: str) -> int:
-    a + b.len()
+    return a + len(b)
 
 def h() -> int:
-    1
+    return 1
 
 def f() -> int:
-    g(b=str(h()), a=h())
+    return g(b=str(h()), a=h())
 ";
     let text = printed(source, "f").unwrap();
     assert!(text.contains("_2 = call h()"), "{text}");
@@ -1065,7 +1064,7 @@ fn fields_left_out_get_their_defaults() {
     z: int? = 3
 
 def f() -> P:
-    P(1)
+    return P(1)
 ";
     let text = printed(source, "f").unwrap();
     assert!(text.contains("= some 3"), "{text}");
@@ -1078,9 +1077,9 @@ def f() -> P:
 /// unrewritten by the checker: the call takes the default where it's lowered.
 #[test]
 fn a_call_left_unrewritten_takes_its_defaults() {
-    let source = "def added(n: int, more = 1) -> int:\n    n + more\n\ndef main(stdout: Stdout):\n    stdout.print(added(2))\n";
-    let module = fennec_syntax::parse(source).unwrap();
-    let checked = fennec_check::check(&module).unwrap();
+    let source = "def added(n: int, more = 1) -> int:\n    return n + more\n\ndef main(stdout: Stdout):\n    stdout.print(added(2))\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check_and_resolve(&mut module).unwrap();
     let program = lower(&module, &checked);
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
     let main = program.functions.iter().find(|function| function.name == "main").unwrap().to_string();
@@ -1092,10 +1091,10 @@ fn arguments_left_out_get_their_defaults_with_their_types() {
     let source = "from std.time import Duration
 
 def wait(label: str, timeout=30s, tries=3) -> int:
-    label.len() + tries
+    return len(label) + tries
 
 def f() -> int:
-    wait(\"a\") + wait(\"b\", tries=1)
+    return wait(\"a\") + wait(\"b\", tries=1)
 ";
     let program = lowered(source).unwrap();
     assert_eq!(program.not_lowered, [], "{program}");
@@ -1110,7 +1109,7 @@ WORDS = [\"a\", \"b\"]
 DOUBLE = LIMIT * 2
 
 def f() -> int:
-    WORDS.len() + LIMIT + DOUBLE
+    return len(WORDS) + LIMIT + DOUBLE
 ";
     let program = lowered(source).unwrap();
     let names: Vec<&str> = program.constants.iter().map(|constant| constant.name.as_str()).collect();
@@ -1126,7 +1125,7 @@ fn what_std_provides_goes_to_the_engines() {
     let source = "from std.math import PI, sqrt
 
 def f(x: float) -> float:
-    sqrt(x) * PI
+    return sqrt(x) * PI
 ";
     let text = printed(source, "f").unwrap();
     assert!(text.contains("builtin math.sqrt(_0)"), "{text}");
@@ -1139,7 +1138,7 @@ fn a_range_with_a_step_goes_through_a_list() {
     mut total = 0
     for i in range(0, n, 2):
         total += i
-    total
+    return total
 ";
     let text = printed(source, "f").unwrap();
     assert!(text.contains("builtin range(0, _0, 2)"), "{text}");
@@ -1154,7 +1153,7 @@ fn for_mut_writes_each_item_back_however_the_loop_is_left() {
             break
         if x < 0:
             return x
-    0
+    return 0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1251,7 +1250,7 @@ fn a_types_own_indexing_is_calls() {
     cells: list[int]
 
     def [](self, at: int) -> int:
-        self.cells[at]
+        return self.cells[at]
 
     def []=(ref self, at: int, value: int):
         self.cells[at] = value
@@ -1261,7 +1260,7 @@ struct Holder:
 
 def f(ref holder: Holder) -> int:
     holder.grid[1] = 2
-    holder.grid[0]
+    return holder.grid[0]
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1329,10 +1328,10 @@ fn a_types_own_index_can_give_a_str() {
     all: list[str]
 
     def [](self, at: int) -> str:
-        self.all[at]
+        return self.all[at]
 
 def f(names: Names) -> str:
-    names[0]
+    return names[0]
 ";
     let text = printed(source, "f").unwrap();
     assert!(text.contains("call Names.[](_0, 0)"), "{text}");
@@ -1341,11 +1340,11 @@ def f(names: Names) -> str:
 #[test]
 fn an_arrow_function_is_lifted_with_what_it_captures() {
     let source = "def apply(value: int, change: (int) -> int) -> int:
-    change(value)
+    return change(value)
 
 def f(x: int) -> int:
     offset = x + 1
-    apply(x, (n) => n + offset)
+    return apply(x, (n) => n + offset)
 ";
     let program = lowered(source).unwrap();
     let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
@@ -1367,10 +1366,10 @@ fn f(_0) -> int
   bb0:
     _1 = _0 + 1
     _2 = _1
-    _3 = closure f.arrow@125[_2]
+    _3 = closure f.arrow@139[_2]
     _4 = call apply(_0, _3)
     return _4
-fn f.arrow@125(_0, _1) -> int
+fn f.arrow@139(_0, _1) -> int
   local _0 offset: int
   local _1 n: int
   local _2: int
@@ -1387,8 +1386,8 @@ fn a_nested_function_captures_and_can_call_itself() {
     def down(n: int) -> int:
         if n <= start:
             return n
-        down(n - 1)
-    down(10)
+        return down(n - 1)
+    return down(10)
 ";
     let program = lowered(source).unwrap();
     let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
@@ -1430,11 +1429,11 @@ fn f.down(_0, _1) -> int
 #[test]
 fn a_function_by_name_is_a_closure_of_nothing() {
     let source = "def double(n: int) -> int:
-    n * 2
+    return n * 2
 
 def f() -> int:
     g = double
-    g(2)
+    return g(2)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1454,7 +1453,7 @@ def f() -> int:
 #[test]
 fn a_key_goes_last_and_names_the_call() {
     let source = "def f(xs: list[int]) -> list[int]:
-    sorted(xs, key=(n) => -n)
+    return sorted(xs, key=(n) => -n)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1463,7 +1462,7 @@ fn a_key_goes_last_and_names_the_call() {
   local _1: (int) -> int
   local _2: list[int]
   bb0:
-    _1 = closure f.arrow@54[]
+    _1 = closure f.arrow@61[]
     _2 = builtin sorted.key(_0, _1)
     return _2
 "
@@ -1473,13 +1472,13 @@ fn a_key_goes_last_and_names_the_call() {
 #[test]
 fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
     let source = "def f(pair: (int, int), at: int) -> int:
-    pair[at]
+    return pair[at]
 
 def g(args: Args, at: int) -> str:
-    args[at]
+    return args[at]
 
 def h(data: bytes, at: int) -> int:
-    data[at]
+    return data[at]
 ";
     assert!(printed(source, "f").unwrap().contains("= _0[_1]"));
     assert!(printed(source, "g").unwrap().contains("= _0[_1]"));
@@ -1496,7 +1495,7 @@ fn a_loop_over_a_type_goes_through_what_its_iter_gives() {
             yield one
 
 def f(bag: Bag) -> list[int]:
-    [one for one in bag]
+    return [one for one in bag]
 ";
     // Its body copied into the loop, with no generator.
     let text = printed(source, "f").unwrap();
@@ -1512,9 +1511,9 @@ fn a_tuple_pattern_tests_each_part() {
     let source = "def f(pair: (int, str)) -> int:
     match pair:
         case (0, _):
-            1
+            return 1
         case (x, _):
-            x
+            return x
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1538,21 +1537,21 @@ fn a_tuple_pattern_tests_each_part() {
     );
 }
 
-/// One case on the line, `except InvalidValue(): 8080`, lowers as the old `else 8080` does: the
-/// case covers every failure and binds nothing, so the failure isn't taken out to match.
+/// One case on the line, `except InvalidValue(): 8080`, covers every failure and binds nothing, so
+/// the failure isn't taken out to match, as it is for `except why:`.
 #[test]
-fn one_case_that_binds_nothing_lowers_as_else_does() -> Result<(), String> {
+fn one_case_that_binds_nothing_takes_nothing_out() -> Result<(), String> {
     let program = |handler: &str| {
         format!(
             "def port_of(text: str) -> int:\n    return int.parse(text) {handler}\n\ndef main(stdout: Stdout):\n    stdout.print(port_of(\"80\"))\n    return\n"
         )
     };
-    let old = printed(&program("else 8080"), "port_of")?;
     let one_case = printed(&program("except InvalidValue(): 8080"), "port_of")?;
-    assert_eq!(one_case, old);
+    assert!(one_case.contains("8080"), "{one_case}");
     // One that binds what failed takes it out, as `except why:` does.
     let named = printed(&program("except why: 8080 if why.message == \"\" else 1"), "port_of")?;
     assert!(named.contains("err"), "{named}");
+    assert_ne!(one_case, named);
     Ok(())
 }
 
@@ -1562,7 +1561,7 @@ fn an_else_chain_gives_the_default_for_none() {
     level: int
 
 def f(p: P?) -> int:
-    p.level else 0
+    return p.level else 0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1610,10 +1609,10 @@ fn a_where_rule_gives_an_error_unless_the_values_are_written_out() {
     value: int where value >= 0
 
 def f(n: int) -> Score fails InvalidValue:
-    Score(n)?
+    return Score(n)?
 
 def g() -> Score:
-    Score(1)
+    return Score(1)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1686,7 +1685,7 @@ def f(text: str) -> list[int] fails ParseError:
     a = geometry.sqrt(16.0)
     b = data.dumps(a)
     t = toml_loads[dict[str, int]](text)?
-    data.loads[list[int]](b)? + t.values()
+    return data.loads[list[int]](b)? + t.values()
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1761,7 +1760,7 @@ def f() -> int:
     _ = map.modify(one, e => e.hit())
     for ref enemy in map:
         enemy.hit()
-    map[one].health
+    return map[one].health
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1827,13 +1826,13 @@ def f() -> int:
 fn an_argument_is_copied_only_when_a_later_one_changes_it() {
     let lowered = lowered(
         "def show(a: list[int], b: int) -> int:
-    b
+    return b
 
 def kept(ref xs: list[int], ys: list[int]) -> int:
-    show(xs, ys.len()) + show(ys, xs.len())
+    return show(xs, len(ys)) + show(ys, len(xs))
 
 def changed(ref xs: list[int]) -> int:
-    show(xs, xs.pop(0))
+    return show(xs, xs.pop(0))
 ",
     )
     .unwrap();
@@ -1874,10 +1873,10 @@ fn an_else_chain_call_runs_only_on_a_value() {
     level: int
 
     def up(self) -> int:
-        self.level + 1
+        return self.level + 1
 
 def f(p: P?) -> int:
-    p.up() else 0
+    return p.up() else 0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1926,7 +1925,7 @@ fn copy_with_fields_copies_and_changes_them() {
     y: int? = None
 
 def f(p: P) -> P:
-    copy(p, y=1)
+    return copy(p, y=1)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1956,7 +1955,7 @@ def f(p: P?) -> P?:
     if q is None:
         return None
     q.up()
-    q
+    return q
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1993,7 +1992,7 @@ fn named_arguments_to_builtins_name_the_call() {
     let source = "from std import json
 
 def f(xs: list[int]) -> str:
-    json.dumps(xs, indent=2)
+    return json.dumps(xs, indent=2)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -2015,7 +2014,7 @@ struct Body:
     position = Vec3.zero
 
 def f() -> float:
-    (Body().position + Vec3(x=3.0)).length()
+    return (Body().position + Vec3(x=3.0)).length()
 ";
     let program = lowered(source).unwrap();
     assert_eq!(program.external, Vec::<String>::new());
@@ -2027,13 +2026,13 @@ def f() -> float:
 #[test]
 fn a_generic_function_is_copied_for_each_type_its_used_with() {
     let source = "def first[T](items: list[T]) -> T:
-    items[0]
+    return items[0]
 
 def f() -> str:
     a = first([1])
     b = first([\"x\"])
     c = first([2])
-    f\"{a} {b} {c}\"
+    return f\"{a} {b} {c}\"
 ";
     let program = lowered(source).unwrap();
     let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
@@ -2060,13 +2059,13 @@ struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
 def twice[T: Shape](shape: T) -> float:
-    shape.area() * 2.0
+    return shape.area() * 2.0
 
 def f() -> float:
-    twice(Square(1.0))
+    return twice(Square(1.0))
 ";
     assert_eq!(
         printed(source, "twice[Square]").unwrap(),
@@ -2089,12 +2088,12 @@ fn a_generic_struct_is_a_struct_for_each_type_it_holds() {
     count = 0
 
     def get(self) -> T:
-        self.held
+        return self.held
 
 def f() -> int:
     a = Box(1)
     b = Box(\"x\")
-    a.get() + b.get().len()
+    return a.get() + len(b.get())
 ";
     let program = lowered(source).unwrap();
     let shown: Vec<String> = program
@@ -2137,7 +2136,7 @@ def f() -> int:
 fn a_method_of_a_list_is_copied_for_what_it_holds() {
     let source = "def f(ref xs: list[int]) -> int:
     xs.reverse()
-    xs.count(1)
+    return xs.count(1)
 ";
     let program = lowered(source).unwrap();
     let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
@@ -2148,11 +2147,11 @@ fn a_method_of_a_list_is_copied_for_what_it_holds() {
 fn a_nested_function_in_a_generic_uses_what_its_types_stand_for() {
     let source = "def f[T](x: T) -> list[T]:
     def again() -> list[T]:
-        [x, x]
-    again()
+        return [x, x]
+    return again()
 
 def h() -> list[int]:
-    f(1)
+    return f(1)
 ";
     let program = lowered(source).unwrap();
     let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
@@ -2164,10 +2163,10 @@ fn a_generic_that_calls_itself_with_a_bigger_type_stops() {
     let source = "def grow[T](x: T, n: int) -> int:
     if n == 0:
         return 0
-    grow([x], n - 1)
+    return grow([x], n - 1)
 
 def f() -> int:
-    grow(1, 3)
+    return grow(1, 3)
 ";
     let program = lowered(source).unwrap();
     assert_ne!(program.not_lowered, []);
@@ -2179,16 +2178,16 @@ fn lowering_some_starts_only_from_what_it_picks() {
     let source = "LIST = [1]
 
 def a() -> int:
-    b()
+    return b()
 
 def b() -> int:
-    LIST[0]
+    return LIST[0]
 
 def c() -> int:
-    1
+    return 1
 ";
-    let module = fennec_syntax::parse(source).unwrap();
-    let checked = fennec_check::check(&module).unwrap();
+    let mut module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check_and_resolve(&mut module).unwrap();
     let program = fennec_ir::lower_some(&module, &checked, &|key| key == "a");
     let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
     assert_eq!(names, ["a"]);
@@ -2201,7 +2200,7 @@ fn facts_narrow_a_local_holding_one_value_along_branches() {
     let source = "def f(n: int) -> int:
     if n < 2:
         return n
-    n - 1
+    return n - 1
 ";
     let program = lowered(source).unwrap();
     let function = program.functions.first().unwrap();
@@ -2224,7 +2223,7 @@ def f(n: int) -> int:
     once = 5
     for i in range(3, 9):
         total += i + once
-    total
+    return total
 ";
     let program = lowered(source).unwrap();
     let function = program.functions.iter().find(|function| function.name == "f").unwrap();
@@ -2269,7 +2268,7 @@ const ACCOUNT: &str = "struct Account:
         pass
 
     def balance(self) -> int:
-        self.total
+        return self.total
 
 
 def pay(account: shared Account, amount: int):
@@ -2433,10 +2432,10 @@ def total(limit: int) -> int:
     mut sum_so_far = 0
     for n in odd(upto(limit)):
         sum_so_far += n * 2
-    sum_so_far
+    return sum_so_far
 
 def doubled(limit: int) -> list[int]:
-    [n for n in (x * 2 for x in upto(limit)) if n > 2]
+    return [n for n in (x * 2 for x in upto(limit)) if n > 2]
 ";
     let total = printed(source, "total").unwrap();
     assert!(!total.contains("call "), "{total}");
@@ -2455,16 +2454,16 @@ fn what_uses_a_stage_in_place_collects_nothing() {
         n += 1
 
 def total(limit: int) -> int:
-    sum(n * 2 for n in upto(limit) if n > 1)
+    return sum(n * 2 for n in upto(limit) if n > 1)
 
 def scaled(xs: list[float]) -> float:
-    sum(x * 2.0 for x in xs)
+    return sum(x * 2.0 for x in xs)
 
 def has_big(limit: int) -> bool:
-    any(n > 2 for n in upto(limit))
+    return any(n > 2 for n in upto(limit))
 
 def all_small(xs: list[int]) -> bool:
-    all(x < 2 for x in xs)
+    return all(x < 2 for x in xs)
 ";
     for function in ["total", "scaled", "has_big", "all_small"] {
         let text = printed(source, function).unwrap();
@@ -2597,7 +2596,7 @@ def f(n: int) -> int:
                 return door.name.len()
     with opened(\"b\") as other:
         pass
-    0
+    return 0
 "
     );
     assert_eq!(printed(&source, "f").unwrap(), LEFT_EVERY_WAY);
@@ -2617,7 +2616,7 @@ def held(name: str) -> Iterator[int]:
             return
 
 def f() -> int:
-    sum(n for n in held(\"a\"))
+    return sum(n for n in held(\"a\"))
 "
     );
     // What the source lent is kept across the `yield`, and its cleanup is written in once, where
@@ -2648,10 +2647,10 @@ def total(numbers: Iterator[int]) -> int:
     mut so_far = 0
     for n in numbers:
         so_far += n
-    so_far
+    return so_far
 
 def main_total() -> int:
-    total(upto(3))
+    return total(upto(3))
 ";
     let made = printed(source, "upto").unwrap();
     assert!(made.contains("= generator upto"), "{made}");
@@ -2669,7 +2668,7 @@ struct Inner:
     count: int
 
     def next(self) -> int:
-        self.count + 1
+        return self.count + 1
 
 struct Outer:
     inner: Inner?
@@ -2677,7 +2676,7 @@ struct Outer:
 def read(outer: Outer) -> int:
     if outer.inner is not None:
         return outer.inner.next() + outer.inner.count
-    0
+    return 0
 ";
     let text = printed(source, "read").unwrap();
     assert!(text.contains(".inner"), "{text}");
@@ -2696,10 +2695,10 @@ fn given_bools(text: &str) -> std::collections::BTreeSet<&str> {
 #[test]
 fn any_and_all_write_their_answer_to_what_they_give_back() {
     let source = "def has(xs: list[int]) -> bool:
-    any(x > 2 for x in xs)
+    return any(x > 2 for x in xs)
 
 def every(xs: list[int]) -> bool:
-    all(x > 2 for x in xs)
+    return all(x > 2 for x in xs)
 ";
     for function in ["has", "every"] {
         let text = printed(source, function).unwrap();
@@ -2720,7 +2719,7 @@ def first_big() -> int:
         found = n
         if n > 1:
             break
-    found
+    return found
 ";
     let text = printed(source, "first_big").unwrap();
     assert_eq!(given_bools(&text).len(), 1, "{text}");
@@ -2733,7 +2732,7 @@ fn a_loop_over_text_makes_no_list() {
     for c in text:
         if c == \" \":
             count += 1
-    count
+    return count
 ";
     let text = printed(source, "spaces").unwrap();
     assert!(!text.contains("str.chars"), "{text}");
@@ -2748,10 +2747,10 @@ struct Pair:
     b: int
 
     def ==(self, other: Pair) -> bool:
-        self.a + self.b == other.a + other.b
+        return self.a + self.b == other.a + other.b
 
 def same(one: Pair, two: Pair) -> bool:
-    one == two and not (one != two)
+    return one == two and not (one != two)
 ";
     let text = printed(source, "same").unwrap();
     assert_eq!(text.matches("Pair.==").count(), 2, "{text}");
@@ -2764,16 +2763,16 @@ struct Pair:
     a: int
 
     def ==(self, other: Pair) -> bool:
-        True
+        return True
 
 struct Held:
     pair: Pair
 
 def same(one: Held, two: Held) -> bool:
-    one == two
+    return one == two
 
 def found(pair: Pair, pairs: list[Pair]) -> bool:
-    pair in pairs
+    return pair in pairs
 ";
     let same = printed(source, "same").unwrap();
     assert!(same.contains(".pair") && same.contains("Pair.=="), "{same}");
@@ -2820,7 +2819,7 @@ def total(packed: Packed[int], at: int) -> int:
         sum_so_far += n
     for n in packed:
         sum_so_far += n
-    sum_so_far
+    return sum_so_far
 
 def main(stdout: Stdout):
     stdout.print(total(Packed(items=[1, 2, 3], starts=[0, 2, 3]), 1))
@@ -2845,7 +2844,7 @@ fn a_yield_method_unpacking_a_tuple_fuses() {
 
     def iter(self) -> Iterator[int]:
         mut trail = self.items
-        while trail.len() > 0:
+        while len(trail) > 0:
             first, second = trail[-1]
             _ = trail.pop()
             yield first + second
@@ -2854,7 +2853,7 @@ def total(pairs: Pairs) -> int:
     mut sum_so_far = 0
     for n in pairs:
         sum_so_far += n
-    sum_so_far
+    return sum_so_far
 
 def main(stdout: Stdout):
     stdout.print(total(Pairs(items=[(1, 2), (3, 4)])))
@@ -2865,7 +2864,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
-    let source = "def main(stdout: Stdout):\n    mut b = Buffer[int](capacity=2)\n    b.extend(Buffer[int]())\n    b.insert(0, 1)\n    stdout.print(b.remove(0))\n    b.push(3)\n    b[0] = 4\n    b.reserve(8)\n    b.truncate(1)\n    stdout.print(b[0], b.len(), b.capacity(), b.pop())\n";
+    let source = "def main(stdout: Stdout):\n    mut b = Buffer[int](capacity=2)\n    b.extend(Buffer[int]())\n    b.insert(0, 1)\n    stdout.print(b.remove(0))\n    b.push(3)\n    b[0] = 4\n    b.reserve(8)\n    b.truncate(1)\n    stdout.print(b[0], len(b), b.capacity(), b.pop())\n";
     let text = printed(source, "main").unwrap();
     assert!(text.contains("builtin Buffer.new.capacity(2)"), "{text}");
     for name in
@@ -2887,11 +2886,11 @@ def transfer(a: shared Account, b: shared Account, amount: int) -> bool:
             return False
         x.total -= amount
         y.add(amount)
-    True
+    return True
 
 def peek(a: shared Account) -> int:
     lock a as seen:
-        seen.total
+        return seen.total
 ";
 
 #[test]
@@ -2969,14 +2968,15 @@ def connect(host: str, port: int) -> int fails DialError:
         fail .NotFound(host)
     if port == 0:
         fail .Closed
-    port
+    return port
 
 def described(port: int) -> str:
-    got = connect(\"db\", port) else as why:
-        match why:
-            case .Refused(host, port): return f\"refused {host}:{port}\"
-            case _: return f\"failed: {why}\"
-    f\"port {got}\"
+    got = connect(\"db\", port) except why:
+        case .Refused(host, port):
+            return f\"refused {host}:{port}\"
+        case _:
+            return f\"failed: {why}\"
+    return f\"port {got}\"
 ";
 
 #[test]
@@ -3035,7 +3035,7 @@ fn an_error_with_cases_is_held_like_an_enum() {
 /// `item in value` calls the value's own `def in`, with the value first, and `not in` flips it.
 #[test]
 fn in_calls_a_types_own_in() {
-    let source = "struct Span:\n    low: int\n    high: int\n\n    def in(self, n: int) -> bool:\n        self.low <= n < self.high\n\ndef inside(span: Span, n: int) -> bool:\n    n in span\n\ndef outside(span: Span, n: int) -> bool:\n    n not in span\n";
+    let source = "struct Span:\n    low: int\n    high: int\n\n    def in(self, n: int) -> bool:\n        return self.low <= n < self.high\n\ndef inside(span: Span, n: int) -> bool:\n    return n in span\n\ndef outside(span: Span, n: int) -> bool:\n    return n not in span\n";
     assert_eq!(
         printed(source, "inside").unwrap(),
         "fn inside(_0, _1) -> bool
@@ -3066,7 +3066,7 @@ fn in_calls_a_types_own_in() {
 /// what it wrote, so native code never prints such a value from its fields.
 #[test]
 fn a_type_with_its_own_str_prints_through_it() {
-    let source = "struct Point:\n    x: int\n\n    def str(self, ref out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    f\"at {p}\"\n";
+    let source = "struct Point:\n    x: int\n\n    def str(self, ref out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    return f\"at {p}\"\n";
     assert_eq!(
         printed(source, "label").unwrap(),
         r#"fn label(_0) -> str
@@ -3125,8 +3125,8 @@ fn a_result_passed_on_fails_every_way_its_function_can() {
     // `outer` fails with `Worse` itself and passes up `inner`'s failure, which is `Bad`, so it
     // gives back a result that can fail with either.
     let source = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int fails Bad:\n    \
-                  if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int fails Bad | Worse:\n    if n > 9:\n        \
-                  fail Worse(why=\"big\")\n    inner(n)?\n";
+                  if n < 0:\n        fail Bad(why=\"neg\")\n    return n\n\ndef outer(n: int) -> int fails Bad | Worse:\n    if n > 9:\n        \
+                  fail Worse(why=\"big\")\n    return inner(n)?\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
     let outer = program.functions.iter().find(|function| function.name == "outer").unwrap();
@@ -3141,10 +3141,10 @@ fn a_result_passed_on_fails_every_way_its_function_can() {
 #[test]
 fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
     let source = "error Boom:\n    pass\n\n\
-        def risky(n: int) -> int fails Boom:\n    if n > 2:\n        fail Boom()\n    n\n\n\
-        def opened(stdout: Stdout) -> with int fails Boom:\n    lend 7 else:\n        stdout.print(\"cleanup\")\n    stdout.print(\"closed\")\n\n\
+        def risky(n: int) -> int fails Boom:\n    if n > 2:\n        fail Boom()\n    return n\n\n\
+        def opened(stdout: Stdout) -> with int fails Boom:\n    lend 7 except:\n        stdout.print(\"cleanup\")\n    stdout.print(\"closed\")\n\n\
         def used(stdout: Stdout) fails Boom:\n    with opened(stdout)? as held:\n        stdout.print(risky(held)?)\n\n\
-        def main(stdout: Stdout):\n    used(stdout) else:\n        return\n";
+        def main(stdout: Stdout):\n    used(stdout) except Boom():\n        return\n";
     let function = printed(source, "used").unwrap();
     assert_eq!(function.matches("on crash run ").count(), 1, "{function}");
     assert!(function.matches("on crash no longer run ").count() >= 2, "{function}");
@@ -3158,7 +3158,8 @@ fn a_rewritten_std_function_stands_in_for_the_librarys() {
         "from std import base64\n\ndef main(stdout: Stdout):\n    stdout.print(base64.encode(\"hi\".encode()))\n",
     )
     .unwrap();
-    let mut rewritten = fennec_syntax::parse("def encode(data: bytes) -> str:\n    \"rewritten\"\n").unwrap();
+    let mut rewritten =
+        fennec_syntax::parse("def encode(data: bytes) -> str:\n    return \"rewritten\"\n").unwrap();
     let Some(fennec_syntax::Item::Function(mut def)) = rewritten.items.pop() else { panic!("no function") };
     // Its text is the library's, as a rewritten one's is.
     let moved = |span: Span| Span {

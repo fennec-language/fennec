@@ -1,2 +1,2 @@
 def gravity() -> float:
-    9.8
+    return 9.8

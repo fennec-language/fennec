@@ -151,6 +151,8 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     let faked = attempt(|state: &mut State| {
         let Some(fakes) = state.world_mut() else { return Ok(None) };
         let done = match &receiver {
+            // Narrowing a whole capability touches nothing, so a test's is narrowed as the real one is.
+            Value::Capability(_) if narrows(&name) => None,
             Value::Capability(capability) => fakes.method(*capability, &name, &given, at),
             Value::Limited(limited) => {
                 let real = fakes.real();
@@ -188,10 +190,10 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         super::write_kept_output();
     }
     let result = match &receiver {
-        Value::Capability(capability) if name != "only" => {
+        Value::Capability(capability) if !narrows(&name) => {
             crate::replay::value(format_args!("{capability:?}.{name}"), at, live)
         }
-        Value::Limited(limited) if name != "only" => {
+        Value::Limited(limited) if !narrows(&name) => {
             crate::replay::value(format_args!("{:?}.{name}", limited.capability), at, live)
         }
         _ => live(),
@@ -292,6 +294,33 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     attempt(|state: &mut State| done.map(|value| state.push(value)))
 }
 
+/// Whether `method` narrows a capability, which reads nothing from outside, so it's neither
+/// recorded nor faked.
+fn narrows(method: &str) -> bool {
+    matches!(method, "only" | "read_only" | "client" | "server" | "hosts")
+}
+
+/// A whole `Fs` narrowed with `read_only`, or a whole `Net` with `client`, `server` or `hosts`,
+/// or `None` for arguments that aren't what they should be.
+fn narrowed_whole(capability: Capability, method: &str, args: &[Value]) -> Option<Value> {
+    use crate::limits::{CLIENT, EVERYWHERE, READ_ONLY, SERVER};
+    let marked = |marks: &[&str]| Limited::to(capability, marks.iter().map(|mark| Rc::from(*mark)).collect());
+    match (method, args) {
+        ("read_only", []) => Some(marked(&[EVERYWHERE, READ_ONLY])),
+        ("client", []) => Some(marked(&[EVERYWHERE, CLIENT])),
+        ("server", []) => Some(marked(&[EVERYWHERE, SERVER])),
+        ("hosts", [Value::List(hosts)]) => {
+            let mut allowed = vec![Rc::from(CLIENT)];
+            for host in hosts.iter() {
+                let Value::Str(host) = host else { return None };
+                allowed.push(Rc::from(host.to_ascii_lowercase()));
+            }
+            Some(Limited::to(capability, allowed))
+        }
+        _ => None,
+    }
+}
+
 /// A method of a whole capability.
 fn native_method(
     capability: Capability,
@@ -304,6 +333,9 @@ fn native_method(
         (Capability::Fs, "only", [path, ..]) => {
             let Value::Str(folder) = path_text(path) else { return Err(wrong()) };
             Ok(Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(&folder))]))
+        }
+        (Capability::Fs, "read_only", []) | (Capability::Net, "client" | "server" | "hosts", _) => {
+            narrowed_whole(capability, method, args).ok_or_else(wrong)
         }
         (Capability::Fs, _, _) => {
             let paths: Vec<Value> = args.iter().map(path_text).collect();

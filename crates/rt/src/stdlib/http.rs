@@ -31,6 +31,8 @@ pub(crate) struct Request {
     pub(crate) timeout: Duration,
     /// The most the answer's body can be.
     pub(crate) most_body: usize,
+    /// The hosts a narrowed `Net` reaches, which the URL and every redirect have to be among.
+    pub(crate) hosts: Option<Vec<String>>,
 }
 
 /// What came back.
@@ -60,6 +62,18 @@ fn without_password(url: &str) -> String {
         Some(at) => format!("{}{}", url.get(..after_scheme).unwrap_or(""), rest.get(at + 1..).unwrap_or("")),
         None => url.to_owned(),
     }
+}
+
+/// Whether `url` is outside `hosts`, the hosts a narrowed `Net` reaches, and if so why, as a
+/// test's fake `Net` checks a request it answers itself.
+pub(crate) fn outside(url: &str, hosts: &[String]) -> Option<Failure> {
+    let at = parse_url(url).ok()?;
+    if crate::limits::host_allowed(hosts.iter().map(String::as_str), &at.host, at.port) {
+        return None;
+    }
+    let listed: Vec<String> = hosts.iter().map(|host| format!("`{host}`")).collect();
+    let listed = if listed.is_empty() { "nothing".to_owned() } else { listed.join(" or ") };
+    Some(Failure::Denied(format!("`{}` is outside what this Net can reach: {listed}", without_password(url))))
 }
 
 fn parse_url(url: &str) -> Result<Url, Failure> {
@@ -155,6 +169,9 @@ pub(crate) fn send(request: &Request) -> Result<Answer, Failure> {
     let first = parse_url(&url)?;
     for _ in 0..=MOST_REDIRECTS {
         let at = parse_url(&url)?;
+        if let Some(refused) = request.hosts.as_ref().and_then(|hosts| outside(&url, hosts)) {
+            return Err(refused);
+        }
         // What says who's asking goes only to the site it was written for: the same scheme, host
         // and port. A name the program made up could be a key, so only what's known to be
         // harmless goes anywhere else.
@@ -1002,6 +1019,7 @@ mod tests {
             body: Vec::new(),
             timeout: Duration::from_secs(5),
             most_body: super::MOST_BODY,
+            hosts: None,
         })
     }
 
@@ -1044,6 +1062,7 @@ mod tests {
                 body: Vec::new(),
                 timeout: Duration::from_secs(30),
                 most_body: 1 << 20,
+                hosts: None,
             });
             let Err(Failure::Other(reason)) = failed else {
                 panic!("{head}: {:?}", failed.map(|answer| answer.body.len()));
@@ -1055,6 +1074,38 @@ mod tests {
             );
             done.join().unwrap();
         }
+    }
+
+    /// A request from a `Net` given hosts goes only to them, and a redirect to another is refused
+    /// rather than followed.
+    #[test]
+    fn a_request_held_to_hosts_refuses_a_redirect_elsewhere() {
+        let (port, done) = serving(vec![format!(
+            "HTTP/1.1 302 Found\r\nlocation: http://localhost:{}/stolen\r\ncontent-length: 0\r\n\r\n",
+            1
+        )]);
+        let ask = |url: String| {
+            send(&Request {
+                method: "GET".to_owned(),
+                url,
+                params: Vec::new(),
+                headers: Vec::new(),
+                body: Vec::new(),
+                timeout: Duration::from_secs(5),
+                most_body: super::MOST_BODY,
+                hosts: Some(vec!["127.0.0.1".to_owned()]),
+            })
+        };
+        let Err(Failure::Denied(reason)) = ask(format!("http://127.0.0.1:{port}/a")) else {
+            panic!("the redirect elsewhere was followed")
+        };
+        assert_eq!(reason, "`http://localhost:1/stolen` is outside what this Net can reach: `127.0.0.1`");
+        done.join().unwrap();
+        // A URL elsewhere is refused before anything's sent.
+        let Err(Failure::Denied(first)) = ask("http://example.com/".to_owned()) else {
+            panic!("it was sent")
+        };
+        assert!(first.starts_with("`http://example.com/` is outside"), "{first}");
     }
 
     #[test]
@@ -1107,6 +1158,7 @@ mod tests {
             body: b"data".to_vec(),
             timeout: Duration::from_secs(5),
             most_body: super::MOST_BODY,
+            hosts: None,
         });
         assert_eq!(answer.ok().unwrap().status, 200);
         let asked = done.join().unwrap();
@@ -1134,6 +1186,7 @@ mod tests {
                 body: Vec::new(),
                 timeout: Duration::from_millis(200),
                 most_body: super::MOST_BODY,
+                hosts: None,
             });
             match answer {
                 Err(Failure::Other(why)) => why,
@@ -1165,6 +1218,7 @@ mod tests {
             body: b"data".to_vec(),
             timeout: Duration::from_secs(5),
             most_body: super::MOST_BODY,
+            hosts: None,
         });
         assert_eq!(answer.ok().unwrap().body, b"ok");
         let asked = done.join().unwrap();
@@ -1192,6 +1246,7 @@ mod tests {
             body: Vec::new(),
             timeout: Duration::from_secs(5),
             most_body: super::MOST_BODY,
+            hosts: None,
         });
         assert_eq!(answer.ok().unwrap().status, 200);
         done.join().unwrap();
@@ -1219,6 +1274,7 @@ mod tests {
             body: Vec::new(),
             timeout: Duration::from_secs(5),
             most_body: super::MOST_BODY,
+            hosts: None,
         });
         assert_eq!(answer.ok().unwrap().status, 200);
         done.join().unwrap();
@@ -1266,6 +1322,7 @@ mod tests {
                 body: Vec::new(),
                 timeout: Duration::from_secs(5),
                 most_body: super::MOST_BODY,
+                hosts: None,
             })
         };
         let plain = "http://127.0.0.1:1/";
@@ -1288,6 +1345,7 @@ mod tests {
             body: Vec::new(),
             timeout: Duration::from_millis(50),
             most_body: super::MOST_BODY,
+            hosts: None,
         });
         assert!(matches!(answer, Err(Failure::TimedOut(after)) if after == Duration::from_millis(50)));
         drop(listener);

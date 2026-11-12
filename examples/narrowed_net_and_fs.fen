@@ -1,0 +1,89 @@
+# A kit given a capability can be given less of it. `net.client()` only connects out,
+# `net.server()` only listens, and `net.hosts([...])` reaches only the hosts named, connecting
+# out: a redirect elsewhere is refused too. `fs.read_only()` reads and never changes anything.
+# Each is still a `Net` or an `Fs`, so a kit takes it as it takes the whole one, and narrowing
+# again only takes more away. What's refused fails as the capability fails, with
+# `NetError.Denied` or `IoError.PermissionDenied`, saying why. `hosts` holds where a kit may
+# connect, by name: it isn't a guard against a name that leads to a private address.
+from std.net import NetError, Response
+
+## Why `run` failed, or "worked".
+def why_not[T](run: () -> T fails NetError) -> str:
+    _ = run() except why:
+        return why.message()
+    return "worked"
+
+## Why `run` failed, or "worked".
+def why_io[T](run: () -> T fails IoError) -> str:
+    _ = run() except why:
+        return why.message()
+    return "worked"
+
+## Listens on any free port, then stops.
+def listens(net: Net) fails NetError:
+    with net.listen(0)? as _:
+        pass
+
+## Connects to `port` here, then hangs up.
+def connects(net: Net, port: int) fails NetError:
+    with net.connect("localhost", port)? as _:
+        pass
+
+test "a client connects out and never listens"(net: Net):
+    client = net.client()
+    assert why_not(() => listens(client)?) == "this Net only connects out, so it can't listen"
+    net.script("GET http://localhost/a", Response(status=200, body="a".encode()))
+    assert client.get("http://localhost/a")?.text() == "a"
+
+test "a server listens and never connects out"(net: Net):
+    server = net.server()
+    assert (
+        why_not(() => server.get("http://localhost/a")?)
+        == "this Net only listens, so it can't connect out"
+    )
+    with server.listen(0)? as listening:
+        assert (
+            why_not(() => connects(server, listening.port)?)
+            == "this Net only listens, so it can't connect out"
+        )
+
+test "a Net given hosts reaches only those, and only connects out"(net: Net):
+    api = net.hosts(["localhost", "*.example.com"])
+    net.script("GET http://localhost/a", Response(status=200, body="a".encode()))
+    assert api.get("http://localhost/a")?.status == 200
+    assert (
+        why_not(() => api.get("http://evil.test/steal")?)
+        == "`http://evil.test/steal` is outside what this Net can reach: `localhost` or `*.example.com`"
+    )
+    assert why_not(() => listens(api)?) == "this Net only connects out, so it can't listen"
+    # Narrowing again only takes more away.
+    narrower = api.hosts(["localhost", "evil.test"])
+    assert why_not(() => narrower.get("http://evil.test/")?).startswith(
+        "`http://evil.test/` is outside",
+    )
+
+test "a read-only Fs reads and changes nothing"(fs: Fs):
+    fs.write_text("notes.txt", "kept")?
+    reader = fs.read_only()
+    assert reader.read_text("notes.txt")? == "kept"
+    assert (
+        why_io(() => reader.write_text("notes.txt", "changed")?)
+        == "this Fs only reads, so it can't change `notes.txt`"
+    )
+    assert (
+        why_io(() => reader.remove("notes.txt")?)
+        == "this Fs only reads, so it can't change `notes.txt`"
+    )
+    assert fs.read_text("notes.txt")? == "kept"
+    # With `only`, either way round.
+    fs.make_dir("saves")?
+    fs.write_text("saves/a.txt", "a")?
+    saves = reader.only("saves")
+    assert saves.read_text("saves/a.txt")? == "a"
+    assert why_io(() => saves.write_text("saves/b.txt", "b")?).startswith("this Fs only reads")
+    assert why_io(() => fs.only("saves").read_only().make_dir("saves/x")?).startswith(
+        "this Fs only reads",
+    )
+
+def main(stdout: Stdout):
+    stdout.print("narrowed")

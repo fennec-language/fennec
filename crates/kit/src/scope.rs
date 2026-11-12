@@ -336,9 +336,11 @@ impl Resolver<'_> {
                     self.function(method, &[]);
                 }
             }
-            // The type has to be one this file can see, like any other name it uses.
+            // The type has to be one this file can see, like any other name it uses, and one its
+            // own kit declares: another kit's type keeps the methods its kit gave it.
             Item::Extend(extension) => {
                 self.qualified(&mut extension.name, extension.span);
+                self.own_kits_type(&extension.name, extension.span);
                 let params: Vec<String> =
                     extension.generics.iter().map(|generic| generic.name.clone()).collect();
                 self.locals = params.iter().cloned().collect();
@@ -651,6 +653,28 @@ impl Resolver<'_> {
         if let Some(original) = self.original(&used, span) {
             *name = original;
         }
+    }
+
+    /// Refuses extending `name`, as the merged module calls it, when another kit declares it: an
+    /// extension there would change what that kit's own code does with its type, as `==` or `len`.
+    fn own_kits_type(&mut self, name: &str, span: Span) {
+        if self.collecting {
+            return;
+        }
+        let Some(&owner) = self.kit.owners.get(name) else { return };
+        if !self.kit.apart(self.file, owner) {
+            return;
+        }
+        let shown = name.rsplit(fennec_syntax::KIT_MARK).next().unwrap_or(name);
+        let kit = self.kit.files.get(owner).map_or("", |part| part.prefix.as_str());
+        let declared = match kit.strip_suffix(fennec_syntax::KIT_MARK) {
+            Some(kit) => format!("the kit `{kit}`"),
+            None => "the program's own kit".to_owned(),
+        };
+        self.errors.push(
+            Diagnostic::new(format!("`{shown}` is declared in {declared}, so only that kit can extend it"), span)
+                .with_help("an extension adds methods to one of this kit's own types; write a function that takes it instead"),
+        );
     }
 
     fn name(&mut self, name: &str, span: Span) {

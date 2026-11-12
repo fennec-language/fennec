@@ -383,6 +383,7 @@ export! {
     fennec_str_replace(a0: i64, a1: i64, a2: i64) -> i64 => strings::replace(a0, a1, a2);
     fennec_str_find(a0: i64, a1: i64) -> i64 => strings::find(a0, a1);
     fennec_str_split(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::split(a0, a1, a2, a3);
+    fennec_str_split_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: i64, a7: i64) -> i64 => strings::split_header(a0, a1, a2, a3, a4, a5, a6, a7);
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);

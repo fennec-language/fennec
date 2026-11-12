@@ -5993,6 +5993,90 @@ def main(stdout: Stdout):
     )
 }
 
+/// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,
+/// gives back what was pushed in a launched task as it does on the main thread, after the main
+/// thread has read the constant over and over. Each read there once took the constant's count down,
+/// below the mark the first launch shares never-freed blocks by, so the task's push was lost.
+#[test]
+fn a_constant_field_pushed_to_in_a_task_keeps_what_was_pushed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "constant_field_in_task",
+        r#"from std.concurrent import Crashed
+
+error Oops:
+    why: str
+
+NOTHING = list[(str, int)]()
+
+struct Holder:
+    items = NOTHING
+
+    def push(ref self, n: int):
+        self.items.append(("x", n))
+
+    def top(ref self) -> int fails Oops:
+        last = self.items.pop() else fail Oops(why="empty")
+        return last[1]
+
+def whole() -> int fails Oops:
+    mut holder = Holder()
+    holder.push(7)
+    return holder.top()? * 10 + NOTHING.len()
+
+def reads() -> int:
+    mut total = 0
+    for _ in range(50):
+        total += NOTHING.len()
+    return total
+
+## Called only on the main thread, so its code counts the constant there.
+def main_reads() -> int:
+    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+
+def in_task(stdout: Stdout) fails Oops:
+    stdout.print("task:", whole()?, reads())
+
+def main(stdout: Stdout) fails Oops | Crashed:
+    # Kept to say after the task, which prints first.
+    before = reads() + main_reads()
+    first = whole()?
+    with launch(() => in_task(stdout)?)?:
+        pass
+    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+"#,
+        "task: 70 0\nmain: 0 70 after: 70 0\n",
+    )
+}
+
+/// What the main thread printed before a launch comes out before what the task prints, on its own
+/// output, as it was printed first: the main thread's kept output is written as the task starts.
+#[test]
+fn what_was_printed_before_a_launch_comes_out_before_the_task_s() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "printed_before_launch",
+        r#"from std.concurrent import Crashed
+
+def tasked(stdout: Stdout):
+    stdout.print("task")
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    stdout.print("before")
+    with launch(() => tasked(stdout))?:
+        pass
+    stdout.print("after")
+    return
+"#,
+        "before\ntask\nafter\n",
+    )
+}
+
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
 /// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
 /// refused when it's built, saying why, rather than failing at line 1 when it's run.
@@ -12208,6 +12292,74 @@ fn connection_writes(said: &str) -> Option<u64> {
     words.next()?.parse().ok()
 }
 
+/// How many bytes a run allocated in all, from what it said under `FENNEC_COUNTS`.
+#[cfg(unix)]
+fn allocated_bytes(said: &str) -> Option<u64> {
+    let line = said.lines().find(|line| line.starts_with("copies "))?;
+    let mut words = line.split(' ');
+    words.by_ref().find(|word| *word == "allocated_bytes")?;
+    words.next()?.parse().ok()
+}
+
+/// A server reads a body that comes in many pieces into one buffer with room to grow, so a 10 MB
+/// upload allocates a few times its size, where joining each piece onto what came before with
+/// `+` copied all of it again for each piece: about 840 MB. The work is counted, not timed. It stops
+/// the server with SIGTERM, so it runs where there are signals.
+#[test]
+#[cfg(unix)]
+fn a_served_body_read_in_many_pieces_is_copied_about_once() -> std::io::Result<()> {
+    use std::io::{BufRead, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("served_body_once")?;
+    let server = built_in(
+        &dir,
+        "serve",
+        r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"{len(request.body)}".encode())
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=60s, until=signals, grace=2s)
+"#,
+    )?;
+    let mut serving = Running(
+        Command::new(&server)
+            .env("FENNEC_COUNTS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(serving.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let size = 10_000_000_usize;
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    client.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    client.write_all(
+        format!("POST /up HTTP/1.1\r\ncontent-length: {size}\r\nconnection: close\r\n\r\n").as_bytes(),
+    )?;
+    // In pieces of 16 KiB, so the server reads it in hundreds.
+    for piece in vec![b'x'; size].chunks(16 * 1024) {
+        client.write_all(piece)?;
+    }
+    let mut answer = String::new();
+    client.read_to_string(&mut answer)?;
+    assert!(answer.ends_with("10000000"), "{answer}");
+    terminate(&serving)?;
+    let mut said = String::new();
+    serving.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?.read_to_string(&mut said)?;
+    std::fs::remove_dir_all(&dir)?;
+    let allocated = allocated_bytes(&said).unwrap_or(u64::MAX);
+    assert!(allocated < 8 * 10_000_000, "a 10 MB body allocated {allocated} bytes: {said}");
+    Ok(())
+}
+
 /// `source` built natively in `dir` as `name`.
 fn built_in(dir: &Path, name: &str, source: &str) -> std::io::Result<PathBuf> {
     let program = dir.join(format!("{name}.fen"));
@@ -17757,6 +17909,207 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
 "#,
     )
 }
+
+/// A slice as a dict's key, set, read with `get`, tested with `in`, popped and added to a set,
+/// for values of every kind a dict holds: a string, an int, a float, a bool, a list, a struct, a
+/// struct holding a list, and a dict. Each does what the same key does made another way, by an
+/// f-string, in either build. A string value used to be stored by a slice key as if it were a
+/// block, which LLVM refused, as `names[line[:colon]] = line[colon + 2:]` in a parse of headers.
+#[test]
+fn a_slice_as_a_key_works_for_every_kind_of_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("slice_keys_every_value")?;
+    let ran = |name: &str, source: &str, how: &[&str]| -> std::io::Result<(String, String)> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let mut args = vec!["build"];
+        args.extend_from_slice(how);
+        let (program, output) =
+            (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+        args.extend([program.as_str(), "-o", output.as_str()]);
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let run = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        assert!(run.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&run.stderr));
+        Ok((
+            String::from_utf8_lossy(&run.stdout).into_owned(),
+            String::from_utf8_lossy(&run.stderr).into_owned(),
+        ))
+    };
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (sliced, counts) = ran("sliced", SLICED_KEYS, how)?;
+        let (made, _) = ran("made", MADE_KEYS, how)?;
+        assert_eq!(sliced, made, "{how:?}");
+        assert!(
+            counts.lines().any(|line| line.starts_with("copies ") && line.ends_with(" live 0")),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const SLICED_KEYS: &str = r#"struct Point:
+    x: int
+    y: int
+
+struct Holder:
+    items: list[int]
+
+def main(stdout: Stdout):
+    lines = ["ab: one", "cd: two", "ab: three", "ef: four"]
+    mut texts = dict[str, str]()
+    mut counts = dict[str, int]()
+    mut floats = dict[str, float]()
+    mut flags = dict[str, bool]()
+    mut lists = dict[str, list[str]]()
+    mut points = dict[str, Point]()
+    mut holders = dict[str, Holder]()
+    mut nested = dict[str, dict[str, int]]()
+    mut seen = set[str]()
+    for line in lines:
+        colon = line.find(":") else 0
+        texts[line[:colon]] = line[colon + 2:]
+        counts[line[:colon]] = (counts.get(line[:colon]) else 0) + 1
+        floats[line[:colon]] = 0.5
+        flags[line[:colon]] = line[:colon] in counts
+        lists[line[:colon]] = [line[colon + 2:]]
+        points[line[:colon]] = Point(x=colon, y=len(line))
+        holders[line[:colon]] = Holder(items=[colon])
+        nested[line[:colon]] = {"n": colon}
+        seen.add(line[:colon])
+        stdout.print(
+            texts.get(line[:colon]) else "-",
+            line[:colon] in texts,
+            line[:colon] in seen,
+            counts[line[:colon]],
+        )
+    first = lines[0]
+    gone = texts.pop(first[0:2])
+    stdout.print(gone, texts, counts, floats, flags, lists)
+    stdout.print(
+        [(k, p.x, p.y) for k, p in points.items()],
+        [len(holders[k].items) for k in sorted(holders.keys())],
+    )
+    stdout.print(nested, sorted(seen), first[0:2] in seen, first[0:2] in texts)
+    seen.discard(first[0:2])
+    stdout.print(sorted(seen))
+    return
+"#;
+
+const MADE_KEYS: &str = r#"struct Point:
+    x: int
+    y: int
+
+struct Holder:
+    items: list[int]
+
+def main(stdout: Stdout):
+    lines = ["ab: one", "cd: two", "ab: three", "ef: four"]
+    mut texts = dict[str, str]()
+    mut counts = dict[str, int]()
+    mut floats = dict[str, float]()
+    mut flags = dict[str, bool]()
+    mut lists = dict[str, list[str]]()
+    mut points = dict[str, Point]()
+    mut holders = dict[str, Holder]()
+    mut nested = dict[str, dict[str, int]]()
+    mut seen = set[str]()
+    for line in lines:
+        colon = line.find(":") else 0
+        texts[f"{line[:colon]}"] = line[colon + 2:]
+        counts[f"{line[:colon]}"] = (counts.get(f"{line[:colon]}") else 0) + 1
+        floats[f"{line[:colon]}"] = 0.5
+        flags[f"{line[:colon]}"] = f"{line[:colon]}" in counts
+        lists[f"{line[:colon]}"] = [line[colon + 2:]]
+        points[f"{line[:colon]}"] = Point(x=colon, y=len(line))
+        holders[f"{line[:colon]}"] = Holder(items=[colon])
+        nested[f"{line[:colon]}"] = {"n": colon}
+        seen.add(f"{line[:colon]}")
+        stdout.print(
+            texts.get(f"{line[:colon]}") else "-",
+            f"{line[:colon]}" in texts,
+            f"{line[:colon]}" in seen,
+            counts[f"{line[:colon]}"],
+        )
+    first = lines[0]
+    gone = texts.pop(first[0:2])
+    stdout.print(gone, texts, counts, floats, flags, lists)
+    stdout.print(
+        [(k, p.x, p.y) for k, p in points.items()],
+        [len(holders[k].items) for k in sorted(holders.keys())],
+    )
+    stdout.print(nested, sorted(seen), first[0:2] in seen, first[0:2] in texts)
+    seen.discard(first[0:2])
+    stdout.print(sorted(seen))
+    return
+"#;
+
+/// A struct kept in place that holds a list, read out of a dict by `values()` or `items()`, or out
+/// of a list by `enumerate` or `zip`, is copied with an owner of its own for what it holds. The
+/// copy used to share the list with no owner of its own, so it read freed memory once the dict
+/// let the list go: the first value's list read as `None`, and printing them could crash.
+#[test]
+fn a_struct_copied_out_of_a_dict_owns_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("struct_values_owned")?;
+    let program = dir.join("struct_values_owned.fen");
+    std::fs::write(&program, STRUCT_VALUES_OWNED)?;
+    let executable = dir.join("struct_values_owned");
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let mut args = vec!["build"];
+        args.extend_from_slice(how);
+        let (source, output) =
+            (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+        args.extend([source.as_str(), "-o", output.as_str()]);
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{how:?}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        assert!(ran.status.success(), "{how:?}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), STRUCT_VALUES_PRINT, "{how:?}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(
+            said.lines().any(|line| line.starts_with("copies ") && line.ends_with(" live 0")),
+            "{how:?}: {said}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const STRUCT_VALUES_PRINT: &str = r"[7] [7] [[7], [7]]
+[7] [[7], [7]]
+[7]
+[7] [7]
+[Holder(items=[1, 2], n=2)]
+";
+
+const STRUCT_VALUES_OWNED: &str = r#"struct Holder:
+    items: list[int]
+    n: int
+
+def main(stdout: Stdout):
+    mut h = dict[str, Holder]()
+    for line in ["ab", "cd"]:
+        h[line] = Holder(items=[7], n=1)
+    vals = h.values()
+    stdout.print(vals[0].items, vals[1].items, [x.items for x in h.values()])
+    pairs = h.items()
+    stdout.print(pairs[0][1].items, [p[1].items for p in pairs])
+    numbered = enumerate(vals)
+    stdout.print(numbered[1][1].items)
+    zipped = zip(vals, vals)
+    stdout.print(zipped[0][0].items, zipped[1][1].items)
+    mut by_int = dict[int, Holder]()
+    by_int[0] = Holder(items=[1, 2], n=2)
+    stdout.print(by_int.values())
+    return
+"#;
 
 /// All of `std.crypto`, of text and of bytes.
 #[test]

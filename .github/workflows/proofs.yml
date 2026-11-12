@@ -57,6 +57,10 @@ jobs:
         id: determinism
         if: always()
         run: .github/scripts/determinism.sh target/release/fennec report.md 50
+      - name: Check formatting takes time in proportion to the program
+        id: timing
+        if: always()
+        run: cargo test --release --locked -p fennec-fmt --test fmt -- --ignored --exact examples::formats_a_big_program_in_time_in_proportion
       - name: Run every test
         id: tests
         if: always()
@@ -77,6 +81,7 @@ jobs:
           FUZZ: ${{ steps.fuzz.outcome }}
           PROGRAMS: ${{ steps.programs.outcome }}
           DETERMINISM: ${{ steps.determinism.outcome }}
+          TIMING: ${{ steps.timing.outcome }}
           TESTS: ${{ steps.tests.outcome }}
         run: |
           {
@@ -84,7 +89,7 @@ jobs:
             echo
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
-            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Tests: $TESTS."
+            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Formatting in proportion: $TIMING. Tests: $TESTS."
             echo
             [ -f report.md ] && cat report.md
             echo

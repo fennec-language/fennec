@@ -10658,12 +10658,40 @@ def main(net: Net, signals: Signals, stdout: Stdout):
         .env("FENNEC_THREADS_RUNTIME", threads)
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_LIVE_REPORT", dir.join("live"))
+            .stdout(std::process::Stdio::piped())
+            .spawn()?,
+    );
     let mut printed = std::io::BufReader::new(server.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
     let mut port = String::new();
     std::io::BufRead::read_line(&mut printed, &mut port)?;
     let port: u16 = port.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     Ok((dir, server, port, printed))
+}
+
+/// Waits until the live count a program writes to `report`, as `FENNEC_LIVE_REPORT` asks, says it's
+/// serving at least `at_least` connections, so a test acts once the server has taken them rather
+/// than after a guess at how long that takes. Fails if it never does.
+pub(crate) fn serving(report: &Path, at_least: usize) {
+    let started = std::time::Instant::now();
+    loop {
+        let counts = std::fs::read_to_string(report).unwrap_or_default();
+        let connections = counts
+            .lines()
+            .find_map(|line| line.strip_prefix("connections "))
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or(0);
+        if connections >= at_least {
+            return;
+        }
+        assert!(
+            started.elapsed() < crate::executables::WALL_DEADLINE,
+            "the server took {connections} of {at_least} connections:\n{counts}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// Sends SIGTERM to `running`.
@@ -10721,8 +10749,8 @@ fn a_server_serving_until_signals_drains_when_asked() -> std::io::Result<()> {
     // Partway through one it never finishes.
     let mut stuck = connected(port)?;
     stuck.write_all(b"GET /c HTTP/1.1\r\n")?;
-    // The server has taken each before it's asked to stop.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // The server has taken each before it's asked to stop, as its live count says.
+    serving(&dir.join("live"), 3);
     terminate(&server)?;
     let asked = std::time::Instant::now();
     let mut rest = Vec::new();

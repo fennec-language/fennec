@@ -1,0 +1,65 @@
+# `Path.inside` joins a path from outside, like a request's, so it can't lead out of a folder:
+# a `..`, a `\`, a control character or a drive letter like `C:` first is refused, a leading `/`
+# is the folder's own top, and empty parts are passed over. A server reads a request's path with
+# its escapes, so `%2e%2e` reaches `inside` as the `..` it is. `inside` only looks at the text:
+# an `Fs` narrowed with `only` is what keeps a program out of other folders, links and all.
+from std.net import NetError, Request, Response
+from std.path import Path
+
+## Where `asked` is inside `www`, or why it can't be.
+def within_www(asked: str) -> str:
+    found = Path("www").inside(asked) except why:
+        return why.message
+    return found.text
+
+## A static file server's first step: the file a request names, or a 403.
+def respond(request: Request) -> Response:
+    found = Path("www").inside(request.path) except why:
+        return Response(status=403, body=f"that isn't inside www: {why.message}".encode())
+    return Response(status=200, body=found.text.encode())
+
+test "a path from outside stays inside"():
+    assert within_www("index.html") == "www/index.html"
+    assert within_www("/css/site.css") == "www/css/site.css"
+    assert within_www("a//b/./c") == "www/a/b/c"
+    assert within_www("") == "www/"
+    # A drive letter later on is only a name.
+    assert within_www("notes/C:") == "www/notes/C:"
+
+test "what could lead out is refused"():
+    for asked in ["..", "../secret", "a/../../secret", "/../secret", "a/b/../../.."]:
+        assert within_www(asked) == f"`{asked}` would leave `www`"
+    for asked in ["C:/Windows", "c:", "C:secret", "/D:/x"]:
+        assert within_www(asked) == f"`{asked}` would leave `www`"
+    for asked in ["a\\..\\secret", "\\\\?\\C:\\x", "a\x00b", "a\nb"]:
+        assert within_www(asked).endswith("can't be a path inside `www`")
+
+## What the server answers a request for `target`, as its status and body.
+def served(net: Net, target: str) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(f"GET {target} HTTP/1.1\r\nconnection: close\r\n\r\n")?
+            server.serve(respond)
+            lines = list(client.lines()?)
+            if lines[0] != "HTTP/1.1 200 OK": return lines[0]
+            return f"{lines[0]} {lines[-1]}"
+    return "no answer"
+
+test "a request's path is read with its escapes before inside sees it"(net: Net):
+    assert served(net, "/index.html")? == "HTTP/1.1 200 OK www/index.html"
+    # `%2e%2e` is `..` and `%2f` is `/`, so each reaches `inside` as a way out, and is refused.
+    for target in [
+        "/%2e%2e/secret",
+        "/..%2fsecret",
+        "/%2E%2E%2F%2E%2E%2Fsecret",
+        "/a/%2e%2e/%2e%2e/x",
+    ]:
+        assert served(net, target)? == "HTTP/1.1 403 Forbidden"
+    # `%5c` is `\`, and `%43%3a` is `C:`.
+    assert served(net, "/%5c..%5csecret")? == "HTTP/1.1 403 Forbidden"
+    assert served(net, "/%43%3a/x")? == "HTTP/1.1 403 Forbidden"
+    # Escaped twice, it's read once: `%2e` is then a name of its own, inside, not a way out.
+    assert served(net, "/%252e%252e/x")? == "HTTP/1.1 200 OK www/%2e%2e/x"
+
+def main(stdout: Stdout):
+    stdout.print(within_www("/css/site.css"), within_www("../secret"))

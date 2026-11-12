@@ -170,7 +170,8 @@ impl Place<'_> {
                 .with_help("`embed_folder` takes a folder; `embed_file` takes one file"));
         }
         let mut found = Found::default();
-        let walk = Walk { edge: &edge, kit, span, overlay: self.overlay, seen: Default::default() };
+        let walk =
+            Walk { edge: &edge, kit, span, overlay: self.overlay, seen: std::cell::RefCell::default() };
         walk.folder(&real, &beside, "", path, &mut found)?;
         found.0.sort_by(|first, second| first.0.cmp(&second.0));
         Ok(found)

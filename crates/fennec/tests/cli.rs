@@ -3588,7 +3588,8 @@ fn a_folder_linked_into_itself_is_walked_once() {
     let kit = dir.join("kit");
     std::fs::create_dir_all(kit.join("src")).unwrap();
     std::fs::create_dir_all(kit.join("assets")).unwrap();
-    std::fs::write(kit.join("kit.toml"), "[kit]\nname = \"looped\"\n").unwrap();
+    std::fs::write(kit.join("kit.toml"), "name = \"looped\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
     std::fs::write(kit.join("src/helper.fen"), "def twice(n: int) -> int:\n    return n * 2\n").unwrap();
     std::fs::write(
         kit.join("src/main.fen"),

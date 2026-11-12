@@ -243,8 +243,8 @@ export struct Pool[T]:
     def borrowed(self, wait: Duration? = None) -> Borrowed[T] fails PoolError:
         waiting = wait else self._wait
         with channel[Lent[T]](size=1) as reply:
-            self._notes.send(PoolNote[T](kind=WANT, reply=reply.sender())) except Closed(
-            ): fail .Closed
+            wanted = PoolNote[T](kind=WANT, reply=reply.sender())
+            self._notes.send(wanted) except Closed(): fail .Closed
             answered = reply.receive_within(waiting) except why:
                 gave_up[T](self._notes, reply, waiting)
                 fail .Timeout(waited=why.waited)

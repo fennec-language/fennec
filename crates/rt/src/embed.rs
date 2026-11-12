@@ -1071,7 +1071,35 @@ pub(in crate::embed) fn capture_here() -> Option<std::sync::Arc<crate::fakes::Ca
 
 /// Makes `capture` the one what runs here prints into, giving back the one before.
 pub(in crate::embed) fn swap_capture(capture: &mut Option<std::sync::Arc<crate::fakes::Capture>>) {
+    // What's held of an unfinished line goes to the capture it was printed for, before another's
+    // comes in.
+    let held = HELD_LINE.take();
+    if !held.is_empty()
+        && let Some(going) = capture_given()
+    {
+        going.print(&held);
+    }
     CAPTURE.with_borrow_mut(|here| std::mem::swap(here, capture));
+}
+
+thread_local! {
+    /// What a task or range a test started has printed of a line not ended yet. A `print` comes
+    /// here in pieces, and its pieces go into the test's capture together, once its line ends, so
+    /// other threads' prints never land inside it.
+    static HELD_LINE: Cell<String> = const { Cell::new(String::new()) };
+}
+
+/// Puts what a task or range printed into `capture`, a whole line at a time: the end of a line it
+/// holds back until the rest of it comes.
+fn capture_lines(capture: &crate::fakes::Capture, text: &str) {
+    let mut held = HELD_LINE.take();
+    held.push_str(text);
+    if let Some(end) = held.rfind('\n') {
+        let rest = held.split_off(end + 1);
+        capture.print(&held);
+        held = rest;
+    }
+    HELD_LINE.set(held);
 }
 
 /// The capture this thread prints into, when what it runs belongs to a test and the thread has no
@@ -1103,8 +1131,9 @@ pub mod io {
                 return Ok(());
             }
         } else if let Some(capture) = super::capture_given() {
-            // A task or range a test started, on a thread of its own: what it prints is the test's.
-            capture.print(text);
+            // A task or range a test started, on a thread of its own: what it prints is the test's,
+            // each line whole.
+            super::capture_lines(&capture, text);
             return Ok(());
         }
         state

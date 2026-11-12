@@ -20,3 +20,28 @@ pub fn next_test() -> Option<Diagnostic> {
         failure
     })
 }
+
+/// What a task or range a test started prints goes into the test's capture a whole line at a time:
+/// a `print` arrives in pieces, and another thread's line printed between them lands before or
+/// after it, never inside it.
+#[test]
+fn a_tasks_printed_line_goes_into_its_tests_capture_whole() {
+    use std::sync::{Arc, Barrier};
+    let capture = crate::fakes::Capture::new();
+    let turns = Arc::new(Barrier::new(2));
+    let other = {
+        let (capture, turns) = (Arc::clone(&capture), Arc::clone(&turns));
+        std::thread::spawn(move || {
+            turns.wait();
+            super::capture_lines(&capture, "other 1\n");
+            turns.wait();
+        })
+    };
+    super::capture_lines(&capture, "item ");
+    turns.wait();
+    turns.wait();
+    super::capture_lines(&capture, "0");
+    super::capture_lines(&capture, "\n");
+    other.join().unwrap();
+    assert_eq!(capture.printed(), "other 1\nitem 0\n");
+}

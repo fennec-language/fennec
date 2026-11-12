@@ -40,7 +40,7 @@ struct Captured {
 }
 
 impl Capture {
-    fn new() -> Arc<Capture> {
+    pub(crate) fn new() -> Arc<Capture> {
         Arc::new(Capture(Mutex::new(Captured::default())))
     }
 
@@ -70,7 +70,7 @@ impl Capture {
         }
     }
 
-    fn printed(&self) -> String {
+    pub(crate) fn printed(&self) -> String {
         self.captured().printed.clone()
     }
 

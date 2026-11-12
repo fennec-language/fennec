@@ -200,7 +200,7 @@ pub(crate) fn timing_functions(block: &TestDef) -> Option<Vec<FnDef>> {
     let tried = if passes_failures_up(block) { "?" } else { "" };
     let source = format!(
         "def {PREFIX}main(clock: Clock, args: Args, stdout: Stdout):\n    started = clock.now()\n    \
-         if args.len() == 0:\n        {PREFIX}bench(){tried}\n    stdout.print((clock.now() - started).nanos)\n"
+         if len(args) == 0:\n        {PREFIX}bench(){tried}\n    stdout.print((clock.now() - started).nanos)\n"
     );
     let mut made = functions_in(&source, block.span.start)?;
     if let Some(main) = made.first_mut() {
@@ -316,9 +316,16 @@ fn shrinking_functions(
     let ran = if tried.is_empty() {
         format!("    {PREFIX}{number}_body({given})\n")
     } else {
-        format!("    {PREFIX}{number}_body({given}) else:\n        return False\n")
+        // A failure here only means this input fails the test, so what it was is dropped, but
+        // never without a word: `except` has to use what it names.
+        format!(
+            "    {PREFIX}{number}_body({given}) except failed:\n        {PREFIX}dropped(f\"{{failed}}\")\n        return False\n"
+        )
     };
-    let _ = write!(source, "def {PREFIX}{number}_attempt({params}) -> bool:\n{ran}    {PREFIX}passed()\n\n");
+    let _ = write!(
+        source,
+        "def {PREFIX}{number}_attempt({params}) -> bool:\n{ran}    return {PREFIX}passed()\n\n"
+    );
     let _ = writeln!(source, "def {PREFIX}{number}_shrunk({params}):");
     for at in 0..test.inputs.len() {
         let _ = writeln!(source, "    mut best{at} = input{at}");
@@ -345,7 +352,7 @@ fn shrinking_functions(
     for (at, input) in test.inputs.iter().enumerate() {
         // A value shown in a list is shown as one on its own is.
         let _ = writeln!(source, "    shown{at} = str([best{at}])");
-        described.push(format!("\"{} = \" + shown{at}[1:shown{at}.len() - 1]", input.name));
+        described.push(format!("\"{} = \" + shown{at}[1:len(shown{at}) - 1]", input.name));
     }
     let _ = write!(
         source,
@@ -381,7 +388,7 @@ fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Option<Module> {
     // What shrinking calls, which native code makes calls to the runtime.
     if tests.iter().any(|test| !test.inputs.is_empty()) {
         let shrinking = format!(
-            "def {PREFIX}passed() -> bool:\n    True\n\ndef {PREFIX}failed_for(given: str):\n    pass\n"
+            "def {PREFIX}passed() -> bool:\n    return True\n\ndef {PREFIX}failed_for(given: str):\n    pass\n\ndef {PREFIX}dropped(why: str):\n    pass\n"
         );
         made.extend(functions_in(&shrinking, 0)?);
     }
@@ -648,5 +655,66 @@ fn run_alone(work: &std::path::Path, number: usize) -> (String, String) {
             (String::from_utf8_lossy(&output.stdout).into_owned(), ended)
         }
         Err(err) => (String::new(), format!("it couldn't be run: {err}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// What runs a kit's tests through LLVM, written around them, is in the forms of 2026-11-11:
+    /// the property test's runner, its tries and its shrinking, and a bench's timing `main`, each
+    /// checks with nothing the migration would rewrite, so the tests a user writes never stop
+    /// building when old forms are refused.
+    #[test]
+    fn what_runs_the_tests_is_in_the_new_forms() {
+        let source = "\
+error Odd:
+    value: int
+
+def half(n: int) -> int fails Odd:
+    if n % 2 != 0:
+        fail Odd(value=n)
+    return n // 2
+
+test \"halves add up\" for n: int:
+    assert half(n * 2)? * 2 == n * 2
+
+test \"names stay short\" for name: str:
+    assert len(name) < 100
+
+bench \"halving\":
+    _ = half(8)?
+";
+        let module = fennec_syntax::parse(source).unwrap();
+        let tests: Vec<fennec_syntax::TestDef> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                fennec_syntax::Item::Test(test) => Some(test.clone()),
+                _ => None,
+            })
+            .collect();
+        let properties: Vec<&fennec_syntax::TestDef> = tests.iter().filter(|test| !test.bench).collect();
+        let trimmed = super::trimmed_for(&module, &properties).unwrap();
+        let bench = tests.iter().find(|test| test.bench).unwrap();
+        let mut made: Vec<fennec_syntax::FnDef> = trimmed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                fennec_syntax::Item::Function(def) => Some(def.clone()),
+                _ => None,
+            })
+            .collect();
+        made.extend(super::timing_functions(bench).unwrap().into_iter().filter(|def| def.name != "main"));
+        let old: Vec<String> = fennec_check::migration_fixes(
+            &fennec_syntax::Module {
+                items: made.into_iter().map(fennec_syntax::Item::Function).collect(),
+                ..Default::default()
+            },
+            &fennec_syntax::Sources::new(),
+        )
+        .into_iter()
+        .map(|found| found.message)
+        .collect();
+        assert!(old.is_empty(), "{old:?}");
     }
 }

@@ -16,12 +16,12 @@ pub(crate) const PREFIX: &str = "fennec_test_";
 const SHARED: &str = "\
 def fennec_test_random(ref state: int, limit: int) -> int:
     state = state * 48271 % 2147483647
-    state % limit
+    return state % limit
 
 def fennec_test_length(ref state: int, depth: int) -> int:
     if depth > 2:
         return 0
-    fennec_test_random(ref state, 8)
+    return fennec_test_random(ref state, 8)
 
 ";
 
@@ -68,7 +68,7 @@ impl<'m> Inputs<'m> {
         let body = if ty.optional {
             let inner = self.function_for(&TypeExpr { optional: false, ..ty.clone() })?;
             format!(
-                "    if fennec_test_random(ref state, 5) == 0:\n        return None\n    {inner}(ref state, depth)\n"
+                "    if fennec_test_random(ref state, 5) == 0:\n        return None\n    return {inner}(ref state, depth)\n"
             )
         } else {
             self.body_for(ty)?
@@ -86,23 +86,23 @@ impl<'m> Inputs<'m> {
         }
         let body = match (ty.name.as_str(), ty.args.as_slice(), ty.optional) {
             // Toward 0: 0, half of it rounded toward 0, and one step nearer.
-            ("int", [], false) => "    if value == 0:\n        return []\n    mut half = value // 2\n    if value < 0 and half * 2 != value:\n        half += 1\n    if value > 0:\n        return [0, half, value - 1]\n    [0, half, value + 1]\n".to_owned(),
-            ("bool", [], false) => "    if value:\n        return [False]\n    []\n".to_owned(),
-            ("str", [], false) => "    if value.len() == 0:\n        return []\n    [\"\", value[0:value.len() - 1]]\n".to_owned(),
+            ("int", [], false) => "    if value == 0:\n        return []\n    mut half = value // 2\n    if value < 0 and half * 2 != value:\n        half += 1\n    if value > 0:\n        return [0, half, value - 1]\n    return [0, half, value + 1]\n".to_owned(),
+            ("bool", [], false) => "    if value:\n        return [False]\n    return []\n".to_owned(),
+            ("str", [], false) => "    if len(value) == 0:\n        return []\n    return [\"\", value[0:len(value) - 1]]\n".to_owned(),
             // Empty, then each item left out in turn.
             ("list", [item], false) => {
                 self.function_for(item)?;
                 format!(
-                    "    if value.len() == 0:\n        return []\n    mut options: list[{shown}] = [[]]\n    for skip in range(value.len()):\n        options.append(value[:skip] + value[skip + 1:])\n    options\n"
+                    "    if len(value) == 0:\n        return []\n    mut options: list[{shown}] = [[]]\n    for skip in range(len(value)):\n        options.append(value[:skip] + value[skip + 1:])\n    return options\n"
                 )
             }
             // Toward 0, as a whole number first.
-            ("float", [], false) => "    if value == 0.0:\n        return []\n    if value % 1.0 == 0.0:\n        return [0.0]\n    whole = value - value % 1.0\n    if value < 0.0:\n        return [0.0, whole + 1.0]\n    [0.0, whole]\n".to_owned(),
+            ("float", [], false) => "    if value == 0.0:\n        return []\n    if value % 1.0 == 0.0:\n        return [0.0]\n    whole = value - value % 1.0\n    if value < 0.0:\n        return [0.0, whole + 1.0]\n    return [0.0, whole]\n".to_owned(),
             // Tuples, structs and optionals have nothing simpler yet. Shrinking structs by their
             // fields is still to come.
             _ => {
                 self.function_for(ty)?;
-                "    []\n".to_owned()
+                "    return []\n".to_owned()
             }
         };
         let name = format!("{PREFIX}simpler_{}", self.simpler.len());
@@ -113,18 +113,18 @@ impl<'m> Inputs<'m> {
 
     fn body_for(&mut self, ty: &TypeExpr) -> Option<String> {
         Some(match (ty.name.as_str(), ty.args.as_slice()) {
-            ("int", []) => "    kind = fennec_test_random(ref state, 10)\n    if kind == 0:\n        return 0\n    if kind == 1:\n        return 1\n    if kind == 2:\n        return -1\n    fennec_test_random(ref state, 2001) - 1000\n".to_owned(),
+            ("int", []) => "    kind = fennec_test_random(ref state, 10)\n    if kind == 0:\n        return 0\n    if kind == 1:\n        return 1\n    if kind == 2:\n        return -1\n    return fennec_test_random(ref state, 2001) - 1000\n".to_owned(),
             ("float", []) => {
                 let int = TypeExpr { name: "int".to_owned(), args: Vec::new(), optional: false, span: ty.span };
                 let int = self.function_for(&int)?;
-                format!("    float({int}(ref state, depth)) / 8.0\n")
+                format!("    return float({int}(ref state, depth)) / 8.0\n")
             }
-            ("bool", []) => "    fennec_test_random(ref state, 2) == 0\n".to_owned(),
-            ("str", []) => "    letters = \"abcdefghijklmnopqrstuvwxyz\"\n    mut text = \"\"\n    for _ in range(fennec_test_length(ref state, depth)):\n        text += letters[fennec_test_random(ref state, 26)]\n    text\n".to_owned(),
+            ("bool", []) => "    return fennec_test_random(ref state, 2) == 0\n".to_owned(),
+            ("str", []) => "    letters = \"abcdefghijklmnopqrstuvwxyz\"\n    mut text = \"\"\n    for _ in range(fennec_test_length(ref state, depth)):\n        text += letters[fennec_test_random(ref state, 26)]\n    return text\n".to_owned(),
             ("list", [item]) => {
                 let inner = self.function_for(item)?;
                 format!(
-                    "    mut items: {} = []\n    for _ in range(fennec_test_length(ref state, depth)):\n        items.append({inner}(ref state, depth + 1))\n    items\n",
+                    "    mut items: {} = []\n    for _ in range(fennec_test_length(ref state, depth)):\n        items.append({inner}(ref state, depth + 1))\n    return items\n",
                     written(ty)
                 )
             }
@@ -136,7 +136,7 @@ impl<'m> Inputs<'m> {
                     let _ = writeln!(body, "    item{at} = {inner}(ref state, depth + 1)");
                     names.push(format!("item{at}"));
                 }
-                let _ = writeln!(body, "    ({})", names.join(", "));
+                let _ = writeln!(body, "    return ({})", names.join(", "));
                 body
             }
             (name, []) => self.body_of_type(name)?,
@@ -154,7 +154,7 @@ impl<'m> Inputs<'m> {
         })?;
         if def.cases.is_empty() {
             let (lines, made) = self.fields(&def.fields, "    ")?;
-            return Some(format!("{lines}    {name}({made})\n"));
+            return Some(format!("{lines}    return {name}({made})\n"));
         }
         let mut body = format!("    kind = fennec_test_random(ref state, {})\n", def.cases.len());
         for (at, case) in def.cases.iter().enumerate() {
@@ -169,10 +169,10 @@ impl<'m> Inputs<'m> {
         // Never reached, but a function has to give back a value at its end.
         let first = def.cases.first()?;
         if first.fields.is_empty() {
-            let _ = writeln!(body, "    .{}", first.name);
+            let _ = writeln!(body, "    return .{}", first.name);
         } else {
             let (lines, made) = self.fields(&first.fields, "    ")?;
-            let _ = writeln!(body, "{lines}    .{}({made})", first.name);
+            let _ = writeln!(body, "{lines}    return .{}({made})", first.name);
         }
         Some(body)
     }
@@ -197,6 +197,46 @@ impl<'m> Inputs<'m> {
 #[cfg(test)]
 mod tests {
     use super::Inputs;
+
+    /// What makes and shrinks every kind of input checks as Fennec of 2026-11-11: each `def` that
+    /// gives a value says `return`, a length is `len(x)`, and nothing the migration would rewrite
+    /// is left, so a test's generated code never stops building when old forms are refused.
+    #[test]
+    fn what_it_writes_is_in_the_new_forms() {
+        let source = "\
+struct Point:
+    x: int
+    label: str
+
+enum Shape:
+    Dot
+    Circle(radius: float)
+    Line(start: Point, end: Point)
+";
+        let module = fennec_syntax::parse(source).unwrap();
+        let mut inputs = Inputs::new(&module);
+        let types =
+            ["int", "float", "bool", "str", "list[int]", "list[str]", "(int, str)", "int?", "Point", "Shape"];
+        for ty in types {
+            let test = format!("test \"t\" for a: {ty}:\n    pass\n");
+            let parsed = fennec_syntax::parse(&test).unwrap();
+            let Some(fennec_syntax::Item::Test(test)) = parsed.items.first() else { panic!("no test") };
+            let wanted = test.inputs.first().and_then(|input| input.ty.as_ref()).unwrap();
+            assert!(inputs.function_for(wanted).is_some(), "{ty}");
+            assert!(inputs.simpler_for(wanted).is_some(), "{ty}");
+        }
+        let written = format!("{source}\n{}", inputs.source());
+        assert!(!written.contains(".len()") && !written.contains(".abs()"), "{written}");
+        let mut sources = fennec_syntax::Sources::new();
+        let base = sources.add("inputs.fen", &written);
+        let mut checked = fennec_syntax::parse_at(&written, base).unwrap();
+        fennec_check::check_to_build(&mut checked).map_err(|found| format!("{found:?}\n{written}")).unwrap();
+        let old: Vec<String> = fennec_check::migration_fixes(&checked, &sources)
+            .into_iter()
+            .map(|found| found.message)
+            .collect();
+        assert!(old.is_empty(), "{old:?}\n{written}");
+    }
 
     #[test]
     fn it_leaves_what_it_cannot_make() {

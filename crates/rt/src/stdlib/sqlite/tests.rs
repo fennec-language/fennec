@@ -208,26 +208,62 @@ fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), Strin
         "delete from notes where n = 2",
         "reindex notes",
         "drop index by_n",
+        "create temp table scratch (n integer)",
+        "create temp view scratch_seen as select n from scratch",
+        "create temp trigger scratch_kept after insert on scratch begin select 1; end",
+        "insert into scratch (n) values (1)",
+        "drop trigger scratch_kept",
+        "drop view scratch_seen",
+        "drop table scratch",
     ];
     for text in works {
         let said = run(db, "_execute", &query(text, &[], &[]))?;
         assert!(said.starts_with("Ok("), "{text}: {said}");
     }
     let refused = [
-        "create trigger kept after insert on notes begin insert into notes (n) values (0); end",
-        "create view seen as select n from notes",
-        "create temp table elsewhere (n integer)",
-        "create temp trigger t after insert on notes begin select 1; end",
+        "attach database 'other.db' as other",
+        "attach database ':memory:' as other",
+        "vacuum into 'copy.db'",
         "analyze",
         "pragma foreign_keys = on",
         "pragma table_info(notes)",
         "pragma main.user_version = 3",
+        "pragma temp.user_version = 3",
         "pragma writable_schema = on",
+        "pragma temp_store_directory = '/tmp'",
         "detach database main",
+        "detach database temp",
     ];
     for text in refused {
         let said = run(db, "_execute", &query(text, &[], &[]))?;
-        assert!(said.contains("not authorized"), "{text}: {said}");
+        // `VACUUM INTO` is refused as it attaches, which SQLite words as "authorization denied".
+        assert!(said.contains("not authorized") || said.contains("authorization denied"), "{text}: {said}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_view_and_a_trigger_in_main_work() -> Result<(), String> {
+    let mut fakes = Fakes::default();
+    let db = handle_of(&open_fake(&mut fakes, "kept.db"))?;
+    for text in [
+        "create table notes (n integer)",
+        "create table counted (n integer)",
+        "create trigger count_notes after insert on notes begin insert into counted (n) values (new.n); end",
+        "create view big as select n from notes where n > 1",
+        "insert into notes (n) values (1)",
+        "insert into notes (n) values (2)",
+    ] {
+        let said = run(db, "_execute", &query(text, &[], &[]))?;
+        assert!(said.starts_with("Ok("), "{text}: {said}");
+    }
+    let counted = run(db, "_query", &query("select n from counted order by n", &[], &[]))?;
+    assert!(counted.contains("ints=[1, 2]"), "{counted}");
+    let big = run(db, "_query", &query("select n from big", &[], &[]))?;
+    assert!(big.contains("ints=[2]"), "{big}");
+    for text in ["drop view big", "drop trigger count_notes"] {
+        let said = run(db, "_execute", &query(text, &[], &[]))?;
+        assert!(said.starts_with("Ok("), "{text}: {said}");
     }
     Ok(())
 }

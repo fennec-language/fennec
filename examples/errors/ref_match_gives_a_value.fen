@@ -3,12 +3,12 @@ enum Slot:
     Held(count: int)
 
 def bump(ref slot: Slot) -> int:
-    match slot:
+    return match slot:
         case .Held(ref count):
             count += 1
-            return count
+            count
         case .Empty:
-            return 0
+            0
 
 def main(stdout: Stdout):
     mut slot = Slot.Held(count=1)

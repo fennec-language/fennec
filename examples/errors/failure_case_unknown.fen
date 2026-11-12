@@ -15,5 +15,6 @@ def main(stdout: Stdout):
         case .Gon:
             0
         case _:
+            stdout.print(why)
             1
     stdout.print(value)

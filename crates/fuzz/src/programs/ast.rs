@@ -558,6 +558,12 @@ pub(crate) enum Writing {
     Added,
     /// `to = f"{to}piece"`.
     Formatted,
+    /// `to = to + piece + to`, a later piece reading what's being grown.
+    Chained,
+    /// `to += piece + to + "ç"`, three pieces, one of them what's being grown.
+    Summed,
+    /// `to += piece`, a piece past 23 bytes with letters past ASCII.
+    Long,
     /// `_ = to.remove(key)`, a walk of what's left, then the key put back with a new value.
     Removed,
 }

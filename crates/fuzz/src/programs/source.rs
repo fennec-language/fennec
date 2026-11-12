@@ -571,6 +571,9 @@ fn streamed_written(streaming: &Streaming) -> String {
     out
 }
 
+/// A piece of text past the 23 bytes a str holds in place, with letters past ASCII.
+pub(crate) const LONG_PIECE: &str = "a piece of text past 23 bytes, é and 🦊, ";
+
 /// A list of ints as Fennec writes one.
 fn ints_written(items: &[i64]) -> String {
     let items: Vec<String> = items.iter().map(ToString::to_string).collect();
@@ -679,7 +682,8 @@ fn aliased_written(aliasing: &Aliasing) -> String {
         |n: usize| if n == TABLE || n == LEDGER || n == ROOMS || changed.contains(&n) { "mut " } else { "" };
     let mut out = format!(
         "struct Ledger{id}:\n    points: Table[Point]\n    count: int\n\nstruct Room{id}:\n    counts: dict[str, \
-         int]\n    label: str\n\n"
+         int]\n    label: str\n\n    def labeled(ref self, first: str, second: str):\n        self.label += first + \
+         second\n\n"
     );
     if steps.iter().any(|step| matches!(step, Alias::Written { how: Writing::Ref, .. })) {
         let _ = write!(
@@ -907,6 +911,7 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
         (Held::Counts, _) => format!("    {to}[\"{key}\"] += {n}\n"),
         (Held::Rooms, Writing::Set) => format!("    {to}[{room}].counts[\"b\"] = {n}\n"),
         (Held::Rooms, Writing::Field) => format!("    {to}[{room}].label += \"q{n}\"\n"),
+        (Held::Rooms, Writing::Method) => format!("    {to}[{room}].labeled(\"a{n}\", \"é{n}\")\n"),
         (Held::Rooms, Writing::PutBack) => format!(
             "    mut taken{s} = {to}[{room}]\n    taken{s}.counts[\"a\"] += {n}\n    {to}[{room}] = taken{s}\n"
         ),
@@ -930,6 +935,9 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
         (Held::Point, _) => format!("    {to}.moved({n})\n"),
         (Held::Text, Writing::Added) => format!("    {to} += \"q{n}\"\n"),
         (Held::Text, Writing::Formatted) => format!("    {to} = f\"{{{to}}}r{n}\"\n"),
+        (Held::Text, Writing::Chained) => format!("    {to} = {to} + \"a{n}\" + {to}\n"),
+        (Held::Text, Writing::Summed) => format!("    {to} += \"b{n}\" + {to} + \"ç\"\n"),
+        (Held::Text, Writing::Long) => format!("    {to} += \"{LONG_PIECE}{n}\"\n"),
         (Held::Text, _) => format!("    {to} = {to} + \"p{n}\"\n"),
     }
 }

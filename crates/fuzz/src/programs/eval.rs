@@ -517,6 +517,9 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
         (Kept::Rooms(rooms), Writing::Field) => {
             let _ = write!(rooms.get_mut(at)?.1, "q{n}");
         }
+        (Kept::Rooms(rooms), Writing::Method) => {
+            let _ = write!(rooms.get_mut(at)?.1, "a{n}é{n}");
+        }
         (Kept::Rooms(rooms), Writing::PutBack) => {
             let count = keyed(&mut rooms.get_mut(at)?.0, 0)?;
             *count = count.checked_add(n)?;
@@ -552,6 +555,17 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
         }
         (Kept::Text(text), Writing::Formatted) => {
             let _ = write!(text, "r{n}");
+        }
+        (Kept::Text(text), Writing::Chained) => {
+            let before = text.clone();
+            let _ = write!(text, "a{n}{before}");
+        }
+        (Kept::Text(text), Writing::Summed) => {
+            let before = text.clone();
+            let _ = write!(text, "b{n}{before}ç");
+        }
+        (Kept::Text(text), Writing::Long) => {
+            let _ = write!(text, "{}{n}", super::source::LONG_PIECE);
         }
         (Kept::Text(text), _) => {
             let _ = write!(text, "p{n}");

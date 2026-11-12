@@ -1072,7 +1072,9 @@ impl Writer<'_> {
                 Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append, Writing::Removed],
                 Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method, Writing::Removed],
                 Held::Counts => &[Writing::Field, Writing::Set, Writing::Removed],
-                Held::Rooms => &[Writing::ForRef, Writing::Set, Writing::Field, Writing::PutBack],
+                Held::Rooms => {
+                    &[Writing::ForRef, Writing::Set, Writing::Field, Writing::PutBack, Writing::Method]
+                }
                 Held::Table | Held::Entries => {
                     &[Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
@@ -1080,7 +1082,14 @@ impl Writer<'_> {
                     &[Writing::Field, Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
                 Held::Point => &[Writing::Field, Writing::Method],
-                Held::Text => &[Writing::Joined, Writing::Added, Writing::Formatted],
+                Held::Text => &[
+                    Writing::Joined,
+                    Writing::Added,
+                    Writing::Formatted,
+                    Writing::Chained,
+                    Writing::Summed,
+                    Writing::Long,
+                ],
             };
             // Any collection can be handed to tasks, each changing a copy of its own.
             if !matches!(kind, Held::Point | Held::Text) && !self.threadless && self.choice(5) == 0 {

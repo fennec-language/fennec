@@ -333,32 +333,32 @@ from std import json
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    ints: list[int]? = json.loads[list[int]](text) else as why:
+    ints: list[int]? = json.loads[list[int]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if ints is not None:
         stdout.print(f\"Ok({ints})\")
-    names: dict[str, str]? = json.loads[dict[str, str]](text) else as why:
+    names: dict[str, str]? = json.loads[dict[str, str]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if names is not None:
         stdout.print(f\"Ok({names})\")
-    floats: dict[str, list[float]]? = json.loads[dict[str, list[float]]](text) else as why:
+    floats: dict[str, list[float]]? = json.loads[dict[str, list[float]]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if floats is not None:
         stdout.print(f\"Ok({floats})\")
-    words: list[str?]? = json.loads[list[str?]](text) else as why:
+    words: list[str?]? = json.loads[list[str?]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if words is not None:
         stdout.print(f\"Ok({words})\")
-    number: float? = json.loads[float](text) else as why:
+    number: float? = json.loads[float](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if number is not None:
         stdout.print(f\"Ok({number})\")
-    truth: bool? = json.loads[bool](text) else as why:
+    truth: bool? = json.loads[bool](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if truth is not None:
@@ -372,22 +372,22 @@ from std import toml
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    names: dict[str, str]? = toml.loads[dict[str, str]](text) else as why:
+    names: dict[str, str]? = toml.loads[dict[str, str]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if names is not None:
         stdout.print(f\"Ok({names})\")
-    counts: dict[str, int]? = toml.loads[dict[str, int]](text) else as why:
+    counts: dict[str, int]? = toml.loads[dict[str, int]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if counts is not None:
         stdout.print(f\"Ok({counts})\")
-    tables: dict[str, dict[str, str]]? = toml.loads[dict[str, dict[str, str]]](text) else as why:
+    tables: dict[str, dict[str, str]]? = toml.loads[dict[str, dict[str, str]]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if tables is not None:
         stdout.print(f\"Ok({tables})\")
-    floats: dict[str, list[float]]? = toml.loads[dict[str, list[float]]](text) else as why:
+    floats: dict[str, list[float]]? = toml.loads[dict[str, list[float]]](text) except why:
         stdout.print(f\"Err({why})\")
         None
     if floats is not None:
@@ -397,7 +397,7 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
 /// The `utf8` target's program, which decodes its file's bytes, printing `Ok(text)` or `Err(why)`.
 const UTF8_READER: &str = "\
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
-    decoded = fs.read_bytes(args[0])?.decode() else as why:
+    decoded = fs.read_bytes(args[0])?.decode() except why:
         stdout.print(f\"Err({why})\")
         return
     stdout.print(f\"Ok({decoded})\")
@@ -417,6 +417,21 @@ const READERS: [(&str, &str); 9] = [
     ("utf8", UTF8_READER),
 ];
 
+/// The Fennec program the target `name` reads its inputs through, if it has one.
+pub(crate) fn reader_source(name: &str) -> Option<String> {
+    let source = READERS.iter().find(|(named, _)| *named == name).map(|(_, source)| (*source).to_owned());
+    source.or_else(|| match name {
+        "pack" => Some(crate::pack_rules::reader()),
+        "toml-rules" => Some(crate::toml_rules::reader()),
+        _ => None,
+    })
+}
+
+/// The names of the targets that read their inputs through a Fennec program.
+pub(crate) fn reader_names() -> Vec<&'static str> {
+    READERS.iter().map(|(name, _)| *name).chain(["pack", "toml-rules"]).collect()
+}
+
 /// The readers built so far in this process, by target.
 type Built = std::sync::Mutex<Vec<(String, PathBuf)>>;
 
@@ -431,13 +446,7 @@ fn reader(name: &str) -> Result<PathBuf, String> {
         used(executable);
         return Ok(executable.clone());
     }
-    let source = READERS.iter().find(|(named, _)| *named == name).map(|(_, source)| (*source).to_owned());
-    let source = source.or_else(|| match name {
-        "pack" => Some(crate::pack_rules::reader()),
-        "toml-rules" => Some(crate::toml_rules::reader()),
-        _ => None,
-    });
-    let source = source.ok_or_else(|| format!("there's no reader for `{name}`"))?;
+    let source = reader_source(name).ok_or_else(|| format!("there's no reader for `{name}`"))?;
     // Built once for every process, by what it's built from, since cutting a failure down runs a
     // process for each try.
     let readers = std::env::temp_dir().join("fennec-fuzz-readers");

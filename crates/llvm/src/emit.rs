@@ -1616,18 +1616,32 @@ impl Emit<'_, '_, '_> {
     /// but through a call LLVM copies in, so the block this is in carries on: for a fact checked
     /// where what comes after leans on the block it's written in, like a phi.
     pub(crate) fn proof_held_here(&mut self, broken: &str, proof: &str, span: Span) {
-        self.declare("declare void @fennec_proof_broken(ptr, i64, i64) #1");
-        self.module.add_helper(
-            "fen_proof_held",
-            "define internal void @fen_proof_held(i1 %broken, ptr %proof, i64 %from, i64 %to) #2 {\nentry:\n  br i1 %broken, label %stop, label %held, !prof !8\nstop:\n  call void @fennec_proof_broken(ptr %proof, i64 %from, i64 %to)\n  unreachable\nheld:\n  ret void\n}\n\n".to_owned(),
-        );
-        let text = self.literal(&format!("proof broken: {proof}"));
+        let text = self.proof_text(proof);
         let here = self.label("proof_at");
         let (place, args) = self.span_values(&here, span);
         for line in place.lines() {
             self.line(line.trim_start());
         }
         self.line(&format!("call void @fen_proof_held(i1 {broken}, ptr {text}, {args})"));
+    }
+
+    /// What a broken proof says, for `@fen_proof_held`, which this defines for the module.
+    pub(crate) fn proof_text(&mut self, proof: &str) -> String {
+        let symbol = self.proof_symbol(proof);
+        let text = self.temp();
+        self.line(&format!("{text} = load ptr, ptr {symbol}, !invariant.load !1"));
+        text
+    }
+
+    /// The global holding what a broken proof says, for a helper to load and give
+    /// `@fen_proof_held`, which this defines for the module.
+    pub(crate) fn proof_symbol(&mut self, proof: &str) -> String {
+        self.declare("declare void @fennec_proof_broken(ptr, i64, i64) #1");
+        self.module.add_helper(
+            "fen_proof_held",
+            "define internal void @fen_proof_held(i1 %broken, ptr %proof, i64 %from, i64 %to) #2 {\nentry:\n  br i1 %broken, label %stop, label %held, !prof !8\nstop:\n  call void @fennec_proof_broken(ptr %proof, i64 %from, i64 %to)\n  unreachable\nheld:\n  ret void\n}\n\n".to_owned(),
+        );
+        self.literal_symbol(&format!("proof broken: {proof}"))
     }
 
     /// Checks that each address a parameter has alone, which a build that doesn't check proofs
@@ -3940,6 +3954,24 @@ def main(stdout: Stdout):
         ] {
             assert!(said.iter().any(|text| text.contains(proof)), "no check that {proof}: {said:?}");
         }
+        Ok(())
+    }
+
+    /// A build that checks proofs checks a string's cursor is inside it wherever it's taken as a
+    /// place in its bytes: in finding a character, reading one, and walking to one.
+    #[test]
+    fn checking_proofs_checks_a_strings_cursor() -> Result<(), String> {
+        let source = "def go(s: str) -> int:\n    mut n = 0\n    for i in range(s.len()):\n        if s[i] == \"\u{e9}\" or s[i - 1] == \"a\":\n            n += 1\n    return n\n\ndef main(stdout: Stdout):\n    stdout.print(go(\"caf\u{e9} na\u{ef}ve\"))\n    return\n";
+        let program = lowered(source)?;
+        let (plain, _, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(plain.contains("@fen_char_walk(") && !plain.contains("%cursor_wrong"), "{plain}");
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let helpers = text.matches("%cursor_wrong = or i1").count();
+        assert!(helpers >= 2, "{helpers} helpers check the cursor:\n{text}");
+        assert!(shared.literals.values().any(|said| said.contains("a string's cursor is inside it")));
         Ok(())
     }
 

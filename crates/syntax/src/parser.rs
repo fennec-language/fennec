@@ -29,7 +29,18 @@ pub fn parse_prelude(source: &str) -> Result<Module, Diagnostic> {
 /// Parses a standard library source with its spans starting at `base`, past `Span::PRELUDE`:
 /// each file has its own, so a span names the file it's in.
 pub(crate) fn parse_prelude_at(source: &str, base: u32) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, base)?).module()
+    let mut module = Parser::new(lex(source, base)?).module()?;
+    // The library's own code is never checked as a program's is, which writes `len(x)` and
+    // `abs(x)` in as the methods they call, so that's done here: it has no `len` of its own.
+    crate::visit::exprs_mut(&mut module, &mut |expr| {
+        if let ExprKind::Call { callee, args } = &expr.kind
+            && matches!(&callee.kind, ExprKind::Name(name) if matches!(name.as_str(), "len" | "abs"))
+            && matches!(args.as_slice(), [arg] if arg.name.is_none() && !arg.is_mut)
+        {
+            crate::visit::method_of_call(expr);
+        }
+    });
+    Ok(module)
 }
 
 /// Parses one file of a program with several, its spans starting at byte `base` so they

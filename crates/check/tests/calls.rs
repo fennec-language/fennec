@@ -237,7 +237,7 @@ fn builtin_values_have_their_methods() {
             "use `lower()`",
             "use `stdout.print(...)`",
             "a plain `=` makes a copy already: `kept = value`",
-            "use `.len()`",
+            "use `len(x)`",
             "",
         ]
     );

@@ -21,6 +21,9 @@ enum Quoting {
 #[derive(Debug)]
 struct Literal {
     quoting: Quoting,
+    /// Whether it's what a formatting macro like `format!` is given first, so `{name}` is a
+    /// value put in and `{{` a brace.
+    format: bool,
     text: String,
     /// The byte in the file where each byte of `text` is written, and one past the last.
     at: Vec<usize>,
@@ -56,6 +59,7 @@ fn literals(src: &str) -> Vec<Literal> {
             let Some(end) = from(src, open).find(&close).map(|at| open + at) else { break };
             found.push(Literal {
                 quoting: Quoting::Raw(hashes),
+                format: formatted(src, i),
                 text: src.get(open..end).unwrap_or_default().to_owned(),
                 at: (open..=end).collect(),
             });
@@ -67,7 +71,8 @@ fn literals(src: &str) -> Vec<Literal> {
             }
             i += 1;
         } else if rest.starts_with('"') {
-            let (literal, end) = plain(src, i + 1);
+            let (mut literal, end) = plain(src, i + 1);
+            literal.format = formatted(src, i);
             found.push(literal);
             i = end + 1;
         } else {
@@ -143,7 +148,72 @@ fn plain(src: &str, start: usize) -> (Literal, usize) {
         }
     }
     at.push(i);
-    (Literal { quoting: Quoting::Plain { multiline }, text, at }, i)
+    (Literal { quoting: Quoting::Plain { multiline }, format: false, text, at }, i)
+}
+
+/// Whether the literal starting at `at` is a formatting macro's first argument, or the one after
+/// what `write!` writes to.
+fn formatted(src: &str, at: usize) -> bool {
+    let before = src.get(..at).unwrap_or_default().trim_end();
+    let opened = |name: &str| before.ends_with(&format!("{name}!("));
+    if ["format", "print", "println", "eprint", "eprintln", "panic"].into_iter().any(opened) {
+        return true;
+    }
+    // `write!(out, "...")`: a comma after the writer, on the same line.
+    let Some(written) = before.strip_suffix(',') else { return false };
+    let line = written.rsplit('\n').next().unwrap_or_default();
+    ["write!(", "writeln!("].iter().any(|name| line.contains(name) && !line.contains('"'))
+}
+
+/// A format literal's program as it reads once formatted, with each value put in left out and
+/// `{{` read as `{`, and the lines that held a value, which are left as they are.
+fn without_values(program: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(program.len());
+    let mut held = Vec::new();
+    for (number, line) in program.split('\n').enumerate() {
+        if number > 0 {
+            out.push('\n');
+        }
+        let mut rest = line;
+        while let Some(c) = rest.chars().next() {
+            if let Some(after) = rest.strip_prefix("{{").or_else(|| rest.strip_prefix("}}")) {
+                out.push(c);
+                rest = after;
+            } else if let Some(after) = rest.strip_prefix('{')
+                && let Some(close) = after.find('}')
+                && after.get(..close).is_some_and(|inside| {
+                    inside.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '?' | '#'))
+                })
+            {
+                held.push(number);
+                rest = after.get(close + 1..).unwrap_or_default();
+            } else {
+                out.push(c);
+                rest = rest.get(c.len_utf8()..).unwrap_or_default();
+            }
+        }
+    }
+    (out, held)
+}
+
+/// A piece of a body, like what a test puts in a `main`, with an old form in it: put in a `def`
+/// for the migration, and taken back out of it.
+fn in_a_def(fragment: &str, migrate: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
+    const HEAD: &str = "def main(stdout: Stdout):";
+    let olds = ["else as ", "lend ", ".len()", ".abs()"];
+    if !olds.iter().any(|old| fragment.contains(old)) {
+        return None;
+    }
+    let wrapped: Vec<String> = fragment
+        .split('\n')
+        .map(|line| if line.is_empty() { String::new() } else { format!("    {line}") })
+        .collect();
+    let new = migrate(&format!("{HEAD}\n{}", wrapped.join("\n")))?;
+    let body = new.strip_prefix(HEAD)?.strip_prefix('\n')?;
+    body.split('\n')
+        .map(|line| if line.is_empty() { Some(line) } else { line.strip_prefix("    ") })
+        .collect::<Option<Vec<&str>>>()
+        .map(|lines| lines.join("\n"))
 }
 
 /// A program as a literal spells it: with a first line break dropped and the indent every line
@@ -173,13 +243,17 @@ fn as_program(text: &str) -> (String, String, Vec<usize>) {
 
 /// The edits that turn the literal's program `old` into `new`, as (from, to, text) on the Rust
 /// file: whole changed lines, written back in the literal's quoting with its indent.
-fn edits(literal: &Literal, old: &str, new: &str) -> Option<Vec<(usize, usize, String)>> {
+fn edits(literal: &Literal, (old, held): (&str, &[usize]), new: &str) -> Option<Vec<(usize, usize, String)>> {
     let (_, indent, starts) = as_program(&literal.text);
     let old_lines: Vec<&str> = old.split('\n').collect();
     let new_lines: Vec<&str> = new.split('\n').collect();
     let end_of = |line: usize| -> usize { starts.get(line).copied().unwrap_or(literal.text.len() + 1) };
     let mut found = Vec::new();
     for (from, to, written) in hunks(&old_lines, &new_lines) {
+        // A line with a value put in by `format!` stays as it is.
+        if held.iter().any(|line| (from..to).contains(line)) {
+            continue;
+        }
         // Each old line with its line break, the last one's to the literal's end.
         let start = *literal.at.get(end_of(from))?;
         let text_end = end_of(to).min(literal.text.len());
@@ -189,7 +263,11 @@ fn edits(literal: &Literal, old: &str, new: &str) -> Option<Vec<(usize, usize, S
             if !line.is_empty() {
                 replaced.push_str(&indent);
             }
-            replaced.push_str(line);
+            if literal.format {
+                replaced.push_str(&line.replace('{', "{{").replace('}', "}}"));
+            } else {
+                replaced.push_str(line);
+            }
             replaced.push('\n');
         }
         // The literal's last line has no break after it.
@@ -267,14 +345,41 @@ fn quoted(quoting: Quoting, text: &str) -> Option<String> {
     }
 }
 
+/// The stretches of a Rust source between `// fennec-migrate: off` and `// fennec-migrate: on`,
+/// or the end, whose literals are left as they are: the migration's own tests, written in the
+/// old forms on purpose.
+fn left_alone(src: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(off) = from_on(src, from, "// fennec-migrate: off") {
+        let end = from_on(src, off, "// fennec-migrate: on").unwrap_or(src.len());
+        ranges.push(off..end);
+        from = end;
+    }
+    ranges
+}
+
+/// Where `marker` is first written in `src` at or after `at`.
+fn from_on(src: &str, at: usize, marker: &str) -> Option<usize> {
+    from(src, at).find(marker).map(|found| at + found)
+}
+
 /// A Rust source with the programs in its literals migrated by `migrate`, which is given each
-/// program and gives back its new text, or nothing when it's left as it is.
+/// program and gives back its new text, or nothing when it's left as it is. A piece of a body
+/// with no `def` is migrated inside one, and a `format!` literal as it reads once formatted.
 fn migrated(src: &str, migrate: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     let mut all = Vec::new();
-    for literal in literals(src).iter().filter(|literal| literal.text.contains("def ")) {
+    let left = left_alone(src);
+    for literal in literals(src) {
+        let at = literal.at.first().copied().unwrap_or(0);
+        if left.iter().any(|range| range.contains(&at)) {
+            continue;
+        }
         let (program, ..) = as_program(&literal.text);
-        let Some(new) = migrate(&program).filter(|new| *new != program) else { continue };
-        if let Some(found) = edits(literal, &program, &new) {
+        let (program, held) = if literal.format { without_values(&program) } else { (program, Vec::new()) };
+        let new = if program.contains("def ") { migrate(&program) } else { in_a_def(&program, migrate) };
+        let Some(new) = new.filter(|new| *new != program) else { continue };
+        if let Some(found) = edits(&literal, (&program, &held), &new) {
             all.extend(found);
         }
     }
@@ -386,6 +491,44 @@ mod tests {
         let src =
             "let q = '\"'; // \"def x\"\nlet b = b\"def y\"; let s = \"def two() -> int:\\n    1 + 1\";\n";
         assert_eq!(by_hand(src), src.replace("    1 + 1\";", "    return 1 + 1\";"));
+    }
+
+    #[test]
+    fn a_piece_of_a_body_is_migrated_inside_a_def() {
+        let src = "in_main(\"stdout.print(items.len())\\nx = load() else as why:\\n    fail why\");\n";
+        let mut migrate = |text: &str| -> Option<String> {
+            Some(text.replace("items.len()", "len(items)").replace("else as why:", "except why:"))
+        };
+        assert_eq!(
+            migrated(src, &mut migrate).unwrap_or_default(),
+            "in_main(\"stdout.print(len(items))\\nx = load() except why:\\n    fail why\");\n"
+        );
+    }
+
+    #[test]
+    fn a_format_literal_keeps_its_values_and_braces() {
+        let src = "let p = format!(\"{FILES}def two() -> int:\\n    1 + 1\\n\\ndef three() -> {{int}}:\\n    1 + 1\\n\");\n";
+        let out = by_hand(src);
+        assert_eq!(
+            out,
+            "let p = format!(\"{FILES}def two() -> int:\\n    return 1 + 1\\n\\ndef three() -> {{int}}:\\n    return 1 + 1\\n\");\n"
+        );
+    }
+
+    #[test]
+    fn a_line_with_a_value_put_in_is_left_as_it_is() {
+        let src = "let p = format!(\"def two() -> int:\\n    {body}\\n\");\n";
+        let mut migrate = |text: &str| -> Option<String> { Some(text.replace("    \n", "    return\n")) };
+        assert_eq!(migrated(src, &mut migrate), None);
+    }
+
+    #[test]
+    fn a_stretch_marked_off_is_left_as_it_is() {
+        let program = "let p = \"def two() -> int:\\n    1 + 1\\n\";\n";
+        let src = format!("// fennec-migrate: off\n{program}// fennec-migrate: on\n{program}");
+        let out = by_hand(&src);
+        assert_eq!(out.matches("return 1 + 1").count(), 1, "{out}");
+        assert!(out.starts_with(&format!("// fennec-migrate: off\n{program}")), "{out}");
     }
 
     #[test]

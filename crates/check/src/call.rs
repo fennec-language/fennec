@@ -210,13 +210,13 @@ impl FnCx<'_> {
     }
 
     /// `failure_of` is only for tests: anywhere else a failure is named where it happens, with
-    /// `else as why:`. The standard library's own code may still call it.
+    /// `except why:`. The standard library's own code may still call it.
     fn test_only_function(&self, name: &str, span: Span) -> Option<Diagnostic> {
         let entry = self.checker.program.functions.get(name)?;
         if name != "failure_of" || !entry.prelude || self.in_a_test() || span.in_prelude() {
             return None;
         }
-        let help = "outside a test, name a failure where it happens with `x = f() else as why:`; a test checks one with `assert f() fails Oops()`";
+        let help = "outside a test, name a failure where it happens with `x = f() except why:`; a test checks one with `assert f() fails Oops()`";
         Some(Diagnostic::new("`failure_of` is only for tests", span).with_help(help))
     }
 

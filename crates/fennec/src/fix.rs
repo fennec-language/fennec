@@ -102,7 +102,7 @@ fn migrate_forms(path: &str) -> ExitCode {
                     eprint!("{}", problems.render());
                     return ExitCode::FAILURE;
                 }
-                if let Err(code) = write_all(changed) {
+                if let Err(code) = write_rewritten(changed) {
                     return code;
                 }
                 continue;
@@ -123,7 +123,7 @@ fn migrate_forms(path: &str) -> ExitCode {
             eprintln!("\nthe rewrites left these, which have no fix");
             return ExitCode::FAILURE;
         }
-        if let Err(code) = write_all(changed) {
+        if let Err(code) = write_rewritten(changed) {
             return code;
         }
     }
@@ -152,7 +152,7 @@ fn migrate_syntax(path: &str) -> ExitCode {
             else {
                 break;
             };
-            if let Err(code) = write_all(vec![(shown.clone(), fixed)]) {
+            if let Err(code) = write_rewritten(vec![(shown.clone(), fixed)]) {
                 return code;
             }
         }
@@ -188,7 +188,7 @@ pub(crate) fn migrate_std() -> ExitCode {
             return ExitCode::FAILURE;
         }
         let Some(fixed) = fennec_syntax::apply_fixes(text, base, &fixes) else { continue };
-        if let Err(code) = write_all(vec![(file, fixed)]) {
+        if let Err(code) = write_rewritten(vec![(file, fixed)]) {
             return code;
         }
     }
@@ -348,10 +348,19 @@ fn loop_over_copy(line: &str, source: &str) -> Option<(String, String)> {
     Some((named, looped))
 }
 
-/// Writes each changed file, saying so.
+/// Writes each changed file, saying so, formatted when it was before.
 fn write_all(changed: Vec<(String, String)>) -> Result<(), ExitCode> {
-    for (file, text) in changed {
+    let changed = changed.into_iter().map(|(file, text)| {
         let text = formatted_like_before(&file, text);
+        (file, text)
+    });
+    write_rewritten(changed.collect())
+}
+
+/// Writes each changed file as it was rewritten, saying so: the migration changes only the forms
+/// it moves, and never formats a line it didn't.
+fn write_rewritten(changed: Vec<(String, String)>) -> Result<(), ExitCode> {
+    for (file, text) in changed {
         if let Err(err) = std::fs::write(&file, text) {
             eprintln!("error: couldn't write {file}: {err}");
             return Err(ExitCode::FAILURE);

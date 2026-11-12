@@ -1038,6 +1038,10 @@ fn an_index_that_only_indexes_is_an_item() {
     let source = "def f(enemies: list[E]):\n    for i in range(enemies.len()):\n        draw(enemies[i])\n";
     assert_eq!(rules(source), ["range-len"]);
     assert_eq!(fixed(source), "def f(enemies: list[E]):\n    for enemy in enemies:\n        draw(enemy)\n");
+    // As it's written now, with the builtin, too.
+    let builtin = "def f(enemies: list[E]):\n    for i in range(len(enemies)):\n        draw(enemies[i])\n";
+    assert_eq!(rules(builtin), ["range-len"]);
+    assert_eq!(fixed(builtin), "def f(enemies: list[E]):\n    for enemy in enemies:\n        draw(enemy)\n");
     for (why, source) in [
         ("it's used for more", "def f(xs: list[int]):\n    for i in range(xs.len()):\n        g(i, xs[i])\n"),
         (

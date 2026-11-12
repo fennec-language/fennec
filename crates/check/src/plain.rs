@@ -192,7 +192,7 @@ impl Walk<'_> {
                 .with_fix(end, "?");
         }
         said.with_help(
-            "give a value for a failure with `else`, handle it with `else as why:`, or pass it up with `?` from a function that says `fails`",
+            "handle the failure with `except why:`, give a value for the cases it fails with, as `x = f() except Missing(): 0`, or pass it up with `?` from a function that says `fails`",
         )
     }
 

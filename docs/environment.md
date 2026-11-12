@@ -64,4 +64,3 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 ## Decided, not built yet
 
 - `FENNEC_LOG`: per-part log levels for `Log.from_env`. See [decisions.md](decisions.md).
-- `FENNEC_STRIP_FACTS`: builds with every fact handed to LLVM stripped (`!range`, `noalias`, TBAA, `assume`), so the nightly run can check a program prints the same without them. The nightly run starts using it once the compiler reads it; move it to "For CI and the tests" then.

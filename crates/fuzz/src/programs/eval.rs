@@ -1317,7 +1317,7 @@ impl Machine {
         Ok(())
     }
 
-    /// `guarded`'s `lend x else:` cleanup, after a block that failed or crashed: the note it
+    /// `guarded`'s `lend x except:` cleanup, after a block that failed or crashed: the note it
     /// leaves when it fails, with the rest of it skipped.
     fn cleanup(&mut self, code: i64, noted: bool) -> Ran<Option<i64>> {
         let _ = writeln!(self.out, "unguard {code}");
@@ -1367,7 +1367,7 @@ impl Machine {
 
     /// `left{id}(stdout)`: each round opens the wards outermost first and closes them innermost
     /// first, the code after `lend` for a block that finished or was left by `return`, `break` or
-    /// `continue`, and `lend x else:` for one that failed or crashed.
+    /// `continue`, and `lend x except:` for one that failed or crashed.
     fn left(&mut self, depth: usize, rounds: i64, at: i64, how: Leave) -> Ran<()> {
         let names = super::source::WARDS.get(..depth).unwrap_or(&super::source::WARDS);
         let mut total = 0_i64;

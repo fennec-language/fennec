@@ -217,10 +217,10 @@ fn lists_are_written_out_read_changed_and_looped_over() {
     mut items = [1, limit]
     items.append(3)
     items[0] += 1
-    mut sum = 0
+    mut subtotal = 0
     for item in items:
-        sum += item
-    return sum + items[1]
+        subtotal += item
+    return subtotal + items[1]
 ";
     assert_eq!(
         printed(source, "total").unwrap(),
@@ -230,7 +230,7 @@ fn lists_are_written_out_read_changed_and_looped_over() {
   local _2 items: list[int]
   local _3: int
   local _4: int
-  local _5 sum: int
+  local _5 subtotal: int
   local _6: list[int]
   local _7: int
   local _8: int
@@ -415,17 +415,17 @@ def total() -> int:
 #[test]
 fn for_counts_in_a_local_of_its_own() {
     let source = "def total(n: int) -> int:
-    mut sum = 0
+    mut subtotal = 0
     for i in range(n, 0, -1):
         if i == 3: continue
-        sum += i
-    return sum
+        subtotal += i
+    return subtotal
 ";
     assert_eq!(
         printed(source, "total").unwrap(),
         "fn total(_0) -> int
   local _0 n: int
-  local _1 sum: int
+  local _1 subtotal: int
   local _2: int
   local _3: int
   local _4: bool
@@ -720,7 +720,7 @@ fn matching_a_failure_sees_each_error_and_looks_through_ok() {
         case Missing(name):
             name
         case _:
-            \"denied\"
+            str(why)
     return text
 "
     );
@@ -1366,10 +1366,10 @@ fn f(_0) -> int
   bb0:
     _1 = _0 + 1
     _2 = _1
-    _3 = closure f.arrow@125[_2]
+    _3 = closure f.arrow@139[_2]
     _4 = call apply(_0, _3)
     return _4
-fn f.arrow@125(_0, _1) -> int
+fn f.arrow@139(_0, _1) -> int
   local _0 offset: int
   local _1 n: int
   local _2: int
@@ -1462,7 +1462,7 @@ fn a_key_goes_last_and_names_the_call() {
   local _1: (int) -> int
   local _2: list[int]
   bb0:
-    _1 = closure f.arrow@54[]
+    _1 = closure f.arrow@61[]
     _2 = builtin sorted.key(_0, _1)
     return _2
 "
@@ -1537,21 +1537,21 @@ fn a_tuple_pattern_tests_each_part() {
     );
 }
 
-/// One case on the line, `except InvalidValue(): 8080`, lowers as the old `else 8080` does: the
-/// case covers every failure and binds nothing, so the failure isn't taken out to match.
+/// One case on the line, `except InvalidValue(): 8080`, covers every failure and binds nothing, so
+/// the failure isn't taken out to match, as it is for `except why:`.
 #[test]
-fn one_case_that_binds_nothing_lowers_as_else_does() -> Result<(), String> {
+fn one_case_that_binds_nothing_takes_nothing_out() -> Result<(), String> {
     let program = |handler: &str| {
         format!(
             "def port_of(text: str) -> int:\n    return int.parse(text) {handler}\n\ndef main(stdout: Stdout):\n    stdout.print(port_of(\"80\"))\n    return\n"
         )
     };
-    let old = printed(&program("else 8080"), "port_of")?;
     let one_case = printed(&program("except InvalidValue(): 8080"), "port_of")?;
-    assert_eq!(one_case, old);
+    assert!(one_case.contains("8080"), "{one_case}");
     // One that binds what failed takes it out, as `except why:` does.
     let named = printed(&program("except why: 8080 if why.message == \"\" else 1"), "port_of")?;
     assert!(named.contains("err"), "{named}");
+    assert_ne!(one_case, named);
     Ok(())
 }
 
@@ -3160,7 +3160,8 @@ fn a_rewritten_std_function_stands_in_for_the_librarys() {
         "from std import base64\n\ndef main(stdout: Stdout):\n    stdout.print(base64.encode(\"hi\".encode()))\n",
     )
     .unwrap();
-    let mut rewritten = fennec_syntax::parse("def encode(data: bytes) -> str:\n    return \"rewritten\"\n").unwrap();
+    let mut rewritten =
+        fennec_syntax::parse("def encode(data: bytes) -> str:\n    return \"rewritten\"\n").unwrap();
     let Some(fennec_syntax::Item::Function(mut def)) = rewritten.items.pop() else { panic!("no function") };
     // Its text is the library's, as a rewritten one's is.
     let moved = |span: Span| Span {

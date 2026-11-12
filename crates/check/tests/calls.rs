@@ -662,7 +662,8 @@ fn a_literal_default_gives_its_type() {
 
 #[test]
 fn writing_the_type_a_literal_default_gives_is_an_error() {
-    let text = "def scan(limit: int = 8, label: str? = None, items = list[int]()) -> int:\n    return limit\n";
+    let text =
+        "def scan(limit: int = 8, label: str? = None, items = list[int]()) -> int:\n    return limit\n";
     assert_eq!(problems(text), ["`limit` takes its type from its default, so `: int` isn't needed @ int"]);
 }
 

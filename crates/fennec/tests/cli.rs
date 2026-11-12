@@ -1838,8 +1838,11 @@ fn dev_changes_reports_what_changed_since_the_last_run() {
 
     std::fs::write(kit.join("src/main.fen"), "# hi\ndef main(stdout: Stdout):\n    stdout.print( 1 )\n")
         .unwrap();
-    std::fs::write(kit.join("src/other.fen"), "def other() -> int:\n    return 2\n\ndef more() -> int:\n    return 3\n")
-        .unwrap();
+    std::fs::write(
+        kit.join("src/other.fen"),
+        "def other() -> int:\n    return 2\n\ndef more() -> int:\n    return 3\n",
+    )
+    .unwrap();
     let edited = changes_in(&kit, &home).unwrap();
     assert_eq!(
         text(&edited.stdout),

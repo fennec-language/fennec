@@ -515,8 +515,7 @@ fn else_can_leave_and_what_it_gives_is_whats_inside() {
 
 #[test]
 fn leaving_with_else_is_checked_like_the_statement() {
-    let wrong_value =
-        "def age_of(ages: dict[str, int]) -> int:\n    age = ages.get('a') else return 'old'\n    return age\n";
+    let wrong_value = "def age_of(ages: dict[str, int]) -> int:\n    age = ages.get('a') else return 'old'\n    return age\n";
     assert_eq!(
         problems(wrong_value).len(),
         1,
@@ -589,7 +588,10 @@ fn else_as_is_for_what_can_fail_and_its_block_leaves() {
     );
     assert_eq!(
         found,
-        ["`except` goes right after the call it handles @ held", "this can't fail, so `except` has nothing to handle @ held"]
+        [
+            "`except` goes right after the call it handles @ held",
+            "this can't fail, so `except` has nothing to handle @ held"
+        ]
     );
     let ends_on_nothing = problems(
         "error Oops:\n    pass\n\ndef risky() -> int fails Oops:\n    fail Oops()\n\ndef main(stdout: Stdout):\n    value = risky() except failure:\n        stdout.print(failure)\n    stdout.print(value)\n",
@@ -643,8 +645,7 @@ fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
         let written = fennec_syntax::apply_fixes(&source, 0, problem.as_slice());
         assert_eq!(written, Some(format!("def port(text: str, given: bool) -> int:\n    {fixed}\n")));
     }
-    let parenthesized =
-        "def port(text: str, given: bool) -> int:\n    int_value = int(text) except InvalidValue(): 80\n    return (int_value) if given else 8080\n";
+    let parenthesized = "def port(text: str, given: bool) -> int:\n    int_value = int(text) except InvalidValue(): 80\n    return (int_value) if given else 8080\n";
     assert!(fennec_syntax::parse(parenthesized).is_ok());
     let chained = "def size(n: int) -> int:\n    return 1 if n < 1 else 2 if n < 2 else 3\n";
     assert!(fennec_syntax::parse(chained).is_ok());

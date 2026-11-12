@@ -142,7 +142,8 @@ fn a_value_put_into_a_container_is_copied_when_changed() {
 #[test]
 fn a_moved_value_is_never_copied() {
     // `xs` isn't used after `ys` takes it, so `ys` changes the only buffer.
-    let source = "def f(n: int) -> int:\n    xs = [n]\n    mut ys = xs\n    ys.append(1)\n    return len(ys)\n";
+    let source =
+        "def f(n: int) -> int:\n    xs = [n]\n    mut ys = xs\n    ys.append(1)\n    return len(ys)\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }
 

@@ -9620,10 +9620,8 @@ fn a_huge_function_is_compiled_as_written_and_gives_the_same() -> std::io::Resul
     let mut body = String::new();
     let mut total: i64 = 0;
     for line in 0..lines {
-        let _ = writeln!(
-            body,
-            "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + len(f\"{{total}}\")"
-        );
+        let _ =
+            writeln!(body, "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + len(f\"{{total}}\")");
         let picked = if line % 2 == 0 { line } else { line + 1 };
         let written = i64::try_from(total.to_string().len()).unwrap_or(0);
         total += picked + written;
@@ -18115,7 +18113,9 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
     let print_after = "\n\ndef main(stdout: Stdout):\n    stdout.print(\"before\")\n";
     same_as_pinned(
         "overflow",
-        &format!("def f(n: int) -> int:\n    return n * 9223372036854775807{print_after}    stdout.print(f(3))\n"),
+        &format!(
+            "def f(n: int) -> int:\n    return n * 9223372036854775807{print_after}    stdout.print(f(3))\n"
+        ),
     )?;
     same_as_pinned(
         "zero",

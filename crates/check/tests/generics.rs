@@ -716,7 +716,8 @@ fn a_type_parameter_has_its_interfaces_functions() {
     assert_eq!(problems(&text), ["`T` has nothing called `make` @ T.make()"]);
     let text = format!("{MADE}def build[T: Made]() -> int:\n    return T.make()\n");
     assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
-    let text = "interface Sized:\n    def size(self) -> int\n\ndef build[T: Sized]() -> int:\n    return T.size()\n";
+    let text =
+        "interface Sized:\n    def size(self) -> int\n\ndef build[T: Sized]() -> int:\n    return T.size()\n";
     assert_eq!(problems(text), ["`size` needs a `T` to call it on @ T.size()"]);
     let text = "def build() -> int:\n    return T.make()\n";
     assert_eq!(problems(text).len(), 1, "{:?}", problems(text));

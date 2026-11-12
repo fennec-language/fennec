@@ -462,7 +462,8 @@ fn only_a_closed_fence_of_fennec_in_a_doc_comment_is_an_example() {
     assert!(!unclosed.status.success());
     assert!(String::from_utf8_lossy(&unclosed.stderr).contains("never closed"));
     // Text that looks like one in a string, or a comment after code, isn't one.
-    let text = "def words() -> str:\n    return \"## ```\" ## ```\n\ntest \"words\":\n    assert words() != \"\"\n";
+    let text =
+        "def words() -> str:\n    return \"## ```\" ## ```\n\ntest \"words\":\n    assert words() != \"\"\n";
     std::fs::write(&game, text).unwrap();
     let in_a_string = run_tests(&dir, &["--all"]).unwrap();
     assert_eq!(

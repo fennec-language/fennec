@@ -126,10 +126,15 @@ fn a_union_has_no_none_no_member_twice_and_no_type_parameter() {
         ["write `str?`: an optional says it can be missing"]
     );
     assert_eq!(
-        helps("struct A:\n    n: int\n\nstruct B:\n    n: int\n\ndef f(x: A | B | None) -> int:\n    return 1\n"),
+        helps(
+            "struct A:\n    n: int\n\nstruct B:\n    n: int\n\ndef f(x: A | B | None) -> int:\n    return 1\n"
+        ),
         ["write `(A | B)?`: an optional says it can be missing"]
     );
-    assert_eq!(problems("def f(x: int | int) -> int:\n    return 1\n"), ["`int` is in this union twice @ int"]);
+    assert_eq!(
+        problems("def f(x: int | int) -> int:\n    return 1\n"),
+        ["`int` is in this union twice @ int"]
+    );
     assert_eq!(
         problems("def f[T](x: T | int) -> int:\n    return 1\n"),
         ["`T` is a type parameter, which can't be part of a union @ T"]

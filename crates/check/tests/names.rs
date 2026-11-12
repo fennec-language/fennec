@@ -392,7 +392,9 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
         [format!("{private} @ case Account(owner, balance): stdout.print(balance)\n")]
     );
     assert_eq!(
-        problems(&format!("{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        return self._balance\n")),
+        problems(&format!(
+            "{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        return self._balance\n"
+        )),
         [format!("{private} @ self._balance")]
     );
 }
@@ -452,7 +454,8 @@ fn a_type_another_std_module_imports_still_needs_its_own_import() {
         helps("def wait(pause: Duration) -> int:\n    return 1\n"),
         ["import it from std.time, like `from std.time import Duration`"]
     );
-    let imported = "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    return pause.nanos\n";
+    let imported =
+        "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    return pause.nanos\n";
     assert_eq!(problems(imported), Vec::<String>::new());
 }
 

@@ -3573,3 +3573,57 @@ fn embed_folder_gives_a_folders_files_by_path() {
     assert!(refused("site").contains("`site/link.txt` is outside this file's folder"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A folder linked into itself is walked once: `src/a -> .` and `src/b -> .` would double finding a
+/// kit's modules at every level until the path was too long, and `assets/loop -> .` would have
+/// `embed_folder` read the folder again inside itself, a few hundred levels deep. Each command
+/// here finishes within its CPU time, or the test fails rather than taking the machine's memory.
+#[test]
+#[cfg(unix)]
+fn a_folder_linked_into_itself_is_walked_once() {
+    use crate::executables::Within as _;
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-link-loop-{}", std::process::id())),
+    );
+    let kit = dir.join("kit");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::create_dir_all(kit.join("assets")).unwrap();
+    std::fs::write(kit.join("kit.toml"), "name = \"looped\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(kit.join("src/helper.fen"), "def twice(n: int) -> int:\n    return n * 2\n").unwrap();
+    std::fs::write(
+        kit.join("src/main.fen"),
+        "from helper import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice(21))\n    return\n",
+    )
+    .unwrap();
+    std::fs::write(kit.join("assets/a.txt"), "a").unwrap();
+    std::os::unix::fs::symlink(".", kit.join("src/a")).unwrap();
+    std::os::unix::fs::symlink(".", kit.join("src/b")).unwrap();
+    std::os::unix::fs::symlink(".", kit.join("assets/loop")).unwrap();
+    let run = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_NO_DAEMON", "1")
+            .output_within()
+            .unwrap()
+    };
+    let checked = run(&["check"]);
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+    let ran = run(&["run", "--no-test"]);
+    assert_eq!(text(&ran.stdout), "42\n", "{}", text(&ran.stderr));
+    std::fs::write(
+        kit.join("src/main.fen"),
+        "ASSETS = embed_folder(\"../assets\")\n\ndef main(stdout: Stdout):\n    stdout.print(ASSETS.len())\n    return\n",
+    )
+    .unwrap();
+    let embedded = run(&["check"]);
+    assert!(!embedded.status.success());
+    assert!(
+        text(&embedded.stderr).contains("is a folder this embeds already, reached again through a link"),
+        "{}",
+        text(&embedded.stderr)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -2340,6 +2340,8 @@ fn fix_moves_idmap_to_table() {
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
 }
 
+// The migration's own tests, whose programs are in the old forms on purpose.
+// fennec-migrate: off
 /// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
 /// and a def's last value as what it returns): plain `fennec fix` leaves them, `fennec fix
 /// --migrate` writes `except` and `return` for them, a second run finds nothing more, and the
@@ -2447,6 +2449,7 @@ fn fix_migrate_rewrites_the_programs_in_rust_strings() {
             .replace("\\n    3\\n", "\\n    return 3\\n")
     );
 }
+// fennec-migrate: on
 
 /// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
 /// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`

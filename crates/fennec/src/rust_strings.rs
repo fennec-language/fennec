@@ -345,12 +345,36 @@ fn quoted(quoting: Quoting, text: &str) -> Option<String> {
     }
 }
 
+/// The stretches of a Rust source between `// fennec-migrate: off` and `// fennec-migrate: on`,
+/// or the end, whose literals are left as they are: the migration's own tests, written in the
+/// old forms on purpose.
+fn left_alone(src: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(off) = from_on(src, from, "// fennec-migrate: off") {
+        let end = from_on(src, off, "// fennec-migrate: on").unwrap_or(src.len());
+        ranges.push(off..end);
+        from = end;
+    }
+    ranges
+}
+
+/// Where `marker` is first written in `src` at or after `at`.
+fn from_on(src: &str, at: usize, marker: &str) -> Option<usize> {
+    from(src, at).find(marker).map(|found| at + found)
+}
+
 /// A Rust source with the programs in its literals migrated by `migrate`, which is given each
 /// program and gives back its new text, or nothing when it's left as it is. A piece of a body
 /// with no `def` is migrated inside one, and a `format!` literal as it reads once formatted.
 fn migrated(src: &str, migrate: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     let mut all = Vec::new();
+    let left = left_alone(src);
     for literal in literals(src) {
+        let at = literal.at.first().copied().unwrap_or(0);
+        if left.iter().any(|range| range.contains(&at)) {
+            continue;
+        }
         let (program, ..) = as_program(&literal.text);
         let (program, held) = if literal.format { without_values(&program) } else { (program, Vec::new()) };
         let new = if program.contains("def ") { migrate(&program) } else { in_a_def(&program, migrate) };
@@ -496,6 +520,15 @@ mod tests {
         let src = "let p = format!(\"def two() -> int:\\n    {body}\\n\");\n";
         let mut migrate = |text: &str| -> Option<String> { Some(text.replace("    \n", "    return\n")) };
         assert_eq!(migrated(src, &mut migrate), None);
+    }
+
+    #[test]
+    fn a_stretch_marked_off_is_left_as_it_is() {
+        let program = "let p = \"def two() -> int:\\n    1 + 1\\n\";\n";
+        let src = format!("// fennec-migrate: off\n{program}// fennec-migrate: on\n{program}");
+        let out = by_hand(&src);
+        assert_eq!(out.matches("return 1 + 1").count(), 1, "{out}");
+        assert!(out.starts_with(&format!("// fennec-migrate: off\n{program}")), "{out}");
     }
 
     #[test]

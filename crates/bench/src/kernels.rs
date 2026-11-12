@@ -136,6 +136,20 @@ impl Kernel {
         Ok(hash(&(read(Path::new(&self.path))? + &read(twin)?)))
     }
 
+    /// What the self-hosted front end prints, which is what the Rust one prints for the same
+    /// input, when this is it: its twin, run.
+    pub(crate) fn front_end_output(&self, fennec: &Path) -> Result<Option<String>, String> {
+        let Twin::FrontEnd(corpus) = &self.twin else { return Ok(None) };
+        let output = std::process::Command::new(fennec)
+            .args(["dev", "tree", corpus])
+            .output()
+            .map_err(|err| format!("couldn't run {}: {err}", fennec.display()))?;
+        if !output.status.success() {
+            return Err(format!("`fennec dev tree` failed: {}", String::from_utf8_lossy(&output.stderr)));
+        }
+        Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
+
     /// A hash of what it printed, for comparing with its target. The self-hosted front end
     /// starts by naming its input, which the Rust front end doesn't.
     pub(crate) fn output_hash(&self, output: &str) -> String {

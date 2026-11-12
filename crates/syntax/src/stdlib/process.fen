@@ -1,3 +1,5 @@
+from std.time import Duration
+
 ## What a program that ran gave back: the status it exited with, and what it wrote. A status
 ## other than 0 usually means it failed, but it's the program's to say, so it isn't an error.
 export struct Output:
@@ -19,6 +21,12 @@ export error ProcessError:
     ## `t"--depth={depth}"`, is fine, and so is one after an argument the template writes as `--`,
     ## which tells most programs nothing after it is an option.
     LooksLikeAnOption(program: str, expression: str)
+    ## It was still running when its `timeout=`, 10 minutes unless given, ran out, so it was
+    ## stopped.
+    TimedOut(program: str, after: Duration)
+    ## It wrote more than `most_output=` bytes, 16 MB unless given, to its standard output or
+    ## error, so it was stopped rather than kept in memory.
+    TooMuchOutput(program: str, most: int)
 
     ## The program it was asked to run.
     def program(self) -> str:
@@ -27,6 +35,10 @@ export error ProcessError:
                 program
             case .LooksLikeAnOption(program, _):
                 program
+            case .TimedOut(program, _):
+                program
+            case .TooMuchOutput(program, _):
+                program
 
     def message(self) -> str:
         match self:
@@ -34,3 +46,7 @@ export error ProcessError:
                 reason
             case .LooksLikeAnOption(program, expression):
                 f"`{{{expression}}}` starts an argument with `-`, so `{program}` would read it as an option: put `--` before it, if `{program}` takes that, to mean it isn't one"
+            case .TimedOut(program, after):
+                f"`{program}` was still running after {after}, so it was stopped: give `run` a longer `timeout=` if it needs one"
+            case .TooMuchOutput(program, most):
+                f"`{program}` wrote more than {most:,} bytes, so it was stopped: give `run` a bigger `most_output=` if it needs one"

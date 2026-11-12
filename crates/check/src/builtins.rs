@@ -406,7 +406,7 @@ impl FnCx<'_> {
             Some("Connection") if name == "read_line" => &["crlf", "timeout"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "_udp" => &["port"],
-            Some("Process") if name == "run" => &["cwd", "env", "input"],
+            Some("Process") if name == "run" => &["cwd", "env", "input", "most_output", "timeout"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
                 self.one_request_body(args, span);
                 &["body", "headers", "json", "params", "timeout"]
@@ -546,12 +546,7 @@ impl FnCx<'_> {
                         self.error(mismatch("`crlf`", &Type::Bool, &ty, arg.value.span));
                     }
                 }
-                Some("port") if named.contains(&"port") => {
-                    if !self.checker.fits(&Type::Int, &ty) {
-                        self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
-                    }
-                }
-                Some(option @ ("indent" | "level")) if named.contains(&option) => {
+                Some(option @ ("indent" | "level" | "port" | "most_output")) if named.contains(&option) => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch(&format!("`{option}`"), &Type::Int, &ty, arg.value.span));
                     }

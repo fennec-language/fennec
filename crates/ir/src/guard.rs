@@ -226,7 +226,7 @@ fn guard(function: &mut Function, region: &Region, edge: &Edge) {
     }
 }
 
-/// `box.items.len()`, read under a lock of its own just for the field, needs no copy of the list if
+/// `len(box.items)`, read under a lock of its own just for the field, needs no copy of the list if
 /// the lock's held for the length too.
 fn keep_lock_for_len(function: &mut Function) {
     let mut uses: HashMap<LocalId, usize> = HashMap::new();

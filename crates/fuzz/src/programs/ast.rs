@@ -311,6 +311,33 @@ pub(crate) enum Arrow {
     Either(Expr),
 }
 
+/// A `Turned` loop: `turned{id}`, of `rounds` turns, its int starting at `start` and changing sign
+/// by `how`, stepping down by `step`, or reset to `reset_to` on turn `reset_at`.
+#[derive(Clone, Debug)]
+pub(crate) struct Turning {
+    pub(crate) id: usize,
+    pub(crate) how: Turn,
+    pub(crate) rounds: i64,
+    pub(crate) start: i64,
+    pub(crate) step: i64,
+    pub(crate) reset_at: i64,
+    pub(crate) reset_to: i64,
+}
+
+/// How a `Turned` loop's int changes sign after its first turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// `at = start`, then `at -= step` each turn: stepped down past 0.
+    StepDown,
+    /// `sign * start`, with `sign` flipped each turn.
+    Flip,
+    /// `n = start`, then `n += 1` each turn, reset to `reset_to`, below 0, on turn `reset_at`.
+    Reset,
+}
+
+/// The list a `Turned` loop indexes: 4 items, so the places from -4 to 3 are in it.
+pub(crate) const XS: [i64; 4] = [10, 20, 30, 40];
+
 /// How round `at` of a `Left` loop leaves its `with` blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Leave {
@@ -556,6 +583,11 @@ pub(crate) enum Stmt {
         at: i64,
         how: Leave,
     },
+    /// `turned{id}(stdout)`: a loop of `rounds` turns whose int is at least 0 on the first turn
+    /// and changes sign later, by `how`. Each turn prints it, `XS[it]`, it times 3, and it added
+    /// to each end of `int`, so a proof that it's never negative, made from the first turn alone,
+    /// shows: from -4 to 3 all of those hold, and past them the program stops.
+    Turned(Turning),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

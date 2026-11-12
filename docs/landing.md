@@ -31,6 +31,21 @@ It does the three steps below in order, and stops at the first that fails, with 
 Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
 steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
 
+## Flakes
+
+A check that fails and then passes on the same code is a flake, and nothing is ever just run again. Each one is written in the flake ledger with:
+- the test;
+- the commit;
+- the machine's load when it failed;
+- everything it printed then.
+
+The coverage lane reads the ledger nightly.
+
+- **On your machine:** a failed gate step is kept under the tree it tested. The tree is the code itself; the commit is new each time, since the gate merges `main` first. When a gate on the same tree passes, what failed before goes in `flakes.log` in Fennec's folder, `~/.fennec`, beside `work` rather than in it, since what's in `work` is swept after an hour.
+- **In CI:** a run that passes only after jobs ran again finds the jobs that failed in its earlier attempts. It keeps their failures as the run's `flakes` artifact.
+
+`.github/scripts/fennec-flakes` lists the ledger by test, most often first. It reads `~/.fennec/flakes.log` or the ledgers it's given, such as a downloaded artifact. `--show TEST` prints a test's entries whole.
+
 ## When CI on `main` fails
 
 1. Find the failed job in the Actions tab, under the workflow "CI" or "CodeQL".

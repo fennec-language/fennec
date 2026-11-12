@@ -128,3 +128,18 @@ fn patterns_that_make_backtrackers_blow_up_take_linear_time() {
     assert_eq!(search("(x+x+)+y", &"x".repeat(5_000)), None);
     assert!(started.elapsed().as_secs() < 20, "took {:?}", started.elapsed());
 }
+
+/// Groups nest at most 250 deep. Deeper, a pattern fails as too deep rather than recursing until
+/// the stack runs out, which ended the process with a signal: a server taking a pattern from a
+/// request could be stopped by one.
+#[test]
+fn a_pattern_nested_ten_thousand_deep_fails_as_too_deep() {
+    let deep = |open: &str, depth: usize| format!("{}a{}", open.repeat(depth), ")".repeat(depth));
+    assert_eq!(error(&deep("(", 10_000)), "groups nest more than 250 deep");
+    assert_eq!(error(&deep("(?:", 10_000)), "groups nest more than 250 deep");
+    // Never closed, it's still too deep before it's anything else.
+    assert_eq!(error(&"(".repeat(100_000)), "groups nest more than 250 deep");
+    assert_eq!(error(&deep("(", 251)), "groups nest more than 250 deep");
+    assert_eq!(error(&deep("(", 250)), "<valid>");
+    assert_eq!(search(&deep("(", 250), "xay"), Some("a".to_owned()));
+}

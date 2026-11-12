@@ -3601,6 +3601,49 @@ def main(stdout: Stdout):
     stdout.print(world.units[1].health)
 "#;
 
+/// A `ref` case whose body returns puts the case back before the function returns, and the
+/// function returns what the body did, on every way through: a `def` that ends in such a
+/// `match` gives its value with `return` in each case, as every `def` does since 2026-11-11.
+#[test]
+fn a_ref_case_that_returns_puts_the_case_back_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_returns",
+        r#"enum Slot:
+    Empty
+    Held(count: int)
+
+def bump(ref slot: Slot) -> int:
+    match slot:
+        case .Held(ref count):
+            count += 1
+            return count
+        case .Empty:
+            return 0
+
+def bump_or_keep(ref slot: Slot, keep: bool) -> int:
+    match slot:
+        case .Held(ref count):
+            count += 1
+            if keep:
+                return count
+        case .Empty:
+            pass
+    return -1
+
+def main(stdout: Stdout):
+    mut slot = Slot.Held(count=1)
+    stdout.print(bump(ref slot), bump(ref slot), slot)
+    mut empty = Slot.Empty
+    stdout.print(bump(ref empty), empty)
+    stdout.print(bump_or_keep(ref slot, True), bump_or_keep(ref slot, False), slot)
+"#,
+        "2 3 Slot.Held(count=3)\n0 Slot.Empty\n4 -1 Slot.Held(count=5)\n",
+    )
+}
+
 /// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively,
 /// as the language says: a case that finishes, one that leaves by `return`, and one that fails,
 /// each putting the case back, and a `_` field kept as it was.

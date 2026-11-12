@@ -513,6 +513,9 @@ impl Lowering<'_> {
             at,
         );
         let mut block = std::mem::take(&mut arm.body);
+        // A case whose body always returns returns after the case is put back, every time, so
+        // what's written in ends the function as the body did.
+        let always = always_returns(&block);
         fail_through(&mut block, std::slice::from_ref(&put_back));
         let (exit, returned) = (format!("exit__ref{made}"), format!("returned__ref{made}"));
         let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
@@ -535,7 +538,11 @@ impl Lowering<'_> {
             body.extend(block);
         }
         body.push(put_back);
-        body.extend(taken_again(ways, &exit, &returned, at));
+        if always && ways.returned == Some(true) {
+            body.extend(returned_always(&returned, at));
+        } else {
+            body.extend(taken_again(ways, &exit, &returned, at));
+        }
         arm.body = body;
         Some(())
     }

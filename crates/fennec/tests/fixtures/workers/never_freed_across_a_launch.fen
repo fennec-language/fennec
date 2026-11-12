@@ -14,8 +14,8 @@ def counted(text: str, tags: list[int], items: list[int]) -> int:
     for _ in range(3000):
         held = [text, text]
         more = [tags, items]
-        total += held[0].len() + more[0].len() + more[1].len()
-    total
+        total += len(held[0]) + len(more[0]) + len(more[1])
+    return total
 
 def main(stdout: Stdout) fails Crashed:
     items = [10, 20, 30]

@@ -7,7 +7,7 @@
 ## assert points(3) == 30
 ## ```
 def points(level: int) -> int:
-    level * 10
+    return level * 10
 
 def main(stdout: Stdout):
     stdout.print(points(2))

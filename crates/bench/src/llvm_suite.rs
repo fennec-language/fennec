@@ -694,18 +694,18 @@ mod tests {
         let kernel = dir.join("k.fen");
         std::fs::write(
             &kernel,
-            "def f() -> int:\n    1\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n",
+            "def f() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n",
         )
         .unwrap();
         let copy = timed_copy(kernel.to_str().unwrap(), &dir, "k").unwrap();
         assert_eq!(
             std::fs::read_to_string(copy).unwrap(),
-            "def f() -> int:\n    1\n\ndef main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n    \
+            "def f() -> int:\n    return 1\n\ndef main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n    \
              stdout.print(f())\n    if len(args) > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n"
         );
         std::fs::write(
             &kernel,
-            "def main(stdout: Stdout):\n    stdout.print(1)\n\ndef later() -> int:\n    2\n",
+            "def main(stdout: Stdout):\n    stdout.print(1)\n\ndef later() -> int:\n    return 2\n",
         )
         .unwrap();
         assert_eq!(timed_copy(kernel.to_str().unwrap(), &dir, "k"), None, "main isn't last");

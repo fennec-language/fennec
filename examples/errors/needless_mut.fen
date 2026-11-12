@@ -1,5 +1,5 @@
 def describe(health: int) -> str:
-    f"{health} HP"
+    return f"{health} HP"
 
 def main(stdout: Stdout):
     mut health = 100

@@ -14,12 +14,12 @@ def report(stdout: Stdout, fs: Fs) fails IoError:
 def wait_a_second(clock: Clock) -> int:
     start = clock.now()
     clock.sleep(Duration.seconds(1.0))
-    (clock.now() - start).nanos
+    return (clock.now() - start).nanos
 
 def failed[T](run: () -> T fails IoError) -> bool:
-    _ = run() else:
+    _ = run() except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other():
         return True
-    False
+    return False
 
 test "a written file reads back"(fs: Fs):
     save_score(fs, 120)?
@@ -31,7 +31,7 @@ test "a written file reads back"(fs: Fs):
 test "each test starts with nothing"(fs: Fs):
     assert not fs.exists("saves")?
     assert fs.exists(".")?
-    assert (fs.list_dir(".")?).len() == 0
+    assert len(fs.list_dir(".")?) == 0
 
 test "folders list, measure and remove"(fs: Fs):
     save_score(fs, 7)?

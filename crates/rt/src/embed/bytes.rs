@@ -4,7 +4,7 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{IMMORTAL, block_text, text_address};
+use super::heap::{NEVER_FREED_COUNT, block_text, text_address};
 use super::{State, fail_with, with};
 use crate::collections::{from_hex, hex, hex_problem};
 use crate::value::Value;
@@ -143,7 +143,7 @@ pub extern "C" fn constant(length: i64) -> i64 {
     with(|state| {
         let mut block = with_room(state, usize::try_from(length).unwrap_or(0));
         if let Some(count) = block.first_mut() {
-            *count = IMMORTAL;
+            *count = NEVER_FREED_COUNT;
         }
         let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
         state.heap.adopt(&mut vec![block]);

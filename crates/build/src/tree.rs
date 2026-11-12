@@ -83,15 +83,15 @@ mod tests {
     /// even inside a string that looks like a position.
     #[test]
     fn a_tree_hashes_by_what_it_holds_not_where_it_is() {
-        let source = "def greet(name: str) -> str:\n    \"Span { start: 1 } {name}\"\n";
+        let source = "def greet(name: str) -> str:\n    return \"Span { start: 1 } {name}\"\n";
         let hash = tree_hash(&first_item(source, 0));
         assert_eq!(tree_hash(&first_item(source, 4096)), hash, "moved");
-        let spaced = "\n\ndef greet(name: str) -> str:\n\n    \"Span { start: 1 } {name}\"\n";
+        let spaced = "\n\ndef greet(name: str) -> str:\n\n    return \"Span { start: 1 } {name}\"\n";
         assert_eq!(tree_hash(&first_item(spaced, 0)), hash, "spaced out");
         for changed in [
-            "def greet(name: str) -> str:\n    \"Span { start: 2 } {name}\"\n",
-            "def greet(who: str) -> str:\n    \"Span { start: 1 } {who}\"\n",
-            "def hail(name: str) -> str:\n    \"Span { start: 1 } {name}\"\n",
+            "def greet(name: str) -> str:\n    return \"Span { start: 2 } {name}\"\n",
+            "def greet(who: str) -> str:\n    return \"Span { start: 1 } {who}\"\n",
+            "def hail(name: str) -> str:\n    return \"Span { start: 1 } {name}\"\n",
         ] {
             assert_ne!(tree_hash(&first_item(changed, 0)), hash, "{changed}");
         }

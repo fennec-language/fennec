@@ -2,11 +2,11 @@ struct Player:
     name: str
 
     def greet(self) -> str:
-        f"hi, {self.name}"
+        return f"hi, {self.name}"
 
 def find(name: str) -> Player?:
     if name == "Kit": return Player(name="Kit")
-    None
+    return None
 
 def main(stdout: Stdout):
     stdout.print(find("Vex").greet())

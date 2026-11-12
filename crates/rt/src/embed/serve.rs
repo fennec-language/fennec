@@ -1105,6 +1105,7 @@ impl Io {
     /// Drains the server `id` because the program was asked to stop: its rounds waiting for a
     /// next message are woken, to end, before it drains as `break` does.
     fn drain_stopping(&mut self, id: u64) {
+        super::live::stop_taken();
         if let Some(here) = self.servers.get(&id) {
             let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
             // In the order they parked, not the set's.

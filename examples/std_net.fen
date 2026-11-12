@@ -7,17 +7,28 @@ from std.net import Connection, NetError, Response
 from std.time import Duration
 
 def reason[T](run: () -> T fails NetError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message()
-    "it worked"
+    return "it worked"
 
 ## The next line a connection is sent, or "" once the other side is done.
 def line_of(conn: Connection) -> str fails NetError:
-    conn.read_line()? else ""
+    return conn.read_line()? else ""
 
 ## Every line a connection is sent, until the other side is done.
+## A connection's lines, or none at all when it fails.
+def lines_or_empty(conn: Connection) -> list[str]:
+    lines = lines_of(conn) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied(
+    ) | .Tls() | .Status() | .Other(): []
+    return lines
+
+## Bytes as text, or "" when they aren't UTF-8.
+def text_of(data: bytes) -> str:
+    text = data.decode() except InvalidValue(): ""
+    return text
+
 def lines_of(conn: Connection) -> list[str] fails NetError:
-    list(conn.lines()?)
+    return list(conn.lines()?)
 
 ## Connects to `host` and hangs up, to see how connecting goes.
 def connecting(net: Net, host: str, port: int) fails NetError:
@@ -56,7 +67,7 @@ test "looping over a server gives each connection as it comes"(net: Net):
                 mut heard = list[str]()
                 for conn in server:
                     heard.append(line_of(conn)?)
-                    if heard.len() == 2: break
+                    if len(heard) == 2: break
                 assert heard == ["first", "second"]
 
 test "a server gives each connection its own task"(net: Net):
@@ -65,7 +76,7 @@ test "a server gives each connection its own task"(net: Net):
             with net.connect("localhost", 9000)? as client:
                 client.write(f"{name}\n")?
         # In a test, a server's loop ends once no connection is waiting.
-        heard = [lines_of(conn) else [] for conn in parallel(server)]
+        heard = [lines_or_empty(conn) for conn in parallel(server)]
         assert heard == [["ash"], ["kit"]]
 
 test "bytes go as they are"(net: Net):
@@ -106,7 +117,7 @@ test "a receive with nothing waiting gives up, and a loop over a socket ends"(ne
         socket.send_to("one", f"localhost:{socket.port}")?
         socket.send_to("two", f"localhost:{socket.port}")?
         # In a test, nothing more can come once none is waiting, so the loop ends.
-        heard = [packet.data.decode() else "" for packet in socket]
+        heard = [text_of(packet.data) for packet in socket]
         assert heard == ["one", "two"]
 
 test "a connection closed here says so when it's written to"(net: Net):
@@ -172,10 +183,11 @@ def main(stdout: Stdout, net: Net):
                 stdout.print(client.read_line()?)
                 # The server's end is still open but sends nothing more, so a read with a
                 # timeout gives up.
-                _ = client.read_line(timeout=Duration.millis(50)) else as why:
-                    match why:
-                        case .TimedOut(after=after):
-                            stdout.print("nothing came in", after.as_millis(), "ms")
-                        case _:
-                            stdout.print("something came")
-                    ""
+                _ = client.read_line(timeout=Duration.millis(50)) except why:
+                    case .TimedOut(after=after):
+                        stdout.print("nothing came in", after.as_millis(), "ms")
+                        ""
+                    case .NotFound() | .Refused() | .Closed | .Denied() | .Tls() | .Status(
+                    ) | .Other():
+                        stdout.print("something came")
+                        ""

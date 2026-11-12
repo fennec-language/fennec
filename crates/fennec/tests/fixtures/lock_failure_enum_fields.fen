@@ -17,7 +17,7 @@ struct C:
     pair: (str, list[int])
 
 def made() -> C:
-    C(
+    return C(
         shape=.Tagged(name="a name long enough to need a block", tags=[1, 2]),
         inner=Inner(shape=.Circle(r=1.5), n=1),
         maybe=[7],
@@ -49,7 +49,7 @@ def main(stdout: Stdout):
         which = round % 7
         shared c = made()
         mut failed = False
-        fails_after(c, which) else:
+        fails_after(c, which) except Nope():
             failed = True
         if not failed:
             stdout.print("it didn't fail")

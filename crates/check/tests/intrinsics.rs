@@ -33,7 +33,7 @@ fn a_def_without_a_body_needs_one() {
 fn a_def_takes_no_other_annotation() {
     assert_eq!(
         problems_as_written(
-            "struct Point:\n    x = 0\n\n    @inline\n    def moved(self) -> int:\n        self.x + 1\n"
+            "struct Point:\n    x = 0\n\n    @inline\n    def moved(self) -> int:\n        return self.x + 1\n"
         ),
         ["`@inline` isn't something a `def` can have @ @inline"]
     );

@@ -1,7 +1,7 @@
 error: `../src` is a folder
- --> examples/projects/errors/embed_a_folder/src/main.fen:3:18
+ --> examples/projects/errors/embed_a_folder/src/main.fen:3:22
   |
-3 |     stdout.print(embed_file("../src").len())
-  |                  ^^^^^^^^^^^^^^^^^^^^
+3 |     stdout.print(len(embed_file("../src")))
+  |                      ^^^^^^^^^^^^^^^^^^^^
   |
   = help: `embed_file` takes one file; embed each file you need

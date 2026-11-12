@@ -15,16 +15,16 @@ def doubled(items: list[int]) -> list[int]:
     mut out: list[int] = []
     for x in items:
         out.append(x * 2)
-    out
+    return out
 
 def nudge(ref points: list[Point]):
-    for i in range(points.len()):
+    for i in range(len(points)):
         points[i].x += 1.0
 
 def both(items: list[int], ref others: list[int]) -> int:
     others.append(9)
     others[0] = 7
-    items.len() * 10 + items[0]
+    return len(items) * 10 + items[0]
 
 def spread(
     ref int_list: list[int],
@@ -38,14 +38,14 @@ def spread(
         float_list.append(float(i) / 2.0)
         count_list[0] += i
         flag_list.append(i % 2 == 0)
-    float_list[-1] * 2.0
+    return float_list[-1] * 2.0
 
 def main(stdout: Stdout):
     mut items = [1, 2, 3]
     kept = items
     items[0] = 100
     items.append(4)
-    stdout.print(items, kept, items.len(), kept.len())
+    stdout.print(items, kept, len(items), len(kept))
 
     mut shared = [7]
     alias = shared
@@ -59,7 +59,7 @@ def main(stdout: Stdout):
     for i in range(1_000):
         many.append(i)
     total = sum(value for value in many)
-    stdout.print(many.len(), total, many[-1], many[500])
+    stdout.print(len(many), total, many[-1], many[500])
 
     mut points = [Point(x=0.0, y=1.0), Point(x=2.0, y=3.0)]
     before = points
@@ -91,7 +91,7 @@ def main(stdout: Stdout):
     mut flags = [False]
     stdout.print(
         spread(ref ints, ref floats, ref counts, ref flags, 100),
-        ints.len(),
+        len(ints),
         floats[50],
         counts,
         flags[-1],

@@ -6,10 +6,10 @@ struct Count:
 
     def next(ref self) -> int:
         self.left -= 1
-        self.left
+        return self.left
 
 def two(source: Source) -> int:
-    source.next() + source.next()
+    return source.next() + source.next()
 
 def main(stdout: Stdout):
     counter = Count()

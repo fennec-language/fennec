@@ -1,8 +1,8 @@
 def reverse(items: list[int]) -> list[int]:
-    [items[items.len() - 1 - at] for at in range(items.len())]
+    return [items[len(items) - 1 - at] for at in range(len(items))]
 
 def clamp(value: int, low: int, high: int) -> int:
-    max(low, min(value, high))
+    return max(low, min(value, high))
 
 test "reversing twice gives the original" for items: list[int]:
     assert reverse(reverse(items)) == items

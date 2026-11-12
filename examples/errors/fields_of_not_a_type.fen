@@ -6,7 +6,7 @@ def names() -> list[str]:
     mut found = []
     for field in fields(Ponit):
         found.append(field.name)
-    found
+    return found
 
 def main(stdout: Stdout):
     stdout.print(names())

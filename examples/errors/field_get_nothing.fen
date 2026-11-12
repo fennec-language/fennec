@@ -10,7 +10,7 @@ def walk[T](value: T) -> int:
     for field in fields(T):
         show(f"{field.get()}")
         count += 1
-    count
+    return count
 
 def main(stdout: Stdout):
     stdout.print(walk(Point(1, 2)))

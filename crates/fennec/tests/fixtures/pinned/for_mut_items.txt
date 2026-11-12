@@ -1,4 +1,4 @@
-source 8fd53d50691a525e52210ecb037d07edf122ed3ba79c68b540d76b471b707948
+source 8e22ff75bcdd5bdbfa371e9d463df9715256d0ab464e7d7040712d4bc978d533
 code 0
 stdout 2348
 [Unit(tags=[1, 0], name="first name long enough not to be inline", hp=0), Unit(tags=[2, 1], name="b", hp=1), Unit(tags=[3, 5], name="c", hp=5)] [Unit(tags=[1], name="first name long enough not to be inline", hp=0), Unit(tags=[2], name="b", hp=1), Unit(tags=[3], name="c", hp=5)] [Unit(tags=[1], name="first name long enough not to be inline", hp=0), Unit(tags=[2], name="b", hp=1), Unit(tags=[3], name="c", hp=5)] Unit(tags=[1], name="first name long enough not to be inline", hp=0) [1]

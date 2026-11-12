@@ -16,9 +16,9 @@ def main(stdout: Stdout):
     stdout.print(tags[4_999].name, tags[4_999].n)
     mut words = [f"another word long enough to be held in a block, {n}" for n in range(5_000)]
     for ref word in parallel(words):
-        if word.len() % 3 == 0:
+        if len(word) % 3 == 0:
             word = word + "!"
     stdout.print(words[0], words[4_999])
     stdout.print(
-        sum(tag.name.len() for tag in parallel(tags)) + sum(word.len() for word in parallel(words)),
+        sum(len(tag.name) for tag in parallel(tags)) + sum(len(word) for word in parallel(words)),
     )

@@ -146,7 +146,7 @@ fn standard_library_methods_give_back_their_types() {
     plus_one_imported(setup, "word.replace('a', 'b')", "can't use `+` on a str and an int");
     plus_one_imported(setup, "word.split('a')[0]", "can't use `+` on a str and an int");
     plus_one_imported(setup, "word.find_all('a')[0].start / 2", "can't mix int and float in `+`");
-    plus_one_imported(setup, "queue.len() / 2", "can't mix int and float in `+`");
+    plus_one_imported(setup, "len(queue) / 2", "can't mix int and float in `+`");
     plus_one_imported(setup, "is_regex('a')", "can't use `+` on a bool and an int");
 }
 
@@ -237,10 +237,11 @@ fn every_modules_names_have_to_be_imported() {
 fn capabilities_and_errors_need_no_import() {
     let program = "
         def read(fs: Fs, path: str) -> str:
-            fs.read_text(path) else as why:
-                match why:
-                    case .NotFound(reason=reason): reason
-                    case _: why.message()
+            return fs.read_text(path) except why:
+                case .NotFound(reason=reason):
+                    reason
+                case _:
+                    why.message()
 
         def main(stdout: Stdout, fs: Fs, clock: Clock):
             stdout.print(read(fs, 'a.txt'), InvalidValue('no'), ParseError('no', 1, 1), clock.now())
@@ -273,7 +274,7 @@ fn file_system_methods_give_back_their_types() {
 fn bytes_hold_ints_and_decode_to_text_that_might_fail() {
     let program = "
         def first(data: bytes) -> int:
-            data[0]
+            return data[0]
 
         def main(stdout: Stdout, fs: Fs):
             data = 'fox'.encode()
@@ -319,7 +320,7 @@ fn reading_numbers_from_text_can_fail_and_characters_have_codes() {
             code: int
 
             def from_code(code: int) -> Glyph:
-                Glyph(code=code)
+                return Glyph(code=code)
 
         def main(stdout: Stdout):
             stdout.print(Glyph.from_code(65).code + 1)
@@ -338,7 +339,7 @@ fn reading_numbers_from_text_can_fail_and_characters_have_codes() {
 fn arguments_and_input_are_text() {
     let program = "
         def main(stdout: Stdout, args: Args, stdin: Stdin):
-            stdout.print([arg + 1 for arg in args], args[0] + 1, args.len() + 'a', args.program + 1)
+            stdout.print([arg + 1 for arg in args], args[0] + 1, len(args) + 'a', args.program + 1)
             stdout.print(stdin.lines()[0] + 1, args['a'])
     ";
     assert_eq!(
@@ -346,7 +347,7 @@ fn arguments_and_input_are_text() {
         [
             "can't use `+` on a str and an int @ arg + 1",
             "can't use `+` on a str and an int @ args[0] + 1",
-            "can't use `+` on an int and a str @ args.len() + \"a\"",
+            "can't use `+` on an int and a str @ len(args) + \"a\"",
             "can't use `+` on a str and an int @ args.program + 1",
             "can't use `+` on a str and an int @ stdin.lines()[0] + 1",
             "an index must be an int, not a str @ \"a\"",

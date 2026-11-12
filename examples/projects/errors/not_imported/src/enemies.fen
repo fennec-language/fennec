@@ -2,4 +2,4 @@ struct Enemy:
     health = 100
 
 def strongest(enemies: list[Enemy]) -> int:
-    max(enemy.health for enemy in enemies)
+    return max(enemy.health for enemy in enemies)

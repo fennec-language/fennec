@@ -643,6 +643,16 @@ mod pool {
         false
     }
 
+    /// Without threads, no chunk runs ahead of a stream's reader.
+    pub(super) fn streams_run_ahead() -> bool {
+        false
+    }
+
+    /// Without threads, there are no workers.
+    pub(super) fn on_worker() -> bool {
+        false
+    }
+
     /// Without threads, native code only runs on the program's thread, whose limit it has.
     pub fn stack_limit() -> usize {
         0

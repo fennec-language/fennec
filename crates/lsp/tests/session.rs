@@ -324,7 +324,7 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
 #[test]
 fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
     let mut editor = Editor::new("quick_lints").unwrap();
-    editor.open("src/combat.fen", &COMBAT.replace("    power * 2", "    pass\n    power * 2"));
+    editor.open("src/combat.fen", &COMBAT.replace("    return power * 2", "    pass\n    return power * 2"));
     editor.open("src/main.fen", MAIN);
     let published = editor.change("src/main.fen", &MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)"));
     assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-pass"], "kept");
@@ -529,7 +529,7 @@ fn definitions_of_arguments_cases_capabilities_parameters_and_modules() {
         ("by=2", "by: int"),
         ("length=4", "length: int"),
         ("Line(length):", "Line(length: int)"),
-        ("T:\n    items", "T](items"),
+        ("T:\n    return items", "T](items"),
         ("n for n", "n in [1]"),
         ("screen.print", "screen: Stdout"),
     ];

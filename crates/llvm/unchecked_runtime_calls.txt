@@ -14,7 +14,6 @@ fennec_args_len unchecked 0
 fennec_box_equal in-cant-fail 0
 fennec_box_equal unchecked 0
 fennec_box_to_value unchecked 0
-fennec_clock_now unchecked 0
 fennec_constant_kept in-cant-fail 0
 fennec_constant_kept unchecked 0
 fennec_dict_popped unchecked 0

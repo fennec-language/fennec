@@ -333,17 +333,9 @@ mod tests {
 # the bench kernels make. A function not listed here mustn't go unchecked anywhere, and the
 # kernels' counts must match: a fix lowers them, written with FENNEC_UPDATE_UNCHECKED=1.
 #
-# Which of these really fail, as the runtime lane read them (2026-11-12). 46 give back a block's
-# address, and none of the 46 sets the failure flag: they run under `with`, not `attempt`, and a
-# too-big allocation stops the program in the runtime. They're here only because NEVER_FAIL
-# doesn't list them yet. Null comes from them in two ways:
-# - As a normal answer emitted code already tests: str_from_code and bytes_decode (a code that
-#   isn't a character, bytes that aren't UTF-8), and dict_find_by_value and dict_find_slice (not
-#   found).
-# - Only on what a compiler bug would give them, or with no runtime on the thread: the other 42.
-#   The runtime lane's next change makes each stop the program as a bug rather than give back 0,
-#   and lists all 46 as never failing, which takes them off this file.
-# text_of, which gives back nothing and writes a header, has its one bad path (no runtime) made an
-# empty inline header in the same change.
+# The runtime lane read the 46 that give back a block's address (2026-11-12): none sets the failure
+# flag, as they run under `with`, not `attempt`. 42 now stop the program as a bug rather than give
+# back 0, and 4 give back 0 only as an answer emitted code already tests. All 46, and text_of, are
+# in NEVER_FAIL, so none is listed here.
 ";
 }

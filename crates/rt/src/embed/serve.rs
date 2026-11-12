@@ -195,6 +195,8 @@ pub struct Conn {
     /// Whether anything's been read since it last wrote: a read before anything has is waiting
     /// for a next message, not partway through one.
     read_since_write: Cell<bool>,
+    /// When every read has to be done by, and how long that was, once `reads_within` is called.
+    reads_by: Cell<Option<(Instant, Duration)>>,
 }
 
 /// How long a connection has to finish its TLS handshake.
@@ -220,6 +222,7 @@ impl Conn {
             tls: RefCell::new(None),
             draining: None,
             read_since_write: Cell::new(false),
+            reads_by: Cell::new(None),
         }
     }
 
@@ -295,9 +298,25 @@ impl Conn {
         }
     }
 
+    /// Has every read from now on done within `after`, however long each is given.
+    pub fn reads_within(&self, after: Duration) {
+        self.reads_by.set(Some((Instant::now() + after, after)));
+    }
+
+    /// How long a read given `timeout` waits: no longer than what's left before every read has to
+    /// be done by.
+    fn read_until(&self, timeout: Option<Duration>) -> Until {
+        match self.reads_by.get() {
+            Some((by, whole)) if timeout.is_none_or(|timeout| Instant::now() + timeout > by) => {
+                Until { timeout: Some(whole), deadline: Some(by) }
+            }
+            _ => Until::after(timeout),
+        }
+    }
+
     /// Up to `count` bytes, empty at the end.
     pub fn read(&self, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
-        let until = Until::after(timeout);
+        let until = self.read_until(timeout);
         {
             let mut ahead = self.ahead.borrow_mut();
             if !ahead.is_empty() {
@@ -328,7 +347,7 @@ impl Conn {
     /// `read_line`, which with `crlf` fails on a line ended by a bare `\n`.
     pub fn read_line_crlf(&self, timeout: Option<Duration>, crlf: bool) -> Result<Option<Vec<u8>>, Failure> {
         let most = crate::stdlib::net::MOST_LINE_BYTES;
-        let until = Until::after(timeout);
+        let until = self.read_until(timeout);
         // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
         // once however slowly the line comes.
         let mut looked = 0;

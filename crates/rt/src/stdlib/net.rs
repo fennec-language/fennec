@@ -48,6 +48,10 @@ struct Stream {
     /// Whether anything's been read since it last wrote: before anything has, a read is waiting
     /// for a next message, which a server draining ends.
     read_since_write: AtomicBool,
+    /// When every read from now on has to be done by, and how long that was from when it was
+    /// set: a server gives a request's head and body one, so a client sending a byte at a time
+    /// can't hold a connection open for longer than a request may take.
+    reads_by: Mutex<Option<(Instant, Duration)>>,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -243,8 +247,9 @@ impl Fake {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
             ("Server", "_accept", []) => return Ok(made_or_failed(self.accept(handle).map(connection_made))),
-            // A test's server never drains: its connections are taken one at a time.
-            ("Server", "_stop_on", _) => return Ok(Value::Unit),
+            // A test's server never drains: its connections are taken one at a time. And a test's
+            // connection never waits, so it has no time to run out of.
+            ("Server", "_stop_on", _) | ("Connection", "_reads_within", [_]) => return Ok(Value::Unit),
             ("Connection", "draining", []) => return Ok(Value::Bool(false)),
             ("Connection" | "UdpSocket" | "Server", "close", []) => {
                 self.close(handle);
@@ -557,7 +562,7 @@ fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     }
 }
 
-fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
+pub(crate) fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
     if let Value::Instance(duration) = value
         && let Some(Value::Int(nanos)) = duration.field("nanos")
     {
@@ -674,6 +679,15 @@ pub(crate) fn real_connection(
         }
         // What a task serving a connection makes its `Connection` from.
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
+        // Has every read from now on done within `after`.
+        ("_reads_within", [after]) => {
+            let after = duration_of(after, span)?;
+            if let Ok(stream) = stream(handle) {
+                *stream.reads_by.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some((Instant::now() + after, after));
+            }
+            return Ok(Value::Unit);
+        }
         // Its server's draining, when it was told to `stop_on` signals and one has come.
         ("draining", []) => {
             let draining = PLAIN_DRAINS.load(Ordering::SeqCst) && crate::signals::stopping();
@@ -1093,6 +1107,7 @@ fn keep_stream_as(
         writing: Mutex::new(()),
         served,
         read_since_write: AtomicBool::new(false),
+        reads_by: Mutex::new(None),
     };
     Ok(open(|open| {
         let handle = fresh_handle(open);
@@ -1133,13 +1148,18 @@ fn wait_at_most(socket: &TcpStream, timeout: Option<Duration>) -> Result<(), Fai
     }
 }
 
+/// The most one read takes in. A read gives what's there, up to what it was asked for, so a
+/// count far past that, as one from a request's header can be, reads no more at once, and room
+/// is never made for what only a count says is coming.
+const MOST_READ_AT_ONCE: usize = 64 * 1024;
+
 fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
     let stream = stream(handle)?;
     // With nothing to give, it mustn't wait for something to come.
     if count == 0 {
         return Ok(Vec::new());
     }
-    let mut data = vec![0; count];
+    let mut data = vec![0; count.min(MOST_READ_AT_ONCE)];
     let read = reading(&stream, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
     if read > 0 {
@@ -1333,6 +1353,17 @@ fn reading<T>(
     timeout: Option<Duration>,
     mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
+    // A read waits no longer than what's left before the connection's reads have to be done by.
+    let timeout = match *stream.reads_by.lock().unwrap_or_else(PoisonError::into_inner) {
+        Some((by, whole)) => {
+            let left = by.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(Failure::TimedOut(whole));
+            }
+            Some(timeout.map_or(left, |timeout| timeout.min(left)))
+        }
+        None => timeout,
+    };
     let mut attempt = || {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
         match &mut *reader {
@@ -1946,6 +1977,61 @@ pub(crate) mod tests {
         server.write_all(b"lo\n").unwrap();
         let line = super::read_line(handle, Some(std::time::Duration::from_secs(10)));
         assert_eq!(line.ok().flatten().as_deref(), Some(&b"hello\n"[..]));
+        close(handle);
+    }
+
+    /// Once a connection's reads are given a time to be done by, a client sending a little at a
+    /// time, each read well inside its own timeout, is cut off when that time comes, rather than
+    /// holding the connection as long as it keeps sending.
+    #[test]
+    fn reads_given_a_time_to_be_done_by_stop_then_however_steadily_bytes_come() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        // A line every 20 ms, for five seconds, far longer than the reads are given.
+        let sender = std::thread::spawn(move || {
+            for _ in 0..250 {
+                if server.write_all(b"x\n").is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        let within = Value::made("Duration", vec![("nanos", Value::Int(300_000_000))]);
+        let set = super::real_connection(handle, "_reads_within", &[within], None, Span::default());
+        assert!(set.is_ok());
+        let started = std::time::Instant::now();
+        let each = Some(std::time::Duration::from_secs(1));
+        let ended = loop {
+            match super::read_line(handle, each) {
+                Ok(Some(_)) => {}
+                other => break other,
+            }
+        };
+        let took = started.elapsed();
+        close(handle);
+        let _ = sender.join();
+        assert!(matches!(ended, Err(Failure::TimedOut(_))), "{ended:?}");
+        // Cut off at about 300 ms; the sender would have gone on for five seconds.
+        assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+    }
+
+    /// A read asked for far more than could ever come, as with a count from a request's header,
+    /// gives what's there without making room for the rest.
+    #[test]
+    fn a_read_of_a_huge_count_gives_what_there_is() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        server.write_all(b"abc").unwrap();
+        let read = super::read(handle, 1 << 50, Some(std::time::Duration::from_secs(10)));
+        assert_eq!(read.ok().as_deref(), Some(&b"abc"[..]));
         close(handle);
     }
 

@@ -58,7 +58,9 @@ pub(crate) fn read_line() -> Value {
 /// `IoError`, through the same buffer as `read_line`.
 pub(crate) fn read_chunk(size: usize) -> Value {
     let read = crate::stdlib::fs::blocking(move || {
-        let mut chunk = vec![0; size];
+        // A read gives what's there, up to `size`, so it needn't make room for more than one
+        // read takes in, however big `size` is.
+        let mut chunk = vec![0; size.min(64 * 1024)];
         std::io::Read::read(&mut std::io::stdin().lock(), &mut chunk).map(|count| {
             chunk.truncate(count);
             chunk

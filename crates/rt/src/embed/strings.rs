@@ -851,25 +851,51 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
 }
 
 thread_local! {
-    /// The bytes a string block's text is copied into to be read as a `str`, kept to save making
-    /// them anew for each call.
+    /// The bytes a string block's text is copied into to be read as a `str`, and a second string's,
+    /// like the part a `find` looks for, kept to save making them anew for each call.
     static READ: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static READ_PART: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Runs `with` on a string block's text, copied out a word at a time into bytes kept for it, with
-/// nothing else made: no `String`, no value. None when `address` isn't a string's block.
-fn read_text<R>(state: &mut State, address: i64, with: impl FnOnce(&mut State, &str) -> R) -> Option<R> {
-    let mut bytes = READ.take();
+/// Copies a string block's text into `bytes` a word at a time. False when `address` isn't a
+/// string's block.
+fn copy_out(state: &State, address: i64, bytes: &mut Vec<u8>) -> bool {
     bytes.clear();
     let block = u64::try_from(address).ok().and_then(|at| state.heap.block(at));
-    let block = block.filter(|block| super::heap::is_text(state, block))?;
+    let Some(block) = block.filter(|block| super::heap::is_text(state, block)) else { return false };
     let (length, _) = lengths(block);
     for word in block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8)) {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
     bytes.truncate(length);
-    let done = std::str::from_utf8(&bytes).ok().map(|text| with(state, text));
+    true
+}
+
+/// Runs `with` on a string block's text, copied out into bytes kept for it, with nothing else
+/// made: no `String`, no value. None when `address` isn't a string's block.
+fn read_text<R>(state: &mut State, address: i64, with: impl FnOnce(&mut State, &str) -> R) -> Option<R> {
+    let mut bytes = READ.take();
+    let done = copy_out(state, address, &mut bytes)
+        .then(|| std::str::from_utf8(&bytes).ok().map(|text| with(state, text)))
+        .flatten();
     READ.set(bytes);
+    done
+}
+
+/// `read_text` for two strings at once, the second, `part`, often what's looked for in the first.
+fn read_two<R>(
+    state: &mut State,
+    (address, part): (i64, i64),
+    with: impl FnOnce(&mut State, &str, &str) -> R,
+) -> Option<R> {
+    let mut bytes = READ_PART.take();
+    let done = copy_out(state, part, &mut bytes)
+        .then(|| {
+            let part = std::str::from_utf8(&bytes).ok()?;
+            read_text(state, address, |state, text| with(state, text, part))
+        })
+        .flatten();
+    READ_PART.set(bytes);
     done
 }
 
@@ -890,8 +916,8 @@ pub extern "C" fn lower(address: i64) -> i64 {
 /// `text.replace(old, new)`.
 pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
     super::made_with("replace", |state| {
-        let (Some(old), Some(new)) = (text(state, old), text(state, new)) else { return 0 };
-        read_text(state, address, |state, text| text_address(state, &text.replace(old.as_str(), &new)))
+        let Some(new) = text(state, new) else { return 0 };
+        read_two(state, (address, old), |state, text, old| text_address(state, &text.replace(old, &new)))
             .unwrap_or(0)
     })
 }
@@ -899,9 +925,8 @@ pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
 /// `text.find(part)`: which character `part` first starts at, or -1 when it isn't there.
 pub extern "C" fn find(address: i64, part: i64) -> i64 {
     with(|state| {
-        let part = text(state, part)?;
-        read_text(state, address, |_, text| {
-            let before = text.find(part.as_str()).and_then(|at| text.get(..at));
+        read_two(state, (address, part), |_, text, part| {
+            let before = text.find(part).and_then(|at| text.get(..at));
             before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
         })
     })
@@ -912,14 +937,15 @@ pub extern "C" fn find(address: i64, part: i64) -> i64 {
 /// once. An empty separator fails.
 pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
-        let between = match separator {
-            0 => None,
-            _ => Some(text(state, separator).ok_or_else(|| lost(start, end))?),
+        let at = span(start, end);
+        let split = if separator == 0 {
+            read_text(state, address, |state, whole| split_into(state, whole, None, at))
+        } else {
+            read_two(state, (address, separator), |state, whole, between| {
+                split_into(state, whole, Some(between), at)
+            })
         };
-        read_text(state, address, |state, whole| {
-            split_into(state, whole, between.as_deref(), span(start, end))
-        })
-        .ok_or_else(|| lost(start, end))?
+        split.ok_or_else(|| lost(start, end))?
     })
 }
 

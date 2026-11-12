@@ -17495,6 +17495,179 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Builds `source` with these options and runs it under `FENNEC_COUNTS`: what it printed, and
+/// the line saying what it copied and what it still held at the end.
+fn printed_and_counts(dir: &Path, name: &str, how: &[&str]) -> std::io::Result<(String, String)> {
+    let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+    let (program, output) =
+        (program.to_string_lossy().into_owned(), executable.to_string_lossy().into_owned());
+    let args: Vec<&str> =
+        ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
+    let built = fennec(&args, dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
+    Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
+}
+
+/// `ref` in a loop never copies, items that hold blocks of their own included: a dict, a list
+/// and a string. A `Table` gone through as a local, a parameter or a field, or by `enumerate`,
+/// a list in a field, and an item changed through `units[id]`: each item is taken out, changed
+/// where it is and put back, in either build. Each used to copy the whole item, its dict shared,
+/// every time round.
+#[test]
+fn a_ref_loop_over_items_holding_blocks_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("ref_loops_holding_blocks")?;
+    std::fs::write(dir.join("ref_loops_holding_blocks.fen"), REF_LOOPS_HOLDING_BLOCKS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "ref_loops_holding_blocks", how)?;
+        assert_eq!(printed, "25950 1000 3225 1000\n", "{how:?}");
+        assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const REF_LOOPS_HOLDING_BLOCKS: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    name: str
+    hp: int
+    bag: dict[str, int]
+    tags: list[str]
+
+struct World:
+    units = Table[Unit]()
+    queue = list[Unit]()
+
+def heal(ref units: Table[Unit]):
+    for ref unit in units:
+        unit.hp += 1
+        unit.bag["herb"] = (unit.bag.get("herb") else 0) + 1
+    return
+
+def march(ref world: World):
+    for at, ref unit in enumerate(world.units):
+        unit.hp += at
+        unit.tags.append("m")
+        _ = unit.tags.pop()
+    for ref unit in world.queue:
+        unit.hp -= 1
+        unit.bag["wait"] = (unit.bag.get("wait") else 0) + 1
+    return
+
+def main(stdout: Stdout):
+    mut world = World()
+    mut ids = list[Id[Unit]]()
+    for n in range(50):
+        ids.append(world.units.add(Unit(name=f"fox{n}", hp=n, bag={"gold": n}, tags=["a"])))
+        world.queue.append(Unit(name=f"kit{n}", hp=n, bag={"gold": n}, tags=["b"]))
+    for _ in range(20):
+        heal(ref world.units)
+        march(ref world)
+        for ref unit in world.units:
+            unit.bag["gold"] = (unit.bag.get("gold") else 0) + 2
+        for id in ids:
+            world.units[id].hp -= 1
+    mut hp = 0
+    mut herbs = 0
+    mut gold = 0
+    for unit in world.units:
+        hp += unit.hp
+        herbs += unit.bag.get("herb") else 0
+        gold += unit.bag.get("gold") else 0
+    mut waited = 0
+    for unit in world.queue:
+        hp += unit.hp
+        waited += unit.bag.get("wait") else 0
+    stdout.print(hp, herbs, gold, waited)
+    return
+"#;
+
+/// An item taken out of a `Table` by `for ref` goes back however the loop ends. A failure
+/// halfway keeps what was changed, up to the item that failed, and leaves the rest as they
+/// were. A crash halfway under `lock ... as ref` puts every item back as it was. A copy of
+/// the `Table` made before the loop stays as it was, its items' dicts included.
+#[test]
+fn a_table_left_halfway_through_a_ref_loop_is_whole() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ref_loop_left_halfway")?;
+    std::fs::write(dir.join("ref_loop_left_halfway.fen"), REF_LOOP_LEFT_HALFWAY)?;
+    let rows = "fox0 10 1 0\nfox1 20 1 0\nfox2 30 1 0\nfox3 30 0 0\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "ref_loop_left_halfway", how)?;
+        assert_eq!(printed, format!("too hot at 30\n{rows}before 60 4\ncrashed\n{rows}"), "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const REF_LOOP_LEFT_HALFWAY: &str = r#"from std.collections import Id, Table
+from std.concurrent import Crashed
+
+error TooHot:
+    at: int
+
+struct Unit:
+    name: str
+    hp: int
+    bag: dict[str, int]
+
+struct World:
+    units = Table[Unit]()
+
+def heat(ref units: Table[Unit], limit: int) fails TooHot:
+    for ref unit in units:
+        unit.hp += 10
+        unit.bag["heat"] = (unit.bag.get("heat") else 0) + 1
+        if unit.hp > limit: fail TooHot(at=unit.hp)
+    return
+
+def burn(world: shared World, limit: int):
+    lock world as ref held:
+        for ref unit in held.units:
+            unit.hp += 100
+            unit.bag["burn"] = 1
+            # A crash halfway: the lock puts back everything it changed.
+            assert unit.hp < limit
+    return
+
+def burning(world: shared World) fails Crashed:
+    with launch(() => burn(world, limit=125))?:
+        pass
+    return
+
+def show(stdout: Stdout, units: Table[Unit]):
+    for unit in units:
+        stdout.print(unit.name, unit.hp, unit.bag.get("heat") else 0, unit.bag.get("burn") else 0)
+    return
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    for n in range(4):
+        _ = units.add(Unit(name=f"fox{n}", hp=n * 10, bag={"gold": n}))
+    before = units
+    heat(ref units, limit=25) except why:
+        case TooHot(at):
+            stdout.print("too hot at", at)
+    show(stdout, units)
+    stdout.print("before", sum(unit.hp for unit in before), sum(len(unit.bag) for unit in before))
+    shared world = World(units=units)
+    burning(world) except why:
+        case Crashed():
+            stdout.print("crashed")
+    lock world as held:
+        show(stdout, held.units)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

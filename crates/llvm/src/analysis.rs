@@ -62,6 +62,9 @@ pub(crate) struct Analysis {
     /// Locals taking an item out of a list to change it and put it back: the local or field
     /// the list is in, which has to be alone before the item's count says anything.
     items_taken: HashMap<usize, (LocalId, Vec<String>)>,
+    /// `for ref` items taken out of a `Table`'s slot: the local or field the `Table` is in,
+    /// which has to be alone before the item is taken.
+    slot_homes: HashMap<usize, (LocalId, Vec<String>)>,
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
@@ -1835,17 +1838,12 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                 }
             }
-            // A `Table`'s items aren't a list's, so they're read and written as they are.
-            let id_map = |local: LocalId| {
-                matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Table(_)))
-            };
-            // Nor are an array's: one in a block isn't made alone to take one out. Nor a dict's,
-            // whose item is read out of it as it is, with no making it alone first: the dict may
-            // be another's too, and the item has to own what it holds to change it.
+            // An array's items aren't taken out: one in a block isn't made alone to take one out.
+            // Nor a dict's, whose item is read out of it as it is, with no making it alone first:
+            // the dict may be another's too, and the item has to own what it holds to change it.
+            // A `Table`'s are, by `Id`, as a list's are by position: it's made alone first.
             let dict = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::Dict(..)));
-            if matches!(&inst.kind, InstKind::GetIndex { .. })
-                && (id_map(source) || is_array(function, source) || dict)
-            {
+            if matches!(&inst.kind, InstKind::GetIndex { .. }) && (is_array(function, source) || dict) {
                 continue;
             }
             if let InstKind::GetIndex { index, .. } = &inst.kind {
@@ -2240,6 +2238,57 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
                 known.taken.insert(dest.0);
                 known.items_taken.insert(dest.0, (root, path));
                 known.loop_taken.insert(dest.0);
+            }
+        }
+    }
+    find_slot_takes(function, known);
+}
+
+/// `for ref item in table`: the same for a `Table`'s slot, read into the loop's name and put
+/// back by the `Id` asked of the same slot just before. Taken, the item has one owner while the
+/// body runs, so changing it changes it where it is, and putting it back moves it home.
+fn find_slot_takes(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for (at, inst) in block.insts.iter().enumerate() {
+            let InstKind::Builtin { dest: Some(dest), name, args, .. } = &inst.kind else { continue };
+            let [Operand::Local(from), _] = args.as_slice() else { continue };
+            if name != "Table.at_slot"
+                || dest == from
+                || known.writes.get(dest.0) != Some(&1)
+                || known.taken.contains(&dest.0)
+                || known.borrowed.contains(&dest.0)
+            {
+                continue;
+            }
+            // The slot's `Id`, asked just before at the same slot.
+            let id =
+                block.insts.get(..at).unwrap_or_default().iter().rev().find_map(|asked| match &asked.kind {
+                    InstKind::Builtin { dest: Some(id), name, args: asked_args, .. }
+                        if name == "Table.slot_id" && asked_args.get(1) == args.get(1) =>
+                    {
+                        Some((*id, asked_args.first().cloned()))
+                    }
+                    _ => None,
+                });
+            let Some((id, Some(Operand::Local(asked_of)))) = id else { continue };
+            let index = Operand::Local(id);
+            if known.writes.get(id.0) != Some(&1) {
+                continue;
+            }
+            let Some((root, path)) = written_back_to(function, *dest, &index) else { continue };
+            // Both read the same `Table`: the one the item goes back into.
+            if comes_from(function, known, *from, (root, &path))
+                && comes_from(function, known, asked_of, (root, &path))
+                && stays_apart(function, known, (start, at + 1), (*dest, *from, &index), (root, &path))
+            {
+                known.taken.insert(dest.0);
+                known.loop_taken.insert(dest.0);
+                known.slot_homes.insert(dest.0, (root, path.clone()));
+                // A field's `Table` read for the item is only looked at, and nothing reads it
+                // again before the item is home, so holding it would make the slot shared.
+                if *from != root {
+                    known.borrowed.insert(from.0);
+                }
             }
         }
     }
@@ -2757,6 +2806,7 @@ impl Analysis {
             borrowed_from: HashMap::new(),
             taken: HashSet::new(),
             items_taken: HashMap::new(),
+            slot_homes: HashMap::new(),
             path_taken: HashMap::new(),
             loop_taken: HashSet::new(),
             places_taken: HashMap::new(),
@@ -2912,6 +2962,11 @@ impl Analysis {
 
     pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
         self.items_taken.get(&local.0)
+    }
+
+    /// Where the `Table` is that a `for ref` item was taken out of.
+    pub(crate) fn slot_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
+        self.slot_homes.get(&local.0)
     }
 
     /// Whether anything writes a local.

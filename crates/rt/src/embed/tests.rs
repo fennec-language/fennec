@@ -57,3 +57,27 @@ fn a_held_line_goes_into_the_capture_it_was_printed_for() {
     super::flush_held_line();
     assert_eq!(second.printed(), "second");
 }
+
+/// Whether a launched task writes as it goes is its own run's to say: a run that writes live on
+/// another thread, as an earlier test's may, doesn't change it here, and a task of a run that
+/// writes live passes it on to what it launches.
+#[test]
+fn a_task_writes_as_it_goes_only_when_its_own_run_does() {
+    std::thread::spawn(|| {
+        super::start(super::Tables::default(), crate::Inputs { live: true, ..crate::Inputs::default() });
+        assert!(super::program_writes(), "a live run's tasks write as they go");
+        super::finish();
+    })
+    .join()
+    .unwrap();
+    std::thread::spawn(|| {
+        super::start(super::Tables::default(), crate::Inputs::default());
+        assert!(!super::program_writes(), "another run writing live changes nothing here");
+        let was = super::swap_task_writes(true);
+        assert!(super::program_writes(), "a task that writes as it goes passes it on");
+        super::swap_task_writes(was);
+        super::finish();
+    })
+    .join()
+    .unwrap();
+}

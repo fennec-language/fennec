@@ -201,9 +201,6 @@ impl Tables {
 #[derive(Clone, Default)]
 struct Output(Rc<RefCell<Vec<u8>>>, bool);
 
-/// Whether the program writes its output as it goes, rather than keeping it for a host.
-static PROGRAM_WRITES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 thread_local! {
     /// Whether what's running here is a launched task of a program that writes as it goes. A
     /// `parallel` range's output is kept to come out whole, but tasks talk to each other, and what
@@ -211,10 +208,13 @@ thread_local! {
     static TASK_WRITES: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Whether a launched task's printing is written as it goes.
+/// Whether a task launched from here writes as it goes: as what launches it does, whether that's a
+/// runtime writing its output live or a task that was launched to. A run's own, so one run writing
+/// live doesn't change how another's tasks print, as tests running one after another in a process
+/// would see.
 #[cfg(any(test, feature = "threads"))]
 pub(in crate::embed) fn program_writes() -> bool {
-    PROGRAM_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+    TASK_WRITES.get() || OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| output.1))
 }
 
 /// Says whether what's about to run here writes as it goes, giving back what was.
@@ -247,9 +247,25 @@ fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
     })
 }
 
-/// What live runs have written, in tests, in the order they wrote it.
+/// What live runs have written, in tests, in the order they wrote it. Every test's runs write here,
+/// so a test reads only what was written since it started (`written_since`).
 #[cfg(test)]
 static WRITTEN: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+/// Where what live runs write has got to, for a test to read only what's written after it
+/// (`written_since`).
+#[cfg(test)]
+pub(in crate::embed) fn written_mark() -> usize {
+    WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+}
+
+/// What live runs have written since `mark`, as text: a test's, along with whatever other tests
+/// running at the same time wrote, which it tells apart by what it looks for.
+#[cfg(test)]
+pub(in crate::embed) fn written_since(mark: usize) -> String {
+    let written = WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(written.get(mark..).unwrap_or_default()).into_owned()
+}
 
 #[cfg(test)]
 fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
@@ -540,9 +556,6 @@ fn capability(kind: i64) -> Capability {
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
     let output = Output(Rc::default(), live);
-    if live {
-        PROGRAM_WRITES.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
     OUTPUT.set(Some(output.clone()));
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();

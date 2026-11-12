@@ -405,15 +405,10 @@ fn native_code_serves_a_server_the_runtime_opened() {
     finish();
 }
 
-/// What a live runtime has written, as text.
-fn written() -> String {
-    let written = super::super::WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    String::from_utf8_lossy(&written).into_owned()
-}
-
-/// Waits until `line` has been written. The bound is only there so a broken server fails the test
-/// rather than hanging it.
-fn wait_for_written(line: &str) {
+/// Waits until `line` has been written since `mark`. The bound is only there so a broken server
+/// fails the test rather than hanging it.
+fn wait_for_written(mark: usize, line: &str) {
+    let written = || super::super::written_since(mark);
     let started = std::time::Instant::now();
     while !written().contains(line) {
         assert!(started.elapsed() < Duration::from_secs(30), "`{line}` wasn't written: {}", written());
@@ -436,6 +431,7 @@ fn printing() -> Handler {
 
 #[test]
 fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
+    let mark = super::super::written_mark();
     let (listener, address) = listener();
     let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
         let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
@@ -448,13 +444,13 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
         let mut parked = std::net::TcpStream::connect(address).unwrap();
         parked.write_all(b"from the parked task\n").unwrap();
         // It's written with this connection still open, its task parked for its next line.
-        wait_for_written("from the parked task\n");
+        wait_for_written(mark, "from the parked task\n");
         let mut other = std::net::TcpStream::connect(address).unwrap();
         other.write_all(b"from the other task\n").unwrap();
-        wait_for_written("from the other task\n");
+        wait_for_written(mark, "from the other task\n");
         // One task's prints stay in order, whatever comes between them.
         parked.write_all(b"from the parked task, later\n").unwrap();
-        wait_for_written("from the parked task, later\n");
+        wait_for_written(mark, "from the parked task, later\n");
     };
     let (sent, ran) = std::sync::mpsc::channel();
     let started = move |stopper: Stopper| {
@@ -471,7 +467,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
         std::panic::resume_unwind(panic);
     }
     assert_eq!(served.failed, 0);
-    let text = written();
+    let text = super::super::written_since(mark);
     let (first, later) =
         (text.find("from the parked task\n").unwrap(), text.find("from the parked task, later\n").unwrap());
     assert!(first < text.find("from the other task\n").unwrap());

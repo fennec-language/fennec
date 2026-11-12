@@ -21,9 +21,12 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Connection", "write") => reads(&[Type::Unknown], fails(Type::Unit)),
         ("Connection" | "Server" | "UdpSocket", "close") => reads(&[], Type::Unit),
         ("Server", "_accept") => reads(&[], fails(Type::named("Connection"))),
-        // What `stop_on` is written with: drains when the program's asked to stop, its rounds
-        // given this long.
-        ("Server", "_stop_on") => reads(&[Type::named("Duration")], Type::Unit),
+        // `_stop_on`, what `stop_on` is written with: drains when the program's asked to stop, its
+        // rounds given this long. `_reads_within`: has every read from now on done within this
+        // long, together, as a server gives a request's head and body.
+        ("Server", "_stop_on") | ("Connection", "_reads_within") => {
+            reads(&[Type::named("Duration")], Type::Unit)
+        }
         // Whether its server's draining, so it should answer this message and close.
         ("Connection", "draining") => reads(&[], Type::Bool),
         ("Net", "get" | "post") => reads(&[Type::Str], fails(Type::named("Response"))),

@@ -13,7 +13,7 @@ fennec-blake3.workspace = true
 fennec-build.workspace = true
 fennec-check.workspace = true
 fennec-fmt.workspace = true
-fennec-rt.workspace = true
+fennec-rt = { workspace = true, features = ["made-up-inputs"] }
 fennec-ir.workspace = true
 fennec-lint.workspace = true
 fennec-parked.workspace = true

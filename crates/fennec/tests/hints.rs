@@ -11,7 +11,7 @@ fn first_error(body: &str) -> Option<(String, Option<String>)> {
 #[test]
 fn methods_from_other_languages_point_to_fennec_ones() {
     let cases = [
-        ("[1].length()", "a list has no method `length`", "use `.len()`"),
+        ("[1].length()", "a list has no method `length`", "use `len(x)`"),
         ("[1].push(2)", "a list has no method `push`", "use `append`"),
         ("\" x \".trim()", "a str has no method `trim`", "use `strip()`"),
         ("\"x\".toUpperCase()", "a str has no method `toUpperCase`", "use `upper()`"),

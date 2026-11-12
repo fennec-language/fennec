@@ -800,7 +800,7 @@ fn a_double_lookup_fixed_prints_the_same() {
 }
 
 /// `fennec fix` writes what used `Ok`, `Err` and `Result`, which are refused now: a `match` on
-/// `Ok` and `Err` with `else`, where a function's last line returns from its failure case, a named
+/// `Ok` and `Err` with `except`, where a function's last line returns from its failure case, a named
 /// value keeps its name, and a loop's last statement continues; `-> Result[T, E]` as
 /// `-> T fails E`; and `return Err(e)` as `fail e`. The program runs once fixed.
 #[test]
@@ -826,9 +826,9 @@ fn what_used_ok_err_and_result_is_fixed_and_runs() {
     for written in [
         "def lower(n: int) -> int fails Bad:\n",
         "        fail Bad(\"small\")\n",
-        "lowered = lower(n) else:\n        return 0\n    lowered\n",
-        "given = lower(n) else:\n            9\n",
-        "lowered = lower(n) else as problem:\n            stdout.print(problem.why)\n            continue\n",
+        "lowered = lower(n) except Bad():\n        return 0\n    return lowered\n",
+        "given = lower(n) except Bad():\n            9\n",
+        "lowered = lower(n) except problem:\n            stdout.print(problem.why)\n            continue\n",
     ] {
         assert!(now.contains(written), "{now}");
     }

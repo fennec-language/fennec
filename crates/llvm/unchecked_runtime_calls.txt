@@ -30,7 +30,6 @@ fennec_bytes_builder unchecked 0
 fennec_bytes_decode in-cant-fail 0
 fennec_bytes_decode_problem in-cant-fail 0
 fennec_bytes_grow in-cant-fail 0
-fennec_clock_now unchecked 0
 fennec_constant_kept in-cant-fail 0
 fennec_constant_kept unchecked 0
 fennec_dict_add_new_slice unchecked 2

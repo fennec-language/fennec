@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Stmt, Turn, Turning, Via, XS,
+    RefPlace, Stmt, StreamMap, StreamRead, Streaming, Turn, Turning, Via, XS, YS,
 };
 
 /// What every program starts with, for its body to use.
@@ -538,6 +538,36 @@ pub(crate) fn source(program: &Program) -> String {
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
     format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+}
+
+/// `streamed{id}`, the function a `Streamed` calls: its stream, made and read.
+fn streamed_written(streaming: &Streaming) -> String {
+    let Streaming { id, items, map, read } = streaming;
+    let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+    let mut out = format!("def streamed{id}(stdout: Stdout):\n    xs = [{}]\n", items.join(", "));
+    let each = match map {
+        StreamMap::Scaled(by, plus) => format!("item * {by} + {plus}"),
+        StreamMap::Divided(zero) => format!("100 // (item - {zero})"),
+        StreamMap::Indexed => {
+            let ys: Vec<String> = YS.iter().map(ToString::to_string).collect();
+            let _ = writeln!(out, "    ys = [{}]", ys.join(", "));
+            "ys[item]".to_owned()
+        }
+    };
+    let _ = writeln!(out, "    stream = ({each} for item in parallel(xs))");
+    match read {
+        StreamRead::Loop(stop) => {
+            out.push_str("    mut seen = 0\n    for y in stream:\n        stdout.print(\"streamed\", y)\n        seen += 1\n");
+            if let Some(stop) = stop {
+                let _ = writeln!(out, "        if seen == {stop}:\n            break");
+            }
+            out.push_str("    stdout.print(\"read\", seen)\n");
+        }
+        StreamRead::Sum => out.push_str("    stdout.print(\"sum\", sum(y for y in stream))\n"),
+        StreamRead::Listed => out.push_str("    stdout.print([y + 1 for y in stream])\n"),
+    }
+    out.push('\n');
+    out
 }
 
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
@@ -1187,6 +1217,10 @@ impl Writer {
                     &["Crashed", "Closed", "Timeout", "Refused"],
                     "stdout.print(\"stopped\")",
                 );
+            }
+            Stmt::Streamed(streaming) => {
+                let _ = write!(self.helpers, "{}", streamed_written(streaming));
+                self.line(indent, &format!("streamed{}(stdout)", streaming.id));
             }
             Stmt::Turned(turning) => {
                 let _ = write!(self.helpers, "{}", turned_written(turning));

@@ -2,6 +2,10 @@
 //! which types are plain, which are boxed, where fields go, and how the runtime reads them.
 //! It knows nothing about generating code.
 
+// A hash map's order changes with every process, so iterating one would make what the compiler
+// emits, or the order it checks in, differ from run to run. Iterate a sorted copy or a BTreeMap.
+#![deny(clippy::iter_over_hash_type)]
+
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 

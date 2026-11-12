@@ -38,7 +38,10 @@ fn round_trip(source: &str, name: &str) -> Option<String> {
 
 #[test]
 fn examples_are_formatted() {
-    for path in fen_files(&examples_dir()).unwrap() {
+    let paths = fen_files(&examples_dir()).unwrap();
+    // Finding none would pass with nothing checked.
+    assert!(paths.len() > 100, "only {} examples were found in {}", paths.len(), examples_dir().display());
+    for path in paths {
         let source = fs::read_to_string(&path).unwrap();
         let name = path.display().to_string();
         let formatted = round_trip(&source, &name);

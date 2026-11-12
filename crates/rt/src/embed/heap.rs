@@ -26,8 +26,10 @@ mod named;
 pub(super) mod shown;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(super) use freeing::free_waiting;
 pub use freeing::{free, free_text, set_abandon};
-pub(super) use freeing::{release, run_abandons, share_abandons};
+pub(super) use freeing::{release, run_abandons, share_abandons, strays};
 pub(super) use named::packable;
 pub use shown::{own_text, own_text_written};
 
@@ -391,6 +393,23 @@ fn unowned(what: &str) -> ! {
 #[cfg(test)]
 fn unowned(what: &str) -> ! {
     panic!("the runtime was handed a native block it doesn't own: {what}");
+}
+
+/// Stops the program: the runtime found `what`, a bug in Fennec, which going on would hide. This
+/// is reached with the runtime's state borrowed, so it says so itself.
+#[cfg(not(test))]
+#[cold]
+#[inline(never)]
+pub(in crate::embed) fn runtime_bug(what: &str) -> ! {
+    super::write_kept_output();
+    let _ = writeln!(std::io::stderr(), "error: {what}\n  = help: this is a bug in Fennec; please report it");
+    super::aot::stop_now(1)
+}
+
+/// [`runtime_bug`] in a test, which goes on to be caught, where a program stops.
+#[cfg(test)]
+pub(in crate::embed) fn runtime_bug(what: &str) -> ! {
+    panic!("{what}");
 }
 
 /// Stops the program: it asked for a block too big to exist. This is reached with the runtime's

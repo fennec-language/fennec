@@ -19,12 +19,18 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
-    if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+    if llvm_expected() {
         let missing = tools.as_ref().err().map_or("", String::as_str);
         assert!(tools.is_ok(), "FENNEC_EXPECT_LLVM is set, but {missing}");
         assert!(runtime, "FENNEC_EXPECT_LLVM is set, but the runtime library didn't build");
     }
     tools.is_ok() && runtime
+}
+
+/// Whether `FENNEC_EXPECT_LLVM` says LLVM is the backend that has to work here, as CI's Linux and
+/// Windows test jobs say, so what's missing fails a test rather than skipping it.
+pub(crate) fn llvm_expected() -> bool {
+    std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty())
 }
 
 /// A folder of its own, emptied when the test is done.
@@ -3780,6 +3786,45 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
     };
     same_as_expected_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
     same_as_expected_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
+}
+
+/// A print that fails stops the program there, as anything that fails does. Its standard output
+/// is a file it may only write 512 bytes of (`ulimit -f 1`, with the signal for passing that
+/// ignored), so writing fails once a run has kept enough to write out: what comes after the loop
+/// never runs, and the failure says why. It used to carry on and say so only at the end.
+#[cfg(unix)]
+#[test]
+fn a_print_that_fails_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, stderr: Stderr):\n    for i in range(100000):\n        stdout.print(i)\n    stderr.write_line(\"went on\")?\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("print_fails")?;
+        let (program, executable) = (dir.join("prints.fen"), dir.join("prints"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' XFSZ; ulimit -f 1; exec \"$0\" > \"$1\"")
+            .arg(&executable)
+            .arg(dir.join("printed.txt"))
+            .output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert!(err.starts_with("error: couldn't write output"), "{how:?}: {err}");
+        assert!(!err.contains("went on"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
 }
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
@@ -10929,7 +10974,7 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = peak {
+    if let Some(peak) = measured(peak) {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
@@ -11000,10 +11045,20 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    if let Some(peak) = peak {
+    if let Some(peak) = measured(peak) {
         assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
+}
+
+/// The peak `with_peak_memory` read, which only Windows, with no `/usr/bin/time`, goes without.
+/// Anywhere else a peak that wasn't read fails, so a memory limit is never passed unchecked.
+fn measured(peak: Option<u64>) -> Option<u64> {
+    assert!(
+        peak.is_some() || cfg!(windows),
+        "no peak memory was read: /usr/bin/time is missing, or what it printed has changed"
+    );
+    peak
 }
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.

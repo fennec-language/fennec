@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use crate::executables::{FENNEC_DEADLINE, Running, Within, runtime_built, threads_runtime_built};
+use crate::executables::{FENNEC_DEADLINE, Running, Within, threads_runtime_built};
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output_before(FENNEC_DEADLINE)
@@ -22,11 +22,18 @@ fn ran_in(dir: &Path, ran: &Output) -> crate::llvm::Outcome {
     crate::llvm::apart_from(dir, crate::llvm::outcome(ran))
 }
 
+/// Whether these tests can run, as `llvm::ready` says. Where `FENNEC_EXPECT_LLVM` is set, what's
+/// missing fails the test, the threads runtime included, so a break in it fails every test here
+/// rather than letting each pass by returning early.
 fn ready() -> bool {
-    fennec_llvm::Tools::find().is_ok()
-        && runtime_built()
-        // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
-        && crate::executables::runtime_beside_fennec()
+    // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
+    if !crate::executables::runtime_beside_fennec() || !crate::llvm::ready() {
+        return false;
+    }
+    if crate::llvm::llvm_expected() {
+        assert!(threads_runtime_built(), "FENNEC_EXPECT_LLVM is set, but the threads runtime didn't build");
+    }
+    true
 }
 
 /// A tick over units, as an entity system steps them, each changed in place by a `for mut` over
@@ -1351,5 +1358,161 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), pinned_outcome.0);
     assert!(ran.stdout.starts_with(b"1"), "{}", String::from_utf8_lossy(&ran.stdout));
+    Ok(())
+}
+
+/// What a stream's items count as they're made, and how far ahead of its reader that ever got.
+const STREAM_COUNTER: &str = "\
+struct Made:
+    count = 0
+    most_ahead = 0
+
+def made(seen: shared Made, x: int) -> int:
+    lock seen as ref held:
+        held.count += 1
+    return x * 3
+
+def ahead(seen: shared Made, read: int) -> int:
+    lock seen as ref held:
+        if held.count - read > held.most_ahead:
+            held.most_ahead = held.count - read
+        return held.most_ahead
+
+def made_so_far(seen: shared Made) -> int:
+    lock seen as held:
+        return held.count
+
+";
+
+/// `(f(x) for x in parallel(xs))` comes in the list's order, and a slow reader holds the workers
+/// back: they never get more than a window of chunks ahead of it, here well under half the list.
+#[test]
+fn a_stream_comes_in_order_and_its_workers_wait_for_its_reader() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-stream-order-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = format!(
+        "{STREAM_COUNTER}def main(stdout: Stdout):
+    shared seen = Made()
+    xs = [n for n in range(400_000)]
+    mut read = 0
+    mut in_order = True
+    mut most = 0
+    for y in (made(seen, x) for x in parallel(xs)):
+        if y != read * 3:
+            in_order = False
+        read += 1
+        slow = sum(step % 7 for step in range(40))
+        most = ahead(seen, read) + slow * 0
+    stdout.print(read, in_order, most < 200_000, most > 0)
+    return
+"
+    );
+    let built = build_on_threads(&dir, &source, "order")?;
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        let printed = String::from_utf8_lossy(&ran.stdout);
+        // On more than one thread the workers do run ahead, so it's the window that holds them.
+        let wanted = if threads == "1" { "400000 True True " } else { "400000 True True True\n" };
+        assert!(
+            printed.starts_with(wanted),
+            "{threads} threads: {printed} {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A `break` out of a stream ends it: the chunks running then finish, and none starts after, so
+/// what's been made stays what it was once the loop is left.
+#[test]
+fn a_break_out_of_a_stream_lets_its_running_chunks_finish_and_starts_no_more() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-stream-break-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = format!(
+        "{STREAM_COUNTER}def main(stdout: Stdout):
+    shared seen = Made()
+    xs = [n for n in range(400_000)]
+    mut first = -1
+    for y in (made(seen, x) for x in parallel(xs)):
+        if y == 30:
+            first = y
+            break
+    after = made_so_far(seen)
+    spin = sum(step % 3 for step in range(3_000_000))
+    later = made_so_far(seen)
+    stdout.print(first, after == later, after >= 11, after < 400_000, spin > 0)
+    return
+"
+    );
+    let built = build_on_threads(&dir, &source, "broken")?;
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .env("FENNEC_PARALLEL_STRESS", "1")
+            .output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "30 True True True True\n",
+            "{threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An item that fails stops the stream and the program, at the item's place: nothing after it is
+/// read, and what was printed before comes out.
+#[test]
+fn an_item_that_fails_cuts_a_stream_short() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-stream-fails-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = "def risky(x: int) -> int:
+    return 1000 // (x - 150_000)
+
+def total(xs: list[int]) -> int:
+    mut sum = 0
+    for y in (risky(x) for x in parallel(xs)):
+        sum += y
+    return sum
+
+def main(stdout: Stdout):
+    xs = [n for n in range(300_000)]
+    stdout.print(\"before\")
+    stdout.print(total(xs))
+    stdout.print(\"after\")
+    return
+";
+    let built = build_on_threads(&dir, source, "fails")?;
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .env("FENNEC_PARALLEL_STRESS", "1")
+            .output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "before\n", "{threads} threads: {said}");
+        assert!(
+            said.starts_with("error: ") && said.contains("1000 // (x - 150_000)"),
+            "{threads} threads: {said}"
+        );
+        assert_eq!(ran.status.code(), Some(1), "{threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

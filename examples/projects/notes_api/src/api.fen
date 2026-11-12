@@ -22,15 +22,15 @@ struct Problem:
 def answer(request: Request, status: int, text: str) -> Response:
     mut headers = {"content-type": "application/json"}
     if (
-        text.len() > GZIP_FROM
+        len(text) > GZIP_FROM
         and (request.headers.get("accept-encoding") else "").find("gzip") is not None
     ):
         headers["content-encoding"] = "gzip"
         return Response(status=status, headers=headers, body=compress.gzip(text))
-    Response(status=status, headers=headers, body=text.encode())
+    return Response(status=status, headers=headers, body=text.encode())
 
 def problem(request: Request, status: int, message: str) -> Response:
-    answer(request, status=status, text=json.dumps(Problem(error=message)))
+    return answer(request, status=status, text=json.dumps(Problem(error=message)))
 
 ## Answers one request, keeping notes in `notes`.
 export def respond(
@@ -40,16 +40,17 @@ export def respond(
     request: Request,
 ) -> Response:
     parts = [part for part in request.path.split("/") if part != ""]
-    if parts.len() == 0 or parts[0] != "notes":
+    if len(parts) == 0 or parts[0] != "notes":
         return problem(request, status=404, message="there's nothing here")
-    if parts.len() == 1:
+    if len(parts) == 1:
         match request.method:
             case "GET":
                 words = request.query.get("q") else ""
                 lock notes as current:
                     return answer(request, status=200, text=json.dumps(current.find(words)))
             case "POST":
-                draft = json.loads[Draft](request.body.decode() else "") else as why:
+                body = request.body.decode() except InvalidValue(): ""
+                draft = json.loads[Draft](body) except why:
                     return problem(request, status=400, message=why.message)
                 now = clock.time()
                 note = Note(
@@ -68,7 +69,7 @@ export def respond(
                     status=405,
                     message=f"/notes takes GET and POST, not {request.method}",
                 )
-    if parts.len() > 2: return problem(request, status=404, message="there's nothing here")
+    if len(parts) > 2: return problem(request, status=404, message="there's nothing here")
     id = parts[1]
     mut found: Note? = None
     lock notes as current:
@@ -76,20 +77,21 @@ export def respond(
     if found is None: return problem(request, status=404, message=f"there's no note {id}")
     match request.method:
         case "GET":
-            answer(request, status=200, text=json.dumps(found))
+            return answer(request, status=200, text=json.dumps(found))
         case "PUT":
-            draft = json.loads[Draft](request.body.decode() else "") else as why:
+            body = request.body.decode() except InvalidValue(): ""
+            draft = json.loads[Draft](body) except why:
                 return problem(request, status=400, message=why.message)
             changed = copy(found, title=draft.title, body=draft.body, changed=clock.time())
             lock notes as ref current:
                 current.add(changed)
-            answer(request, status=200, text=json.dumps(changed))
+            return answer(request, status=200, text=json.dumps(changed))
         case "DELETE":
             lock notes as ref current:
                 _ = current.remove(id)
-            Response(status=204)
+            return Response(status=204)
         case _:
-            problem(
+            return problem(
                 request,
                 status=405,
                 message=f"a note takes GET, PUT and DELETE, not {request.method}",
@@ -97,7 +99,7 @@ export def respond(
 
 ## A request with a JSON body, as a client sends one.
 def sent(method: str, path: str, body = "") -> Request:
-    Request(method=method, path=path, body=body.encode())
+    return Request(method=method, path=path, body=body.encode())
 
 test "a note is made, read, changed and removed"(clock: Clock, entropy: Entropy):
     shared notes = Notes()
@@ -184,4 +186,4 @@ test "a big answer is gzipped for a client that takes it"(clock: Clock, entropy:
         and zipped.headers["content-encoding"] == "gzip"
     )
     assert compress.gunzip(zipped.body)? == plain.body
-    assert zipped.body.len() < plain.body.len() // 3
+    assert len(zipped.body) < len(plain.body) // 3

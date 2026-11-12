@@ -283,11 +283,13 @@ pub enum StmtKind {
         body: Vec<Stmt>,
     },
     /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
-    /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
-    /// caller's block fails, empty when there's none.
+    /// here, with `value` lent to it. `otherwise` is the `except:` block, which runs when the
+    /// caller's block fails, empty when there's none. `except` says it was written so, rather
+    /// than with the `else:` of before 2026-11-11, which is refused.
     Lend {
         value: Expr,
         otherwise: Vec<Stmt>,
+        except: bool,
     },
     Break,
     Continue,

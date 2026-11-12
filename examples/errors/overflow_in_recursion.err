@@ -1,10 +1,10 @@
 error: this calculation overflows an int
- --> examples/errors/overflow_in_recursion.fen:5:5
+ --> examples/errors/overflow_in_recursion.fen:5:12
   |
-5 |     over(n - 1) + over(n - 2)
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+5 |     return over(n - 1) + over(n - 2)
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: ints are 64-bit; check the values involved, or use floats for very large numbers
   = in `over`
-  = called from `over` at examples/errors/overflow_in_recursion.fen:5:5, more than once
+  = called from `over` at examples/errors/overflow_in_recursion.fen:5:12, more than once
   = called from `main` at examples/errors/overflow_in_recursion.fen:9:18

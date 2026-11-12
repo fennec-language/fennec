@@ -20,7 +20,7 @@ struct Stats:
 
     def hit(ref self) -> int:
         self.hits += 1
-        self.hits
+        return self.hits
 
     def noted(ref self, kept: bool):
         if kept:
@@ -46,50 +46,50 @@ def shown(stats: shared Stats) -> str:
 ## An int that overflows once `n` is above 0: the checked add crashes the request.
 def overflowed(n: int) -> int:
     big = 9223372036854775000
-    big + n * 1000
+    return big + n * 1000
 
 ## Keeps note `n`, and lets go of notes far older, so the database stays small.
 def keep_note(db: Database, n: int, body: str) -> int fails SqlError:
     with db.transaction()? as tx:
         _ = tx.execute(t"insert into notes (id, body) values ({n}, {body})")?
         _ = tx.execute(t"delete from notes where id < {n - 2000}")?
-    db.query[int](t"select count(*) from notes")?[0]
+    return db.query[int](t"select count(*) from notes")?[0]
 
 ## Writes `body` to one of the soak's files, reads it back, and gives its length.
 def round_trip(fs: Fs, dir: str, n: int, body: str) -> int fails IoError:
     path = f"{dir}/file{n % 64}.txt"
     with fs.create(path, durable=False)? as file:
         file.write_text(body)?
-    fs.read_text(path)?.len()
+    return len(fs.read_text(path)?)
 
 def text(status: int, said: str) -> Response:
-    Response(status=status, headers={"content-type": "text/plain"}, body=said.encode())
+    return Response(status=status, headers={"content-type": "text/plain"}, body=said.encode())
 
 def respond(stats: shared Stats, db: Database, fs: Fs, dir: str, request: Request) -> Response:
-    n = int(request.query.get("n") else "0") else 0
-    body = request.body.decode() else ""
+    n = int(request.query.get("n") else "0") except InvalidValue(): 0
+    body = request.body.decode() except InvalidValue(): ""
     match request.path:
         case "/count":
-            text(200, said=f"{hit(stats)}")
+            return text(200, said=f"{hit(stats)}")
         case "/note":
-            count = keep_note(db, n, body) else as why:
+            count = keep_note(db, n, body) except why:
                 noted(stats, kept=False)
                 return text(500, said=f"{why}")
             noted(stats, kept=True)
-            text(200, said=f"{count}")
+            return text(200, said=f"{count}")
         case "/file":
-            length = round_trip(fs, dir, n, body) else as why:
+            length = round_trip(fs, dir, n, body) except why:
                 return text(500, said=f"{why}")
-            text(200, said=f"{length}")
+            return text(200, said=f"{length}")
         case "/crash":
-            text(200, said=f"{overflowed(n)}")
+            return text(200, said=f"{overflowed(n)}")
         case "/stats":
-            text(200, said=shown(stats))
+            return text(200, said=shown(stats))
         case _:
-            text(404, said="nothing here")
+            return text(404, said="nothing here")
 
 def main(net: Net, fs: Fs, args: Args, stdout: Stdout) fails NetError | SqlError | IoError:
-    dir = args[0] if args.len() > 0 else "soak-data"
+    dir = args[0] if len(args) > 0 else "soak-data"
     if not fs.exists(dir)?:
         fs.make_dir(dir)?
     shared stats = Stats()

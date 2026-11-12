@@ -146,7 +146,7 @@ impl FnCx<'_> {
             }
             StmtKind::Break | StmtKind::Continue => self.leave_loop(stmt),
             StmtKind::Pass => Flow::unit(),
-            StmtKind::Lend { value, otherwise } => self.lend(value, otherwise, stmt.span),
+            StmtKind::Lend { value, otherwise, .. } => self.lend(value, otherwise, stmt.span),
         }
     }
 

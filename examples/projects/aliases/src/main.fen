@@ -11,11 +11,11 @@ struct Settings:
     speed: float
 
 def strongest(foes: list[Foe]) -> Foe?:
-    if foes.len() == 0: return None
-    foes[0]
+    if len(foes) == 0: return None
+    return foes[0]
 
 def main(stdout: Stdout):
-    settings = toml_loads[Settings]("speed = 2.5") else Settings(1.0)
+    settings = toml_loads[Settings]("speed = 2.5") except ParseError(): Settings(1.0)
     foes = [make_enemy("bat", .Flyer(3.0)), Foe("rat", .Walker)]
     for foe in foes:
         stdout.print(describe(foe))

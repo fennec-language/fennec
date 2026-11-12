@@ -48,8 +48,12 @@ const MISSING_RETURN_TYPE: &str = "so its return type has to be written";
 /// The message of the problem a `def` that can fail without saying `fails` has.
 const MISSING_FAILS: &str = "so its signature says `fails";
 
-/// A program as `fennec fix` leaves it, with the types its `def`s give back, and how they fail,
-/// written in. Most tests are about something else, so their programs leave them out.
+/// The message of the problem a `def` whose value is its last line without `return` has.
+const MISSING_RETURN: &str = "a `def` gives its value with `return`";
+
+/// A program as `fennec fix` leaves it, with the types its `def`s give back, how they fail, and
+/// the `return` before each value, written in. Most tests are about something else, so their
+/// programs leave them out.
 fn with_return_types(source: String) -> String {
     let mut source = source;
     for _ in 0..4 {
@@ -60,6 +64,7 @@ fn with_return_types(source: String) -> String {
             .filter(|diagnostic| {
                 diagnostic.message.ends_with(MISSING_RETURN_TYPE)
                     || diagnostic.message.contains(MISSING_FAILS)
+                    || diagnostic.message == MISSING_RETURN
             })
             .collect();
         match fennec_syntax::apply_fixes(&source, 0, &missing) {

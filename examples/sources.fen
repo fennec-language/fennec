@@ -10,36 +10,41 @@ struct Ledger:
 
 def entry(ref ledger: Ledger, name: str) -> with str:
     ledger.lines.append(f"open {name}")
-    lend name.upper() else:
+    lend name.upper() except:
         ledger.lines.append(f"undo {name}")
     ledger.lines.append(f"close {name}")
 
 def charge(amount: int) -> int fails PayError:
     if amount > 100: fail PayError(why="over the limit")
-    amount
+    return amount
 
 def pay(ref ledger: Ledger, name: str, amount: int) -> int fails PayError:
     with entry(ref ledger, name) as label:
         if amount == 0: return 0
         ledger.lines.append(f"{label} pays {charge(amount)?}")
-    amount
+    return amount
 
 def saved(ref ledger: Ledger, full: bool) -> with int fails PayError:
-    lend ledger.lines.len()
+    lend len(ledger.lines)
     if full: fail PayError(why="the disk is full")
     ledger.lines.append("saved")
 
 def save(ref ledger: Ledger, full: bool) -> int fails PayError:
     with saved(ref ledger, full)? as count:
         return count
-    0
+    return 0
 
 def main(stdout: Stdout):
     mut ledger = Ledger()
-    stdout.print(pay(ref ledger, "ana", amount=40) else -1)
-    stdout.print(pay(ref ledger, "bo", amount=0) else -1)
-    stdout.print(pay(ref ledger, "cy", amount=500) else -1)
-    stdout.print(save(ref ledger, full=False) else -1)
-    stdout.print(save(ref ledger, full=True) else -1)
+    pay_value = pay(ref ledger, "ana", amount=40) except PayError(): -1
+    stdout.print(pay_value)
+    pay_value2 = pay(ref ledger, "bo", amount=0) except PayError(): -1
+    stdout.print(pay_value2)
+    pay_value3 = pay(ref ledger, "cy", amount=500) except PayError(): -1
+    stdout.print(pay_value3)
+    save_value = save(ref ledger, full=False) except PayError(): -1
+    stdout.print(save_value)
+    save_value2 = save(ref ledger, full=True) except PayError(): -1
+    stdout.print(save_value2)
     for line in ledger.lines:
         stdout.print(line)

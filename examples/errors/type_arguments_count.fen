@@ -2,7 +2,7 @@ struct Boxed[T]:
     item: T
 
     def empty() -> int:
-        0
+        return 0
 
 def main(stdout: Stdout):
     stdout.print(Boxed[int, str].empty())

@@ -7,14 +7,14 @@ struct Money:
     cents: int
 
     def show(self) -> str:
-        f"${self.cents / 100:.2f}"
+        return f"${self.cents / 100:.2f}"
 
 extend Money:
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
     def split(self, ways: int) -> list[Money]:
-        [Money(cents=self.cents // ways) for _ in range(ways)]
+        return [Money(cents=self.cents // ways) for _ in range(ways)]
 
 def main(stdout: Stdout):
     total = Money(cents=1250) + Money(cents=375)

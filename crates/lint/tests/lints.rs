@@ -179,10 +179,12 @@ fn an_fstring_with_nothing_to_fill_in_is_a_string() {
 
 #[test]
 fn text_built_with_plus_and_str_is_one_fstring() {
-    let source =
-        "def f(hp: int, top: int, name: str) -> str:\n    \"HP: \" + str(hp) + \"/\" + str(top) + name\n";
+    let source = "def f(hp: int, top: int, name: str) -> str:\n    return \"HP: \" + str(hp) + \"/\" + str(top) + name\n";
     assert_eq!(rules(source), ["concat-to-fstring"], "one lint for the whole chain");
-    assert_eq!(fixed(source), "def f(hp: int, top: int, name: str) -> str:\n    f\"HP: {hp}/{top}{name}\"\n");
+    assert_eq!(
+        fixed(source),
+        "def f(hp: int, top: int, name: str) -> str:\n    return f\"HP: {hp}/{top}{name}\"\n"
+    );
     let source = "x = \"{a}\\n\\\"\" + str(1.5)\n";
     assert_eq!(
         fixed(source),
@@ -197,25 +199,24 @@ fn text_built_with_plus_and_str_is_one_fstring() {
 
 #[test]
 fn a_path_to_a_name_imported_already_is_the_name() {
-    let source = "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    std.math.sqrt(x) + sqrt(x)\n";
+    let source = "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    return std.math.sqrt(x) + sqrt(x)\n";
     assert!(rules(source).contains(&"full-path"), "{:?}", rules(source));
     assert_eq!(
         fixed(source),
-        "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    sqrt(x) + sqrt(x)\n"
+        "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    return sqrt(x) + sqrt(x)\n"
     );
     let aliased = "from std import json\nfrom std.json import loads as parse\n\ndef f(text: str):\n    json.loads(text)\n";
     assert!(fixed(aliased).contains("    parse(text)\n"), "{}", fixed(aliased));
     let renamed =
         "import game.physics as physics\nfrom game.physics import step\n\ndef f():\n    physics.step()\n";
     assert!(fixed(renamed).contains("    step()\n"), "{}", fixed(renamed));
-    let other =
-        "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    std.math.floor(x)\n";
+    let other = "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    return std.math.floor(x)\n";
     assert!(!rules(other).contains(&"full-path"), "a name that isn't imported by itself");
 }
 
 #[test]
 fn assert_is_for_tests() {
-    let source = "def heal(hp: int) -> int:\n    assert hp > 0\n    hp + 1\n";
+    let source = "def heal(hp: int) -> int:\n    assert hp > 0\n    return hp + 1\n";
     assert_eq!(rules(source), ["assert-outside-tests"]);
     let nested = "def f(n: int):\n    if n > 0:\n        match n:\n            case 1:\n                assert n == 1\n            case _:\n                pass\n";
     assert_eq!(rules(nested), ["assert-outside-tests"], "inside blocks and cases");
@@ -227,11 +228,12 @@ fn assert_is_for_tests() {
 
 #[test]
 fn an_if_chain_comparing_one_name_with_values_is_a_match() {
-    let source = "def name(n: int) -> str:\n    if n == 1:\n        \"one\"\n    elif 2 == n:\n        x = \"two\"\n        x\n    elif n == 3: \"three\"\n    else:\n        \"many\"\n";
-    assert_eq!(rules(source), ["elif-to-match"]);
+    let source = "def name(n: int) -> str:\n    if n == 1:\n        return \"one\"\n    elif 2 == n:\n        x = \"two\"\n        return x\n    elif n == 3: return \"three\"\n    else:\n        return \"many\"\n";
+    // Every branch returns, so the `else` is needless too.
+    assert_eq!(rules(source), ["elif-to-match", "needless-else"]);
     assert_eq!(
         fixed(source),
-        "def name(n: int) -> str:\n    match n:\n        case 1:\n            \"one\"\n        case 2:\n            x = \"two\"\n            x\n        case 3:\n            \"three\"\n        case _:\n            \"many\"\n"
+        "def name(n: int) -> str:\n    match n:\n        case 1:\n            return \"one\"\n        case 2:\n            x = \"two\"\n            return x\n        case 3:\n            return \"three\"\n        case _:\n            return \"many\"\n"
     );
     let open = "def f(text: str):\n    if text == \"a\":\n        g()\n    elif text == \"b\":\n        h()\n    elif text == \"c\":\n        k()\n";
     assert!(
@@ -255,11 +257,11 @@ fn an_if_chain_comparing_one_name_with_values_is_a_match() {
 
 #[test]
 fn a_parameter_nothing_reads_goes_with_its_arguments() {
-    let source = "def damage(power: int, target: str, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3, \"rat\"), damage(power=4, target=\"bat\", bonus=2))\n";
+    let source = "def damage(power: int, target: str, bonus: int = 1) -> int:\n    return power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3, \"rat\"), damage(power=4, target=\"bat\", bonus=2))\n";
     assert!(all_rules(source).contains(&"unused-param"), "{:?}", all_rules(source));
     assert_eq!(
         fixed_params(source),
-        "def damage(power: int, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3), damage(power=4, bonus=2))\n"
+        "def damage(power: int, bonus: int = 1) -> int:\n    return power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3), damage(power=4, bonus=2))\n"
     );
     // What comes after it starts at `ref`, not at its value.
     let source = "def f(unused: int, ref items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(2, ref xs)\n";
@@ -267,15 +269,19 @@ fn a_parameter_nothing_reads_goes_with_its_arguments() {
         fixed_params(source),
         "def f(ref items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(ref xs)\n"
     );
-    let last = "def f(n: int, unused: int) -> int:\n    n\n\ndef g() -> int:\n    f(1, 2)\n";
-    assert_eq!(fixed_params(last), "def f(n: int) -> int:\n    n\n\ndef g() -> int:\n    f(1)\n");
-    let held = "def f(n: int, unused: int) -> int:\n    n\n\ndef g(h: (int, int) -> int) -> int:\n    h(1, 2)\n\ndef k() -> int:\n    g(f)\n";
+    let last = "def f(n: int, unused: int) -> int:\n    return n\n\ndef g() -> int:\n    return f(1, 2)\n";
+    assert_eq!(
+        fixed_params(last),
+        "def f(n: int) -> int:\n    return n\n\ndef g() -> int:\n    return f(1)\n"
+    );
+    let held = "def f(n: int, unused: int) -> int:\n    return n\n\ndef g(h: (int, int) -> int) -> int:\n    return h(1, 2)\n\ndef k() -> int:\n    return g(f)\n";
     assert!(!all_rules(held).contains(&"unused-param"), "held as a value, it has to take two");
-    let public = "export def f(n: int, unused: int) -> int:\n    n\n";
+    let public = "export def f(n: int, unused: int) -> int:\n    return n\n";
     assert!(!all_rules(public).contains(&"unused-param"), "another kit may call it");
-    let method = "struct Dog:\n    age: int\n\n    def speak(self, loud: bool) -> str:\n        \"woof\"\n";
+    let method =
+        "struct Dog:\n    age: int\n\n    def speak(self, loud: bool) -> str:\n        return \"woof\"\n";
     assert!(!all_rules(method).contains(&"unused-param"), "an interface may need it");
-    let read_inside = "def f(n: int, scale: int) -> list[int]:\n    [x * scale for x in range(n)]\n";
+    let read_inside = "def f(n: int, scale: int) -> list[int]:\n    return [x * scale for x in range(n)]\n";
     assert!(!all_rules(read_inside).contains(&"unused-param"), "read in a comprehension");
 }
 
@@ -289,7 +295,7 @@ fn kit_rules(source: &str) -> Vec<&'static str> {
 
 #[test]
 fn a_kit_gives_failures_back_rather_than_expecting() {
-    let source = "def load(text: str) -> int:\n    int(text).expect(\"it's a number\")\n\nstruct Save:\n    level: int\n\n    def parsed(self, text: str) -> int:\n        def inner() -> int:\n            int(text).expect(\"a number\")\n        inner()\n";
+    let source = "def load(text: str) -> int:\n    return int(text).expect(\"it's a number\")\n\nstruct Save:\n    level: int\n\n    def parsed(self, text: str) -> int:\n        def inner() -> int:\n            return int(text).expect(\"a number\")\n        return inner()\n";
     assert_eq!(
         kit_rules(source),
         ["expect-in-kit", "expect-in-kit"],
@@ -297,7 +303,7 @@ fn a_kit_gives_failures_back_rather_than_expecting() {
     );
     let main = "def main(stdout: Stdout):\n    stdout.print(int(\"1\").expect(\"it's a number\"))\n\ntest \"parses\":\n    assert int(\"2\").expect(\"a number\") == 2\n";
     assert_eq!(kit_rules(main), Vec::<&str>::new(), "`main` and tests decide for the program");
-    let own = "struct Check:\n    ok: bool\n\n    def expect(self, why: str) -> bool:\n        self.ok\n\ndef f(check: Check) -> bool:\n    check.expect(\"fine\")\n";
+    let own = "struct Check:\n    ok: bool\n\n    def expect(self, why: str) -> bool:\n        return self.ok\n\ndef f(check: Check) -> bool:\n    return check.expect(\"fine\")\n";
     assert_eq!(kit_rules(own), Vec::<&str>::new(), "a method of its own named `expect`");
     assert_eq!(all_rules(source).iter().filter(|rule| **rule == "expect-in-kit").count(), 0, "only a kit");
 }
@@ -314,39 +320,39 @@ fn needless_conversions(source: &str) -> (usize, String) {
 
 #[test]
 fn a_conversion_to_what_a_value_is_already_goes() {
-    let text = "def f(name: str, n: int, x: float) -> str:\n    a = str(name)\n    b = int(n)\n    c = float(x)\n    f\"{a}{b}{c}\"\n";
+    let text = "def f(name: str, n: int, x: float) -> str:\n    a = str(name)\n    b = int(n)\n    c = float(x)\n    return f\"{a}{b}{c}\"\n";
     assert_eq!(
         needless_conversions(text),
-        (3, "def f(name: str, n: int, x: float) -> str:\n    a = name\n    b = n\n    c = x\n    f\"{a}{b}{c}\"\n".to_owned())
+        (3, "def f(name: str, n: int, x: float) -> str:\n    a = name\n    b = n\n    c = x\n    return f\"{a}{b}{c}\"\n".to_owned())
     );
-    let shown = "def f(n: int) -> str:\n    f\"{str(n)} left\"\n";
+    let shown = "def f(n: int) -> str:\n    return f\"{str(n)} left\"\n";
     assert_eq!(
         needless_conversions(shown),
-        (1, "def f(n: int) -> str:\n    f\"{n} left\"\n".to_owned()),
+        (1, "def f(n: int) -> str:\n    return f\"{n} left\"\n".to_owned()),
         "an f-string shows anything"
     );
-    let bracketed = "def f(a: str, b: str) -> int:\n    str(a + b).len()\n";
+    let bracketed = "def f(a: str, b: str) -> int:\n    return len(str(a + b))\n";
     assert_eq!(
         needless_conversions(bracketed),
-        (1, "def f(a: str, b: str) -> int:\n    (a + b).len()\n".to_owned())
+        (1, "def f(a: str, b: str) -> int:\n    return len(a + b)\n".to_owned())
     );
-    let converts = "def f(n: int, x: float) -> str:\n    y = int(x)\n    str(n + y)\n";
+    let converts = "def f(n: int, x: float) -> str:\n    y = int(x)\n    return str(n + y)\n";
     assert_eq!(needless_conversions(converts).0, 0, "these change what the value is");
-    let formatted = "def f(n: float) -> str:\n    f\"{str(n):>8}\"\n";
+    let formatted = "def f(n: float) -> str:\n    return f\"{str(n):>8}\"\n";
     assert_eq!(needless_conversions(formatted).0, 0, "a format reads the text, not the number");
-    let own = "def str(n: int) -> int:\n    n + 1\n\ndef f(n: int) -> int:\n    str(n)\n";
+    let own = "def str(n: int) -> int:\n    return n + 1\n\ndef f(n: int) -> int:\n    return str(n)\n";
     assert_eq!(needless_conversions(own).0, 0, "the program's own `str`");
 }
 
 #[test]
 fn a_conversion_that_makes_a_value_of_a_names_own_stays() {
-    let named = "def f(s: str) -> str:\n    mut y = str(s)\n    y += \"!\"\n    y\n";
+    let named = "def f(s: str) -> str:\n    mut y = str(s)\n    y += \"!\"\n    return y\n";
     assert_eq!(needless_conversions(named).0, 0, "`mut y = s` would make `y` stand for `s`");
-    let in_a_case = "def f(s: str, n: int) -> str:\n    match n:\n        case 1:\n            mut y = str(s)\n            y += \"!\"\n            y\n        case _:\n            s\n";
+    let in_a_case = "def f(s: str, n: int) -> str:\n    match n:\n        case 1:\n            mut y = str(s)\n            y += \"!\"\n            return y\n        case _:\n            return s\n";
     assert_eq!(needless_conversions(in_a_case).0, 0, "in a case of a `match` too");
     let test_body = "test \"a name of its own\":\n    s = \"a\"\n    mut y = str(s)\n    y += \"!\"\n    assert s == \"a\"\n";
     assert_eq!(needless_conversions(test_body).0, 0, "in a test too");
-    let in_a_loop = "def f(n: int) -> int:\n    mut h = \"a\"\n    mut total = 0\n    for _ in range(n):\n        k = str(h)\n        h += \"b\"\n        total += k.len()\n    total\n";
+    let in_a_loop = "def f(n: int) -> int:\n    mut h = \"a\"\n    mut total = 0\n    for _ in range(n):\n        k = str(h)\n        h += \"b\"\n        total += len(k)\n    return total\n";
     let (count, fixed) = needless_conversions(in_a_loop);
     assert_eq!(
         (count, fixed),
@@ -376,7 +382,7 @@ fn double_lookups(source: &str) -> (usize, String) {
 
 #[test]
 fn a_key_looked_up_after_asking_for_it_is_looked_up_once() {
-    let wrap = |expr: &str| format!("def f(counts: dict[str, int], key: str) -> int:\n    {expr}\n");
+    let wrap = |expr: &str| format!("def f(counts: dict[str, int], key: str) -> int:\n    return {expr}\n");
     for (written, fixed) in [
         ("counts[key] if key in counts else 0", "counts.get(key) else 0"),
         ("0 if key not in counts else counts[key]", "counts.get(key) else 0"),
@@ -384,19 +390,18 @@ fn a_key_looked_up_after_asking_for_it_is_looked_up_once() {
     ] {
         assert_eq!(double_lookups(&wrap(written)), (1, wrap(fixed)), "{written}");
     }
-    let field = "struct Tally:\n    counts: dict[str, int]\n\n    def of(self, key: str) -> int:\n        self.counts[key] if key in self.counts else 0\n";
+    let field = "struct Tally:\n    counts: dict[str, int]\n\n    def of(self, key: str) -> int:\n        return self.counts[key] if key in self.counts else 0\n";
     assert_eq!(
         double_lookups(field),
         (1, field.replace("self.counts[key] if key in self.counts else 0", "self.counts.get(key) else 0")),
     );
-    let none =
-        "def f(counts: dict[str, int], key: str) -> int?:\n    counts[key] if key in counts else None\n";
+    let none = "def f(counts: dict[str, int], key: str) -> int?:\n    return counts[key] if key in counts else None\n";
     assert_eq!(
         double_lookups(none),
         (1, none.replace("counts[key] if key in counts else None", "counts.get(key)")),
         "a missing value stays one"
     );
-    let two = "def f(one: dict[str, int], other: dict[str, int], key: str) -> int:\n    one[key] if key in one else other[key] if key in other else 0\n";
+    let two = "def f(one: dict[str, int], other: dict[str, int], key: str) -> int:\n    return one[key] if key in one else other[key] if key in other else 0\n";
     assert_eq!(
         double_lookups(two).1,
         two.replace(
@@ -411,19 +416,19 @@ fn a_key_looked_up_after_asking_for_it_is_looked_up_once() {
 fn a_lookup_that_would_mean_something_else_stays() {
     for source in [
         // A list's `in` asks about its values, not its positions.
-        "def f(xs: list[int], at: int) -> int:\n    xs[at] if at in xs else 0\n",
+        "def f(xs: list[int], at: int) -> int:\n    return xs[at] if at in xs else 0\n",
         // Another key, or another table.
-        "def f(counts: dict[str, int], key: str, other: str) -> int:\n    counts[other] if key in counts else 0\n",
-        "def f(one: dict[str, int], two: dict[str, int], key: str) -> int:\n    one[key] if key in two else 0\n",
+        "def f(counts: dict[str, int], key: str, other: str) -> int:\n    return counts[other] if key in counts else 0\n",
+        "def f(one: dict[str, int], two: dict[str, int], key: str) -> int:\n    return one[key] if key in two else 0\n",
         // A call may give something else the second time.
-        "def next_key() -> str:\n    \"a\"\n\ndef f(counts: dict[str, int]) -> int:\n    counts[next_key()] if next_key() in counts else 0\n",
+        "def next_key() -> str:\n    return \"a\"\n\ndef f(counts: dict[str, int]) -> int:\n    return counts[next_key()] if next_key() in counts else 0\n",
         // A type of its own may mean anything by these.
-        "struct Odd:\n    size: int\n\n    def in(self, key: int) -> bool:\n        key < self.size\n\n    def [](self, key: int) -> int:\n        key\n\ndef f(odd: Odd, key: int) -> int:\n    odd[key] if key in odd else 0\n",
+        "struct Odd:\n    size: int\n\n    def in(self, key: int) -> bool:\n        return key < self.size\n\n    def [](self, key: int) -> int:\n        return key\n\ndef f(odd: Odd, key: int) -> int:\n    return odd[key] if key in odd else 0\n",
         // A bracket the span leaves out.
-        "def f(counts: dict[str, int], key: str, more: int) -> int:\n    counts[key] if key in counts else (more + 1)\n",
+        "def f(counts: dict[str, int], key: str, more: int) -> int:\n    return counts[key] if key in counts else (more + 1)\n",
         // The index runs where the key isn't there, which stops the program, as `get` wouldn't.
-        "def f(counts: dict[str, int], key: str) -> int:\n    counts[key] if key not in counts else 0\n",
-        "def f(counts: dict[str, int], key: str) -> int:\n    0 if key in counts else counts[key]\n",
+        "def f(counts: dict[str, int], key: str) -> int:\n    return counts[key] if key not in counts else 0\n",
+        "def f(counts: dict[str, int], key: str) -> int:\n    return 0 if key in counts else counts[key]\n",
     ] {
         let module = parse_at(source, 0).map_err(|problem| problem.message).unwrap();
         assert!(fennec_check::check_typed(&module).is_ok(), "it has to check to say anything: {source}");
@@ -452,22 +457,23 @@ fn comparing_a_value_with_itself_is_a_mistake() {
         let source = format!("def f(amount: {ty}) -> bool:\n    amount {op} amount\n");
         assert_eq!(self_compares(&source), [format!("`amount {op} amount` is always {always}")], "{source}");
     }
-    let field = "struct Unit:\n    size: int\n\ndef f(unit: Unit) -> bool:\n    unit.size == unit.size\n";
+    let field =
+        "struct Unit:\n    size: int\n\ndef f(unit: Unit) -> bool:\n    return unit.size == unit.size\n";
     assert_eq!(self_compares(field), ["`unit.size == unit.size` is always True"]);
 }
 
 #[test]
 fn comparing_what_may_differ_says_nothing() {
     for source in [
-        "def f(one: int, other: int) -> bool:\n    one == other\n",
-        "struct Unit:\n    size: int\n    cost: int\n\ndef f(unit: Unit) -> bool:\n    unit.size == unit.cost\n",
+        "def f(one: int, other: int) -> bool:\n    return one == other\n",
+        "struct Unit:\n    size: int\n    cost: int\n\ndef f(unit: Unit) -> bool:\n    return unit.size == unit.cost\n",
         // A call may give something else the second time.
-        "def next_one() -> int:\n    1\n\ndef f() -> bool:\n    next_one() == next_one()\n",
+        "def next_one() -> int:\n    return 1\n\ndef f() -> bool:\n    return next_one() == next_one()\n",
         // A type of its own may mean anything by `==`.
-        "struct Odd:\n    size: int\n\n    def ==(self, other: Odd) -> bool:\n        False\n\ndef f(odd: Odd) -> bool:\n    odd == odd\n",
+        "struct Odd:\n    size: int\n\n    def ==(self, other: Odd) -> bool:\n        return False\n\ndef f(odd: Odd) -> bool:\n    return odd == odd\n",
         // An optional is something else, and so is any other comparison.
-        "def f(maybe: int?) -> bool:\n    maybe == maybe\n",
-        "def f(amount: int) -> bool:\n    amount <= amount\n",
+        "def f(maybe: int?) -> bool:\n    return maybe == maybe\n",
+        "def f(amount: int) -> bool:\n    return amount <= amount\n",
     ] {
         assert_eq!(self_compares(source), Vec::<String>::new(), "{source}");
     }
@@ -477,13 +483,13 @@ fn comparing_what_may_differ_says_nothing() {
 fn an_exported_item_says_what_it_is_for() {
     let missing = |source: &str| all_rules(source).iter().filter(|rule| **rule == "missing-doc").count();
     for source in [
-        "export def spawn() -> int:\n    1\n",
+        "export def spawn() -> int:\n    return 1\n",
         "export enum Mood:\n    Calm\n",
         "export type Size = int\n",
         "export LIMIT = 8\n",
         // Nothing but a `##` line just above it counts.
-        "# A plain comment.\nexport def spawn() -> int:\n    1\n",
-        "## A comment on nothing.\n\nexport def spawn() -> int:\n    1\n",
+        "# A plain comment.\nexport def spawn() -> int:\n    return 1\n",
+        "## A comment on nothing.\n\nexport def spawn() -> int:\n    return 1\n",
     ] {
         assert_eq!(missing(source), 1, "{source}");
     }
@@ -495,7 +501,7 @@ fn an_exported_item_says_what_it_is_for() {
     ] {
         assert_eq!(missing(source), 2, "{source}");
     }
-    let inside = "## A unit.\nexport struct Unit:\n    size: int\n    _hidden = 0\n\n    def grown(self) -> int:\n        self.size + 1\n";
+    let inside = "## A unit.\nexport struct Unit:\n    size: int\n    _hidden = 0\n\n    def grown(self) -> int:\n        return self.size + 1\n";
     assert_eq!(missing(inside), 1, "its method: the type's doc covers its fields");
     let undocumented = "export struct Note:\n    title: str\n    body: str\n";
     assert_eq!(missing(undocumented), 3, "a type with no doc, and each of its fields");
@@ -504,16 +510,16 @@ fn an_exported_item_says_what_it_is_for() {
 #[test]
 fn a_private_item_or_one_with_a_doc_says_nothing() {
     for source in [
-        "def spawn() -> int:\n    1\n",
+        "def spawn() -> int:\n    return 1\n",
         "struct Unit:\n    size: int\n",
-        "## Spawns one.\nexport def spawn() -> int:\n    1\n",
-        "## Spawns one.\n## It's always the same one.\nexport def spawn() -> int:\n    1\n",
-        "## Spawns one.\n@inline\nexport def spawn() -> int:\n    1\n",
-        "## A unit.\nexport struct Unit:\n    ## How big it is.\n    size: int\n\n    ## How big it would be.\n    def grown(self) -> int:\n        self.size + 1\n",
+        "## Spawns one.\nexport def spawn() -> int:\n    return 1\n",
+        "## Spawns one.\n## It's always the same one.\nexport def spawn() -> int:\n    return 1\n",
+        "## Spawns one.\n@inline\nexport def spawn() -> int:\n    return 1\n",
+        "## A unit.\nexport struct Unit:\n    ## How big it is.\n    size: int\n\n    ## How big it would be.\n    def grown(self) -> int:\n        return self.size + 1\n",
         // A documented type covers its fields.
         "## A note someone wrote.\nexport struct Note:\n    title: str\n    body: str\n",
         // `export` inside text says nothing.
-        "def spawn() -> str:\n    \"export def\"\n",
+        "def spawn() -> str:\n    return \"export def\"\n",
     ] {
         assert!(!all_rules(source).contains(&"missing-doc"), "{source}");
     }
@@ -521,7 +527,7 @@ fn a_private_item_or_one_with_a_doc_says_nothing() {
 
 #[test]
 fn an_item_nothing_uses_goes_with_its_doc() {
-    let source = "## Says hello.\ndef greet() -> str:\n    \"hi\"\n\n## A spare.\nstruct Spare:\n    size: int\n\n    def grow(self) -> int:\n        self.size + 1\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n";
+    let source = "## Says hello.\ndef greet() -> str:\n    return \"hi\"\n\n## A spare.\nstruct Spare:\n    size: int\n\n    def grow(self) -> int:\n        return self.size + 1\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n";
     assert_eq!(
         all_rules(source).iter().filter(|rule| **rule == "unused-item").count(),
         1,
@@ -530,11 +536,11 @@ fn an_item_nothing_uses_goes_with_its_doc() {
     );
     assert_eq!(
         fixed_by(source, &|rule| rule == "unused-item"),
-        "## Says hello.\ndef greet() -> str:\n    \"hi\"\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n"
+        "## Says hello.\ndef greet() -> str:\n    return \"hi\"\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n"
     );
     let cases = "enum Mood:\n    Calm\n    Angry\n\ndef main(stdout: Stdout):\n    mood = .Calm\n    stdout.print(mood == .Angry)\n";
     assert!(!all_rules(cases).contains(&"unused-item"), "an enum used through its cases");
-    let typed = "struct Point:\n    x: int\n\ndef origin(p: Point) -> int:\n    p.x\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
+    let typed = "struct Point:\n    x: int\n\ndef origin(p: Point) -> int:\n    return p.x\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
     let flagged: Vec<String> = found(typed)
         .unwrap()
         .iter()
@@ -542,9 +548,9 @@ fn an_item_nothing_uses_goes_with_its_doc() {
         .map(|lint| lint.message().to_owned())
         .collect();
     assert_eq!(flagged, ["nothing uses the function `origin`"], "a type named in a parameter is used");
-    let public = "export def greet() -> str:\n    \"hi\"\n";
+    let public = "export def greet() -> str:\n    return \"hi\"\n";
     assert!(!all_rules(public).contains(&"unused-item"), "another kit may use it");
-    let recursive = "def countdown(n: int) -> int:\n    if n == 0: return 0\n    countdown(n - 1)\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
+    let recursive = "def countdown(n: int) -> int:\n    if n == 0: return 0\n    return countdown(n - 1)\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
     assert!(all_rules(recursive).contains(&"unused-item"), "calling itself isn't a use");
 }
 
@@ -559,12 +565,10 @@ fn a_use_is_a_whole_word_whatever_letters_are_around_it() {
             .collect()
     };
     // A letter that isn't ASCII is part of the word, so `éhelper` isn't `helper`.
-    let inside =
-        "def helper() -> int:\n    1\n\ndef main(stdout: Stdout):\n    # éhelper\n    stdout.print(2)\n";
+    let inside = "def helper() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    # éhelper\n    stdout.print(2)\n";
     assert_eq!(unused(inside), ["nothing uses the function `helper`"]);
     // Marks that aren't letters end it, so `«helper»` is.
-    let marked =
-        "def helper() -> int:\n    1\n\ndef main(stdout: Stdout):\n    # «helper»\n    stdout.print(2)\n";
+    let marked = "def helper() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    # «helper»\n    stdout.print(2)\n";
     assert!(unused(marked).is_empty(), "{:?}", unused(marked));
     // Names longer than 63 bytes share a length, and are still told apart by what they say.
     let long = "a".repeat(70);
@@ -686,8 +690,8 @@ fn an_argument_that_can_be_read_stays_as_it_is() {
 /// something, so they're still asked for.
 #[test]
 fn parameters_named_only_for_their_place_stay_positional() {
-    let defs = "def dot(a: Vec3, b: Vec3) -> float:\n    0.0\n\ndef larger(a: int, b: int) -> int:\n    a\n\n\
-        def mid(a: int, b: int, c: int) -> int:\n    a\n\ndef at(x: int, y: int):\n    pass\n\n";
+    let defs = "def dot(a: Vec3, b: Vec3) -> float:\n    return 0.0\n\ndef larger(a: int, b: int) -> int:\n    return a\n\n\
+        def mid(a: int, b: int, c: int) -> int:\n    return a\n\ndef at(x: int, y: int):\n    pass\n\n";
     for call in ["dot(u, v)", "larger(1, 2)", "mid(1, 2, 3)"] {
         assert_eq!(rules(&format!("{defs}def main():\n    {call}\n")), NONE, "{call}");
     }
@@ -752,7 +756,7 @@ fn a_name_a_function_binds_itself_isnt_flagged() {
 
 #[test]
 fn code_after_leaving_a_block_cant_run() {
-    let source = "def f(a: int) -> int:\n    return a\n    a + 1\n";
+    let source = "def f(a: int) -> int:\n    return a\n    return a + 1\n";
     assert!(rules(source).contains(&"unreachable"));
     assert_eq!(rules("def f():\n    while True:\n        break\n        g()\n"), ["unreachable"]);
     assert_eq!(
@@ -814,7 +818,7 @@ fn an_if_that_only_gives_back_its_condition_is_its_condition() {
             "{written}"
         );
     }
-    assert_eq!(rules("def f(a: int) -> bool:\n    if a > 0: return True\n    True\n"), NONE);
+    assert_eq!(rules("def f(a: int) -> bool:\n    if a > 0: return True\n    return True\n"), NONE);
 }
 
 /// A write to standard output or error inside a `parallel` loop's body is a hint: its tasks
@@ -890,35 +894,35 @@ fn a_default_for_none_has_its_own_form() {
 
 #[test]
 fn an_import_nothing_uses_goes() {
-    let source = "from std.math import PI, sqrt\n\ndef f() -> float:\n    sqrt(2.0)\n";
+    let source = "from std.math import PI, sqrt\n\ndef f() -> float:\n    return sqrt(2.0)\n";
     assert_eq!(rules(source), ["unused-import"]);
-    assert_eq!(fixed(source), "from std.math import sqrt\n\ndef f() -> float:\n    sqrt(2.0)\n");
-    let whole = "import std.json\nfrom std.math import PI\n\ndef f() -> float:\n    PI\n";
-    assert_eq!(fixed(whole), "from std.math import PI\n\ndef f() -> float:\n    PI\n");
-    let renamed = "from std.math import sqrt as root, PI\n\ndef f() -> float:\n    root(PI)\n";
+    assert_eq!(fixed(source), "from std.math import sqrt\n\ndef f() -> float:\n    return sqrt(2.0)\n");
+    let whole = "import std.json\nfrom std.math import PI\n\ndef f() -> float:\n    return PI\n";
+    assert_eq!(fixed(whole), "from std.math import PI\n\ndef f() -> float:\n    return PI\n");
+    let renamed = "from std.math import sqrt as root, PI\n\ndef f() -> float:\n    return root(PI)\n";
     assert_eq!(rules(renamed), NONE);
 }
 
 #[test]
 fn a_name_in_an_fstring_or_a_type_is_a_use() {
-    assert_eq!(rules("from std.math import PI\n\ndef f() -> str:\n    f\"{PI}\"\n"), NONE);
-    assert_eq!(rules("from std.math import Vec3\n\ndef f(v: Vec3) -> int:\n    1\n"), NONE);
-    assert_eq!(rules("import std.json\n\ndef f() -> str:\n    std.json.dumps([1])\n"), NONE);
-    assert_eq!(rules("from std import json\n\ndef f() -> str:\n    json.dumps([1])\n"), NONE);
+    assert_eq!(rules("from std.math import PI\n\ndef f() -> str:\n    return f\"{PI}\"\n"), NONE);
+    assert_eq!(rules("from std.math import Vec3\n\ndef f(v: Vec3) -> int:\n    return 1\n"), NONE);
+    assert_eq!(rules("import std.json\n\ndef f() -> str:\n    return std.json.dumps([1])\n"), NONE);
+    assert_eq!(rules("from std import json\n\ndef f() -> str:\n    return json.dumps([1])\n"), NONE);
 }
 
 #[test]
 fn a_local_nothing_reads_keeps_what_its_value_does() {
-    let source = "def f() -> int:\n    damage = attack()\n    1\n";
+    let source = "def f() -> int:\n    damage = attack()\n    return 1\n";
     assert_eq!(rules(source), ["unused-name"]);
-    assert_eq!(fixed(source), "def f() -> int:\n    attack()\n    1\n");
+    assert_eq!(fixed(source), "def f() -> int:\n    attack()\n    return 1\n");
     let read = [
-        "def f() -> int:\n    damage = attack()\n    damage\n",
-        "def f() -> int:\n    mut total = 0\n    total += 1\n    2\n",
-        "def f() -> int:\n    xs = [1]\n    xs.append(2)\n    3\n",
-        "def f() -> str:\n    name = \"a\"\n    f\"{name}\"\n",
-        "def f() -> int:\n    n = 1\n    def g() -> int:\n        n\n    g()\n",
-        "def f() -> int:\n    _skip = attack()\n    1\n",
+        "def f() -> int:\n    damage = attack()\n    return damage\n",
+        "def f() -> int:\n    mut total = 0\n    total += 1\n    return 2\n",
+        "def f() -> int:\n    xs = [1]\n    xs.append(2)\n    return 3\n",
+        "def f() -> str:\n    name = \"a\"\n    return f\"{name}\"\n",
+        "def f() -> int:\n    n = 1\n    def g() -> int:\n        return n\n    return g()\n",
+        "def f() -> int:\n    _skip = attack()\n    return 1\n",
     ];
     for source in read {
         assert_eq!(rules(source), NONE, "{source}");
@@ -941,22 +945,22 @@ fn a_ref_case_changes_what_the_match_is_over() {
 
 #[test]
 fn mut_on_a_local_nothing_changes_goes() {
-    let source = "def f() -> int:\n    mut speed = 4\n    speed + 1\n";
+    let source = "def f() -> int:\n    mut speed = 4\n    return speed + 1\n";
     assert_eq!(rules(source), ["needless-mut"]);
-    assert_eq!(fixed(source), "def f() -> int:\n    speed = 4\n    speed + 1\n");
+    assert_eq!(fixed(source), "def f() -> int:\n    speed = 4\n    return speed + 1\n");
     let changed = [
-        "def f() -> int:\n    mut n = 0\n    n += 1\n    n\n",
-        "def f() -> int:\n    mut n = 0\n    n = 2\n    n\n",
-        "def f() -> int:\n    mut xs = [1]\n    xs.append(2)\n    xs.len()\n",
-        "def f() -> int:\n    mut xs = [1]\n    xs[0] = 2\n    xs[0]\n",
-        "def f(p: P) -> int:\n    mut q = p\n    q.pos.x = 1\n    q.pos.x\n",
-        "def f() -> int:\n    mut xs = [1]\n    g(ref xs)\n    xs[0]\n",
-        "def f() -> int:\n    mut xs = [1]\n    for ref x in xs:\n        x += 1\n    xs[0]\n",
-        "def f() -> int:\n    mut n = 0\n    def bump():\n        n += 1\n    bump()\n    n\n",
-        "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    m + n\n",
-        "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    w.xs[0]\n",
-        "def f(s: S) -> int:\n    mut at = s\n    match at:\n        case .A(inner):\n            at = inner\n        case _:\n            pass\n    1\n",
-        "def f(s: S) -> int:\n    mut src = s\n    src.next[int]() else 0\n",
+        "def f() -> int:\n    mut n = 0\n    n += 1\n    return n\n",
+        "def f() -> int:\n    mut n = 0\n    n = 2\n    return n\n",
+        "def f() -> int:\n    mut xs = [1]\n    xs.append(2)\n    return len(xs)\n",
+        "def f() -> int:\n    mut xs = [1]\n    xs[0] = 2\n    return xs[0]\n",
+        "def f(p: P) -> int:\n    mut q = p\n    q.pos.x = 1\n    return q.pos.x\n",
+        "def f() -> int:\n    mut xs = [1]\n    g(ref xs)\n    return xs[0]\n",
+        "def f() -> int:\n    mut xs = [1]\n    for ref x in xs:\n        x += 1\n    return xs[0]\n",
+        "def f() -> int:\n    mut n = 0\n    def bump():\n        n += 1\n    bump()\n    return n\n",
+        "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    return m + n\n",
+        "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    return w.xs[0]\n",
+        "def f(s: S) -> int:\n    mut at = s\n    match at:\n        case .A(inner):\n            at = inner\n        case _:\n            pass\n    return 1\n",
+        "def f(s: S) -> int:\n    mut src = s\n    return src.next[int]() else 0\n",
     ];
     for source in changed {
         assert_eq!(rules(source), NONE, "{source}");
@@ -980,62 +984,65 @@ fn an_unused_index_needs_no_enumerate() {
 
 #[test]
 fn a_loop_that_leaves_with_else_stays_a_loop() {
-    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int(text) else continue)\n    found\n";
+    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int(text) else continue)\n    return found\n";
     assert_eq!(rules(source), NONE);
 }
 
 #[test]
 fn a_loop_that_only_appends_is_a_comprehension() {
-    let source = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        if p.alive:\n            names.append(p.name)\n    names\n";
+    let source = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        if p.alive:\n            names.append(p.name)\n    return names\n";
     assert_eq!(rules(source), ["manual-comprehension"]);
     assert_eq!(
         fixed(source),
-        "def f(ps: list[P]) -> list[str]:\n    mut names = [p.name for p in ps if p.alive]\n    names\n"
+        "def f(ps: list[P]) -> list[str]:\n    mut names = [p.name for p in ps if p.alive]\n    return names\n"
     );
-    let more = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        names.append(p.name)\n        g()\n    names\n";
+    let more = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        names.append(p.name)\n        g()\n    return names\n";
     assert_eq!(rules(more), NONE, "the loop does something else too");
-    let started = "def f(ps: list[P]) -> list[str]:\n    mut names = [\"a\"]\n    for p in ps:\n        names.append(p.name)\n    names\n";
+    let started = "def f(ps: list[P]) -> list[str]:\n    mut names = [\"a\"]\n    for p in ps:\n        names.append(p.name)\n    return names\n";
     assert_eq!(rules(started), NONE, "it didn't start empty");
-    let bracketed = "def f(ps: list[int]) -> list[int]:\n    mut out = []\n    for p in ps:\n        out.append(p + (p if p > 0 else 0))\n    out\n";
+    let bracketed = "def f(ps: list[int]) -> list[int]:\n    mut out = []\n    for p in ps:\n        out.append(p + (p if p > 0 else 0))\n    return out\n";
     assert_eq!(rules(bracketed), NONE, "the span leaves out a bracket it needs");
 }
 
 #[test]
 fn a_loop_that_only_adds_is_a_sum() {
-    let source = "def f(cart: list[I]) -> int:\n    mut total = 0\n    for item in cart:\n        total += item.price\n    total\n";
+    let source = "def f(cart: list[I]) -> int:\n    mut total = 0\n    for item in cart:\n        total += item.price\n    return total\n";
     assert_eq!(rules(source), ["manual-builtin"]);
     assert_eq!(
         fixed(source),
-        "def f(cart: list[I]) -> int:\n    mut total = sum(item.price for item in cart)\n    total\n"
+        "def f(cart: list[I]) -> int:\n    mut total = sum(item.price for item in cart)\n    return total\n"
     );
-    let uses_total = "def f(cart: list[I]) -> int:\n    mut total = 0\n    for item in cart:\n        total += total\n    total\n";
+    let uses_total = "def f(cart: list[I]) -> int:\n    mut total = 0\n    for item in cart:\n        total += total\n    return total\n";
     assert_eq!(rules(uses_total), NONE);
 }
 
 #[test]
 fn a_loop_that_stops_at_the_first_match_is_any() {
-    let source = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if p.health <= 0:\n            found = True\n            break\n    found\n";
+    let source = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if p.health <= 0:\n            found = True\n            break\n    return found\n";
     assert_eq!(rules(source), ["manual-builtin"]);
     assert_eq!(
         fixed(source),
-        "def f(ps: list[P]) -> bool:\n    mut found = any(p.health <= 0 for p in ps)\n    found\n"
+        "def f(ps: list[P]) -> bool:\n    mut found = any(p.health <= 0 for p in ps)\n    return found\n"
     );
-    let every = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if check(p):\n            found = True\n    found\n";
+    let every = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if check(p):\n            found = True\n    return found\n";
     assert_eq!(rules(every), NONE, "without `break` it checks every item, and `any` stops at the first");
-    let read = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if found or p.dead:\n            found = True\n            break\n    found\n";
+    let read = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if found or p.dead:\n            found = True\n            break\n    return found\n";
     assert_eq!(rules(read), NONE, "the loop reads the flag");
 }
 
 #[test]
 fn a_loop_that_keeps_the_largest_is_max() {
-    let source = "def f(xs: list[int]) -> int:\n    mut best = xs[0]\n    for x in xs[1:]:\n        if x > best:\n            best = x\n    best\n";
+    let source = "def f(xs: list[int]) -> int:\n    mut best = xs[0]\n    for x in xs[1:]:\n        if x > best:\n            best = x\n    return best\n";
     assert_eq!(rules(source), ["manual-builtin"]);
-    assert_eq!(fixed(source), "def f(xs: list[int]) -> int:\n    mut best = max(xs)\n    best\n");
-    let smallest = "def f(words: list[str]) -> str:\n    mut first = words[0]\n    for word in words:\n        if first > word:\n            first = word\n    first\n";
-    assert_eq!(fixed(smallest), "def f(words: list[str]) -> str:\n    mut first = min(words)\n    first\n");
+    assert_eq!(fixed(source), "def f(xs: list[int]) -> int:\n    mut best = max(xs)\n    return best\n");
+    let smallest = "def f(words: list[str]) -> str:\n    mut first = words[0]\n    for word in words:\n        if first > word:\n            first = word\n    return first\n";
+    assert_eq!(
+        fixed(smallest),
+        "def f(words: list[str]) -> str:\n    mut first = min(words)\n    return first\n"
+    );
     let floats = source.replace("list[int]", "list[float]").replace("-> int", "-> float");
     assert_eq!(rules(&floats), NONE, "`max` and `>` order NaN differently");
-    let elsewhere = "def f(xs: list[int], ys: list[int]) -> int:\n    mut best = xs[0]\n    for y in ys:\n        if y > best:\n            best = y\n    best\n";
+    let elsewhere = "def f(xs: list[int], ys: list[int]) -> int:\n    mut best = xs[0]\n    for y in ys:\n        if y > best:\n            best = y\n    return best\n";
     assert_eq!(rules(elsewhere), NONE, "it starts from another list");
 }
 
@@ -1051,7 +1058,7 @@ fn a_counted_while_is_a_for() {
         ),
         (
             "it's used after",
-            "def f(n: int) -> int:\n    mut i = 0\n    while i < n:\n        i += 1\n    i\n",
+            "def f(n: int) -> int:\n    mut i = 0\n    while i < n:\n        i += 1\n    return i\n",
         ),
         (
             "the limit moves",
@@ -1068,7 +1075,7 @@ fn a_counted_while_is_a_for() {
 
 #[test]
 fn an_index_that_only_indexes_is_an_item() {
-    let source = "def f(enemies: list[E]):\n    for i in range(enemies.len()):\n        draw(enemies[i])\n";
+    let source = "def f(enemies: list[E]):\n    for i in range(len(enemies)):\n        draw(enemies[i])\n";
     assert_eq!(rules(source), ["range-len"]);
     assert_eq!(fixed(source), "def f(enemies: list[E]):\n    for enemy in enemies:\n        draw(enemy)\n");
     // As it's written now, with the builtin, too.
@@ -1076,18 +1083,18 @@ fn an_index_that_only_indexes_is_an_item() {
     assert_eq!(rules(builtin), ["range-len"]);
     assert_eq!(fixed(builtin), "def f(enemies: list[E]):\n    for enemy in enemies:\n        draw(enemy)\n");
     for (why, source) in [
-        ("it's used for more", "def f(xs: list[int]):\n    for i in range(xs.len()):\n        g(i, xs[i])\n"),
+        ("it's used for more", "def f(xs: list[int]):\n    for i in range(len(xs)):\n        g(i, xs[i])\n"),
         (
             "it writes the list",
-            "def f(ref xs: list[int]):\n    for i in range(xs.len()):\n        xs[i] = xs[i] + 1\n",
+            "def f(ref xs: list[int]):\n    for i in range(len(xs)):\n        xs[i] = xs[i] + 1\n",
         ),
         (
             "a dict's keys aren't its items",
-            "def f(xs: dict[int, int]):\n    for i in range(xs.len()):\n        g(xs[i])\n",
+            "def f(xs: dict[int, int]):\n    for i in range(len(xs)):\n        g(xs[i])\n",
         ),
         (
             "the name is taken",
-            "def f(points: list[int]):\n    point = 1\n    for i in range(points.len()):\n        g(points[i], point)\n",
+            "def f(points: list[int]):\n    point = 1\n    for i in range(len(points)):\n        g(points[i], point)\n",
         ),
     ] {
         assert_eq!(rules(source), NONE, "{why}");
@@ -1100,12 +1107,14 @@ fn each_kind_of_name_is_written_its_own_way() {
     assert_eq!(name_rules("struct my_point:\n    x: int\n"), ["naming-case"]);
     assert_eq!(name_rules("limit = 3\n"), ["naming-case"]);
     assert_eq!(
-        name_rules("LIMIT = 3\n\ndef count_it(start: int) -> int:\n    total_now = start\n    total_now\n"),
+        name_rules(
+            "LIMIT = 3\n\ndef count_it(start: int) -> int:\n    total_now = start\n    return total_now\n"
+        ),
         NONE
     );
     assert_eq!(
         name_rules(
-            "struct Point:\n    _secret: int\n\n    def +(self, other: Point) -> Point:\n        other\n"
+            "struct Point:\n    _secret: int\n\n    def +(self, other: Point) -> Point:\n        return other\n"
         ),
         NONE,
         "a private field and an operator"
@@ -1114,22 +1123,25 @@ fn each_kind_of_name_is_written_its_own_way() {
 
 #[test]
 fn a_short_name_is_flagged_unless_it_says_enough() {
-    assert_eq!(name_rules("def area(w: int) -> int:\n    w\n"), ["short-name"]);
+    assert_eq!(name_rules("def area(w: int) -> int:\n    return w\n"), ["short-name"]);
     assert_eq!(
-        name_rules("def f(hp: int) -> int:\n    hp\n").iter().filter(|rule| **rule == "short-name").count(),
+        name_rules("def f(hp: int) -> int:\n    return hp\n")
+            .iter()
+            .filter(|rule| **rule == "short-name")
+            .count(),
         2,
         "and `f`"
     );
     for fine in [
-        "def area(x: int, y: int, n: int) -> int:\n    x + y + n\n",
-        "def step(dt: float, at: int) -> float:\n    dt\n",
-        "def read(fs: Fs) -> int:\n    1\n",
-        "def total(items: list[int]) -> int:\n    sum(item for item in items)\n",
+        "def area(x: int, y: int, n: int) -> int:\n    return x + y + n\n",
+        "def step(dt: float, at: int) -> float:\n    return dt\n",
+        "def read(fs: Fs) -> int:\n    return 1\n",
+        "def total(items: list[int]) -> int:\n    return sum(item for item in items)\n",
     ] {
         assert_eq!(name_rules(fine), NONE, "{fine}");
     }
     assert_eq!(
-        name_rules("from std.json import loads as j\n\ndef read() -> int:\n    j(\"1\")\n"),
+        name_rules("from std.json import loads as j\n\ndef read() -> int:\n    return j(\"1\")\n"),
         NONE,
         "kept apart, see below"
     );
@@ -1138,20 +1150,21 @@ fn a_short_name_is_flagged_unless_it_says_enough() {
 #[test]
 fn a_local_named_like_a_builtin_is_flagged() {
     assert_eq!(
-        name_rules("def count_them(items: list[int]) -> int:\n    sum = 0\n    sum\n"),
+        name_rules("def count_them(items: list[int]) -> int:\n    sum = 0\n    return sum\n"),
         ["shadowed-builtin"]
     );
-    assert_eq!(name_rules("def count_them(range: int) -> int:\n    range\n"), ["shadowed-builtin"]);
+    assert_eq!(name_rules("def count_them(range: int) -> int:\n    return range\n"), ["shadowed-builtin"]);
 }
 
 #[test]
 fn an_alias_that_changes_nothing_goes() {
-    let source = "from std import json as json\n\ndef read() -> str:\n    json.dumps([1])\n";
+    let source = "from std import json as json\n\ndef read() -> str:\n    return json.dumps([1])\n";
     assert_eq!(rules(source), ["needless-alias"]);
-    assert_eq!(fixed(source), "from std import json\n\ndef read() -> str:\n    json.dumps([1])\n");
-    let module = "import std.json as json\n\ndef read() -> str:\n    json.dumps([1])\n";
-    assert_eq!(fixed(module), "from std import json\n\ndef read() -> str:\n    json.dumps([1])\n");
-    let twice = "from std.math import sqrt, sqrt as root\n\ndef side() -> float:\n    sqrt(root(2.0))\n";
+    assert_eq!(fixed(source), "from std import json\n\ndef read() -> str:\n    return json.dumps([1])\n");
+    let module = "import std.json as json\n\ndef read() -> str:\n    return json.dumps([1])\n";
+    assert_eq!(fixed(module), "from std import json\n\ndef read() -> str:\n    return json.dumps([1])\n");
+    let twice =
+        "from std.math import sqrt, sqrt as root\n\ndef side() -> float:\n    return sqrt(root(2.0))\n";
     assert_eq!(rules(twice), ["needless-alias"]);
 }
 

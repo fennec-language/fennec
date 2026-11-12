@@ -2,7 +2,7 @@ struct P:
     x: int
 
     def str(self) -> str:
-        f"P{self.x}"
+        return f"P{self.x}"
 
 def main(stdout: Stdout):
     stdout.print(P(x=1))

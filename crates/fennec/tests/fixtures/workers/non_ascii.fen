@@ -3,14 +3,14 @@ struct City:
     size: int
 
 def first(text: str) -> str:
-    text[0]
+    return text[0]
 
 def main(stdout: Stdout):
     names = ["Zürich", "São Paulo", "東京", "Kraków", "Århus", "plain"]
     cities = [City(names[n % 6] + f" {n}", n) for n in range(600)]
     firsts = [first(city.name) for city in parallel(cities)]
     stdout.print(firsts[0], firsts[1], firsts[2], firsts[3], firsts[4], firsts[5])
-    stdout.print(sum(city.name.len() for city in parallel(cities)))
+    stdout.print(sum(len(city.name) for city in parallel(cities)))
     stdout.print(sum(1 if "ü" in city.name else 0 for city in parallel(cities)))
     upper = [city.name.upper() + "!" for city in parallel(cities)]
     stdout.print(upper[0], upper[1], upper[2], upper[599])

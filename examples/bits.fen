@@ -1,7 +1,7 @@
 # Bit operators work on ints. A shift by a count outside 0 to 63 stops the program.
 
 def flags(left: int, right: int) -> list[int]:
-    [left & right, left | right, left ^ right, ~left, left << 3, left >> 1]
+    return [left & right, left | right, left ^ right, ~left, left << 3, left >> 1]
 
 def hash_step(start: int, byte: int) -> int:
     mut hash = start
@@ -10,7 +10,7 @@ def hash_step(start: int, byte: int) -> int:
     hash |= byte & 15
     hash >>= 1
     hash &= 1048575
-    hash
+    return hash
 
 def main(stdout: Stdout):
     stdout.print(flags(12, right=10))

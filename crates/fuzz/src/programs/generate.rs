@@ -14,8 +14,9 @@
 )]
 
 use super::ast::{
-    Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming, TYPES, Turn, Turning, Ty, Via,
+    Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Held, Leave,
+    Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming, TABLE,
+    TYPES, Turn, Turning, Ty, Via, Writing,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -31,6 +32,13 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 /// ordered stream since #1479. Turned off, no input reads the byte that picks it, so the shape
 /// can be taken out without changing what any other input writes.
 const PARALLEL_STREAMS: bool = true;
+
+/// Whether random programs make copies of collections and their parts, change each through every
+/// way of writing in place, and print them all: the shape that shows an in-place write reaching a
+/// second holder. Off until the LLVM lane's in-place writes land, and turned on against their
+/// branches before each merges. Off, no input reads the byte that picks it, so kept inputs still
+/// write what they did.
+const ALIASING: bool = false;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -588,6 +596,7 @@ impl Writer<'_> {
             26 if self.choice(3) == 0 => self.leaves(body),
             26 if self.choice(4) == 0 => self.turns(body),
             26 if PARALLEL_STREAMS && !self.threadless && self.choice(4) == 0 => self.streams(body),
+            26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 => self.change_counts(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
@@ -984,6 +993,60 @@ impl Writer<'_> {
             _ => StreamRead::Loop(None),
         };
         body.push(Stmt::Streamed(Streaming { id, items, map, read }));
+    }
+
+    /// Copies of collections and of their parts, each name then changed through the ways of
+    /// writing in place its kind takes, and all of them printed. Every write reaches only the name
+    /// it's written to, so a write that reaches a copy too shows in what's printed.
+    fn aliasing(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 20);
+        let mut held: Vec<Held> = STARTING.iter().map(|(_, held)| *held).collect();
+        let mut steps = Vec::new();
+        for _ in 0..4 + self.choice(9) {
+            let from = self.choice(held.len());
+            let kind = held.get(from).copied().unwrap_or(Held::Numbers);
+            let roll = self.choice(5);
+            if roll == 0 {
+                steps.push(Alias::Copied { from });
+                held.push(kind);
+                continue;
+            }
+            // A copy's items are read by place or key, and only the starting table's by `Id`.
+            if roll == 1
+                && (kind != Held::Table || from == TABLE)
+                && let Some(part) = kind.part()
+            {
+                steps.push(Alias::Part { from, at: self.choice(2) });
+                held.push(part);
+                continue;
+            }
+            let ways: &[Writing] = match kind {
+                Held::Numbers => &[Writing::Append, Writing::Set, Writing::ForRef, Writing::Ref],
+                Held::Holders => {
+                    &[Writing::ForRef, Writing::Field, Writing::Append, Writing::PutBack, Writing::Method]
+                }
+                Held::Holder => &[Writing::Field, Writing::Append, Writing::Method],
+                Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append],
+                Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method],
+                Held::Table if from == TABLE => {
+                    &[Writing::ForRef, Writing::Field, Writing::PutBack, Writing::Method]
+                }
+                Held::Table => &[Writing::ForRef],
+                Held::Point => &[Writing::Field, Writing::Method],
+                Held::Text => &[Writing::Joined, Writing::Added],
+            };
+            if kind == Held::Numbers && !self.threadless && self.choice(5) == 0 {
+                steps.push(Alias::Tasked { from });
+                continue;
+            }
+            let how = ways.get(self.choice(ways.len())).copied().unwrap_or(Writing::ForRef);
+            let at = self.choice(2);
+            let n = i64::from(self.byte() % 19) - 9;
+            steps.push(Alias::Written { to: from, how, at, n });
+        }
+        body.push(Stmt::Aliased(Aliasing { id, base, steps }));
     }
 
     /// A loop whose int is at least 0 on its first turn and changes sign later, used as an index,

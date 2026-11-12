@@ -20,4 +20,4 @@ def main(stdout: Stdout):
     lock hits as held:
         stdout.print(held.count)
     lock table as held:
-        stdout.print(held.counts.len(), held.counts[0], held.counts[63])
+        stdout.print(len(held.counts), held.counts[0], held.counts[63])

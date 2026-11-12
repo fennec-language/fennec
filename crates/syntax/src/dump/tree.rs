@@ -286,7 +286,7 @@ impl Tree {
             StmtKind::Break => self.spanned("break", stmt.span),
             StmtKind::Continue => self.spanned("continue", stmt.span),
             StmtKind::Pass => self.spanned("pass", stmt.span),
-            StmtKind::Lend { value, otherwise } => self.node("lend", span, |tree| {
+            StmtKind::Lend { value, otherwise, .. } => self.node("lend", span, |tree| {
                 tree.expr(value);
                 tree.stmts(otherwise);
             }),

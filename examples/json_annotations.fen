@@ -15,15 +15,15 @@ struct Account:
     seen = set[str]()
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "loaded"
+    return "loaded"
 
 def ash() -> Account:
     mut account = Account(id=7, display_name="Ash")
     account.cache["visits"] = 3
     account.seen.add("home")
-    account
+    return account
 
 test "a skipped field isn't saved":
     assert json.dumps(ash()) == "{\"uid\": 7, \"display_name\": \"Ash\"}"
@@ -32,7 +32,7 @@ test "a skipped field isn't saved":
 test "loading fills a skipped field in from its default":
     loaded = json.loads[Account](json.dumps(ash()))?
     assert loaded.id == 7 and loaded.display_name == "Ash"
-    assert loaded.cache.len() == 0 and loaded.seen.len() == 0
+    assert len(loaded.cache) == 0 and len(loaded.seen) == 0
 
 test "a saved name wins over names=":
     assert json.dumps(ash(), names=.CamelCase) == "{\"uid\": 7, \"displayName\": \"Ash\"}"

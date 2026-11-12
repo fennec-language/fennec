@@ -344,16 +344,16 @@ fn expressions_are_typed_where_they_are() {
             queue.append('first')
             mut target = None
             target = 3
-            count = queue.len()
+            count = len(queue)
             stdout.print(queue, target is None, count)
-            stdout.print(sorted(queue, key=name => name.len()))
+            stdout.print(sorted(queue, key=name => len(name)))
         ",
     );
     assert_eq!(type_of(&source, "main", "[]"), Some(list(Type::Str)));
     assert_eq!(type_of(&source, "main", "queue.append(\"first\")"), Some(Type::Unit));
-    assert_eq!(type_of(&source, "main", "queue.len()"), Some(Type::Int));
+    assert_eq!(type_of(&source, "main", "len(queue)"), Some(Type::Int));
     let arrow = Type::Arrow(vec![Type::Str], Box::new(Type::Int));
-    assert_eq!(type_of(&source, "main", "name => name.len()"), Some(arrow));
+    assert_eq!(type_of(&source, "main", "name => len(name)"), Some(arrow));
     assert_eq!(type_of(&source, "main", "queue"), Some(list(Type::Str)));
     assert_eq!(type_of(&source, "main", "target is None"), Some(Type::Bool));
 }
@@ -385,7 +385,7 @@ fn generic_calls_are_typed_with_their_type_filled_in() {
     let source = dedent(
         "
         def first[T](items: list[T]) -> T:
-            items[0]
+            return items[0]
 
         def main(stdout: Stdout):
             stdout.print(first(['a']), first([1.5]))

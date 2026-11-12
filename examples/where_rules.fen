@@ -5,7 +5,7 @@ struct Stats:
     speed = 1.0
 
 struct Player:
-    name: str where name.len() > 0
+    name: str where len(name) > 0
     stats: Stats
 
     def rise(ref self):

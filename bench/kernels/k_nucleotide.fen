@@ -6,14 +6,14 @@ def sequence(length: int) -> str:
     for _ in range(length):
         seed = (seed * 3877 + 29573) % 139968
         letters.append("acgt"[seed * 4 // 139968])
-    "".join(letters)
+    return "".join(letters)
 
 def counted(dna: str, size: int) -> dict[str, int]:
     mut counts: dict[str, int] = {}
-    for at in range(dna.len() - size + 1):
+    for at in range(len(dna) - size + 1):
         piece = dna[at:at + size]
         counts[piece] = (counts.get(piece) else 0) + 1
-    counts
+    return counts
 
 def main(stdout: Stdout):
     dna = sequence(100_000)
@@ -22,4 +22,4 @@ def main(stdout: Stdout):
         for negative, piece in sorted([(-count, piece) for piece, count in counts.items()]):
             stdout.print(piece, -negative)
     for piece in ["ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"]:
-        stdout.print((counted(dna, piece.len()).get(piece) else 0), piece)
+        stdout.print((counted(dna, len(piece)).get(piece) else 0), piece)

@@ -2,9 +2,8 @@
 from std import json
 
 def main(stdout: Stdout):
-    count = json.loads[int]("many") else as failure:
-        match failure:
-            case ParseError(why):
-                stdout.print(why)
-        return
+    count = json.loads[int]("many") except failure:
+        case ParseError(why):
+            stdout.print(why)
+            return
     stdout.print(count)

@@ -1,12 +1,12 @@
-source 73088e116a1deadf16945fae18467630977ab2a3a15984d5f73c4411b12fd5c6
+source 1a7251a00a25e2cf58aa755e623a10e5922df42ea146cb4e4bee88d2a7426da6
 code 1
 stdout 7
 before
-stderr 141
+stderr 156
 error: division by zero
- --> <dir>/zero.fen:2:5
+ --> <dir>/zero.fen:2:12
   |
-2 |     10 // n
-  |     ^^^^^^^
+2 |     return 10 // n
+  |            ^^^^^^^
   = in `f`
   = called from `main` at <dir>/zero.fen:6:18

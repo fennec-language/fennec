@@ -10,4 +10,4 @@ def main(stdout: Stdout):
     stdout.print(points.capacity())
     for at in range(100000):
         points.push(Point(first=at, second=2, third=3, fourth=4))
-    stdout.print(points.len())
+    stdout.print(len(points))

@@ -118,6 +118,9 @@ impl Stream {
             set_failed(0);
         }
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
+        // What it printed is written before the reader can see it's done, so what the reader
+        // prints after the stream comes after it, as for a range.
+        super::super::write_kept_output();
         super::super::swap_capture(&mut capture);
         Slot::Done { items, made, failure }
     }

@@ -42,3 +42,34 @@ fn said(what: &str, error: &std::io::Error) {
         );
     }
 }
+
+/// Whether this command has said an entry didn't match its hash.
+static DOUBTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this command has said the cache folder isn't trusted.
+static REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// An entry whose bytes didn't match its hash, read as a miss: said once a command, since it means
+/// something tore or changed the cache.
+pub(crate) fn doubted(path: &std::path::Path) {
+    if !DOUBTED.swap(true, Ordering::Relaxed) {
+        // Where even the warning can't be written, there's no one left to tell.
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: an entry in Fennec's cache doesn't match what was written, so it's made again: {}",
+            path.display()
+        );
+    }
+}
+
+/// A cache folder that isn't used, because it isn't its user's alone: said once a command.
+pub(crate) fn refused(why: &str) {
+    if !REFUSED.swap(true, Ordering::Relaxed) {
+        // Where even the warning can't be written, there's no one left to tell.
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: Fennec's cache isn't used: {why}\n  \
+             anyone who can write it could put a program there that the next run starts"
+        );
+    }
+}

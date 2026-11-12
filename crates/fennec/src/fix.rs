@@ -8,7 +8,12 @@ use std::process::ExitCode;
 /// How many rounds of fixes to make before giving up on reaching a program with none left.
 const ROUNDS: usize = 8;
 
-pub(crate) fn fix(path: &str) -> ExitCode {
+/// With `migrate`, it makes only the rewrites to the forms of 2026-11-11, which the migration
+/// runs over every file at once.
+pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
+    if migrate {
+        return migrate_forms(path);
+    }
     if let Err(code) = parse_fixes(path) {
         return code;
     }
@@ -58,6 +63,60 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         }
     }
     eprintln!("error: fixes kept showing more fixes; run `fennec fix` again to go on");
+    ExitCode::FAILURE
+}
+
+/// `fennec fix --migrate`: the rewrites to the forms of 2026-11-11 and nothing else, so a
+/// lint's fix never rides along. The program has to check first. When a round's rewrites leave
+/// a problem with a fix, like a name a file now needs to import, that fix is made next.
+fn migrate_forms(path: &str) -> ExitCode {
+    let mut first = true;
+    for _ in 0..ROUNDS {
+        let loaded = fennec_kit::load_with(
+            Path::new(path),
+            path,
+            fennec_kit::Entry::Everything,
+            &fennec_kit::Overlay::new(),
+        );
+        let program = match loaded {
+            Ok(program) => program,
+            // A rewrite can leave a file naming what it doesn't import, which loading finds.
+            Err(problems) => {
+                let changed = problems.sources.fixed(&problems.diagnostics);
+                if first || changed.is_empty() {
+                    eprint!("{}", problems.render());
+                    return ExitCode::FAILURE;
+                }
+                if let Err(code) = write_all(changed) {
+                    return code;
+                }
+                continue;
+            }
+        };
+        let (checks, diagnostics) = match fennec_check::check(&program.module) {
+            Ok(_) => (true, fennec_check::migration_fixes(&program.module, &program.sources)),
+            Err(problems) if first => {
+                eprint!("{}", program.sources.render_all(&problems));
+                eprintln!("\nthe program has to check before it's moved to the new forms");
+                return ExitCode::FAILURE;
+            }
+            Err(problems) => (false, problems),
+        };
+        first = false;
+        let changed = program.sources.fixed(&diagnostics);
+        if changed.is_empty() {
+            if checks {
+                return ExitCode::SUCCESS;
+            }
+            eprint!("{}", program.sources.render_all(&diagnostics));
+            eprintln!("\nthe rewrites left these, which have no fix");
+            return ExitCode::FAILURE;
+        }
+        if let Err(code) = write_all(changed) {
+            return code;
+        }
+    }
+    eprintln!("error: rewrites kept showing more; run `fennec fix --migrate` again to go on");
     ExitCode::FAILURE
 }
 

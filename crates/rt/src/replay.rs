@@ -54,7 +54,14 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL2";
+const MAGIC: &[u8; 8] = b"FENREPL3";
+
+/// A log from before recordings were marked at their end: one cut short can't be told apart.
+const MAGIC_UNMARKED: &[u8; 8] = b"FENREPL2";
+
+/// The entry a recording ends with when the run it records ends, logged under no task. A log
+/// without it was cut short: the run was killed, or writing the log failed.
+const END: &str = "end";
 
 /// A log from before tasks were named: every entry is `main`'s.
 const MAGIC_UNNAMED: &[u8; 8] = b"FENREPL1";
@@ -78,6 +85,9 @@ struct Player {
     orders_output: bool,
     /// Bursts tasks have written that aren't due yet, each task's in order, by its name.
     held: HashMap<String, VecDeque<Vec<u8>>>,
+    /// Whether the log ends with the mark its run wrote as it ended, so a replay that runs out of
+    /// it is the program's doing, not the log's.
+    whole: bool,
 }
 
 /// A task, for its entries: its name, and how many tasks it has started, to name the next one.
@@ -187,6 +197,7 @@ fn turn_in(
             let player = player.lock().unwrap_or_else(PoisonError::into_inner);
             let front = player.streams.get(place).and_then(|stream| stream.front());
             match front.map(|(next, payload)| (next.clone(), payload.clone())) {
+                None if !player.whole => return Err(cut_short(what, place)),
                 None => {
                     return Err(format!(
                         "this replay's task asked for `{asked}` at {place}, where its recording had nothing \
@@ -379,14 +390,23 @@ fn playing(path: &Path) -> std::io::Result<Mode> {
 
 /// A log's entries, each task's in a stream of its own: `None` if it's damaged.
 fn player_of(log: &[u8]) -> Option<Player> {
-    let named = log.starts_with(MAGIC);
-    let mut player =
-        Player { streams: HashMap::new(), workers: None, orders_output: false, held: HashMap::new() };
+    let named = log.starts_with(MAGIC) || log.starts_with(MAGIC_UNMARKED);
+    let mut player = Player {
+        streams: HashMap::new(),
+        workers: None,
+        orders_output: false,
+        held: HashMap::new(),
+        whole: !log.starts_with(MAGIC),
+    };
     let mut reader = Entries { log, at: entries_start(log)? };
     while reader.at < log.len() {
         let task = if named { reader.name()? } else { "0".to_owned() };
         let call = reader.name()?;
         let payload = reader.payload()?;
+        if task.is_empty() && call == END {
+            player.whole = true;
+            continue;
+        }
         if task.is_empty() && call == WORKERS {
             let bytes: [u8; 8] = payload.as_slice().try_into().ok()?;
             player.workers = usize::try_from(u64::from_le_bytes(bytes)).ok();
@@ -441,7 +461,7 @@ pub fn header_of(path: &Path) -> std::io::Result<Vec<u8>> {
 
 fn entries_start(log: &[u8]) -> Option<usize> {
     let magic = log.get(..MAGIC.len())?;
-    if magic != MAGIC && magic != MAGIC_UNNAMED {
+    if magic != MAGIC && magic != MAGIC_UNMARKED && magic != MAGIC_UNNAMED {
         return None;
     }
     let length = u32::from_le_bytes(log.get(MAGIC.len()..MAGIC.len() + 4)?.try_into().ok()?);
@@ -534,6 +554,19 @@ pub(crate) fn value(
     }
 }
 
+/// A call that writes, like standard error's: in a recording, logged as `value` logs one. A
+/// replay writes too, as the run did, then gives back what the call gave in the recording, so the
+/// program goes on as it did even where the write turns out differently.
+pub(crate) fn written(
+    call: std::fmt::Arguments<'_>,
+    span: Span,
+    live: impl FnOnce() -> Result<Value, Diagnostic>,
+) -> Result<Value, Diagnostic> {
+    let Mode::Replay(_) = mode() else { return value(call, span, live) };
+    let _ = live();
+    value(call, span, || unreachable!("a replay gives back what was recorded"))
+}
+
 /// A word an outside call gives, like the clock's reading, recorded and replayed as `value` is.
 pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String> {
     match mode() {
@@ -553,26 +586,60 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
 }
 
 fn log(file: &Mutex<std::fs::File>, task: &str, call: &str, payload: &[u8]) {
+    // Once an entry is lost, none comes after it: the log stops there, without its end mark, so a
+    // replay says it was cut short rather than finding a gap and blaming the program.
+    if LOG_FAILED.load(Ordering::Relaxed) {
+        return;
+    }
+    let too_big = u16::try_from(task.len()).is_err()
+        || u16::try_from(call.len()).is_err()
+        || u32::try_from(payload.len()).is_err();
+    if too_big {
+        stopped(&format!("`{call}` gave {} bytes, more than a recording can hold", payload.len()));
+        return;
+    }
     // Written at once, so a run that crashes or is killed leaves what it took.
     let wrote = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&entry(task, call, payload));
-    // Said once: the run goes on, but what it records from here can't be replayed.
-    if let Err(error) = wrote
-        && !LOG_FAILED.swap(true, Ordering::Relaxed)
+    if let Err(error) = wrote {
+        stopped(&error.to_string());
+    }
+}
+
+/// Stops recording, saying why once: the run goes on, but what it records from here can't be
+/// replayed, and a replay of it will say it was cut short.
+fn stopped(why: &str) {
+    if !LOG_FAILED.swap(true, Ordering::Relaxed) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: this run's recording stopped, as {why}; a replay of it will stop where it does"
+        );
+    }
+}
+
+/// The run is ending: in a recording, the log gets its end mark, once, so a replay can tell it
+/// whole from one cut short.
+pub fn ended() {
+    static ENDED: AtomicBool = AtomicBool::new(false);
+    // Only a mode already set: a recording that couldn't be opened stops the program while its
+    // mode is still being worked out, and has nothing to mark.
+    if let Some(Mode::Record(file)) = MODE.get()
+        && !ENDED.swap(true, Ordering::Relaxed)
     {
-        let _ = writeln!(std::io::stderr(), "warning: this run's recording stopped: {error}");
+        log(file, "", END, &[]);
     }
 }
 
 static LOG_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// One entry of a log.
+/// One entry of a log. Lengths too big for their fields are refused by `log` before it gets here.
 fn entry(task: &str, call: &str, payload: &[u8]) -> Vec<u8> {
     let mut entry = Vec::with_capacity(task.len() + call.len() + payload.len() + 8);
-    entry.extend(u16::try_from(task.len()).unwrap_or(u16::MAX).to_le_bytes());
+    entry.extend(u16::try_from(task.len()).unwrap_or(0).to_le_bytes());
     entry.extend(task.as_bytes());
-    entry.extend(u16::try_from(call.len()).unwrap_or(u16::MAX).to_le_bytes());
+    entry.extend(u16::try_from(call.len()).unwrap_or(0).to_le_bytes());
     entry.extend(call.as_bytes());
-    entry.extend(u32::try_from(payload.len()).unwrap_or(u32::MAX).to_le_bytes());
+    entry.extend(u32::try_from(payload.len()).unwrap_or(0).to_le_bytes());
     entry.extend(payload);
     entry
 }
@@ -583,6 +650,9 @@ fn replayed(player: &Mutex<Player>, call: &str) -> Result<Vec<u8>, String> {
     let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
     let stream = player.streams.get_mut(&*task);
     let Some((next, _)) = stream.as_ref().and_then(|stream| stream.front()) else {
+        if !player.whole {
+            return Err(cut_short(call, &task));
+        }
         return Err(format!(
             "this replay asked for `{call}`{}, where its recording had nothing more, so it isn't the run \
              that was recorded: something it depends on wasn't recorded, or the program has changed",
@@ -598,6 +668,16 @@ fn replayed(player: &Mutex<Player>, call: &str) -> Result<Vec<u8>, String> {
     }
     let (_, payload) = stream.and_then(VecDeque::pop_front).unwrap_or_default();
     Ok(payload)
+}
+
+/// What a replay says when it runs past the end of a recording that was cut short: the log's
+/// fault, not the program's.
+fn cut_short(call: &str, task: &str) -> String {
+    format!(
+        "this replay asked for `{call}`{}, past the end of its recording, which was cut short: the run \
+         it records was stopped, or writing it failed, before it ended",
+        in_task(task)
+    )
 }
 
 /// What a value is, in the log.
@@ -725,7 +805,13 @@ fn encode(value: &Value, out: &mut Vec<u8>) {
 struct Reader<'log> {
     bytes: &'log [u8],
     at: usize,
+    /// How deep in values inside values it's reading: a log is read back with a limit, so one
+    /// made to nest without end can't take `fennec replay` down.
+    depth: usize,
 }
+
+/// How deep a recorded value may nest: far past anything a capability gives back.
+const DEEPEST: usize = 256;
 
 impl Reader<'_> {
     fn byte(&mut self) -> Option<u8> {
@@ -759,6 +845,16 @@ impl Reader<'_> {
     }
 
     fn value(&mut self) -> Option<Value> {
+        if self.depth >= DEEPEST {
+            return None;
+        }
+        self.depth += 1;
+        let value = self.value_inside();
+        self.depth -= 1;
+        value
+    }
+
+    fn value_inside(&mut self) -> Option<Value> {
         Some(match self.byte()? {
             tag::UNIT => Value::Unit,
             tag::NONE => Value::None,
@@ -805,7 +901,7 @@ impl Reader<'_> {
 }
 
 fn decode_result(payload: &[u8], span: Span) -> Option<Result<Value, Diagnostic>> {
-    let mut reader = Reader { bytes: payload, at: 0 };
+    let mut reader = Reader { bytes: payload, at: 0, depth: 0 };
     if payload.first() == Some(&tag::FAILED) {
         reader.byte()?;
         let message = reader.text()?;

@@ -899,31 +899,56 @@ pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i
             0 => None,
             _ => Some(text(state, separator).ok_or_else(|| lost(start, end))?),
         };
-        if between.as_deref() == Some("") {
-            // An empty separator fails, as the method says.
-            return method(state, address, "split", &[separator], span(start, end)).map(|_| 0);
-        }
-        // Each part goes straight into the list's items, with no list of values made on the way
-        // and dropped after.
-        let element = super::text::string_element(state);
-        let headers = *element == Element::Text;
-        let mut items = Vec::new();
-        let mut put = |state: &mut State, part: &str| {
-            if headers {
-                items.extend(super::text::header(state, part));
-            } else {
-                items.push(text_address(state, part).cast_unsigned());
-            }
-        };
-        let mut one = between.as_deref().map(str::chars);
-        match (one.as_mut().and_then(Iterator::next), one.as_mut().and_then(Iterator::next), &between) {
-            (_, _, None) => whole.split_whitespace().for_each(|part| put(state, part)),
-            // One character, like "/" or " ", is looked for as a character, which is quicker.
-            (Some(character), None, _) => whole.split(character).for_each(|part| put(state, part)),
-            (_, _, Some(between)) => whole.split(between.as_str()).for_each(|part| put(state, part)),
-        }
-        Ok(super::lists::list_of_items(state, &element, &items))
+        split_into(state, &whole, between.as_deref(), span(start, end))
     })
+}
+
+/// `fennec_str_split_header(text, separator, start, end)`: `text.split(separator)` for a text and
+/// a separator given as their headers, inline or holding a block, so neither is made a block first.
+/// A separator of three zeros is none: `text.split()`.
+pub extern "C" fn split_header(
+    t0: u64,
+    t1: u64,
+    t2: u64,
+    s0: u64,
+    s1: u64,
+    s2: u64,
+    start: i64,
+    end: i64,
+) -> i64 {
+    attempt(|state: &mut State| {
+        let whole = super::text::text_of(state, &[t0, t1, t2]);
+        let between = (s0, s1, s2) != (0, 0, 0);
+        let between = between.then(|| super::text::text_of(state, &[s0, s1, s2]));
+        split_into(state, &whole, between.as_deref(), span(start, end))
+    })
+}
+
+/// The list `whole.split(between)` gives, or `whole.split()` without `between`, owned once. Each
+/// part goes straight into the list's items, with no list of values made on the way and dropped
+/// after. An empty separator fails, as the method says.
+fn split_into(state: &mut State, whole: &str, between: Option<&str>, at: Span) -> Result<i64, Diagnostic> {
+    if between == Some("") {
+        return crate::collections::str_method(whole, "split", &[Value::str("")], at).map(|_| 0);
+    }
+    let element = super::text::string_element(state);
+    let headers = *element == Element::Text;
+    let mut items = Vec::new();
+    let mut put = |state: &mut State, part: &str| {
+        if headers {
+            items.extend(super::text::header(state, part));
+        } else {
+            items.push(text_address(state, part).cast_unsigned());
+        }
+    };
+    let mut one = between.map(str::chars);
+    match (one.as_mut().and_then(Iterator::next), one.as_mut().and_then(Iterator::next), between) {
+        (_, _, None) => whole.split_whitespace().for_each(|part| put(state, part)),
+        // One character, like "/" or " ", is looked for as a character, which is quicker.
+        (Some(character), None, _) => whole.split(character).for_each(|part| put(state, part)),
+        (_, _, Some(between)) => whole.split(between).for_each(|part| put(state, part)),
+    }
+    Ok(super::lists::list_of_items(state, &element, &items))
 }
 
 #[cfg(test)]
@@ -1074,6 +1099,11 @@ mod split_tests {
                 assert_eq!(parts(split(address, slash, 0, 0), headers), by_slash, "{whole:?}");
                 let by_space: Vec<&str> = whole.split_whitespace().collect();
                 assert_eq!(parts(split(address, 0, 0, 0), headers), by_space, "{whole:?}");
+                // The same given as headers, inline or holding a block, with none made a block.
+                let [t0, t1, t2] = with(|state| Some(text::header(state, whole))).unwrap();
+                let [s0, s1, s2] = with(|state| Some(text::header(state, "/"))).unwrap();
+                assert_eq!(parts(super::split_header(t0, t1, t2, s0, s1, s2, 0, 0), headers), by_slash);
+                assert_eq!(parts(super::split_header(t0, t1, t2, 0, 0, 0, 0, 0), headers), by_space);
             }
             let empty = with(|state| heap::text_address(state, ""));
             assert_eq!(split(slash, empty, 0, 0), 0);

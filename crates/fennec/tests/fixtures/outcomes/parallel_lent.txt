@@ -1,4 +1,4 @@
-source a48ebef8f067b1f2d01644cce09a7a994fb3491fb67fd208bfa33f36a94ec01d
+source 2847f1cc7442facfba4420fe3d641d2b3fcdde064398cb91fb9426ec250980b8
 code 0
 stdout 654
 a word long enough to be held in a block of its own, 0! a word long enough to be held in a block of its own, 19999! a word long enough to be held in a block of its own, 7

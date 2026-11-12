@@ -1,4 +1,4 @@
 # The file is read before anything has run, so a path worked out later is too late.
 def main(stdout: Stdout):
     name = "level.bin"
-    stdout.print(embed_file(name).len())
+    stdout.print(len(embed_file(name)))

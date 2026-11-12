@@ -3344,7 +3344,7 @@ fn a_hot_function_keeps_no_checks() {
         "{printed}"
     );
     assert_eq!(printed.matches("keeps its").count(), 1, "the loop keeps no check: {printed}");
-    std::fs::write(&program, source.replace("sum + xs[at]", "sum")).unwrap();
+    std::fs::write(&program, source.replace("running + xs[at]", "running")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "3.0\n", "{}", text(&output.stderr));
     // An overflow check the compiler can't prove away stays, as the safety net it is everywhere.

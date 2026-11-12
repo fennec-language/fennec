@@ -6335,7 +6335,7 @@ def started[T, E](make: () -> T fails E) fails Crashed:
         pass
 
 def ran[T, E](make: () -> T fails E):
-    _ = make() else:
+    _ = make() except E():
         return
 
 def one() -> int fails Nope:

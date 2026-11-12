@@ -3908,7 +3908,8 @@ def main(stdout: Stdout):
     /// A build with facts stripped hands LLVM none, where a plain build hands it every kind.
     #[test]
     fn stripping_facts_hands_llvm_none() -> Result<(), String> {
-        let facts = ["noalias", "captures(none)", "!range !", "!tbaa !", "inbounds", "call void @llvm.assume("];
+        let facts =
+            ["noalias", "captures(none)", "!range !", "!tbaa !", "inbounds", "call void @llvm.assume("];
         let (plain, _) = handed(Shared::default())?;
         for fact in facts {
             assert!(plain.contains(fact), "a plain build hands LLVM `{fact}`");
@@ -3931,7 +3932,12 @@ def main(stdout: Stdout):
         }
         assert!(text.contains("call void @fen_proof_held(") && text.contains("!tbaa !"), "{text}");
         let said: Vec<&String> = shared.literals.values().collect();
-        for proof in ["a length is at most", "a `ref` parameter's address", "every caller passes the failure flag clear", "a remainder by a positive number"] {
+        for proof in [
+            "a length is at most",
+            "a `ref` parameter's address",
+            "every caller passes the failure flag clear",
+            "a remainder by a positive number",
+        ] {
             assert!(said.iter().any(|text| text.contains(proof)), "no check that {proof}: {said:?}");
         }
         Ok(())

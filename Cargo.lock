@@ -224,6 +224,7 @@ name = "fennec-build"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
+ "fennec-dist",
  "fennec-rt",
  "fennec-syntax",
  "fennec-temp",

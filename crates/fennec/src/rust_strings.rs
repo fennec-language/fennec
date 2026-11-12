@@ -377,7 +377,12 @@ fn migrated(src: &str, migrate: &mut dyn FnMut(&str) -> Option<String>) -> Optio
         }
         let (program, ..) = as_program(&literal.text);
         let (program, held) = if literal.format { without_values(&program) } else { (program, Vec::new()) };
-        let new = if program.contains("def ") { migrate(&program) } else { in_a_def(&program, migrate) };
+        // A test's program may write its strings in `'`, which its helper reads as `"`: migrated
+        // as it's read, and written back as it was.
+        let single = program.contains('\'') && !program.contains('"');
+        let readable = if single { program.replace('\'', "\"") } else { program.clone() };
+        let new = if readable.contains("def ") { migrate(&readable) } else { in_a_def(&readable, migrate) };
+        let new = new.map(|new| if single { new.replace('"', "'") } else { new });
         let Some(new) = new.filter(|new| *new != program) else { continue };
         if let Some(found) = edits(&literal, (&program, &held), &new) {
             all.extend(found);
@@ -529,6 +534,19 @@ mod tests {
         let out = by_hand(&src);
         assert_eq!(out.matches("return 1 + 1").count(), 1, "{out}");
         assert!(out.starts_with(&format!("// fennec-migrate: off\n{program}")), "{out}");
+    }
+
+    #[test]
+    fn a_program_written_in_single_quotes_is_migrated_as_its_test_reads_it() {
+        let src = "let p = \"def name() -> str:\\n    'a' + 'b'\\n\";\n";
+        let mut migrate = |text: &str| -> Option<String> {
+            assert!(!text.contains('\''), "{text}");
+            Some(text.replace("    \"a\"", "    return \"a\""))
+        };
+        assert_eq!(
+            migrated(src, &mut migrate).unwrap_or_default(),
+            "let p = \"def name() -> str:\\n    return 'a' + 'b'\\n\";\n"
+        );
     }
 
     #[test]

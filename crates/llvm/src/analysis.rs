@@ -1838,12 +1838,12 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                 }
             }
-            // An array's items aren't taken out: one in a block isn't made alone to take one out.
-            // Nor a dict's, whose item is read out of it as it is, with no making it alone first:
-            // the dict may be another's too, and the item has to own what it holds to change it.
-            // A `Table`'s are, by `Id`, as a list's are by position: it's made alone first.
+            // A dict's value isn't taken out here: it's read out of the dict as it is, with no
+            // making it alone first, so the dict may be another's too, and the value has to own
+            // what it holds to change it. A `Table`'s and an array's items are, by `Id` or
+            // position, as a list's are: each is made alone first.
             let dict = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::Dict(..)));
-            if matches!(&inst.kind, InstKind::GetIndex { .. }) && (is_array(function, source) || dict) {
+            if matches!(&inst.kind, InstKind::GetIndex { .. }) && dict {
                 continue;
             }
             if let InstKind::GetIndex { index, .. } = &inst.kind {
@@ -1914,11 +1914,6 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             }
         }
     }
-}
-
-/// Whether a local holds a fixed-size array, which is laid out as a struct, not a list.
-fn is_array(function: &Function, local: LocalId) -> bool {
-    matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Array(..)))
 }
 
 /// `object.field += text`, which the IR writes as a local read from the field, added to and put
@@ -2222,7 +2217,12 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
             let InstKind::GetIndex { dest, object: Operand::Local(from), index } = &inst.kind else {
                 continue;
             };
-            let is_list = matches!(function.locals.get(from.0).map(|local| &local.ty), Some(Type::List(_)));
+            // A list's item, or an array's: an array kept in place is read and written where it
+            // is, and one in a block is made alone first, as a list is.
+            let is_list = matches!(
+                function.locals.get(from.0).map(|local| &local.ty),
+                Some(Type::List(_) | Type::Array(..))
+            );
             if !is_list
                 || dest == from
                 || known.writes.get(dest.0) != Some(&1)
@@ -2262,7 +2262,7 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             };
             let kept = matches!(
                 function.locals.get(from.0).map(|local| &local.ty),
-                Some(Type::List(_) | Type::Table(_) | Type::Dict(..))
+                Some(Type::List(_) | Type::Array(..) | Type::Table(_) | Type::Dict(..))
             );
             if !kept
                 || copied != read

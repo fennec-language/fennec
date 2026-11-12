@@ -18015,6 +18015,151 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// An array's `for ref` takes each item out and changes it where it is, as a list's does, for
+/// items holding a dict and a list: going round twenty times copies no more than going round
+/// once, where each time round used to copy every item. A copy of the array kept first, as a
+/// local or in a copied struct, keeps what it had, and a failure halfway keeps the changes up to
+/// the item that failed.
+#[test]
+fn an_arrays_ref_loop_changes_its_items_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("array_ref_loop")?;
+    std::fs::write(dir.join("array_ref_loop.fen"), ARRAY_REF_LOOP)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "array_ref_loop", how)?;
+        assert_eq!(
+            printed,
+            "kept 0 0 1\nkept 1 1 1\nkept 2 2 1\nkept 3 3 1\nbumped 10 100 2\nbumped 11 101 2\nbumped 12 102 2\nbumped 13 103 2\ngrid kept 0 0 1\ngrid kept 1 1 1\ngrid kept 2 2 1\ngrid kept 3 3 1\ngrid 10 100 1\ngrid 11 101 1\ngrid 12 102 1\ngrid 13 103 1\nrefused at 1012\nafter 1010 100 2\nafter 1011 101 2\nafter 1012 102 2\nafter 13 103 2\n",
+            "{how:?}"
+        );
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    let rounds = |times: u32| -> std::io::Result<Option<u64>> {
+        let name = format!("array_rounds_{times}");
+        let source = ARRAY_REF_LOOP.replace(
+            "    bump(ref cells)\n",
+            &format!("    for _ in range({times}):\n        bump(ref cells)\n"),
+        );
+        std::fs::write(dir.join(format!("{name}.fen")), source)?;
+        let (_, counts) = printed_and_counts(&dir, &name, &["--llvm"])?;
+        Ok(count(&counts, "copies"))
+    };
+    let (once, often) = (rounds(1)?, rounds(20)?);
+    assert!(once.is_some() && once == often, "{once:?} against {often:?}");
+    // `cells[at].x += 1`, and an item copied out with `mut` and put back, take it out too: eighty
+    // of each copy only what the items first shared, and what the copy kept first shares.
+    std::fs::write(dir.join("array_item_forms.fen"), ARRAY_ITEM_FORMS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "array_item_forms", how)?;
+        assert_eq!(printed, "8080 86 8\n0 6 4\n", "{how:?}");
+        assert!(count(&counts, "copies") < Some(30) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const ARRAY_ITEM_FORMS: &str = r#"struct Cell:
+    x = 0
+    bag = dict[str, int]()
+
+def poke(ref cells: array[Cell, 4], at: int):
+    cells[at].x += 1
+    cells[at].bag["n"] = (cells[at].bag.get("n") else 0) + 1
+    return
+
+def swap_out(ref cells: array[Cell, 4], at: int):
+    mut cell = cells[at]
+    cell.x += 100
+    cell.bag["m"] = 1
+    cells[at] = cell
+    return
+
+def main(stdout: Stdout):
+    mut cells = array[Cell, 4]()
+    for at in range(4):
+        cells[at].bag["n"] = at
+    kept = cells
+    for _ in range(20):
+        for at in range(4):
+            poke(ref cells, at)
+            swap_out(ref cells, at)
+    stdout.print(
+        sum(cell.x for cell in cells),
+        sum(cell.bag["n"] for cell in cells),
+        sum(len(cell.bag) for cell in cells),
+    )
+    stdout.print(
+        sum(cell.x for cell in kept),
+        sum(cell.bag["n"] for cell in kept),
+        sum(len(cell.bag) for cell in kept),
+    )
+    return
+"#;
+
+const ARRAY_REF_LOOP: &str = r#"error Refused:
+    at: int
+
+struct Cell:
+    x = 0
+    bag = dict[str, int]()
+    tags = list[str]()
+
+struct Grid:
+    cells = array[Cell, 4]()
+
+def fill(ref cells: array[Cell, 4]):
+    for at, ref cell in enumerate(cells):
+        cell.x = at
+        cell.bag["n"] = at
+        cell.tags.append(f"t{at}")
+    return
+
+def bump(ref cells: array[Cell, 4]):
+    for ref cell in cells:
+        cell.x += 10
+        cell.bag["n"] = (cell.bag.get("n") else 0) + 100
+        cell.tags.append("b")
+    return
+
+def bump_grid(ref grid: Grid):
+    for ref cell in grid.cells:
+        cell.x += 10
+        cell.bag["n"] = (cell.bag.get("n") else 0) + 100
+    return
+
+def bump_until(ref cells: array[Cell, 4], limit: int) fails Refused:
+    for ref cell in cells:
+        cell.x += 1000
+        if cell.x > limit: fail Refused(at=cell.x)
+    return
+
+def show(stdout: Stdout, name: str, cells: array[Cell, 4]):
+    for cell in cells:
+        stdout.print(name, cell.x, cell.bag.get("n") else -1, len(cell.tags))
+    return
+
+def main(stdout: Stdout):
+    mut cells = array[Cell, 4]()
+    fill(ref cells)
+    kept = cells
+    bump(ref cells)
+    show(stdout, "kept", kept)
+    show(stdout, "bumped", cells)
+    mut grid = Grid()
+    fill(ref grid.cells)
+    grid_kept = grid
+    bump_grid(ref grid)
+    show(stdout, "grid kept", grid_kept.cells)
+    show(stdout, "grid", grid.cells)
+    bump_until(ref cells, limit=1011) except why:
+        case Refused(at):
+            stdout.print("refused at", at)
+    show(stdout, "after", cells)
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

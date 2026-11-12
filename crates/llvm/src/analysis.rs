@@ -1288,6 +1288,10 @@ fn find_reads_again(function: &Function, known: &mut Analysis) {
             read_in.insert(local.0, at);
         }
     }
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "each local is checked alone, and what's found goes into a set"
+    )]
     for (local, read) in read_in {
         let written = written_in.get(&local).copied().unwrap_or(usize::MAX);
         if read != written && comes_back(function, read, written) {
@@ -1505,6 +1509,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
             candidates.remove(&dest);
         }
     }
+    #[expect(clippy::iter_over_hash_type, reason = "what's found goes into a set and a map")]
     for (dest, Candidate { source, .. }) in candidates {
         known.borrowed.insert(dest);
         known.borrowed_from.insert(dest, source);
@@ -2800,7 +2805,8 @@ fn local_of(operand: &Operand) -> Option<usize> {
 /// Whether nothing changes a map from where a walk of it is asked for, on any way from there to
 /// where the walk reads it, round its loop included.
 fn walk_leaves_alone(function: &Function, made: LocalId, map: LocalId, read_at: usize) -> bool {
-    let mut after = HashMap::new();
+    // Where the walk is asked for: each block that does, with the place after it there.
+    let mut after = Vec::new();
     let mut before: HashMap<usize, Vec<usize>> = HashMap::new();
     for (at, block) in function.blocks.iter().enumerate() {
         for next in block.end.targets() {
@@ -2809,10 +2815,11 @@ fn walk_leaves_alone(function: &Function, made: LocalId, map: LocalId, read_at: 
         if let Some(index) = block.insts.iter().position(
             |inst| matches!(&inst.kind, InstKind::Builtin { dest: Some(dest), .. } if *dest == made),
         ) {
-            after.insert(at, index + 1);
+            after.push((at, index + 1));
         }
     }
-    let Some((&start, &first)) = after.iter().next() else { return false };
+    // Asked for in more than one block, it isn't known which the walk starts from.
+    let [(start, first)] = after[..] else { return false };
     let reach = |from: usize, links: &dyn Fn(usize) -> Vec<usize>| {
         let mut seen = HashSet::from([from]);
         let mut waiting = vec![from];
@@ -3182,6 +3189,10 @@ fn parameters_kept<'p>(functions: &HashMap<&'p str, &'p Function>) -> HashMap<&'
         functions.iter().map(|(name, function)| (*name, vec![false; function.params])).collect();
     loop {
         let mut changed = false;
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "each round only turns parameters on, so it settles the same in any order"
+        )]
         for (name, function) in functions {
             for at in 0..function.params {
                 if kept.get(name).and_then(|params| params.get(at)).copied().unwrap_or(true) {

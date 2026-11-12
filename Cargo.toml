@@ -91,7 +91,7 @@ libm = { version = "=0.2.16", default-features = false }
 # one again isn't the point; rusqlite is the safe API over it, and every `unsafe` stays inside it
 # and libsqlite3-sys. Without default features, there's no statement cache to pull in a second
 # hashbrown. Not on WebAssembly, where there's no disk. Under MIT, with SQLite in the public domain.
-rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled", "hooks", "limits"] }
 # Catching the signals that ask a program to stop, for `Signals`: on Unix, a handler that sets a
 # flag and wakes a thread, and gives a second signal its default action, so nothing of ours is
 # `unsafe`. Its iterator is the thread's. Under MIT or Apache-2.0.

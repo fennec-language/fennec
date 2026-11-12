@@ -34,6 +34,9 @@ mod real {
     use std::time::{Duration, Instant};
 
     use fennec_syntax::{Diagnostic, Span};
+    use rusqlite::config::DbConfig;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use rusqlite::limits::Limit;
     use rusqlite::types::{Value as Cell, ValueRef};
     use rusqlite::{Connection, ErrorCode, OpenFlags};
 
@@ -164,7 +167,8 @@ mod real {
             #[cfg(unix)]
             Place::Checked { path, .. } => path,
         };
-        let conn = Connection::open_with_flags(path, flags)?;
+        let mut conn = Connection::open_with_flags(path, flags)?;
+        kept_to_its_file(&mut conn)?;
         #[cfg(unix)]
         if let Place::Checked { path, file } = place
             && !still_the_file(&conn, path, *file)
@@ -188,6 +192,77 @@ mod real {
         }
         conn.busy_timeout(Duration::ZERO)?;
         Ok(conn)
+    }
+
+    /// The pragmas `std.sqlite` itself runs, the only ones a connection takes.
+    const OWN_PRAGMAS: [&str; 2] = ["journal_mode", "synchronous"];
+
+    /// Keeps a connection to its own file. A query's text is the program's, so without this it
+    /// could `ATTACH` any file the process can open, write a copy of the database anywhere with
+    /// `VACUUM INTO`, or move SQLite's temporary files with a pragma, reaching past the `Fs` it
+    /// was opened through. So a connection takes only the actions ordinary queries need, no
+    /// database with a file may be attached, a pragma runs only if it's one of
+    /// `std.sqlite`'s own, and SQLite's defensive mode is on, with the schema not trusted to
+    /// call functions or views that could do the same.
+    fn kept_to_its_file(conn: &mut Connection) -> rusqlite::Result<()> {
+        // One, for the database of no file a plain `VACUUM` attaches while it works. The
+        // authorizer below refuses any that names a file.
+        conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+        conn.authorizer(Some(
+            |context: AuthContext<'_>| {
+                if allowed(&context) { Authorization::Allow } else { Authorization::Deny }
+            },
+        ))
+    }
+
+    /// Whether a connection takes an action a statement asks for. It's what ordinary queries
+    /// need, and nothing else: whatever isn't named here is refused, an action SQLite adds later
+    /// included, until it's looked at and allowed.
+    fn allowed(context: &AuthContext<'_>) -> bool {
+        let in_main = context.database_name.is_none_or(|name| name == "main");
+        let in_temp = context.database_name == Some("temp");
+        // A plain `VACUUM` builds the database again in a scratch one of no file, `vacuum_...`.
+        let in_vacuum = context.database_name.is_some_and(|name| name.starts_with("vacuum_"));
+        match context.action {
+            AuthAction::Select
+            | AuthAction::Read { .. }
+            | AuthAction::Insert { .. }
+            | AuthAction::Update { .. }
+            | AuthAction::Delete { .. }
+            | AuthAction::Transaction { .. }
+            | AuthAction::Savepoint { .. }
+            | AuthAction::Function { .. }
+            | AuthAction::Recursive => true,
+            // Its own tables, indexes, views and triggers, and changing a table as a migration
+            // does. A new index asks to be built, as `REINDEX` does. None of them can reach a
+            // file, with `ATTACH` refused and the schema not trusted.
+            AuthAction::CreateTable { .. } | AuthAction::CreateIndex { .. } => in_main || in_vacuum,
+            AuthAction::DropTable { .. }
+            | AuthAction::DropIndex { .. }
+            | AuthAction::Reindex { .. }
+            | AuthAction::CreateView { .. }
+            | AuthAction::DropView { .. }
+            | AuthAction::CreateTrigger { .. }
+            | AuthAction::DropTrigger { .. } => in_main,
+            // The connection's own temporary tables, their indexes, views and triggers.
+            AuthAction::CreateTempTable { .. }
+            | AuthAction::CreateTempIndex { .. }
+            | AuthAction::CreateTempView { .. }
+            | AuthAction::CreateTempTrigger { .. }
+            | AuthAction::DropTempTable { .. }
+            | AuthAction::DropTempIndex { .. }
+            | AuthAction::DropTempView { .. }
+            | AuthAction::DropTempTrigger { .. } => in_temp,
+            AuthAction::AlterTable { database_name, .. } => database_name == "main",
+            AuthAction::Pragma { pragma_name, .. } => OWN_PRAGMAS.contains(&pragma_name),
+            // A plain `VACUUM` attaches a database of no file, which reaches nothing; one with
+            // a file, as `ATTACH` or `VACUUM INTO` gives, could reach any, and one whose name is
+            // an expression comes as `Unknown`, refused below with everything else.
+            AuthAction::Attach { filename } => filename.is_empty(),
+            _ => false,
+        }
     }
 
     fn open(place: Place) -> Result<i64, String> {

@@ -249,6 +249,7 @@ version = "0.0.1"
 dependencies = [
  "fennec-blake3",
  "fennec-build",
+ "fennec-dist",
  "fennec-syntax",
  "fennec-temp",
 ]
@@ -302,6 +303,7 @@ dependencies = [
  "fennec-blake3",
  "fennec-check",
  "fennec-deps",
+ "fennec-dist",
  "fennec-syntax",
 ]
 

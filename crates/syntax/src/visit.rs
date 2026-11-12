@@ -343,6 +343,19 @@ pub fn not_of_equals(compare: &mut Expr) {
     compare.kind = ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(equals) };
 }
 
+/// `len(x)` or `abs(x)`: reads `x.len()` or `x.abs()`, the method the builtin calls. The method is
+/// where the builtin's name is written.
+pub fn method_of_call(call: &mut Expr) {
+    let ExprKind::Call { callee, args } = &mut call.kind else { return };
+    let ExprKind::Name(name) = &callee.kind else { return };
+    let [arg] = args.as_mut_slice() else { return };
+    let at = arg.value.span;
+    let object = std::mem::replace(&mut arg.value, Expr { kind: ExprKind::None, span: at });
+    let method = ExprKind::Attr { object: Box::new(object), name: name.clone(), optional: false };
+    **callee = Expr { kind: method, span: callee.span };
+    args.clear();
+}
+
 /// `value.step`, where the value can fail, in a chain an `else` ends: reads `(value else None).step`,
 /// so the chain stops there. Nothing's written for what's added, so its span is empty.
 pub fn none_on_failure(step: &mut Expr) {

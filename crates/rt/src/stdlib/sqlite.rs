@@ -18,9 +18,9 @@ fn failed(case: &str, reason: &str) -> Value {
     Value::Err(Rc::new(Value::made_case("SqlError", case, vec![("reason", Value::str(reason))])))
 }
 
-pub(crate) use real::{Fakes, call, open_fake, open_file};
 #[cfg(any(unix, windows))]
 pub(crate) use real::open_checked;
+pub(crate) use real::{Fakes, call, open_fake, open_file};
 
 #[cfg(test)]
 mod tests;

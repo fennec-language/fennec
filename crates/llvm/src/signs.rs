@@ -55,7 +55,8 @@ impl Floor {
     }
 }
 
-/// The indexes proven not negative: each function's, by block and place in it.
+/// The list and text indexes proven not negative, and the products of two ints proven not
+/// negative: each function's, by block and place in it.
 pub(crate) type NonNegative = HashMap<String, HashSet<(usize, usize)>>;
 
 /// What's known across the program, worked out until it stops changing.
@@ -312,6 +313,14 @@ fn walk(
                     };
                     if let Some(by) = indexed
                         && floor_of(by, &now).non_negative()
+                    {
+                        found.insert((at, index));
+                    }
+                    // A product of two ints that aren't negative overflows only past `i64::MAX`, which
+                    // an unsigned multiply finds more cheaply than a signed one.
+                    if let InstKind::Binary { op: BinOp::Mul, lhs, rhs, .. } = &inst.kind
+                        && floor_of(lhs, &now).non_negative()
+                        && floor_of(rhs, &now).non_negative()
                     {
                         found.insert((at, index));
                     }

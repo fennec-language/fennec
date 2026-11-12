@@ -4,7 +4,7 @@
 
 use fennec_check::Type;
 
-use crate::{dedent, helps, problems_as_written, returns};
+use crate::{dedent, helps, problems, problems_as_written, returns};
 
 /// A program with the fixes of its problems made, the way `fennec fix` makes them.
 fn fixed(text: &str) -> String {
@@ -198,69 +198,66 @@ fn a_type_the_program_cant_name_gets_no_fix() {
     assert!(diagnostics.iter().all(|diagnostic| diagnostic.fixes.is_empty()), "{diagnostics:?}");
 }
 
+/// `len(x)` is a builtin, as in Python: it calls the value's own `len`, a built-in value's or
+/// a type's `def len(self) -> int`, and gives an int.
 #[test]
-fn len_is_a_method_and_its_fix_moves_it_there() {
-    let program = "
-        def main(stdout: Stdout):
-            xs = [1, 2]
-            stdout.print(len(xs), len(xs + [3]), f\"{len({1: 2})}\", len(len('ab') * 'c'))
-    ";
+fn len_calls_the_values_own_len() {
     assert_eq!(
-        fixed(program),
-        dedent(
+        problems(
             "
+            struct Bag:
+                items: list[int]
+
+                def len(self) -> int:
+                    return len(self.items)
+
             def main(stdout: Stdout):
                 xs = [1, 2]
-                stdout.print(xs.len(), (xs + [3]).len(), f\"{({1: 2}).len()}\", ('ab'.len() * 'c').len())
+                bag = Bag(items=xs)
+                stdout.print(len(xs) + len(xs + [3]), f\"{len({1: 2})}\", len(str(len('ab'))), len(bag) + 1)
             "
-        )
+        ),
+        Vec::<String>::new()
     );
     assert_eq!(
-        helps("def main(stdout: Stdout):\n    stdout.print(len([1]))"),
+        problems_as_written(
+            "def main(stdout: Stdout):\n    stdout.print(len('a') + 'b', len(1), len([1], [2]))"
+        ),
         [
-            "the global functions are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`"
+            "can't use `+` on an int and a str @ len(\"a\") + \"b\"",
+            "an int has no method `len` @ len(1)",
+            "`len` takes one value: `len(x)` @ len([1], [2])",
         ]
     );
     assert_eq!(
         helps("def main(stdout: Stdout):\n    stdout.print(sorted(['a'], key=len))"),
-        ["a length is a method: write `x.len()`, or `x => x.len()` to pass it"]
+        ["`len` is called on a value: write `len(x)`, or `x => len(x)` to pass it"]
     );
 }
 
+/// `abs(x)` is a builtin the same way: it gives back a number of the type it's given.
 #[test]
-fn abs_is_a_method_and_its_fix_moves_it_there() {
-    let program = "
-        def main(stdout: Stdout):
-            x = -2
-            stdout.print(abs(x), abs(-3), abs(x * 2 if x > 0 else 1), abs(x).abs())
-    ";
+fn abs_calls_the_values_own_abs() {
     assert_eq!(
-        fixed(program),
-        dedent(
+        problems(
             "
             def main(stdout: Stdout):
                 x = -2
-                stdout.print(x.abs(), (-3).abs(), (x * 2 if x > 0 else 1).abs(), x.abs().abs())
+                stdout.print(abs(x), abs(-3), abs(x * 2 if x > 0 else 1), abs(abs(x)), abs(-1.5) + 0.5)
             "
-        )
-    );
-    // The error doesn't hide what the value is.
-    assert_eq!(
-        problems_as_written("def main(stdout: Stdout):\n    stdout.print(abs(1) + 'a')"),
-        ["`abs` is a method: write `x.abs()` @ abs(1)", "can't use `+` on an int and a str @ abs(1) + \"a\""]
+        ),
+        Vec::<String>::new()
     );
     assert_eq!(
-        problems_as_written("def main(stdout: Stdout):\n    stdout.print(abs(1.5) + 1, len('a') + 'b')"),
+        problems_as_written("def main(stdout: Stdout):\n    stdout.print(abs(1) + 'a', abs(1.5) + 1)"),
         [
-            "`abs` is a method: write `x.abs()` @ abs(1.5)",
-            "can't mix int and float in `+` @ abs(1.5) + 1",
-            "`len` is a method: write `x.len()` @ len(\"a\")",
-            "can't use `+` on an int and a str @ len(\"a\") + \"b\"",
+            "can't use `+` on an int and a str @ abs(1) + \"a\"",
+            "can't mix int and float in `+` @ abs(1.5) + 1"
         ]
     );
     assert_eq!(
         helps("def main(stdout: Stdout):\n    stdout.print(sorted([1], key=abs))"),
-        ["a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"]
+        ["`abs` is called on a value: write `abs(x)`, or `x => abs(x)` to pass it"]
     );
 }
 

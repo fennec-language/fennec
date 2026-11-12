@@ -53,12 +53,115 @@ fn entries_are_written_whole_and_reading_marks_them_used() {
     cache.write("runs", "a.txt", b"hello").unwrap();
     let path = cache.path("runs", "a.txt");
     assert_eq!(path, home.join("cache").join(FOLDER).join("runs").join("a.txt"));
-    entry(&path, 5, 3_600).unwrap();
+    File::open(&path).unwrap().set_modified(SystemTime::now() - Duration::from_secs(3_600)).unwrap();
     let before = modified(&path).unwrap();
-    assert_eq!(cache.read("runs", "a.txt"), Some(vec![0; 5]));
+    assert_eq!(cache.read("runs", "a.txt").as_deref(), Some(&b"hello"[..]));
     assert!(modified(&path).unwrap() > before, "reading should mark the entry as used");
     assert_eq!(cache.read("runs", "missing.txt"), None);
-    assert_eq!(cache.size(), 5);
+    // The entry's bytes, and the 32 of its hash.
+    assert_eq!(cache.size(), 5 + 32);
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// Many threads writing one entry at once, while another reads it, never leave half of one: each
+/// writes a temporary file of its own, and a read sees one writer's whole entry or none.
+#[test]
+fn two_writers_of_one_entry_never_leave_half_of_it() {
+    let home = home("writers").unwrap();
+    let cache = Cache::new(&home);
+    let texts: Vec<Vec<u8>> = (0..4_u8).map(|at| vec![at; 4_096 * (usize::from(at) + 1)]).collect();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for text in &texts {
+            let cache = cache.clone();
+            scope.spawn(move || {
+                for _ in 0..100 {
+                    cache.write("llvm", "shared", text).unwrap();
+                }
+            });
+        }
+        scope.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(read) = cache.read("llvm", "shared") {
+                    assert!(texts.contains(&read), "read {} bytes of none of them", read.len());
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    // And none of their temporary files is left.
+    let left: Vec<_> = std::fs::read_dir(cache.path("llvm", "shared").parent().unwrap())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .filter(|name| name != "shared")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// An entry with a byte changed since it was written is a miss, never read or run as it is: one
+/// written as bytes, checked against the hash it ends in, and a kept program, against the hash
+/// beside it.
+#[test]
+fn an_entry_with_a_changed_byte_is_a_miss() {
+    use std::io::{Seek as _, Write as _};
+    let home = home("changed").unwrap();
+    let cache = Cache::new(&home);
+    let flip = |path: &Path| {
+        let mut file = File::options().read(true).write(true).open(path).unwrap();
+        file.seek(std::io::SeekFrom::Start(3)).unwrap();
+        file.write_all(b"!").unwrap();
+    };
+    cache.write("llvm", "object", b"the bytes of an object").unwrap();
+    assert!(cache.read("llvm", "object").is_some());
+    flip(&cache.path("llvm", "object"));
+    assert_eq!(cache.read("llvm", "object"), None);
+    // Cut short, it's a miss too.
+    cache.write("llvm", "short", b"the bytes of another object").unwrap();
+    File::options().write(true).open(cache.path("llvm", "short")).unwrap().set_len(10).unwrap();
+    assert_eq!(cache.read("llvm", "short"), None);
+    // A kept program, read or put out for a run.
+    let program = home.join("program");
+    std::fs::write(&program, b"a program as it was linked").unwrap();
+    cache.keep_file("programs", "root", &program).unwrap();
+    std::fs::remove_file(&program).unwrap();
+    let out = home.join("out");
+    assert_eq!(cache.read("programs", "root").as_deref(), Some(&b"a program as it was linked"[..]));
+    let kept = cache.path("programs", "root");
+    #[cfg(unix)]
+    std::fs::set_permissions(&kept, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    flip(&kept);
+    assert!(!cache.link_out("programs", "root", &out).unwrap(), "a changed program was put out");
+    assert!(!out.exists());
+    assert_eq!(cache.read("programs", "root"), None);
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// Fennec's folder is made its user's alone, and a cache folder others can write to isn't used:
+/// anyone who can write it could put a program there that the next run starts.
+#[test]
+#[cfg(unix)]
+fn a_cache_others_can_write_isnt_used() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let home = home("private").unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cache = Cache::new(&home);
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&home), 0o700);
+    cache.write("llvm", "x", b"kept").unwrap();
+    assert!(cache.read("llvm", "x").is_some());
+    // Taking away what others may do never gives its user more: a read-only folder stays so.
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let _ = Cache::new(&home);
+    assert_eq!(mode(&home.join("cache")), 0o500);
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o777)).unwrap();
+    let open = Cache::new(&home);
+    assert_eq!(open.read("llvm", "x"), None, "a cache others can write was read");
+    open.write("llvm", "y", b"not kept").unwrap();
+    assert!(!open.path("llvm", "y").exists(), "a cache others can write was written");
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::remove_dir_all(&home).unwrap();
 }
 
@@ -162,7 +265,11 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
     let cache = Cache::new(&home);
     let old = fennec_build::KEPT_RECENT.as_secs() + 600;
     entry(&cache.path("llvm", "just stored"), 100, 5).unwrap();
-    entry(&cache.path("llvm", "used"), 100, old).unwrap();
+    cache.write("llvm", "used", &[0; 68]).unwrap();
+    File::open(cache.path("llvm", "used"))
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(old))
+        .unwrap();
     assert!(cache.read("llvm", "used").is_some());
     entry(&cache.path("llvm", "old"), 100, old).unwrap();
     let program = home.join("launched");

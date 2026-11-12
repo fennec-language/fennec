@@ -2442,6 +2442,72 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What every call gives a helper is known in it: `go`'s sums are proven from positions and a
+/// count stepped once a turn, and a build checking proofs checks what it's given on the way in.
+/// `shifted` is given both ends of int across its calls, so its sum keeps its check, and fails.
+#[test]
+fn what_every_call_gives_a_helper_is_known_in_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def go(i: int, j: int) -> float:
+    return 1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)
+
+def row(v: list[float], i: int) -> float:
+    mut total = 0.0
+    mut j = 0
+    for x in v:
+        total += go(i, j=j) * x
+        j += 1
+    return total
+
+def shifted(a: int, b: int) -> int:
+    return a + b
+
+def counted(v: list[int]) -> int:
+    mut seen = 0
+    for x in v:
+        seen += 2
+    return seen - 1
+
+def main(stdout: Stdout):
+    v = [1.0, 2.0, 3.0]
+    rows = [row(v, i) for i in range(v.len())]
+    stdout.print(f"{rows[0] + rows[1] + rows[2]:.6f}")
+    stdout.print(shifted(3, b=4), shifted(-9, b=2), counted([5, 6, 7]))
+    big = 9223372036854775800
+    stdout.print(shifted(big, b=7))
+    stdout.print(shifted(big, b=8))
+    return
+"#;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("given_ranges")?;
+        let (program, executable) = (dir.join("given.fen"), dir.join("given"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "4.477991\n7 -7 5\n9223372036854775807\n",
+            "{how:?}: {err}"
+        );
+        assert!(err.starts_with("error: this calculation overflows an int"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
+}
+
 #[test]
 fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {
@@ -3626,6 +3692,7 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
+/// Two ints known not negative multiply unsigned: past `i64::MAX` and past `u64::MAX` both fail.
 #[test]
 fn a_product_that_overflows_still_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -3640,6 +3707,7 @@ fn a_product_that_overflows_still_fails_as_pinned() -> std::io::Result<()> {
         ("product_fits", "3037000499", "3037000499"),
         ("product_too_big", "3037000500", "3037000500"),
         ("product_too_small", "-3037000500", "3037000500"),
+        ("product_far_too_big", "4294967296", "4294967296"),
     ] {
         same_as_expected_in_both_builds(name, &program(a, b))?;
     }
@@ -10976,6 +11044,82 @@ fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::R
     Ok(())
 }
 
+/// What the next test runs: a `parallel` loop's body printing, and an ordered stream's read until a
+/// `break`, each with a line printed after it.
+const PRINTING_BODIES: &str = r#"def streamed(stdout: Stdout, n: int) -> int:
+    stdout.print("streamed", n)
+    return n * n
+
+def main(stdout: Stdout):
+    numbers = [n for n in range(200)]
+    for n in parallel(numbers):
+        stdout.print("loop", n)
+    stdout.print("after loop")
+    many = [n for n in range(20000)]
+    for square in (streamed(stdout, n) for n in parallel(many)):
+        if square > 900:
+            break
+    stdout.print("after break")
+"#;
+
+/// What `parallel` bodies print follows real call order, so it's compared sorted, but each print
+/// comes out whole, none is lost, and everything printed after a loop or a stream comes after all
+/// that its bodies printed, with workers writing as they go and any number of them. A stream's
+/// chunks the reader never took may still have run, and print, before its `break` ends them.
+#[test]
+fn what_parallel_bodies_print_comes_out_whole_and_before_what_follows() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("printing-bodies")?;
+    let program = dir.join("printing.fen");
+    std::fs::write(&program, PRINTING_BODIES)?;
+    let executable = dir.join("printing");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let looped: Vec<String> = (0..200).map(|n| format!("loop {n}")).collect();
+    for threads in ["1", "4", "16"] {
+        for _ in 0..20 {
+            let ran = Command::new(&executable)
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr);
+            let out = String::from_utf8_lossy(&ran.stdout);
+            let lines: Vec<&str> = out.lines().collect();
+            let after_loop = lines.iter().position(|line| *line == "after loop").expect(&out);
+            let after_break = lines.iter().position(|line| *line == "after break").expect(&out);
+            let mut in_loop: Vec<&str> = lines[..after_loop].to_vec();
+            in_loop.sort_by_key(|line| line.split(' ').nth(1).and_then(|n| n.parse::<u32>().ok()));
+            assert_eq!(in_loop, looped, "{threads} threads: {said}\n{out}");
+            let mut seen: Vec<u32> = lines[after_loop + 1..after_break]
+                .iter()
+                .map(|line| line.strip_prefix("streamed ").and_then(|n| n.parse().ok()).expect(line))
+                .collect();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), after_break - after_loop - 1, "each printed once: {out}");
+            assert!((0..=31).all(|n| seen.contains(&n)), "{threads} threads: every item read printed\n{out}");
+            assert_eq!(after_break + 1, lines.len(), "{threads} threads: nothing after: {said}\n{out}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
 const SQLITE_TESTS: &str = r#"from std import sqlite
 from std import sql
@@ -11728,6 +11872,66 @@ def main(net: Net, stdout: Stdout):
          HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line",
     ];
     assert_eq!([too_big.as_str(), &refused_after], wanted);
+    Ok(())
+}
+
+/// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
+/// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
+#[test]
+fn a_native_server_cuts_off_a_request_sent_a_byte_at_a_time() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=1s)
+";
+    let dir = folder("http_server_trickle")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+    let mut trickle = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    trickle.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+    trickle.write_all(b"POST /slow HTTP/1.1\r\nContent-Length: 1000\r\n\r\n")?;
+    // A byte of the body each tenth of a second, each well within the timeout, for up to 20
+    // seconds: with only each read timed, each read gets its byte and this never ends.
+    let started = std::time::Instant::now();
+    let mut heard = Vec::new();
+    let mut closed = false;
+    while started.elapsed() < std::time::Duration::from_secs(20) {
+        if trickle.write_all(b"x").is_err() {
+            closed = true;
+            break;
+        }
+        let mut buffer = [0; 512];
+        match trickle.read(&mut buffer) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(read) => heard.extend_from_slice(&buffer[..read]),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => {
+                closed = true;
+                break;
+            }
+        }
+    }
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(closed, "the server still held a request sent a byte at a time after 20 seconds");
+    assert!(!String::from_utf8_lossy(&heard).contains("200 OK"), "{}", String::from_utf8_lossy(&heard));
     Ok(())
 }
 
@@ -19205,6 +19409,37 @@ def main(stdout: Stdout):
     seen.add(5)
     stdout.print(seen, copied)
 "#,
+    )
+}
+
+/// `len(x)` and `abs(x)` call the value's own method: a list's, a string's, a dict's, a
+/// comprehension's, a number's and a type's own `def len` and `def abs`.
+#[test]
+fn len_and_abs_call_the_values_own_method() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "len_and_abs",
+        r#"struct Bag:
+    items: list[int]
+
+    def len(self) -> int:
+        return len(self.items)
+
+struct Turn:
+    by: int
+
+    def abs(self) -> Turn:
+        return Turn(by=abs(self.by))
+
+def main(stdout: Stdout):
+    numbers = [1, 2, 3]
+    bag = Bag(items=numbers)
+    stdout.print(len(numbers), len("héllo"), len({1: 2}), len(bag), len([n for n in numbers if n > 1]))
+    stdout.print(abs(-3), abs(-2.5), abs(Turn(by=-4)).by, abs(len(numbers) - 10))
+"#,
+        "3 5 1 3 2\n3 2.5 4 7\n",
     )
 }
 

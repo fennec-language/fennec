@@ -94,6 +94,32 @@ pub fn prelude_files() -> impl Iterator<Item = (&'static str, &'static str)> {
     CORE.into_iter().chain(modules)
 }
 
+/// Where each file of the standard library starts in the spans: past `Span::PRELUDE`, one after
+/// another in the order `prelude_files` gives them, with a byte between, so a span names its file.
+fn prelude_bases() -> &'static [(&'static str, &'static str, u32)] {
+    static BASES: std::sync::OnceLock<Vec<(&'static str, &'static str, u32)>> = std::sync::OnceLock::new();
+    BASES.get_or_init(|| {
+        let mut base = crate::Span::PRELUDE;
+        prelude_files()
+            .map(|(name, text)| {
+                let at = base;
+                base = base.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX)).saturating_add(1);
+                (name, text, at)
+            })
+            .collect()
+    })
+}
+
+/// The standard library file a span is in: its name, like `math`, its text, and where its spans
+/// start.
+#[must_use]
+pub fn prelude_file_at(span: crate::Span) -> Option<(&'static str, &'static str, u32)> {
+    prelude_bases().iter().copied().find(|(_, text, base)| {
+        let end = base.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX));
+        (*base..=end).contains(&span.start)
+    })
+}
+
 /// The standard library written in Fennec, loaded before every program by the type checker and
 /// the compiler: the core, then each module's code.
 pub fn prelude() -> impl Iterator<Item = &'static str> {
@@ -295,8 +321,10 @@ fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
 /// Parses one file of the standard library. A mistake in one says which file and line, since it
 /// can't be shown against a program's own lines.
 fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagnostic> {
-    let mut module = crate::parser::parse_prelude(source).map_err(|problem| {
-        let at = problem.span.start.saturating_sub(crate::Span::PRELUDE) as usize;
+    let base =
+        prelude_bases().iter().find(|(file, ..)| *file == name).map_or(crate::Span::PRELUDE, |at| at.2);
+    let mut module = crate::parser::parse_prelude_at(source, base).map_err(|problem| {
+        let at = problem.span.start.saturating_sub(base) as usize;
         let line = source.get(..at).map_or(1, |before| before.matches('\n').count() + 1);
         let message = format!("the standard library's `{name}.fen`, line {line}: {}", problem.message);
         crate::Diagnostic { message, ..problem }
@@ -424,6 +452,26 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// Each file of the standard library has its own range of spans, so a span names the file it's
+    /// in and reads its own text, which `fennec fix --migrate --std` writes back by.
+    #[test]
+    fn each_library_file_has_its_own_spans() {
+        let files: Vec<(&str, &str)> = super::prelude_files().collect();
+        for (module, (name, text)) in super::prelude_modules().unwrap().iter().zip(&files) {
+            let Some(span) = module.items.iter().find_map(|item| match item {
+                crate::Item::Function(def) => Some(def.span),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let (found, found_text, base) = super::prelude_file_at(span).unwrap();
+            assert_eq!((found, found_text), (*name, *text));
+            let start = usize::try_from(span.start - base).unwrap();
+            let written = text.get(start..).unwrap_or_default();
+            assert!(written.starts_with("def") || written.starts_with('@'), "{name}: {written}");
+        }
+    }
+
     /// Each type the standard library extends has its Fennec methods in one file only: a
     /// built-in type's own, like `int.fen` for `int`, or the file that declares it.
     #[test]

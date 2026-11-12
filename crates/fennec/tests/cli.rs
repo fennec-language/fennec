@@ -406,6 +406,36 @@ fn test_fails_when_a_test_fails() {
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
 }
 
+/// What a test's launched tasks and its `parallel` loop's bodies print reaches the test's
+/// `captured()` and `sorted_lines()`, whatever thread they ran on, however many threads there are
+/// and whether the loop was split to an item a range or left whole.
+#[test]
+fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4", "16"] {
+        for stressed in [false, true] {
+            let mut command = crate::executables::fennec_command();
+            command
+                .args(["test", "crates/fennec/tests/fixtures/tasks_print_into_tests.fen"])
+                .current_dir(repo())
+                .env("FENNEC_NO_CACHE", "1")
+                .env("FENNEC_THREADS", threads);
+            if stressed {
+                command.env("FENNEC_PARALLEL_STRESS", "1");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                text(&output.stdout),
+                "2 passed, 0 failed\n",
+                "{threads} threads, stressed {stressed}: {}",
+                text(&output.stderr)
+            );
+        }
+    }
+}
+
 /// `assert value fails Pattern` holds when the value fails with what the pattern matches, and a
 /// failed one says what really happened: what it failed with instead, or what it gave.
 #[test]
@@ -2281,6 +2311,80 @@ fn fix_moves_idmap_to_table() {
     assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
 }
 
+/// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
+/// and a def's last value as what it returns): plain `fennec fix` leaves them, `fennec fix
+/// --migrate` writes `except` and `return` for them, a second run finds nothing more, and the
+/// program prints what it did before.
+#[test]
+fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let old = std::fs::read_to_string(fixtures.join("old_failure_forms.fen")).unwrap();
+    let migrated = std::fs::read_to_string(fixtures.join("migrated_failure_forms.fen")).unwrap();
+    let dir = scratch("failure-forms").unwrap();
+    let program = dir.join("forms.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, &old).unwrap();
+    let before = fennec(&["run", &path], "").unwrap();
+    let plain = fennec(&["fix", &path], "").unwrap();
+    let untouched = std::fs::read_to_string(&program).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let rewritten = std::fs::read_to_string(&program).unwrap();
+    let after = fennec(&["run", &path], "").unwrap();
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert_eq!(untouched, old);
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, migrated);
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    assert_eq!(rewritten, migrated);
+    assert!(after.status.success(), "{}", text(&after.stderr));
+    assert_eq!(text(&after.stdout), text(&before.stdout));
+    assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
+}
+
+/// A program that doesn't check, like an example of a mistake, gets the rewrites that need no
+/// types: `return`, `except why:` for `else as why:`, and `len(x)`. The mistake stays.
+#[test]
+fn fix_migrate_rewrites_what_needs_no_types_in_a_program_that_doesnt_check() {
+    let dir = scratch("migrate-unchecked").unwrap();
+    let program = dir.join("mistake.fen");
+    let path = program.to_string_lossy().into_owned();
+    let old = "def size(items: list[int]) -> int:\n    items.len()\n\n\
+        def main(stdout: Stdout):\n    got = int(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
+        stdout.print(size([got]), nowhere)\n";
+    std::fs::write(&program, old).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("    items.len()", "    return len(items)").replace("else as why:", "except why:")
+    );
+}
+
+/// `--rust-strings` moves the programs in a Rust file's string literals, raw or plain, writing
+/// back only their changed lines in each literal's own quoting and indent.
+#[test]
+fn fix_migrate_rewrites_the_programs_in_rust_strings() {
+    let dir = scratch("migrate-rust-strings").unwrap();
+    let file = dir.join("tests.rs");
+    let path = file.to_string_lossy().into_owned();
+    let old = "fn raw() -> &'static str {\n    r#\"\n        def two() -> int:\n            1 + 1\n\n        \
+        def main(stdout: Stdout):\n            stdout.print(\"two\", two())\n    \"#\n}\n\n\
+        fn plain() -> &'static str {\n    \"def three() -> int:\\n    3\\n\\ndef main(stdout: Stdout):\\n    \
+        stdout.print(three())\\n\"\n}\n";
+    std::fs::write(&file, old).unwrap();
+    let fixed = fennec(&["fix", "--migrate", "--rust-strings", &path], "").unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        old.replace("            1 + 1\n", "            return 1 + 1\n")
+            .replace("\\n    3\\n", "\\n    return 3\\n")
+    );
+}
+
 /// A `shared Name:` declaration and a `with` on its values, written before `shared T` and `lock`:
 /// `fennec fix` makes the type a `struct`, writes `shared` where a value is shared, and `lock`
 /// for the `with`, and then it runs.
@@ -2366,6 +2470,60 @@ fn committed_to_git(repository: &Path) -> std::io::Result<String> {
     git(&["add", "--all"])?;
     git(&["commit", "--quiet", "-m", "a kit"])?;
     git(&["rev-parse", "HEAD"])
+}
+
+/// A kit fetched from git can't name another by `file://`: it could carry a bare repository and
+/// name it, or point at any repository of the user's, and have it fetched into the build. The
+/// real `fennec` refuses it, naming the kit and the address, however the tests' own library calls
+/// may allow it. The user's own kit naming one by `file://` is fine.
+#[test]
+fn a_kit_from_git_naming_a_file_repository_is_refused() {
+    let dir = scratch("git-file").unwrap();
+    let carried = dir.join("carried");
+    std::fs::create_dir_all(carried.join("src")).unwrap();
+    std::fs::write(carried.join("kit.toml"), "name = \"carried\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(carried.join("src/lib.fen"), "export def one() -> int:\n    return 1\n").unwrap();
+    let carried_commit = committed_to_git(&carried).unwrap();
+    let address = |folder: &Path| {
+        format!("file:///{}", folder.display().to_string().replace('\\', "/").trim_start_matches('/'))
+    };
+    let engine = dir.join("engine");
+    std::fs::create_dir_all(engine.join("src")).unwrap();
+    std::fs::write(
+        engine.join("kit.toml"),
+        format!(
+            "name = \"engine\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\ncarried = {{ git = \"{}\", commit = \"{carried_commit}\" }}\n",
+            address(&carried)
+        ),
+    )
+    .unwrap();
+    std::fs::write(engine.join("src/lib.fen"), "export def two() -> int:\n    return 2\n").unwrap();
+    let engine_commit = committed_to_git(&engine).unwrap();
+    let kit = dir.join("game");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nengine = {{ git = \"{}\", commit = \"{engine_commit}\" }}\n",
+            address(&engine)
+        ),
+    )
+    .unwrap();
+    std::fs::write(kit.join("src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n    return\n")
+        .unwrap();
+    let update = crate::executables::fennec_command()
+        .arg("update")
+        .current_dir(&kit)
+        .env("FENNEC_HOME", dir.join("home"))
+        .env_remove("FENNEC_OFFLINE")
+        .output()
+        .unwrap();
+    assert!(!update.status.success(), "{}", text(&update.stdout));
+    let said = text(&update.stderr);
+    assert!(said.contains("`engine` is from git, and names `carried` at `file:///"), "{said}");
+    assert!(said.contains("a repository on this machine"), "{said}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.

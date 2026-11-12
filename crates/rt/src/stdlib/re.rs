@@ -13,19 +13,47 @@ enum Part {
     Group(usize),
 }
 
-/// Patterns compiled so far, each kept for the next time it's used.
+/// How many compiled patterns are kept, so a program compiling patterns it's given, as a server
+/// might from requests, doesn't hold every one it ever saw.
+const MOST_KEPT: usize = 256;
+
+/// The longest pattern kept compiled. A longer one is compiled each time it's used.
+const LONGEST_KEPT: usize = 4096;
+
+/// Patterns compiled so far, each kept for the next time it's used, up to `MOST_KEPT` of them:
+/// past that, the one used longest ago goes.
 #[derive(Default)]
-pub(crate) struct Regexes(HashMap<String, Rc<Regex>>);
+pub(crate) struct Regexes {
+    kept: HashMap<String, (Rc<Regex>, u64)>,
+    /// Counts each use, so the one used longest ago has the lowest number.
+    uses: u64,
+}
 
 impl Regexes {
-    /// A pattern, compiled once and kept.
+    /// A pattern, compiled once and kept while it's among the most recently used.
     pub(crate) fn compiled(&mut self, pattern: &str) -> Result<Rc<Regex>, fennec_re::Error> {
-        if let Some(regex) = self.0.get(pattern) {
+        self.uses += 1;
+        if let Some((regex, used)) = self.kept.get_mut(pattern) {
+            *used = self.uses;
             return Ok(Rc::clone(regex));
         }
         let regex = Rc::new(Regex::new(pattern)?);
-        self.0.insert(pattern.to_owned(), Rc::clone(&regex));
+        if pattern.len() <= LONGEST_KEPT {
+            if self.kept.len() >= MOST_KEPT
+                && let Some(oldest) =
+                    self.kept.iter().min_by_key(|(_, (_, used))| *used).map(|(key, _)| key.clone())
+            {
+                self.kept.remove(&oldest);
+            }
+            self.kept.insert(pattern.to_owned(), (Rc::clone(&regex), self.uses));
+        }
         Ok(regex)
+    }
+
+    /// How many patterns are kept compiled.
+    #[cfg(test)]
+    fn kept(&self) -> usize {
+        self.kept.len()
     }
 }
 
@@ -117,4 +145,28 @@ fn replace(text: &str, regex: &Regex, parts: &[Part]) -> String {
     }
     out.push_str(text.get(from..).unwrap_or(""));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Regexes;
+
+    /// A program compiling a new pattern each time keeps at most 256 of them, the ones it used
+    /// last, and a pattern too long to keep still compiles and matches.
+    #[test]
+    fn only_the_patterns_used_last_are_kept() {
+        let mut regexes = Regexes::default();
+        let first = regexes.compiled("a+").ok();
+        for n in 0..1000 {
+            assert!(regexes.compiled(&format!("x{n}")).is_ok());
+            // Used all along, it's never the one that goes.
+            assert!(regexes.compiled("a+").is_ok());
+        }
+        assert_eq!(regexes.kept(), 256);
+        let again = regexes.compiled("a+").ok();
+        assert!(first.zip(again).is_some_and(|(first, again)| std::rc::Rc::ptr_eq(&first, &again)));
+        let long = "b".repeat(10_000);
+        assert!(regexes.compiled(&long).is_ok());
+        assert_eq!(regexes.kept(), 256);
+    }
 }

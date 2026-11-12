@@ -20,6 +20,9 @@
 //! its own namespace, so a signature for one never counts for the other.
 
 mod sshsig;
+mod trust;
+
+pub use trust::{kit_root, trusted, write_kit_file};
 
 use std::fmt::Write as _;
 

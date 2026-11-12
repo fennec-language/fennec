@@ -7,11 +7,11 @@ from std.net import NetError, Request, Response
 def echo(request: Request) -> Response:
     x = request.headers.get("x") else "-"
     said = f"{request.method} {request.path} {request.query} {x} {request.text()}"
-    Response(status=200, body=said.encode())
+    return Response(status=200, body=said.encode())
 
 ## Answers with a header whose value would start a header of its own.
 def smuggling(request: Request) -> Response:
-    Response(status=200, headers={"x-note": "a\r\nset-cookie: stolen"})
+    return Response(status=200, headers={"x-note": "a\r\nset-cookie: stolen"})
 
 ## What the server answers `raw` with, by `respond`: its lines joined by ` | `.
 def answered(net: Net, raw: str, respond: (Request) -> Response) -> str fails NetError:
@@ -21,14 +21,14 @@ def answered(net: Net, raw: str, respond: (Request) -> Response) -> str fails Ne
             server.serve(respond, timeout=1s)
             got = client.lines()?
             return " | ".join(list(got))
-    ""
+    return ""
 
 ## The status and the reason the server gave for refusing `raw`.
 def refused(net: Net, raw: str) -> str fails NetError:
     said = answered(net, raw, respond=echo)?
     parts = said.split(" | ")
     status = parts[0].removeprefix("HTTP/1.1 ")
-    f"{status}: {parts[-1]}"
+    return f"{status}: {parts[-1]}"
 
 test "a request's parts reach respond, its path and query decoded"(net: Net):
     raw = "GET /a%20b?x=1&y=two HTTP/1.1\r\nX: hi\r\nConnection: close\r\n\r\n"

@@ -6,7 +6,7 @@ def sizes[T](value: T) -> list[int]:
     mut found = []
     for field in fields(T):
         found.append(field.size)
-    found
+    return found
 
 def main(stdout: Stdout):
     stdout.print(sizes(Point(1, 2)))

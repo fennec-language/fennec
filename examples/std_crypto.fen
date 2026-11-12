@@ -9,22 +9,22 @@ struct Save:
     tag: str
 
 def sign(key: str, level: int) -> Save:
-    Save(level=level, tag=keyed_blake3(key, f"level {level}"))
+    return Save(level=level, tag=keyed_blake3(key, f"level {level}"))
 
 ## Text in pieces of `size` characters, one at a time, as a file's chunks come.
 def pieces(text: str, size: int) -> Iterator[str]:
     mut at = 0
-    while at < text.len():
+    while at < len(text):
         yield text[at:at + size]
         at = at + size
 
 def untouched(key: str, save: Save) -> bool:
     # Comparing the tags in constant time doesn't tell a forger how close a guess was.
-    equal(keyed_blake3(key, f"level {save.level}"), save.tag)
+    return equal(keyed_blake3(key, f"level {save.level}"), save.tag)
 
 test "the same text always has the same hash" for text: str:
     assert blake3(text) == blake3(text.encode())
-    assert blake3(text).len() == 64 and sha256(text).len() == 64
+    assert len(blake3(text)) == 64 and len(sha256(text)) == 64
     assert sha256(text) == sha256(text.encode())
 
 test "SHA-256 matches the standard":

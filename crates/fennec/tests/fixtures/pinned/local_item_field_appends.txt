@@ -1,4 +1,4 @@
-source a5159a0aaf2daddb3154a7161c6c5b212c04d5fb423285dce2d2990840a60961
+source c0cf442903fea3273515013a081d6172bd72ab3017330b5aa0c4e78adc34e2da
 code 1
 stdout 789
 [Unit(tags=[1, 2, 3, 10], hp=0), Unit(tags=[4], hp=1)] [Unit(tags=[1, 2, 3], hp=0), Unit(tags=[4], hp=1)] [Unit(tags=[1, 2, 3], hp=0), Unit(tags=[4], hp=1)] Unit(tags=[1, 2, 3], hp=0) [1, 2, 3]

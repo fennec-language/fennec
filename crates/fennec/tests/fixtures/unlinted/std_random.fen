@@ -8,7 +8,7 @@ struct Enemy:
 
 ## Rolls `count` dice with `sides` sides each.
 def roll(ref rng: Random, count: int, sides: int) -> int:
-    sum(rng.randint(1, high=sides) for _ in range(count))
+    return sum(rng.randint(1, high=sides) for _ in range(count))
 
 test "the same seed gives the same numbers" for seed: int:
     mut a = Random(seed=seed)

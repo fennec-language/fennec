@@ -1,5 +1,5 @@
 def total(scores: list[int]) -> int:
-    sum(scores)
+    return sum(scores)
 
 def main(stdout: Stdout):
     mut scores = [1, 2]

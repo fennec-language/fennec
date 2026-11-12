@@ -10,6 +10,10 @@
 //! each is made once, the first time its literal, constant, capability or case is asked for, so
 //! how many there are says when the program first went that way, not what it holds on to.
 //!
+//! A last line, `stopping 1`, says a server has taken a stop the program was asked for and is
+//! draining, where it's `stopping 0` before: a test asking a server to stop waits for it rather than
+//! for a time it hopes is long enough.
+//!
 //! Nothing's counted unless the variable's set, and then only every 100 ms on each thread.
 
 use std::collections::{BTreeMap, HashMap};
@@ -88,6 +92,31 @@ fn report() -> Option<&'static PathBuf> {
     REPORT.get_or_init(|| std::env::var_os("FENNEC_LIVE_REPORT").map(PathBuf::from)).as_ref()
 }
 
+/// Whether a server has taken a stop the program was asked for, and is draining.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A server has taken a stop the program was asked for, and is draining: the report says so from
+/// now on, starting to be written if nothing's published yet, as on a runtime with no workers.
+pub(crate) fn stop_taken() {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(path) = report() {
+        // Written now as well, so it's said before a server with nothing left to serve ends.
+        write_now(path);
+        start_writing(path);
+    }
+}
+
+/// Starts the thread that writes the report, the first time it's asked.
+fn start_writing(path: &std::path::Path) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let path = path.to_path_buf();
+        let _ = std::thread::Builder::new()
+            .name("fennec-live-report".to_owned())
+            .spawn(move || write_every(&path));
+    });
+}
+
 /// Each thread's latest counts, by the thread's number.
 static PUBLISHED: Mutex<Option<HashMap<u16, Counts>>> = Mutex::new(None);
 
@@ -109,35 +138,44 @@ pub(crate) fn publish(now: bool, count: impl FnOnce() -> Counts) {
     let counts = count();
     let thread = super::threads::index();
     let mut published = PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner);
-    let first = published.is_none();
     published.get_or_insert_with(HashMap::new).insert(thread, counts);
     drop(published);
-    if first {
-        let path = path.clone();
-        let _ = std::thread::Builder::new()
-            .name("fennec-live-report".to_owned())
-            .spawn(move || write_every(&path));
-    }
+    start_writing(path);
 }
 
 /// Writes the sum of what every thread published to `path`, a few times a second, for as long as
 /// the program runs.
-fn write_every(path: &PathBuf) {
-    let writing = path.with_extension("writing");
+fn write_every(path: &std::path::Path) {
     loop {
-        let mut total = Counts::default();
-        if let Some(published) = PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-            for counts in published.values() {
-                total.add(counts);
-            }
-        }
-        let written =
-            std::fs::File::create(&writing).and_then(|mut file| file.write_all(total.lines().as_bytes()));
-        if written.is_ok() {
-            let _ = std::fs::rename(&writing, path);
-        }
+        write_now(path);
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Writes the sum of what every thread published to `path`, replacing what was there in one go.
+fn write_now(path: &std::path::Path) {
+    // One write at a time, as the report's thread and a stop taken can both write.
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _one = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+    let lines = report_text();
+    let writing = path.with_extension("writing");
+    let written = std::fs::File::create(&writing).and_then(|mut file| file.write_all(lines.as_bytes()));
+    if written.is_ok() {
+        let _ = std::fs::rename(&writing, path);
+    }
+}
+
+/// What the report says: the sum of what every thread published, and whether a server has taken
+/// a stop.
+fn report_text() -> String {
+    let mut total = Counts::default();
+    if let Some(published) = PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        for counts in published.values() {
+            total.add(counts);
+        }
+    }
+    let stopping = u8::from(STOPPING.load(std::sync::atomic::Ordering::SeqCst));
+    format!("{}stopping {stopping}\n", total.lines())
 }
 
 /// This thread's runtime's own counts, without a worker's tasks.
@@ -163,6 +201,16 @@ pub(crate) fn of_this_thread() -> Counts {
 #[cfg(test)]
 mod tests {
     use super::Counts;
+
+    /// The report's last line says whether a server has taken a stop, which a test asking one to
+    /// stop waits for: once one has, it stays said.
+    #[test]
+    fn the_report_ends_saying_whether_a_server_has_taken_a_stop() {
+        let said = super::report_text();
+        assert!(said.ends_with("stopping 0\n") || said.ends_with("stopping 1\n"), "{said}");
+        super::stop_taken();
+        assert!(super::report_text().ends_with("stopping 1\n"));
+    }
 
     #[test]
     fn counts_add_up_by_size_and_read_as_lines() {

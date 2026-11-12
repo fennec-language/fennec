@@ -15,9 +15,9 @@ def main(stdout: Stdout):
 
     mut groups: dict[int, list[str]] = {}
     for word in ["a", "bb", "c", "dd"]:
-        mut words = groups.setdefault(word.len(), [])
+        mut words = groups.setdefault(len(word), [])
         words.append(word)
-        groups[word.len()] = words
+        groups[len(word)] = words
     stdout.print(groups)
 
     evens = {2, 4, 6}
@@ -38,6 +38,6 @@ def main(stdout: Stdout):
     # They work for any items a set can hold, and don't change what they're called on.
     here = {Tile(x=0, y=0), Tile(x=1, y=0)}
     there = {Tile(x=1, y=0)}
-    stdout.print(here.difference(there), here.intersection(there), here.union(there).len())
+    stdout.print(here.difference(there), here.intersection(there), len(here.union(there)))
     names = {"ash", "kit"}
     stdout.print(names.union({"vex"}), names)

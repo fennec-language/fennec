@@ -5,7 +5,7 @@ from std.random import Random
 
 ## A sorted map's keys and values as a plain list, the same as a sorted dict's.
 def sorted_items(table: dict[int, int]) -> list[(int, int)]:
-    [(key, table[key]) for key in sorted(table.keys())]
+    return [(key, table[key]) for key in sorted(table.keys())]
 
 test "it agrees with a dict, whatever is added and removed" for steps: list[(int, int)]:
     mut map = SortedMap[int, int]()
@@ -19,7 +19,7 @@ test "it agrees with a dict, whatever is added and removed" for steps: list[(int
             map[at] = value
             table[at] = value
     assert map.items() == sorted_items(table)
-    assert map.len() == table.len()
+    assert len(map) == len(table)
 
 test "thousands of random changes agree with a dict":
     mut random = Random(seed=7)
@@ -36,7 +36,7 @@ test "thousands of random changes agree with a dict":
         if step % 300 == 0:
             assert map.items() == sorted_items(table)
     assert map.items() == sorted_items(table)
-    assert map.len() == table.len()
+    assert len(map) == len(table)
 
 test "many keys split and merge nodes, and stay in order":
     # Over 31 * 32 keys, so the tree is three levels deep.
@@ -44,16 +44,16 @@ test "many keys split and merge nodes, and stay in order":
     for n in range(1100):
         key = (n * 7919) % 1100
         map[key] = f"{key}"
-    assert map.len() == 1100
+    assert len(map) == 1100
     assert map.keys() == range(1100)
     assert map[1034] == "1034"
     for n in range(0, 1100, 2):
         assert map.remove(n) == f"{n}"
-    assert map.len() == 550
+    assert len(map) == 550
     assert map.keys() == range(1, 1100, 2)
     for n in range(1, 1100, 2):
         assert map.remove(n) == f"{n}"
-    assert map.len() == 0
+    assert len(map) == 0
     assert map.items() == []
     map[5] = "five"
     assert map.items() == [(5, "five")]
@@ -64,7 +64,7 @@ test "setting a key again replaces its value":
     map.set("a", 2)
     map["b"] = 3
     assert map.items() == [("a", 2), ("b", 3)]
-    assert map.len() == 2
+    assert len(map) == 2
 
 test "finding a key, or the nearest ones":
     mut map = SortedMap[int, str]()
@@ -90,14 +90,14 @@ test "a range of keys":
     assert map.between(20, 10) == []
     assert map.between(-5, 3) == [(0, 0)]
     assert map.between(290, 1000) == [(291, 582), (294, 588), (297, 594)]
-    assert map.between(0, 300).len() == 100
+    assert len(map.between(0, 300)) == 100
 
 test "values can be None":
     mut map = SortedMap[int, str?]()
     map[1] = None
     assert 1 in map and map.get(1) is None
     assert map.remove(1) is None
-    assert map.len() == 0 and 1 not in map
+    assert len(map) == 0 and 1 not in map
     assert map.remove(1) is None
 
 test "a copy is independent":
@@ -108,17 +108,17 @@ test "a copy is independent":
     for key in range(50):
         _ = map.remove(key)
     map[1000] = 1
-    assert saved.len() == 100 and saved.keys() == range(100)
-    assert map.len() == 51 and map.first() == (50, 50)
+    assert len(saved) == 100 and saved.keys() == range(100)
+    assert len(map) == 51 and map.first() == (50, 50)
     map.clear()
-    assert map.len() == 0 and saved.len() == 100
+    assert len(map) == 0 and len(saved) == 100
 
 struct Score:
     points: int
     name: str
 
     def <(self, other: Score) -> bool:
-        (self.points, self.name) < (other.points, other.name)
+        return (self.points, self.name) < (other.points, other.name)
 
 def main(stdout: Stdout):
     mut board = SortedMap[Score, str]()

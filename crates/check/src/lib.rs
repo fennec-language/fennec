@@ -89,7 +89,16 @@ pub use types::{Num, Type};
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.
 pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
-    check_typed(module).map(Checked::into_signatures)
+    let checked = check_typed(module)?;
+    refuse_old_forms(module, &checked)?;
+    Ok(checked.into_signatures())
+}
+
+/// The forms of before 2026-11-11 a program still has, refused, from what checking it as it was
+/// written found. `check_typed` takes them, so `fennec fix` can type them to rewrite them.
+fn refuse_old_forms(module: &Module, checked: &Checked) -> Result<(), Vec<Diagnostic>> {
+    let refused = except_fix::old_forms(module, checked);
+    if refused.is_empty() { Ok(()) } else { Err(refused) }
 }
 
 /// Like `check`, for a module `check_to_build` has resolved and trimmed to what `main` reaches,
@@ -266,6 +275,7 @@ pub fn builtin_method_params(ty: &Type, name: &str) -> Option<Vec<Type>> {
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
     let names = own_types_apart(module);
     let checked = check_typed(module).map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     resolved(module, checked)
 }
 
@@ -454,6 +464,7 @@ pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Dia
     let checked = checker::Checker::new(module)
         .run(checker::Scope::ReachedWithFields)
         .map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     // Resolving writes in what the check found, as a default left out of a call, which checking
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
@@ -474,6 +485,7 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     let names = own_types_apart(module);
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     resolved(module, checked)
 }
 

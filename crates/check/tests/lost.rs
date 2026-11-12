@@ -13,10 +13,10 @@ const UNIT: &str = "struct Unit:
 
     def healed(ref self) -> int:
         self.health += 1
-        self.health
+        return self.health
 
 def find(units: list[Unit], at: int) -> Unit:
-    units[at]
+    return units[at]
 
 ";
 
@@ -128,14 +128,14 @@ fn anything_later_reading_it_keeps_the_change() {
 #[test]
 fn a_branch_keeps_a_change_if_any_way_on_reads_it() {
     let reads_in_one =
-        "mut total = 0\nif units.len() > 0:\n    total = 1\nif units.len() > 1:\n    stdout.print(total)\n";
+        "mut total = 0\nif len(units) > 0:\n    total = 1\nif len(units) > 1:\n    stdout.print(total)\n";
     assert_eq!(after_units(reads_in_one), NONE);
-    let lost_in_one = "mut total = 0\nif units.len() > 0:\n    stdout.print(total)\nelse:\n    total = 1\n";
+    let lost_in_one = "mut total = 0\nif len(units) > 0:\n    stdout.print(total)\nelse:\n    total = 1\n";
     assert_eq!(
         after_units(lost_in_one),
         ["this change to `total` is lost: nothing reads `total` after this @ total = 1"]
     );
-    let matched = "mut total = 0\nmatch units.len():\n    case 0:\n        total = 1\n    case _:\n        pass\nstdout.print(total)\n";
+    let matched = "mut total = 0\nmatch len(units):\n    case 0:\n        total = 1\n    case _:\n        pass\nstdout.print(total)\n";
     assert_eq!(after_units(matched), NONE);
 }
 

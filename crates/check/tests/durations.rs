@@ -5,7 +5,7 @@ use crate::{helps, in_main, problems};
 
 #[test]
 fn a_duration_literal_is_a_duration() {
-    let program = "from std.time import Duration\n\ndef wait(pause = 250ms) -> Duration:\n    pause * 2\n\n\
+    let program = "from std.time import Duration\n\ndef wait(pause = 250ms) -> Duration:\n    return pause * 2\n\n\
                    def main(stdout: Stdout):\n    stdout.print((wait() + 1.5s - 2min + 1h30min).nanos, 30ns < 2us)\n";
     assert_eq!(problems(program), Vec::<String>::new());
     assert_eq!(in_main("x = 3s + 1"), ["`other` should be a Duration, but this is an int @ 1"]);

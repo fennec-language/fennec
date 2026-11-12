@@ -64,7 +64,7 @@ def players(out: Sender[Command], seed: int) fails Closed:
         if kind == 0:
             out.send(.Move(who=who, vx=a - 8, vy=b - 8))?
         elif kind == 1:
-            out.send(.Give(who=who, item=a % ITEMS.len(), count=b + 1))?
+            out.send(.Give(who=who, item=a % len(ITEMS), count=b + 1))?
         else:
             out.send(.Heal(who=who, amount=a))?
     return
@@ -174,8 +174,8 @@ def tick(
         ) for entity in entities if entity.changed
     ]
     data = pack.dumps(snaps)
-    mut hash = data.len() - head
-    for at in range(head, data.len()):
+    mut hash = len(data) - head
+    for at in range(head, len(data)):
         hash = (hash * 31 + data[at]) % 1_000_000_007
     return hash
 
@@ -206,7 +206,7 @@ def main(stdout: Stdout) fails Closed | Crashed:
         )
     mut cells = [list[int]() for _ in range(SIDE * SIDE)]
     # The header `pack` writes before the snapshot itself, the same every tick.
-    head = pack.dumps(list[Snap]()).len() - 1
+    head = len(pack.dumps(list[Snap]())) - 1
     mut checksum = 0
     with channel[Command](size=64) as commands:
         sender = commands.sender()

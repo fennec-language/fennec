@@ -10,7 +10,7 @@ from std.net import NetError, Request, Response
 
 def respond(request: Request) -> Response:
     echoed = request.query.get("echo") else ""
-    Response(status=200, headers={"x-echo": echoed}, body="hello".encode())
+    return Response(status=200, headers={"x-echo": echoed}, body="hello".encode())
 
 ## Every line a server answers `raw` with.
 def answer(net: Net, raw: str) -> list[str] fails NetError:
@@ -19,10 +19,10 @@ def answer(net: Net, raw: str) -> list[str] fails NetError:
             client.write(raw)?
             server.serve(respond)
             return list(client.lines()?)
-    []
+    return []
 
 def status_of(net: Net, raw: str) -> str fails NetError:
-    answer(net, raw)?[0]
+    return answer(net, raw)?[0]
 
 BAD = "HTTP/1.1 400 Bad Request"
 GOOD = "HTTP/1.1 200 OK"

@@ -16,10 +16,10 @@ struct Holder:
     def bump(ref self) -> int:
         self.count += 1
         self.total += self.count
-        self.total
+        return self.total
 
     def label(self) -> str:
-        self.maybe.label else "none"
+        return self.maybe.label else "none"
 
     def set_inner(ref self, label: str):
         self.maybe = Inner(label=label, note=None)
@@ -32,20 +32,20 @@ enum Shape:
 def name_of(shape: Shape) -> str:
     match shape:
         case .Dot:
-            "dot"
+            return "dot"
         case .Named(name, parts):
             shown = name else "anon"
-            f"{shown}:{parts.len()}"
+            return f"{shown}:{len(parts)}"
         case .Pair(at):
             x, y = at
-            f"{x},{y}"
+            return f"{x},{y}"
 
 def maybe(holder: Holder, given: bool) -> Holder?:
     if given: return holder
-    None
+    return None
 
 def fresh() -> Holder:
-    Holder(count=1, maybe=None, pair=(1, "one"), grid=[[1, 2], [3]], words=["a", None])
+    return Holder(count=1, maybe=None, pair=(1, "one"), grid=[[1, 2], [3]], words=["a", None])
 
 def main(stdout: Stdout):
     mut holder = fresh()
@@ -65,7 +65,7 @@ def main(stdout: Stdout):
     x, y = holder.pair
     stdout.print(x, y, holder.grid[1], holder.grid[0][1], holder.words[2])
     for row in holder.grid:
-        stdout.print(row.len())
+        stdout.print(len(row))
     holder.maybe = None
     stdout.print(holder.label(), holder)
 

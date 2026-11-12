@@ -6,13 +6,13 @@ struct Shelf:
     name: str
 
 def first(shelf: Shelf) -> int:
-    shelf.items[0]
+    return shelf.items[0]
 
 def main(stdout: Stdout):
     mut shelf = Shelf(items=[3, 1, 2], counts={"a": 1}, name="oak")
-    stdout.print(shelf.items[1], shelf.items.len(), shelf.items[-1])
-    stdout.print(shelf.counts["a"], shelf.counts.len(), (shelf.counts.get("b") else 7))
-    stdout.print(shelf.name.len(), shelf.name[0], shelf.name.upper())
+    stdout.print(shelf.items[1], len(shelf.items), shelf.items[-1])
+    stdout.print(shelf.counts["a"], len(shelf.counts), (shelf.counts.get("b") else 7))
+    stdout.print(len(shelf.name), shelf.name[0], shelf.name.upper())
 
     shelf.items.append(9)
     shelf.items[0] = 4
@@ -24,18 +24,18 @@ def main(stdout: Stdout):
     stdout.print(kept, shelf.items)
 
     grid = [[1, 2], [3, 4]]
-    stdout.print(grid[1][0], grid[0].len())
+    stdout.print(grid[1][0], len(grid[0]))
     for row in grid:
-        stdout.print(row[1], row.len())
+        stdout.print(row[1], len(row))
 
     dicts = [{"x": 1}, {"y": 2}]
     stdout.print(
         (dicts[1].get("y") else 0),
         (dicts[0].get("y") else 8),
         dicts[0]["x"],
-        dicts[1].len(),
+        len(dicts[1]),
     )
     for key in dicts[0]:
         stdout.print(key)
     words = ["ab", "cde"]
-    stdout.print(words[1].len(), words[1][2])
+    stdout.print(len(words[1]), words[1][2])

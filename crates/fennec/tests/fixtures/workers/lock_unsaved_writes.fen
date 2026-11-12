@@ -28,8 +28,7 @@ def failed(tally: shared Tally, step: int) fails Boom:
         held.count += 1000
         held.counts[step % 3] = 1000
         held.other = step
-        if step % 2 == 0:
-            fail Boom(step=step)
+        if step % 2 == 0: fail Boom(step=step)
 
 ## Two locks taken together, written in either order. Only their end together ends either one's
 ## walk, so the last write goes unsaved and a failure puts back the rest.
@@ -41,16 +40,14 @@ def together(first: shared Tally, second: shared Tally, step: int, failing: bool
         else:
             one.count += 1
             two.other = step
-        if failing:
-            fail Boom(step=step)
+        if failing: fail Boom(step=step)
 
 ## A write in a loop whose later turn fails, which puts back every turn's.
 def looped(tally: shared Tally, times: int) fails Boom:
     lock tally as ref held:
         for step in range(times):
             held.other = step + 50
-            if step == 2:
-                fail Boom(step=step)
+            if step == 2: fail Boom(step=step)
 
 ## Writes, then a crash that puts them back.
 def crashing(tally: shared Tally, at: int):
@@ -79,18 +76,18 @@ def main(stdout: Stdout):
     mut failed_count = 0
     for step in range(1, 7):
         kept(tally, step=step)
-        _ = failed(tally, step=step) else:
+        _ = failed(tally, step=step) except Boom():
             failed_count += 1
     for at in [1, 0]:
-        _ = launched(tally, at=at) else:
+        _ = launched(tally, at=at) except Crashed():
             stdout.print("crashed", at)
-    _ = overflowed(tally, by=9_223_372_036_854_775_807) else:
+    _ = overflowed(tally, by=9_223_372_036_854_775_807) except Crashed():
         stdout.print("overflowed")
-    _ = looped(tally, times=5) else:
+    _ = looped(tally, times=5) except Boom():
         failed_count += 1
     shared spare = Tally()
     for step in range(4):
-        _ = together(tally, second=spare, step=step, failing=step >= 2) else:
+        _ = together(tally, second=spare, step=step, failing=step >= 2) except Boom():
             failed_count += 1
     lock spare as held:
         stdout.print(held.count, held.other)

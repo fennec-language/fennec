@@ -668,6 +668,8 @@ mod tests {
         for other in &maps {
             assert_eq!(planned(other), want);
         }
-        assert_eq!(want.2, ["module0", "module1", "module2", "module3", "module4", "module5", "module6"]);
+        // The changed module, and the modules of the tests it affects: `module2`'s, and tests 3, 13,
+        // 23 and 33, in modules 3, 6, 2 and 5. In one order, sorted.
+        assert_eq!(want.2, ["module2", "module3", "module5", "module6"]);
     }
 }

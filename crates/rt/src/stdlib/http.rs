@@ -624,8 +624,10 @@ pub(crate) mod tls {
         }
     }
 
-    /// How connections are made, worked out once: loading what's trusted takes a while.
-    fn config() -> Result<Arc<ClientConfig>, Failure> {
+    /// How connections are made, worked out once: loading what's trusted takes a while. Every
+    /// certificate is checked, against what the system trusts and the host's name, with nothing
+    /// that turns it off; rustls speaks TLS 1.2 and 1.3 only; and the host's name is sent (SNI).
+    pub(super) fn config() -> Result<Arc<ClientConfig>, Failure> {
         static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
         CONFIG
             .get_or_init(|| {
@@ -832,11 +834,43 @@ pub(crate) mod tls {
             let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
             tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
             tcp.set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
-            connection.complete_io(tcp).map_err(|error| failure_of(&error, timeout))?;
+            connection.complete_io(tcp).map_err(|error| handshake_failure(&error, timeout))?;
         }
         tcp.set_read_timeout(None).map_err(|error| Failure::of(&error, None))?;
         tcp.set_write_timeout(None).map_err(|error| Failure::of(&error, None))?;
         Ok(())
+    }
+
+    /// A handshake's failure, with a certificate the other side's refused for said in words a
+    /// person can act on, rather than rustls's names for them.
+    fn handshake_failure(error: &std::io::Error, timeout: Duration) -> Failure {
+        use rustls::CertificateError as Wrong;
+        let Some(rustls::Error::InvalidCertificate(wrong)) =
+            error.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        else {
+            return failure_of(error, timeout);
+        };
+        let words = match wrong {
+            Wrong::Expired | Wrong::ExpiredContext { .. } => {
+                "the server's certificate has expired".to_owned()
+            }
+            Wrong::NotValidYet | Wrong::NotValidYetContext { .. } => {
+                "the server's certificate isn't valid yet".to_owned()
+            }
+            Wrong::NotValidForName => "the server's certificate isn't for this host".to_owned(),
+            Wrong::NotValidForNameContext { expected, .. } => {
+                let expected = format!("{expected:?}");
+                // rustls shows the name as `DnsName("example.com")`.
+                let name = expected.split('"').nth(1).unwrap_or(&expected);
+                format!("the server's certificate isn't for `{name}`")
+            }
+            Wrong::UnknownIssuer => {
+                "the server's certificate isn't from an authority this system trusts".to_owned()
+            }
+            Wrong::Revoked => "the server's certificate has been revoked".to_owned(),
+            other => format!("the server's certificate doesn't check out: {other}"),
+        };
+        Failure::Tls(words)
     }
 
     /// What a connection's handshake needs to know of it.
@@ -884,7 +918,7 @@ pub(crate) mod tls {
         tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
         tcp.set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
         while connection.is_handshaking() {
-            connection.complete_io(&mut tcp).map_err(|error| failure_of(&error, timeout))?;
+            connection.complete_io(&mut tcp).map_err(|error| handshake_failure(&error, timeout))?;
         }
         Ok(Box::new(StreamOwned::new(connection, tcp)))
     }
@@ -1055,6 +1089,29 @@ mod tests {
             );
             done.join().unwrap();
         }
+    }
+
+    /// The client always checks certificates and names the host it wants in its first message
+    /// (SNI), so a server holding several sites gives the right one's certificate.
+    #[test]
+    fn the_client_names_the_host_it_wants() {
+        let config = super::tls::config().ok().unwrap();
+        assert!(config.enable_sni);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let heard = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut hello = vec![0; 4096];
+            let read = conn.read(&mut hello).unwrap();
+            hello.truncate(read);
+            hello
+        });
+        let tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let timeout = Duration::from_secs(10);
+        let got = super::tls::wrap(tcp, "fennec.localhost", std::time::Instant::now() + timeout, timeout);
+        assert!(got.is_err(), "a server that hung up let the handshake through");
+        let hello = heard.join().unwrap();
+        assert!(hello.windows(16).any(|part| part == b"fennec.localhost"), "the hello didn't name the host");
     }
 
     #[test]

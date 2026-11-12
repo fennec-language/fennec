@@ -18,6 +18,8 @@ fn failed(case: &str, reason: &str) -> Value {
     Value::Err(Rc::new(Value::made_case("SqlError", case, vec![("reason", Value::str(reason))])))
 }
 
+#[cfg(unix)]
+pub(crate) use real::open_checked;
 pub(crate) use real::{Fakes, call, open_fake, open_file};
 
 #[cfg(test)]
@@ -54,6 +56,13 @@ mod real {
     enum Place {
         File(String),
         Test(String),
+        /// A file an `Fs` narrowed with `only` opened, by its path and the device and number of
+        /// the file the narrowed `Fs` found there: each connection checks it opened that one.
+        #[cfg(unix)]
+        Checked {
+            path: String,
+            file: (u64, u64),
+        },
     }
 
     /// An open database.
@@ -153,9 +162,26 @@ mod real {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-        let (Place::File(path) | Place::Test(path)) = place;
+        let path = match place {
+            Place::File(path) | Place::Test(path) => path,
+            #[cfg(unix)]
+            Place::Checked { path, .. } => path,
+        };
         let mut conn = Connection::open_with_flags(path, flags)?;
         kept_to_its_file(&mut conn)?;
+        #[cfg(unix)]
+        if let Place::Checked { path, file } = place
+            && !still_the_file(&conn, path, *file)
+        {
+            let message = format!(
+                "the database at `{path}` changed while it was being opened, so it isn't the one this Fs \
+                 can reach"
+            );
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some(message),
+            ));
+        }
         // Readers go on while a writer writes, and a commit is on the disk before it's done,
         // as SQLite's default `synchronous=FULL` has it.
         let _: String = conn.query_row("pragma journal_mode=wal", [], |row| row.get(0))?;
@@ -249,6 +275,30 @@ mod real {
     /// `fs._sqlite_open(path)` on the real disk: the handle of the database in the file at `path`.
     pub(crate) fn open_file(path: &str) -> Value {
         match open(Place::File(path.to_owned())) {
+            Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
+            Err(reason) => io_error(&reason),
+        }
+    }
+
+    /// Whether the database `conn` opened at `path` is still the file the narrowed `Fs` noted:
+    /// the path names it before and after SQLite is asked, and SQLite says its own open file is
+    /// what the path names. A folder or link swapped in on the way is caught, short of one swapped
+    /// back and forth between those looks.
+    #[cfg(unix)]
+    pub(in crate::stdlib::sqlite) fn still_the_file(conn: &Connection, path: &str, file: (u64, u64)) -> bool {
+        use std::os::unix::fs::MetadataExt as _;
+        let named = || std::fs::metadata(path).is_ok_and(|found| (found.dev(), found.ino()) == file);
+        let before = named();
+        let mut moved: std::ffi::c_int = -1;
+        let asked = conn.file_control(rusqlite::DEFAULT_NAME, rusqlite::FileControl::HasMoved(&mut moved));
+        before && asked.is_ok() && moved == 0 && named()
+    }
+
+    /// `fs._sqlite_open(path)` for an `Fs` narrowed with `only`, on the real disk: the database in
+    /// the file at `path`, refused unless SQLite opened `file`, the one the narrowed `Fs` found.
+    #[cfg(unix)]
+    pub(crate) fn open_checked(path: &str, file: (u64, u64)) -> Value {
+        match open(Place::Checked { path: path.to_owned(), file }) {
             Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
             Err(reason) => io_error(&reason),
         }

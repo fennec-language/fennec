@@ -23,7 +23,13 @@ pub fn parse(source: &str) -> Result<Module, Diagnostic> {
 /// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found
 /// in it is never shown against the program's own lines.
 pub fn parse_prelude(source: &str) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, Span::PRELUDE)?).module()
+    parse_prelude_at(source, Span::PRELUDE)
+}
+
+/// Parses a standard library source with its spans starting at `base`, past `Span::PRELUDE`:
+/// each file has its own, so a span names the file it's in.
+pub(crate) fn parse_prelude_at(source: &str, base: u32) -> Result<Module, Diagnostic> {
+    Parser::new(lex(source, base)?).module()
 }
 
 /// Parses one file of a program with several, its spans starting at byte `base` so they

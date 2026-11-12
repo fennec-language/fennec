@@ -73,6 +73,11 @@ struct Player {
     streams: HashMap<String, VecDeque<(String, Vec<u8>)>>,
     /// How many workers the recorded run had, when the log says.
     workers: Option<usize>,
+    /// Whether the recording logged standard output's bursts, so a replay writes them in that
+    /// order: not one made before that was recorded, nor one of a run that printed nothing.
+    orders_output: bool,
+    /// Bursts tasks have written that aren't due yet, each task's in order, by its name.
+    held: HashMap<String, VecDeque<Vec<u8>>>,
 }
 
 /// A task, for its entries: its name, and how many tasks it has started, to name the next one.
@@ -255,6 +260,50 @@ pub(crate) fn taken_at(place: &str, what: &str) -> Option<u64> {
     Some(u64::try_from(before - stream.len()).unwrap_or(0))
 }
 
+/// The place standard output is: each burst a task writes is logged there, in the order the bursts
+/// went out.
+const OUTPUT: &str = "out";
+
+/// Keeps a recorded burst and its entry together, so the log has the bursts in the order they
+/// went out.
+static WRITING: Mutex<()> = Mutex::new(());
+
+/// Writes a burst of standard output with `write`. In a recording, it's logged under the task that
+/// wrote it, so the log has how tasks' output interleaved. How tasks' output interleaves is an
+/// outside input, as the clock is, and a replay repeats it: a burst is held until every burst
+/// recorded before it has gone out, and whichever task's burst comes in writes all that are then
+/// due. No task waits for another to write, so one whose turn is behind work queued on its own
+/// thread doesn't hold that work up.
+pub(crate) fn writing(bytes: &[u8], write: impl Fn(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+    match mode() {
+        Mode::Off => write(bytes),
+        Mode::Record(file) => {
+            let _order = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+            write(bytes)?;
+            let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            log(file, OUTPUT, &format!("{} write", running()), &length.to_le_bytes());
+            Ok(())
+        }
+        Mode::Replay(player) => {
+            let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+            if !player.orders_output {
+                return write(bytes);
+            }
+            player.held.entry(running().to_string()).or_default().push_back(bytes.to_vec());
+            loop {
+                let next = player.streams.get(OUTPUT).and_then(VecDeque::front).map(|(call, _)| call.clone());
+                let Some(task) = next.as_deref().and_then(|call| call.strip_suffix(" write")) else { break };
+                let Some(burst) = player.held.get_mut(task).and_then(VecDeque::pop_front) else { break };
+                write(&burst)?;
+                if let Some(stream) = player.streams.get_mut(OUTPUT) {
+                    stream.pop_front();
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 /// A `parallel` call's range, named by its call and where it starts.
 pub(crate) fn range(call: Option<&Task>, from: usize) -> Option<Task> {
     call.map(|call| Task::named(Arc::from(format!("{}.{from}", call.name))))
@@ -331,7 +380,8 @@ fn playing(path: &Path) -> std::io::Result<Mode> {
 /// A log's entries, each task's in a stream of its own: `None` if it's damaged.
 fn player_of(log: &[u8]) -> Option<Player> {
     let named = log.starts_with(MAGIC);
-    let mut player = Player { streams: HashMap::new(), workers: None };
+    let mut player =
+        Player { streams: HashMap::new(), workers: None, orders_output: false, held: HashMap::new() };
     let mut reader = Entries { log, at: entries_start(log)? };
     while reader.at < log.len() {
         let task = if named { reader.name()? } else { "0".to_owned() };
@@ -344,6 +394,7 @@ fn player_of(log: &[u8]) -> Option<Player> {
         }
         player.streams.entry(task).or_default().push_back((call, payload));
     }
+    player.orders_output = player.streams.contains_key(OUTPUT);
     Some(player)
 }
 
@@ -414,7 +465,18 @@ pub fn replay_from(path: &Path) -> std::io::Result<()> {
 /// What a replay that's run out of its log, or ended before it, says: `None` when it hasn't.
 pub fn unfinished() -> Option<String> {
     let Mode::Replay(player) = mode() else { return None };
-    let (task, next) = left_over(&player.lock().unwrap_or_else(PoisonError::into_inner))?;
+    let player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut held: Vec<&String> =
+        player.held.iter().filter(|(_, bursts)| !bursts.is_empty()).map(|(task, _)| task).collect();
+    held.sort();
+    if let Some(task) = held.first() {
+        return Some(format!(
+            "this replay printed more than its recording did{}, so it isn't the run that was recorded: \
+             something it depends on wasn't recorded, or the program has changed",
+            in_task(task)
+        ));
+    }
+    let (task, next) = left_over(&player)?;
     Some(format!(
         "this replay ended where its recording asked for `{next}` next{}, so it isn't the run that was \
          recorded: something it depends on wasn't recorded, or the program has changed",

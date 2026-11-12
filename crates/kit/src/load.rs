@@ -283,8 +283,9 @@ fn some_of_a_kit(
 /// trimming `shown_as` when it names that folder, and as an absolute path when it doesn't.
 fn find_root(dir: &Path, shown_as: &str) -> Option<(PathBuf, String)> {
     let absolute = std::fs::canonicalize(dir).ok()?;
-    let (levels, root) =
-        absolute.ancestors().enumerate().find(|(_, folder)| folder.join("kit.toml").is_file())?;
+    // Reached only through folders nobody else can write to: see `fennec_dist::kit_root`.
+    let found = fennec_dist::kit_root(&absolute)?;
+    let (levels, root) = absolute.ancestors().enumerate().find(|(_, folder)| *folder == found)?;
     let mut shown = PathBuf::from(shown_as);
     for _ in 0..levels {
         // Going up from `.` or `..` isn't trimming a name, so show the absolute path.

@@ -35,11 +35,46 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     })
 }
 
-/// `a + b`.
+/// A string's block, or no words when the address isn't a string's.
+fn text_block(state: &State, address: i64) -> &[u64] {
+    u64::try_from(address)
+        .ok()
+        .and_then(|address| state.heap.block(address))
+        .filter(|block| super::heap::is_text(state, block))
+        .unwrap_or_default()
+}
+
+/// `a + b`. Both are UTF-8 with their characters already counted, so their words go one after the
+/// other into a new block and its lengths are theirs added up: nothing is checked or counted again a
+/// character at a time.
 pub extern "C" fn concat(a: i64, b: i64) -> i64 {
     super::made_with("fennec_str_concat", |state| {
-        let joined = format!("{}{}", text(state, a).unwrap_or_default(), text(state, b).unwrap_or_default());
-        text_address(state, &joined)
+        let (first, first_chars) = lengths(text_block(state, a));
+        let (second, second_chars) = lengths(text_block(state, b));
+        let bytes = first + second;
+        if bytes == 1 {
+            // A string of one ASCII character is the one block every such string shares.
+            let one = if first == 1 { a } else { b };
+            let byte = text_block(state, one).get(TEXT_HEADER_WORDS).map(|word| word & 0xff);
+            if let Some(address) =
+                byte.and_then(|byte| usize::try_from(byte).ok()).and_then(|byte| state.tables.ascii.get(byte))
+            {
+                return i64::try_from(*address).unwrap_or(0);
+            }
+        }
+        let words = TEXT_HEADER_WORDS + bytes.div_ceil(8).max(1);
+        // Each word with bytes in it is written below, and only an empty string's one word is left
+        // to be zero.
+        let mut joined = state.heap.fresh_written(words, TEXT_HEADER_WORDS + bytes.div_ceil(8));
+        let number = |n: usize| u64::try_from(n).unwrap_or(0);
+        let room = number((words - TEXT_HEADER_WORDS) * 8);
+        let header = [1, state.tables.str_shape, number(bytes), first_chars + second_chars, room, 0];
+        if let Some(start) = joined.get_mut(..TEXT_HEADER_WORDS) {
+            start.copy_from_slice(&header);
+        }
+        add_text(&mut joined, 0, text_block(state, a));
+        add_text(&mut joined, first, text_block(state, b));
+        state.heap.insert(joined)
     })
 }
 
@@ -977,6 +1012,138 @@ mod place_tests {
         with(|state| assert_eq!(super::text(state, tail).as_deref(), Some("own")));
         let empty = slice(text, 5, 2, 0, 0);
         with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
+        finish();
+    }
+}
+
+#[cfg(test)]
+mod concat_tests {
+    use std::rc::Rc;
+
+    use super::super::{Tables, aot, finish, heap, lists, start, with};
+    use super::{append, concat, join};
+    use crate::packed::Element;
+
+    fn begin() {
+        let tables = Tables {
+            shapes: vec![Rc::new(Element::Str)],
+            elements: vec![Rc::new(Element::Str)],
+            ..Tables::default()
+        };
+        start(tables, crate::Inputs::default());
+        // Made as native code makes it, once the run has started.
+        aot::ascii();
+    }
+
+    fn string(text: &str) -> i64 {
+        with(|state| heap::text_address(state, text))
+    }
+
+    /// A string's text and its lengths in bytes and characters, as its block holds them.
+    fn read(address: i64) -> (String, u64, u64) {
+        with(|state| {
+            let block = state.heap.block(address.cast_unsigned()).unwrap_or_default();
+            let text = super::text(state, address).unwrap_or_default();
+            (text, block.get(2).copied().unwrap_or(0), block.get(3).copied().unwrap_or(0))
+        })
+    }
+
+    /// Lets go of one owner, as native code does, which leaves a block shared for the whole run.
+    fn let_go(address: i64) {
+        with(|state| heap::release(state, address.cast_unsigned()));
+    }
+
+    fn allocated() -> u64 {
+        with(|state| state.heap.counts.allocated_bytes)
+    }
+
+    /// `a + b` puts their bytes one after the other whatever word each ends partway through, and its
+    /// lengths are theirs added up, wide characters too.
+    #[test]
+    fn a_joined_string_holds_both_parts_and_their_lengths_added_up() {
+        begin();
+        let parts = [
+            "",
+            "a",
+            "abc",
+            "abcdefgh",
+            "abcdefghi",
+            "\u{e9}t\u{e9}",
+            "\u{65e5}\u{672c}\u{1f98a} and then some more bytes",
+            "seventeen bytes!!",
+        ];
+        for first in parts {
+            for second in parts {
+                let (a, b) = (string(first), string(second));
+                let joined = concat(a, b);
+                let whole = format!("{first}{second}");
+                let (text, bytes, chars) = read(joined);
+                assert_eq!(text, whole);
+                assert_eq!(bytes, u64::try_from(whole.len()).unwrap());
+                assert_eq!(chars, u64::try_from(whole.chars().count()).unwrap(), "{whole:?}");
+                for address in [a, b, joined] {
+                    let_go(address);
+                }
+            }
+        }
+        finish();
+    }
+
+    /// A string of one ASCII character made by `+` is the block every such string shares, as one
+    /// made any other way is.
+    #[test]
+    fn one_ascii_character_joined_is_the_shared_one() {
+        begin();
+        let (empty, x) = (string(""), string("x"));
+        assert_eq!(concat(empty, x), x);
+        assert_eq!(concat(x, empty), x);
+        assert_eq!(concat(0, x), x, "what isn't a string adds nothing");
+        let_go(empty);
+        finish();
+    }
+
+    /// Building a string a piece at a time with `+=`, or all at once with `join`, allocates in
+    /// proportion to its length, where making each piece's string anew would take its square.
+    #[test]
+    fn a_string_built_by_appends_or_a_join_costs_in_proportion_to_its_length() {
+        begin();
+        let piece = string("twelve bytes");
+        let appended = |pieces: usize| {
+            let before = allocated();
+            let mut text = string("");
+            for _ in 0..pieces {
+                text = append(text, piece);
+            }
+            assert_eq!(read(text).1, 12 * u64::try_from(pieces).unwrap());
+            heap::free_text(text);
+            allocated() - before
+        };
+        let joined = |pieces: usize| {
+            let list = lists::new(0, i64::try_from(pieces).unwrap());
+            with(|state| {
+                let block = state.heap.block_mut(list.cast_unsigned()).unwrap();
+                let items = block.get_mut(lists::LIST_HEADER_WORDS..).unwrap();
+                items.iter_mut().take(pieces).for_each(|item| *item = piece.cast_unsigned());
+            });
+            let before = allocated();
+            let comma = string(", ");
+            let text = join(comma, list);
+            assert_eq!(read(text).1, 14 * u64::try_from(pieces).unwrap() - 2);
+            heap::free_text(text);
+            heap::free_text(comma);
+            allocated() - before
+        };
+        for pieces in [1_000, 3_000, 10_000] {
+            // Room doubles as a string grows, so it has at most twice its length, and all it had
+            // before at most twice that again.
+            let length = 12 * u64::try_from(pieces).unwrap();
+            let took = appended(pieces);
+            assert!(took <= 8 * length + 1_024, "{pieces} appends took {took} bytes for {length}");
+            // A join makes one block, just big enough.
+            let length = 14 * u64::try_from(pieces).unwrap();
+            let took = joined(pieces);
+            assert!(took <= length + 128, "joining {pieces} took {took} bytes for {length}");
+        }
         finish();
     }
 }

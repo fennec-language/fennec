@@ -6,7 +6,7 @@
 def warn_missing(stderr: Stderr, names: list[str]) -> int fails IoError:
     for name in names:
         stderr.write_line(f"warning: {name} wasn't found")?
-    names.len()
+    return len(names)
 
 test "warnings go to standard error, not standard output"(stdout: Stdout, stderr: Stderr):
     assert warn_missing(stderr, ["a.txt", "b.txt"])? == 2

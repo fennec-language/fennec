@@ -101,7 +101,7 @@ mod tests {
         let dir =
             fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-parses-{}", std::process::id())));
         let _ = std::fs::remove_dir_all(&dir);
-        let text = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
+        let text = "## Twice the number.\nexport def twice(number: int) -> int:\n    return number * 2\n";
         let parses = kept(&dir, "build one");
         assert!(parses.kept(&hashed(text), "src/maths.fen", false, 0).is_none(), "nothing's kept yet");
         parses.keep(&hashed(text), "src/maths.fen", false, 40, &fennec_syntax::parse_at(text, 40).unwrap());

@@ -5,9 +5,9 @@ enum Color:
 def paint(color: Color) -> str:
     match color:
         case Red:
-            "red"
+            return "red"
         case .Blue:
-            "blue"
+            return "blue"
 
 def main(stdout: Stdout):
     stdout.print(paint(Color.Blue))

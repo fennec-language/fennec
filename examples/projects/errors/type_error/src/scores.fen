@@ -1,2 +1,2 @@
 def total(scores: list[int]) -> int:
-    sum(scores) + "points"
+    return sum(scores) + "points"

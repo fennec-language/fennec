@@ -34,9 +34,9 @@ struct Camp:
     units = Table[Unit]()
 
 def failure[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    "loaded"
+    return "loaded"
 
 test "a world with Ids loads back the same":
     mut world = World()
@@ -146,5 +146,5 @@ def main(stdout: Stdout):
     world.selected = [ash]
     text = json.dumps(world)
     stdout.print(text)
-    loaded = json.loads[World](text) else World()
+    loaded = json.loads[World](text) except ParseError(): World()
     stdout.print(loaded.units[loaded.selected[0]].name, json.dumps(loaded) == text)

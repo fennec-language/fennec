@@ -168,8 +168,8 @@ impl Launcher {
                 folder.display()
             ));
         }
-        std::fs::create_dir_all(self.toolchains())
-            .and_then(|()| std::fs::write(self.link_file(name), format!("{}\n", folder.display())))
+        self.private_toolchains()?;
+        std::fs::write(self.link_file(name), format!("{}\n", folder.display()))
             .map_err(|err| format!("couldn't write the link: {err}"))
     }
 
@@ -248,7 +248,7 @@ impl Launcher {
     ///
     /// When there's no toolchain to run, or the one there is isn't the one pinned.
     pub fn toolchain_for(&self, from: &Path) -> Result<PathBuf, String> {
-        let Some(root) = kit::root(from) else {
+        let Some(root) = kit::root(from)? else {
             let version = self.default_version().ok_or(NO_DEFAULT)?;
             return self.exactly(&version);
         };
@@ -298,7 +298,7 @@ impl Launcher {
     /// When `from` is in a kit, whose `kit.toml` says which version it builds with, or the version
     /// isn't there and can't or mayn't be installed.
     pub fn outside_a_kit(&self, from: &Path, version: &str) -> Result<PathBuf, String> {
-        if let Some(root) = kit::root(from) {
+        if let Some(root) = kit::root(from)? {
             return Err(format!(
                 "`--version` is for scripts outside a kit, and {} says which version this kit builds with: change `fennec = ...` there, or `fennec +{version} <command>` runs that version this once",
                 root.join("kit.toml").display()
@@ -382,7 +382,7 @@ impl Launcher {
     ///
     /// When it isn't in a kit, or the toolchain can't be installed.
     pub fn update(&self, from: &Path, latest: bool) -> Result<String, String> {
-        let root = kit::root(from).ok_or("this isn't in a kit, so there's no pin to move")?;
+        let root = kit::root(from)?.ok_or("this isn't in a kit, so there's no pin to move")?;
         let manifest = std::fs::read_to_string(root.join("kit.toml"))
             .map_err(|err| format!("couldn't read kit.toml: {err}"))?;
         let mut version = kit::version(&manifest)?;
@@ -409,6 +409,14 @@ impl Launcher {
             Some(_) => format!("kit.lock: Fennec {version}, as its release is now\n"),
             None => format!("kit.lock: Fennec {version}\n"),
         })
+    }
+
+    /// Makes Fennec's folder and its toolchains' folder, if they aren't there, its user's alone, as
+    /// the cache makes them: what's kept there is run. See `fennec_dist::private_folder`.
+    fn private_toolchains(&self) -> Result<(), String> {
+        fennec_dist::private_folder(&self.home)
+            .and_then(|()| fennec_dist::private_folder(&self.toolchains()))
+            .map_err(|refused| refused.0)
     }
 
     /// Reads one of a release's files.
@@ -470,8 +478,7 @@ impl Launcher {
             return Err(format!("{} has no `fennec` to run", archive.file));
         }
         let toolchains = self.toolchains();
-        std::fs::create_dir_all(&toolchains)
-            .map_err(|err| format!("couldn't make {}: {err}", toolchains.display()))?;
+        self.private_toolchains()?;
         // Unpacked beside where it goes and then moved there, so a toolchain is there whole or not at all.
         let partial = toolchains.join(format!(".{version}.{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&partial);

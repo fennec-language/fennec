@@ -2,7 +2,7 @@ from std.random import Random
 
 ## Rolls `count` dice: a generator only reads, so the rolls that change `rng` go in a loop.
 def roll(ref rng: Random, count: int) -> int:
-    sum(rng.randint(1, high=6) for _ in range(count))
+    return sum(rng.randint(1, high=6) for _ in range(count))
 
 def main(stdout: Stdout):
     mut rng = Random(seed=7)

@@ -13,14 +13,18 @@ struct Body:
         self.asleep = False
 
     def moved(self, dt: float) -> Body:
-        Body(position=self.position + self.velocity * dt, velocity=self.velocity, mass=self.mass)
+        return Body(
+            position=self.position + self.velocity * dt,
+            velocity=self.velocity,
+            mass=self.mass,
+        )
 
 def settle(ref body: Body):
     body.velocity = Vec3.zero()
     body.asleep = True
 
 def heaviest(first: Body, second: Body) -> Body:
-    first if first.mass >= second.mass else second
+    return first if first.mass >= second.mass else second
 
 def main(stdout: Stdout):
     mut ball = Body(mass=2.0)

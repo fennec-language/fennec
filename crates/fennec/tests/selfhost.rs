@@ -72,7 +72,7 @@ const PARSE_CASES: &[(&str, &str)] = &[
         "lock",
         "def f(a: shared A, b: shared B?):\n    shared c = A()\n    lock a, c as ref x, y:\n        pass\n",
     ),
-    ("lend", "def f(a: int) -> with int:\n    lend a + 1 else:\n        pass\n    lend f\"{a}\"\n"),
+    ("lend", "def f(a: int) -> with int:\n    lend a + 1 except:\n        pass\n    lend f\"{a}\"\n"),
     (
         "except",
         "def f(t: str) -> int:\n    a = g(t) except why:\n        return 0\n    b = g(t) except why:\n        case .Gone(at):\n            at\n        case _:\n            fail why\n    c = int(t) except InvalidValue(): 8080\n    d = g(t) except .Gone(): return 1\n    h(t) except why:\n        log(why)\n    return a + b + c + d\n",
@@ -154,7 +154,7 @@ struct Box[T, U: Shape]:
     pass
 
     def +(self, other: Box) -> Box:
-        self
+        return self
     def [](self, at: int):
         self.items[at]
     def []=(ref self, at: int, value: T):
@@ -232,12 +232,12 @@ test \"boxes add\":
     assert Box() + Box() == Box()
 
 test \"any list\" for items: list[int], n: int:
-    assert items.len() >= 0
+    assert len(items) >= 0
 ",
     ),
     (
         "lock_gives_a_value",
-        "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    total\n",
+        "def f(scores: shared list[int]) -> int:\n    total = lock scores as current:\n        sum(current)\n    return total\n",
     ),
     (
         "if_over_lines_gives_no_value",
@@ -258,7 +258,7 @@ test \"any list\" for items: list[int], n: int:
     ),
     (
         "one_line_if_and_fallback_apart",
-        "def port(text: str, given: bool) -> int:\n    (int(text) else 80) if given else (8080 else 1)\n",
+        "def port(text: str, given: bool) -> int:\n    int_value = int(text) except InvalidValue(): 80\n    return (int_value) if given else (8080 else 1)\n",
     ),
     ("local_ref", "def main():\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n"),
     ("local_ref_without_a_name", "def main():\n    ref units[0] = 1\n"),
@@ -269,7 +269,7 @@ test \"any list\" for items: list[int], n: int:
 /// types are written.
 const CHECK_CASES: &[(&str, &str)] = &[
     // `Result` is gone: what can fail says so with `fails`.
-    ("result_type_gone", "error Bad:\n    why: str\n\ndef half(n: int) -> Result[int, Bad]:\n    n\n"),
+    ("result_type_gone", "error Bad:\n    why: str\n\ndef half(n: int) -> Result[int, Bad]:\n    return n\n"),
     // A program's own `Heap`, which isn't generic, where std's `PriorityQueue` holds its own
     // `Heap[(P, int)]`: the library's declarations keep meaning the library's type.
     (
@@ -284,8 +284,7 @@ const CHECK_CASES: &[(&str, &str)] = &[
     (
         "call_type_arguments",
         "from std import json\n\ndef read(text: str) -> int:\n    found = json.loads[Draft](text) else 0\n    \
-         made = list[Tokn]()\n    if made.len() == 0 and parsed[Mising](text):\n        return 1\n    \
-         [x for x in f[Wrong](1)].len() + found\n",
+         made = list[Tokn]()\n    if len(made) == 0 and parsed[Mising](text):\n        return 1\n    return [x for x in f[Wrong](1)].len() + found\n",
     ),
     (
         "unknown_types",
@@ -298,11 +297,11 @@ const CHECK_CASES: &[(&str, &str)] = &[
     ("alias_loop", "type Loop = Loop\ntype Pair = (int, Loop)\n\ndef f(p: Pair):\n    pass\n"),
     (
         "bounds",
-        "interface Shape:\n    def area(self) -> float\n\nstruct Enemy:\n    hp = 1\n\nstruct Bag[T: Enemy]:\n    items: list[T]\n\ndef f[T: Shape & Eq, U: Enemy](a: T, b: U, c: list[Shape]) -> T:\n    a\n",
+        "interface Shape:\n    def area(self) -> float\n\nstruct Enemy:\n    hp = 1\n\nstruct Bag[T: Enemy]:\n    items: list[T]\n\ndef f[T: Shape & Eq, U: Enemy](a: T, b: U, c: list[Shape]) -> T:\n    return a\n",
     ),
     (
         "generic_scopes",
-        "struct Box[T]:\n    item: T\n    other: U\n\n    def get(self) -> T:\n        self.item\n\ndef outer[T](x: T) -> T:\n    def inner(y: Nope) -> T:\n        y\n    names: list[T] = []\n    x\n",
+        "struct Box[T]:\n    item: T\n    other: U\n\n    def get(self) -> T:\n        return self.item\n\ndef outer[T](x: T) -> T:\n    def inner(y: Nope) -> T:\n        return y\n    names: list[T] = []\n    return x\n",
     ),
     (
         "arrows_to_nothing",

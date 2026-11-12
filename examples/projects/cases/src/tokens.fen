@@ -9,8 +9,9 @@ def tokens(source: str) -> list[Tok]:
     mut found = []
     for word in source.split():
         if word.isdigit():
-            found.append(Tok.Int(int(word) else 0))
+            int_value = int(word) except InvalidValue(): 0
+            found.append(Tok.Int(int_value))
         else:
             tok = .Name(word)
             found.append(tok)
-    found
+    return found

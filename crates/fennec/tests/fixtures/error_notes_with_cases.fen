@@ -8,32 +8,32 @@ error Broken:
 def connect(host: str, port: int) -> int fails Dial:
     if port == 0: fail .Closed
     if port < 0: fail .Refused(host, port)
-    port
+    return port
 
 def parse(n: int) -> int fails Broken:
     if n > 3: fail Broken(code=n)
-    n
+    return n
 
 def both(port: int) -> int fails Dial | Broken:
-    parse(connect("db", port)?)?
+    return parse(connect("db", port)?)?
 
 def noted(port: int) -> int fails Dial | Broken:
-    n = both(port) else as problem:
+    n = both(port) except problem:
         mut kept = problem
         kept.add_note(f"while dialing {port}")
         kept.add_note("second line\nand a third")
         fail kept
-    n
+    return n
 
 ## Prints what `noted` gave, or the notes on what it failed with and the failure.
 def shown(stdout: Stdout, port: int):
-    n = noted(port) else as problem:
+    n = noted(port) except problem:
         stdout.print(problem.notes(), problem)
         return
     stdout.print(n)
 
 def main(stdout: Stdout) fails Dial | Broken:
-    _ = connect("db", 0) else as closed:
+    _ = connect("db", 0) except closed:
         mut c = closed
         stdout.print(c.notes(), c)
         c.add_note("first")
@@ -42,7 +42,7 @@ def main(stdout: Stdout) fails Dial | Broken:
         stdout.print(c.notes(), copy.notes(), c == copy, c)
         stdout.print(f"{c}", str(c))
         0
-    _ = connect("db", -1) else as refused:
+    _ = connect("db", -1) except refused:
         mut r = refused
         r.add_note("refused once")
         stdout.print(r.notes(), r, r == refused)

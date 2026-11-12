@@ -12,7 +12,7 @@ struct Point:
     y: float
 
 def main(stdout: Stdout):
-    nan = float("nan") else 0.0
+    nan = float("nan") except InvalidValue(): 0.0
     other_nan = 0.0 - nan
     zero = 0.0
     negative_zero = -0.0
@@ -35,10 +35,18 @@ def main(stdout: Stdout):
         Point(x=1.0, label="p", y=2.0) == Point(x=1.0, label="q", y=2.0),
         Point(x=1.0, label="p", y=2.0) == Point(x=1.0, label="p", y=2.5),
     )
-    mut readings = {Reading.Value(nan): "nan", Reading.Value(zero): "zero", Reading.Missing: "missing"}
+    mut readings = {
+        Reading.Value(nan): "nan",
+        Reading.Value(zero): "zero",
+        Reading.Missing: "missing",
+    }
     readings[Reading.Value(other_nan)] = "nan again"
     readings[Reading.Value(negative_zero)] = "zero again"
-    stdout.print(readings.len(), readings[Reading.Value(nan)], readings[Reading.Value(zero)])
+    stdout.print(len(readings), readings[Reading.Value(nan)], readings[Reading.Value(zero)])
     mut points = {Point(x=nan, label=long, y=zero): 1}
     points[Point(x=other_nan, label=long, y=negative_zero)] = 2
-    stdout.print(points.len(), points[Point(x=nan, label=long, y=negative_zero)], Point(x=1.0, label=long, y=zero) in points)
+    stdout.print(
+        len(points),
+        points[Point(x=nan, label=long, y=negative_zero)],
+        Point(x=1.0, label=long, y=zero) in points,
+    )

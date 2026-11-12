@@ -10,13 +10,13 @@ extend dict[K: Hashable, V]:
     def setdefault(ref self, key: K, default: V) -> V:
         if key in self: return self[key]
         self[key] = default
-        default
+        return default
 
     ## Takes `key` out, giving back its value, or `None` when it isn't there: `pop` for a key that
     ## may be missing, as `get` is to `self[key]`.
     def remove(ref self, key: K) -> V?:
         if key not in self: return None
-        self.pop(key)
+        return self.pop(key)
 
 extend dict[K: Hashable & Serializable, V: Serializable]:
     def serialize(self, ref out: Serializer):
@@ -27,7 +27,7 @@ extend dict[K: Hashable & Serializable, V: Serializable]:
 ## written as escapes, as `std.string`'s `quoted_input` writes them, which a core file can't import.
 def twice_key[K](key: K) -> str:
     full = f"{key}"
-    cut = full if full.len() <= 40 else full[0:20] + "…"
+    cut = full if len(full) <= 40 else full[0:20] + "…"
     hex = "0123456789abcdef"
     mut text = ""
     for c in cut:
@@ -54,13 +54,13 @@ extend dict[K: Hashable & Deserializable, V: Deserializable]:
             # Read straight into the dict, with no list of pairs on the way.
             for _ in range(count):
                 key = src.value[K]()?
-                before = found.len()
+                before = len(found)
                 found[key] = src.value[V]()?
-                if found.len() == before: fail src.here(f"has {twice_key(key)} twice")
+                if len(found) == before: fail src.here(f"has {twice_key(key)} twice")
             src.end_map()
             return found
         for key, value in src.map[K, V]()?:
-            before = found.len()
+            before = len(found)
             found[key] = value
-            if found.len() == before: fail src.here(f"has {twice_key(key)} twice")
+            if len(found) == before: fail src.here(f"has {twice_key(key)} twice")
         return found

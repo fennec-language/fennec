@@ -8,44 +8,44 @@ extend i8:
     def from(x: int) -> i8 fails InvalidValue:
         if x < -128 or x > 127:
             fail InvalidValue(message=f"{x} doesn't fit in i8, which holds -128 to 127")
-        i8(x)
+        return i8(x)
 
     ## The i8 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     def parse(text: str) -> i8 fails InvalidValue:
-        i8.from(int(text)?)?
+        return i8.from(int(text)?)?
 
     ## `self + other`, wrapping round past either end, as an i8's bits do.
     def wrapping_add(self, other: i8) -> i8:
-        i8((int(self) + int(other) + 128) % 256 - 128)
+        return i8((int(self) + int(other) + 128) % 256 - 128)
 
     ## `self - other`, wrapping round past either end, as an i8's bits do.
     def wrapping_sub(self, other: i8) -> i8:
-        i8((int(self) - int(other) + 128) % 256 - 128)
+        return i8((int(self) - int(other) + 128) % 256 - 128)
 
     ## `self * other`, wrapping round past either end, as an i8's bits do.
     def wrapping_mul(self, other: i8) -> i8:
-        i8((int(self) * int(other) + 128) % 256 - 128)
+        return i8((int(self) * int(other) + 128) % 256 - 128)
 
     ## `self + other`, or the nearest end of i8 when it's past one.
     def saturating_add(self, other: i8) -> i8:
         whole = int(self) + int(other)
         if whole < -128: return i8(-128)
         if whole > 127: return i8(127)
-        i8(whole)
+        return i8(whole)
 
     ## `self - other`, or the nearest end of i8 when it's past one.
     def saturating_sub(self, other: i8) -> i8:
         whole = int(self) - int(other)
         if whole < -128: return i8(-128)
         if whole > 127: return i8(127)
-        i8(whole)
+        return i8(whole)
 
     ## `self * other`, or the nearest end of i8 when it's past one.
     def saturating_mul(self, other: i8) -> i8:
         whole = int(self) * int(other)
         if whole < -128: return i8(-128)
         if whole > 127: return i8(127)
-        i8(whole)
+        return i8(whole)
 
 extend i16:
     ## The `int` `x` as an i16, or an `InvalidValue` when it doesn't fit. Convert another size
@@ -53,44 +53,44 @@ extend i16:
     def from(x: int) -> i16 fails InvalidValue:
         if x < -32768 or x > 32767:
             fail InvalidValue(message=f"{x} doesn't fit in i16, which holds -32768 to 32767")
-        i16(x)
+        return i16(x)
 
     ## The i16 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     def parse(text: str) -> i16 fails InvalidValue:
-        i16.from(int(text)?)?
+        return i16.from(int(text)?)?
 
     ## `self + other`, wrapping round past either end, as an i16's bits do.
     def wrapping_add(self, other: i16) -> i16:
-        i16((int(self) + int(other) + 32768) % 65536 - 32768)
+        return i16((int(self) + int(other) + 32768) % 65536 - 32768)
 
     ## `self - other`, wrapping round past either end, as an i16's bits do.
     def wrapping_sub(self, other: i16) -> i16:
-        i16((int(self) - int(other) + 32768) % 65536 - 32768)
+        return i16((int(self) - int(other) + 32768) % 65536 - 32768)
 
     ## `self * other`, wrapping round past either end, as an i16's bits do.
     def wrapping_mul(self, other: i16) -> i16:
-        i16((int(self) * int(other) + 32768) % 65536 - 32768)
+        return i16((int(self) * int(other) + 32768) % 65536 - 32768)
 
     ## `self + other`, or the nearest end of i16 when it's past one.
     def saturating_add(self, other: i16) -> i16:
         whole = int(self) + int(other)
         if whole < -32768: return i16(-32768)
         if whole > 32767: return i16(32767)
-        i16(whole)
+        return i16(whole)
 
     ## `self - other`, or the nearest end of i16 when it's past one.
     def saturating_sub(self, other: i16) -> i16:
         whole = int(self) - int(other)
         if whole < -32768: return i16(-32768)
         if whole > 32767: return i16(32767)
-        i16(whole)
+        return i16(whole)
 
     ## `self * other`, or the nearest end of i16 when it's past one.
     def saturating_mul(self, other: i16) -> i16:
         whole = int(self) * int(other)
         if whole < -32768: return i16(-32768)
         if whole > 32767: return i16(32767)
-        i16(whole)
+        return i16(whole)
 
 extend i32:
     ## The `int` `x` as an i32, or an `InvalidValue` when it doesn't fit. Convert another size
@@ -100,44 +100,44 @@ extend i32:
             fail InvalidValue(
                 message=f"{x} doesn't fit in i32, which holds -2147483648 to 2147483647",
             )
-        i32(x)
+        return i32(x)
 
     ## The i32 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     def parse(text: str) -> i32 fails InvalidValue:
-        i32.from(int(text)?)?
+        return i32.from(int(text)?)?
 
     ## `self + other`, wrapping round past either end, as an i32's bits do.
     def wrapping_add(self, other: i32) -> i32:
-        i32((int(self) + int(other) + 2147483648) % 4294967296 - 2147483648)
+        return i32((int(self) + int(other) + 2147483648) % 4294967296 - 2147483648)
 
     ## `self - other`, wrapping round past either end, as an i32's bits do.
     def wrapping_sub(self, other: i32) -> i32:
-        i32((int(self) - int(other) + 2147483648) % 4294967296 - 2147483648)
+        return i32((int(self) - int(other) + 2147483648) % 4294967296 - 2147483648)
 
     ## `self * other`, wrapping round past either end, as an i32's bits do.
     def wrapping_mul(self, other: i32) -> i32:
-        i32((int(self) * int(other) + 2147483648) % 4294967296 - 2147483648)
+        return i32((int(self) * int(other) + 2147483648) % 4294967296 - 2147483648)
 
     ## `self + other`, or the nearest end of i32 when it's past one.
     def saturating_add(self, other: i32) -> i32:
         whole = int(self) + int(other)
         if whole < -2147483648: return i32(-2147483648)
         if whole > 2147483647: return i32(2147483647)
-        i32(whole)
+        return i32(whole)
 
     ## `self - other`, or the nearest end of i32 when it's past one.
     def saturating_sub(self, other: i32) -> i32:
         whole = int(self) - int(other)
         if whole < -2147483648: return i32(-2147483648)
         if whole > 2147483647: return i32(2147483647)
-        i32(whole)
+        return i32(whole)
 
     ## `self * other`, or the nearest end of i32 when it's past one.
     def saturating_mul(self, other: i32) -> i32:
         whole = int(self) * int(other)
         if whole < -2147483648: return i32(-2147483648)
         if whole > 2147483647: return i32(2147483647)
-        i32(whole)
+        return i32(whole)
 
 extend u8:
     ## The `int` `x` as a u8, or an `InvalidValue` when it doesn't fit. Convert another size
@@ -145,44 +145,44 @@ extend u8:
     def from(x: int) -> u8 fails InvalidValue:
         if x < 0 or x > 255:
             fail InvalidValue(message=f"{x} doesn't fit in u8, which holds 0 to 255")
-        u8(x)
+        return u8(x)
 
     ## The u8 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     def parse(text: str) -> u8 fails InvalidValue:
-        u8.from(int(text)?)?
+        return u8.from(int(text)?)?
 
     ## `self + other`, wrapping round past either end, as a u8's bits do.
     def wrapping_add(self, other: u8) -> u8:
-        u8((int(self) + int(other)) % 256)
+        return u8((int(self) + int(other)) % 256)
 
     ## `self - other`, wrapping round past either end, as a u8's bits do.
     def wrapping_sub(self, other: u8) -> u8:
-        u8((int(self) - int(other)) % 256)
+        return u8((int(self) - int(other)) % 256)
 
     ## `self * other`, wrapping round past either end, as a u8's bits do.
     def wrapping_mul(self, other: u8) -> u8:
-        u8((int(self) * int(other)) % 256)
+        return u8((int(self) * int(other)) % 256)
 
     ## `self + other`, or the nearest end of u8 when it's past one.
     def saturating_add(self, other: u8) -> u8:
         whole = int(self) + int(other)
         if whole < 0: return u8(0)
         if whole > 255: return u8(255)
-        u8(whole)
+        return u8(whole)
 
     ## `self - other`, or the nearest end of u8 when it's past one.
     def saturating_sub(self, other: u8) -> u8:
         whole = int(self) - int(other)
         if whole < 0: return u8(0)
         if whole > 255: return u8(255)
-        u8(whole)
+        return u8(whole)
 
     ## `self * other`, or the nearest end of u8 when it's past one.
     def saturating_mul(self, other: u8) -> u8:
         whole = int(self) * int(other)
         if whole < 0: return u8(0)
         if whole > 255: return u8(255)
-        u8(whole)
+        return u8(whole)
 
 extend u16:
     ## The `int` `x` as a u16, or an `InvalidValue` when it doesn't fit. Convert another size
@@ -190,44 +190,44 @@ extend u16:
     def from(x: int) -> u16 fails InvalidValue:
         if x < 0 or x > 65535:
             fail InvalidValue(message=f"{x} doesn't fit in u16, which holds 0 to 65535")
-        u16(x)
+        return u16(x)
 
     ## The u16 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     def parse(text: str) -> u16 fails InvalidValue:
-        u16.from(int(text)?)?
+        return u16.from(int(text)?)?
 
     ## `self + other`, wrapping round past either end, as a u16's bits do.
     def wrapping_add(self, other: u16) -> u16:
-        u16((int(self) + int(other)) % 65536)
+        return u16((int(self) + int(other)) % 65536)
 
     ## `self - other`, wrapping round past either end, as a u16's bits do.
     def wrapping_sub(self, other: u16) -> u16:
-        u16((int(self) - int(other)) % 65536)
+        return u16((int(self) - int(other)) % 65536)
 
     ## `self * other`, wrapping round past either end, as a u16's bits do.
     def wrapping_mul(self, other: u16) -> u16:
-        u16((int(self) * int(other)) % 65536)
+        return u16((int(self) * int(other)) % 65536)
 
     ## `self + other`, or the nearest end of u16 when it's past one.
     def saturating_add(self, other: u16) -> u16:
         whole = int(self) + int(other)
         if whole < 0: return u16(0)
         if whole > 65535: return u16(65535)
-        u16(whole)
+        return u16(whole)
 
     ## `self - other`, or the nearest end of u16 when it's past one.
     def saturating_sub(self, other: u16) -> u16:
         whole = int(self) - int(other)
         if whole < 0: return u16(0)
         if whole > 65535: return u16(65535)
-        u16(whole)
+        return u16(whole)
 
     ## `self * other`, or the nearest end of u16 when it's past one.
     def saturating_mul(self, other: u16) -> u16:
         whole = int(self) * int(other)
         if whole < 0: return u16(0)
         if whole > 65535: return u16(65535)
-        u16(whole)
+        return u16(whole)
 
 extend u32:
     ## The `int` `x` as a u32, or an `InvalidValue` when it doesn't fit. Convert another size
@@ -235,47 +235,47 @@ extend u32:
     def from(x: int) -> u32 fails InvalidValue:
         if x < 0 or x > 4294967295:
             fail InvalidValue(message=f"{x} doesn't fit in u32, which holds 0 to 4294967295")
-        u32(x)
+        return u32(x)
 
     ## The u32 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     def parse(text: str) -> u32 fails InvalidValue:
-        u32.from(int(text)?)?
+        return u32.from(int(text)?)?
 
     ## `self + other`, wrapping round past either end, as a u32's bits do.
     def wrapping_add(self, other: u32) -> u32:
-        u32((int(self) + int(other)) % 4294967296)
+        return u32((int(self) + int(other)) % 4294967296)
 
     ## `self - other`, wrapping round past either end, as a u32's bits do.
     def wrapping_sub(self, other: u32) -> u32:
-        u32((int(self) - int(other)) % 4294967296)
+        return u32((int(self) - int(other)) % 4294967296)
 
     ## `self * other`, wrapping round past the end, as a u32's bits do.
     def wrapping_mul(self, other: u32) -> u32:
         # In two halves of `other`, so no product is past what an `int` holds.
         (a, b) = (int(self), int(other))
         high = a * (b >> 16) % 4294967296
-        u32((high * 65536 + a * (b & 65535)) % 4294967296)
+        return u32((high * 65536 + a * (b & 65535)) % 4294967296)
 
     ## `self + other`, or the nearest end of u32 when it's past one.
     def saturating_add(self, other: u32) -> u32:
         whole = int(self) + int(other)
         if whole < 0: return u32(0)
         if whole > 4294967295: return u32(4294967295)
-        u32(whole)
+        return u32(whole)
 
     ## `self - other`, or the nearest end of u32 when it's past one.
     def saturating_sub(self, other: u32) -> u32:
         whole = int(self) - int(other)
         if whole < 0: return u32(0)
         if whole > 4294967295: return u32(4294967295)
-        u32(whole)
+        return u32(whole)
 
     ## `self * other`, or the largest u32 when it's past it.
     def saturating_mul(self, other: u32) -> u32:
         (a, b) = (int(self), int(other))
         # Checked by division first, so no product is past what an `int` holds.
         if a != 0 and b > 4294967295 // a: return u32(4294967295)
-        u32(a * b)
+        return u32(a * b)
 
 extend u64:
     ## The `int` `x` as a u64, or an `InvalidValue` when it's negative. Convert another size
@@ -285,12 +285,12 @@ extend u64:
             fail InvalidValue(
                 message=f"{x} doesn't fit in u64, which holds 0 to 18446744073709551615",
             )
-        u64(x)
+        return u64(x)
 
     ## The u64 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
     ## What's past the largest `int` is read a digit at a time.
     def parse(text: str) -> u64 fails InvalidValue:
-        n = int(text) else as problem:
+        n = int(text) except problem:
             if not text.isdigit(): fail problem
             top = u64(9223372036854775807) * 2 + 1
             mut value = u64(0)
@@ -299,25 +299,25 @@ extend u64:
                 # Checked before it's multiplied, so it never goes past the top.
                 if value > (top - digit) // 10:
                     # Only digits, but as many as it likes: past 40, its first 20 and its length.
-                    shown = text if text.len() <= 40 else f"{text[0:20]}… ({text.len():,} digits)"
+                    shown = text if len(text) <= 40 else f"{text[0:20]}… ({len(text):,} digits)"
                     fail InvalidValue(
                         message=f"{shown} doesn't fit in u64, which holds 0 to 18446744073709551615",
                     )
                 value = value * 10 + digit
             return value
-        u64.from(n)?
+        return u64.from(n)?
 
     ## `self + other`, wrapping round past the end, as a u64's bits do.
     def wrapping_add(self, other: u64) -> u64:
         top = u64(9223372036854775807) * 2 + 1
         if self > top - other: return self - (top - other) - 1
-        self + other
+        return self + other
 
     ## `self - other`, wrapping round past 0, as a u64's bits do.
     def wrapping_sub(self, other: u64) -> u64:
         top = u64(9223372036854775807) * 2 + 1
         if other > self: return top - (other - self) + 1
-        self - other
+        return self - other
 
     ## `self * other`, wrapping round past the end, as a u64's bits do.
     def wrapping_mul(self, other: u64) -> u64:
@@ -326,22 +326,22 @@ extend u64:
         (a_low, a_high) = (self & low, self >> 32)
         (b_low, b_high) = (other & low, other >> 32)
         crossed = ((a_high * b_low) & low) + ((a_low * b_high) & low)
-        (a_low * b_low).wrapping_add((crossed & low) << 32)
+        return (a_low * b_low).wrapping_add((crossed & low) << 32)
 
     ## `self + other`, or the largest u64 when it's past it.
     def saturating_add(self, other: u64) -> u64:
         top = u64(9223372036854775807) * 2 + 1
         if self > top - other: return top
-        self + other
+        return self + other
 
     ## `self - other`, or 0 when it's below it.
     def saturating_sub(self, other: u64) -> u64:
         if other > self: return u64(0)
-        self - other
+        return self - other
 
     ## `self * other`, or the largest u64 when it's past it.
     def saturating_mul(self, other: u64) -> u64:
         top = u64(9223372036854775807) * 2 + 1
         # Checked by division first, so no product is past the top.
         if self != 0 and other > top // self: return top
-        self * other
+        return self * other

@@ -1,5 +1,5 @@
 def move(position: float, speed: float) -> float:
-    position + speed
+    return position + speed
 
 def main(stdout: Stdout):
     stdout.print(move(1.5, 2))

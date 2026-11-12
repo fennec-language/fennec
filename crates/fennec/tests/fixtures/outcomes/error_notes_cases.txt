@@ -1,4 +1,4 @@
-source 1a6bfe29419a80bcf2e29d3fbca1a05b05255948170da74f8672b51e1cf8c5b1
+source 173e7eb12d09126d95ffe69b09f03e29f42b9ff9719616cc08113719730e48f2
 code 1
 stdout 344
 [] Dial.Closed
@@ -19,6 +19,6 @@ note: second line
 10 |     if port < 0: fail .Refused(host, port)
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
   = in `connect`
-  = called from `both` at <dir>/cases.fen:18:11
+  = called from `both` at <dir>/cases.fen:18:18
   = called from `noted` at <dir>/cases.fen:25:9
   = called from `main` at <dir>/cases.fen:59:18

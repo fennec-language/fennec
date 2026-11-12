@@ -391,6 +391,10 @@ fn report_counts(counts: &heap::Counts, live: usize) {
         0 => said,
         writes => format!("{said} connection_writes {writes}"),
     };
+    let said = match heap::strays() {
+        0 => said,
+        strays => format!("{said} stray_frees {strays}"),
+    };
     let _ = writeln!(std::io::stderr(), "{said} live {live}");
 }
 

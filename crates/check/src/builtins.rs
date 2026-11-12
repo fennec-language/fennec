@@ -409,7 +409,7 @@ impl FnCx<'_> {
             Some("Process") if name == "run" => &["cwd", "env", "input", "most_output", "timeout"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
                 self.one_request_body(args, span);
-                &["body", "headers", "json", "params", "timeout"]
+                &["body", "headers", "json", "most_body", "params", "timeout"]
             }
             _ => &[],
         };
@@ -546,7 +546,7 @@ impl FnCx<'_> {
                         self.error(mismatch("`crlf`", &Type::Bool, &ty, arg.value.span));
                     }
                 }
-                Some(option @ ("indent" | "level" | "port" | "most_output" | "most"))
+                Some(option @ ("indent" | "level" | "port" | "most_output" | "most_body" | "most"))
                     if named.contains(&option) =>
                 {
                     if !self.checker.fits(&Type::Int, &ty) {

@@ -19,12 +19,18 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
-    if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+    if llvm_expected() {
         let missing = tools.as_ref().err().map_or("", String::as_str);
         assert!(tools.is_ok(), "FENNEC_EXPECT_LLVM is set, but {missing}");
         assert!(runtime, "FENNEC_EXPECT_LLVM is set, but the runtime library didn't build");
     }
     tools.is_ok() && runtime
+}
+
+/// Whether `FENNEC_EXPECT_LLVM` says LLVM is the backend that has to work here, as CI's Linux and
+/// Windows test jobs say, so what's missing fails a test rather than skipping it.
+pub(crate) fn llvm_expected() -> bool {
+    std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty())
 }
 
 /// A folder of its own, emptied when the test is done.
@@ -1756,13 +1762,12 @@ fn changing_a_list_in_a_shared_value_in_a_task_copies_nothing() -> std::io::Resu
     Ok(())
 }
 
-/// Changes to a list in a `shared` value that still copy it under its lock: an `insert`, and a change
-/// inside one of its items, like a list in a struct in it. A crash puts back an append or a pop from
-/// a note of each in the lock's rollback log, but these change what a note of one place can't put
-/// back, so the log keeps the list as it was, and the change copies it. `insert(0, x)` takes time
-/// in proportion to the list's length anyway.
+/// Changes to a list in a `shared` value under its lock that copy nothing: an `insert`, made in place
+/// and noted in the lock's rollback log for a crash to take out again, and a change inside one of
+/// its items, like a list in a struct in it. That one still copies: reaching the item, the log
+/// holds it as it was, so a list in it has a second owner, and changing it copies it.
 #[test]
-#[ignore = "a crash puts back only appends and pops from notes; an insert, or a change inside an item, under a `lock ... as ref` copies the list"]
+#[ignore = "a change inside an item of a list under a `lock ... as ref` copies what it changes: the log holds the item, so a list in it is shared (#1469); an insert is made in place"]
 fn changes_inside_a_list_in_a_shared_value_copy_nothing() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -3781,6 +3786,45 @@ fn steps_proved_safe_match_what_was_pinned_at_the_ends_of_the_ints() -> std::io:
     };
     same_as_expected_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
     same_as_expected_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
+}
+
+/// A print that fails stops the program there, as anything that fails does. Its standard output
+/// is a file it may only write 512 bytes of (`ulimit -f 1`, with the signal for passing that
+/// ignored), so writing fails once a run has kept enough to write out: what comes after the loop
+/// never runs, and the failure says why. It used to carry on and say so only at the end.
+#[cfg(unix)]
+#[test]
+fn a_print_that_fails_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, stderr: Stderr):\n    for i in range(100000):\n        stdout.print(i)\n    stderr.write_line(\"went on\")?\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("print_fails")?;
+        let (program, executable) = (dir.join("prints.fen"), dir.join("prints"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' XFSZ; ulimit -f 1; exec \"$0\" > \"$1\"")
+            .arg(&executable)
+            .arg(dir.join("printed.txt"))
+            .output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert!(err.starts_with("error: couldn't write output"), "{how:?}: {err}");
+        assert!(!err.contains("went on"), "{how:?}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "{how:?}: {err}");
+    }
+    Ok(())
 }
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:

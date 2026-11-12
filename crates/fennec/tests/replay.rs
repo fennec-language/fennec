@@ -26,11 +26,14 @@ fn folder(name: &str) -> std::io::Result<fennec_temp::Temp> {
 type Outcome = (String, String, Option<i32>);
 
 fn outcome(ran: &Output) -> Outcome {
-    (
-        String::from_utf8_lossy(&ran.stdout).into_owned(),
-        String::from_utf8_lossy(&ran.stderr).into_owned(),
-        ran.status.code(),
-    )
+    let mut said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    // A program a signal stopped has no exit code, so which signal goes with what it said: a run
+    // killed with nothing printed is otherwise only `None`, which says nothing of why.
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&ran.status) {
+        let _ = std::fmt::Write::write_fmt(&mut said, format_args!("[stopped by signal {signal}]"));
+    }
+    (String::from_utf8_lossy(&ran.stdout).into_owned(), said, ran.status.code())
 }
 
 /// Records a run of `program` with `input` on its standard input, then replays it, giving back both
@@ -664,6 +667,97 @@ fn tasks_printing_replay_their_output_in_the_order_it_went_out() -> std::io::Res
     assert_eq!(recorded.2, Some(0), "{}", recorded.1);
     assert_eq!(recorded.0.lines().count(), 64 + 3 * 2500 + 1);
     for threads in ["1", "4", "1", "4", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An ordered stream whose body prints, read until a `break`, while its chunks run ahead.
+const STREAM_PAST_A_BREAK: &str = "def shown(stdout: Stdout, n: int) -> int:
+    stdout.print(\"chunk\", n)
+    return n * n
+
+def main(stdout: Stdout):
+    many = [n for n in range(20000)]
+    for square in (shown(stdout, n) for n in parallel(many)):
+        if square > 900:
+            break
+    stdout.print(\"after break\")
+";
+
+/// A stream's chunks that ran ahead of a `break` in the recording run in its replay too, and no
+/// others do, so what they printed comes out the same, however many threads the replay is given.
+#[test]
+fn a_streams_chunks_run_past_a_break_replay_as_they_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stream-break")?;
+    let program = dir.join("stream.fen");
+    std::fs::write(&program, STREAM_PAST_A_BREAK)?;
+    let log = dir.join("stream.log");
+    let mut record = fennec_command();
+    // The reader waits for the workers to run each chunk in its window, so chunks run past the
+    // break however loaded the machine: left to itself, a reader that gets to every chunk first
+    // runs them all, and none runs past it.
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1").env("FENNEC_STREAM_RUN_AHEAD", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    let read = recorded.0.lines().filter(|line| line.starts_with("chunk ")).count();
+    assert!(read > 32, "no chunk ran past the break, so this tests nothing: {}", recorded.0);
+    for threads in ["1", "7", "1", "7"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An ordered stream whose body prints, with an item that fails partway.
+const STREAM_FAILING: &str = "def shown(stdout: Stdout, n: int) -> int:
+    stdout.print(\"chunk\", n)
+    return 1000 // (n - 3000)
+
+def main(stdout: Stdout):
+    many = [n for n in range(20000)]
+    stdout.print(\"never\", sum(part for part in (shown(stdout, n) for n in parallel(many))))
+";
+
+/// A stream whose item fails stops the program where it did when recorded: its replay prints
+/// what the chunks that ran printed and fails the same way, however many threads it's given.
+#[test]
+fn a_stream_that_fails_replays_as_it_failed() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stream-fails")?;
+    let program = dir.join("stream.fen");
+    std::fs::write(&program, STREAM_FAILING)?;
+    let log = dir.join("stream.log");
+    let mut record = fennec_command();
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_before(DEADLINE)?);
+    assert_eq!(recorded.2, Some(1), "{}", recorded.1);
+    assert!(recorded.1.contains("division by zero") && !recorded.0.contains("never"), "{recorded:?}");
+    for threads in ["1", "7", "1", "7"] {
         let replayed = outcome(
             &fennec_command()
                 .env("FENNEC_THREADS", threads)

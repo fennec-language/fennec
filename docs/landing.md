@@ -41,7 +41,7 @@ A check that fails and then passes on the same code is a flake, and nothing is e
 
 The coverage lane reads the ledger nightly.
 
-- **On your machine:** a failed gate step is kept under the tree it tested. The tree is the code itself; the commit is new each time, since the gate merges `main` first. When a gate on the same tree passes, what failed before goes in `flakes.log` in Fennec's folder, `~/.fennec`, beside `work` rather than in it, since what's in `work` is swept after an hour.
+- **On your machine:** a failed gate step is kept under the change it tested: the tree, and the branch with its own commits, the ones not on main. When a later gate of the same change passes, what failed before goes in `flakes.log` in Fennec's folder, `~/.fennec`, beside `work` rather than in it, since what's in `work` is swept after an hour. The same change is the same tree, or the same branch with the same commits of its own, since the gate merges `main` first and main may have moved. A failure on a branch whose own commits changed before it passed was fixed, not shown to be a flake, so it's dropped.
 - **In CI:** a run that passes only after jobs ran again finds the jobs that failed in its earlier attempts. It keeps their failures as the run's `flakes` artifact.
 
 `.github/scripts/fennec-flakes` lists the ledger by test, most often first. It reads `~/.fennec/flakes.log` or the ledgers it's given, such as a downloaded artifact. `--show TEST` prints a test's entries whole.

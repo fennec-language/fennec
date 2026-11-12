@@ -239,6 +239,8 @@ impl Emit<'_, '_, '_> {
             self.declare("declare ptr @fennec_list_sorted_with(ptr, ptr) nounwind");
             let result = self.temp();
             self.line(&format!("{result} = call ptr @fennec_list_sorted_with(ptr {list}, ptr {compare})"));
+            // A type's own `<` can fail, which ends the sort.
+            self.leave_if_failed();
             return self.assign(dest, &result);
         }
         let how = Self::sort_kind(&held)?;

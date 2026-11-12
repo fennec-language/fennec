@@ -40,6 +40,8 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
 - `FENNEC_HASH_SEED`: a fixed seed for dict hashing, so a run's order repeats. `fennec test` sets it.
 - `FENNEC_GATE_LOCK`: the lock file the pre-push hook takes, so the landing script's test can use its own.
+- `FENNEC_DOCKER_CONTEXT`: the Docker context the gate's Linux check runs in, in place of `colima-fennec`, Fennec's own VM. See [landing.md](landing.md).
+- `FENNEC_LINUX_CHECK_HELD`: set by the gate's Linux check for itself, run again under its lock: the lock's file descriptor.
 - `FENNEC_PARKED_STOP`: a parked-code test runs itself again with this set, to crash on purpose.
 - `FENNEC_CONNECTIONS`: how many connections an ignored serve memory test opens, run by hand.
 - `FENNEC_AI_TEST_BASE_URL`: the host `tools/ai-test` sends its requests to.

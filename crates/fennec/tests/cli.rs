@@ -2673,6 +2673,72 @@ fn a_kit_from_git_naming_a_file_repository_is_refused() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A pinned kit that uses a capability it wasn't given is broken, or changed: the error says so,
+/// and offers no fix. `fennec fix` once handed such a kit the program's `Fs`, editing the kit in the
+/// store and `main` to pass it, and left the store unlike its pin. Now it changes neither.
+#[test]
+fn no_tool_changes_a_kit_this_one_depends_on() {
+    let dir = scratch("fix-dependency").unwrap();
+    let repository = dir.join("helper");
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(
+        repository.join("kit.toml"),
+        "name = \"helper\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
+    )
+    .unwrap();
+    let library = "export def tidy(text: str) -> str:\n    _ = fs\n    return text.strip()\n";
+    std::fs::write(repository.join("src/lib.fen"), library).unwrap();
+    let commit = committed_to_git(&repository).unwrap();
+    let kit = dir.join("app");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nhelper = {{ git = \"file:///{}\", commit = \"{commit}\" }}\n",
+            repository.display().to_string().replace('\\', "/").trim_start_matches('/')
+        ),
+    )
+    .unwrap();
+    let main = "from helper import tidy\n\ndef main(stdout: Stdout, fs: Fs):\n    stdout.print(tidy(\"  hello  \"))\n    return\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .arg(command)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap()
+    };
+    // It pins the kit, and then says the program doesn't check, as it doesn't.
+    let updated = fennec("update");
+    assert!(kit.join("kit.lock").is_file(), "{}", text(&updated.stderr));
+    assert!(
+        text(&updated.stderr).contains("this is in a kit this one depends on"),
+        "{}",
+        text(&updated.stderr)
+    );
+    let checked = fennec("check");
+    let said = text(&checked.stderr);
+    assert!(!checked.status.success());
+    assert!(
+        said.contains("`fs` doesn't exist")
+            && said.contains(
+                "this is in a kit this one depends on, which no tool changes: the kit changed or is broken"
+            ),
+        "{said}"
+    );
+    assert!(!said.contains("parameter"), "the error still offers to hand the kit a capability: {said}");
+    let fixed = fennec("fix");
+    assert!(!fixed.status.success());
+    assert!(!text(&fixed.stdout).contains("fixed"), "{}", text(&fixed.stdout));
+    let stored: Vec<_> = std::fs::read_dir(dir.join("home/kits")).unwrap().flatten().collect();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(std::fs::read_to_string(stored[0].path().join("src/lib.fen")).unwrap(), library);
+    assert_eq!(std::fs::read_to_string(kit.join("src/main.fen")).unwrap(), main);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
 #[test]
 fn fennec_update_pins_a_kit_from_git() {
@@ -2892,6 +2958,96 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     let again = fennec(&["run", "."]);
     assert!(again.status.success(), "{}", text(&again.stderr));
     assert!(text(&again.stdout).starts_with("18\n"), "{}", text(&again.stdout));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A program or kit handed nothing can't reach the standard library's internals: `std.intrinsics`
+/// turns a number into a pointer, so reaching it would make "a kit does I/O only with what it's
+/// handed" false. Every way of writing the import is refused, in a program and in a dependency,
+/// by the module it reaches rather than how it's spelled, and so is an `@intrinsic` of its own.
+#[test]
+fn a_program_or_kit_handed_nothing_cant_reach_std_internals() {
+    let dir = scratch("std-internals").unwrap();
+    let uses = |module: &str| {
+        format!(
+            "def main(stdout: Stdout):\n    channel = {module}.channel_new(1)\n    stdout.print(channel)\n"
+        )
+    };
+    let refused = "`std.intrinsics` is for the standard library";
+    let programs = [
+        format!("from std import intrinsics\n\n{}", uses("intrinsics")),
+        format!("from std import intrinsics as inner\n\n{}", uses("inner")),
+        format!("from std import json, intrinsics\n\n{}", uses("intrinsics")),
+        format!("from std import intrinsics, json\n\n{}", uses("intrinsics")),
+        format!("import std.intrinsics\n\n{}", uses("std.intrinsics")),
+        format!("import std.intrinsics as inner\n\n{}", uses("inner")),
+        "from std.intrinsics import channel_new\n\ndef main(stdout: Stdout):\n    stdout.print(channel_new(1))\n"
+            .to_owned(),
+        "from std.intrinsics import channel_new as made\n\ndef main(stdout: Stdout):\n    stdout.print(made(1))\n"
+            .to_owned(),
+    ];
+    for (at, source) in programs.iter().enumerate() {
+        let program = dir.join(format!("reach_{at}.fen"));
+        std::fs::write(&program, source).unwrap();
+        // `run` checks as `check` does: once is enough to show it does.
+        let commands: &[&str] = if at == 0 { &["check", "run"] } else { &["check"] };
+        for &command in commands {
+            let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
+            assert!(!output.status.success(), "{command} {source}");
+            assert!(text(&output.stderr).contains(refused), "{command} {source}: {}", text(&output.stderr));
+            assert!(text(&output.stdout).is_empty(), "{command} {source}: {}", text(&output.stdout));
+        }
+    }
+    // The other names of a list are still imported, so the refusal is the only error.
+    let listed = dir.join("listed.fen");
+    std::fs::write(
+        &listed,
+        "from std import json, intrinsics\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n",
+    )
+    .unwrap();
+    let output = fennec(&["check", listed.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stderr).matches("error:").count(), 1, "{}", text(&output.stderr));
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
+    let own = dir.join("own_intrinsic.fen");
+    std::fs::write(&own, "@intrinsic\ndef channel_new(size: int) -> int\n\ndef main(stdout: Stdout):\n    stdout.print(channel_new(1))\n").unwrap();
+    let output = fennec(&["check", own.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&output.stderr).contains("only the standard library has `@intrinsic` functions"),
+        "{}",
+        text(&output.stderr)
+    );
+
+    // A dependency that writes the import is refused too, though the program never names it.
+    write_kit(
+        &dir.join("helper"),
+        "helper",
+        "",
+        &[(
+            "lib.fen",
+            "from std import intrinsics\n\nexport def size() -> int:\n    return intrinsics.channel_new(1)\n",
+        )],
+    )
+    .unwrap();
+    let game = dir.join("game");
+    write_kit(
+        &game,
+        "game",
+        "[dependencies]\nhelper = { path = \"../helper\" }\n",
+        &[("main.fen", "from helper import size\n\ndef main(stdout: Stdout):\n    stdout.print(size())\n")],
+    )
+    .unwrap();
+    for command in ["check", "build"] {
+        let output = crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}");
+        assert!(text(&output.stderr).contains(refused), "{command}: {}", text(&output.stderr));
+        assert!(text(&output.stderr).contains("lib.fen"), "{command}: {}", text(&output.stderr));
+        assert!(text(&output.stdout).is_empty(), "{command}: {}", text(&output.stdout));
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

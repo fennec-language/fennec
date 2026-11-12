@@ -25,6 +25,12 @@ jobs:
       # The kernels are built by `fennec build --llvm`, which uses the toolchain's `opt` and `llc`.
       - run: rustup component add llvm-tools-preview
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
+      # The runtime with threads, for kernels that `launch` a task, on its own so the others don't
+      # get `threads` too.
+      - name: Build the runtime with threads
+        run: |
+          cargo build --release --locked -p fennec-runtime --features threads --target-dir target/threads
+          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
       - name: Install what counts instructions
         run: |
           .github/scripts/apt.sh valgrind

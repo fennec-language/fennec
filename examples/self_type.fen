@@ -13,19 +13,19 @@ struct Money:
     cents: int
 
     def +(self, other: Money) -> Money:
-        Money(cents=self.cents + other.cents)
+        return Money(cents=self.cents + other.cents)
 
     def <(self, other: Money) -> bool:
-        self.cents < other.cents
+        return self.cents < other.cents
 
     def abs(self) -> Money:
-        Money(cents=self.cents.abs())
+        return Money(cents=abs(self.cents))
 
 def twice[T: Addable](x: T) -> T:
-    x + x
+    return x + x
 
 def size[T: Signed](x: T) -> T:
-    x.abs()
+    return abs(x)
 
 def main(stdout: Stdout):
     stdout.print(twice(Money(cents=5)), twice(2), twice(1.5), twice("ab"))

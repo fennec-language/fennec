@@ -38,15 +38,15 @@ struct Unit:
 def order(i: int) -> Order:
     match i % 3:
         case 0:
-            .Hold
+            return .Hold
         case 1:
-            .Move(x=i, y=-i)
+            return .Move(x=i, y=-i)
         case _:
-            .Say(text=f"unit {i} says \"hello\"\n")
+            return .Say(text=f"unit {i} says \"hello\"\n")
 
 def unit(i: int) -> Unit:
     kinds = [Kind.Player, Kind.Monster, Kind.Trader]
-    Unit(
+    return Unit(
         id=i,
         name=f"fox-{i}",
         active=i % 2 == 0,
@@ -63,7 +63,7 @@ def unit(i: int) -> Unit:
 def score(units: list[Unit]) -> int:
     mut total = 0
     for unit in units:
-        total += unit.id + unit.name.len() + unit.tags.len() + unit.stats["attack"]
+        total += unit.id + len(unit.name) + len(unit.tags) + unit.stats["attack"]
         if unit.active:
             total += 1
         if unit.pet is not None:
@@ -77,17 +77,17 @@ def score(units: list[Unit]) -> int:
                 case .Move(x, y):
                     total += x - y
                 case .Say(text):
-                    total += text.len()
-    total
+                    total += len(text)
+    return total
 
 def main(stdout: Stdout):
     text = json.dumps([unit(i) for i in range(300)])
     mut scored = 0
     mut written = 0
     for _ in range(40):
-        units = json.loads[list[Unit]](text) else as error:
+        units = json.loads[list[Unit]](text) except error:
             stdout.print(error.message)
             continue
         scored += score(units)
-        written += json.dumps(units).len()
-    stdout.print(text.len(), scored, written)
+        written += len(json.dumps(units))
+    stdout.print(len(text), scored, written)

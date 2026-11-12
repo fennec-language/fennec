@@ -1,7 +1,7 @@
 from std import math
 
 def distance(squared: float) -> float:
-    math.sqrt(squared)
+    return math.sqrt(squared)
 
 def main(stdout: Stdout):
     stdout.print(distance(9.0))

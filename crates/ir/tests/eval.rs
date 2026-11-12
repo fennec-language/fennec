@@ -95,9 +95,8 @@ fn collections_comprehensions_and_structs_are_worked_out() {
 #[test]
 fn a_constant_reads_another_and_calls_the_programs_functions() {
     let source = "LIMIT = 4\nWORDS = [\"a\", \"bb\"]\nDOUBLE = twice(LIMIT)\n\
-                  LENGTHS = {word: word.len() for word in WORDS}\n\
-                  GREETING = f\"{LIMIT} and {DOUBLE:.1f}\"\n\n\
-                  def twice(n: int) -> int:\n    mut total = 0\n    for _ in range(2):\n        total += n\n    total\n\n\
+                  LENGTHS = {word: len(word) for word in WORDS}\nGREETING = f\"{LIMIT} and {DOUBLE:.1f}\"\n\n\
+                  def twice(n: int) -> int:\n    mut total = 0\n    for _ in range(2):\n        total += n\n    return total\n\n\
                   def main(stdout: Stdout):\n    stdout.print(DOUBLE, LENGTHS, GREETING)\n";
     let all = worked(source, 1_000_000);
     let said = |name: &str| all.iter().find(|(own, _)| own == name).map(|(_, said)| said.clone()).unwrap();

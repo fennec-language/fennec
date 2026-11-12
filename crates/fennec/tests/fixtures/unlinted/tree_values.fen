@@ -18,20 +18,20 @@ struct Layer:
 def count(shape: Shape) -> int:
     match shape:
         case .Dot(_):
-            1
+            return 1
         case .Group(first, rest):
-            count(first) + count(rest)
+            return count(first) + count(rest)
         case .Moved(_, inner):
-            count(inner)
+            return count(inner)
 
 def shift(shape: Shape, dx: int) -> Shape:
     match shape:
         case .Dot(at):
-            .Dot(Point(x=at.x + dx, y=at.y))
+            return .Dot(Point(x=at.x + dx, y=at.y))
         case .Group(first, rest):
-            .Group(shift(first, dx), rest=shift(rest, dx))
+            return .Group(shift(first, dx), rest=shift(rest, dx))
         case moved:
-            .Moved(Point(x=dx, y=0), moved)
+            return .Moved(Point(x=dx, y=0), moved)
 
 def first_dot(shape: Shape) -> Point:
     mut at = shape
@@ -51,17 +51,17 @@ def deepest(shapes: list[Shape], limit: int) -> int:
         if n > limit: break
         if n > best:
             best = n
-    best
+    return best
 
 def row(n: int) -> Shape:
     mut shape = Shape.Dot(Point(x=0, y=0))
     for i in range(1, n):
         shape = .Group(.Dot(Point(x=i, y=i * i)), rest=shape)
-    shape
+    return shape
 
 def main(stdout: Stdout):
     shapes = [row(1), row(3), shift(row(4), 10), row(50)]
-    stdout.print(deepest(shapes, 10), shapes.len())
+    stdout.print(deepest(shapes, 10), len(shapes))
     for shape in shapes:
         stdout.print(count(shape), first_dot(shape))
     stdout.print(shapes[2])

@@ -8,32 +8,33 @@ def total_health(names: list[str], health: dict[str, int]) -> int:
     for name in names:
         points = health.get(name) else continue
         total += points
-    total
+    return total
 
 def health_of(health: dict[str, int], name: str) -> int:
     points = health.get(name) else return -1
-    points + 1
+    return points + 1
 
 def heal(ref health: dict[str, int], name: str):
     points = health.get(name) else return
     health[name] = points + 5
 
 def must_find(health: dict[str, int], name: str) -> int fails NotFound:
-    health.get(name) else fail NotFound(name=name)
+    return health.get(name) else fail NotFound(name=name)
 
 def parse_all(texts: list[str]) -> list[int]:
     mut found = []
     for text in texts:
         # A failure counts as missing too.
-        found.append(int(text) else continue)
-    found
+        number = int(text) except InvalidValue(): continue
+        found.append(number)
+    return found
 
 def first_small(rows: list[list[str]]) -> str:
     for row in rows:
         for word in row:
-            size = int(word) else continue
+            size = int(word) except InvalidValue(): continue
             if size < 3: return word
-    "none"
+    return "none"
 
 # A loop writing its items back still does, however it's left.
 def double_until_missing(ref values: list[int], known: dict[int, int]):
@@ -49,9 +50,10 @@ def main(stdout: Stdout):
     mut held = health
     heal(ref held, "nobody")
     heal(ref held, "kit")
-    stdout.print(held["kit"], held.len())
-    stdout.print(must_find(health, "ash") else 0)
-    points = must_find(health, "nobody") else as why:
+    stdout.print(held["kit"], len(held))
+    must_find_value = must_find(health, "ash") except NotFound(): 0
+    stdout.print(must_find_value)
+    points = must_find(health, "nobody") except why:
         stdout.print("no", why.name)
         0
     stdout.print(points)

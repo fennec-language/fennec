@@ -8,7 +8,7 @@ from std import compress
 
 ## A save written small: what a game might keep on disk.
 def packed_save(text: str) -> bytes:
-    compress.gzip(text, level=9)
+    return compress.gzip(text, level=9)
 
 test "what goes in comes back, at every level"():
     text = "the quick brown fox jumps over the lazy dog. " * 200
@@ -19,8 +19,8 @@ test "what goes in comes back, at every level"():
 
 test "repeats get small"():
     text = "fennec " * 1000
-    assert compress.gzip(text).len() < 60
-    assert compress.deflate(text, level=0).len() > text.len()
+    assert len(compress.gzip(text)) < 60
+    assert len(compress.deflate(text, level=0)) > len(text)
 
 test "it reads what Python's zlib writes"():
     # `zlib.compress(b"hello")`.
@@ -34,7 +34,7 @@ test "data that isn't what it says fails"():
     assert problem is not None
     assert problem.message == "this isn't gzip data: it doesn't start as gzip data does"
     mut numbers = [b for b in compress.gzip("fennec")]
-    numbers[numbers.len() - 6] = numbers[numbers.len() - 6] ^ 1
+    numbers[len(numbers) - 6] = numbers[len(numbers) - 6] ^ 1
     problem = failure_of(() => compress.gunzip(bytes(numbers))?)
     assert problem is not None
     assert problem.message == "this isn't gzip data: its check doesn't match what it holds"
@@ -43,7 +43,7 @@ test "a small file that would give back too much stops at most="():
     # A megabyte of zeros is about a kilobyte as gzip, and `gunzip` reads members one after
     # another: 12 of them are 12 MB from about 12 KB, past the 10 MB given.
     member = compress.gzip("\x00" * 1_000_000, level=9)
-    assert member.len() < 4096
+    assert len(member) < 4096
     mut bomb = bytes([])
     for _ in range(12):
         bomb = bomb + member
@@ -53,7 +53,7 @@ test "a small file that would give back too much stops at most="():
         problem.message
         == "the gzip data holds more than 10,000,000 bytes: give `most=` a bigger number if it needs one"
     )
-    assert compress.gunzip(member, most=1_000_000)?.len() == 1_000_000
+    assert len(compress.gunzip(member, most=1_000_000)?) == 1_000_000
     small = compress.zlib("\x00" * 100_000)
     assert failure_of(() => compress.unzlib(small, most=99_999)?) is not None
 
@@ -64,4 +64,5 @@ test "any bytes come back as they were" for numbers: list[int]:
 def main(stdout: Stdout):
     save = "{\"level\": 3, \"score\": 120} " * 100
     small = packed_save(save)
-    stdout.print(save.len(), small.len(), (compress.gunzip(small) else bytes([])) == save.encode())
+    unpacked = compress.gunzip(small) except InvalidValue(): bytes([])
+    stdout.print(len(save), len(small), unpacked == save.encode())

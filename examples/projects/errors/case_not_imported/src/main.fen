@@ -1,10 +1,9 @@
 from inventory import take
 
 def main(stdout: Stdout):
-    item = take("rope") else as why:
-        match why:
-            case OutOfStock(item):
-                f"no {item} left"
-            case _:
-                f"{why}"
+    item = take("rope") except why:
+        case OutOfStock(item):
+            f"no {item} left"
+        case _:
+            f"{why}"
     stdout.print(item)

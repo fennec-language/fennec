@@ -1,5 +1,5 @@
 def repeat(text: str, times = 2) -> str:
-    text * times
+    return text * times
 
 def main(stdout: Stdout):
     stdout.print(repeat("ab", 3))

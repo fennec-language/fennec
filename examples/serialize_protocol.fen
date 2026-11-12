@@ -77,7 +77,7 @@ struct Shown:
         self.sequence(items)
 
     def exact(self) -> bool:
-        False
+        return False
 
     def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
@@ -90,7 +90,7 @@ struct Shown:
         x.serialize(ref self)
 
     def shown(self) -> str:
-        " ".join(self.parts)
+        return " ".join(self.parts)
 
 # Another format takes the same types, and counts instead of writing.
 struct Counted:
@@ -162,7 +162,7 @@ struct Counted:
         self.sequence(items)
 
     def exact(self) -> bool:
-        False
+        return False
 
     def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
@@ -194,7 +194,7 @@ struct Squad:
 def shown[T: Serializable](x: T) -> str:
     mut out = Shown()
     out.value(x)
-    out.shown()
+    return out.shown()
 
 test "plain values write themselves":
     assert shown(3) == "3"

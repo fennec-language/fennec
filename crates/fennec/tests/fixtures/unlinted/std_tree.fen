@@ -20,10 +20,10 @@ def world_x(scene: Tree[Part], id: PartId) -> float:
     mut x = scene[id].x
     for above in scene.ancestors(id):
         x += scene[above].x
-    x
+    return x
 
 def names(scene: Tree[Part], ids: list[PartId]) -> list[str]:
-    [scene[id].name for id in ids]
+    return [scene[id].name for id in ids]
 
 def main(stdout: Stdout):
     mut scene = Tree[Part]()
@@ -33,7 +33,7 @@ def main(stdout: Stdout):
     hub = scene.add(Part(name="hub", x=0.5), parent=wheel)
     door = scene.add(Part(name="door", x=1.0), parent=car)
     camera = Camera(follows=hub)
-    stdout.print(scene.len(), names(scene, scene.roots()))
+    stdout.print(len(scene), names(scene, scene.roots()))
 
     # Values are changed through an ID.
     scene[car].x += 5.0
@@ -60,9 +60,9 @@ def main(stdout: Stdout):
     stdout.print(world_x(scene, hub), world_x(saved, hub))
 
     # A node can't end up below itself.
-    scene.move(trailer, parent=hub) else as why:
+    scene.move(trailer, parent=hub) except why:
         stdout.print(why.message)
-    scene.move(hub, parent=hub) else as why:
+    scene.move(hub, parent=hub) except why:
         stdout.print(why.message)
 
     scene.make_root(wheel)
@@ -71,12 +71,12 @@ def main(stdout: Stdout):
     # Removing a node removes what's below it, and old IDs say so.
     scene.remove(wheel)
     stdout.print(
-        scene.len(),
+        len(scene),
         names(scene, scene.roots()),
         scene.get(hub),
         scene.get(car) == scene[car],
     )
     scene.remove(trailer)
-    stdout.print(names(scene, scene.roots()), saved.len(), saved[hub].name)
+    stdout.print(names(scene, scene.roots()), len(saved), saved[hub].name)
     scene.remove(door)
     stdout.print(scene.children(car))

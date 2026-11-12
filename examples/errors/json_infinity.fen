@@ -5,5 +5,5 @@ struct Limits:
     by_name: dict[str, float]
 
 def main(stdout: Stdout):
-    endless = float("inf") else 0.0
+    endless = float("inf") except InvalidValue(): 0.0
     stdout.print(json.dumps(Limits(by_name={"low": 0.5, "high": endless})))

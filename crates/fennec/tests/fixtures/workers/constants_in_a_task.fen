@@ -4,7 +4,7 @@ LIST = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 TITLE = "a constant title long enough to live in a block of its own"
 
 def show(stdout: Stdout):
-    stdout.print(TITLE, LIST.len(), LIST)
+    stdout.print(TITLE, len(LIST), LIST)
 
 def main(clock: Clock, stdout: Stdout) fails Crashed:
     with launch(() => show(stdout))?:

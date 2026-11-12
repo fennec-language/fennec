@@ -30,8 +30,8 @@ def looped(stdout: Stdout, name: str) fails Boom:
     stdout.print("after", name)
 
 def worker(stdout: Stdout):
-    named(stdout, "named in a task") else stdout.print("failed")
-    looped(stdout, "looped in a task") else stdout.print("failed")
+    named(stdout, "named in a task") except Boom(): stdout.print("failed")
+    looped(stdout, "looped in a task") except Boom(): stdout.print("failed")
 
 def started(stdout: Stdout) fails Crashed:
     with launch(() => worker(stdout))?:

@@ -81,7 +81,7 @@ fn a_run_after_an_edit_shows_the_lints_all_of_the_kit_has() {
     let dir = scratch("edits_linted").unwrap();
     assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
     let kit = dir.join("demo");
-    let maths = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
+    let maths = "## Twice the number.\nexport def twice(number: int) -> int:\n    return number * 2\n";
     let main = "from maths import twice\n\ndef main(stdout: Stdout):\n    mut doubled = twice(21)\n    stdout.print(doubled)\n";
     std::fs::write(kit.join("src/maths.fen"), maths).unwrap();
     std::fs::write(kit.join("src/main.fen"), main).unwrap();
@@ -123,7 +123,7 @@ fn a_run_lints_the_files_main_doesnt_import_too() {
     let kit = dir.join("demo");
     let main = "def main(stdout: Stdout):\n    mut doubled = 42\n    stdout.print(doubled)\n";
     std::fs::write(kit.join("src/main.fen"), main).unwrap();
-    let spare = "## Half the number.\nexport def half(number: int) -> int:\n    mut halved = number / 2\n    halved\n";
+    let spare = "## Half the number.\nexport def half(number: int) -> int:\n    mut halved = number / 2\n    return halved\n";
     std::fs::write(kit.join("src/spare.fen"), spare).unwrap();
     let fennec = |args: &[&str]| {
         let mut command = crate::executables::fennec_command();
@@ -196,7 +196,7 @@ fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
     std::fs::write(
         &program,
         "error DbError:\n    why: str\n\nstruct Log:\n    lines = list[str]()\n\n\
-         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 else:\n        \
+         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 except:\n        \
          log.lines.append(\"rolled back\")\n        fail DbError(why=\"lost the connection\")\n    pass\n\n\
          def insert(n: int) fails DbError:\n    if n > 1: fail DbError(why=\"duplicate row\")\n\n\
          def main(stdout: Stdout) fails DbError:\n    mut log = Log()\n    \
@@ -235,8 +235,8 @@ fn stdin_reads_a_line_or_a_chunk_at_a_time() -> std::io::Result<()> {
     std::fs::write(
         &program,
         "def main(stdin: Stdin, stdout: Stdout) fails IoError:\n    stdout.print(stdin.read_line()?)\n    \
-         stdout.print(stdin.read_line()?)\n    stdout.print(stdin.read_chunk(5)?.decode() else \"?\")\n    \
-         stdout.print(stdin.lines())\n    stdout.print(stdin.read_line()?, stdin.read_chunk(5)?.len())\n",
+         stdout.print(stdin.read_line()?)\n    decode_value = stdin.read_chunk(5)?.decode() except InvalidValue(): \"?\"\n    stdout.print(decode_value)\n    \
+         stdout.print(stdin.lines())\n    stdout.print(stdin.read_line()?, len(stdin.read_chunk(5)?))\n",
     )?;
     let output =
         fennec_in(&dir, &["run", "--no-test", &program.to_string_lossy()], "one\ntwo\r\nthree four\nlast\n")?;
@@ -256,7 +256,7 @@ fn stdin_is_a_reader_through_reader() -> std::io::Result<()> {
         &program,
         "from std.io import Reader\n\n\
          def counted[R: Reader](ref src: R) -> int fails IoError:\n    \
-         mut count = 0\n    for _ in src.lines()?:\n        count += 1\n    count\n\n\
+         mut count = 0\n    for _ in src.lines()?:\n        count += 1\n    return count\n\n\
          def main(stdin: Stdin, stdout: Stdout) fails IoError:\n    mut src = stdin.reader()\n    \
          stdout.print(src.read_line()?)\n    stdout.print(counted(ref src)?)\n",
     )?;
@@ -391,7 +391,7 @@ fn fennec_on(command: &str, name: &str, source: &str) -> std::io::Result<Output>
 #[test]
 fn run_stops_runaway_recursion_with_an_error() {
     // The depth limit, not a stack overflow, is what stops a program that recurses forever.
-    let source = "def forever(n: int) -> int:\n    forever(n + 1)\n\ndef main(stdout: Stdout):\n    stdout.print(forever(0))\n";
+    let source = "def forever(n: int) -> int:\n    return forever(n + 1)\n\ndef main(stdout: Stdout):\n    stdout.print(forever(0))\n";
     let output = fennec_on("run", "forever", source).unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).starts_with("error: calls nested too deeply"));
@@ -624,7 +624,7 @@ fn a_standard_library_default_works_in_a_test_off_llvm() {
     );
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("response.fen");
-    let source = "from std.net import Response\n\ndef handle(path: str) -> Response:\n    match path:\n        case \"/hello\":\n            Response(status=200, body=\"hi\".encode())\n        case _:\n            Response(status=404)\n\ntest \"plain\":\n    assert handle(\"/hello\").status == 200\n    assert handle(\"/\").headers.len() == 0\n\ntest \"net only\"(net: Net):\n    with net.listen(0)? as server:\n        assert server.port >= 0\n";
+    let source = "from std.net import Response\n\ndef handle(path: str) -> Response:\n    match path:\n        case \"/hello\":\n            return Response(status=200, body=\"hi\".encode())\n        case _:\n            return Response(status=404)\n\ntest \"plain\":\n    assert handle(\"/hello\").status == 200\n    assert len(handle(\"/\").headers) == 0\n\ntest \"net only\"(net: Net):\n    with net.listen(0)? as server:\n        assert server.port >= 0\n";
     std::fs::write(&path, source).unwrap();
     let path = path.to_str().unwrap();
     for how in ["--all", "--real"] {
@@ -708,9 +708,13 @@ fn fs_reads_and_writes_bytes() {
     let program = r#"
 def main(stdout: Stdout, fs: Fs):
     fs.write_bytes("save.bin", bytes([0, 1, 254, 255]))?
-    stdout.print(fs.read_bytes("save.bin")?, fs.read_text("save.bin") else "not text")
+    saved = fs.read_bytes("save.bin")?
+    text = fs.read_text("save.bin") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): "not text"
+    stdout.print(saved, text)
     fs.write_text("note.txt", "hé")?
-    stdout.print(fs.read_bytes("note.txt")?, fs.read_bytes("missing.bin") else bytes())
+    note = fs.read_bytes("note.txt")?
+    missing = fs.read_bytes("missing.bin") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): bytes()
+    stdout.print(note, missing)
 "#;
     std::fs::write(dir.join("main.fen"), program).unwrap();
     let output = fennec_in(&dir, &["run", "main.fen"], "").unwrap();
@@ -735,10 +739,11 @@ def main(stdout: Stdout, fs: Fs):
     found = fs.metadata(slots / "b.txt")?
     folder = fs.metadata(slots)?
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
-    fs.remove("saves") else as why:
-        match why:
-            case .Other(): stdout.print("a folder has to be empty to remove")
-            case _: stdout.print(why.message())
+    fs.remove("saves") except why:
+        case .Other():
+            stdout.print("a folder has to be empty to remove")
+        case _:
+            stdout.print(why.message())
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -841,8 +846,7 @@ fn a_double_lookup_fixed_prints_the_same() {
     let program = dir.join("double_lookup.fen");
     let source = "def main(stdout: Stdout):\n    counts = {\"a\": 1}\n    names = {\"a\": \"fox\"}\n    \
                   for key in [\"a\", \"b\"]:\n        stdout.print(counts[key] if key in counts else 7)\n        \
-                  stdout.print(8 if key not in counts else counts[key])\n        \
-                  stdout.print((names[key] if key in names else \"wolf\").len())\n";
+                  stdout.print(8 if key not in counts else counts[key])\n        stdout.print(len(names[key] if key in names else \"wolf\"))\n";
     std::fs::write(&program, source).unwrap();
     let path = program.to_str().unwrap();
     let expected = "1\n1\n3\n7\n8\n4\n";
@@ -867,8 +871,7 @@ fn what_used_ok_err_and_result_is_fixed_and_runs() {
     let dir = scratch("results-fix").unwrap();
     let program = dir.join("results_fix.fen");
     let source = "error Bad:\n    why: str\n\ndef lower(n: int) -> Result[int, Bad]:\n    if n < 1:\n        \
-                  return Err(Bad(\"small\"))\n    n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        \
-                  case Ok(lowered): lowered\n        case Err(_): 0\n\ndef main(stdout: Stdout):\n    \
+                  return Err(Bad(\"small\"))\n    return n - 1\n\ndef first(n: int) -> int:\n    match lower(n):\n        case Ok(lowered): return lowered\n        case Err(_): return 0\n\ndef main(stdout: Stdout):\n    \
                   for n in [0, 3]:\n        given = match lower(n):\n            case Ok(lowered): lowered\n            \
                   case Err(_): 9\n        stdout.print(given, first(n))\n        match lower(n):\n            \
                   case Ok(lowered):\n                stdout.print(lowered)\n            case Err(problem):\n                \
@@ -904,7 +907,7 @@ fn run_exits_with_1_when_the_program_fails() {
     let failing = dir.join("failing.fen");
     std::fs::write(
         &failing,
-        "def at(n: int) -> int:\n    [1][n]\n\ndef main(stdout: Stdout):\n    stdout.print(at(1))\n",
+        "def at(n: int) -> int:\n    return [1][n]\n\ndef main(stdout: Stdout):\n    stdout.print(at(1))\n",
     )
     .unwrap();
     let fine = dir.join("fine.fen");
@@ -956,7 +959,7 @@ fn main_gives_back_its_exit_code_on_every_engine() {
         ),
         (
             "given_or_failing",
-            "error Broke:\n    why: str\n\ndef main(args: Args) -> int fails Broke:\n    if args.len() > 5:\n        fail Broke(why=\"many\")\n    return 3\n",
+            "error Broke:\n    why: str\n\ndef main(args: Args) -> int fails Broke:\n    if len(args) > 5:\n        fail Broke(why=\"many\")\n    return 3\n",
             3,
         ),
     ];
@@ -1022,7 +1025,7 @@ fn a_kit_without_main_can_be_tested_but_not_run() {
         .unwrap();
     std::fs::write(
         dir.join("src/maths.fen"),
-        "def twice(x: int) -> int:\n    x * 2\n\ntest \"twice\":\n    assert twice(2) == 4\n",
+        "def twice(x: int) -> int:\n    return x * 2\n\ntest \"twice\":\n    assert twice(2) == 4\n",
     )
     .unwrap();
     std::fs::write(dir.join("src/notes.txt"), "not Fennec\n").unwrap();
@@ -1056,7 +1059,7 @@ fn bench_in(home: &Path, program: &Path) -> std::io::Result<Output> {
         .output()
 }
 
-const BENCHED: &str = "def double(x: int) -> int:\n    x * 2\n\n\
+const BENCHED: &str = "def double(x: int) -> int:\n    return x * 2\n\n\
     bench \"doubling\":\n    assert double(21) == 42\n\n\
     test \"a test\":\n    assert double(1) == 2\n\n\
     def main(stdout: Stdout):\n    stdout.print(double(2))\n";
@@ -1115,9 +1118,9 @@ fn bench_without_blocks_says_so() {
 
 #[test]
 fn dev_copies_lists_what_may_cost_hot_code_first() {
-    let source = "def unused() -> list[int]:\n    [1]\n\n\
+    let source = "def unused() -> list[int]:\n    return [1]\n\n\
         def main(stdout: Stdout):\n    mut xs = [1]\n    snapshot = xs\n    xs.append(2)\n    \
-        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(snapshot.len(), xs.len())\n";
+        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(len(snapshot), len(xs))\n";
     let dir = scratch("copies").unwrap();
     let program = dir.join("game.fen");
     std::fs::write(&program, source).unwrap();
@@ -1155,12 +1158,11 @@ fn counted_in_a_run(name: &str, body: &str) -> String {
 
 #[test]
 fn a_run_counts_a_copy_only_when_a_shared_value_changes() {
-    let shared = "    mut xs = [1, 2, 3]\n    snapshot = xs\n    xs.append(4)\n    \
-                  stdout.print(snapshot.len() + xs.len())\n";
+    let shared = "    mut xs = [1, 2, 3]\n    snapshot = xs\n    xs.append(4)\n    stdout.print(len(snapshot) + len(xs))\n";
     let counted = counted_in_a_run("copies_shared", shared);
     assert!(counted.contains("in a run: 1 copy of 24 B"), "{counted}");
 
-    let alone = "    mut xs = [1, 2, 3]\n    xs.append(4)\n    stdout.print(xs.len())\n";
+    let alone = "    mut xs = [1, 2, 3]\n    xs.append(4)\n    stdout.print(len(xs))\n";
     let counted = counted_in_a_run("copies_alone", alone);
     assert!(counted.contains("in a run: no copies, "), "{counted}");
 }
@@ -1175,8 +1177,7 @@ fn a_run_of_plain_numbers_allocates_nothing() {
 
 #[test]
 fn a_run_counts_what_a_hot_loop_allocates() {
-    let looped = "    mut total = 0\n    for at in range(100):\n        xs = [at, at]\n        \
-                  total += xs.len()\n    stdout.print(total)\n";
+    let looped = "    mut total = 0\n    for at in range(100):\n        xs = [at, at]\n        total += len(xs)\n    stdout.print(total)\n";
     let counted = counted_in_a_run("copies_loop", looped);
     let allocations = counted.split("no copies, ").nth(1).and_then(|rest| rest.split(' ').next());
     let allocations: u64 = allocations.and_then(|count| count.parse().ok()).unwrap_or(0);
@@ -1275,7 +1276,7 @@ fn a_run_after_an_edit_finds_its_mistakes_however_it_checks() {
     let dir = scratch("edits_checked").unwrap();
     assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
     let kit = dir.join("demo");
-    let maths = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
+    let maths = "## Twice the number.\nexport def twice(number: int) -> int:\n    return number * 2\n";
     std::fs::write(kit.join("src/maths.fen"), maths).unwrap();
     std::fs::write(
         kit.join("src/main.fen"),
@@ -1405,7 +1406,7 @@ fn check_and_lint_say_the_same_in_json() {
     std::fs::write(
         &program,
         "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
-         held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n",
+         held = items\n    items.append(2)\n    stdout.print(len(held), len(items), one())\n",
     )
     .unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
@@ -1555,17 +1556,17 @@ fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<fennec_te
     std::fs::write(kit.join("src/parser/core.fen"), "struct Parser:\n    at = 0\n")?;
     std::fs::write(
         kit.join("src/parser/step.fen"),
-        "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
+        "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        return self.at + 1\n",
     )?;
     // Files it mustn't name: one extends `Parser` with something else, and one gives another type
     // a `step`. They sort before the file it should name.
     std::fs::write(
         kit.join("src/parser/also.fen"),
-        "from parser.core import Parser\n\nextend Parser:\n    def other(self) -> int:\n        self.at\n",
+        "from parser.core import Parser\n\nextend Parser:\n    def other(self) -> int:\n        return self.at\n",
     )?;
     std::fs::write(
         kit.join("src/parser/rival.fen"),
-        "struct Rival:\n    at = 0\n\nextend Rival:\n    def step(self) -> int:\n        self.at\n",
+        "struct Rival:\n    at = 0\n\nextend Rival:\n    def step(self) -> int:\n        return self.at\n",
     )?;
     std::fs::write(
         kit.join("src/main.fen"),
@@ -1638,8 +1639,8 @@ fn a_type_parameters_function_runs() {
     let program = dir.join("made.fen");
     std::fs::write(
         &program,
-        "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n\
-         def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
+        "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        return Part(x=7)\n\n\
+         def build[T: Made]() -> T:\n    return T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
     )
     .unwrap();
     let output = fennec(&["run", "--no-test", &program.to_string_lossy()], "").unwrap();
@@ -1652,8 +1653,7 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();
     let program = dir.join("game.fen");
     let path = program.to_string_lossy().into_owned();
-    let hinted = "def main(stdout: Stdout):\n    mut items = [1]\n    held = items\n    items.append(2)\n    \
-                  stdout.print(held.len(), items.len())\n";
+    let hinted = "def main(stdout: Stdout):\n    mut items = [1]\n    held = items\n    items.append(2)\n    stdout.print(len(held), len(items))\n";
     std::fs::write(&program, hinted).unwrap();
     let clean = fennec(&["lint", &path], "").unwrap();
     assert!(clean.status.success(), "{}", text(&clean.stderr));
@@ -1829,7 +1829,7 @@ fn dev_changes_reports_what_changed_since_the_last_run() {
     std::fs::create_dir_all(kit.join("src")).unwrap();
     std::fs::write(kit.join("kit.toml"), "name = \"demo\"\n").unwrap();
     std::fs::write(kit.join("src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
-    std::fs::write(kit.join("src/other.fen"), "def other() -> int:\n    1\n").unwrap();
+    std::fs::write(kit.join("src/other.fen"), "def other() -> int:\n    return 1\n").unwrap();
 
     let first = changes_in(&kit.join("src"), &home).unwrap();
     assert_eq!(text(&first.stdout), "first run: hashed 2 files and 2 definitions\n");
@@ -1838,8 +1838,11 @@ fn dev_changes_reports_what_changed_since_the_last_run() {
 
     std::fs::write(kit.join("src/main.fen"), "# hi\ndef main(stdout: Stdout):\n    stdout.print( 1 )\n")
         .unwrap();
-    std::fs::write(kit.join("src/other.fen"), "def other() -> int:\n    2\n\ndef more() -> int:\n    3\n")
-        .unwrap();
+    std::fs::write(
+        kit.join("src/other.fen"),
+        "def other() -> int:\n    return 2\n\ndef more() -> int:\n    return 3\n",
+    )
+    .unwrap();
     let edited = changes_in(&kit, &home).unwrap();
     assert_eq!(
         text(&edited.stdout),
@@ -1875,7 +1878,7 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
     assert!(text(&output.stdout).starts_with("fixed "));
     assert_eq!(
         fixed,
-        "def square(n: int) -> int:\n    n * n\n\ndef greet(stdout: Stdout):\n    stdout.print(square(3))\n\ndef main(stdout: Stdout):\n    greet(stdout)\n"
+        "def square(n: int) -> int:\n    return n * n\n\ndef greet(stdout: Stdout):\n    stdout.print(square(3))\n\ndef main(stdout: Stdout):\n    greet(stdout)\n"
     );
     assert!(again.status.success() && again.stdout.is_empty());
 }
@@ -1915,7 +1918,7 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(dir.join("kit.toml"), "name = \"tidy\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
         .unwrap();
-    std::fs::write(src.join("parts.fen"), "_LIMIT = 3\n\nstruct _Box:\n    size: int\n\ndef _made(_count: int) -> _Box:\n    _Box(size=_count + _LIMIT)\n").unwrap();
+    std::fs::write(src.join("parts.fen"), "_LIMIT = 3\n\nstruct _Box:\n    size: int\n\ndef _made(_count: int) -> _Box:\n    return _Box(size=_count + _LIMIT)\n").unwrap();
     std::fs::write(
         src.join("main.fen"),
         "from parts import _made\n\ndef main(stdout: Stdout):\n    stdout.print(_made(_count=2).size)\n",
@@ -1926,10 +1929,10 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
     let parts = std::fs::read_to_string(src.join("parts.fen")).unwrap();
     let main = std::fs::read_to_string(src.join("main.fen")).unwrap();
     let ran = fennec(&["run", &path], "").unwrap();
-    std::fs::write(src.join("main.fen"), "def helper() -> int:\n    1\n\ndef _helper() -> int:\n    2\n\ndef main(stdout: Stdout):\n    stdout.print(helper(), _helper())\n").unwrap();
+    std::fs::write(src.join("main.fen"), "def helper() -> int:\n    return 1\n\ndef _helper() -> int:\n    return 2\n\ndef main(stdout: Stdout):\n    stdout.print(helper(), _helper())\n").unwrap();
     std::fs::write(
         src.join("parts.fen"),
-        "def _shown() -> int:\n    3\n\ndef show() -> str:\n    f\"{_shown()}\"\n",
+        "def _shown() -> int:\n    return 3\n\ndef show() -> str:\n    return f\"{_shown()}\"\n",
     )
     .unwrap();
     let left = fennec(&["fix", &path], "").unwrap();
@@ -1938,7 +1941,7 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     assert_eq!(
         parts,
-        "LIMIT = 3\n\nstruct Box:\n    size: int\n\ndef made(_count: int) -> Box:\n    Box(size=_count + LIMIT)\n"
+        "LIMIT = 3\n\nstruct Box:\n    size: int\n\ndef made(_count: int) -> Box:\n    return Box(size=_count + LIMIT)\n"
     );
     assert_eq!(
         main,
@@ -2041,7 +2044,7 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     );
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("read.fen");
-    std::fs::write(&program, "def checked(text: str) -> str fails InvalidValue:\n    fail InvalidValue(message=text)\n\ndef main(stdout: Stdout):\n    text = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(why): str(why != \"\")\n    stdout.print(text)\n    said = checked(\"/nothing/here\") else as problem:\n        match problem:\n            case InvalidValue(_): \"failed\"\n    stdout.print(said)\n").unwrap();
+    std::fs::write(&program, "def checked(text: str) -> str fails InvalidValue:\n    fail InvalidValue(message=text)\n\ndef main(stdout: Stdout):\n    text = checked(\"/nothing/here\") except problem:\n        case InvalidValue(why):\n            str(why != \"\")\n    stdout.print(text)\n    said = checked(\"/nothing/here\") except problem:\n        case InvalidValue(_):\n            \"failed\"\n    stdout.print(said)\n").unwrap();
     let path = program.to_string_lossy().into_owned();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
@@ -2059,7 +2062,7 @@ const CASES_BEFORE: &str = "enum Color:
     Green(shade: int)
 
     def warm() -> Color:
-        Color.Red
+        return Color.Red
 
 enum Light:
     Red
@@ -2075,15 +2078,15 @@ struct Car:
 def pick(n: int) -> Color:
     if n == 0:
         return Color.Red
-    Color.Green(n)
+    return Color.Green(n)
 
 def maybe() -> Color?:
-    Color.Red
+    return Color.Red
 
 def shown(color: Color) -> str:
     match color:
-        case Red: \"red\"
-        case Green(shade): f\"green {shade}\"
+        case Red: return \"red\"
+        case Green(shade): return f\"green {shade}\"
 
 def dial(n: int) -> str fails DialError:
     if n == 0:
@@ -2102,14 +2105,14 @@ def main(stdout: Stdout):
     many = [Color.Red]
     light = Light.Red
     warm: Color = Color.warm()
-    stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), many.len(), light == Light.Off)
+    stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), len(many), light == Light.Off)
     stdout.print(shown(warm), maybe() == Color.Red)
-    dialled = dial(0) else as why:
-        match why:
-            case Closed: \"closed\"
-            case _: \"other\"
+    dialled = dial(0) except why:
+        case Closed: \"closed\"
+        case .NotFound(): \"other\"
     stdout.print(dialled)
-    stdout.print(unsaid() else \"failed\")
+    unsaid_value = unsaid() except .NotFound() | .Closed: \"failed\"
+    stdout.print(unsaid_value)
 ";
 
 /// What `CASES_AFTER` prints, as pinned.
@@ -2122,7 +2125,7 @@ const CASES_AFTER: &str = "enum Color:
     Green(shade: int)
 
     def warm() -> Color:
-        .Red
+        return .Red
 
 enum Light:
     Red
@@ -2138,15 +2141,15 @@ struct Car:
 def pick(n: int) -> Color:
     if n == 0:
         return .Red
-    .Green(n)
+    return .Green(n)
 
 def maybe() -> Color?:
-    .Red
+    return .Red
 
 def shown(color: Color) -> str:
     match color:
-        case .Red: \"red\"
-        case .Green(shade): f\"green {shade}\"
+        case .Red: return \"red\"
+        case .Green(shade): return f\"green {shade}\"
 
 def dial(n: int) -> str fails DialError:
     if n == 0:
@@ -2165,14 +2168,14 @@ def main(stdout: Stdout):
     many = [Color.Red]
     light = Light.Red
     warm: Color = Color.warm()
-    stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), many.len(), light == .Off)
+    stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), len(many), light == .Off)
     stdout.print(shown(warm), maybe() == .Red)
-    dialled = dial(0) else as why:
-        match why:
-            case .Closed: \"closed\"
-            case _: \"other\"
+    dialled = dial(0) except why:
+        case .Closed: \"closed\"
+        case .NotFound(): \"other\"
     stdout.print(dialled)
-    stdout.print(unsaid() else \"failed\")
+    unsaid_value = unsaid() except .NotFound() | .Closed: \"failed\"
+    stdout.print(unsaid_value)
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
@@ -2244,8 +2247,8 @@ fn fix_leaves_leading_dots_alone_in_a_kit() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("kit.toml"), "name = \"cases\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
         .unwrap();
-    let main = "from lights import Light, on\n\nenum Color:\n    Red\n    Blue\n\ndef warm() -> Color:\n    .Red\n\ndef shown(color: Color) -> str:\n    match color:\n        case .Red: \"red\"\n        case .Blue: \"blue\"\n\ndef main(stdout: Stdout):\n    light: Light = .Red\n    stdout.print(shown(warm()), on() == light)\n";
-    let lights = "enum Light:\n    Red\n    Off\n\ndef on() -> Light:\n    .Red\n";
+    let main = "from lights import Light, on\n\nenum Color:\n    Red\n    Blue\n\ndef warm() -> Color:\n    return .Red\n\ndef shown(color: Color) -> str:\n    match color:\n        case .Red: return \"red\"\n        case .Blue: return \"blue\"\n\ndef main(stdout: Stdout):\n    light: Light = .Red\n    stdout.print(shown(warm()), on() == light)\n";
+    let lights = "enum Light:\n    Red\n    Off\n\ndef on() -> Light:\n    return .Red\n";
     std::fs::write(dir.join("src/lights.fen"), lights).unwrap();
     std::fs::write(dir.join("src/main.fen"), main).unwrap();
     let folder = dir.to_string_lossy().into_owned();
@@ -2312,7 +2315,7 @@ fn fix_writes_ref_where_mut_was_on_a_parameter_loop_or_argument() {
 }
 
 /// A program from before `IdMap` became `Table`, which `fennec fix` moves over.
-const OLD_TABLE_NAMES: &str = "from std.game import Id, IdMap\n\nstruct Unit:\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units: IdMap[Unit] = IdMap[Unit]()\n    first: Id[Unit] = units.insert(Unit(hp=1))\n    stdout.print(units.len(), first)\n";
+const OLD_TABLE_NAMES: &str = "from std.game import Id, IdMap\n\nstruct Unit:\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units: IdMap[Unit] = IdMap[Unit]()\n    first: Id[Unit] = units.insert(Unit(hp=1))\n    stdout.print(len(units), first)\n";
 
 /// `fennec fix` moves a program from `std.game`'s `IdMap` to `std.collections`' `Table`, with
 /// `add` for its `insert`, and then it runs.
@@ -2343,9 +2346,9 @@ fn fix_moves_idmap_to_table() {
 // The migration's own tests, whose programs are in the old forms on purpose.
 // fennec-migrate: off
 /// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
-/// and a def's last value as what it returns): plain `fennec fix` leaves them, `fennec fix
-/// --migrate` writes `except` and `return` for them, a second run finds nothing more, and the
-/// program prints what it did before.
+/// and a def's last value as what it returns) is refused, and its rewrite is the fix: plain
+/// `fennec fix` and `fennec fix --migrate` both write `except` and `return` for them, a second run
+/// finds nothing more, and the program prints what it did.
 #[test]
 fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -2355,23 +2358,69 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     let program = dir.join("forms.fen");
     let path = program.to_string_lossy().into_owned();
     std::fs::write(&program, &old).unwrap();
-    let before = fennec(&["run", &path], "").unwrap();
+    let refused = fennec(&["run", &path], "").unwrap();
     let plain = fennec(&["fix", &path], "").unwrap();
-    let untouched = std::fs::read_to_string(&program).unwrap();
+    let plainly = std::fs::read_to_string(&program).unwrap();
+    std::fs::write(&program, &old).unwrap();
     let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let again = fennec(&["fix", "--migrate", &path], "").unwrap();
     let rewritten = std::fs::read_to_string(&program).unwrap();
     let after = fennec(&["run", &path], "").unwrap();
+    assert!(!refused.status.success());
+    assert!(text(&refused.stderr).contains("`lend x except:` now"), "{}", text(&refused.stderr));
     assert!(plain.status.success(), "{}", text(&plain.stderr));
-    assert_eq!(untouched, old);
+    assert_eq!(plainly, migrated);
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     assert_eq!(written, migrated);
     assert!(again.status.success(), "{}", text(&again.stderr));
     assert_eq!(rewritten, migrated);
     assert!(after.status.success(), "{}", text(&after.stderr));
-    assert_eq!(text(&after.stdout), text(&before.stdout));
     assert_eq!(text(&after.stdout), "0 9 7 -1\nno load\nBad.Empty\nopen t\nclose t\n0 3 t\n");
+}
+
+/// An `else` on a failing call inside a statement gets a line of its own before it only when
+/// nothing before it in the statement can print, fail or crash, so what runs runs in the same
+/// order: each function here prints as it runs, and the migrated program prints what the old one
+/// did. A call or a `?` before it keeps it where it is, for a person to write.
+#[test]
+fn fix_migrate_moves_no_call_past_another() {
+    let dir = scratch("migrate-order").unwrap();
+    let program = dir.join("order.fen");
+    let path = program.to_string_lossy().into_owned();
+    let common = "error Bad:\n    Gone\n\n\
+        def noisy(n: int, stdout: Stdout) -> int:\n    stdout.print(\"noisy\", n)\n    return n\n\n\
+        def risky(n: int, stdout: Stdout) -> int fails Bad:\n    stdout.print(\"risky\", n)\n    if n == 0: fail .Gone\n    return n\n\n";
+    let moved = format!(
+        "{common}def main(stdout: Stdout):\n    \
+         stdout.print(\"first\", risky(1, stdout) else -1, risky(0, stdout) else -2, noisy(3, stdout))\n"
+    );
+    std::fs::write(&program, &moved).unwrap();
+    let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        moved.replace(
+            "    stdout.print(\"first\", risky(1, stdout) else -1, risky(0, stdout) else -2, noisy(3, stdout))\n",
+            "    risky_value = risky(1, stdout) except .Gone: -1\n    risky_value2 = risky(0, stdout) except .Gone: -2\n    \
+             stdout.print(\"first\", risky_value, risky_value2, noisy(3, stdout))\n"
+        )
+    );
+    // The order the old program ran in: each argument left to right, then the print.
+    assert_eq!(text(&ran.stdout), "risky 1\nrisky 0\nnoisy 3\nfirst 1 -2 3\n", "{}", text(&ran.stderr));
+    let kept = format!(
+        "{common}def both(stdout: Stdout) -> int fails Bad:\n    \
+         return risky(6, stdout)? + (risky(7, stdout) else -7)\n\n\
+         def main(stdout: Stdout) fails Bad:\n    stdout.print(noisy(4, stdout), risky(5, stdout) else -5)\n    \
+         stdout.print(both(stdout))\n"
+    );
+    std::fs::write(&program, &kept).unwrap();
+    let _ = fennec(&["fix", "--migrate", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    assert!(written.contains("    stdout.print(noisy(4, stdout), risky(5, stdout) else -5)\n"), "{written}");
+    assert!(written.contains("    return risky(6, stdout)? + (risky(7, stdout) else -7)\n"), "{written}");
 }
 
 /// `--migrate` makes only the migration's rewrites: a function nothing calls keeps its place,
@@ -2624,6 +2673,72 @@ fn a_kit_from_git_naming_a_file_repository_is_refused() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A pinned kit that uses a capability it wasn't given is broken, or changed: the error says so,
+/// and offers no fix. `fennec fix` once handed such a kit the program's `Fs`, editing the kit in the
+/// store and `main` to pass it, and left the store unlike its pin. Now it changes neither.
+#[test]
+fn no_tool_changes_a_kit_this_one_depends_on() {
+    let dir = scratch("fix-dependency").unwrap();
+    let repository = dir.join("helper");
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(
+        repository.join("kit.toml"),
+        "name = \"helper\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
+    )
+    .unwrap();
+    let library = "export def tidy(text: str) -> str:\n    _ = fs\n    return text.strip()\n";
+    std::fs::write(repository.join("src/lib.fen"), library).unwrap();
+    let commit = committed_to_git(&repository).unwrap();
+    let kit = dir.join("app");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nhelper = {{ git = \"file:///{}\", commit = \"{commit}\" }}\n",
+            repository.display().to_string().replace('\\', "/").trim_start_matches('/')
+        ),
+    )
+    .unwrap();
+    let main = "from helper import tidy\n\ndef main(stdout: Stdout, fs: Fs):\n    stdout.print(tidy(\"  hello  \"))\n    return\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .arg(command)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap()
+    };
+    // It pins the kit, and then says the program doesn't check, as it doesn't.
+    let updated = fennec("update");
+    assert!(kit.join("kit.lock").is_file(), "{}", text(&updated.stderr));
+    assert!(
+        text(&updated.stderr).contains("this is in a kit this one depends on"),
+        "{}",
+        text(&updated.stderr)
+    );
+    let checked = fennec("check");
+    let said = text(&checked.stderr);
+    assert!(!checked.status.success());
+    assert!(
+        said.contains("`fs` doesn't exist")
+            && said.contains(
+                "this is in a kit this one depends on, which no tool changes: the kit changed or is broken"
+            ),
+        "{said}"
+    );
+    assert!(!said.contains("parameter"), "the error still offers to hand the kit a capability: {said}");
+    let fixed = fennec("fix");
+    assert!(!fixed.status.success());
+    assert!(!text(&fixed.stdout).contains("fixed"), "{}", text(&fixed.stdout));
+    let stored: Vec<_> = std::fs::read_dir(dir.join("home/kits")).unwrap().flatten().collect();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(std::fs::read_to_string(stored[0].path().join("src/lib.fen")).unwrap(), library);
+    assert_eq!(std::fs::read_to_string(kit.join("src/main.fen")).unwrap(), main);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
 #[test]
 fn fennec_update_pins_a_kit_from_git() {
@@ -2637,7 +2752,7 @@ fn fennec_update_pins_a_kit_from_git() {
     .unwrap();
     std::fs::write(
         repository.join("src/lib.fen"),
-        "## How far a thing falls.\nexport def fall() -> int:\n    7\n",
+        "## How far a thing falls.\nexport def fall() -> int:\n    return 7\n",
     )
     .unwrap();
     let commit = committed_to_git(&repository).unwrap();
@@ -2747,7 +2862,7 @@ fn write_physics_and_maths(dir: &Path) -> std::io::Result<()> {
         &dir.join("maths"),
         "maths",
         "",
-        &[("lib.fen", "export def twice(x: int) -> int:\n    x * 2\n")],
+        &[("lib.fen", "export def twice(x: int) -> int:\n    return x * 2\n")],
     )?;
     write_kit(
         &dir.join("physics"),
@@ -2758,23 +2873,22 @@ fn write_physics_and_maths(dir: &Path) -> std::io::Result<()> {
                 "lib.fen",
                 "from shapes import area, Circle\nfrom maths import twice\n\nLIMIT: int = 10\n\n\
                  export struct Body:\n    mass: int\n    shape: Circle\n\n    \
-                 def weight(self) -> int:\n        twice(self.mass) + area(self.shape) + helper()\n\n\
+                 def weight(self) -> int:\n        return twice(self.mass) + area(self.shape) + helper()\n\n\
                  export enum Kind:\n    Solid\n    Liquid(depth: int)\n\n\
                  export error TooHeavy:\n    Over(by: int)\n\n\
                  export interface Weighed:\n    def weight(self) -> int\n\n\
                  export def total[T: Weighed](items: list[T]) -> int fails TooHeavy:\n    \
-                 mut sum: int = 0\n    for item in items:\n        sum += item.weight()\n    \
-                 if sum > 100:\n        fail .Over(by=sum - 100)\n    sum\n\n\
+                 mut subtotal: int = 0\n    for item in items:\n        subtotal += item.weight()\n    \
+                 if subtotal > 100:\n        fail .Over(by=subtotal - 100)\n    return subtotal\n\n\
                  export def describe(kind: Kind) -> str:\n    match kind:\n        \
-                 case .Solid:\n            \"solid\"\n        case .Liquid(depth=d):\n            \
-                 f\"liquid {d}\"\n\n\
-                 def helper() -> int:\n    LIMIT\n\n\
+                 case .Solid:\n            return \"solid\"\n        case .Liquid(depth=d):\n            return f\"liquid {d}\"\n\n\
+                 def helper() -> int:\n    return LIMIT\n\n\
                  test \"not the program's\":\n    assert false\n",
             ),
             (
                 "shapes.fen",
                 "export struct Circle:\n    radius: int\n\n\
-                 export def area(circle: Circle) -> int:\n    3 * circle.radius * circle.radius\n",
+                 export def area(circle: Circle) -> int:\n    return 3 * circle.radius * circle.radius\n",
             ),
         ],
     )?;
@@ -2790,16 +2904,13 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     let kit = dir.join("game");
     let main = "import physics\nfrom physics import Body, total, describe\nfrom physics.shapes import Circle as Round\n\n\
         struct Circle:\n    name: str\n\n\
-        def helper() -> str:\n    \"mine\"\n\n\
+        def helper() -> str:\n    return \"mine\"\n\n\
         def main(stdout: Stdout):\n    \
         body: physics.Body = Body(mass=2, shape=Round(radius=1))\n    \
         stdout.print(body.weight())\n    \
         stdout.print(describe(.Liquid(depth=3)))\n    \
         stdout.print(Circle(name=\"own\").name + helper())\n    \
-        stdout.print(f\"{body}\")\n    \
-        weighed = total([body]) else as why:\n        \
-        match why:\n            \
-        case .Over(by=n): n\n    \
+        stdout.print(f\"{body}\")\n    weighed = total([body]) except why:\n        case .Over(by=n):\n            n\n    \
         stdout.print(weighed)\n";
     let manifest = "[dependencies]\nphysics = { path = \"../physics\" }\n";
     write_kit(&kit, "game", manifest, &[("main.fen", main)]).unwrap();
@@ -2841,12 +2952,102 @@ fn a_kit_imports_another_and_their_names_stay_apart() {
     std::fs::write(
         dir.join("physics/src/shapes.fen"),
         "export struct Circle:\n    radius: int\n\n\
-         export def area(circle: Circle) -> int:\n    4 * circle.radius * circle.radius\n",
+         export def area(circle: Circle) -> int:\n    return 4 * circle.radius * circle.radius\n",
     )
     .unwrap();
     let again = fennec(&["run", "."]);
     assert!(again.status.success(), "{}", text(&again.stderr));
     assert!(text(&again.stdout).starts_with("18\n"), "{}", text(&again.stdout));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A program or kit handed nothing can't reach the standard library's internals: `std.intrinsics`
+/// turns a number into a pointer, so reaching it would make "a kit does I/O only with what it's
+/// handed" false. Every way of writing the import is refused, in a program and in a dependency,
+/// by the module it reaches rather than how it's spelled, and so is an `@intrinsic` of its own.
+#[test]
+fn a_program_or_kit_handed_nothing_cant_reach_std_internals() {
+    let dir = scratch("std-internals").unwrap();
+    let uses = |module: &str| {
+        format!(
+            "def main(stdout: Stdout):\n    channel = {module}.channel_new(1)\n    stdout.print(channel)\n"
+        )
+    };
+    let refused = "`std.intrinsics` is for the standard library";
+    let programs = [
+        format!("from std import intrinsics\n\n{}", uses("intrinsics")),
+        format!("from std import intrinsics as inner\n\n{}", uses("inner")),
+        format!("from std import json, intrinsics\n\n{}", uses("intrinsics")),
+        format!("from std import intrinsics, json\n\n{}", uses("intrinsics")),
+        format!("import std.intrinsics\n\n{}", uses("std.intrinsics")),
+        format!("import std.intrinsics as inner\n\n{}", uses("inner")),
+        "from std.intrinsics import channel_new\n\ndef main(stdout: Stdout):\n    stdout.print(channel_new(1))\n"
+            .to_owned(),
+        "from std.intrinsics import channel_new as made\n\ndef main(stdout: Stdout):\n    stdout.print(made(1))\n"
+            .to_owned(),
+    ];
+    for (at, source) in programs.iter().enumerate() {
+        let program = dir.join(format!("reach_{at}.fen"));
+        std::fs::write(&program, source).unwrap();
+        // `run` checks as `check` does: once is enough to show it does.
+        let commands: &[&str] = if at == 0 { &["check", "run"] } else { &["check"] };
+        for &command in commands {
+            let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
+            assert!(!output.status.success(), "{command} {source}");
+            assert!(text(&output.stderr).contains(refused), "{command} {source}: {}", text(&output.stderr));
+            assert!(text(&output.stdout).is_empty(), "{command} {source}: {}", text(&output.stdout));
+        }
+    }
+    // The other names of a list are still imported, so the refusal is the only error.
+    let listed = dir.join("listed.fen");
+    std::fs::write(
+        &listed,
+        "from std import json, intrinsics\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n",
+    )
+    .unwrap();
+    let output = fennec(&["check", listed.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stderr).matches("error:").count(), 1, "{}", text(&output.stderr));
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
+    let own = dir.join("own_intrinsic.fen");
+    std::fs::write(&own, "@intrinsic\ndef channel_new(size: int) -> int\n\ndef main(stdout: Stdout):\n    stdout.print(channel_new(1))\n").unwrap();
+    let output = fennec(&["check", own.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&output.stderr).contains("only the standard library has `@intrinsic` functions"),
+        "{}",
+        text(&output.stderr)
+    );
+
+    // A dependency that writes the import is refused too, though the program never names it.
+    write_kit(
+        &dir.join("helper"),
+        "helper",
+        "",
+        &[(
+            "lib.fen",
+            "from std import intrinsics\n\nexport def size() -> int:\n    return intrinsics.channel_new(1)\n",
+        )],
+    )
+    .unwrap();
+    let game = dir.join("game");
+    write_kit(
+        &game,
+        "game",
+        "[dependencies]\nhelper = { path = \"../helper\" }\n",
+        &[("main.fen", "from helper import size\n\ndef main(stdout: Stdout):\n    stdout.print(size())\n")],
+    )
+    .unwrap();
+    for command in ["check", "build"] {
+        let output = crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}");
+        assert!(text(&output.stderr).contains(refused), "{command}: {}", text(&output.stderr));
+        assert!(text(&output.stderr).contains("lib.fen"), "{command}: {}", text(&output.stderr));
+        assert!(text(&output.stdout).is_empty(), "{command}: {}", text(&output.stdout));
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -3075,8 +3276,8 @@ fn a_loop_that_only_indexes_a_list_and_takes_its_length_stays_native() {
     let program = dir.join("total.fen");
     std::fs::write(
         &program,
-        "def total(xs: list[int]) -> int:\n    mut sum_of = 0\n    for i in range(xs.len()):\n        \
-         sum_of += xs[i]\n    sum_of\n\ndef main(stdout: Stdout):\n    stdout.print(total([i for i in range(10)]))\n",
+        "def total(xs: list[int]) -> int:\n    mut sum_of = 0\n    for i in range(len(xs)):\n        \
+         sum_of += xs[i]\n    return sum_of\n\ndef main(stdout: Stdout):\n    stdout.print(total([i for i in range(10)]))\n",
     )
     .unwrap();
     let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
@@ -3089,7 +3290,7 @@ fn a_loop_that_only_indexes_a_list_and_takes_its_length_stays_native() {
 fn abs_is_native_on_numbers() {
     let dir = scratch("abs").unwrap();
     let program = dir.join("size.fen");
-    let source = "def main(stdout: Stdout):\n    stdout.print((-4).abs(), (-2.5).abs())\n";
+    let source = "def main(stdout: Stdout):\n    stdout.print(abs(-4), abs(-2.5))\n";
     std::fs::write(&program, source).unwrap();
     let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "everything compiles to native code\n");
@@ -3102,7 +3303,7 @@ fn a_dicts_length_is_native() {
     let program = dir.join("size.fen");
     std::fs::write(
         &program,
-        "def size(table: dict[int, int]) -> int:\n    table.len()\n\ndef main(stdout: Stdout):\n    \
+        "def size(table: dict[int, int]) -> int:\n    return len(table)\n\ndef main(stdout: Stdout):\n    \
          mut table: dict[int, int] = {}\n    table[1] = 2\n    stdout.print(size(table))\n",
     )
     .unwrap();
@@ -3195,8 +3396,7 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
         &program,
         "struct Counter:\n    counts: dict[int, int]\n\n    def bump(ref self, key: int):\n        \
          self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = \
-         Counter(counts={})\n    for i in range(20_000):\n        counter.bump(i * 7919 % 10_007)\n    \
-         stdout.print(counter.counts.len())\n",
+         Counter(counts={})\n    for i in range(20_000):\n        counter.bump(i * 7919 % 10_007)\n    stdout.print(len(counter.counts))\n",
     )
     .unwrap();
     peak_is_under(&program, 200_000).unwrap();
@@ -3210,8 +3410,7 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
 fn a_copy_each_time_round_a_loop_is_a_hint_and_a_hot_path_refuses_it() {
     let dir = scratch("copy-rule").unwrap();
     let program = dir.join("loop.fen");
-    let body = "    mut seen = [1, 2]\n    for _ in range(3):\n        kept = seen\n        seen.append(kept.len())\n        \
-                stdout.print(kept.len(), seen.len())\n";
+    let body = "    mut seen = [1, 2]\n    for _ in range(3):\n        kept = seen\n        seen.append(len(kept))\n        stdout.print(len(kept), len(seen))\n";
     let said = "`seen` is copied each time round the loop, since `kept` still holds it";
     std::fs::write(&program, format!("def main(stdout: Stdout):\n{body}")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
@@ -3240,7 +3439,7 @@ fn a_hot_loop_over_a_table_makes_nothing() {
     let source = "from std.collections import Table\n\nstruct Enemy:\n    hp: int\n\nstruct World:\n    \
                   enemies = Table[Enemy]()\n\n@hot\ndef step(ref world: World) -> int:\n    mut total = 0\n    \
                   for ref enemy in world.enemies:\n        enemy.hp -= 1\n    for enemy in world.enemies:\n        \
-                  total += enemy.hp\n    total\n\ndef main(stdout: Stdout):\n    mut world = World()\n    \
+                  total += enemy.hp\n    return total\n\ndef main(stdout: Stdout):\n    mut world = World()\n    \
                   _ = world.enemies.add(Enemy(hp=3))\n    _ = world.enemies.add(Enemy(hp=5))\n    \
                   stdout.print(step(ref world))\n";
     std::fs::write(&program, source).unwrap();
@@ -3260,7 +3459,7 @@ fn a_hot_function_and_what_it_calls_cant_allocate() {
     let source = "struct Unit:\n    hp: float\n    tags: list[str]\n\ndef tagged(ref unit: Unit, tag: str):\n    \
                   unit.tags.append(tag)\n\n@hot\ndef tick(ref units: list[Unit], dt: float) -> float:\n    \
                   mut total = 0.0\n    for ref unit in units:\n        unit.hp -= dt\n        total += unit.hp\n    \
-                  tagged(ref units[0], \"hit\")\n    total\n\ndef main(stdout: Stdout):\n    \
+                  tagged(ref units[0], \"hit\")\n    return total\n\ndef main(stdout: Stdout):\n    \
                   mut units = [Unit(hp=10.0, tags=[]), Unit(hp=20.0, tags=[])]\n    stdout.print(tick(ref units, 1.0))\n";
     std::fs::write(&program, source).unwrap();
     for command in ["check", "run"] {
@@ -3286,8 +3485,8 @@ fn a_hot_function_and_what_it_calls_cant_allocate() {
 fn a_hot_function_keeps_no_checks() {
     let dir = scratch("hot-checks").unwrap();
     let program = dir.join("hot.fen");
-    let source = "@hot\ndef total(xs: list[float], at: int) -> float:\n    mut sum = 0.0\n    for x in xs:\n        \
-                  sum += x\n    sum + xs[at]\n\ndef main(stdout: Stdout):\n    stdout.print(total([1.0, 2.0], 1))\n";
+    let source = "@hot\ndef total(xs: list[float], at: int) -> float:\n    mut running = 0.0\n    for x in xs:\n        \
+                  running += x\n    return running + xs[at]\n\ndef main(stdout: Stdout):\n    stdout.print(total([1.0, 2.0], 1))\n";
     std::fs::write(&program, source).unwrap();
     let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
     let printed = text(&output.stderr);
@@ -3299,18 +3498,18 @@ fn a_hot_function_keeps_no_checks() {
         "{printed}"
     );
     assert_eq!(printed.matches("keeps its").count(), 1, "the loop keeps no check: {printed}");
-    std::fs::write(&program, source.replace("sum + xs[at]", "sum")).unwrap();
+    std::fs::write(&program, source.replace("running + xs[at]", "running")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "3.0\n", "{}", text(&output.stderr));
     // An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
-    std::fs::write(&program, "@hot\ndef add(a: int, b: int) -> int:\n    a + b\n\ndef main(stdout: Stdout):\n    stdout.print(add(1, b=2))\n").unwrap();
+    std::fs::write(&program, "@hot\ndef add(a: int, b: int) -> int:\n    return a + b\n\ndef main(stdout: Stdout):\n    stdout.print(add(1, b=2))\n").unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "3\n", "{}", text(&output.stderr));
     // So does a float divide check, and an integer one doesn't.
-    std::fs::write(&program, "@hot\ndef ratio(a: float, b: float) -> float:\n    a / b\n\ndef main(stdout: Stdout):\n    stdout.print(ratio(1.0, b=4.0))\n").unwrap();
+    std::fs::write(&program, "@hot\ndef ratio(a: float, b: float) -> float:\n    return a / b\n\ndef main(stdout: Stdout):\n    stdout.print(ratio(1.0, b=4.0))\n").unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "0.25\n", "{}", text(&output.stderr));
-    std::fs::write(&program, "@hot\ndef parts(a: int, b: int) -> int:\n    a // b\n\ndef main(stdout: Stdout):\n    stdout.print(parts(9, b=4))\n").unwrap();
+    std::fs::write(&program, "@hot\ndef parts(a: int, b: int) -> int:\n    return a // b\n\ndef main(stdout: Stdout):\n    stdout.print(parts(9, b=4))\n").unwrap();
     let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
     assert!(
         text(&output.stderr).contains("this may divide by zero, so it keeps its check"),
@@ -3329,7 +3528,7 @@ fn a_shared_value_is_one_cell_however_its_reached() {
     std::fs::write(
         &program,
         "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    \
-         def balance(self) -> int:\n        self.total\n\n\
+         def balance(self) -> int:\n        return self.total\n\n\
          def pay(account: shared Account, amount: int):\n    lock account as ref held:\n        held.add(amount)\n\n\
          def main(stdout: Stdout):\n    shared account = Account()\n    same = account\n    pay(account, 5)\n    \
          lock same as ref held:\n        held.add(10)\n    mut through_same = 0\n    lock same as held:\n        \
@@ -3350,8 +3549,7 @@ fn constants_are_worked_out_while_compiling() {
         &program,
         "from std.math import PI, sin\n\nstruct Point:\n    x: float\n    y: float\n\n\
          SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]\nORIGIN = Point(x=0.0, y=-1.5)\n\
-         SQUARES = {n: n * n for n in range(5)}\n\ndef main(stdout: Stdout):\n    \
-         stdout.print(SINE.len(), SINE[256], ORIGIN.y, SQUARES[4])\n",
+         SQUARES = {n: n * n for n in range(5)}\n\ndef main(stdout: Stdout):\n    stdout.print(len(SINE), SINE[256], ORIGIN.y, SQUARES[4])\n",
     )
     .unwrap();
     let output = fennec(&["run", &path], "").unwrap();
@@ -3361,7 +3559,7 @@ fn constants_are_worked_out_while_compiling() {
     // One that takes too long is worked out when the program starts, with a hint.
     std::fs::write(
         &program,
-        "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    total\n\n\
+        "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    return total\n\n\
          SLOW = slow()\n\ndef main(stdout: Stdout):\n    stdout.print(SLOW)\n",
     )
     .unwrap();
@@ -3664,7 +3862,7 @@ fn embed_folder_gives_a_folders_files_by_path() {
     let game = dir.join("game/main.fen");
     let source = "SITE = embed_folder(\"site\")\n\ndef main(stdout: Stdout):\n    \
         stdout.print(SITE.len(), SITE.keys())\n    stdout.print(SITE.get(\"css/app.css\"))\n    \
-        stdout.print(SITE.get(\"missing\") is None)\n    for path, data in SITE.items():\n        stdout.print(path, data.len())\n";
+        stdout.print(SITE.get(\"missing\") is None)\n    for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
     std::fs::write(&game, source).unwrap();
     let ran = fennec(&["run", "--no-test", &game.to_string_lossy()], "").unwrap();
     assert_eq!(

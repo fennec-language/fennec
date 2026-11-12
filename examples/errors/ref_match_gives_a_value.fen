@@ -3,7 +3,7 @@ enum Slot:
     Held(count: int)
 
 def bump(ref slot: Slot) -> int:
-    match slot:
+    return match slot:
         case .Held(ref count):
             count += 1
             count

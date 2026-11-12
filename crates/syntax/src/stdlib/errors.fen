@@ -31,6 +31,6 @@ export error ParseError:
 ## the usual way to check one. It's only for tests: anywhere else, `else as why:` names a failure
 ## where it happens.
 export def failure_of[T, E](run: () -> T fails E) -> E?:
-    run() else as why:
+    run() except why:
         return why
-    None
+    return None

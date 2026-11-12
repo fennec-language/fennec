@@ -37,7 +37,7 @@ def bump(ref x: int):
     x = 99
 
 def made() -> C:
-    C(
+    return C(
         n=1,
         big=2,
         small=0.5,
@@ -107,7 +107,7 @@ def main(stdout: Stdout):
     for which in range(22):
         shared c = made()
         mut failed = False
-        fails_after(c, which) else:
+        fails_after(c, which) except Nope():
             failed = True
         if not failed:
             stdout.print("it didn't fail", which)

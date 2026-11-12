@@ -352,6 +352,15 @@ pub(crate) fn emit_with(
     Ok((units, shared, layouts))
 }
 
+/// Whether a function only hands its work on: one block, a few instructions, and one call, to
+/// another function. Inlined where it's called, it costs nothing, and what it calls is reached
+/// with one call fewer, as `field(name, x)` reaches `x.serialize(ref self)`.
+fn forwards(function: &Function) -> bool {
+    let [block] = function.blocks.as_slice() else { return false };
+    let calls = block.insts.iter().filter(|inst| matches!(inst.kind, InstKind::Call { .. })).count();
+    block.insts.len() <= 4 && calls == 1 && callees(function).all(|name| name != function.name)
+}
+
 fn size(function: &Function) -> usize {
     function.blocks.iter().map(|block| block.insts.len() + 1).sum()
 }
@@ -468,7 +477,7 @@ fn unit<'p>(
     }
     let recursive = size(function) <= SELF_INLINED && callees(function).any(|name| name == function.name);
     let inlined = format!("@\"f_{}$inl\"", function.name);
-    let small = size(function) <= ALWAYS_INLINE && callees(function).next().is_none();
+    let small = (size(function) <= ALWAYS_INLINE && callees(function).next().is_none()) || forwards(function);
     module.define(
         function,
         &Definition {
@@ -4189,6 +4198,22 @@ def main(stdout: Stdout):
         );
         assert!(text.contains("release, align 8"), "{text}");
         assert!(!text.contains("unordered"), "{text}");
+        Ok(())
+    }
+
+    /// A function that only hands its work on to another, as a serializer's `field` hands `x` to
+    /// its `serialize`, is inlined wherever it's called, so what it calls is reached with one call
+    /// fewer. One that calls itself, or does more, isn't made to be.
+    #[test]
+    fn a_function_that_only_forwards_is_inlined() -> Result<(), String> {
+        let source = "def work(n: int) -> int:\n    mut total = 0\n    for i in range(n):\n        total += i * n\n    return total\n\n\
+                      def forward(n: int) -> int:\n    return work(n)\n\n\
+                      def more(n: int) -> int:\n    a = work(n)\n    b = work(a)\n    return a + b\n\n\
+                      def main(stdout: Stdout):\n    stdout.print(forward(3), more(2))\n";
+        let forward = text_of(source, "forward")?;
+        assert!(forward.contains("@\"f_forward\"(") && forward.contains(") #2 {"), "{forward}");
+        let more = text_of(source, "more")?;
+        assert!(more.contains("@\"f_more\"(") && !more.contains("@\"f_more\"(i64 %p0) #2 {"), "{more}");
         Ok(())
     }
 

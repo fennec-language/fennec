@@ -179,13 +179,20 @@ impl Cache {
             std::fs::create_dir_all(folder)?;
         }
         // On the disk before it's an entry, so a power cut can't leave one with no bytes.
-        File::open(from)?.sync_all()?;
+        synced(from)?;
         let sum = sum_of(&std::fs::read(from)?);
         let temporary = linked_beside(from, &path)?;
         read_only_program(&temporary)?;
         // The hash first: a reader between the two finds the old program with the new hash, a
         // mismatch, which is a miss.
         put(&sum_path(&path), &[sum.as_bytes()])?;
+        // Windows won't rename over a read-only file, as an older program kept at this name is.
+        #[cfg(windows)]
+        if let Ok(found) = std::fs::metadata(&path) {
+            let mut permissions = found.permissions();
+            permissions.set_readonly(false);
+            let _ = std::fs::set_permissions(&path, permissions);
+        }
         std::fs::rename(&temporary, &path)
     }
 
@@ -406,14 +413,41 @@ fn linked_beside(from: &Path, path: &Path) -> std::io::Result<PathBuf> {
 /// write, but its owner may still set its time. Cleanup's order and the sweep of old runs depend
 /// on this, so a failure is said; an entry another command's cleanup took meanwhile is none.
 fn mark_used(path: &Path) {
-    let marked = File::open(path).and_then(|file| file.set_modified(SystemTime::now()));
-    crate::touched("mark what it used as used", marked);
+    crate::touched("mark what it used as used", set_time(path, SystemTime::now()));
     // A kept program's hash goes with it, or cleanup would take the hash and leave the program.
     let sum = sum_path(path);
     if sum.is_file() {
-        let marked = File::open(&sum).and_then(|file| file.set_modified(SystemTime::now()));
-        crate::touched("mark what it used as used", marked);
+        crate::touched("mark what it used as used", set_time(&sum, SystemTime::now()));
     }
+}
+
+/// Sets when a file or folder was last changed, as cleanup orders entries by. Windows sets a time
+/// only through a handle that may write the file's attributes, which a read-only file still
+/// allows, and opens a folder only with its backup semantics; elsewhere, opening it to read will
+/// do, for its owner.
+///
+/// # Errors
+///
+/// When it isn't there, or its time can't be set.
+pub fn set_time(path: &Path, time: SystemTime) -> std::io::Result<()> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // FILE_WRITE_ATTRIBUTES, and FILE_FLAG_BACKUP_SEMANTICS.
+        options.read(false).access_mode(0x0100).custom_flags(0x0200_0000);
+    }
+    options.open(path)?.set_modified(time)
+}
+
+/// Puts a file's bytes on the disk. Windows flushes a file only through a handle that may write it.
+fn synced(path: &Path) -> std::io::Result<()> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(windows)]
+    options.write(true);
+    options.open(path)?.sync_all()
 }
 
 /// Every file under `dir`, in the build folder `build`.

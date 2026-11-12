@@ -16,8 +16,10 @@ export struct Path:
         Path(self.text + "/" + part)
 
     ## `part`, a path from outside like a request's, inside this one. A leading `/` is taken as
-    ## this path's own top. It fails on anything that could lead out of it: a `..`, a `\\`, or a
-    ## control character. Unlike `/`, it can't replace the path.
+    ## this path's own top, and empty parts are passed over. It fails on anything that could lead
+    ## out of it: a `..`, a `\\`, a control character, or a drive letter like `C:` first. Unlike
+    ## `/`, it can't replace the path. It only looks at the text: an `Fs` narrowed with `only` is
+    ## what keeps a program out of other folders, links and all.
     def inside(self, part: str) -> Path fails InvalidValue:
         for c in part:
             if c.code() < 32 or c.code() == 127 or c == "\\":
@@ -25,6 +27,9 @@ export struct Path:
                     message=f"`{cut_input(part)}` can't be a path inside `{cut_input(self.text)}`",
                 )
         kept = Path(part).parts()
+        # On Windows, `C:` first is another drive's folder, wherever the path was joined.
+        if kept.len() > 0 and is_drive(kept[0]):
+            fail InvalidValue(message=f"`{cut_input(part)}` would leave `{cut_input(self.text)}`")
         for name in kept:
             if name == "..":
                 fail InvalidValue(
@@ -89,3 +94,9 @@ export struct Path:
         if self.is_absolute(): return Path("/" + text)
         if text == "": return Path(".")
         Path(text)
+
+## Whether `name` starts as a Windows drive does: a letter, then `:`.
+def is_drive(name: str) -> bool:
+    if name.len() < 2 or name[1] != ":": return False
+    letter = name[0].code()
+    return (letter >= 65 and letter <= 90) or (letter >= 97 and letter <= 122)

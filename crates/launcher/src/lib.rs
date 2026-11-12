@@ -248,7 +248,7 @@ impl Launcher {
     ///
     /// When there's no toolchain to run, or the one there is isn't the one pinned.
     pub fn toolchain_for(&self, from: &Path) -> Result<PathBuf, String> {
-        let Some(root) = kit::root(from) else {
+        let Some(root) = kit::root(from)? else {
             let version = self.default_version().ok_or(NO_DEFAULT)?;
             return self.exactly(&version);
         };
@@ -298,7 +298,7 @@ impl Launcher {
     /// When `from` is in a kit, whose `kit.toml` says which version it builds with, or the version
     /// isn't there and can't or mayn't be installed.
     pub fn outside_a_kit(&self, from: &Path, version: &str) -> Result<PathBuf, String> {
-        if let Some(root) = kit::root(from) {
+        if let Some(root) = kit::root(from)? {
             return Err(format!(
                 "`--version` is for scripts outside a kit, and {} says which version this kit builds with: change `fennec = ...` there, or `fennec +{version} <command>` runs that version this once",
                 root.join("kit.toml").display()
@@ -392,7 +392,7 @@ impl Launcher {
     ///
     /// When it isn't in a kit, or the toolchain can't be installed.
     pub fn update(&self, from: &Path, latest: bool) -> Result<String, String> {
-        let root = kit::root(from).ok_or("this isn't in a kit, so there's no pin to move")?;
+        let root = kit::root(from)?.ok_or("this isn't in a kit, so there's no pin to move")?;
         let manifest = std::fs::read_to_string(root.join("kit.toml"))
             .map_err(|err| format!("couldn't read kit.toml: {err}"))?;
         let mut version = kit::version(&manifest)?;

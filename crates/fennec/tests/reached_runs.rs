@@ -229,8 +229,8 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
         assert_eq!(stdout(&again), stdout(&first));
         assert_eq!(shown(&again), shown(&first), "a failure points at the source just the same");
     }
-    // Long enough that a file's time can be told from when it was noted.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    // A file's time can be told from when it was noted once it's older than the clock's grain.
+    aged(&dir).unwrap();
     assert_eq!(stdout(&run(&home, &dir).unwrap()), stdout(&first));
     let noted = run(&home, &dir).unwrap();
     assert_eq!(shown(&noted), shown(&first), "started without reading anything");
@@ -238,6 +238,25 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     std::fs::write(dir.join("src/lib.fen"), lib("0")).unwrap();
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "0\n1\n", "an edit is seen");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Sets the time of every file of the kit in `dir`, `kit.toml` and what's under `src`, ten seconds
+/// back, so a run can tell each from when it was noted, which it otherwise couldn't until the
+/// clock's grain had passed: what a test once slept 2.1 seconds for.
+fn aged(dir: &Path) -> std::io::Result<()> {
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+    let mut files = vec![dir.join("kit.toml")];
+    let mut folders = vec![dir.join("src")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder)?.flatten() {
+            let path = entry.path();
+            if path.is_dir() { folders.push(path) } else { files.push(path) }
+        }
+    }
+    for file in files.iter().filter(|file| file.exists()) {
+        std::fs::File::options().write(true).open(file)?.set_modified(then)?;
+    }
+    Ok(())
 }
 
 /// A kit whose `main` prints what it embeds, with `test` added to what it holds.
@@ -260,8 +279,8 @@ fn an_edit_to_an_embedded_file_is_seen_by_a_kit_started_from_what_it_kept() {
     let dir = embedding_kit("embed_image", "").unwrap();
     let home = dir.join("home");
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
-    // Long enough that a file's time can be told from when it was noted.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    // A file's time can be told from when it was noted once it's older than the clock's grain.
+    aged(&dir).unwrap();
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n", "started from what it kept, bytes and all");
 

@@ -268,6 +268,39 @@ mod launcher {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A kit in group-writable folders, as a umask of 002 makes them, runs the toolchain it pins.
+    /// One in a folder anyone can write to stops, saying the `chmod` that fixes it: it never runs
+    /// the default toolchain in place of the one the kit asks for.
+    #[test]
+    #[cfg(unix)]
+    fn a_kit_toml_not_trusted_stops_and_never_runs_the_default() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("trust");
+        let (pair, public) = key();
+        release(&dir.join("dist"), "0.4.2", &pair);
+        release(&dir.join("dist"), "0.4.3", &pair);
+        let launcher = launcher(&dir, &public);
+        launcher.set_default("0.4.3").unwrap();
+        let kit = kit(&dir, "0.4.2");
+        let mode = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        mode(&kit, 0o775);
+        mode(&kit.join("src"), 0o775);
+        mode(&kit.join("kit.toml"), 0o664);
+        assert_eq!(ran(&launcher.toolchain_for(&kit.join("src")).unwrap(), "x").0, "fennec 0.4.2: x\n");
+        mode(&kit, 0o777);
+        let refused = launcher.toolchain_for(&kit.join("src")).unwrap_err();
+        let shown = std::fs::canonicalize(&kit).unwrap();
+        assert!(
+            refused.contains(&format!("can be written by anyone: `chmod o-w {}` fixes it", shown.display())),
+            "{refused}"
+        );
+        assert!(launcher.update(&kit, false).unwrap_err().contains("chmod o-w"));
+        mode(&kit, 0o755);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn outside_a_kit_the_default_toolchain_runs() {
         let dir = scratch("default");

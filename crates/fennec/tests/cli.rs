@@ -3384,6 +3384,72 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
+/// One program built in two folders, with two Fennec folders, a second apart, is the same bytes
+/// each time: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
+/// a single file built by its whole path. Nothing of where or when it was built goes in: the files
+/// it carries to show a failure in are named from the kit, not from the root of the disk, and its
+/// cache key goes by the runtime library's build, not by where that is or when it changed.
+#[test]
+fn a_program_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("same-bytes")?;
+    let places = [dir.join("one/deeper/still"), dir.join("two")];
+    for place in &places {
+        let (kit, tools) = (place.join("game"), place.join("tools"));
+        std::fs::create_dir_all(kit.join("src/world"))?;
+        std::fs::create_dir_all(tools.join("src"))?;
+        std::fs::write(
+            tools.join("kit.toml"),
+            "name = \"tools\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
+        )?;
+        std::fs::write(tools.join("src/lib.fen"), "export def twice(n: int) -> int:\n    return n * 2\n")?;
+        std::fs::write(
+            kit.join("kit.toml"),
+            "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\ntools = { path = \"../tools\" }\n",
+        )?;
+        std::fs::write(kit.join("src/world/size.fen"), "export def size() -> int:\n    return 21\n")?;
+        std::fs::write(
+            kit.join("src/main.fen"),
+            "from tools import twice\nfrom world.size import size\n\ndef main(stdout: Stdout):\n    stdout.print(twice(size()))\n    return\n",
+        )?;
+        std::fs::write(
+            place.join("alone.fen"),
+            "def main(stdout: Stdout):\n    stdout.print(42)\n    return\n",
+        )?;
+    }
+    let build =
+        |place: &Path, home: &str, target: &str, from: &Path, out: &str| -> std::io::Result<Vec<u8>> {
+            let built = crate::executables::fennec_command()
+                .args(["build", target, "-o"])
+                .arg(place.join(out))
+                .current_dir(from)
+                .env("FENNEC_HOME", dir.join(home))
+                .output_within()?;
+            assert!(built.status.success(), "{target}: {}", text(&built.stderr));
+            std::fs::read(place.join(out))
+        };
+    for (what, out) in
+        [("kit by its whole path", "whole"), ("kit as .", "dot"), ("file by its whole path", "file")]
+    {
+        let mut made = Vec::new();
+        for (at, place) in places.iter().enumerate() {
+            let (target, from) = match out {
+                "whole" => (place.join("game").to_string_lossy().into_owned(), place.clone()),
+                "dot" => (".".to_owned(), place.join("game")),
+                _ => (place.join("alone.fen").to_string_lossy().into_owned(), place.clone()),
+            };
+            made.push(build(place, &format!("home{at}"), &target, &from, out)?);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        assert!(made[0] == made[1], "a {what} built in two places came out different");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program built again under the same name, and run each time, is a new file every time: macOS
 /// remembers the code signature of a file it has launched and kills a program written into one,
 /// with no word. So two programs take turns at one path, built through the store, which links one

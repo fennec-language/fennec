@@ -375,8 +375,8 @@ impl Emit<'_, '_, '_> {
         length
     }
 
-    /// `a + b`: done in place in the words when both are inline and the result fits, and by
-    /// the runtime otherwise.
+    /// `a + b`: done in place in the words when both are inline and the result fits, and
+    /// otherwise as one text made at the size of both, with nothing boxed first.
     fn header_concat(&mut self, a: &str, b: &str) -> String {
         let (a_block, b_block) = (self.header_in_block(a), self.header_in_block(b));
         let (a_length, b_length) = (self.inline_length(a), self.inline_length(b));
@@ -410,13 +410,7 @@ impl Emit<'_, '_, '_> {
         let words_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&runtime);
-        let joined = self.on_blocks([a, b], |emit, [x, y]| {
-            emit.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
-            let joined = emit.temp();
-            emit.line(&format!("{joined} = call ptr @fennec_str_concat(ptr {x}, ptr {y})"));
-            joined
-        });
-        let joined = self.text_from_block(&joined);
+        let joined = self.joined_texts(&[a, b]);
         let runtime_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&done);

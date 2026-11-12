@@ -18535,6 +18535,52 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// `a + b` of texts too long to join in a header, or held in blocks, is made as one block at
+/// the size of both, each copied in once, with neither boxed into a block of its own first: a
+/// short text held in its header was copied into a block, joined and let go of. It gives what it
+/// gave, for texts of every length and of characters past ASCII.
+#[test]
+fn texts_joined_past_a_header_are_made_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("texts_joined")?;
+    std::fs::write(dir.join("texts_joined.fen"), TEXTS_JOINED)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "texts_joined", how)?;
+        assert_eq!(printed, TEXTS_JOINED_PRINT, "{how:?}");
+        assert!(count(&counts, "allocations") < Some(90) && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TEXTS_JOINED_PRINT: &str = r"abab aba string long enough to be held in a block of its own a string long enough to be held in a block of its ownab a string long enough to be held in a block of its owna string long enough to be held in a block of its own
+55 56 é日本é日本 18
+é日本 own 56 12
+165 29aé日
+";
+
+const TEXTS_JOINED: &str = r#"def main(stdout: Stdout):
+    short = "ab"
+    long_one = "a string long enough to be held in a block of its own"
+    wide = "é日本"
+    stdout.print(short + short, short + long_one, long_one + short, long_one + long_one)
+    stdout.print(
+        len(short + long_one),
+        len(wide + long_one),
+        wide + wide,
+        len(wide + wide + wide + wide + wide + wide),
+    )
+    joined = wide + long_one
+    stdout.print(joined[0:3], joined[-3:], len(joined), joined.find("long") else -1)
+    mut parts = list[str]()
+    for n in range(30):
+        parts.append(f"{n}" + long_one[0:n % 7] + wide[0:n % 3])
+    stdout.print(len("".join(parts)), parts[29])
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

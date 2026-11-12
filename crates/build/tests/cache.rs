@@ -156,7 +156,17 @@ fn a_cache_others_can_write_isnt_used() {
     std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o555)).unwrap();
     let _ = Cache::new(&home);
     assert_eq!(mode(&home.join("cache")), 0o500);
+    // Its own with the group able to write, as a umask of 002 makes it, it's used, and made private.
+    std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o775)).unwrap();
+    let grouped = Cache::new(&home);
+    assert_eq!(mode(&home.join("cache")), 0o700);
+    assert!(grouped.read("llvm", "x").is_some(), "a group-writable cache of the user's own wasn't used");
     std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o777)).unwrap();
+    let refused = fennec_build::private_folder(&home.join("cache")).unwrap_err();
+    assert!(
+        refused.0.contains("can be written by anyone") && refused.0.contains("`chmod -R go-w"),
+        "{refused:?}"
+    );
     let open = Cache::new(&home);
     assert_eq!(open.read("llvm", "x"), None, "a cache others can write was read");
     open.write("llvm", "y", b"not kept").unwrap();
@@ -294,14 +304,26 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
         assert!(cache.path("llvm", name).exists(), "{name}");
     }
     assert!(kept.exists() && run.exists());
-    // Long unused, it still stays while the run has it put out, and goes once it doesn't.
+    // Long unused, it still stays while the run has it put out, and goes once it doesn't. Its
+    // hash beside it is one entry with it: it stays while the program does, so the program put
+    // out again isn't taken for a torn one, and goes with it.
     let long_ago = SystemTime::now() - Duration::from_secs(old);
-    File::open(&kept).unwrap().set_modified(long_ago).unwrap();
+    let sum = home.join("cache").join(FOLDER).join("programs").join("root.sum");
+    for path in [&kept, &sum] {
+        File::open(path).unwrap().set_modified(long_ago).unwrap();
+    }
     cache.cleanup(0).unwrap();
     assert!(kept.exists(), "a program a run has put out stays");
+    assert!(sum.exists(), "the hash of a program that stays went without it");
+    let again = home.join("work").join("fennec-run-2");
+    assert!(cache.link_out("programs", "root", &again).unwrap());
     std::fs::remove_file(&run).unwrap();
-    cache.cleanup(0).unwrap();
-    assert!(!kept.exists());
+    std::fs::remove_file(&again).unwrap();
+    for path in [&kept, &sum] {
+        File::open(path).unwrap().set_modified(long_ago).unwrap();
+    }
+    assert_eq!(cache.cleanup(0).unwrap().removed, 1, "a program and its hash are one entry");
+    assert!(!kept.exists() && !sum.exists());
     std::fs::remove_dir_all(&home).unwrap();
 }
 

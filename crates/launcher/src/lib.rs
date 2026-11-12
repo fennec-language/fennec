@@ -168,8 +168,8 @@ impl Launcher {
                 folder.display()
             ));
         }
-        std::fs::create_dir_all(self.toolchains())
-            .and_then(|()| std::fs::write(self.link_file(name), format!("{}\n", folder.display())))
+        self.private_toolchains()?;
+        std::fs::write(self.link_file(name), format!("{}\n", folder.display()))
             .map_err(|err| format!("couldn't write the link: {err}"))
     }
 
@@ -411,6 +411,14 @@ impl Launcher {
         })
     }
 
+    /// Makes Fennec's folder and its toolchains' folder, if they aren't there, its user's alone, as
+    /// the cache makes them: what's kept there is run. See `fennec_dist::private_folder`.
+    fn private_toolchains(&self) -> Result<(), String> {
+        fennec_dist::private_folder(&self.home)
+            .and_then(|()| fennec_dist::private_folder(&self.toolchains()))
+            .map_err(|refused| refused.0)
+    }
+
     /// Reads one of a release's files.
     fn fetch(&self, version: &str, file: &str) -> Result<Vec<u8>, String> {
         let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
@@ -470,8 +478,7 @@ impl Launcher {
             return Err(format!("{} has no `fennec` to run", archive.file));
         }
         let toolchains = self.toolchains();
-        std::fs::create_dir_all(&toolchains)
-            .map_err(|err| format!("couldn't make {}: {err}", toolchains.display()))?;
+        self.private_toolchains()?;
         // Unpacked beside where it goes and then moved there, so a toolchain is there whole or not at all.
         let partial = toolchains.join(format!(".{version}.{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&partial);

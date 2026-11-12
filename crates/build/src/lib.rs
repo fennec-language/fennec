@@ -12,7 +12,6 @@
 mod cache;
 mod changes;
 mod locals;
-mod private;
 mod reach;
 mod reached;
 mod snapshot;
@@ -24,7 +23,7 @@ mod verdict;
 
 pub use cache::{CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, KEPT_RECENT, UNUSED_BUILD, VERSION};
 pub use changes::{Change, Kind, changes};
-pub use private::{Refused, own_uid, private_folder};
+pub use fennec_dist::{Refused, private_folder};
 pub use reach::test_keys;
 pub use reached::{
     Defined, keep_what_functions_reach, keep_what_main_reaches, names_used, reached_by_main, reaches_into,

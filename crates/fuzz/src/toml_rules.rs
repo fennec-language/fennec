@@ -30,9 +30,9 @@ struct Settings:
     for (n, ty) in TYPES.iter().enumerate() {
         let _ = write!(
             source,
-            "\ndef read_as_{n}(text: str) -> str:\n    value = toml.loads[{ty}](text) else:\n        return \"err\"\n    \
-             written = toml.dumps(value)\n    back = toml.loads[{ty}](written) else:\n        return \"ok unreadable\"\n    \
-             f\"ok {{back == value}}\"\n"
+            "\ndef read_as_{n}(text: str) -> str:\n    value = toml.loads[{ty}](text) except ParseError():\n        return \"err\"\n    \
+             written = toml.dumps(value)\n    back = toml.loads[{ty}](written) except ParseError():\n        return \"ok unreadable\"\n    \
+             return f\"ok {{back == value}}\"\n"
         );
     }
     source.push_str(

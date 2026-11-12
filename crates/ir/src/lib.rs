@@ -38,6 +38,10 @@
 //! can't be lowered is listed in [`Program::not_lowered`], with why, and no example has one.
 //! Tests aren't lowered yet.
 
+// A hash map's order changes with every process, so iterating one would make what the compiler
+// emits, or the order it checks in, differ from run to run. Iterate a sorted copy or a BTreeMap.
+#![deny(clippy::iter_over_hash_type)]
+
 pub mod arrays;
 mod costs;
 pub mod eval;

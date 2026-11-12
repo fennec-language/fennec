@@ -1,3 +1,5 @@
+from std.string import quoted_input
+
 ## Arguments a program wasn't given in a way it understands. `message` says what's wrong.
 export error CliError:
     message: str
@@ -197,7 +199,7 @@ export struct Cli:
             elif left.len() > 0:
                 given.values[taken.name] = left[0]
                 left = left[1:]
-        if left.len() > 0: fail CliError(message=f"`{left[0]}` wasn't expected")
+        if left.len() > 0: fail CliError(message=f"{quoted_input(left[0])} wasn't expected")
 
     def _usage(self) -> str:
         mut usage = ""

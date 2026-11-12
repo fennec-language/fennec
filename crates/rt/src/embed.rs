@@ -488,6 +488,26 @@ pub(crate) fn failed() -> bool {
     FLAGS.with(|flags| flags.failed.get() != 0)
 }
 
+/// Whether this thread's failure flag is set, for the runtime library's check, in a debug build,
+/// that a function it says never fails didn't.
+pub fn failure_flag_set() -> bool {
+    failed()
+}
+
+/// Stops the program: `symbol`, which the runtime library says never fails, set the failure flag.
+/// Generated code skips the check after such a call, so it would have gone on past the failure.
+#[cold]
+#[inline(never)]
+pub fn failed_though_never_fails(symbol: &str) -> ! {
+    let message = with(|state| state.failure.as_ref().map(|failure| failure.message.clone()));
+    let _ = writeln!(
+        std::io::stderr(),
+        "fennec runtime: `{symbol}` is listed in NEVER_FAIL but failed: {}",
+        message.unwrap_or_default()
+    );
+    std::process::abort();
+}
+
 /// Where the failure flag is. Native code asks on each thread before it reads it, so this is
 /// where the thread's word saying whether the run is recorded or replayed is set.
 pub fn failed_flag() -> usize {
@@ -825,7 +845,7 @@ pub mod temps {
         with(|state| state.push(Value::Bool(b != 0)))
     }
 
-    /// A capability as a value, for code that passes one on, like `args.len()`: a block or a
+    /// A capability as a value, for code that passes one on, like `len(args)`: a block or a
     /// kind, as for `declare_capability`.
     pub extern "C" fn capability(kind: i64) -> i64 {
         with(|state| {

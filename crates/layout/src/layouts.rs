@@ -103,7 +103,10 @@ impl Layouts {
             enums: enums.map(|def| (def.name.as_str(), def)).collect(),
         };
         let mut layouts = Layouts::default();
-        for def in sources.enums.values() {
+        // In the enums' names' order, so each case's owners come out the same every run.
+        let mut enums: Vec<&TypeDef> = sources.enums.values().copied().collect();
+        enums.sort_unstable_by(|first, second| first.name.cmp(&second.name));
+        for def in enums {
             for case in &def.cases {
                 layouts.owners.entry(case.name.clone()).or_default().push(def.name.clone());
             }

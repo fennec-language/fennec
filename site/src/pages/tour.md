@@ -75,12 +75,12 @@ enum Kind:
 
 def speed_of(kind: Kind) -> float:
     match kind:
-        case .Runner: 8.0
-        case .Walker: 3.0
-        case .Turret: 0.0
+        case .Runner: return 8.0
+        case .Walker: return 3.0
+        case .Turret: return 0.0
 
 def label_of(health: int) -> str:
-    "boss" if health > 500 else "minion"
+    return "boss" if health > 500 else "minion"
 ```
 
 Names belong to the block they're made in. A name made inside an `if`, `for` or `with` doesn't exist after it, so nothing leaks into the rest of the function.
@@ -91,24 +91,24 @@ A module can hold constants, worked out while compiling. There's no `mut` at the
 KEYWORDS = {"def", "if", "else"}
 
 def is_keyword(word: str) -> bool:
-    word in KEYWORDS
+    return word in KEYWORDS
 ```
 
 ## Functions
 
-Parameters and return types are written, and everything inside a function is inferred. The last expression in a function is its value.
+Parameters and return types are written, and everything inside a function is inferred. A function gives its value with `return`.
 
 ```fennec
 from std.math import PI
 
 def area(radius: float) -> float:
-    PI * radius * radius
+    return PI * radius * radius
 
 def factorial(n: int) -> int:
-    1 if n <= 1 else n * factorial(n - 1)
+    return 1 if n <= 1 else n * factorial(n - 1)
 ```
 
-- Use `return` to leave early. A function with no `->` returns nothing. If you leave a return type out, the error's fix writes in the one the compiler inferred.
+- `return` can leave early too. A function with no `->` returns nothing. If you leave a return type out, the error's fix writes in the one the compiler inferred.
 - Short functions are passed with an arrow: `enemies.sort(key=enemy => enemy.health)`. An arrow is one expression, and anything longer is a nested `def`.
 - Functions used as values never change anything around them. A nested function that needs to change something takes a `ref` parameter.
 
@@ -120,7 +120,7 @@ def counts(words: list[str]) -> dict[str, int]:
     mut seen = dict[str, int]()
     for word in words:
         count(word, ref seen)
-    seen
+    return seen
 ```
 
 ## Named arguments
@@ -129,7 +129,7 @@ A parameter with a default is passed by name only, and a literal default gives i
 
 ```fennec
 def scan(rows: list[int], limit=8) -> list[int]:
-    rows[:limit]
+    return rows[:limit]
 
 def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
@@ -144,7 +144,7 @@ struct Account:
     total = 0
 
 def transfer(source: Account, destination: Account, amount: int) -> list[Account]:
-    [copy(source, total=source.total - amount), copy(destination, total=destination.total + amount)]
+    return [copy(source, total=source.total - amount), copy(destination, total=destination.total + amount)]
 
 def main(stdout: Stdout):
     savings = Account(total=10)
@@ -193,7 +193,7 @@ struct Enemy:
     health = 100
 
     def at(position: Vec3) -> Enemy:
-        Enemy(position=position)
+        return Enemy(position=position)
 
 def main(stdout: Stdout):
     boss = Enemy.at(Vec3(x=1.0, y=2.0, z=3.0))
@@ -219,7 +219,7 @@ struct Square:
 
 extend Square:
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 ```
 
 ## Copies
@@ -256,7 +256,7 @@ struct Bag:
 def main(stdout: Stdout):
     identity: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
     bag = Bag()
-    stdout.print(identity.len(), identity[3], bag.slots[0])
+    stdout.print(len(identity), identity[3], bag.slots[0])
 ```
 
 Write one as a list of exactly `N` items, or as `array[T, N]()`, which fills it with the item's zero. It indexes, loops with `for` and `for ref`, and has `len`, `in` and `==`. Its size never changes, and `list(arr)` makes a list from it. A wrong count, and a position known to be outside it, are compile errors.
@@ -385,15 +385,15 @@ enum Shape:
 
 def area(shape: Shape) -> float:
     match shape:
-        case .Circle(radius): PI * radius * radius
-        case .Rect(width, height): width * height
-        case .Dot: 0.0
+        case .Circle(radius): return PI * radius * radius
+        case .Rect(width, height): return width * height
+        case .Dot: return 0.0
 
 def kind(shape: Shape) -> str:
     match shape:
-        case .Circle(radius) if radius > 10.0: "a big circle"
-        case .Circle(_) | .Dot: "round"
-        case .Rect(_, _): "square-ish"
+        case .Circle(radius) if radius > 10.0: return "a big circle"
+        case .Circle(_) | .Dot: return "round"
+        case .Rect(_, _): return "square-ish"
 ```
 
 The leading dot marks an enum case, and it's required when the type is known. You only write the enum's name if the type isn't known where you write it.
@@ -409,13 +409,13 @@ struct Circle:
     radius: float
 
     def area(self) -> float:
-        PI * self.radius * self.radius
+        return PI * self.radius * self.radius
 
 struct Square:
     side: float
 
     def area(self) -> float:
-        self.side * self.side
+        return self.side * self.side
 
 type Shape = Circle | Square
 
@@ -441,8 +441,8 @@ struct Enemy:
     health = 3
 
 def find_target(enemies: list[Enemy]) -> Enemy?:
-    if enemies.len() == 0: return None
-    enemies[0]
+    if len(enemies) == 0: return None
+    return enemies[0]
 
 def main(stdout: Stdout):
     target = find_target([Enemy()])
@@ -459,8 +459,8 @@ struct Enemy:
     health = 3
 
 def find_target(enemies: list[Enemy]) -> Enemy?:
-    if enemies.len() == 0: return None
-    enemies[0]
+    if len(enemies) == 0: return None
+    return enemies[0]
 
 def main(stdout: Stdout):
     # 1 if there's no target
@@ -502,7 +502,7 @@ struct Shop:
         if count == 0:
             fail .OutOfStock(item)
         self._items[item] = count - 1
-        item
+        return item
 ```
 
 `fail` returns a failure, and `?` passes one up to your caller, so you can see every line a function can leave from. There are a few ways to deal with a call that can fail:
@@ -514,28 +514,29 @@ error NotFound:
 def load_score(path: str) -> int fails NotFound:
     if path == "":
         fail NotFound(path)
-    10
+    return 10
 
 def doubled(path: str) -> int fails NotFound:
     # pass the failure up
-    load_score(path)? * 2
+    return load_score(path)? * 2
 
 def main(stdout: Stdout):
     # use a default if it failed
-    stdout.print(load_score("") else 0)
+    fallback = load_score("") except NotFound(): 0
+    stdout.print(fallback)
 
     # or name the failure in a block that leaves with return, fail, continue or break
-    score = load_score("save") else as why:
+    score = load_score("save") except why:
         stdout.print(f"no file at {why.path}")
         return
     stdout.print(score)
 ```
 
-A failure is handled at the call: `?`, `else`, or `else as`. There's no `Ok`, `Err` or `Result` to store and forget. Inside an `else as` block, `match why:` handles different failures, with `_` the only catch-all, and `fail why` passes one on.
+A failure is handled at the call. `?` passes it up, and `except` handles it: one case on the line, `except why:` with a block, or `case` arms under `except why:`, with `case _:` for the rest. `why` must be used on every way out, by reading it or by `fail why`. There's no `Ok`, `Err` or `Result` to store and forget, and `else` is only for a missing value.
 
-**Planned:** an `else as` block that gives a value as its last line instead of leaving, and the old `Ok`, `Err` and `Result` removed.
+An `except why:` block after `x =` can also give `x` a value as its last line, rather than leaving. **Planned:** the old `Ok`, `Err` and `Result` removed.
 
-- The default after `else` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
+- The value after `except` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
 - `fails A | B` combines failures from different places, and `?` passes any of them up as it is. A function type can say it too: `(str) -> int fails ParseError | RangeError`.
 - `result.expect("why")` says a call can't fail, and needs a reason. **Planned:** `ignore` goes, and `_ = f()` on a call that can fail is a compile error, so a failure must always be handled.
 - A run-time bug is different from a failure. `xs[i]` out of range stops the program with a clear message, because there's nothing sensible to handle.
@@ -566,7 +567,7 @@ def main(stdout: Stdout):
     stdout.print(by_name, total, strongest)
 ```
 
-- Python's looping builtins come along: `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`, `range`. Questions about one value are methods: `xs.len()`, `x.abs()`.
+- Python's looping builtins come along: `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`, `range`. `len(xs)` and `abs(x)` are builtins too, and other questions about one value are methods.
 - A `dict` keeps insertion order, so looping over it gives the same order every time.
 - `d.get(key)` returns an optional, and a fallback reads the way it does anywhere else: `d.get(key) else 0`.
 - A struct works as a dict key with nothing to write. It hashes all its fields.
@@ -635,9 +636,9 @@ def placeholders(query: Template[SqlValue]) -> str:
     mut sent = ""
     for at, text in enumerate(query.strings):
         sent += text
-        if at < query.values.len():
+        if at < len(query.values):
             sent += "?"
-    sent
+    return sent
 
 def main(stdout: Stdout):
     # a name someone else chose is a value, never part of the text
@@ -709,13 +710,13 @@ def echo(conn: Connection) fails NetError:
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
         for conn in parallel(server):
-            echo(conn) else as error:
+            echo(conn) except error:
                 stdout.print(f"{conn.peer} dropped: {error}")
                 continue
             stdout.print(f"{conn.peer} left")
 ```
 
-Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `else as` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
+Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `except` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
 
 **Planned:** `limit=` on `parallel`.
 
@@ -751,7 +752,7 @@ def best_of(scores: shared Scores, name: str) -> int:
     # many tasks can read it at once
     lock scores as current:
         return current.best.get(name) else 0
-    0
+    return 0
 
 def main(stdout: Stdout):
     shared scores = Scores()
@@ -781,8 +782,9 @@ def load(fs: Fs, path: str) -> list[int] fails IoError:
     mut found = list[int]()
     with fs.open(path)? as file:
         for line in file.lines()?:
-            found.append(int(line) else 0)
-    found
+            number = int.parse(line) except InvalidValue(): 0
+            found.append(number)
+    return found
 ```
 
 - The end of the block is where the file finishes. The `?` on the `with` line covers both opening it and finishing it, so there's no `close()` to forget.
@@ -790,7 +792,7 @@ def load(fs: Fs, path: str) -> list[int] fails IoError:
 - `fs.open` reads in `lines()` or `chunks(size)`, so a file bigger than memory is fine.
 - What a `with` lends can't escape the block, and a struct holding something borrowed is borrowed too.
 
-Writing your own takes `-> with T` and one `lend`, with setup above it, cleanup below, and `lend x else:` for when the caller's block fails:
+Writing your own takes `-> with T` and one `lend`, with setup above it, cleanup below, and `lend x except:` for when the caller's block fails:
 
 ```fennec
 struct Ledger:
@@ -799,7 +801,7 @@ struct Ledger:
 def entry(ref ledger: Ledger, name: str) -> with str:
     ledger.lines.append(f"open {name}")
     # the caller's block runs here
-    lend name.upper() else:
+    lend name.upper() except:
         # the caller's block failed
         ledger.lines.append(f"undo {name}")
     ledger.lines.append(f"close {name}")
@@ -878,13 +880,13 @@ struct Circle:
 
     # Circle is a Shape because it has area()
     def area(self) -> float:
-        PI * self.radius * self.radius
+        return PI * self.radius * self.radius
 
 def total_area[T: Shape](shapes: list[T]) -> float:
-    sum(shape.area() for shape in shapes)
+    return sum(shape.area() for shape in shapes)
 
 def describe(shape: Shape) -> str:
-    f"area {shape.area()}"
+    return f"area {shape.area()}"
 ```
 
 A parameter typed with an interface is resolved at compile time, like `[T: Shape]`, with no hidden dispatch or boxing. For a collection of different kinds of things, use a union or an `enum`.
@@ -940,7 +942,7 @@ enum Command:
     Damage(target: int, amount: int)
 
 def on_explosion(healths: list[int]) -> list[Command]:
-    [.Damage(target=i, amount=50) for i, health in enumerate(healths) if health > 0]
+    return [.Damage(target=i, amount=50) for i, health in enumerate(healths) if health > 0]
 
 def main(stdout: Stdout):
     mut healths = [100, 0]
@@ -959,11 +961,11 @@ A function can only touch the outside world through what it's given. Without an 
 
 ```fennec
 def load_save(fs: Fs, slot: str) -> str fails IoError:
-    fs.read_text(slot)?
+    return fs.read_text(slot)?
 
 # pure: no I/O possible
 def parse_save(data: str) -> list[str]:
-    data.split()
+    return data.split()
 ```
 
 Calling `print`, or using `stdout` in a function that wasn't given it, is an error that says how to pass it in. `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` work today. `clock.now()` reads a monotonic clock, for measuring, and `clock.time()` reads the wall clock as a `Time` in UTC.
@@ -974,7 +976,7 @@ Tests live next to the code they test.
 
 ```fennec
 def clamped(health: int) -> int:
-    max(health, 0)
+    return max(health, 0)
 
 test "clamping stops at zero":
     assert clamped(-5) == 0

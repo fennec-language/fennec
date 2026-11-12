@@ -39,18 +39,25 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a literal's block, filled in when the program starts.
     pub(crate) fn literal(&mut self, text: &str) -> String {
+        let symbol = self.literal_symbol(text);
+        let temp = self.temp();
+        self.line(&format!("{temp} = load ptr, ptr {symbol}, !invariant.load !1"));
+        temp
+    }
+
+    /// The global that holds a literal's block, for code outside a function's own to load.
+    pub(crate) fn literal_symbol(&mut self, text: &str) -> String {
         let name = format!("l_{}", fennec_blake3::hash(text.as_bytes()).to_hex());
         self.declare(&format!("@\"{name}\" = external dso_local global ptr"));
         self.module.shared.literals.insert(name.clone(), text.to_owned());
-        let temp = self.temp();
-        self.line(&format!("{temp} = load ptr, ptr @\"{name}\", !invariant.load !1"));
-        temp
+        format!("@\"{name}\"")
     }
 
     fn print_text(&mut self, text: &str) {
         let number = self.string_number(text);
         self.declare("declare void @fennec_print_str(i64) nounwind");
         self.line(&format!("call void @fennec_print_str(i64 {number})"));
+        self.leave_if_failed();
     }
 
     pub(crate) fn print(&mut self, args: &[Operand]) -> Result<(), String> {
@@ -155,44 +162,53 @@ impl Emit<'_, '_, '_> {
             Kind::Int => {
                 self.declare("declare void @fennec_print_int(i64) nounwind");
                 self.line(&format!("call void @fennec_print_int(i64 {value})"));
+                self.leave_if_failed();
             }
             Kind::Float => {
                 self.declare("declare void @fennec_print_float(double) nounwind");
                 self.line(&format!("call void @fennec_print_float(double {value})"));
+                self.leave_if_failed();
             }
             Kind::U64 => {
                 self.declare("declare void @fennec_print_u64(i64) nounwind");
                 self.line(&format!("call void @fennec_print_u64(i64 {value})"));
+                self.leave_if_failed();
             }
             Kind::F32 => {
                 self.declare("declare void @fennec_print_f32(double) nounwind");
                 self.line(&format!("call void @fennec_print_f32(double {value})"));
+                self.leave_if_failed();
             }
             Kind::Bool => {
                 self.declare("declare void @fennec_print_bool(i8) nounwind");
                 let wide = self.temp();
                 self.line(&format!("{wide} = zext i1 {value} to i8"));
                 self.line(&format!("call void @fennec_print_bool(i8 {wide})"));
+                self.leave_if_failed();
             }
             Kind::TextBlock => {
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {value})"));
+                self.leave_if_failed();
             }
             Kind::Str => {
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.on_blocks([value], |emit, [block]| {
                     emit.line(&format!("call void @fennec_str_print(ptr {block})"));
                 });
+                self.leave_if_failed();
             }
             _ if self.is_one_of_several(kind) || self.is_union(kind) => {
                 let text = self.plain_text(value, kind)?;
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {text})"));
                 self.release(&text);
+                self.leave_if_failed();
             }
             Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare void @fennec_print_block(ptr) nounwind");
                 self.line(&format!("call void @fennec_print_block(ptr {value})"));
+                self.leave_if_failed();
             }
             // A plain struct or enum, in place: its text, as an f-string writes it.
             Kind::Struct(_) | Kind::Enum(_) => {
@@ -200,6 +216,7 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {text})"));
                 self.release(&text);
+                self.leave_if_failed();
             }
             // A name narrowed to `None`, like `x` after `x = None`, holds nothing but prints so.
             Kind::Unit => self.print_text("None"),

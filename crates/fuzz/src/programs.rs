@@ -90,7 +90,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     }
     // A program that runs `parallel` does the same on one thread as on several.
     if source.contains("parallel(") {
-        for threads in [1, 4, 8] {
+        for threads in [1, 4, 8, 16] {
             let ran = crate::llvm::ran_again_on("programs", threads).map_err(with_program)?;
             if ran != release {
                 return Err(with_program(format!(
@@ -108,7 +108,18 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
             shown(&release)
         )));
     }
-    if let Some((printed, succeeded)) = eval::run(&program)
+    let expected = eval::run_saying(&program);
+    // Where the evaluator knows what a failure says, as a stream's item does, the builds say it.
+    if let Some((_, false, Some(said))) = &expected
+        && !dev.2
+        && !dev.1.contains(said.as_str())
+    {
+        return Err(with_program(format!(
+            "the builds stop saying something else than the evaluator:\n--- built\n{}\n--- evaluator\n{said}",
+            dev.1
+        )));
+    }
+    if let Some((printed, succeeded, _)) = expected
         && (printed.as_bytes() != dev.0.as_slice() || succeeded != dev.2)
     {
         let ended = if succeeded { "ran to the end" } else { "failed" };
@@ -134,7 +145,7 @@ mod tests {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
-            if let Some((_, succeeded)) = eval::run(&generate::program(&bytes)) {
+            if let Some((_, succeeded, _)) = eval::run_saying(&generate::program(&bytes)) {
                 sure += 1;
                 failed += usize::from(!succeeded);
             }
@@ -349,7 +360,7 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");
     }
 
-    /// A source's `lend x else:` cleanup runs on a failure and on a crash, in `main` and in a
+    /// A source's `lend x except:` cleanup runs on a failure and on a crash, in `main` and in a
     /// launched task.
     #[test]
     fn it_cleans_up_after_failures_and_crashes() {
@@ -452,9 +463,9 @@ mod tests {
         }
     }
 
-    /// With `except`, no failure is handled with `else`, and every catch-all `except why:` either
-    /// has a `case` for each error or reads `why`. Checked on the rewrite whether or not the switch
-    /// is on, so it's ready the day `except` parses.
+    /// Programs are written only in the forms locked on 2026-11-11: no failure is handled with
+    /// `else`, every catch-all `except why:` either has a `case` for each error or reads `why`,
+    /// and `len(x)` and `abs(x)` stand where the methods did.
     #[test]
     fn it_handles_failures_with_except() {
         let wanted = [
@@ -471,7 +482,7 @@ mod tests {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
-            let program = source::excepted(&source::source(&generate::program(&bytes)));
+            let program = source::source(&generate::program(&bytes));
             let lines: Vec<&str> = program.lines().collect();
             for (at, line) in lines.iter().enumerate() {
                 let trimmed = line.trim_start();
@@ -499,8 +510,39 @@ mod tests {
             for (count, want) in found.iter_mut().zip(wanted) {
                 *count += usize::from(program.contains(want));
             }
-            if source::EXCEPT_PARSES {
-                assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
+            assert!(!program.contains(") else \"refused\""), "a failing call inside a print");
+            assert!(
+                !program.contains(".len()") && !program.contains(".abs()"),
+                "a method where a builtin goes"
+            );
+        }
+        assert!(found.iter().all(|count| *count >= 1), "{found:?}");
+    }
+
+    /// A generator over `parallel(xs)` is made every way an item can be worked out, and read every
+    /// way a stream is: a loop, one that breaks, `sum` and a list comprehension.
+    #[test]
+    fn it_reads_streams_every_way() {
+        let ways = [
+            " + ",
+            "100 // (item - ",
+            "ys[item] for item in parallel(xs)",
+            "        if seen == ",
+            "sum(y for y in stream)",
+            "[y + 1 for y in stream]",
+        ];
+        let mut found = [0_usize; 6];
+        for seed in 0_u8..=255 {
+            let bytes: Vec<u8> = (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            for streamed in source.split("\ndef streamed").skip(1) {
+                let streamed = streamed.split("\n\n").next().unwrap_or_default();
+                assert!(streamed.contains(" for item in parallel(xs))"), "{streamed}");
+                for (count, way) in found.iter_mut().zip(ways) {
+                    *count += usize::from(streamed.contains(way));
+                }
             }
         }
         assert!(found.iter().all(|count| *count >= 1), "{found:?}");

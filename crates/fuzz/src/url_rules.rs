@@ -9,17 +9,17 @@ from std import url
 from std.url import Url
 
 def same(a: Url, b: Url) -> bool:
-    a.scheme == b.scheme and a.user == b.user and a.host == b.host and a.port == b.port and a.path == b.path and a.query == b.query and a.fragment == b.fragment
+    return a.scheme == b.scheme and a.user == b.user and a.host == b.host and a.port == b.port and a.path == b.path and a.query == b.query and a.fragment == b.fragment
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    found: Url? = url.parse(text) else None
+    found: Url? = url.parse(text) except InvalidValue(): None
     if found is None:
         stdout.print(\"reads-back\", True)
         stdout.print(\"prints-the-same\", True)
     else:
         written = f\"{found}\"
-        again: Url? = url.parse(written) else None
+        again: Url? = url.parse(written) except InvalidValue(): None
         if again is None:
             stdout.print(\"reads-back\", False, written)
             stdout.print(\"prints-the-same\", False, written)

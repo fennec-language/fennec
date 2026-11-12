@@ -3253,6 +3253,12 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         // A launch fails with no thread to run on, and a wait for a task can be cut short.
         || matches!(name, "intrinsics.launch" | "intrinsics.launch_take")
         || is_socket_method(name)
+        // Sorting what isn't a plain number, string or bool orders by its type's own `<`, which
+        // can fail.
+        || (name == "sorted"
+            && args.first().and_then(|list| function.type_of(list)).is_some_and(|ty| {
+                !matches!(&ty, Type::List(item) if matches!(**item, Type::Int | Type::Float | Type::Str | Type::Bool))
+            }))
         || name.starts_with("crypto.")
         || name.starts_with("compress.")
         || name.starts_with("unicode.")
@@ -3306,7 +3312,9 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "parallel.for"
                     | "parallel.serve"
                     | "parallel.peer"
+                    | "parallel.label"
                     | "parallel.map"
+                    | "parallel.stream_next"
                     | "parallel.sum"
         )
 }

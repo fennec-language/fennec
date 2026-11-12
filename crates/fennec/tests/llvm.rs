@@ -18399,8 +18399,8 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
     Ok(())
 }
 
-const TEXT_GROWN_PRINTS: &str = r#"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
-"#;
+const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
+";
 
 const TEXT_GROWN: &str = r#"def main(stdout: Stdout):
     mut text = ""
@@ -18455,13 +18455,13 @@ fn a_struct_made_with_a_list_built_for_it_takes_it_over() -> std::io::Result<()>
     Ok(())
 }
 
-const MADE_WITH_A_LIST_PRINTS: &str = r#"[1, 2, 9] [1, 2, 3]
+const MADE_WITH_A_LIST_PRINTS: &str = r"[1, 2, 9] [1, 2, 3]
 [[5, 0], [5, 10, 1], [5, 10, 11, 2]] [5, 10, 11, 12]
 [7, 8] [7] [7]
 [0, 1, 2, 3, 100] [4]
-"#;
+";
 
-const MADE_WITH_A_LIST: &str = r#"struct W:
+const MADE_WITH_A_LIST: &str = r"struct W:
     es: list[int]
     more: list[int]
 
@@ -18493,7 +18493,7 @@ def main(stdout: Stdout):
     b.es.append(100)
     stdout.print(b.es, b.more)
     return
-"#;
+";
 
 const LIST_BUILT_FOR_IT: &str = r#"struct E:
     x: int

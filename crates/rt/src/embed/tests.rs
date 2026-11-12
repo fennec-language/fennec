@@ -80,6 +80,8 @@ fn a_task_writes_as_it_goes_only_when_its_own_run_does() {
     })
     .join()
     .unwrap();
+}
+
 /// A block a runtime function would give native code as 0, no block at all, stops the run as a bug
 /// in Fennec rather than reaching native code, which uses it at once with no check.
 #[test]

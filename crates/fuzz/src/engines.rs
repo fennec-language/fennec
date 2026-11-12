@@ -67,6 +67,9 @@ pub(crate) fn runtime(input: &[u8]) -> Result<(), String> {
     tables.shapes = vec![std::rc::Rc::new(Element::Int), std::rc::Rc::new(Element::Str)];
     tables.str_shape = 2;
     embed::start(tables, fennec_rt::Inputs::default());
+    // A block a call can't make for a made-up value comes back as 0, which is dropped below, rather
+    // than stopping the process as it would a program, whose native code never passes one.
+    embed::takes_made_up_inputs(true);
     let mut values: Vec<i64> = Vec::new();
     let mut rng = Rng::new(0, 0);
     let mut bytes = input.iter().copied();
@@ -98,6 +101,7 @@ pub(crate) fn runtime(input: &[u8]) -> Result<(), String> {
         }
         let _ = embed::next_test();
     }
+    embed::takes_made_up_inputs(false);
     embed::finish();
     Ok(())
 }

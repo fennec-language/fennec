@@ -36,9 +36,9 @@ pub(crate) fn err_call(call: Span, error: Span, returned: Option<Span>) -> Diagn
 
 /// `case Ok(...)` or `case Err(...)`: a failure is handled where it happens, not matched.
 pub(crate) fn result_case(case: Span) -> Diagnostic {
-    Diagnostic::new("`Ok` and `Err` are gone: a failure is handled with `else as why:`", case).with_help(
-        "write `x = f() else as why:` and handle the failure in its block, with `match why:` to tell \
-         failures apart; `fennec fix` rewrites most of these",
+    Diagnostic::new("`Ok` and `Err` are gone: a failure is handled with `except why:`", case).with_help(
+        "write `x = f() except why:` and handle the failure in its block, with `case` arms under it \
+         to tell failures apart; `fennec fix` rewrites most of these",
     )
 }
 

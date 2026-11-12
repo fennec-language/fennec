@@ -6,7 +6,7 @@ use fennec_ir::{FormatPart, LocalId, Operand};
 use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, HEADER_ACCESS, LENGTH_ACCESS};
+use crate::emit::{Emit, HEADER_ACCESS};
 use crate::kinds::Kind;
 
 /// How a value of one of several types is written: as itself, as `print` and `str` write it, or
@@ -39,12 +39,18 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a literal's block, filled in when the program starts.
     pub(crate) fn literal(&mut self, text: &str) -> String {
+        let symbol = self.literal_symbol(text);
+        let temp = self.temp();
+        self.line(&format!("{temp} = load ptr, ptr {symbol}, !invariant.load !1"));
+        temp
+    }
+
+    /// The global that holds a literal's block, for code outside a function's own to load.
+    pub(crate) fn literal_symbol(&mut self, text: &str) -> String {
         let name = format!("l_{}", fennec_blake3::hash(text.as_bytes()).to_hex());
         self.declare(&format!("@\"{name}\" = external dso_local global ptr"));
         self.module.shared.literals.insert(name.clone(), text.to_owned());
-        let temp = self.temp();
-        self.line(&format!("{temp} = load ptr, ptr @\"{name}\", !invariant.load !1"));
-        temp
+        format!("@\"{name}\"")
     }
 
     fn print_text(&mut self, text: &str) {
@@ -1127,7 +1133,7 @@ impl Emit<'_, '_, '_> {
             (self.offset(text, TEXT_BYTES.unsigned_abs()), self.offset(text, TEXT.unsigned_abs()));
         let (length, held, same_length, same_word, same) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+        self.load_length(&length, &length_at);
         self.line(&format!("{held} = load i64, ptr {word_at}"));
         self.line(&format!("{same_length} = icmp eq i64 {length}, {}", literal.len()));
         self.line(&format!("{same_word} = icmp eq i64 {held}, {word}"));
@@ -1507,7 +1513,7 @@ tagged:
                 let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let (at, length) = (self.temp(), self.temp());
                 self.line(&format!("{at} = getelementptr inbounds i8, ptr {text}, i64 {TEXT_CHARS}"));
-                self.line(&format!("{length} = load i64, ptr {at}{LENGTH_ACCESS}"));
+                self.load_length(&length, &at);
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "str" => self.text_of_value(dest.ok_or("no result")?, first.ok_or("no argument")?, span),
@@ -1517,7 +1523,7 @@ tagged:
                 let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let bytes_at = self.offset(&text, TEXT_BYTES.unsigned_abs());
                 let (bytes, one) = (self.temp(), self.temp());
-                self.line(&format!("{bytes} = load i64, ptr {bytes_at}{LENGTH_ACCESS}"));
+                self.load_length(&bytes, &bytes_at);
                 self.line(&format!("{one} = icmp eq i64 {bytes}, 1"));
                 let (quick, slow, joined) = (self.label("byte"), self.label("code"), self.label("coded"));
                 self.line(&format!("br i1 {one}, label %{quick}, label %{slow}, !prof !8"));

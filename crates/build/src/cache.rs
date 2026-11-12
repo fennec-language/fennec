@@ -7,8 +7,12 @@
 //! compiler starts from an empty cache. An old build's folder goes whole once it's gone unused
 //! for a day.
 //!
-//! An entry is written to a temporary file and renamed into place, so a reader never sees half
-//! of one, and reading and writing take no locks. Reading an entry sets its modified time,
+//! An entry is written to a temporary file of its own and renamed into place, so a reader never
+//! sees half of one, and reading and writing take no locks. Each ends in a hash of its bytes, or,
+//! for a program kept as the file that was launched, has the hash in a file beside it, and a read
+//! that doesn't match is a miss: a torn or changed entry is never used. The hash guards against
+//! accidents; against people, Fennec's folder is its user's alone, and a cache folder another
+//! user owns or can write to isn't used at all (see `private.rs`). Reading an entry sets its modified time,
 //! which is how cleanup knows what was used least recently; access times are unreliable.
 //! Cleanup is the one thing that takes a lock, so two cleanups never run at once. The daemon runs
 //! one every five minutes while it's idle, and any command starts one when none has run for an hour.
@@ -50,7 +54,16 @@ const STALE_LOCK: Duration = Duration::from_secs(600);
 #[derive(Clone, Debug)]
 pub struct Cache {
     root: PathBuf,
+    /// Whether the folder can be trusted: its user's alone. One that isn't is never read from or
+    /// written to.
+    trusted: Result<(), crate::private::Refused>,
 }
+
+/// How many bytes of hash end each entry written as bytes.
+const HASH_LEN: usize = 32;
+
+/// The ending of the file beside a kept program that holds its hash.
+const SUM: &str = "sum";
 
 /// What a cleanup did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -76,7 +89,21 @@ struct Entry {
 
 impl Cache {
     pub fn new(home: &Path) -> Self {
-        Cache { root: home.join("cache") }
+        let root = home.join("cache");
+        let trusted =
+            crate::private::private_folder(home).and_then(|()| crate::private::private_folder(&root));
+        Cache { root, trusted }
+    }
+
+    /// Whether the cache can be used, saying once a command why when it can't.
+    fn usable(&self) -> bool {
+        match &self.trusted {
+            Ok(()) => true,
+            Err(why) => {
+                crate::unsaved::refused(&why.0);
+                false
+            }
+        }
     }
 
     /// The size cap: `FENNEC_CACHE_CAP` in bytes, or 1 GiB.
@@ -89,10 +116,31 @@ impl Cache {
         self.root.join(FOLDER).join(kind).join(name)
     }
 
-    /// Reads an entry, and marks it as just used.
+    /// Reads an entry, and marks it as just used. One whose bytes don't match its hash is a
+    /// miss, said once a command: it was torn or changed since it was written.
     pub fn read(&self, kind: &str, name: &str) -> Option<Vec<u8>> {
+        if !self.usable() {
+            return None;
+        }
         let path = self.path(kind, name);
-        let bytes = std::fs::read(&path).ok()?;
+        let mut bytes = std::fs::read(&path).ok()?;
+        let whole = match beside(&path) {
+            // A kept program is the whole file, with its hash beside it.
+            Some(sum) => sum_of(&bytes) == sum,
+            None => match bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end)) {
+                Some((text, hash)) => {
+                    let whole = hash == fennec_blake3::hash(text).as_bytes();
+                    let end = text.len();
+                    bytes.truncate(end);
+                    whole
+                }
+                None => false,
+            },
+        };
+        if !whole {
+            crate::unsaved::doubted(&path);
+            return None;
+        }
         // Marking costs a write, so an entry marked in the last few minutes isn't marked again.
         let age = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
         if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
@@ -101,15 +149,15 @@ impl Cache {
         Some(bytes)
     }
 
-    /// Writes an entry whole: to a temporary file, then renamed into place.
+    /// Writes an entry whole, ending in a hash of its bytes: to a temporary file of its own,
+    /// synced, then renamed into place.
     pub fn write(&self, kind: &str, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-        let path = self.path(kind, name);
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder)?;
+        if !self.usable() {
+            return Ok(());
         }
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-        std::fs::write(&temporary, bytes)?;
-        std::fs::rename(&temporary, &path)
+        let path = self.path(kind, name);
+        let hash = fennec_blake3::hash(bytes);
+        put(&path, &[bytes, hash.as_bytes()])
     }
 
     /// Keeps the program at `from` as an entry, as that very file rather than a copy of it:
@@ -120,29 +168,50 @@ impl Cache {
     /// Nothing is ever written into a file once kept: it's made read-only, and a new program kept
     /// under the same name is a new file put in its place, so a link to the old one goes on
     /// holding the old program, never the new one. `from` has to be a file nothing else writes.
+    ///
+    /// Its hash goes in a file beside it, since the program itself is run and can't end in one.
     pub fn keep_file(&self, kind: &str, name: &str, from: &Path) -> std::io::Result<()> {
+        if !self.usable() {
+            return Ok(());
+        }
         let path = self.path(kind, name);
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)?;
         }
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-        let _ = std::fs::remove_file(&temporary);
-        if std::fs::hard_link(from, &temporary).is_err() {
-            std::fs::copy(from, &temporary)?;
-        }
+        // On the disk before it's an entry, so a power cut can't leave one with no bytes.
+        File::open(from)?.sync_all()?;
+        let sum = sum_of(&std::fs::read(from)?);
+        let temporary = linked_beside(from, &path)?;
         read_only_program(&temporary)?;
+        // The hash first: a reader between the two finds the old program with the new hash, a
+        // mismatch, which is a miss.
+        put(&sum_path(&path), &[sum.as_bytes()])?;
         std::fs::rename(&temporary, &path)
     }
 
     /// Puts the entry at `to` as that very file rather than a copy, marked as just used: linked
-    /// out, where a link can be made. Gives back whether there was one.
+    /// out, where a link can be made. Gives back whether there was one, and one that doesn't match
+    /// its hash wasn't. An entry written as bytes, which ends in its hash, is written out whole
+    /// without it.
     pub fn link_out(&self, kind: &str, name: &str, to: &Path) -> std::io::Result<bool> {
+        if !self.usable() {
+            return Ok(false);
+        }
         let path = self.path(kind, name);
         if !path.is_file() {
             return Ok(false);
         }
-        // An entry kept some other way, as by `write`, may not be runnable yet.
-        read_only_program(&path)?;
+        let Some(sum) = beside(&path) else {
+            let Some(bytes) = self.read(kind, name) else { return Ok(false) };
+            let _ = std::fs::remove_file(to);
+            put(to, &[&bytes])?;
+            read_only_program(to)?;
+            return Ok(true);
+        };
+        if sum_of(&std::fs::read(&path)?) != sum {
+            crate::unsaved::doubted(&path);
+            return Ok(false);
+        }
         // Marked before it's put out: a linked file is the entry, with its time, and a sweep of
         // what earlier runs built goes by that time, so it has to be the time of this run.
         mark_used(&path);
@@ -259,12 +328,92 @@ impl Entry {
     }
 }
 
+/// The file beside a kept program that holds its hash: its whole name with `.sum` after it, so
+/// `root` and `root.functions` never share one.
+fn sum_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".");
+    name.push(SUM);
+    PathBuf::from(name)
+}
+
+/// The hash in the file beside a kept program, if it has one.
+fn beside(path: &Path) -> Option<String> {
+    std::fs::read_to_string(sum_path(path)).ok().map(|sum| sum.trim().to_owned())
+}
+
+/// A kept program's hash, as its file beside it holds it.
+fn sum_of(bytes: &[u8]) -> String {
+    fennec_blake3::hash(bytes).to_hex()
+}
+
+/// A name beside `path` for a temporary file no other writer has: this process's id, the time,
+/// and a count, so two threads, or two processes of one id in two containers, never share one.
+fn temporary_beside(path: &Path) -> PathBuf {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!(".{name}.{}-{nanos:x}-{count}.tmp", std::process::id()))
+}
+
+/// Writes `parts` to `path` whole: to a temporary file of its own, made new, which refuses a file
+/// or a link already at that name, then synced, then renamed into place.
+fn put(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    for _ in 0..8 {
+        let temporary = temporary_beside(path);
+        let mut file = match File::options().write(true).create_new(true).open(&temporary) {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        };
+        let written = parts
+            .iter()
+            .try_for_each(|part| file.write_all(part))
+            .and_then(|()| file.sync_all())
+            .and_then(|()| std::fs::rename(&temporary, path));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        return written;
+    }
+    Err(std::io::Error::new(ErrorKind::AlreadyExists, "no temporary name was free"))
+}
+
+/// `from` linked in at a temporary name of its own beside `path`, or copied there where a link
+/// can't be made, as across disks. A link fails rather than replace what's at the name.
+fn linked_beside(from: &Path, path: &Path) -> std::io::Result<PathBuf> {
+    for _ in 0..8 {
+        let temporary = temporary_beside(path);
+        match std::fs::hard_link(from, &temporary) {
+            Ok(()) => return Ok(temporary),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+            Err(_) => {
+                let bytes = std::fs::read(from)?;
+                put(&temporary, &[&bytes])?;
+                return Ok(temporary);
+            }
+        }
+    }
+    Err(std::io::Error::new(ErrorKind::AlreadyExists, "no temporary name was free"))
+}
+
 /// Marks an entry as just used, for cleanup's order. A program kept read-only can't be opened to
 /// write, but its owner may still set its time. Cleanup's order and the sweep of old runs depend
 /// on this, so a failure is said; an entry another command's cleanup took meanwhile is none.
 fn mark_used(path: &Path) {
     let marked = File::open(path).and_then(|file| file.set_modified(SystemTime::now()));
     crate::touched("mark what it used as used", marked);
+    // A kept program's hash goes with it, or cleanup would take the hash and leave the program.
+    let sum = sum_path(path);
+    if sum.is_file() {
+        let marked = File::open(&sum).and_then(|file| file.set_modified(SystemTime::now()));
+        crate::touched("mark what it used as used", marked);
+    }
 }
 
 /// Every file under `dir`, in the build folder `build`.

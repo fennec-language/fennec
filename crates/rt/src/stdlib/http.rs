@@ -196,6 +196,15 @@ fn once<'h>(
     if !fits_on_a_line(&url.target) || !fits_on_a_line(&url.host) {
         return Err(Failure::Other("the URL has a space, line break or control character in it".to_owned()));
     }
+    // Every header's checked before anything's sent, or any connection tried: one whose name
+    // isn't one, or whose value would start a line of its own, could make one request two.
+    let headers: Vec<(&str, &str)> = headers.collect();
+    for (name, value) in &headers {
+        if !is_token(name) || value.bytes().any(|byte| (byte < 32 && byte != b'\t') || byte == 127) {
+            let shown = name.escape_debug();
+            return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
+        }
+    }
     let tcp = connect(url, deadline, timeout)?;
     let mut stream =
         if url.secure { secured(tcp, &url.host, deadline, timeout)? } else { Stream::Plain(tcp) };
@@ -207,10 +216,6 @@ fn once<'h>(
     let mut head = format!("{method} {} HTTP/1.1\r\nHost: {host}\r\n", url.target);
     let (mut agent, mut accept) = (false, false);
     for (name, value) in headers {
-        if !is_token(name) || value.bytes().any(|byte| (byte < 32 && byte != b'\t') || byte == 127) {
-            let shown = name.escape_debug();
-            return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
-        }
         agent |= name.eq_ignore_ascii_case("user-agent");
         accept |= name.eq_ignore_ascii_case("accept");
         let _ = write!(head, "{name}: {value}\r\n");
@@ -1027,17 +1032,33 @@ mod tests {
         assert!(asked.ends_with("\r\n\r\ndata"), "{asked}");
     }
 
+    /// A header whose value would start a line of its own is refused before any connection is
+    /// tried: nothing listens on port 1, so a refusal that came only from connecting would say
+    /// so instead. A name that isn't one is refused the same way, and so is a control character.
     #[test]
     fn a_header_cant_smuggle_in_another_line() {
-        let answer = send(&Request {
-            method: "GET".to_owned(),
-            url: "http://127.0.0.1:1/".to_owned(),
-            params: Vec::new(),
-            headers: vec![("X".to_owned(), "a\r\nEvil: b".to_owned())],
-            body: Vec::new(),
-            timeout: Duration::from_millis(200),
-        });
-        assert!(answer.is_err());
+        let refused = |name: &str, value: &str| {
+            let answer = send(&Request {
+                method: "GET".to_owned(),
+                url: "http://127.0.0.1:1/".to_owned(),
+                params: Vec::new(),
+                headers: vec![(name.to_owned(), value.to_owned())],
+                body: Vec::new(),
+                timeout: Duration::from_millis(200),
+            });
+            match answer {
+                Err(Failure::Other(why)) => why,
+                Err(other) => format!("{other:?}"),
+                Ok(_) => "an answer".to_owned(),
+            }
+        };
+        let said = "the header `X` has a line break or `:` in it";
+        assert_eq!(refused("X", "a\r\nEvil: b"), said);
+        assert_eq!(refused("X", "a\nEvil: b"), said);
+        assert_eq!(refused("X", "a\u{7f}"), said);
+        assert_eq!(refused("Evil: b\r\nX", "a"), "the header `Evil: b\\r\\nX` has a line break or `:` in it");
+        // A good header gets as far as connecting, which fails on its own terms.
+        assert!(!refused("X", "a").contains("header"));
     }
 
     #[test]

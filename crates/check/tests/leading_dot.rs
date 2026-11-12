@@ -176,3 +176,20 @@ fn a_case_names_its_type_only_where_the_type_isnt_one() {
     let empty: [&str; 0] = [];
     assert_eq!(problems(union), empty);
 }
+
+/// Under `except why:`, a `case _:` after cases that took all of every error but one reads
+/// `why` as that one, as `case error:` there did: a `Shut` once `Late` is taken.
+#[test]
+fn case_underscore_reads_the_error_the_cases_before_it_left() {
+    let program = "error Shut:\n    Stuck(name: str)\n    Jammed\n\n    def said(self) -> str:\n        return \"shut\"\n\n\
+        error Late:\n    waited: int\n\ndef run(n: int) fails Shut | Late:\n    if n == 1: fail Late(waited=1)\n\n\
+        def main(stdout: Stdout):\n    run(0) except why:\n        case Late(waited=_):\n            stdout.print(1)\n        \
+        case Shut.Stuck(name=name):\n            stdout.print(name)\n        case _:\n            stdout.print(why.said())\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(program), empty);
+    // Before a case takes all of `Late`, `why` is still either.
+    let early = program.replace("        case Late(waited=_):\n            stdout.print(1)\n", "");
+    let said: Vec<String> =
+        problems(&early).iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect();
+    assert_eq!(said, ["an error has no method `said`"]);
+}

@@ -25,8 +25,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
         "ord" => diagnostic.with_help("a character's code is a method: write `c.code()`"),
-        "abs" => diagnostic.with_help("a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"),
-        "len" => diagnostic.with_help("a length is a method: write `x.len()`, or `x => x.len()` to pass it"),
+        "abs" | "len" => diagnostic.with_help(format!("`{name}` is called on a value: write `{name}(x)`, or `x => {name}(x)` to pass it")),
         "chr" => diagnostic.with_help("make a character from its code with `str.from_code(n)`"),
         "embed_file" | "embed_folder" => diagnostic.with_help(format!(
             "`{name}` reads what's beside the source, and this source isn't in a file"
@@ -126,7 +125,7 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
             .with_fix(Span { start: span.end, end: span.end }, "?");
     }
     let help = if ty.is_collection() {
-        "Fennec has no truthiness: write `x.len() > 0`"
+        "Fennec has no truthiness: write `len(x) > 0`"
     } else if ty.maybe_none() {
         "Fennec has no truthiness: write `x is None` or `x is not None`"
     } else {
@@ -139,7 +138,7 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
 pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("{} has no method `{method}`", describe(ty)), span);
     match method {
-        "length" | "size" | "count" => diagnostic.with_help("use `.len()`"),
+        "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
         "push" | "add" => diagnostic.with_help("use `append`"),
         "trim" => diagnostic.with_help("use `strip()`"),
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),

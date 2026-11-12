@@ -39,15 +39,15 @@ pub(crate) fn written(method: &str, args: &[Value], at: Span) -> Result<Value, D
     })
 }
 
-/// A method of a test's fake `Stderr`, which keeps what's written in `errors`.
+/// A method of a test's fake `Stderr`, which keeps what's written in the test's capture.
 pub(crate) fn faked(
-    errors: &mut String,
+    capture: &crate::fakes::Capture,
     method: &str,
     args: &[Value],
     at: Span,
 ) -> Result<Value, Diagnostic> {
     if let Some(data) = what_to_write(method, args, at)? {
-        errors.push_str(&String::from_utf8_lossy(&data));
+        capture.error(&String::from_utf8_lossy(&data));
     }
     Ok(Value::Ok(Rc::new(Value::Unit)))
 }

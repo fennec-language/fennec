@@ -27,6 +27,9 @@
     clippy::format_push_string,
     reason = "this writes text: its temporaries are named for what they hold, in long runs of lines"
 )]
+// A hash map's order changes from one run to the next, so it mustn't reach what's emitted or
+// what's proven: each loop over one says why its order can't matter, or goes over a sorted copy.
+#![deny(clippy::iter_over_hash_type)]
 
 mod analysis;
 mod arrays;
@@ -43,6 +46,7 @@ mod dicts;
 mod dying;
 mod emit;
 mod entry;
+mod facts;
 mod generators;
 mod headers;
 mod holding;
@@ -73,7 +77,8 @@ use fennec_rt::embed::dicts::Word;
 pub use build::{Built, Tools, compile, compile_whole, huge_functions, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use emit::{
-    Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, trust_native_blocks,
+    Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, strip_facts,
+    trust_native_blocks,
 };
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
@@ -89,6 +94,17 @@ pub enum Proofs {
     /// Writes it anyway, as an assertion that the proof held: a build to find false proofs with,
     /// which `FENNEC_CHECK_PROOFS=1` asks for. One that didn't hold says "proof broken" and which.
     Checked,
+}
+
+/// Whether a build hands LLVM the facts it knows beside the code (see `facts`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Facts {
+    /// Hands them over, for LLVM to optimize with.
+    #[default]
+    Given,
+    /// Leaves them out, which `FENNEC_STRIP_FACTS=1` asks for: a build that should run the same,
+    /// only slower, to catch a wrong one.
+    Stripped,
 }
 
 /// Whether a build tells the runtime of each native block it makes and frees (see `native`). The
@@ -148,6 +164,8 @@ pub struct Shared {
     pub noting_checks: bool,
     /// Whether checks left out because of a proof are, or are written anyway as assertions.
     pub proofs: Proofs,
+    /// Whether LLVM is handed the facts known beside the code.
+    pub facts: Facts,
     /// Whether native blocks are made known to the runtime, for it to stop if it's ever given one.
     pub native_blocks: NativeBlocks,
     /// The checks written, when they're noted: the same one more than once if its function is
@@ -277,13 +295,15 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
     Layouts::from_definitions(&definitions)
 }
 
-/// The module text for this machine starts with this, or says what's missing.
+/// The module text for this machine starts with this, or says what's missing. Each module is
+/// named `fennec`: unnamed, LLVM names it by the path of the file it's read from, which holds the
+/// build's folder, and an object the same source makes would differ from one folder to the next.
 fn header() -> Result<&'static str, String> {
-    const MAC_ARM: &str = "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32\"\ntarget triple = \"arm64-apple-macosx14.0.0\"\n\n";
-    const LINUX_ARM: &str = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8-i16:16-i64:64-i128:128-n32:64-S128-Fn32\"\ntarget triple = \"aarch64-unknown-linux-gnu\"\n\n";
-    const LINUX_X86: &str = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\n";
-    const WINDOWS_X86: &str = "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-w64-windows-gnu\"\n\n";
-    const MAC_X86: &str = "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-apple-macosx14.0.0\"\n\n";
+    const MAC_ARM: &str = "source_filename = \"fennec\"\ntarget datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32\"\ntarget triple = \"arm64-apple-macosx14.0.0\"\n\n";
+    const LINUX_ARM: &str = "source_filename = \"fennec\"\ntarget datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8-i16:16-i64:64-i128:128-n32:64-S128-Fn32\"\ntarget triple = \"aarch64-unknown-linux-gnu\"\n\n";
+    const LINUX_X86: &str = "source_filename = \"fennec\"\ntarget datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\n";
+    const WINDOWS_X86: &str = "source_filename = \"fennec\"\ntarget datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-w64-windows-gnu\"\n\n";
+    const MAC_X86: &str = "source_filename = \"fennec\"\ntarget datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-apple-macosx14.0.0\"\n\n";
     match (std::env::consts::ARCH, std::env::consts::OS) {
         ("aarch64", "macos") => Ok(MAC_ARM),
         ("aarch64", "linux") => Ok(LINUX_ARM),

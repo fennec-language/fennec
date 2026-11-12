@@ -359,7 +359,7 @@ pub fn tests_entry(
         "\ndefine void @fennec_run_test(i64 %number) {{\nstart:\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  switch i64 %number, label %done [{cases} ]\n{blocks}done:\n  ret void\n}}\n"
     );
     out += &c_main(count, &format!("@fennec_aot_run(ptr @fennec_entry, i64 {})", bytes.len()));
-    Ok(out)
+    Ok(crate::facts::as_handed(out, shared))
 }
 
 /// The module. `bytes` is the program as the runtime reads it.
@@ -414,7 +414,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     let _ = writeln!(out, "  call swiftcc void @\"f_main\"({})\n  ret void\n}}\n", args.join(", "));
     out += &thunks;
     out += &c_main(count, &format!("@fennec_aot_run(ptr @fennec_entry, i64 {})", bytes.len()));
-    Ok(out)
+    Ok(crate::facts::as_handed(out, shared))
 }
 
 #[cfg(test)]

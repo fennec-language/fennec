@@ -260,6 +260,8 @@ pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Sha
 
 /// Whether every build from here on checks proofs: see [`crate::Proofs::Checked`].
 static PROOFS_CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether builds leave out the facts they would hand LLVM, as `FENNEC_STRIP_FACTS=1` asks.
+static FACTS_STRIPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Makes every build from here on check proofs, or not: each check left out because of a proof is
 /// written anyway, as an assertion that it held. `fennec` does when `FENNEC_CHECK_PROOFS=1`.
@@ -276,6 +278,11 @@ pub fn check_proofs(on: bool) {
     PROOFS_CHECKED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether builds leave out the facts they'd hand LLVM (see `facts`).
+pub fn strip_facts(on: bool) {
+    FACTS_STRIPPED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
@@ -285,6 +292,9 @@ pub(crate) fn emit_with(
     let attributes = attributes(cpu);
     if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
         shared.proofs = crate::Proofs::Checked;
+    }
+    if FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed) {
+        shared.facts = crate::Facts::Stripped;
     }
     shared.native_blocks = if NATIVE_TRUSTED.load(std::sync::atomic::Ordering::Relaxed)
         && shared.proofs != crate::Proofs::Checked
@@ -333,6 +343,11 @@ pub(crate) fn emit_with(
         let symbol = format!("l_{}", fennec_blake3::hash(name.as_bytes()).to_hex());
         shared.literals.insert(symbol.clone(), name);
         shared.own_texts.push((symbol, own.function.clone(), boxed));
+    }
+    if shared.facts == crate::Facts::Stripped {
+        for unit in &mut units {
+            unit.text = crate::facts::stripped(&unit.text);
+        }
     }
     Ok((units, shared, layouts))
 }
@@ -550,8 +565,11 @@ impl<'p> Module<'_, 'p> {
     pub(crate) fn params(&self, function: &Function, named: bool) -> Result<String, String> {
         let mut params = Vec::with_capacity(function.params + 2);
         let returns = self.kind(&function.returns)?;
+        // An address only this parameter has: told to LLVM, or checked on the way in by a build
+        // that checks proofs (see `Emit::addresses_apart`).
+        let alone = if self.shared.proofs == crate::Proofs::Checked { "" } else { "noalias " };
         if returns.in_memory() {
-            params.push(if named { "ptr noalias captures(none) %ret".to_owned() } else { "ptr".to_owned() });
+            params.push(if named { format!("ptr {alone}captures(none) %ret") } else { "ptr".to_owned() });
         }
         for (at, local) in function.locals.iter().take(function.params).enumerate() {
             let kind = self.kind(&local.ty)?;
@@ -559,7 +577,7 @@ impl<'p> Module<'_, 'p> {
             let ty = if by_address || kind.in_memory() { "ptr".to_owned() } else { kind.slot(self.layouts) };
             params.push(match (named, by_address) {
                 (false, _) => ty,
-                (true, true) => format!("ptr noalias captures(none) %p{at}"),
+                (true, true) => format!("ptr {alone}captures(none) %p{at}"),
                 (true, false) => format!("{ty} %p{at}"),
             });
         }
@@ -925,6 +943,14 @@ impl Emit<'_, '_, '_> {
 
     fn body(&mut self) -> Result<(), String> {
         let function = self.function;
+        // Where the function's code starts, for what's checked on the way in.
+        let entry_span = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.insts)
+            .map(|inst| inst.span)
+            .find(|span| *span != Span::default())
+            .unwrap_or_default();
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
@@ -964,6 +990,20 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
+        }
+        // What every call gives a parameter, which what's proven from it leans on.
+        if self.checks_proofs() && !self.known.param_ranges.is_empty() {
+            let span = entry_span;
+            for (at, (low, high)) in self.known.param_ranges.clone() {
+                let (below, above, outside) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{below} = icmp slt i64 %p{at}, {low}"));
+                self.line(&format!("{above} = icmp sgt i64 %p{at}, {high}"));
+                self.line(&format!("{outside} = or i1 {below}, {above}"));
+                self.proof_held(&outside, "a parameter is in the range every call gives it", span);
+            }
+        }
+        if self.checks_proofs() {
+            self.addresses_apart(entry_span)?;
         }
         // A dict nothing but its own lookups and puts ever holds (see `held_by_itself`).
         for local in held_by_itself(function) {
@@ -1010,10 +1050,9 @@ impl Emit<'_, '_, '_> {
         // Every caller passes the flag clear, so saying so lets a check after an inlined call
         // that didn't fail go away. An assumption, as a store would be inlined into loops.
         if self.module.flagged(&function.name) {
-            self.declare("declare void @llvm.assume(i1)");
             self.line("%err_in = load ptr, ptr %err");
             self.line("%err_clear = icmp eq ptr %err_in, null");
-            self.line("call void @llvm.assume(i1 %err_clear)");
+            self.assumed("%err_clear", "every caller passes the failure flag clear", entry_span);
         }
         if self.ticks() {
             self.start_ticks();
@@ -1573,6 +1612,102 @@ impl Emit<'_, '_, '_> {
         self.start_block(&carry_on);
     }
 
+    /// In a build that checks proofs, ends the program if `broken` is true, as `proof_held` does,
+    /// but through a call LLVM copies in, so the block this is in carries on: for a fact checked
+    /// where what comes after leans on the block it's written in, like a phi.
+    pub(crate) fn proof_held_here(&mut self, broken: &str, proof: &str, span: Span) {
+        let text = self.proof_text(proof);
+        let here = self.label("proof_at");
+        let (place, args) = self.span_values(&here, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.line(&format!("call void @fen_proof_held(i1 {broken}, ptr {text}, {args})"));
+    }
+
+    /// What a broken proof says, for `@fen_proof_held`, which this defines for the module.
+    pub(crate) fn proof_text(&mut self, proof: &str) -> String {
+        let symbol = self.proof_symbol(proof);
+        let text = self.temp();
+        self.line(&format!("{text} = load ptr, ptr {symbol}, !invariant.load !1"));
+        text
+    }
+
+    /// The global holding what a broken proof says, for a helper to load and give
+    /// `@fen_proof_held`, which this defines for the module.
+    pub(crate) fn proof_symbol(&mut self, proof: &str) -> String {
+        self.declare("declare void @fennec_proof_broken(ptr, i64, i64) #1");
+        self.module.add_helper(
+            "fen_proof_held",
+            "define internal void @fen_proof_held(i1 %broken, ptr %proof, i64 %from, i64 %to) #2 {\nentry:\n  br i1 %broken, label %stop, label %held, !prof !8\nstop:\n  call void @fennec_proof_broken(ptr %proof, i64 %from, i64 %to)\n  unreachable\nheld:\n  ret void\n}\n\n".to_owned(),
+        );
+        self.literal_symbol(&format!("proof broken: {proof}"))
+    }
+
+    /// Checks that each address a parameter has alone, which a build that doesn't check proofs
+    /// tells LLVM is `noalias` (the place a value is given back in, and each `ref` parameter), is
+    /// no other parameter's address.
+    fn addresses_apart(&mut self, span: Span) -> Result<(), String> {
+        let function = self.function;
+        let mut alone = Vec::new();
+        let mut addresses = Vec::new();
+        if self.module.kind(&function.returns)?.in_memory() {
+            alone.push("%ret".to_owned());
+            addresses.push("%ret".to_owned());
+        }
+        for (at, local) in function.locals.iter().take(function.params).enumerate() {
+            let kind = self.module.kind(&local.ty)?;
+            let by_address = function.mut_params.contains(&at);
+            if by_address {
+                alone.push(format!("%p{at}"));
+            }
+            if by_address || kind.in_memory() || kind.slot(self.module.layouts) == "ptr" {
+                addresses.push(format!("%p{at}"));
+            }
+        }
+        for (at, one) in alone.iter().enumerate() {
+            for other in addresses.iter().filter(|other| *other != one) {
+                if alone.iter().take(at).any(|before| before == other) {
+                    continue;
+                }
+                let same = self.temp();
+                self.line(&format!("{same} = icmp eq ptr {one}, {other}"));
+                self.proof_held_here(&same, "a `ref` parameter's address is no other parameter's", span);
+            }
+        }
+        Ok(())
+    }
+
+    /// Says `holds`, an `i1`, is true: to LLVM, as an assumption, or in a build that checks proofs,
+    /// as a check that stops the program with `proof` if it isn't.
+    pub(crate) fn assumed(&mut self, holds: &str, proof: &str, span: Span) {
+        if self.checks_proofs() {
+            let broken = self.temp();
+            self.line(&format!("{broken} = xor i1 {holds}, true"));
+            self.proof_held_here(&broken, proof, span);
+        } else {
+            self.declare("declare void @llvm.assume(i1)");
+            self.line(&format!("call void @llvm.assume(i1 {holds})"));
+        }
+    }
+
+    /// Loads a length from `at` into `dest`. LLVM is told it's from 0 to the most items anything
+    /// can have, or a build that checks proofs checks that.
+    pub(crate) fn load_length(&mut self, dest: &str, at: &str) {
+        if self.checks_proofs() {
+            self.line(&format!("{dest} = load i64, ptr {at}{HEADER_ACCESS}"));
+            let broken = self.temp();
+            self.line(&format!("{broken} = icmp ugt i64 {dest}, {}", crate::analysis::MOST_ITEMS));
+            self.proof_held_here(
+                &broken,
+                "a length is at most the most items anything can have",
+                Span::default(),
+            );
+        } else {
+            self.line(&format!("{dest} = load i64, ptr {at}{LENGTH_ACCESS}"));
+        }
+    }
+
     /// In a build that checks proofs, ends the program if the block at `block` doesn't have one
     /// owner, as a proof says it does.
     pub(crate) fn proof_alone(&mut self, block: &str, proof: &str, span: Span) {
@@ -1904,6 +2039,39 @@ impl Emit<'_, '_, '_> {
         value
     }
 
+    /// Whether the instruction being written multiplies two ints proven not negative (see `signs`).
+    fn operands_not_negative(&self) -> bool {
+        self.module
+            .whole
+            .non_negative
+            .get(self.function.name.as_str())
+            .is_some_and(|found| found.contains(&self.at))
+    }
+
+    /// A product of two ints proven not negative, which overflows when it passes `i64::MAX`: an
+    /// unsigned multiply says when it passes `u64::MAX`, and the product's top bit when it's past
+    /// `i64::MAX` short of that. That's the check Rust makes on a `usize`, one multiply fewer than
+    /// a signed one, which works the product out twice. A build that checks proofs checks that
+    /// neither is negative.
+    fn checked_not_negative_product(&mut self, a: &str, b: &str, span: Span) -> String {
+        if self.checks_proofs() {
+            let (either, negative) = (self.temp(), self.temp());
+            self.line(&format!("{either} = or i64 {a}, {b}"));
+            self.line(&format!("{negative} = icmp slt i64 {either}, 0"));
+            self.proof_held(&negative, "a product's ints aren't negative", span);
+        }
+        self.declare("declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)");
+        let (pair, value, wrapped, past, bad) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{pair} = call {{ i64, i1 }} @llvm.umul.with.overflow.i64(i64 {a}, i64 {b})"));
+        self.line(&format!("{wrapped} = extractvalue {{ i64, i1 }} {pair}, 1"));
+        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        self.line(&format!("{past} = icmp slt i64 {value}, 0"));
+        self.line(&format!("{bad} = or i1 {wrapped}, {past}"));
+        self.fail_if(&bad, OVERFLOW, span);
+        value
+    }
+
     fn checked(&mut self, name: &str, a: &str, b: &str, span: Span) -> String {
         let intrinsic = format!("@llvm.{name}.with.overflow.i64");
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
@@ -2078,6 +2246,7 @@ impl Emit<'_, '_, '_> {
             }
             BinOp::Add => self.checked("sadd", a, b, span),
             BinOp::Sub => self.checked("ssub", a, b, span),
+            BinOp::Mul if self.operands_not_negative() => self.checked_not_negative_product(a, b, span),
             BinOp::Mul => self.checked("smul", a, b, span),
             BinOp::FloorDiv | BinOp::Mod => self.division(op, (a, b), rhs, span),
             BinOp::Div => {
@@ -2189,12 +2358,11 @@ impl Emit<'_, '_, '_> {
             // worked out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't
             // have, and is the machine's remainder alone.
             if let Operand::Int(divisor @ 1..) = rhs {
-                self.declare("declare void @llvm.assume(i1)");
                 let (low, high) = (self.temp(), self.temp());
                 self.line(&format!("{low} = icmp sge i64 {result}, 0"));
-                self.line(&format!("call void @llvm.assume(i1 {low})"));
+                self.assumed(&low, "a remainder by a positive number isn't negative", span);
                 self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
-                self.line(&format!("call void @llvm.assume(i1 {high})"));
+                self.assumed(&high, "a remainder is below what it's by", span);
             }
         }
         result
@@ -3740,6 +3908,73 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A program whose code is handed every kind of fact: a `ref` parameter (`noalias`), lengths
+    /// (`!range`), a remainder by a number and a list made alone (`llvm.assume`), and the failure
+    /// flag a function that can fail is given clear (`llvm.assume`).
+    const FACTFUL: &str = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + seen.len()\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(xs.len())\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
+
+    /// Every module's text, as a build with these settings hands it to LLVM.
+    fn handed(shared: Shared) -> Result<(String, Shared), String> {
+        let (units, shared, _) = emit_with(&lowered(FACTFUL)?, Cpu::Usual, shared)?;
+        Ok((units.iter().map(|unit| unit.text.as_str()).collect(), shared))
+    }
+
+    /// A build with facts stripped hands LLVM none, where a plain build hands it every kind.
+    #[test]
+    fn stripping_facts_hands_llvm_none() -> Result<(), String> {
+        let facts =
+            ["noalias", "captures(none)", "!range !", "!tbaa !", "inbounds", "call void @llvm.assume("];
+        let (plain, _) = handed(Shared::default())?;
+        for fact in facts {
+            assert!(plain.contains(fact), "a plain build hands LLVM `{fact}`");
+        }
+        let (stripped, _) = handed(Shared { facts: crate::Facts::Stripped, ..Shared::default() })?;
+        for fact in facts.iter().chain(&[" nsw ", " nuw ", "!invariant.load"]) {
+            assert!(!stripped.contains(fact), "`{fact}` is left in:\n{stripped}");
+        }
+        Ok(())
+    }
+
+    /// A build that checks proofs checks the facts it can rather than handing them over: what's
+    /// assumed, that a length is in range, and that a `ref` parameter's address is its alone. The
+    /// TBAA tags, which it can't check, stay, for a build with facts stripped to be compared with.
+    #[test]
+    fn checking_proofs_checks_the_facts_it_can() -> Result<(), String> {
+        let (text, shared) = handed(Shared { proofs: crate::Proofs::Checked, ..Shared::default() })?;
+        for fact in ["noalias", "!range !", "call void @llvm.assume("] {
+            assert!(!text.contains(fact), "`{fact}` is handed over:\n{text}");
+        }
+        assert!(text.contains("call void @fen_proof_held(") && text.contains("!tbaa !"), "{text}");
+        let said: Vec<&String> = shared.literals.values().collect();
+        for proof in [
+            "a length is at most",
+            "a `ref` parameter's address",
+            "every caller passes the failure flag clear",
+            "a remainder by a positive number",
+        ] {
+            assert!(said.iter().any(|text| text.contains(proof)), "no check that {proof}: {said:?}");
+        }
+        Ok(())
+    }
+
+    /// A build that checks proofs checks a string's cursor is inside it wherever it's taken as a
+    /// place in its bytes: in finding a character, reading one, and walking to one.
+    #[test]
+    fn checking_proofs_checks_a_strings_cursor() -> Result<(), String> {
+        let source = "def go(s: str) -> int:\n    mut n = 0\n    for i in range(s.len()):\n        if s[i] == \"\u{e9}\" or s[i - 1] == \"a\":\n            n += 1\n    return n\n\ndef main(stdout: Stdout):\n    stdout.print(go(\"caf\u{e9} na\u{ef}ve\"))\n    return\n";
+        let program = lowered(source)?;
+        let (plain, _, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(plain.contains("@fen_char_walk(") && !plain.contains("%cursor_wrong"), "{plain}");
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let helpers = text.matches("%cursor_wrong = or i1").count();
+        assert!(helpers >= 2, "{helpers} helpers check the cursor:\n{text}");
+        assert!(shared.literals.values().any(|said| said.contains("a string's cursor is inside it")));
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
@@ -3756,6 +3991,22 @@ def main(stdout: Stdout):
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
         assert!(!plain_shared.literals.values().any(|text| text.contains("proof broken")));
         assert!(text.len() > plain.len());
+        Ok(())
+    }
+
+    /// A product of two ints proven not negative is checked as an unsigned one, as Rust checks a
+    /// `usize`'s: two lengths, which can be big enough to overflow. One whose ints may be negative
+    /// keeps the signed check.
+    #[test]
+    fn only_a_product_of_ints_that_arent_negative_checks_unsigned() -> Result<(), String> {
+        let source = "def area(w: int, h: int) -> int:\n    return w * h\n\ndef scaled(x: int) -> int:\n    return x * 3\n\ndef main(stdout: Stdout):\n    xs = [1, 2, 3]\n    stdout.print(area(xs.len(), h=xs.len()))\n    stdout.print(scaled(xs[0] - 5))\n    return\n";
+        let area = text_of(source, "area")?;
+        assert!(area.contains("@llvm.umul.with.overflow.i64(") && !area.contains("@llvm.smul"), "{area}");
+        let scaled = text_of(source, "scaled")?;
+        assert!(
+            scaled.contains("@llvm.smul.with.overflow.i64(") && !scaled.contains("@llvm.umul"),
+            "{scaled}"
+        );
         Ok(())
     }
 

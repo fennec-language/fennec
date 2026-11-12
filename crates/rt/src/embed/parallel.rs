@@ -12,8 +12,14 @@
 //! the body reads from around it and `thread` is the running thread's number, for counting
 //! (see `threads`). A body gives back 0, or anything else when it failed, with the failure in
 //! its thread's runtime. Once one fails, no range after it starts, but those before it still
-//! run: the failure passed up is the lowest range's that fails, so it's the same however many
-//! threads run.
+//! run, and on the pool ones after it that another thread already started finish: the failure
+//! passed up is the lowest range's that fails, so it's the same however many threads run.
+//!
+//! What bodies print follows real call order, as decisions.md has it: each print whole, one
+//! range's prints in order, and everything printed after the call after all of it. A worker
+//! writes what a range printed as the range ends, so across ranges the order can differ between
+//! runs. Where the calling thread's runtime keeps its output for a host rather than writing it, as
+//! a test's does, the ranges' text is handed to it whole, by where each range starts.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -74,14 +80,17 @@ struct Run {
     /// The call, as a task of the one making it, for naming its ranges' entries in a recording or a
     /// replay. `None` in a normal run.
     task: Option<crate::replay::Task>,
+    /// The capture of the test making the call, if a test is, for what its ranges print.
+    capture: Option<Arc<crate::fakes::Capture>>,
     /// The calling thread's blocks, lent to the ranges while it waits, when they're on the pool.
     lent: RwLock<Option<Arc<super::table::Table>>>,
     /// What each range made on a worker that outlives it, for the calling thread to adopt.
     made: Mutex<Vec<Box<[u64]>>>,
     /// How the ranges changed the owners of the calling thread's blocks, for it to apply.
     owners: Mutex<HashMap<u64, i64>>,
-    /// What each range printed on a worker, whole, by where it starts: it's written in that order,
-    /// whatever order the ranges finished in, so what a call prints is the same every run.
+    /// What each range printed on a worker that keeps its output rather than writing it, whole,
+    /// by where it starts, for the calling thread's runtime to take in that order. A worker in an
+    /// executable writes as it goes, so this is empty there.
     printed: Mutex<Vec<(usize, Vec<u8>)>>,
     /// Says when the last range on the pool has finished, to the calling thread waiting for it.
     done: Latch,
@@ -146,6 +155,8 @@ struct Started {
     since: usize,
     was: Option<crate::replay::Task>,
     from: usize,
+    /// The capture what was running before printed into, put back as the range ends.
+    capture: Option<Arc<crate::fakes::Capture>>,
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +172,7 @@ impl Run {
             chunk,
             caller: super::threads::index(),
             task: crate::replay::child(),
+            capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
             failure: Mutex::new(None),
             beaten: Mutex::new(Vec::new()),
@@ -217,13 +229,21 @@ impl Run {
         }
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
-        Started { since: super::threads::made_so_far(), was, from }
+        let mut capture = self.capture.clone();
+        super::swap_capture(&mut capture);
+        Started { since: super::threads::made_so_far(), was, from, capture }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
-    fn keep_made(&self, Started { since, mut was, from }: Started) {
+    fn keep_made(&self, Started { since, mut was, from, mut capture }: Started) {
+        // In a recording or a replay, what the range printed goes out as its own, under its name,
+        // before what was running is put back.
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
         crate::replay::swap(&mut was);
+        super::swap_capture(&mut capture);
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);

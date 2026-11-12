@@ -1,4 +1,4 @@
-from std.re import Regex
+from std.re import Regex, is_regex
 
 struct Command:
     verb: str
@@ -14,6 +14,20 @@ def parse_command(line: str) -> Command?:
 test "names with letters only are found whole" for word: str:
     names = Regex(r"[a-z]+").find_all(word)
     assert all(name.text.len() > 0 for name in names)
+
+## Why `pattern` can't be a `Regex`, or "built" if it can.
+def refused(pattern: str) -> str:
+    _ = Regex(pattern=pattern) except why:
+        return why.message
+    return "built"
+
+test "a pattern from outside nested too deep fails, rather than running the stack out"():
+    deep = "(" * 10_000 + "a" + ")" * 10_000
+    too_deep = "this pattern isn't valid: groups nest more than 250 deep (at character 250)"
+    assert refused(deep) == too_deep
+    assert not is_regex("(" * 100_000)
+    assert refused("(" * 250 + "a" + ")" * 250) == "built"
+    assert refused("(?:" * 250 + "a" + ")" * 250) == "built"
 
 def main(stdout: Stdout):
     stdout.print(parse_command("take 3 arrows"))

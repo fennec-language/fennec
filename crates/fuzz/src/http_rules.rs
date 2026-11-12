@@ -39,7 +39,7 @@ def respond(request: Request) -> Response:
         headers=request.headers,
         body=[b for b in request.body],
     )
-    Response(status=200, body=json.dumps(echo).encode())
+    return Response(status=200, body=json.dumps(echo).encode())
 
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
@@ -52,7 +52,7 @@ pub(crate) const CLIENT: &str = "\
 from std import json
 
 def main(net: Net, args: Args, stdout: Stdout):
-    response = net.get(f\"http://127.0.0.1:{args[0]}/\", timeout=5s) else:
+    response = net.get(f\"http://127.0.0.1:{args[0]}/\", timeout=5s) except .NotFound() | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other():
         stdout.print(\"err\")
         return
     stdout.print(\"ok\", response.status, json.dumps([b for b in response.body]))

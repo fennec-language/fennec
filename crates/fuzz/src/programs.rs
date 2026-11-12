@@ -90,7 +90,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     }
     // A program that runs `parallel` does the same on one thread as on several.
     if source.contains("parallel(") {
-        for threads in [1, 4, 8] {
+        for threads in [1, 4, 8, 16] {
             let ran = crate::llvm::ran_again_on("programs", threads).map_err(with_program)?;
             if ran != release {
                 return Err(with_program(format!(
@@ -108,7 +108,18 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
             shown(&release)
         )));
     }
-    if let Some((printed, succeeded)) = eval::run(&program)
+    let expected = eval::run_saying(&program);
+    // Where the evaluator knows what a failure says, as a stream's item does, the builds say it.
+    if let Some((_, false, Some(said))) = &expected
+        && !dev.2
+        && !dev.1.contains(said.as_str())
+    {
+        return Err(with_program(format!(
+            "the builds stop saying something else than the evaluator:\n--- built\n{}\n--- evaluator\n{said}",
+            dev.1
+        )));
+    }
+    if let Some((printed, succeeded, _)) = expected
         && (printed.as_bytes() != dev.0.as_slice() || succeeded != dev.2)
     {
         let ended = if succeeded { "ran to the end" } else { "failed" };
@@ -134,7 +145,7 @@ mod tests {
             let bytes: Vec<u8> = (0_u8..160)
                 .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
                 .collect();
-            if let Some((_, succeeded)) = eval::run(&generate::program(&bytes)) {
+            if let Some((_, succeeded, _)) = eval::run_saying(&generate::program(&bytes)) {
                 sure += 1;
                 failed += usize::from(!succeeded);
             }

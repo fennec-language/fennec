@@ -15,7 +15,7 @@
 
 use super::ast::{
     Amount, Arith, Arrow, BufOp, Case, Compare, Expr, FLOATS, FloatHeld, Leave, Nested, Op, Place, Program,
-    RefPlace, Size, Stmt, TYPES, Turn, Turning, Ty, Via,
+    RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming, TYPES, Turn, Turning, Ty, Via,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -26,6 +26,11 @@ const CRASH_RUNS_A_CLEANUP_WITH_QUESTION_MARK: bool = true;
 /// of the `with` blocks they leave. They do since #1341; turned off, `Left` leaves its blocks
 /// every other way.
 const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
+
+/// Whether random programs read a generator over `parallel(xs)`, which runs as the runtime's
+/// ordered stream once the LLVM lane's #1479 lands. Off until then; on main today it runs in
+/// order, which the switch leaves alone, so that the inputs kept so far write what they did.
+const PARALLEL_STREAMS: bool = false;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -582,6 +587,7 @@ impl Writer<'_> {
             23..=25 => self.copies(body, which),
             26 if self.choice(3) == 0 => self.leaves(body),
             26 if self.choice(4) == 0 => self.turns(body),
+            26 if PARALLEL_STREAMS && self.choice(4) == 0 => self.streams(body),
             26 => self.change_counts(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
@@ -956,6 +962,28 @@ impl Writer<'_> {
             ways.get(self.choice(ways.len())).copied().unwrap_or(Leave::Return)
         };
         body.push(Stmt::Left { id, depth, together, rounds, at, how });
+    }
+
+    /// A generator over `parallel(xs)`, an ordered stream, read by a `for` loop that may break, by
+    /// `sum`, or by a list comprehension. Its items may fail by dividing by zero or indexing past
+    /// a list, which stops the program at the first one read.
+    fn streams(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let count = 3 + usize::from(self.byte() % 6);
+        let items: Vec<i64> = (0..count).map(|_| i64::from(self.byte() % 7)).collect();
+        let map = match self.choice(3) {
+            0 => StreamMap::Scaled(i64::from(self.byte() % 7) - 3, i64::from(self.byte() % 11) - 5),
+            1 => StreamMap::Divided(i64::from(self.byte() % 7)),
+            _ => StreamMap::Indexed,
+        };
+        let read = match self.choice(4) {
+            0 => StreamRead::Sum,
+            1 => StreamRead::Listed,
+            2 => StreamRead::Loop(Some(1 + i64::from(self.byte()) % i64::try_from(count).unwrap_or(1))),
+            _ => StreamRead::Loop(None),
+        };
+        body.push(Stmt::Streamed(Streaming { id, items, map, read }));
     }
 
     /// A loop whose int is at least 0 on its first turn and changes sign later, used as an index,

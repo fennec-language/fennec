@@ -63,10 +63,17 @@ struct Stream {
     /// or a replay: each chunk as a `parallel` call's range is, by where it starts. `None` in a
     /// normal run.
     task: Option<crate::replay::Task>,
+    /// In a replay, the chunks that ran in the recording, the ones the reader took and any that
+    /// ran ahead of it: only those run, and all of them do, so what they did happens again.
+    /// `None` otherwise.
+    recorded: Option<Vec<usize>>,
     chunks: Mutex<Chunks>,
     /// Signalled whenever a chunk is done.
     done: Condvar,
 }
+
+/// What a stream's entry saying which of its chunks ran is called, in a recording or a replay.
+const RAN: &str = "ran";
 
 thread_local! {
     /// This thread's streams, by the number native code holds.
@@ -84,8 +91,12 @@ impl Stream {
     }
 
     /// Runs chunk `at` on this thread, unless another thread has started it or the stream has
-    /// ended.
-    fn run(&self, at: usize) {
+    /// ended. In a replay, a chunk the recording never ran is left for the reader, who runs only
+    /// the ones it takes.
+    fn run(&self, at: usize, by_reader: bool) {
+        if !by_reader && self.recorded.as_ref().is_some_and(|ran| !ran.contains(&at)) {
+            return;
+        }
         {
             let mut chunks = self.lock();
             let ended = chunks.ended;
@@ -131,7 +142,7 @@ impl Stream {
     /// Starts chunk `at` on the pool.
     fn start(self: &Arc<Self>, at: usize) {
         let stream = Arc::clone(self);
-        pool::spawn(move || stream.run(at));
+        pool::spawn(move || stream.run(at, false));
     }
 
     /// The next chunk, once it's done: run here if no thread has started it. With it taken,
@@ -147,7 +158,7 @@ impl Stream {
                 None => return None,
                 Some(Slot::Waiting) => {
                     drop(chunks);
-                    self.run(at);
+                    self.run(at, true);
                     chunks = self.lock();
                 }
                 Some(Slot::Running) => {
@@ -179,6 +190,7 @@ impl Stream {
 /// `from + i` at `i` in `out`, a list the runtime made of `to - from` items of the element
 /// numbered `element`. The first chunks start on the pool straight away.
 pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
+    let task = crate::replay::child();
     let (length, words) = with(|state| extent(state, list)).unwrap_or((0, 1));
     let window = pool::window(length * words);
     let chunk = chunk(words);
@@ -192,7 +204,11 @@ pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i
         chunk,
         window,
         reader: threads::index(),
-        task: crate::replay::child(),
+        recorded: task
+            .as_ref()
+            .and_then(|task| crate::replay::logged_numbers(&task.name(), RAN))
+            .map(|ran| ran.into_iter().filter_map(|at| usize::try_from(at).ok()).collect()),
+        task,
         chunks: Mutex::new(Chunks { first: 0, slots, ended: false }),
         done: Condvar::new(),
     });
@@ -233,8 +249,38 @@ pub extern "C" fn stream_end(stream: i64) {
     while chunks.slots.iter().any(|slot| matches!(slot, Slot::Running)) {
         chunks = stream.done.wait(chunks).unwrap_or_else(PoisonError::into_inner);
     }
+    let first = chunks.first;
     let slots = std::mem::take(&mut chunks.slots);
     drop(chunks);
+    let ran_ahead: Vec<usize> = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| matches!(slot, Slot::Done { .. }))
+        .map(|(at, _)| first + at)
+        .collect();
+    // In a recording, which chunks ran: those the reader took, and those that ran ahead of it.
+    if let Some(task) = &stream.task {
+        let ran: Vec<u64> =
+            (0..first).chain(ran_ahead.iter().copied()).filter_map(|at| u64::try_from(at).ok()).collect();
+        crate::replay::log_numbers(&task.name(), RAN, &ran);
+    }
+    // In a replay, the chunks that ran ahead in the recording and haven't here run now, so what
+    // they did happens again.
+    let behind: Vec<usize> = stream
+        .recorded
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|at| *at >= first && !ran_ahead.contains(at))
+        .collect();
+    for at in behind {
+        if let Slot::Done { items, made, .. } = stream.make(at) {
+            threads::adopt(made);
+            if items != 0 {
+                heap::free(items);
+            }
+        }
+    }
     for slot in slots {
         if let Slot::Done { items, made, .. } = slot {
             threads::adopt(made);

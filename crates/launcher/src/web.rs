@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a connection may wait on the other side before it's given up on.
 const WAIT: Duration = Duration::from_secs(30);
@@ -13,8 +13,25 @@ const WAIT: Duration = Duration::from_secs(30);
 /// How many redirects a fetch follows: a release page sends its files elsewhere, once.
 const MOST_REDIRECTS: usize = 5;
 
-/// The most a fetch takes in: more than any release's archive.
-const MOST_BYTES: u64 = 1 << 31;
+/// The most a fetch takes in when nothing says how big what it fetches is: a release's manifest,
+/// its signatures and its `latest`, each a few lines. An archive's size comes from its signed
+/// manifest, and is all its fetch takes in.
+const MOST_BYTES: u64 = 1 << 20;
+
+/// The longest a line of the answer's head may be. A mirror that sends one without end would
+/// otherwise have it read into memory until there's none left.
+const LONGEST_LINE: u64 = 8 << 10;
+
+/// How long a whole fetch may take, however it's sent: a mirror that sends a byte every few
+/// seconds never trips the wait on each read, and is stopped here.
+const WHOLE_FETCH: Duration = Duration::from_mins(15);
+
+/// What one fetch may take in, and until when.
+#[derive(Clone, Copy)]
+struct Limits {
+    most: u64,
+    until: Instant,
+}
 
 /// The bytes at `url`.
 ///
@@ -22,9 +39,23 @@ const MOST_BYTES: u64 = 1 << 31;
 ///
 /// When they can't be fetched, saying why.
 pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    fetch_at_most(url, MOST_BYTES)
+}
+
+/// The bytes at `url`, of which there are at most `most`, as a release's signed manifest says
+/// how big each archive is. More is refused, before it's all read.
+///
+/// # Errors
+///
+/// When they can't be fetched, or there are more, saying why.
+pub(crate) fn fetch_at_most(url: &str, most: u64) -> Result<Vec<u8>, String> {
+    fetch_within(url, Limits { most, until: Instant::now() + WHOLE_FETCH })
+}
+
+fn fetch_within(url: &str, limits: Limits) -> Result<Vec<u8>, String> {
     let mut url = url.to_owned();
     for _ in 0..=MOST_REDIRECTS {
-        match get(&url)? {
+        match get(&url, limits)? {
             Got::Bytes(bytes) => return Ok(bytes),
             Got::Elsewhere(next) => url = next,
         }
@@ -38,7 +69,7 @@ pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
 ///
 /// When it can't be asked, or doesn't redirect.
 pub(crate) fn redirect(url: &str) -> Result<String, String> {
-    match get(url)? {
+    match get(url, Limits { most: MOST_BYTES, until: Instant::now() + WHOLE_FETCH })? {
         Got::Elsewhere(next) => Ok(next),
         Got::Bytes(_) => Err(format!("{url} doesn't redirect")),
     }
@@ -74,7 +105,7 @@ fn parts(url: &str) -> Result<(bool, String, u16, String), String> {
     Ok((secure, host.to_owned(), port, path.to_owned()))
 }
 
-fn get(url: &str) -> Result<Got, String> {
+fn get(url: &str, limits: Limits) -> Result<Got, String> {
     let (secure, host, port, path) = parts(url)?;
     let failed = |err: std::io::Error| format!("couldn't fetch {url}: {err}");
     let tcp =
@@ -87,9 +118,9 @@ fn get(url: &str) -> Result<Got, String> {
         env!("CARGO_PKG_VERSION")
     );
     stream.write_all(request.as_bytes()).map_err(failed)?;
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(Until { inner: stream, until: limits.until });
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(failed)?;
+    read_line(&mut reader, &mut line).map_err(failed)?;
     let status: u16 = line
         .split(' ')
         .nth(1)
@@ -100,7 +131,7 @@ fn get(url: &str) -> Result<Got, String> {
     let mut location = None;
     loop {
         line.clear();
-        reader.read_line(&mut line).map_err(failed)?;
+        read_line(&mut reader, &mut line).map_err(failed)?;
         let header = line.trim_end();
         if header.is_empty() {
             break;
@@ -127,10 +158,13 @@ fn get(url: &str) -> Result<Got, String> {
     if status != 200 {
         return Err(format!("{url} answered {}", line_status(status)));
     }
+    if length.is_some_and(|length| length > limits.most) {
+        return Err(format!("{url} is bigger than the {} bytes it should be", limits.most));
+    }
     let body = if chunked {
-        chunks(&mut reader).map_err(failed)?
+        chunks(&mut reader, limits.most).map_err(failed)?
     } else {
-        whole(&mut reader, length).map_err(failed)?
+        whole(&mut reader, length, limits.most).map_err(failed)?
     };
     Ok(Got::Bytes(body))
 }
@@ -142,21 +176,59 @@ fn line_status(status: u16) -> String {
     }
 }
 
-fn whole(reader: &mut impl Read, length: Option<u64>) -> std::io::Result<Vec<u8>> {
+fn whole(reader: &mut impl Read, length: Option<u64>, most: u64) -> std::io::Result<Vec<u8>> {
     let mut body = Vec::new();
-    reader.take(length.unwrap_or(MOST_BYTES).min(MOST_BYTES)).read_to_end(&mut body)?;
+    // One byte more than may come, to tell an answer that's too big from one that's just right.
+    reader.take(length.unwrap_or(most).min(most).saturating_add(1)).read_to_end(&mut body)?;
+    if u64::try_from(body.len()).unwrap_or(u64::MAX) > most {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("it's more than {most} bytes"),
+        ));
+    }
     if length.is_some_and(|length| u64::try_from(body.len()).ok() != Some(length)) {
         return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the connection ended early"));
     }
     Ok(body)
 }
 
-fn chunks(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
+/// A line of the answer, at most `LONGEST_LINE` long.
+fn read_line(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<()> {
+    reader.take(LONGEST_LINE + 1).read_line(line)?;
+    if u64::try_from(line.len()).unwrap_or(u64::MAX) > LONGEST_LINE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("a line of its answer is longer than {LONGEST_LINE} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// A connection read only until `until`: each read after it fails, so a whole fetch ends in time
+/// however slowly what it fetches is sent.
+struct Until<R> {
+    inner: R,
+    until: Instant,
+}
+
+impl<R: Read> Read for Until<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if Instant::now() > self.until {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "it's taken longer than a whole fetch may",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+fn chunks(reader: &mut impl BufRead, most: u64) -> std::io::Result<Vec<u8>> {
     let bad = || std::io::Error::new(std::io::ErrorKind::InvalidData, "a chunk's size can't be read");
     let mut body = Vec::new();
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line)?;
+        read_line(reader, &mut line)?;
         let size = line
             .trim_end()
             .split(';')
@@ -166,7 +238,7 @@ fn chunks(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
         if size == 0 {
             return Ok(body);
         }
-        if u64::try_from(body.len()).unwrap_or(u64::MAX).saturating_add(size) > MOST_BYTES {
+        if u64::try_from(body.len()).unwrap_or(u64::MAX).saturating_add(size) > most {
             return Err(bad());
         }
         let before = body.len();
@@ -175,7 +247,7 @@ fn chunks(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
             return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the connection ended early"));
         }
         line.clear();
-        reader.read_line(&mut line)?;
+        read_line(reader, &mut line)?;
     }
 }
 
@@ -205,7 +277,61 @@ fn tls(
 
 #[cfg(test)]
 mod tests {
-    use super::parts;
+    use super::{Limits, fetch_at_most, fetch_within, parts};
+    use std::io::{Read as _, Write as _};
+    use std::time::{Duration, Instant};
+
+    /// A mirror on this machine that answers each request as its path asks: a header line with no
+    /// end, more than it should send, or a byte at a time.
+    fn misbehaving() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut asked = [0; 512];
+                    let read = stream.read(&mut asked).unwrap_or(0);
+                    let asked = String::from_utf8_lossy(&asked[..read]).into_owned();
+                    let _ = if asked.starts_with("GET /endless") {
+                        stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nx-long: ")
+                            .and_then(|()| stream.write_all(&vec![b'a'; 20_000]))
+                    } else if asked.starts_with("GET /big") {
+                        stream
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5000\r\n\r\n")
+                            .and_then(|()| stream.write_all(&[b'b'; 5000]))
+                    } else {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1000\r\n\r\n").and_then(|()| {
+                            for _ in 0..1000 {
+                                std::thread::sleep(Duration::from_millis(20));
+                                stream.write_all(b"c")?;
+                            }
+                            Ok(())
+                        })
+                    };
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// A mirror can't take the launcher's memory or time: a header line longer than 8 KiB is
+    /// refused, an answer bigger than what was asked for is refused, and one sent so slowly that
+    /// the whole fetch would take too long is stopped, though each byte comes in time.
+    #[test]
+    fn a_mirror_that_misbehaves_is_stopped() {
+        let mirror = misbehaving();
+        let endless = fetch_at_most(&format!("{mirror}/endless"), 1 << 20).unwrap_err();
+        assert!(endless.contains("longer than 8192 bytes"), "{endless}");
+        let big = fetch_at_most(&format!("{mirror}/big"), 100).unwrap_err();
+        assert!(big.contains("bigger than the 100 bytes"), "{big}");
+        let started = Instant::now();
+        let limits = Limits { most: 1 << 20, until: Instant::now() + Duration::from_millis(300) };
+        let slow = fetch_within(&format!("{mirror}/drip"), limits).unwrap_err();
+        assert!(slow.contains("longer than a whole fetch may"), "{slow}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 
     #[test]
     fn only_https_reaches_another_machine() {

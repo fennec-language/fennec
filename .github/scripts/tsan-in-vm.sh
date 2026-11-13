@@ -25,6 +25,7 @@ memory=$((memory * 7 / 8 / 1024 / 1024))m
 inside='
 set -euo pipefail
 # The ThreadSanitizer runtime of GCC, which links the programs, as the image CI runs on has it.
+# Debian trixie, not bookworm: the runtime of GCC 12 has no __tsan_memcpy, which the nightly emits.
 apt-get update -qq > /dev/null && apt-get install -y -qq git binutils perl libtsan2 > /dev/null
 rustup component add llvm-tools-preview > /dev/null
 rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src > /dev/null
@@ -46,5 +47,5 @@ docker --context "$context" run --rm --memory "$memory" \
   --env NIGHTLY="$nightly" \
   --env RUSTUP_TOOLCHAIN="$toolchain" \
   --env SECONDS_OF_FUZZING="$seconds" \
-  "rust:${toolchain%.*}-slim-bookworm" \
+  "rust:${toolchain%.*}-slim-trixie" \
   bash -c "$inside"

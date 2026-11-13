@@ -363,7 +363,7 @@ extend Time:
     def deserialize(ref src: Deserializer) -> Time fails ParseError:
         text = src.text()?
         return Time.parse(text) except ParseError(): fail src.here(
-            f"is `{text}`, which isn't an RFC 3339 time",
+            f"is {quoted_input(text)}, which isn't an RFC 3339 time",
         )
 
 extend Duration:

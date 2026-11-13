@@ -21049,8 +21049,6 @@ fn fennec_literal(text: &str) -> String {
             '\n' => "\\n".to_owned(),
             '\t' => "\\t".to_owned(),
             '\r' => "\\r".to_owned(),
-            '{' => "{{".to_owned(),
-            '}' => "}}".to_owned(),
             other => other.to_string(),
         })
         .collect();

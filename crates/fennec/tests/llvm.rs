@@ -7127,6 +7127,125 @@ def main(stdout: Stdout):
     )
 }
 
+/// `json.loads` finds which field a name is by comparing the name's bytes where they are in the
+/// text, several at a time. Names that begin one another, names of each size the compare takes a
+/// different way (1, 2 and 3 bytes, 8, 23, and past a header's room), a name one byte off, a
+/// longer one, one with an escape and one that isn't ASCII each match or miss as they should, in
+/// any order. A text that ends inside a name fails as a string that never ends, with nothing
+/// read past it. An enum's cases, found the same way, do too.
+#[test]
+fn json_matches_a_fields_name_by_its_bytes_whatever_its_size_and_wherever_the_text_ends()
+-> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("json_names_by_bytes", NAMES_BY_BYTES, NAMES_BY_BYTES_PRINTED)
+}
+
+/// The program of [`json_matches_a_fields_name_by_its_bytes_whatever_its_size_and_wherever_the_text_ends`].
+const NAMES_BY_BYTES: &str = r#"from std import json
+
+struct Near:
+    a: int
+    ab: int
+    abc: int
+    abd: int
+
+struct Wide:
+    eight_by: int
+    a_name_of_twenty_three_: int
+    a_name_longer_than_a_header_holds: int
+    a_name_longer_than_a_header_holdt: int
+    grosse: int
+
+enum Mode:
+    On
+    Once
+    Onced
+    Off
+
+struct Switch:
+    mode: Mode
+    n: int
+
+def near(stdout: Stdout, text: str):
+    got_value = json.loads[Near](text) except why:
+        stdout.print(f"no: {why.message}")
+        return
+    stdout.print(got_value)
+    return
+
+def wide(stdout: Stdout, text: str):
+    got_value = json.loads[Wide](text) except why:
+        stdout.print(f"no: {why.message}")
+        return
+    stdout.print(got_value)
+    return
+
+def switch(stdout: Stdout, text: str):
+    got_value = json.loads[Switch](text) except why:
+        stdout.print(f"no: {why.message}")
+        return
+    stdout.print(got_value)
+    return
+
+def main(stdout: Stdout):
+    # Names that begin one another, in order, out of order, and with space before the colon.
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"abd\": 4}")
+    near(stdout, "{\"abd\": 4, \"abc\": 3, \"ab\": 2, \"a\": 1}")
+    near(stdout, "{\"abc\" : 3, \"a\"\t: 1, \"abd\"\n: 4, \"ab\" :2}")
+    # A name that's one byte off, one that's longer, and one written with an escape.
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"abe\": 4}")
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"abdd\": 4}")
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"ab\\u0064\": 4}")
+    # The text ends inside a name, at each place.
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"abd")
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"ab")
+    near(stdout, "{\"a\": 1, \"ab\": 2, \"abc\": 3, \"")
+    near(stdout, "{\"a")
+    # Names of 8 and 23 bytes, two past a header's room that differ in the last byte, and one
+    # that isn't ASCII.
+    wide(stdout, "{\"eight_by\": 1, \"a_name_of_twenty_three_\": 2, \"a_name_longer_than_a_header_holds\": 3, \"a_name_longer_than_a_header_holdt\": 4, \"grosse\": 5}")
+    wide(stdout, "{\"grosse\": 5, \"a_name_longer_than_a_header_holdt\": 4, \"a_name_longer_than_a_header_holds\": 3, \"a_name_of_twenty_three_\": 2, \"eight_by\": 1}")
+    wide(stdout, "{\"eight_by\": 1, \"a_name_of_twenty_three_\": 2, \"a_name_longer_than_a_header_holds\": 3, \"a_name_longer_than_a_header_holdu\": 4, \"grosse\": 5}")
+    wide(stdout, "{\"eight_by\": 1, \"a_name_of_twenty_three_\": 2, \"a_name_longer_than_a_header_holds\": 3, \"a_name_longer_than_a_header_hold")
+    wide(stdout, "{\"eight_by\": 1, \"a_name_of_twenty_three_\": 2, \"a_name_longer_than_a_header_holds\": 3, \"a_name_longer_than_a_header_holdt\": 4, \"größe\": 5}")
+    # An enum's cases by name, which begin one another too.
+    switch(stdout, "{\"mode\": \"On\", \"n\": 1}")
+    switch(stdout, "{\"mode\": \"Once\", \"n\": 2}")
+    switch(stdout, "{\"mode\": \"Onced\", \"n\": 3}")
+    switch(stdout, "{\"mode\": \"Off\", \"n\": 4}")
+    switch(stdout, "{\"mode\": \"Onc\", \"n\": 5}")
+    switch(stdout, "{\"mode\": \"Oncede\", \"n\": 6}")
+    switch(stdout, "{\"mode\": \"On")
+    return
+"#;
+
+/// What [`NAMES_BY_BYTES`] prints.
+const NAMES_BY_BYTES_PRINTED: &str = r#"Near(a=1, ab=2, abc=3, abd=4)
+Near(a=1, ab=2, abc=3, abd=4)
+Near(a=1, ab=2, abc=3, abd=4)
+no: `Near` has no field "abe", but the text has one
+no: `Near` has no field "abdd", but the text has one
+Near(a=1, ab=2, abc=3, abd=4)
+no: this string never ends, at line 1, column 29
+no: this string never ends, at line 1, column 29
+no: this string never ends, at line 1, column 29
+no: this string never ends, at line 1, column 2
+Wide(eight_by=1, a_name_of_twenty_three_=2, a_name_longer_than_a_header_holds=3, a_name_longer_than_a_header_holdt=4, grosse=5)
+Wide(eight_by=1, a_name_of_twenty_three_=2, a_name_longer_than_a_header_holds=3, a_name_longer_than_a_header_holdt=4, grosse=5)
+no: `Wide` has no field "a_name_longer_than_a_header_holdu", but the text has one
+no: this string never ends, at line 1, column 87
+no: `Wide` has no field "größe", but the text has one
+Switch(mode=Mode.On, n=1)
+Switch(mode=Mode.Once, n=2)
+Switch(mode=Mode.Onced, n=3)
+Switch(mode=Mode.Off, n=4)
+no: `mode` is "Onc", which isn't a case of `Mode`
+no: `mode` is "Oncede", which isn't a case of `Mode`
+no: this string never ends, at line 1, column 10
+"#;
+
 /// `for field in fields(T):` is written out for each of `T`'s fields in each copy, with
 /// `field.name` its name and `field.get(x)` its value, so a generic function can walk a struct and
 /// what's inside it. A type with no fields gives none.

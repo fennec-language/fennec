@@ -11878,6 +11878,13 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let (ran, peak) = with_peak_memory(&executable, &dir)?;
+    // The same program hashing a file of one chunk, a megabyte, for what any run holds anyway.
+    let small = dir.join("hash_small.fen");
+    std::fs::write(&small, HASH_BIG_FILE.replace("range(64)", "range(1)"))?;
+    let small_executable = dir.join("hash_small");
+    let built = fennec(&["build", "--llvm", &path(&small), "-o", &path(&small_executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (_, small_peak) = with_peak_memory(&small_executable, &dir)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -11885,8 +11892,19 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    if let Some(peak) = measured(peak) {
-        assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
+    let (Some(peak), Some(small_peak)) = (measured(peak), measured(small_peak)) else { return Ok(()) };
+    let mb = |bytes: u64| bytes / (1024 * 1024);
+    // Hashing 64 MB a chunk at a time holds hardly more than hashing one chunk. Measured as what
+    // it adds, since AddressSanitizer adds a share of its own to every run, which isn't what the
+    // program holds: 13 MB hashing 64 MB here, and 21 MB under the sanitizer, 35 MB in CI's.
+    assert!(
+        peak.saturating_sub(small_peak) < 16 * 1024 * 1024,
+        "hashing 64 MB held {} MB, against {} MB for one",
+        mb(peak),
+        mb(small_peak)
+    );
+    if std::env::var_os("FENNEC_SANITIZE").is_none() {
+        assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", mb(peak));
     }
     Ok(())
 }

@@ -37,9 +37,13 @@ cd /src
 git config --global --add safe.directory /src
 git init -q .
 .github/scripts/tsan-runtime.sh
-.github/scripts/tsan-programs.sh target/release/fennec "$SECONDS_OF_FUZZING"
+# With addresses not randomized, for this and every program it starts: on Arm, TSan finds no room
+# for its shadow memory where the kernel scatters mappings this widely, and stops every program.
+setarch "$(uname -m)" -R .github/scripts/tsan-programs.sh target/release/fennec "$SECONDS_OF_FUZZING"
 '
-docker --context "$context" run --rm --memory "$memory" \
+# `setarch -R` asks the kernel for a process with addresses not randomized, which Docker's default
+# seccomp profile refuses, so this container, in Fennec's own VM, runs without it.
+docker --context "$context" run --rm --memory "$memory" --security-opt seccomp=unconfined \
   --volume "$root:/repo:ro" \
   --volume fennec-tsan-target:/src/target \
   --volume fennec-tsan-rustup:/usr/local/rustup \

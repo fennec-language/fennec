@@ -32,13 +32,19 @@ pub(crate) fn canon(ty: &Type) -> Type {
 /// As [`canon`], but an optional of a block, outside a list or dict, stays an optional: one
 /// word, the block or null for `None`. `layouts` says which named types are blocks.
 pub(crate) fn canon_in(layouts: Option<&Layouts>, ty: &Type) -> Type {
-    if let (Type::Optional(inner), Some(layouts)) = (ty, layouts) {
-        let held = canon(inner);
-        if Block::of(layouts.ty(&held)).is_some() {
-            return Type::Optional(Box::new(held));
-        }
+    if let (Type::Optional(inner), Some(layouts)) = (ty, layouts)
+        && one_word_optional(layouts, inner)
+    {
+        return Type::Optional(Box::new(canon(inner)));
     }
     canon(ty)
+}
+
+/// Whether an optional of `inner` is one word, the address of the block `inner` is held by or null
+/// for `None`, which it is when `inner` is held by a block. The one place this is decided, for the
+/// layouts and every local alike, so a field and a local never hold the same optional two ways.
+pub(crate) fn one_word_optional(layouts: &Layouts, inner: &Type) -> bool {
+    Block::of(layouts.ty(&canon(inner))).is_some()
 }
 
 /// The definitions of the tuples, optionals and results a type mentions.

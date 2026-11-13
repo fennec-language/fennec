@@ -179,11 +179,81 @@ pub struct Shared {
 
 /// The layouts of everything a program defines, generic types' copies included, and of the
 /// tuples, optionals and results it uses.
-pub fn layouts_of(program: &Program) -> Layouts {
+///
+/// # Errors
+/// When the first layout and the finished one disagree on which types are blocks, or on how an
+/// optional the program mentions is held: a bug in the compiler, which would have a field and a
+/// local hold one value two ways.
+pub fn layouts_of(program: &Program) -> Result<Layouts, String> {
     // Which named types are blocks doesn't depend on how optionals are held, so a first layout
     // with every optional as an enum says which optionals can be one word.
     let first = laid_out(program, None);
-    laid_out(program, Some(&first))
+    let finished = laid_out(program, Some(&first));
+    agreed(program, &first, &finished)?;
+    Ok(finished)
+}
+
+/// Whether the finished layout keeps what the first decided: each type a block in one is a block in
+/// the other, and each optional the program mentions, however deep, is held the same way by both.
+fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), String> {
+    let ids = (0..first.len()).filter_map(|id| u32::try_from(id).ok());
+    for layout in ids.filter_map(|id| first.get(id)) {
+        let other = finished.id(&layout.name).and_then(|id| finished.get(id));
+        if other.is_some_and(|other| other.boxed != layout.boxed) {
+            return Err(format!(
+                "the layouts disagree on whether `{}` is a block, which is a bug in the compiler",
+                layout.name
+            ));
+        }
+    }
+    let mut mentioned: Vec<&fennec_check::Type> = Vec::new();
+    for def in program.structs.iter().chain(&program.errors) {
+        mentioned.extend(def.fields.iter().map(|(_, ty)| ty));
+    }
+    for case in program.enums.iter().flat_map(|def| &def.cases) {
+        mentioned.extend(case.fields.iter().map(|(_, ty)| ty));
+    }
+    for function in program.functions.iter().chain(&program.constants) {
+        mentioned.push(&function.returns);
+        mentioned.extend(function.locals.iter().map(|local| &local.ty));
+    }
+    for def in &program.generators {
+        mentioned.push(&def.item);
+        mentioned.extend(&def.slots);
+    }
+    mentioned.into_iter().try_for_each(|ty| optionals_agree(ty, first, finished))
+}
+
+/// Whether every optional in a type is one word in both layouts or in neither.
+fn optionals_agree(ty: &fennec_check::Type, first: &Layouts, finished: &Layouts) -> Result<(), String> {
+    use fennec_check::Type;
+    let each = |types: &mut dyn Iterator<Item = &Type>| -> Result<(), String> {
+        for ty in types {
+            optionals_agree(ty, first, finished)?;
+        }
+        Ok(())
+    };
+    match ty {
+        Type::Optional(inner) => {
+            if kinds::one_word_optional(first, inner) != kinds::one_word_optional(finished, inner) {
+                return Err(format!(
+                    "the layouts disagree on whether `{ty}` is one word, which is a bug in the compiler"
+                ));
+            }
+            optionals_agree(inner, first, finished)
+        }
+        Type::List(inner)
+        | Type::Buffer(inner)
+        | Type::Set(inner)
+        | Type::Iterator(inner)
+        | Type::Id(inner)
+        | Type::Table(inner)
+        | Type::Array(inner, _) => optionals_agree(inner, first, finished),
+        Type::Dict(a, b) | Type::Result(a, b) => each(&mut [a.as_ref(), b.as_ref()].into_iter()),
+        Type::Tuple(items) | Type::Union(items) | Type::Generic(_, items) => each(&mut items.iter()),
+        Type::Arrow(params, returns) => each(&mut params.iter().chain(std::iter::once(returns.as_ref()))),
+        _ => Ok(()),
+    }
 }
 
 /// A `main` that gives back a result is run by one that doesn't, which fails the program if the
@@ -315,5 +385,35 @@ fn header() -> Result<&'static str, String> {
         ("x86_64", "macos") => Ok(MAC_X86),
         ("x86_64", "windows") => Ok(WINDOWS_X86),
         (arch, os) => Err(format!("the LLVM backend doesn't know {arch} on {os} yet")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fennec_check::Type;
+    use fennec_layout::{Layouts, Written};
+
+    /// A type a block in one layout and in place in the other, as a layout that changed its mind
+    /// would give: an optional of it would be one word in a field and two in a local, so the
+    /// build stops, naming it.
+    #[test]
+    fn layouts_that_disagree_on_an_optional_stop_the_build() {
+        let node = Type::Named("Node".to_owned());
+        let field = |name: &str, ty: Type| (name.to_owned(), ty, None);
+        let held_by_itself = vec![(
+            "Node".to_owned(),
+            Written::Struct(vec![field("value", Type::Int), field("next", node.clone())]),
+        )];
+        let plain = vec![("Node".to_owned(), Written::Struct(vec![field("value", Type::Int)]))];
+        let (boxed, in_place) =
+            (Layouts::from_definitions(&held_by_itself), Layouts::from_definitions(&plain));
+        let optional = Type::List(Box::new(Type::Optional(Box::new(node))));
+        let found = super::optionals_agree(&optional, &boxed, &in_place);
+        assert_eq!(
+            found,
+            Err("the layouts disagree on whether `Node?` is one word, which is a bug in the compiler"
+                .to_owned())
+        );
+        assert_eq!(super::optionals_agree(&optional, &boxed, &boxed), Ok(()));
     }
 }

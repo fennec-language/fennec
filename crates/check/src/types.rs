@@ -398,7 +398,7 @@ impl Type {
     /// with no written form.
     pub(crate) fn written(&self, span: fennec_syntax::Span) -> Option<fennec_syntax::TypeExpr> {
         use fennec_syntax::TypeExpr;
-        let named =
+        let plain =
             |name: &str, args: Vec<TypeExpr>| TypeExpr { name: name.to_owned(), args, optional: false, span };
         let all = |items: &[Type]| items.iter().map(|item| item.written(span)).collect::<Option<Vec<_>>>();
         Some(match self {
@@ -408,33 +408,33 @@ impl Type {
             | Type::Bool
             | Type::Str
             | Type::LiteralStr
-            | Type::Bytes => named(&self.kind(), Vec::new()),
-            Type::Unit => named("nothing", Vec::new()),
-            Type::None => named("None", Vec::new()),
-            Type::List(item) => named("list", vec![item.written(span)?]),
-            Type::Buffer(item) => named("Buffer", vec![item.written(span)?]),
+            | Type::Bytes => plain(&self.kind(), Vec::new()),
+            Type::Unit => plain("nothing", Vec::new()),
+            Type::None => plain("None", Vec::new()),
+            Type::List(item) => plain("list", vec![item.written(span)?]),
+            Type::Buffer(item) => plain("Buffer", vec![item.written(span)?]),
             Type::Array(item, size) => {
-                named("array", vec![item.written(span)?, named(&size.to_string(), Vec::new())])
+                plain("array", vec![item.written(span)?, plain(&size.to_string(), Vec::new())])
             }
-            Type::Set(item) => named("set", vec![item.written(span)?]),
-            Type::Iterator(item) => named("Iterator", vec![item.written(span)?]),
-            Type::Dict(key, value) => named("dict", vec![key.written(span)?, value.written(span)?]),
-            Type::Tuple(items) => named("tuple", all(items)?),
+            Type::Set(item) => plain("set", vec![item.written(span)?]),
+            Type::Iterator(item) => plain("Iterator", vec![item.written(span)?]),
+            Type::Dict(key, value) => plain("dict", vec![key.written(span)?, value.written(span)?]),
+            Type::Tuple(items) => plain("tuple", all(items)?),
             Type::Optional(inner) => TypeExpr { optional: true, ..inner.written(span)? },
-            Type::Union(members) => named("|", all(members)?),
-            Type::Errors(names) => match names.as_slice() {
-                [one] => named(one, Vec::new()),
-                _ => named("|", names.iter().map(|name| named(name, Vec::new())).collect()),
+            Type::Union(members) => plain("|", all(members)?),
+            Type::Errors(errors) => match errors.as_slice() {
+                [one] => plain(one, Vec::new()),
+                _ => plain("|", errors.iter().map(|name| plain(name, Vec::new())).collect()),
             },
-            Type::Result(value, error) => named("Result", vec![value.written(span)?, error.written(span)?]),
-            Type::Named(name) | Type::Param(name) => named(name, Vec::new()),
-            Type::Generic(name, args) => named(name, all(args)?),
-            Type::Id(item) => named("Id", vec![item.written(span)?]),
-            Type::Table(item) => named("Table", vec![item.written(span)?]),
+            Type::Result(value, error) => plain("Result", vec![value.written(span)?, error.written(span)?]),
+            Type::Named(name) | Type::Param(name) => plain(name, Vec::new()),
+            Type::Generic(name, args) => plain(name, all(args)?),
+            Type::Id(item) => plain("Id", vec![item.written(span)?]),
+            Type::Table(item) => plain("Table", vec![item.written(span)?]),
             Type::Arrow(params, ret) => {
                 let mut args = all(params)?;
                 args.push(ret.written(span)?);
-                named("->", args)
+                plain("->", args)
             }
             Type::Unknown | Type::Function(_) | Type::Var(_) => return None,
         })

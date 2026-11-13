@@ -283,6 +283,16 @@ pub fn strip_facts(on: bool) {
     FACTS_STRIPPED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether builds check proofs, as [`check_proofs`] last said.
+pub(crate) fn proofs_checked() -> bool {
+    PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether builds leave out the facts, as [`strip_facts`] last said.
+pub(crate) fn facts_stripped() -> bool {
+    FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
@@ -3166,8 +3176,14 @@ impl Emit<'_, '_, '_> {
             InstKind::MakeOk { dest, value } => self.make_case(*dest, "Ok", value.as_slice()),
             InstKind::MakeErr { dest, error } => self.make_case(*dest, "Err", std::slice::from_ref(error)),
             InstKind::IsErr { dest, value } => self.is_case(*dest, value, "Err"),
-            InstKind::GetOk { dest, value } => self.get_case_field(*dest, value, "Ok", "value"),
-            InstKind::GetErr { dest, value } => self.get_case_field(*dest, value, "Err", "error"),
+            InstKind::GetOk { dest, value } => {
+                self.get_case_field(*dest, value, "Ok", "value")?;
+                self.let_go_after_last_read(*dest, value)
+            }
+            InstKind::GetErr { dest, value } => {
+                self.get_case_field(*dest, value, "Err", "error")?;
+                self.let_go_after_last_read(*dest, value)
+            }
             InstKind::IsError { dest, value, type_name } => self.is_case(*dest, value, type_name),
             InstKind::AsError { dest, value } => self.as_error(*dest, value),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),

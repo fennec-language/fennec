@@ -2586,6 +2586,11 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        if dest.is_none()
+            && let Some(done) = self.moving_list_method(name, args, span)
+        {
+            return done;
+        }
         // `int.parse(text)` and `float.parse(text)` are `int(text)?` and `float(text)?` given back:
         // the result is made where the caller keeps it, rather than made, read and made again.
         if let ("int.parse" | "float.parse", Some(dest), [text @ Operand::Local(held)]) = (name, dest, args)
@@ -4047,6 +4052,24 @@ def main(stdout: Stdout):
         let helpers = text.matches("%cursor_wrong = or i1").count();
         assert!(helpers >= 2, "{helpers} helpers check the cursor:\n{text}");
         assert!(shared.literals.values().any(|said| said.contains("a string's cursor is inside it")));
+        Ok(())
+    }
+
+    /// A build that checks proofs checks a text joined into a block is past 23 bytes, as its
+    /// header, made from the block with nothing looked up, takes it to be. A plain build doesn't.
+    #[test]
+    fn checking_proofs_checks_a_joined_text_is_past_a_header() -> Result<(), String> {
+        let source = "def join(a: str, b: str) -> str:\n    return a + b\n\ndef main(stdout: Stdout):\n    stdout.print(join(\"a string long enough\", \" to need a block\"))\n    return\n";
+        let program = lowered(source)?;
+        let proof = "a text joined in a block is past 23 bytes";
+        let (plain, plain_shared, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(!plain.contains(proof) && !plain_shared.literals.values().any(|said| said.contains(proof)));
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let said: Vec<&String> = shared.strings.values().chain(shared.literals.values()).collect();
+        assert!(text.contains(proof) || said.iter().any(|said| said.contains(proof)), "{text}");
         Ok(())
     }
 

@@ -1086,7 +1086,11 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let shared = !state.heap.is_alone(at, block);
     if shared {
         let (shape, live) = (shape_word(block)?, entries(block, layout.width));
-        state.heap.copied(live.len());
+        // An empty dict shared, as the empty constant a dict can start as is, is made anew: there's
+        // nothing to copy, so no copy is counted.
+        if !live.is_empty() {
+            state.heap.copied(live.len());
+        }
         for entry in live.chunks_exact(layout.width) {
             retain_entry(state, layout, entry);
         }
@@ -1266,7 +1270,10 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     }
     let layout = layout(state, block)?;
     let (shape, live, how) = (shape_word(block)?, entries(block, layout.width), Hashing::of(block));
-    state.heap.copied(live.len());
+    // An empty dict shared is made anew, with no copy counted, as in `set_words`.
+    if !live.is_empty() {
+        state.heap.copied(live.len());
+    }
     for entry in live.chunks_exact(layout.width) {
         retain_entry(state, layout, entry);
     }

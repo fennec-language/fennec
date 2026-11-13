@@ -741,7 +741,9 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store i64 {chars}, ptr {chars_at}{header}"));
                 let value = match paths {
                     Some((inline, inline_end, done)) => {
-                        let from_block = self.text_from_block(&made);
+                        // More than 23 bytes come here, so the header is the block's address and
+                        // length.
+                        let from_block = self.text_of_long_block(&made, &bytes);
                         let block_end = self.current.clone();
                         self.line(&format!("br label %{done}"));
                         self.start_block(&done);
@@ -840,7 +842,8 @@ impl Emit<'_, '_, '_> {
             (self.offset(&made, TEXT_BYTES.unsigned_abs()), self.offset(&made, TEXT_CHARS.unsigned_abs()));
         self.line(&format!("store i64 {bytes}, ptr {bytes_at}{HEADER_ACCESS}"));
         self.line(&format!("store i64 {chars}, ptr {chars_at}{HEADER_ACCESS}"));
-        let from_block = self.text_from_block(&made);
+        // More than 23 bytes come here, so the header is the block's address and length.
+        let from_block = self.text_of_long_block(&made, &bytes);
         let block_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&done);

@@ -243,7 +243,13 @@ fn tick(entities: &mut [Entity], cells: &mut [Vec<usize>], threads: usize, turn:
 fn main() {
     let started = std::time::Instant::now();
     let count = black_box(10_000_i64);
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    // As many threads as Fennec's pool has: `FENNEC_THREADS` when it's set, so a run at any
+    // count compares like with like, and otherwise one for each core, as the pool does.
+    let threads = std::env::var("FENNEC_THREADS")
+        .ok()
+        .and_then(|count| count.parse::<usize>().ok())
+        .filter(|&count| count > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
     let mut entities = Vec::new();
     let mut state = 42;
     for number in 0..count {

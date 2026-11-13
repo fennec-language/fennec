@@ -26,7 +26,7 @@ impl Parser {
             Tok::Kw(Kw::While) => self.while_stmt(),
             Tok::Kw(Kw::For) => self.for_stmt(),
             Tok::Kw(Kw::With) => self.with_stmt(false),
-            // `lend value`, or `lend value else:` with a block, in a `with` source.
+            // `lend value`, or `lend value except:` with a block, in a `with` source.
             Tok::Name(word) if word == "lend" && starts_value(self.peek_at(1)) => self.lend_stmt(),
             // `lock scores as ref current:`, where a name follows `lock`.
             Tok::Name(word) if word == "lock" && matches!(self.peek_at(1), Tok::Name(_)) => {

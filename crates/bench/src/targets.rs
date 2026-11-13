@@ -101,7 +101,38 @@ fn text(targets: &Targets) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Target, Targets, parse, text};
+    use std::path::Path;
+
+    use super::{Target, Targets, parse, read, text};
+
+    /// Every targets file under `bench/targets`, for every architecture, reads cleanly, and each
+    /// line names a kernel there is: a line from another file copied in by mistake fails here,
+    /// on every machine, not only on the architecture that reads that file.
+    #[test]
+    fn every_targets_file_reads_and_names_only_kernels() {
+        let bench = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench");
+        let kernels = bench.join("kernels");
+        let mut files = Vec::new();
+        for dir in [bench.join("targets"), bench.join("targets/unchecked")] {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|ext| ext == "txt") {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(files.len() >= 4, "found only {} targets files", files.len());
+        for file in &files {
+            let targets = read(file).unwrap();
+            assert!(!targets.is_empty(), "{} has no targets", file.display());
+            for kernel in targets.keys() {
+                // `selfhost`'s twin is the Rust front end, and `dicts.std` is a second twin of
+                // `dicts`, so a kernel is a twin's name or the front end.
+                let known = kernel == "selfhost" || kernels.join(format!("{kernel}.rs")).exists();
+                assert!(known, "{} names `{kernel}`, which isn't a kernel", file.display());
+            }
+        }
+    }
 
     #[test]
     fn targets_read_back_as_they_were_written() {
@@ -131,7 +162,7 @@ mod tests {
 
     #[test]
     fn unchecked_targets_are_kept_apart() {
-        let dir = std::path::Path::new("targets");
+        let dir = Path::new("targets");
         let unchecked = super::unchecked_path(dir);
         assert_eq!(unchecked.parent(), Some(dir.join("unchecked").as_path()));
         assert_eq!(unchecked.file_name(), super::path(dir).file_name());

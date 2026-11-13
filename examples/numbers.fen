@@ -53,3 +53,9 @@ def main(stdout: Stdout):
     biggest = 9223372036854775806 + 1
     smallest = -biggest - 1
     stdout.print(biggest, smallest, biggest - 1, smallest + 1, smallest - -5)
+
+    # A sized number's own functions read one from text or make one from an int, failing outside
+    # what it holds.
+    largest = u64.parse("18446744073709551615") except InvalidValue(): u64(0)
+    byte = u8.from(255) except InvalidValue(): u8(0)
+    stdout.print(largest, byte)

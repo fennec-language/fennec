@@ -3,8 +3,9 @@
 # still held it, so the change was made to a copy of it. A test keeps this exact: a count that
 # goes up fails, since it's a copy the code generator started making, and one that goes down is
 # lowered here. Counts are exact and don't move with the machine or its load, as times do.
+api_handler 0
 binary_trees 0
-chat_server 102738
+chat_server 102259
 closures 0
 comp_helpers 0
 comprehensions 0

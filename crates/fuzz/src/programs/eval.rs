@@ -12,11 +12,13 @@
 
 use std::fmt::Write as _;
 
+use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, KEYS,
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -455,6 +457,75 @@ fn sum_of(items: &[i64]) -> Ran<i64> {
 }
 
 /// A value as `stdout.print` writes it.
+/// A `FieldCalls` struct, as the evaluator keeps it.
+struct Boxed {
+    text: String,
+    count: i64,
+    items: Vec<i64>,
+}
+
+/// What a `FieldCalls` call gives, or a field holds.
+enum Piece {
+    Text(String),
+    Count(i64),
+    Items(Vec<i64>),
+}
+
+impl Piece {
+    /// As `stdout.print` writes it on its own.
+    fn shown(&self) -> String {
+        match self {
+            Piece::Text(text) => text.clone(),
+            Piece::Count(count) => count.to_string(),
+            Piece::Items(items) => shown(&Value::Ints(items.clone())),
+        }
+    }
+}
+
+impl Boxed {
+    fn read(&self, field: Field) -> Piece {
+        match field {
+            Field::Text => Piece::Text(self.text.clone()),
+            Field::Count => Piece::Count(self.count),
+            Field::Items => Piece::Items(self.items.clone()),
+        }
+    }
+
+    /// `field += given`, or `field += a + given` when `plus`, with `a` made from `n`.
+    fn added(&mut self, field: Field, plus: bool, n: i64, given: Piece) -> Option<()> {
+        match (field, given) {
+            (Field::Text, Piece::Text(given)) => {
+                if plus {
+                    let _ = write!(self.text, "a{n}");
+                }
+                self.text.push_str(&given);
+            }
+            (Field::Count, Piece::Count(given)) => {
+                let added = if plus { n.checked_add(given)? } else { given };
+                self.count = self.count.checked_add(added)?;
+            }
+            (Field::Items, Piece::Items(given)) => {
+                if plus {
+                    self.items.push(n);
+                }
+                self.items.extend(given);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    /// As `stdout.print` writes the `Box{id}` it is.
+    fn shown(&self, id: usize) -> String {
+        format!(
+            "Box{id}(text=\"{}\", count={}, items={})",
+            self.text,
+            self.count,
+            shown(&Value::Ints(self.items.clone()))
+        )
+    }
+}
+
 /// The value at `KEYS[at]` among a dict's entries.
 fn keyed<T>(pairs: &mut [(String, T)], at: usize) -> Option<&mut T> {
     let key = KEYS.get(at)?;
@@ -517,6 +588,9 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
         (Kept::Rooms(rooms), Writing::Field) => {
             let _ = write!(rooms.get_mut(at)?.1, "q{n}");
         }
+        (Kept::Rooms(rooms), Writing::Method) => {
+            let _ = write!(rooms.get_mut(at)?.1, "a{n}é{n}");
+        }
         (Kept::Rooms(rooms), Writing::PutBack) => {
             let count = keyed(&mut rooms.get_mut(at)?.0, 0)?;
             *count = count.checked_add(n)?;
@@ -552,6 +626,17 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
         }
         (Kept::Text(text), Writing::Formatted) => {
             let _ = write!(text, "r{n}");
+        }
+        (Kept::Text(text), Writing::Chained) => {
+            let before = text.clone();
+            let _ = write!(text, "a{n}{before}");
+        }
+        (Kept::Text(text), Writing::Summed) => {
+            let before = text.clone();
+            let _ = write!(text, "b{n}{before}ç");
+        }
+        (Kept::Text(text), Writing::Long) => {
+            let _ = write!(text, "{}{n}", super::source::LONG_PIECE);
         }
         (Kept::Text(text), _) => {
             let _ = write!(text, "p{n}");
@@ -619,6 +704,83 @@ fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// What a `Read` step does: prints, or keeps an item by a name of its own.
+enum Read {
+    Printed(String),
+    Kept(i64, i64),
+}
+
+/// What a `Read` step's loop over `value`, as `read_written` writes it, does.
+fn read_shown(value: &Kept, how: Reading, n: i64) -> Option<Read> {
+    let points = match value {
+        Kept::Table(points) | Kept::Entries(points) | Kept::Ledger(points, _) => points,
+        Kept::Rooms(rooms) => {
+            let summed = |counts: &Vec<(String, i64)>| {
+                counts.iter().try_fold(0_i64, |total, (_, count)| total.checked_add(*count))
+            };
+            let length = |label: &String| i64::try_from(label.chars().count()).ok();
+            let mut total = 0_i64;
+            if how == Reading::Broken {
+                for (counts, label) in rooms {
+                    if summed(counts)? > n {
+                        break;
+                    }
+                    total = total.checked_add(length(label)?)?;
+                }
+                return Some(Read::Printed(format!("broke {total}\n")));
+            }
+            for (counts, label) in rooms {
+                total = total.checked_add(summed(counts)?)?.checked_add(length(label)?)?;
+            }
+            return Some(Read::Printed(format!("read {total}\n")));
+        }
+        _ => return None,
+    };
+    let point = |(x, y): &(i64, i64)| format!("Point(x={x}, y={y})");
+    Some(match how {
+        Reading::Summed => {
+            let mut total = 0_i64;
+            for (x, y) in points {
+                total = total.checked_add(x.checked_mul(3)?.checked_add(*y)?)?;
+            }
+            Read::Printed(format!("read {total}\n"))
+        }
+        Reading::Kept => {
+            let last = points.iter().rev().find(|(x, _)| *x >= n).copied().unwrap_or((0, 0));
+            Read::Kept(last.0, last.1)
+        }
+        Reading::Replaced => {
+            let mut lines = String::new();
+            for (x, y) in points {
+                let _ = writeln!(lines, "item {x} {y}");
+            }
+            Read::Printed(lines)
+        }
+        Reading::Broken => {
+            let mut total = 0_i64;
+            for (x, y) in points {
+                if *x > n {
+                    break;
+                }
+                total = total.checked_add(y.checked_add(1)?)?;
+            }
+            Read::Printed(format!("broke {total}\n"))
+        }
+        Reading::Returned => {
+            let found = points.iter().find(|(x, _)| *x > n).copied().unwrap_or((-1, -1));
+            Read::Printed(format!("first {}\n", point(&found)))
+        }
+        Reading::Failed => {
+            let got = if points.iter().any(|(x, _)| *x > n) {
+                -1
+            } else {
+                points.iter().try_fold(0_i64, |total, (_, y)| total.checked_add(*y))?
+            };
+            Read::Printed(format!("refused {got}\n"))
+        }
+    })
 }
 
 /// What `walk_written`'s line prints for `value`.
@@ -1446,6 +1608,9 @@ impl Machine {
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
+            Stmt::FieldCalls(calls) => self.fielded(calls)?,
+            Stmt::Yielded(yielding) => self.yielded(yielding),
+            Stmt::Woken(waking) => self.woken(waking),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1801,6 +1966,115 @@ impl Machine {
         Ok(())
     }
 
+    /// What `woken{id}` prints: each answer before the task's crash or failure, then how its
+    /// block ended, if it did.
+    fn woken(&mut self, waking: &Waking) {
+        let Waking { count, at, failing, rounds, .. } = *waking;
+        for _ in 0..rounds {
+            for number in 0..count.min(at.max(0)) {
+                let _ = writeln!(self.out, "got {}", number * 2);
+            }
+            if (0..count).contains(&at) {
+                if failing {
+                    let _ = writeln!(self.out, "refused {at}");
+                } else {
+                    self.out.push_str("crashed\n");
+                }
+            }
+        }
+    }
+
+    /// What `yielded{id}` prints: every value as it was yielded, however much was yielded after
+    /// it, and the notes again as they come back from the task.
+    fn yielded(&mut self, yielding: &Yielding) {
+        let Yielding { id, count, widths: [notes, pairs, words] } = *yielding;
+        let repeat = |letter: &str, width: i64| letter.repeat(usize::try_from(width).unwrap_or(0));
+        let mut got = Vec::new();
+        let mut kept_items = vec![0_i64];
+        let mut kept_count = 0_i64;
+        for at in 0..count {
+            got.push(format!(
+                "Note{id}(text=\"{at}{}\", items=[{at}, {}], counts={{\"a\": {at}}})",
+                repeat("n", notes),
+                at + 1
+            ));
+            kept_items.push(at);
+            kept_count += at;
+            got.push(format!(
+                "Note{id}(text=\"{}\", items={}, counts={{\"k\": {kept_count}}})",
+                repeat("k", notes),
+                shown(&Value::Ints(kept_items.clone()))
+            ));
+        }
+        for note in &got {
+            let _ = writeln!(self.out, "note {note}");
+        }
+        let firsts: Vec<String> =
+            (0..count).map(|at| format!("(\"{at}{}\", [{at}])", repeat("p", pairs))).collect();
+        let _ = writeln!(self.out, "pairs [{}]", firsts.join(", "));
+        for at in 0..count {
+            if at % 2 == 0 {
+                let _ = writeln!(self.out, "plain {at}{}", repeat("w", words));
+            } else {
+                let _ = writeln!(self.out, "many [{at}, {at}]");
+            }
+        }
+        for note in &got {
+            let _ = writeln!(self.out, "back {note}");
+        }
+    }
+
+    /// What `fielded{id}` prints: each call's own print, then the field it added to; then the
+    /// struct and the `shared` one.
+    fn fielded(&mut self, calls: &FieldCalls) -> Ran<()> {
+        let base = calls.base;
+        let mut boxed = Boxed { text: format!("t{base}"), count: base, items: vec![base] };
+        let mut kept = Boxed { text: "k".to_owned(), count: 0, items: Vec::new() };
+        for step in &calls.steps {
+            let FieldCall { field, call, plus, n } = *step;
+            let target = if call == Calling::Shared { &mut kept } else { &mut boxed };
+            let given = match call {
+                Calling::Printed | Calling::Shared => {
+                    let maker = match field {
+                        Field::Count => "told",
+                        Field::Text => "said",
+                        Field::Items => "given",
+                    };
+                    let _ = writeln!(self.out, "{maker} {n}");
+                    Some(match field {
+                        Field::Count => Piece::Count(n),
+                        Field::Text => Piece::Text(format!("s{n}")),
+                        Field::Items => Piece::Items(vec![n, n]),
+                    })
+                }
+                Calling::Failed if n > 5 => {
+                    self.out.push_str("refused\n");
+                    None
+                }
+                Calling::Failed => Some(match field {
+                    Field::Count => Piece::Count(n),
+                    Field::Text => Piece::Text(format!("c{n}")),
+                    Field::Items => Piece::Items(vec![n]),
+                }),
+                Calling::Copied | Calling::Listed => {
+                    let read = target.read(field);
+                    let _ = writeln!(self.out, "peek {}", read.shown());
+                    Some(read)
+                }
+                Calling::Closure => Some(target.read(field)),
+            };
+            if let Some(given) = given {
+                target.added(field, plus, n, given).ok_or(Stop::Unsure)?;
+            }
+            if call != Calling::Shared {
+                let _ = writeln!(self.out, "now {}", boxed.read(field).shown());
+            }
+        }
+        let _ = writeln!(self.out, "box {}", boxed.shown(calls.id));
+        let _ = writeln!(self.out, "kept {}", kept.shown(calls.id));
+        Ok(())
+    }
+
     /// What `constants{id}` prints: each use of the constants sees them as they started, and its
     /// own changes to its copies, whichever thread it runs on.
     fn constants(&mut self, constants: &Constants) -> Ran<()> {
@@ -1888,6 +2162,13 @@ impl Machine {
                     let given = kept.get(from).ok_or(Stop::Unsure)?;
                     let sums: Option<Vec<i64>> = (0..3).map(|i| handed(given, i)).collect();
                     let _ = writeln!(self.out, "sums {}", shown(&Value::Ints(sums.ok_or(Stop::Unsure)?)));
+                }
+                Alias::Read { from, how, n } => {
+                    let read = read_shown(kept.get(from).ok_or(Stop::Unsure)?, how, n).ok_or(Stop::Unsure)?;
+                    match read {
+                        Read::Printed(line) => self.out.push_str(&line),
+                        Read::Kept(x, y) => kept.push(Kept::Point(x, y)),
+                    }
                 }
                 Alias::Drained { from, at, n } => {
                     let mut last = kept.get(from).cloned().ok_or(Stop::Unsure)?;

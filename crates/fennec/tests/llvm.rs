@@ -20102,6 +20102,32 @@ fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Resu
     Ok(())
 }
 
+/// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or
+/// in a block: with an empty part, a part as long as the text or longer, and characters of two
+/// bytes either side of where they'd meet.
+#[test]
+fn a_texts_start_and_end_are_compared_where_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "text_affixes",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a", "abc", "café", "été long enough to need a block of its own", "a text that's long enough to be held in a block"]
+    parts = ["", "a", "c", "abc", "abcd", "é", "été", "own", "block", "café", "a text that's long enough to be held in a block", "x"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            starts = "1" if text.startswith(part) else "0"
+            ends = "1" if text.endswith(part) else "0"
+            said.append(starts + ends)
+        stdout.print(" ".join(said))
+    return
+"#,
+        "11 00 00 00 00 00 00 00 00 00 00 00\n11 11 00 00 00 00 00 00 00 00 00 00\n11 10 01 11 00 00 00 00 00 00 00 00\n11 00 10 00 00 01 00 00 00 11 00 00\n11 00 00 00 00 10 10 01 00 00 00 00\n11 10 00 00 00 00 00 00 01 00 11 00\n",
+    )
+}
+
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.
 #[test]
 fn strings_let_go_of_match_what_was_pinned() -> std::io::Result<()> {

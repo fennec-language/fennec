@@ -436,7 +436,8 @@ pub(crate) fn fake_method(
             Some(other) => other,
             None => Ok(io_error("there's no fake file system here")),
         }),
-        ("_sqlite_open", [Value::Str(path)]) => Some(Ok(world.open_database(path))),
+        ("_sqlite_open", [Value::Str(path)]) => Some(Ok(world.open_database(path, false))),
+        ("_sqlite_read", [Value::Str(path)]) => Some(Ok(world.open_database(path, true))),
         ("_finish", [file]) => {
             let mut written = Ok(());
             let done = finish(file, &mut |target, data| {
@@ -527,7 +528,9 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         }
         ("_create", [Value::Str(path), Value::Bool(durable)]) => create(path, *durable),
         ("_open", [Value::Str(path)]) => open(path),
-        ("_sqlite_open", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path),
+        ("_sqlite_open", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path, false),
+        // Through an `Fs` narrowed with `read_only`: for reading only, and never made.
+        ("_sqlite_read", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path, true),
         ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())).map_err(Fail::from), |()| Value::Unit),
         ("_discard", [file]) => {
             discard(file);
@@ -535,7 +538,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         }
         (
             "exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk"
-            | "make_dir" | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open",
+            | "make_dir" | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open" | "_sqlite_read",
             _,
         ) => return wrong(),
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
@@ -624,7 +627,8 @@ pub(crate) fn beneath(
                 Err(fail) => io_failed(&fail),
             }
         }
-        ("_sqlite_open", [Value::Str(_)]) => sqlite_beneath(folder, at, full),
+        ("_sqlite_open", [Value::Str(_)]) => sqlite_beneath(folder, at, full, false),
+        ("_sqlite_read", [Value::Str(_)]) => sqlite_beneath(folder, at, full, true),
         // Wrong arguments, and a method that isn't the file system's, say so as the whole `Fs` does.
         _ => return real_fs(method, paths, span),
     })
@@ -769,13 +773,14 @@ fn remove_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<()> {
 /// path, and on Unix SQLite itself, say (see `sqlite::open_checked`). Its `-wal` and `-shm` files
 /// beside it are opened by SQLite by path, without following a link at the last step. Closing the
 /// window between the looks needs SQLite handed the open file, through a VFS of Fennec's own.
-fn sqlite_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, full: &str) -> Value {
+fn sqlite_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, full: &str, read_only: bool) -> Value {
     let full = full.to_owned();
     #[cfg(unix)]
     let noted = blocking(move || {
         use std::os::unix::fs::MetadataExt as _;
         let mut options = cap_std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true);
+        // Read only, it's opened as it is, and one that isn't there isn't made.
+        options.read(true).write(!read_only).create(!read_only);
         let found = folder.open_with(&at, &options)?.into_std().metadata()?;
         // With every link resolved, so SQLite can be told to refuse one.
         let resolved = std::fs::canonicalize(&full)?.to_string_lossy().into_owned();
@@ -784,20 +789,21 @@ fn sqlite_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, full: &str) -> Val
     #[cfg(windows)]
     let noted = blocking(move || {
         let mut options = cap_std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true);
+        // Read only, it's opened as it is, and one that isn't there isn't made.
+        options.read(true).write(!read_only).create(!read_only);
         let found = same_file::Handle::from_file(folder.open_with(&at, &options)?.into_std())?;
         Ok::<_, std::io::Error>((full, Arc::new(found)))
     });
     #[cfg(any(unix, windows))]
     match noted {
-        Ok((path, file)) => crate::stdlib::sqlite::open_checked(&path, file),
+        Ok((path, file)) => crate::stdlib::sqlite::open_checked(&path, file, read_only),
         Err(err) => io_failed(&Fail::from(err)),
     }
     // Elsewhere, there's no SQLite.
     #[cfg(not(any(unix, windows)))]
     {
         drop((folder, at));
-        crate::stdlib::sqlite::open_file(&full)
+        crate::stdlib::sqlite::open_file(&full, read_only)
     }
 }
 

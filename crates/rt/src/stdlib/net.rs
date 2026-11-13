@@ -297,6 +297,9 @@ impl Fake {
     /// What a test scripted for a request. A request it didn't script fails: nothing else could
     /// answer it.
     pub(crate) fn request(&mut self, request: &http::Request) -> Value {
+        if let Some(refused) = request.hosts.as_ref().and_then(|hosts| http::outside(&request.url, hosts)) {
+            return failed(&refused);
+        }
         let sent = format!("{} {}", request.method, http::written(request));
         self.requests.push(sent.clone());
         match self.answers.get(&sent) {
@@ -538,6 +541,8 @@ pub(crate) enum Failure {
     TimedOut(Duration),
     Closed,
     Tls(String),
+    /// A narrowed `Net` doesn't reach that host, or can't do that.
+    Denied(String),
     Other(String),
 }
 
@@ -800,6 +805,7 @@ fn request_of(
         body: Vec::new(),
         timeout: CONNECT_TIMEOUT,
         most_body: http::MOST_BODY,
+        hosts: None,
     };
     let sends_json = named.iter().any(|(name, _)| *name == "json");
     for (name, value) in named {
@@ -815,6 +821,17 @@ fn request_of(
             ("body", Value::Bytes(data)) => request.body = data.to_vec(),
             ("params", Value::Dict(pairs)) => request.params = text_pairs(pairs, span)?,
             ("headers", Value::Dict(pairs)) => request.headers = text_pairs(pairs, span)?,
+            // What a narrowed `Net` reaches, for its client to hold the URL and each redirect to.
+            ("_hosts", Value::List(hosts)) => {
+                request.hosts = Some(
+                    hosts
+                        .iter()
+                        .filter_map(
+                            |host| if let Value::Str(host) = host { Some(host.to_string()) } else { None },
+                        )
+                        .collect(),
+                );
+            }
             (other, _) => {
                 return Err(Diagnostic::new(format!("this has no parameter called `{other}`"), span));
             }
@@ -1050,6 +1067,7 @@ pub(crate) fn failed(failure: &Failure) -> Value {
         }
         Failure::Closed => ("Closed", Vec::new()),
         Failure::Tls(reason) => ("Tls", vec![("reason", Value::str(reason))]),
+        Failure::Denied(reason) => ("Denied", vec![("reason", Value::str(reason))]),
         Failure::Other(reason) => ("Other", vec![("reason", Value::str(reason))]),
     };
     Value::Err(Rc::new(Value::made_case("NetError", case, fields)))

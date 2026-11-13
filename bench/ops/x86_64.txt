@@ -2,15 +2,15 @@
 # Written by `fennec-bench ops --pin`: instructions for one operation, Fennec's and its
 # Rust twin's, and a hash of what both print.
 # operation fennec rust output
-concat 686 153 358fcc8fde8e6ef5
-dict_get 141 238 81d02fe2c588940a
-dict_put 130 249 ab39a7ea05ce9935
-find 309 271 4e050ac418a81c6a
-fstring 151 441 39ea2f884cc5e6b7
-json_dumps 3381 1842 61c1c49ae8b00250
-json_loads 13180 1825 31892504485fcc05
-parse_int 532 64 b6183ab1f49e0410
-removesuffix 132 54 c681687395f67e8b
-slice 84 55 8d902c28b52fde04
-split 1307 356 26cc9da55878ca96
+concat 440 153 358fcc8fde8e6ef5
+dict_get 134 238 81d02fe2c588940a
+dict_put 132 249 ab39a7ea05ce9935
+find 310 271 4e050ac418a81c6a
+fstring 145 441 39ea2f884cc5e6b7
+json_dumps 2369 1842 61c1c49ae8b00250
+json_loads 3097 1825 31892504485fcc05
+parse_int 78 64 b6183ab1f49e0410
+removesuffix 131 54 c681687395f67e8b
+slice 87 55 8d902c28b52fde04
+split 1318 356 26cc9da55878ca96
 struct_new 60 22 6d31aee4c54b4aa0

@@ -380,3 +380,21 @@ fn two_tasks_listening_each_hear_everything_sent() {
     }
     finish();
 }
+
+/// A channel this thread found, and keeps to find again without the lock every thread takes, is
+/// gone once it's freed, as it is to a thread that never found it: a send says it's closed, and a
+/// receive that there's nothing more.
+#[test]
+fn a_channel_found_and_kept_is_gone_once_it_s_freed() {
+    begin();
+    let channel = channel_new(2);
+    assert_eq!(channel_send(channel, 7, 0, FOREVER), DONE);
+    let mut got = 0;
+    assert_eq!(channel_receive(channel, FOREVER, &mut got), DONE);
+    assert_eq!(got, 7);
+    assert!(FOUND.with_borrow(|found| found.contains_key(&channel)), "kept to find again");
+    channel_free(channel);
+    assert_eq!(channel_send(channel, 8, 0, FOREVER), CLOSED);
+    assert_eq!(channel_receive(channel, FOREVER, &mut got), CLOSED);
+    finish();
+}

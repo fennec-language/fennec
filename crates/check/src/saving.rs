@@ -372,7 +372,6 @@ struct Read<'f> {
     field: &'f Field,
     /// The local holding its value.
     local: String,
-    held: Type,
     ty: String,
     /// Its type made optional, when it isn't one already.
     or_none: String,
@@ -389,19 +388,13 @@ impl Read<'_> {
         }
     }
 
-    /// Reads the field's value. An int, a float, a bool or a text is read straight from the
-    /// reader, rather than through `value[T]` and the type's `deserialize`, which come to the same
-    /// call.
+    /// Reads the field's value.
     fn read(&self) -> String {
-        match (&self.union, &self.held) {
-            (Some(changed), _) => {
+        match &self.union {
+            Some(changed) => {
                 format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, changed.saved_as)
             }
-            (None, Type::Int) => "src__.int()?".to_owned(),
-            (None, Type::Float) => "src__.float()?".to_owned(),
-            (None, Type::Bool) => "src__.bool()?".to_owned(),
-            (None, Type::Str) => "src__.text()?".to_owned(),
-            (None, _) => format!("src__.value[{}]()?", self.ty),
+            None => format!("src__.value[{}]()?", self.ty),
         }
     }
 }
@@ -562,7 +555,7 @@ fn reads<'f>(
             let or_none = written.ty(&Type::optional(held.clone()));
             let ty = written.ty(&held);
             let local = written.field(&field.name);
-            saved.push(Read { field, local, held, ty, or_none, optional, union });
+            saved.push(Read { field, local, ty, or_none, optional, union });
         }
     }
     Some((saved, left_out))

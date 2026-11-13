@@ -11416,6 +11416,24 @@ pub(crate) fn serving(report: &Path, at_least: usize) {
     }
 }
 
+/// Waits until the live count at `report` says `stopping 1`: the server has taken the stop and is
+/// draining, on either runtime. Fails if it never does.
+#[cfg(unix)]
+pub(crate) fn stopping(report: &Path) {
+    let started = std::time::Instant::now();
+    loop {
+        let counts = std::fs::read_to_string(report).unwrap_or_default();
+        if counts.lines().any(|line| line == "stopping 1") {
+            return;
+        }
+        assert!(
+            started.elapsed() < crate::executables::WALL_DEADLINE,
+            "the server never said it was stopping:\n{counts}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Sends SIGTERM to `running`.
 #[cfg(unix)]
 fn terminate(running: &Running) -> std::io::Result<()> {
@@ -11515,7 +11533,8 @@ fn a_server_on_the_plain_runtime_serving_until_signals_stops_when_asked() -> std
     partway.read_exact(&mut first)?;
     assert_eq!(String::from_utf8_lossy(&first), answer);
     terminate(&server)?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // The server has taken the stop before the request's finished, as its live count says.
+    stopping(&dir.join("live"));
     partway.write_all(b"\r\n")?;
     let mut answered = Vec::new();
     partway.read_to_end(&mut answered)?;

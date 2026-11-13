@@ -1238,7 +1238,7 @@ def main(stdout: Stdout):
     return
 "#;
 
-const SENDS: &str = r#"from std.concurrent import Closed, channel
+const SENDS: &str = r"from std.concurrent import Closed, channel
 
 enum Command:
     Move(who: int, vx: int, vy: int)
@@ -1257,9 +1257,9 @@ def main(stdout: Stdout) fails Closed:
                     total += who * amount
     stdout.print(total)
     return
-"#;
+";
 
-const NUMBERS_SENT: &str = r#"from std.concurrent import Closed, channel
+const NUMBERS_SENT: &str = r"from std.concurrent import Closed, channel
 
 enum Command:
     Move(who: int, vx: int, vy: int)
@@ -1274,7 +1274,7 @@ def main(stdout: Stdout) fails Closed:
             total += command
     stdout.print(total)
     return
-"#;
+";
 
 #[test]
 fn dev_copies_reports_a_mistake_instead_of_a_list() {

@@ -397,6 +397,7 @@ export! {
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
+    fennec_str_same_at(a0: u64, a1: u64, a2: u64, a3: i64, a4: u64, a5: u64, a6: u64) -> i8 => text::same_at(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_append_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => text::append_header(a0, a1, a2, a3);
     fennec_str_find_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 => text::find_header(a0, a1, a2, a3, a4, a5);
     fennec_text_starts_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::starts_with(a0, a1, a2, a3, a4, a5);

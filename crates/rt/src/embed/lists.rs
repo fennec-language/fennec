@@ -429,7 +429,11 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let address = if shared {
         let element = element_of(state, block)?;
         let kept = items(block, stride).to_vec();
-        state.heap.copied(kept.len());
+        // An empty list shared, as the empty constant a list can start as is, is made anew with
+        // the room wanted: there's nothing to copy, so no copy is counted.
+        if !kept.is_empty() {
+            state.heap.copied(kept.len());
+        }
         retain_items(state, &element, &kept);
         let grown = build(state, at, stride, &kept, wanted);
         release(state, address);

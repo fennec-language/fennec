@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use fennec_syntax::{Item, Module};
+use fennec_syntax::{FnDef, Item, Module};
 
 use crate::types::Type;
 
@@ -80,53 +80,23 @@ pub(crate) fn lower(module: &mut Module, saved: &BTreeSet<Type>) -> bool {
             _ => None,
         })
         .collect();
-    let mut text = String::new();
-    let mut names = Vec::new();
+    let mut made = Vec::new();
     for tuple in &tuples {
         let (save, load) = (tuple_function("serialize", tuple), tuple_function("deserialize", tuple));
         if written.contains(&save) {
             continue;
         }
-        let Some(source) = functions_for(tuple, names.len()) else { continue };
-        text.push_str(&source);
-        names.push((save, load));
-    }
-    if names.is_empty() {
-        return false;
-    }
-    let Ok(mut parsed) = fennec_syntax::parse_prelude(&text) else { return false };
-    // They're written with the program's own types named as written, and then named as the
-    // program's code names them, as a type named like a library type is checked under another
-    // name: that name can't be written.
-    fennec_syntax::rename::rename_types(&mut parsed, &renamed_types(module));
-    let mut functions = parsed.items.into_iter().filter_map(|item| match item {
-        Item::Function(def) => Some(def),
-        _ => None,
-    });
-    for (save, load) in names {
-        let (Some(mut saving), Some(mut loading)) = (functions.next(), functions.next()) else {
-            return false;
-        };
+        let Some((mut saving, mut loading)) = functions_for(tuple) else { continue };
         saving.name = save;
         loading.name = load;
-        module.items.push(Item::Function(saving));
-        module.items.push(Item::Function(loading));
+        made.push(saving);
+        made.push(loading);
     }
+    if made.is_empty() {
+        return false;
+    }
+    module.items.extend(made.into_iter().map(Item::Function));
     true
-}
-
-/// The program's own types checked under another name, each by the name it's written with.
-fn renamed_types(module: &Module) -> std::collections::BTreeMap<String, String> {
-    module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some(def.name.as_str()),
-            _ => None,
-        })
-        .filter(|name| name.ends_with(fennec_syntax::rename::RENAMED))
-        .map(|name| (fennec_syntax::rename::shown_type_name(name).to_owned(), name.to_owned()))
-        .collect()
 }
 
 /// Whether a type holds a tuple anywhere in it.
@@ -179,14 +149,23 @@ fn written_plainly(ty: &Type) -> bool {
         && ty.children().into_iter().all(written_plainly)
 }
 
-/// The source of the two functions for a tuple type, under names numbered `at` that lowering
-/// gives back their own.
-fn functions_for(tuple: &Type, at: usize) -> Option<String> {
+/// What stands where the tuple's type goes in the functions' text, where each item's does, and
+/// the tuple's name as its messages show it.
+const TUPLE: &str = "Tuple__slot";
+const LABEL: &str = "Label__slot";
+
+fn item_slot(at: usize) -> String {
+    format!("Item{at}__slot")
+}
+
+/// The two functions for a tuple type, saving and loading it. Their text is the same for every
+/// tuple of as many items with `None` in the same places, with slots where its types go, which
+/// are put in afterwards as written types built from them (see `slots::fill`).
+fn functions_for(tuple: &Type) -> Option<(FnDef, FnDef)> {
     let Type::Tuple(items) = tuple else { return None };
-    let shown = fennec_syntax::rename::shown_key(&tuple.source()?);
     let count = items.len();
     let mut out = format!(
-        "def tuple_save__{at}[S: Serializer](held: {shown}, ref out: S):\n    out.items(\"{shown}\", {count})\n"
+        "def tuple_save__[S: Serializer](held: {TUPLE}, ref out: S):\n    out.items(\"{LABEL}\", {count})\n"
     );
     for (at, item) in items.iter().enumerate() {
         // An item that's always `None` is saved as missing, as an optional's `None` is.
@@ -199,20 +178,34 @@ fn functions_for(tuple: &Type, at: usize) -> Option<String> {
     out.push_str("    out.end_items()\n\n");
     let _ = writeln!(
         out,
-        "def tuple_load__{at}[D: Deserializer](ref src: D) -> {shown} fails ParseError:\n    src.items(\"{shown}\", {count})?"
+        "def tuple_load__[D: Deserializer](ref src: D) -> {TUPLE} fails ParseError:\n    src.items(\"{LABEL}\", {count})?"
     );
     let mut made = Vec::with_capacity(count);
+    let mut slots = vec![(TUPLE.to_owned(), tuple.clone())];
     for (at, item) in items.iter().enumerate() {
         if *item == Type::None {
             let _ = writeln!(out, "    _ = src.item[int?]()?");
             made.push("None".to_owned());
         } else {
-            let written = fennec_syntax::rename::shown_key(&item.source()?);
-            let _ = writeln!(out, "    item{at} = src.item[{}]()?", crate::saving::one_type(&written));
+            let _ = writeln!(out, "    item{at} = src.item[{}]()?", item_slot(at));
             made.push(format!("item{at}"));
+            slots.push((item_slot(at), item.clone()));
         }
     }
     let made = if count == 1 { format!("({},)", made.join(", ")) } else { format!("({})", made.join(", ")) };
-    let _ = write!(out, "    src.end_items()?\n    return {made}\n\n");
-    Some(out)
+    let _ = write!(out, "    src.end_items()?\n    return {made}\n");
+    let parsed = fennec_syntax::parse_prelude(&out).ok()?;
+    let slots: Vec<(&str, Type)> = slots.iter().map(|(slot, ty)| (slot.as_str(), ty.clone())).collect();
+    // A program's own type checked under another name is shown as it's written.
+    let shown = fennec_syntax::rename::shown_key(&tuple.source()?);
+    let mut functions = parsed.items.into_iter().filter_map(|item| match item {
+        Item::Function(def) => Some(def),
+        _ => None,
+    });
+    let (mut saving, mut loading) = (functions.next()?, functions.next()?);
+    for def in [&mut saving, &mut loading] {
+        crate::slots::fill(def, &slots)?;
+        crate::slots::fill_text(def, LABEL, &shown);
+    }
+    Some((saving, loading))
 }

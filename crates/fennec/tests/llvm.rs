@@ -15289,6 +15289,40 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// The functions that save and load a tuple hold its types themselves, never their text: tuples
+/// inside lists of tuples of dicts, and an optional list inside a tuple, save and load back, and a
+/// wrong one is refused naming the tuple as it's written.
+#[test]
+fn tuples_of_nested_generics_save_and_load_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "tuples_nested",
+            r#"from std import json
+
+struct Route:
+    legs: list[(int, list[(str, dict[str, int])])]
+    corner: (int, (str, list[int]?))
+
+def main(stdout: Stdout):
+    route = Route(legs=[(1, [("a", {"x": 2})])], corner=(3, ("b", None)))
+    text = json.dumps(route)
+    stdout.print(text)
+    back = json.loads[Route](text) except ParseError(): return
+    stdout.print(back == route)
+    _ = json.loads[Route]("{\"legs\": [[1]], \"corner\": [1, [\"b\", null]]}") except why:
+        stdout.print(why)
+        return
+"#
+        )?,
+        "{\"legs\": [[1, [[\"a\", {\"x\": 2}]]]], \"corner\": [3, [\"b\", null]]}\nTrue\n\
+         ParseError(message=\"`legs[0]` should be a (int, list[(str, dict[str, int])]), but it's a list\", line=0, column=0)\n"
+    );
+    Ok(())
+}
+
 /// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
 /// std's readers and writers in Fennec: in a list, in a field, inside
 /// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's

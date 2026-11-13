@@ -62,7 +62,10 @@ for program in $programs crates/fennec/tests/fixtures/workers/*.fen $real; do
     failed=1
     continue
   fi
-  if ! nm "$work/checked" | grep -q __tsan_read; then
+  # Into a file first: `grep -q` stops reading at its first match, and with `pipefail` the
+  # pipe's `nm`, cut short, would fail the check.
+  nm "$work/checked" > "$work/symbols.txt" 2> /dev/null || true
+  if ! grep -q __tsan_read "$work/symbols.txt"; then
     echo "::error::$program was built without ThreadSanitizer"
     failed=1
     continue

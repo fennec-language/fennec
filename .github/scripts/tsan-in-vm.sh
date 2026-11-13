@@ -43,8 +43,11 @@ setarch "$(uname -m)" -R .github/scripts/tsan-programs.sh target/release/fennec 
 '
 # `setarch -R` asks the kernel for a process with addresses not randomized, which Docker's default
 # seccomp profile refuses, so this container, in Fennec's own VM, runs without it.
+# What the fuzzer finds is kept on the Mac, in the checkout's `target/tsan-found`.
+mkdir -p "$root/target/tsan-found"
 docker --context "$context" run --rm --memory "$memory" --security-opt seccomp=unconfined \
   --volume "$root:/repo:ro" \
+  --volume "$root/target/tsan-found:/src/found" \
   --volume fennec-tsan-target:/src/target \
   --volume fennec-tsan-rustup:/usr/local/rustup \
   --volume fennec-linux-check-registry:/usr/local/cargo/registry \

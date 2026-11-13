@@ -1,0 +1,292 @@
+# A JSON API's request handler, as a web service runs it but with no sockets. Each request is
+# HTTP text from a fixed corpus made from one seed: its head is split into a method, a path and
+# headers, its body loaded into a struct whose `where` rules validate it, and it's routed by
+# path. Users live in a dict of structs that's written in place, each user's orders in a dict of
+# lists, and responses are JSON built with `json.dumps` and by joining text. At the end of each
+# day of requests, the day's numbers are summed and the day's counters cleared and filled again.
+
+from std import json
+
+REQUESTS = 50_000
+CORPUS = 4_096
+DAY = 2_500
+SEEN = 4_000
+SHOWN = 20
+ITEMS = ["arrow", "potion", "bone", "herb", "gem", "scroll", "key", "lantern"]
+
+# What a client sends to make a user.
+struct NewUser:
+    name: str where len(name) > 0 and len(name) <= 40
+    age: int where age >= 13 and age <= 120
+    email: str where "@" in email
+
+# What a client sends to place an order.
+struct NewOrder:
+    user: int where user >= 0
+    item: str where len(item) > 0
+    quantity: int where quantity >= 1 and quantity <= 100
+    price: int where price >= 0
+
+# What a client sends to change a user's age.
+struct AgeChange:
+    age: int where age >= 13 and age <= 120
+
+struct User:
+    id: int
+    name: str
+    age: int
+    email: str
+    spent = 0
+    orders = 0
+
+struct Order:
+    id: int
+    item: str
+    quantity: int
+    price: int
+
+struct Response:
+    status: int
+    body: str
+
+# A request's head and body, split apart.
+struct Request:
+    method: str
+    path: str
+    headers: dict[str, str]
+    body: str
+
+struct Service:
+    users: dict[int, User]
+    orders: dict[int, list[Order]]
+    cache: dict[int, str]
+    hits: dict[str, int]
+    stats: str
+    next_user = 0
+    next_order = 0
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# A request as a client writes it: a request line, headers and, with a body, its length.
+def written(method: str, path: str, body: str) -> str:
+    mut text = f"{method} {path} HTTP/1.1\r\nHost: api.den.example\r\n"
+    if len(body) > 0:
+        text = text + "Content-Type: application/json\r\n"
+        text = text + f"Content-Length: {len(body)}\r\n"
+    return text + "\r\n" + body
+
+# The corpus: every kind of request, a few of them broken the ways clients break them.
+def corpus(seed: int) -> list[str]:
+    mut state = seed
+    mut requests = list[str]()
+    for _ in range(CORPUS):
+        state = next(state)
+        kind = below(state, top=100)
+        state = next(state)
+        who = below(state, top=SEEN)
+        state = next(state)
+        amount = below(state, top=130)
+        if kind < 30:
+            # Every twentieth new user is too young, and so refused.
+            age = 9 if who % 20 == 0 else 13 + amount % 90
+            body = f"{{\"name\": \"fox-{who}\", \"age\": {age}, \"email\": \"fox-{who}@den.example\"}}"
+            requests.append(written("POST", path="/users", body=body))
+        elif kind < 55:
+            requests.append(written("GET", path=f"/users/{who}", body=""))
+        elif kind < 80:
+            item = ITEMS[amount % len(ITEMS)]
+            quantity = amount % 12
+            body = f"{{\"user\": {who}, \"item\": \"{item}\", \"quantity\": {quantity}, \"price\": {amount * 3}}}"
+            requests.append(written("POST", path="/orders", body=body))
+        elif kind < 90:
+            requests.append(written("GET", path=f"/orders/{who}", body=""))
+        elif kind < 95:
+            requests.append(written("PATCH", path=f"/users/{who}", body=f"{{\"age\": {amount}}}"))
+        elif kind < 97:
+            requests.append(written("GET", path="/stats", body=""))
+        elif kind < 98:
+            requests.append(written("POST", path="/users", body="{\"name\": \"fox\", \"age\": }"))
+        elif kind < 99:
+            requests.append(written("DELETE", path=f"/users/{who}", body=""))
+        else:
+            requests.append(written("GET", path=f"/admin/{who}", body=""))
+    return requests
+
+# Splits a request's text into its head's parts and its body, or gives nothing when it isn't
+# a request.
+def parsed(text: str) -> Request?:
+    split = text.find("\r\n\r\n") else:
+        return None
+    lines = text[:split].split("\r\n")
+    words = lines[0].split(" ")
+    if len(words) != 3: return None
+    mut headers = dict[str, str]()
+    for line in lines[1:]:
+        colon = line.find(": ") else:
+            return None
+        headers[line[:colon]] = line[colon + 2:]
+    return Request(method=words[0], path=words[1], headers=headers, body=text[split + 4:])
+
+# Whether `request` says its body is JSON and gives its length right.
+def checked_body(request: Request) -> bool:
+    kind = request.headers.get("Content-Type") else ""
+    length = request.headers.get("Content-Length") else "-"
+    says = int.parse(length) except InvalidValue():
+        return False
+    return kind == "application/json" and says == len(request.body)
+
+def failed(status: int, message: str) -> Response:
+    return Response(status=status, body=f"{{\"error\": \"{message}\"}}")
+
+# The number at the end of a path like `/users/12`, after `prefix`.
+def number_after(path: str, prefix: str) -> int?:
+    found = int.parse(path[len(prefix):]) except InvalidValue():
+        return None
+    return found
+
+def create_user(ref service: Service, request: Request) -> Response:
+    if not checked_body(request): return failed(415, message="a JSON body is needed")
+    made = json.loads[NewUser](request.body) except ParseError():
+        return failed(400, message="the body isn't a user")
+    id = service.next_user
+    service.next_user += 1
+    user = User(id=id, name=made.name, age=made.age, email=made.email)
+    text = json.dumps(user)
+    service.users[id] = user
+    return Response(status=201, body=text)
+
+def show_user(ref service: Service, id: int) -> Response:
+    cached = service.cache.get(id)
+    if cached is not None: return Response(status=200, body=cached)
+    user = service.users.get(id) else:
+        return failed(404, message=f"no user {id}")
+    text = json.dumps(user)
+    service.cache[id] = text
+    return Response(status=200, body=text)
+
+def change_age(ref service: Service, id: int, request: Request) -> Response:
+    if not checked_body(request): return failed(415, message="a JSON body is needed")
+    change = json.loads[AgeChange](request.body) except ParseError():
+        return failed(400, message="the body isn't an age")
+    if id not in service.users: return failed(404, message=f"no user {id}")
+    service.users[id].age = change.age
+    _ = service.cache.remove(id)
+    return Response(status=200, body=json.dumps(service.users[id]))
+
+def place_order(ref service: Service, request: Request) -> Response:
+    if not checked_body(request): return failed(415, message="a JSON body is needed")
+    made = json.loads[NewOrder](request.body) except ParseError():
+        return failed(400, message="the body isn't an order")
+    if made.user not in service.users: return failed(404, message=f"no user {made.user}")
+    order = Order(id=service.next_order, item=made.item, quantity=made.quantity, price=made.price)
+    service.next_order += 1
+    service.users[made.user].spent += made.quantity * made.price
+    service.users[made.user].orders += 1
+    _ = service.cache.remove(made.user)
+    if made.user not in service.orders:
+        service.orders[made.user] = []
+    service.orders[made.user].append(order)
+    return Response(status=201, body=json.dumps(order))
+
+# A user's latest orders, newest last, with how many there are and what they cost.
+def list_orders(service: Service, id: int) -> Response:
+    if id not in service.users: return failed(404, message=f"no user {id}")
+    orders = service.orders.get(id) else []
+    total = sum(order.quantity * order.price for order in orders)
+    mut text = f"{{\"user\": {id}, \"count\": {len(orders)}, \"total\": {total}, \"orders\": ["
+    first = max(0, len(orders) - SHOWN)
+    for at in range(first, len(orders)):
+        if at > first:
+            text = text + ", "
+        text = text + json.dumps(orders[at])
+    return Response(status=200, body=text + "]}")
+
+def route(ref service: Service, request: Request) -> Response:
+    path = request.path
+    if path == "/users":
+        if request.method != "POST": return failed(405, message="use POST")
+        return create_user(ref service, request=request)
+    if path == "/orders":
+        if request.method != "POST": return failed(405, message="use POST")
+        return place_order(ref service, request=request)
+    if path == "/stats": return Response(status=200, body=service.stats)
+    if path.startswith("/users/"):
+        id = number_after(path, prefix="/users/") else:
+            return failed(400, message="a user is a number")
+        if request.method == "GET": return show_user(ref service, id=id)
+        if request.method == "PATCH": return change_age(ref service, id=id, request=request)
+        return failed(405, message="use GET or PATCH")
+    if path.startswith("/orders/"):
+        id = number_after(path, prefix="/orders/") else:
+            return failed(400, message="a user is a number")
+        return list_orders(service, id=id)
+    return failed(404, message=f"nothing at {path}")
+
+def reason(status: int) -> str:
+    match status:
+        case 200:
+            return "OK"
+        case 201:
+            return "Created"
+        case 400:
+            return "Bad Request"
+        case 404:
+            return "Not Found"
+        case 405:
+            return "Method Not Allowed"
+        case _:
+            return "Unsupported Media Type"
+
+# Handles one request's text, giving the response's text.
+def handle(ref service: Service, text: str) -> (int, str):
+    mut response = failed(400, message="not a request")
+    request = parsed(text)
+    if request is not None:
+        response = route(ref service, request=request)
+        name = request.method + " " + request.path.split("/")[1]
+        service.hits[name] = (service.hits.get(name) else 0) + 1
+    mut out = f"HTTP/1.1 {response.status} {reason(response.status)}\r\n"
+    out = out + "Content-Type: application/json\r\n"
+    out = out + f"Content-Length: {len(response.body)}\r\n\r\n"
+    out = out + response.body
+    return (response.status, out)
+
+# The end of a day: what the users spent, who orders most, and how often each route was asked
+# for, which then starts again from nothing.
+def end_day(ref service: Service, day: int):
+    spent = sum(user.spent for user in service.users.values())
+    placed = sum(len(orders) for orders in service.orders.values())
+    busy = [id for id, orders in service.orders.items() if len(orders) >= 10]
+    mut text = f"{{\"day\": {day}, \"users\": {len(service.users)}, \"spent\": {spent}, "
+    text = text + f"\"orders\": {placed}, \"busy\": {len(busy)}, \"hits\": {{"
+    mut first = True
+    for name in sorted(service.hits.keys()):
+        if not first:
+            text = text + ", "
+        first = False
+        text = text + f"\"{name}\": {service.hits[name]}"
+    service.stats = text + "}}"
+    service.hits.clear()
+    service.cache.clear()
+    return
+
+def main(stdout: Stdout):
+    requests = corpus(7)
+    mut service = Service(users={}, orders={}, cache={}, hits={}, stats="{}")
+    mut checksum = 0
+    mut statuses = 0
+    for at in range(REQUESTS):
+        status, out = handle(ref service, text=requests[at % CORPUS])
+        checksum = (checksum * 31 + len(out) * 7 + status) % 1_000_000_007
+        statuses += status
+        if (at + 1) % DAY == 0:
+            end_day(ref service, day=(at + 1) // DAY)
+    stdout.print(checksum, statuses, len(service.users), len(service.stats))
+    stdout.print(service.stats)
+    return

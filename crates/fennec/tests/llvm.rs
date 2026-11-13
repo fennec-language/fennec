@@ -21252,6 +21252,107 @@ fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Resu
     Ok(())
 }
 
+/// What a list of parts prints as in `a_split_gives_what_rust_gives_at_every_edge`: each part's
+/// length in characters and its text, between bars.
+fn parts_shown<'a>(parts: impl Iterator<Item = &'a str>) -> String {
+    parts.map(|part| format!("{}:{part}", part.chars().count())).collect::<Vec<_>>().join("|")
+}
+
+/// A Fennec string literal of `text`.
+fn fennec_literal(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .map(|character| match character {
+            '"' => "\\\"".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            '\n' => "\\n".to_owned(),
+            '\t' => "\\t".to_owned(),
+            '\r' => "\\r".to_owned(),
+            other => other.to_string(),
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
+/// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
+/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
+/// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
+/// of lists, so each split is the runtime's. Every list and part is freed after, with no block
+/// left.
+#[test]
+fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (a23, b24) = ("a".repeat(23), "b".repeat(24));
+    let (e23, e24) = (format!("{}a", "é".repeat(11)), "é".repeat(12));
+    let separated: Vec<(String, &str)> = vec![
+        ("a,,b".to_owned(), ","),
+        (",,".to_owned(), ","),
+        (String::new(), ","),
+        (",a,b,".to_owned(), ","),
+        (" x ".to_owned(), " "),
+        ("x".to_owned(), "x"),
+        ("aéb€éc".to_owned(), "é"),
+        ("é".to_owned(), "é"),
+        ("日本語本".to_owned(), "本"),
+        ("→a→→b→".to_owned(), "→"),
+        ("a, b,, c".to_owned(), ", "),
+        (format!("{a23},{b24},{e23},{e24},"), ","),
+        (format!("{a23}é{b24}é{e23}"), "é"),
+        (format!(",{e24},,{a23}"), ","),
+        (format!("{a23}{b24}"), "ab"),
+        (b24.clone(), b24.as_str()),
+        ("ab".to_owned(), "abc"),
+        ("a\tb\nc".to_owned(), "\n"),
+        ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+    ];
+    let spaced: Vec<String> = vec![
+        "  a\tb\nc  ".to_owned(),
+        "a\u{3000}b  c\u{a0}d".to_owned(),
+        format!(" {a23} {b24}\t{e23}\n{e24} "),
+        String::new(),
+        " \t\n ".to_owned(),
+    ];
+    let texts: Vec<String> = separated.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let separators: Vec<String> = separated.iter().map(|(_, separator)| fennec_literal(separator)).collect();
+    let spaced_texts: Vec<String> = spaced.iter().map(|text| fennec_literal(text)).collect();
+    let source = format!(
+        r#"def shown(parts: list[str]) -> str:
+    mut said = list[str]()
+    for part in parts:
+        said.append(f"{{len(part)}}:{{part}}")
+    return "|".join(said)
+
+def main(stdout: Stdout):
+    texts = [{}]
+    separators = [{}]
+    for at in range(len(texts)):
+        stdout.print(shown(texts[at].split(separators[at])))
+    for text in [{}]:
+        stdout.print(shown(text.split()))
+    return
+"#,
+        texts.join(", "),
+        separators.join(", "),
+        spaced_texts.join(", ")
+    );
+    let mut expected = String::new();
+    for (text, separator) in &separated {
+        expected.push_str(&parts_shown(text.split(*separator)));
+        expected.push('\n');
+    }
+    for text in &spaced {
+        expected.push_str(&parts_shown(text.split_whitespace()));
+        expected.push('\n');
+    }
+    let dir = folder("split_edges")?;
+    let program = dir.join("split_edges.fen");
+    std::fs::write(&program, &source)?;
+    prints_with_nothing_left(&dir, &program, &expected, &["1"])
+}
+
 /// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or
 /// in a block: with an empty part, a part as long as the text or longer, and characters of two
 /// bytes either side of where they'd meet.

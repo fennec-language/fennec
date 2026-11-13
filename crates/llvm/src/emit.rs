@@ -3608,6 +3608,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i1 true, ptr {done}"));
         if returns.in_memory() {
             self.retain_inline(&returns, &kept);
+            self.keep_inline(&returns, &kept);
         } else if returns.counted() {
             self.retain_value(held, &returns);
         }

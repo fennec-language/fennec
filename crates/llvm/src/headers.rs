@@ -66,7 +66,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The block a header holds, or null for an inline one.
-    fn header_block(&mut self, header: &str) -> String {
+    pub(crate) fn header_block(&mut self, header: &str) -> String {
         let in_block = self.header_in_block(header);
         let first = self.header_word(header, 0);
         let (word, block) = (self.temp(), self.temp());

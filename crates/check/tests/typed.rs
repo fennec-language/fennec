@@ -140,11 +140,27 @@ fn module_names(module: &Module) -> Vec<String> {
 /// `sqlite` in `sqlite.open(...)` or `std.json` in `std.json.dumps(...)`.
 fn is_type_name(expr: &Expr, modules: &[String]) -> bool {
     match &expr.kind {
-        // `str` in `str.from_code(65)`, `bytes` in `bytes.fromhex(text)` and `int` in
-        // `int.parse(text)` are the type, not a value.
+        // `str` in `str.from_code(65)`, `bytes` in `bytes.fromhex(text)`, `int` in
+        // `int.parse(text)` and `u64` in `u64.parse(text)` are the type, not a value.
         ExprKind::Name(name) => {
             name.starts_with(char::is_uppercase)
-                || matches!(name.as_str(), "str" | "bytes" | "int" | "float")
+                || matches!(
+                    name.as_str(),
+                    "str"
+                        | "bytes"
+                        | "int"
+                        | "float"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "f32"
+                        | "f64"
+                )
                 || modules.contains(name)
         }
         ExprKind::Attr { object, .. } => is_type_name(object, modules),
@@ -236,6 +252,21 @@ fn a_with_through_a_modules_function_is_fully_typed() {
         ",
     );
     assert_fully_typed("with_sqlite.fen", &source);
+}
+
+/// A sized type's own function, as `u64.parse`, is called through the type's name: the call has
+/// its type, and the name before it, the type, needs none of its own.
+#[test]
+fn a_sized_types_own_function_is_fully_typed() {
+    let source = dedent(
+        "
+        def main(stdout: Stdout):
+            big = u64.parse(\"18446744073709551615\") except InvalidValue(): u64(0)
+            small = u8.from(200) except InvalidValue(): u8(0)
+            stdout.print(big, small)
+        ",
+    );
+    assert_fully_typed("sized.fen", &source);
 }
 
 /// Every expression and declared name in `source`, which checks, has a known type.

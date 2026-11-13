@@ -93,6 +93,9 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_list_slice",
     "fennec_list_sorted",
     "fennec_list_sorted_by",
+    "fennec_list_sort",
+    "fennec_list_sort_by",
+    "fennec_list_reverse",
     "fennec_str_with_room",
     "fennec_str_concat",
     "fennec_str_append",
@@ -316,6 +319,8 @@ export! {
     fennec_assert_said(a0: i64, a1: i64, a2: i64) => checks::assert_said(a0, a1, a2);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_list_sorted_by_keys_with(a0: i64, a1: i64, a2: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_by_keys_with(a0, a1, a2);
+    fennec_list_sort_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) => lists::sort_with(a0, a1);
+    fennec_list_sort_by_keys_with(a0: i64, a1: i64, a2: extern "C" fn(i64, i64) -> i64) => lists::sort_by_keys_with(a0, a1, a2);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
     fennec_regex_groups(a0: i64) -> i64 => regex::groups(a0);
@@ -348,6 +353,9 @@ export! {
     fennec_cell_read(a0: i64) -> i64 => heap::cell_read(a0);
     fennec_list_sorted(a0: i64, a1: i64) -> i64 => lists::sorted(a0, a1);
     fennec_list_sorted_by(a0: i64, a1: i64, a2: i64) -> i64 => lists::sorted_by(a0, a1, a2);
+    fennec_list_sort(a0: i64, a1: i64) => lists::sort(a0, a1);
+    fennec_list_reverse(a0: i64) => lists::reverse(a0);
+    fennec_list_sort_by(a0: i64, a1: i64, a2: i64) => lists::sort_by(a0, a1, a2);
     fennec_list_from_value(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::from_value(a0, a1, a2, a3);
     fennec_out_of_range(a0: i64, a1: i64, a2: i64, a3: i64) => lists::out_of_range(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
@@ -389,6 +397,7 @@ export! {
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
+    fennec_str_same_at(a0: u64, a1: u64, a2: u64, a3: i64, a4: u64, a5: u64, a6: u64) -> i8 => text::same_at(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_append_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => text::append_header(a0, a1, a2, a3);
     fennec_str_find_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 => text::find_header(a0, a1, a2, a3, a4, a5);
     fennec_text_starts_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::starts_with(a0, a1, a2, a3, a4, a5);

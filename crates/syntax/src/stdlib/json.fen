@@ -176,6 +176,18 @@ struct JsonKey:
     def some[T: Serializable](ref self, x: T):
         pass
 
+## Empty values for what a reader or a writer uses only now and then: an explained failure's path,
+## `Id`s and `Table`s, tags and tuples. A reader or writer starts with these, shared, rather than
+## making its own, and makes its own only the first time it writes one, as any shared value does
+## when it's changed. So a plain read or write makes none: each would cost an allocation.
+NO_PARTS = list[str]()
+NO_FIELDS = list[(str, str)]()
+NO_COUNTS = list[int]()
+NO_SEEN = list[(str, str, int)]()
+NO_TAGS = dict[str, int]()
+NO_TUPLES = list[(str, int, int, int)]()
+NO_TABLES = dict[str, dict[(int, int), int]]()
+
 ## Writes JSON into one growing text. What's added to it is put in a name first: added straight
 ## from a call or an operator, the text was copied whole each time, so writing grew with the
 ## square of what was written.
@@ -187,7 +199,7 @@ struct JsonWriter:
     _first = True
     ## Where each `Id` is in its `Table`, by the name of its type and its `id_key`, once
     ## `TableFinder` has been through what's written. Until then an `Id` asks for it.
-    _tables = dict[str, dict[(int, int), int]]()
+    _tables = NO_TABLES
     _found = False
     _wants_tables = False
     _optional = False
@@ -512,8 +524,8 @@ def quoted(text: str) -> str:
 struct IdsSeen:
     ## What a message calls everything read: "the text", or "the data".
     _whole = "the text"
-    _ids = list[(str, str, int)]()
-    _tables = list[(str, str, int)]()
+    _ids = NO_SEEN
+    _tables = NO_SEEN
 
     def id(ref self, kind: str, at: str, position: int):
         self._ids.append((kind, at, position))
@@ -717,6 +729,22 @@ def same_bytes(text: str, start: int, word: str, size: int) -> bool:
         at += 1
     return True
 
+## No `Id`s or `Table`s seen, shared until a read sees one.
+NO_IDS = IdsSeen()
+
+## What a reader needs only now and then, apart from what every read needs. A reader has none
+## until it first changes some of it, so letting go of a plain read's reader lets go of one empty
+## field, not four. It's taken out of the reader to be changed and put back, with `_take`, so it's
+## changed where it is, and nothing passing the reader on has to make it the reader's own.
+struct ReaderRare:
+    ## Where an explained read is, as a failure says it, and the fields of the struct it's in.
+    path = NO_PARTS
+    fields = NO_FIELDS
+    ids = NO_IDS
+    tags = NO_TAGS
+
+NO_RARE = ReaderRare()
+
 ## Reads JSON a byte at a time, straight into what it's read as. The first read of a text says
 ## nothing about what's wrong; only a failed one is read again, keeping track of where it is.
 struct JsonReader:
@@ -729,22 +757,20 @@ struct JsonReader:
     _first = True
     _depth = 0
     _in_key = False
-    _path = list[str]()
-    _fields = list[(str, str)]()
+    ## What only some reads need, made the first time one does: see `ReaderRare`.
+    _rare: ReaderRare? = None
+    ## Each object this one is inside: its `_hint`, then its `_seen`. One read at the top has
+    ## nothing outside it, so a flat object never makes this list room.
+    _outer = NO_COUNTS
+    ## For each tuple being read, inside one another: its type, where its array starts, how many
+    ## items it has, and how many have been read.
+    _tuples = NO_TUPLES
     _owner = ""
     ## For the object being read, the field most likely to come next: the one after the last
     ## found, since text usually has them in order. Each object it's inside keeps its own here.
     _hint = 0
     ## The fields a struct being read has had so far, a bit each, and the same for those it's in.
     _seen = 0
-    ## Each object this one is inside: its `_hint`, then its `_seen`. One read at the top has
-    ## nothing outside it, so a flat object never makes this list room.
-    _outer = list[int]()
-    _ids = IdsSeen()
-    _tags = dict[str, int]()
-    ## For each tuple being read, inside one another: its type, where its array starts, how many
-    ## items it has, and how many have been read.
-    _tuples = list[(str, int, int, int)]()
     ## The case whose data is read next, as `Type.Case`, for what a failure in it says.
     _case_owner = ""
 
@@ -757,14 +783,36 @@ struct JsonReader:
         self._at = at
         return b
 
+    ## What only some reads need, to look at: the reader's own, or an empty one.
+    def _seen_rare(self) -> ReaderRare:
+        return self._rare else NO_RARE
+
+    ## What only some reads need, taken out of the reader to change, and put back after with
+    ## `self._rare = ...`. Taken out, nothing else holds it, so it's changed where it is.
+    def _take(ref self) -> ReaderRare:
+        rare = self._rare else ReaderRare()
+        self._rare = None
+        return rare
+
+    ## A step deeper into what an explained read is in, for what a failure says.
+    def _push_path(ref self, part: str):
+        mut rare = self._take()
+        rare.path.append(part)
+        self._rare = rare
+
+    def _pop_path(ref self):
+        mut rare = self._take()
+        _ = rare.path.pop()
+        self._rare = rare
+
     ## Where the reader is, as messages say it.
     def _where(self) -> str:
-        if len(self._path) == 0: return "the text"
+        if len(self._seen_rare().path) == 0: return "the text"
         return f"`{self._joined()}`"
 
     def _joined(self) -> str:
         mut out = ""
-        for part in self._path:
+        for part in self._seen_rare().path:
             if out != "" and text_byte(part, 0) != 91:
                 out += "."
             out += part
@@ -1075,11 +1123,11 @@ struct JsonReader:
         mut count = 0
         while True:
             if self._explain:
-                self._path.append(f"[{count}]")
+                self._push_path(f"[{count}]")
                 count += 1
             found.append(T.deserialize(ref self)?)
             if self._explain:
-                _ = self._path.pop()
+                self._pop_path()
             b = self._space()
             self._at += 1
             if b == 93:
@@ -1108,13 +1156,13 @@ struct JsonReader:
             self._in_key = False
             if self._space() != 58: fail no_reason()
             if self._explain:
-                self._path.append(
+                self._push_path(
                     f"[{cut_input(text_part(self._source, self._key_start(start), self._at))}]",
                 )
             self._at += 1
             value = V.deserialize(ref self)?
             if self._explain:
-                _ = self._path.pop()
+                self._pop_path()
             found.append((key, value))
             c = self._space()
             self._at += 1
@@ -1141,26 +1189,26 @@ struct JsonReader:
         mut count = 0
         while True:
             if self._explain:
-                self._path.append(f"[{count}]")
+                self._push_path(f"[{count}]")
                 count += 1
             if self._space() != 91: fail self._misfit("[key, value] pair")
             self._at += 1
             if self._explain:
-                self._path.append("[0]")
+                self._push_path("[0]")
             key = K.deserialize(ref self)?
             if self._explain:
-                _ = self._path.pop()
+                self._pop_path()
             if self._space() != 44: fail self._not_a_pair()
             self._at += 1
             if self._explain:
-                self._path.append("[1]")
+                self._push_path("[1]")
             value = V.deserialize(ref self)?
             if self._explain:
-                _ = self._path.pop()
+                self._pop_path()
             if self._space() != 93: fail self._not_a_pair()
             self._at += 1
             if self._explain:
-                _ = self._path.pop()
+                self._pop_path()
             found.append((key, value))
             b = self._space()
             self._at += 1
@@ -1169,7 +1217,6 @@ struct JsonReader:
 
     def _not_a_pair(self) -> ParseError:
         if not self._explain: return no_reason()
-        _ = self._path
         return ParseError(
             message=f"{self._where()} should be a [key, value] pair",
             line=0,
@@ -1208,7 +1255,9 @@ struct JsonReader:
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
-            self._fields = fields
+            mut rare = self._take()
+            rare.fields = fields
+            self._rare = rare
         b = self._space()
         if self._first:
             self._first = False
@@ -1220,7 +1269,7 @@ struct JsonReader:
                 self._unknown_first(fields)?
         else:
             if self._explain:
-                _ = self._path.pop()
+                self._pop_path()
             if b == 125:
                 self._at += 1
                 self._left()
@@ -1232,7 +1281,7 @@ struct JsonReader:
             if at >= 0:
                 self._place = at
                 self._hint = at + 1
-                self._once(at, fields)?
+                if self._seen_again(at): fail self._twice(at, fields)
                 return True
         key = self.text()?
         if self._space() != 58: fail no_reason()
@@ -1271,35 +1320,36 @@ struct JsonReader:
             tries += 1
         return -1
 
-    ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
-    ## Fails if field `at` of a struct has come before: which one to believe would be a guess.
-    ## A struct of more fields than a word has bits doesn't check past those.
-    def _once(ref self, at: int, fields: list[(str, str)]) fails ParseError:
-        if at >= 62: return
+    ## Notes that field `at` of a struct has come, and says whether it had come before: which one
+    ## to believe would be a guess, so the caller fails with `_twice`. It can't fail itself, so the
+    ## usual read, of each field once, makes no failure's room. A struct of more fields than a
+    ## word has bits doesn't check past those.
+    def _seen_again(ref self, at: int) -> bool:
+        if at >= 62: return False
         bit = 1 << at
-        if self._seen & bit != 0:
-            if not self._explain: fail no_reason()
-            fail ParseError(
-                message=f"{self._where()} has `{fields[at][0]}` twice",
-                line=0,
-                column=0,
-            )
+        if self._seen & bit != 0: return True
         self._seen = self._seen | bit
+        return False
+
+    ## The failure for field `at` of a struct coming twice.
+    def _twice(self, at: int, fields: list[(str, str)]) -> ParseError:
+        if not self._explain: return no_reason()
+        return ParseError(message=f"{self._where()} has `{fields[at][0]}` twice", line=0, column=0)
 
     def _named(ref self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
         at = self._place_of(key, fields)
         if at >= 0:
             self._place = at
-            self._once(at, fields)?
+            if self._seen_again(at): fail self._twice(at, fields)
             if self._explain:
-                self._path.append(key)
+                self._push_path(key)
             return True
         match self._extra:
             case .Ignore:
                 self._skip(self._depth)?
                 self._first = False
                 if self._explain:
-                    self._path.append(key)
+                    self._push_path(key)
                 return self.next_field(fields)?
             case .Error:
                 fail self._unknown(key, fields)
@@ -1369,7 +1419,7 @@ struct JsonReader:
     def missing(self, name: str) -> ParseError:
         if not self._explain: return no_reason()
         mut wire = name
-        for saved, own in self._fields:
+        for saved, own in self._seen_rare().fields:
             if saved == name and saved == own:
                 wire = spelled_as(own, self._names)
         joined = self._joined()
@@ -1383,16 +1433,24 @@ struct JsonReader:
         return ParseError(message=f"{self._where()} {message}", line=0, column=0)
 
     def saw_id(ref self, kind: str, position: int):
-        self._ids.id(kind, self._where() if self._explain else "", position)
+        at = self._where() if self._explain else ""
+        mut rare = self._take()
+        rare.ids.id(kind, at, position)
+        self._rare = rare
 
     def saw_table(ref self, kind: str, count: int):
-        self._ids.table(kind, self._where() if self._explain else "", count)
+        at = self._where() if self._explain else ""
+        mut rare = self._take()
+        rare.ids.table(kind, at, count)
+        self._rare = rare
 
     def tag(ref self, kind: str) -> int:
-        found = self._tags.get(kind) else 0
+        found = self._seen_rare().tags.get(kind) else 0
         if found > 0: return found
         made = new_tag()
-        self._tags[kind] = made
+        mut rare = self._take()
+        rare.tags[kind] = made
+        self._rare = rare
         return made
 
     ## A null is a value, not a field left out: one in a field that isn't optional fails, saying
@@ -1431,10 +1489,10 @@ struct JsonReader:
             self._at += 1
         self._tuples.append((name, start, count, read + 1))
         if self._explain:
-            self._path.append(f"[{read}]")
+            self._push_path(f"[{read}]")
         found = T.deserialize(ref self)?
         if self._explain:
-            _ = self._path.pop()
+            self._pop_path()
         return found
 
     def end_items(ref self) fails ParseError:
@@ -1559,7 +1617,7 @@ struct JsonReader:
                 self._depth += 1
                 if self._depth > JSON_MOST_DEEP: fail no_reason()
                 if self._explain:
-                    self._path.append(key)
+                    self._push_path(key)
                 return at
             at += 1
         if not self._explain: fail no_reason()
@@ -1574,7 +1632,7 @@ struct JsonReader:
         self._at += 1
         self._depth -= 1
         if self._explain:
-            _ = self._path.pop()
+            self._pop_path()
 
     ## What comes after everything's been read has to be nothing.
     def finish(ref self) fails ParseError:
@@ -1811,7 +1869,7 @@ export def native_loads[T: Deserializable](
 def read_value[T: Deserializable](ref src: JsonReader) -> T fails ParseError:
     value = T.deserialize(ref src)?
     src.finish()?
-    found = src._ids.problem()
+    found = src._seen_rare().ids.problem()
     if found != "":
         if not src._explain: fail no_reason()
         fail ParseError(message=found, line=0, column=0)

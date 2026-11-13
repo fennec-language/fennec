@@ -436,6 +436,32 @@ fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
     }
 }
 
+/// A constant a test's launched task works out before the test does is one the test finds too: a
+/// test works out its program's constants first, as `main` does in a program that uses tasks.
+/// Before, the task worked it out on its worker, where the test's own push to a field starting as
+/// it couldn't find it, and stopped.
+#[test]
+fn a_constant_a_test_s_task_reads_first_is_found_by_the_test() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4", "16"] {
+        let output = crate::executables::fennec_command()
+            .args(["test", "crates/fennec/tests/fixtures/constants_in_test_tasks.fen"])
+            .current_dir(repo())
+            .env("FENNEC_NO_CACHE", "1")
+            .env("FENNEC_THREADS", threads)
+            .output()
+            .unwrap();
+        assert_eq!(
+            text(&output.stdout),
+            "2 passed, 0 failed\n",
+            "{threads} threads: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
 /// Each line a test and its tasks print reaches the test's capture whole. A `print` arrives in
 /// pieces, and before the fix, pieces of a task's line and the test's own mixed in most runs of
 /// this fixture: 42 of 50 at 4 threads and 30 of 50 at 1 thread, both stressed. So three runs at

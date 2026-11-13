@@ -162,7 +162,7 @@ fn names_a_place(body: &[Stmt]) -> Option<(&[Stmt], &Expr)> {
     (plain && runs_nothing(named)).then_some((checks, named))
 }
 
-/// Whether working an expression out only reads: names, fields, items, arithmetic and `.len()`.
+/// Whether working an expression out only reads: names, fields, items, arithmetic and `len(x)`.
 fn runs_nothing(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Name(_) | ExprKind::Int(_) => true,

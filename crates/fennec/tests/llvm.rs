@@ -489,8 +489,8 @@ fn same_as_expected_in_both_builds(name: &str, source: &str) -> std::io::Result<
     Ok(())
 }
 
-/// An `else` block that gives a value: `else as why:` with what failed in it, a plain `else:`
-/// after a failure or a `None`, a `match` on the failure before the value, and one that leaves.
+/// An `except` block that gives a value: `except why:` with what failed in it, an `else:` after
+/// a `None`, `case` arms on the failure before the value, and one that leaves.
 #[test]
 fn an_else_block_gives_the_value_on_its_last_line() -> std::io::Result<()> {
     if !ready() {
@@ -733,7 +733,7 @@ def main(stdout: Stdout):
 "#;
 
 /// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
-/// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
+/// `None`, and `except why:` handles only the failure, its block giving a value that may be `None`.
 #[test]
 fn a_failure_and_a_none_are_handled_apart() -> std::io::Result<()> {
     if !ready() {
@@ -5421,7 +5421,7 @@ def main(stdout: Stdout) fails Bad:
     )
 }
 
-/// `else as name:` gives the block what failed, and it still has to leave: by `return`, `continue`
+/// `except name:` gives the block what failed, and it still has to leave: by `return`, `continue`
 /// or `fail`, here with a failure that's counted, after a call that gives nothing and one that
 /// gives a value.
 #[test]
@@ -5653,7 +5653,7 @@ def main(stdout: Stdout):
 
 /// Every way out of a `with` block runs its source's cleanup, innermost first when several are left
 /// at once: the code after `lend` for a success-style way out (`return`, `break`, `continue`, an
-/// `else` doing one of those, a `return` in a nested `if` or a `match`), and `lend x else:` for a
+/// `else` doing one of those, a `return` in a nested `if` or a `match`), and `lend x except:` for a
 /// failure-style one (`fail`, `?` on a line, kept, or in an expression, an `else` that fails, a
 /// A `?` failing inside an expression inside a `with` block runs the source's cleanup wherever it
 /// sits: inside another `?`'s call, in a `return`, an assignment or a line of its own, a field read
@@ -5716,7 +5716,7 @@ fn every_way_out_of_a_with_block_runs_its_cleanup() -> std::io::Result<()> {
             "  ended else return\n-1\n  ended else return in a line\n-2\n  failed else fail\n-10\n  failed else as\n-11\n  ended continue 0\n  ended continue 1\n  ended continue 2\n  ended break 0\n  ended break 1\n  ended break 2\n1\n  failed ? on a line\n-12\n  failed ? kept\n-13\n  failed ? in an expression\n-14\n  ended return in an if\n7\n  ended return in a match\n8\n  failed fail in an if\n-15\n  ended inner, else return\n  ended outer, else return\n-3\n  failed inner, else fail\n  failed outer, else fail\n-16\n  failed inner, ?\n  failed outer, ?\n-17\n  ended inner 0, else break\n  ended outer 0, else break\n  ended inner 1, else break\n  ended outer 1, else break\n  ended inner 2, else break\n  ended outer 2, else break\n2\n  failed inner, crash\n  failed outer, crash\n",
             "{how:?}: {err}"
         );
-        // The last way out is a crash, through both its blocks' `lend x else:`.
+        // The last way out is a crash, through both its blocks' `lend x except:`.
         assert!(!ran.status.success(), "{how:?}");
         assert!(err.contains("index 2 is out of range for length 1"), "{how:?}: {err}");
     }
@@ -5756,7 +5756,7 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
-/// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost
+/// A crash in a `with` block runs its sources' `lend x except:` cleanups on the way out, innermost
 /// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
 /// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends
 /// the program.
@@ -5975,7 +5975,7 @@ fn a_crashing_task_s_cleanup_ends_where_it_fails_and_says_so() -> std::io::Resul
     Ok(())
 }
 
-/// A task that crashes inside a `with` runs the block's `lend x else:` before its crash ends it,
+/// A task that crashes inside a `with` runs the block's `lend x except:` before its crash ends it,
 /// and a task that doesn't runs the rest of the source instead.
 #[test]
 fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
@@ -6492,6 +6492,95 @@ def main(stdout: Stdout) fails Crashed:
 "#,
         "before\ntask\nafter\n",
     )
+}
+
+/// A task that crashes while the code that launched it waits on a channel inside the `with launch`
+/// block ends that wait, so the block ends and says `Crashed`, rather than leaving its launcher
+/// waiting for good: a `receive` gives nothing, as from a closed channel, and a `send` fails with
+/// `Closed`. On the main thread, and in a task that launched one, on one thread and on many.
+#[test]
+fn a_task_s_crash_ends_its_launcher_s_wait_on_a_channel() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_ends_launcher_wait")?;
+    let program = dir.join("crash_ends_wait.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, channel
+
+# Crashes before it sends its answer.
+def worker(out: Sender[int], n: int) fails Closed:
+    short = [1, 2]
+    out.send(short[n])?
+    return
+
+def waited(back: Sender[int], results: Channel[int]) -> int fails Closed | Crashed:
+    mut got = 0
+    with launch(() => worker(back, n=5)?)?:
+        got = results.receive() else -1
+    return got
+
+def receives() -> str:
+    with channel[int](size=1) as results:
+        got = waited(results.sender(), results) except Crashed() | Closed():
+            return "receive: crashed"
+        return f"receive: {got}"
+
+# Crashes at its first message, leaving its inbox full.
+def reader(inbox: Inbox[int]) fails Closed:
+    short = [1, 2]
+    for n in inbox:
+        _ = short[n + 5]
+    return
+
+def sent_until_closed() -> int fails Closed | Crashed:
+    mut sent = 0
+    with launch((inbox) => reader(inbox)?, inbox_size=1)? as to_reader:
+        for n in range(100):
+            to_reader.send(n) except Closed():
+                break
+            sent += 1
+    return sent
+
+def sends() -> str:
+    _ = sent_until_closed() except Crashed() | Closed():
+        return "send: crashed"
+    return "send: ended"
+
+# A task that launches the worker, and waits on it in its turn.
+def middle(out: Sender[str]) fails Closed:
+    out.send(receives())?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    stdout.print(receives())
+    stdout.print(sends())
+    with channel[str](size=1) as said:
+        with launch(() => middle(said.sender())?)?:
+            stdout.print("in a task:", said.receive() else "nothing")
+    return
+"#,
+    )?;
+    let wanted = "receive: crashed\nsend: crashed\nin a task: receive: crashed\n";
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("crash_ends_wait"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+            assert!(ran.status.success(), "{how:?} on {threads} threads: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(&dir)
 }
 
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
@@ -20640,6 +20729,31 @@ fn a_texts_start_and_end_are_compared_where_they_are() -> std::io::Result<()> {
     )
 }
 
+/// `find` hands the runtime its text and part as their headers, inline or in a block, and gives
+/// back where the part starts in characters: an empty part, two-byte characters before it, the
+/// whole text, and a part that isn't there.
+#[test]
+fn a_find_reads_its_text_and_part_however_they_are_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "find_headers",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a: b", "café: au lait", "a header line long enough for a block: its value", "été, then a long tail past twenty-three bytes: été"]
+    parts = ["", ": ", "a", "é", "été", "its value", "a header line long enough for a block: its value", "absent"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            at = text.find(part) else -1
+            said.append(str(at))
+        stdout.print(" ".join(said))
+    return
+"#,
+        "0 -1 -1 -1 -1 -1 -1 -1\n0 1 0 -1 -1 -1 -1 -1\n0 4 1 3 -1 -1 -1 -1\n0 37 0 -1 -1 39 0 -1\n0 45 10 0 0 -1 -1 -1\n",
+    )
+}
+
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.
 #[test]
 fn strings_let_go_of_match_what_was_pinned() -> std::io::Result<()> {
@@ -22377,8 +22491,8 @@ def named(present: bool) -> str?:
     Ok(())
 }
 
-/// `_ = check(n) else as why:` on a call that gives nothing but can fail keeps nothing and runs
-/// the call, as the statement `check(n) else as why:` does.
+/// `_ = check(n) except why:` on a call that gives nothing but can fail keeps nothing and runs
+/// the call, as the statement `check(n) except why:` does.
 #[test]
 fn discarding_what_gives_nothing_runs_it() -> std::io::Result<()> {
     if !ready() {

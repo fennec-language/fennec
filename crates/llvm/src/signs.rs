@@ -13,6 +13,13 @@
 //! on `x != -1` or `x >= 0` makes `x` not negative where it holds, so an index kept as `-1` for
 //! none, as `richards` keeps its links, is proven once it's checked against that.
 //!
+//! A list of ints, or of lists of them, has a floor too: the lowest any int in it can be, from
+//! every item it's made with, appended or set, so `for me in cells[cell]` with every cell filled
+//! from indexes has `me` proven, as a `range`'s count is. A list is a value, so a copy changed
+//! elsewhere changes nothing here; one a call changes by `ref`, or a builtin this doesn't know
+//! changes, isn't known after. A closure's captured values are what each closure made of it
+//! captures.
+//!
 //! What the program doesn't make itself isn't known: a field of a struct a builtin gives back or
 //! the runtime passes in, and a parameter of a function a closure, a generator or the runtime may
 //! call. A wrong proof would only turn a negative index's count from the end into a failure
@@ -65,6 +72,8 @@ struct Facts {
     fields: HashMap<(String, String), Floor>,
     params: HashMap<(String, usize), Floor>,
     returns: HashMap<String, Floor>,
+    /// What a parameter a function changes in its caller's place holds wherever it leaves.
+    changed: HashMap<(String, usize), Floor>,
 }
 
 /// What can't be known from the program's own code.
@@ -83,26 +92,14 @@ struct Outside {
     made: HashSet<String>,
     /// The functions the program has, whose every return it sees.
     defined: HashSet<String>,
+    /// Each closure's function, and how many of its first parameters are what it captures.
+    closures: HashMap<String, usize>,
 }
 
 /// The indexes in `program` proven not negative.
 pub(crate) fn non_negative(program: &Program) -> NonNegative {
     let outside = outside(program);
-    // Each round starts from nothing written and reads what the last one found, so facts only go
-    // up, through four states, and this ends where every write, call and return is accounted
-    // for. What the program can't see, like a struct a builtin makes or a function the runtime
-    // calls, is anything from the start.
-    let mut facts = Facts::default();
-    loop {
-        let mut next = Facts::default();
-        for function in program.functions.iter().chain(&program.constants) {
-            walk(function, &facts, &outside, &mut next, None);
-        }
-        if next == facts {
-            break;
-        }
-        facts = next;
-    }
+    let facts = settled(program, &outside);
     let mut proven = NonNegative::new();
     for function in program.functions.iter().chain(&program.constants) {
         let mut found = HashSet::new();
@@ -114,6 +111,24 @@ pub(crate) fn non_negative(program: &Program) -> NonNegative {
     proven
 }
 
+/// What's known across the program once it stops changing. Each round starts from nothing
+/// written and reads what the last one found, so facts only go up, through four states, and this
+/// ends where every write, call and return is accounted for. What the program can't see, like a
+/// struct a builtin makes or a function the runtime calls, is anything from the start.
+fn settled(program: &Program, outside: &Outside) -> Facts {
+    let mut facts = Facts::default();
+    loop {
+        let mut next = Facts::default();
+        for function in program.functions.iter().chain(&program.constants) {
+            walk(function, &facts, outside, &mut next, None);
+        }
+        if next == facts {
+            return facts;
+        }
+        facts = next;
+    }
+}
+
 fn outside(program: &Program) -> Outside {
     let fields: HashMap<String, Vec<(String, Type)>> = program
         .structs
@@ -123,16 +138,21 @@ fn outside(program: &Program) -> Outside {
         .collect();
     let mut callees: HashSet<String> = HashSet::from(["main".to_owned()]);
     let mut made_outside: Vec<Type> = Vec::new();
+    let mut closures: HashMap<String, usize> = HashMap::new();
     for function in program.functions.iter().chain(&program.constants) {
         for inst in function.blocks.iter().flat_map(|block| &block.insts) {
             match &inst.kind {
-                InstKind::MakeClosure { function, .. } => {
+                InstKind::MakeClosure { function, captures, .. } => {
                     callees.insert(function.clone());
+                    let fewest = closures.entry(function.clone()).or_insert(captures.len());
+                    *fewest = (*fewest).min(captures.len());
                 }
                 InstKind::MakeGenerator { generator, .. } => {
                     callees.insert(generator.clone());
                 }
-                InstKind::Builtin { dest: Some(dest), .. } => {
+                // What a collection gives back is what the program put in it, so it's the
+                // program's own: only what another builtin gives is made outside.
+                InstKind::Builtin { dest: Some(dest), name, .. } if !gives_back_what_it_holds(name) => {
                     if let Some(local) = function.locals.get(dest.0) {
                         made_outside.push(local.ty.clone());
                     }
@@ -197,7 +217,22 @@ fn outside(program: &Program) -> Outside {
         .collect();
     let defined =
         program.functions.iter().chain(&program.constants).map(|function| function.name.clone()).collect();
-    Outside { structs, callees, fields, constants, changes, made, defined }
+    // A closure's function is only ever reached through a closure: one that's also called, or a
+    // generator's, or `main`, gets nothing from what it captures.
+    let only_closures = |name: &String| {
+        !called.contains(name.as_str())
+            && name != "main"
+            && !program.generators.iter().any(|def| def.name == *name)
+    };
+    closures.retain(|name, _| only_closures(name));
+    Outside { structs, callees, fields, constants, changes, made, defined, closures }
+}
+
+/// Whether a builtin only gives back something the program put in a collection of its own: a
+/// `Table`'s item, a list's, a dict's value or key, a set's member, or those copied out, or a new
+/// `Table`, which holds nothing yet.
+fn gives_back_what_it_holds(name: &str) -> bool {
+    name == "Table" || ["Table.", "list.", "dict.", "set."].iter().any(|prefix| name.starts_with(prefix))
 }
 
 /// Calls `found` with each struct `ty` names, however deep.
@@ -271,8 +306,11 @@ fn walk(
     let locals = function.locals.len();
     let mut start = vec![Floor::Any; locals];
     let external = outside.callees.contains(&function.name);
+    // A closure's first parameters are what each closure made of it captured, and the rest are
+    // what the runtime or a caller gives it.
+    let captured = outside.closures.get(&function.name).copied().unwrap_or(0);
     for (at, floor) in start.iter_mut().enumerate().take(function.params) {
-        *floor = if external {
+        *floor = if external && at >= captured {
             Floor::Any
         } else {
             facts.params.get(&(function.name.clone(), at)).copied().unwrap_or(Floor::Unset)
@@ -399,15 +437,21 @@ fn walk(
                     send(*then, on_then, &mut waiting);
                     send(*otherwise, on_otherwise, &mut waiting);
                 }
-                Terminator::Return(Some(value)) => {
-                    let returned = floor_of(value, &now);
-                    let known = next.returns.entry(function.name.clone()).or_insert(Floor::Unset);
-                    *known = known.join(returned);
+                Terminator::Return(value) => {
+                    if let Some(value) = value {
+                        let returned = floor_of(value, &now);
+                        let known = next.returns.entry(function.name.clone()).or_insert(Floor::Unset);
+                        *known = known.join(returned);
+                    }
+                    // What a `ref` parameter holds as it goes back to the caller, however it
+                    // leaves, a failure included.
+                    for at in &function.mut_params {
+                        let held = now.get(*at).copied().unwrap_or(Floor::Any);
+                        let known = next.changed.entry((function.name.clone(), *at)).or_insert(Floor::Unset);
+                        *known = known.join(held);
+                    }
                 }
-                Terminator::Return(None)
-                | Terminator::NoMatch { .. }
-                | Terminator::Stop { .. }
-                | Terminator::Unreachable => {}
+                Terminator::NoMatch { .. } | Terminator::Stop { .. } | Terminator::Unreachable => {}
             }
         }
     }
@@ -417,6 +461,15 @@ fn walk(
 fn list_of(function: &Function, object: &Operand) -> bool {
     let Operand::Local(local) = object else { return false };
     function.locals.get(local.0).is_some_and(|local| matches!(local.ty, Type::List(_)))
+}
+
+/// Whether a type has a floor kept for it: an int, or a list of them, however deep.
+fn tracked(ty: &Type) -> bool {
+    match ty {
+        Type::Int => true,
+        Type::List(item) => tracked(item),
+        _ => false,
+    }
 }
 
 fn floor_of(operand: &Operand, now: &[Floor]) -> Floor {
@@ -474,8 +527,9 @@ fn step(
     now: &mut [Floor],
     exact: &mut HashMap<LocalId, i64>,
 ) {
-    let is_int =
-        |local: LocalId| function.locals.get(local.0).is_some_and(|local| matches!(local.ty, Type::Int));
+    let is_int = |local: LocalId| function.locals.get(local.0).is_some_and(|local| tracked(&local.ty));
+    // A list's floor, changed in place: what's added to it can only lower it.
+    let mut kept: Option<LocalId> = None;
     let field_floor = |owner: &str, field: &str| -> Floor {
         if outside.structs.contains(owner) || !outside.made.contains(owner) {
             return Floor::Any;
@@ -541,6 +595,68 @@ fn step(
             };
             dest_floor = Some((*dest, floor));
         }
+        // An item of a list is as low as anything in it.
+        InstKind::GetIndex { dest, object, .. } if list_of(function, object) => {
+            dest_floor = Some((*dest, floor_of(object, now)));
+        }
+        InstKind::MakeList { dest, items } => {
+            let floor = items.iter().fold(Floor::Unset, |floor, item| floor.join(floor_of(item, now)));
+            dest_floor = Some((*dest, floor));
+        }
+        InstKind::SetIndex { object, path, value, .. } if path.is_empty() && is_int(*object) => {
+            let added = floor_of(value, now);
+            if let Some(slot) = now.get_mut(object.0) {
+                *slot = slot.join(added);
+            }
+            kept = Some(*object);
+        }
+        // An item set in a list a struct's field holds is a write of that field.
+        InstKind::SetIndex { object, path, value, .. } if !path.is_empty() => {
+            let mut owner = function.locals.get(object.0).map(|local| local.ty.clone());
+            for (at, field) in path.iter().enumerate() {
+                let Some(Type::Named(name)) = owner.clone() else { break };
+                if at + 1 == path.len() {
+                    let known = next.fields.entry((name.clone(), field.clone())).or_insert(Floor::Unset);
+                    *known = known.join(floor_of(value, now));
+                }
+                owner = outside
+                    .fields
+                    .get(&name)
+                    .and_then(|def| def.iter().find(|(named, _)| named == field))
+                    .map(|(_, ty)| ty.clone());
+            }
+        }
+        InstKind::Builtin { dest, name, args, changes: true } if matches!(args.first(), Some(Operand::Local(list)) if is_int(*list) && list_of(function, &Operand::Local(*list))) =>
+        {
+            let Some(Operand::Local(list)) = args.first() else { return };
+            let added = match name.as_str() {
+                "list.append" => args.get(1).map(|item| floor_of(item, now)),
+                "list.insert" => args.get(2).map(|item| floor_of(item, now)),
+                "list.extend" => args.get(1).map(|items| floor_of(items, now)),
+                // What takes items away, or moves them about, leaves the floor as it was.
+                "list.pop" | "list.clear" | "list.sort" | "list.reverse" | "list.remove" | "list.swap" => {
+                    Some(Floor::Unset)
+                }
+                _ => None,
+            };
+            if let Some(slot) = now.get_mut(list.0) {
+                *slot = added.map_or(Floor::Any, |added| slot.join(added));
+            }
+            kept = Some(*list);
+            // What `pop` gives back was one of its items.
+            if let Some(dest) = dest {
+                let floor =
+                    if name == "list.pop" { floor_of(&Operand::Local(*list), now) } else { Floor::Any };
+                dest_floor = Some((*dest, floor));
+            }
+        }
+        InstKind::MakeClosure { dest, function: made, captures } => {
+            for (at, captured) in captures.iter().enumerate() {
+                let known = next.params.entry((made.clone(), at)).or_insert(Floor::Unset);
+                *known = known.join(floor_of(captured, now));
+            }
+            dest_floor = Some((*dest, Floor::Any));
+        }
         InstKind::GetField { dest, object, field } => {
             let owner = match object {
                 Operand::Local(local) => function.locals.get(local.0).map(|local| &local.ty),
@@ -561,13 +677,18 @@ fn step(
                 let known = next.params.entry((callee.clone(), at)).or_insert(Floor::Unset);
                 *known = known.join(floor_of(arg, now));
             }
-            // What the callee changes in place isn't known after.
+            // What the callee changes in place is what it holds as the callee leaves, where the
+            // program has the callee to see.
             let changed = outside.changes.get(callee).map_or(&[][..], Vec::as_slice);
             for at in changed {
                 if let Some(Operand::Local(local)) = args.get(*at)
                     && let Some(slot) = now.get_mut(local.0)
                 {
-                    *slot = Floor::Any;
+                    *slot = if outside.defined.contains(callee) {
+                        facts.changed.get(&(callee.clone(), *at)).copied().unwrap_or(Floor::Unset)
+                    } else {
+                        Floor::Any
+                    };
                     exact.remove(local);
                 }
             }
@@ -626,7 +747,7 @@ fn step(
     let mut written = Vec::new();
     crate::analysis::visit(inst, |_| {}, |local| written.push(local));
     for local in written {
-        if dest_floor.is_none_or(|(dest, _)| dest != local) {
+        if dest_floor.is_none_or(|(dest, _)| dest != local) && kept != Some(local) {
             if let Some(slot) = now.get_mut(local.0) {
                 *slot = Floor::Any;
             }
@@ -645,6 +766,170 @@ mod tests {
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         Ok(non_negative(&program).get(function).map_or(0, HashSet::len))
+    }
+
+    const LIST_ITEMS: &str = "\
+def scan(cells: list[list[int]], xs: list[int]) -> int:
+    mut total = 0
+    for me in cells[0]:
+        total += xs[me]
+    return total
+
+def scan_parallel(cells: list[list[int]], xs: list[int]) -> int:
+    parts = [scan_one(cell, cells=cells, xs=xs) for cell in parallel(range(len(cells)))]
+    return sum(parts)
+
+def scan_one(cell: int, cells: list[list[int]], xs: list[int]) -> int:
+    mut total = 0
+    for me in cells[cell]:
+        total += xs[me]
+    return total
+
+def main(stdout: Stdout):
+    mut cells = [list[int]() for _ in range(4)]
+    xs = [n * 2 for n in range(40)]
+    for n in range(40):
+        cells[n % 4].append(n)
+    stdout.print(scan(cells, xs=xs), scan_parallel(cells, xs=xs))
+    return
+";
+
+    const TABLE_ITEMS: &str = "\
+from std.collections import Table
+
+struct Unit:
+    number: int
+    x: int
+
+def filed(units: Table[Unit]) -> list[list[int]]:
+    mut cells = [list[int]() for _ in range(4)]
+    for unit in units:
+        cells[unit.x % 4].append(unit.number)
+    return cells
+
+def file(ref cells: list[list[int]], units: Table[Unit]):
+    for ref cell in cells:
+        cell.clear()
+    for unit in units:
+        cells[unit.x % 4].append(unit.number)
+    return
+
+def scan_each_round(units: Table[Unit], xs: list[int]) -> int:
+    mut cells = [list[int]() for _ in range(4)]
+    mut total = 0
+    for _ in range(3):
+        file(ref cells, units=units)
+        for me in cells[2]:
+            total += xs[me]
+    return total
+
+def scan(cells: list[list[int]], xs: list[int]) -> int:
+    mut total = 0
+    for me in cells[1]:
+        total += xs[me]
+    return total
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    for n in range(40):
+        _ = units.add(Unit(number=n, x=n * 3))
+    xs = [n for n in range(40)]
+    stdout.print(scan(filed(units), xs=xs), scan_each_round(units, xs=xs))
+    return
+";
+
+    const NOT_PROVEN: &str = "\
+struct Holder:
+    items: list[int]
+
+def given_a_negative(xs: list[int]) -> int:
+    mut at = [0, 1]
+    at.append(-1)
+    return xs[at[2]]
+
+def parsed(xs: list[int], text: str) -> int:
+    n = int.parse(text) except InvalidValue(): 0
+    at = [n]
+    return xs[at[0]]
+
+def counted_down(xs: list[int]) -> int:
+    mut at = [3]
+    at[0] = at[0] - 5
+    return xs[at[0]]
+
+def lowered(ref at: list[int]):
+    at.append(-2)
+    return
+
+def changed_by_a_call(xs: list[int]) -> int:
+    mut at = [1]
+    lowered(ref at)
+    return xs[at[1]]
+
+def set_in_a_field(xs: list[int]) -> int:
+    mut held = Holder(items=[1, 2])
+    held.items[0] = -1
+    return xs[held.items[0]]
+
+def main(stdout: Stdout):
+    xs = [1, 2, 3]
+    stdout.print(given_a_negative(xs), parsed(xs, text=\"-1\"), counted_down(xs))
+    stdout.print(changed_by_a_call(xs), set_in_a_field(xs))
+    return
+";
+
+    #[test]
+    fn items_kept_in_a_table_and_filed_in_lists_are_proven() -> Result<(), String> {
+        // `xs[me]`, from numbers the program made from a `range`, kept in a `Table` and filed, and
+        // filed again each round by a function given the cells by `ref`.
+        assert!(into_proven(TABLE_ITEMS, "scan", "xs")?);
+        assert!(into_proven(TABLE_ITEMS, "scan_each_round", "xs")?);
+        Ok(())
+    }
+
+    #[test]
+    fn items_that_can_be_negative_are_not_proven() -> Result<(), String> {
+        for function in ["given_a_negative", "parsed", "counted_down", "changed_by_a_call", "set_in_a_field"]
+        {
+            assert!(!into_proven(NOT_PROVEN, function, "xs")?, "{function}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn items_of_lists_filled_from_indexes_are_proven() -> Result<(), String> {
+        // `xs[me]`, in a function and in one a closure that captured the lists calls.
+        assert!(into_proven(LIST_ITEMS, "scan", "xs")?);
+        assert!(into_proven(LIST_ITEMS, "scan_one", "xs")?);
+        Ok(())
+    }
+
+    /// Whether every index into the list named `list` in `function` is proven not negative.
+    fn into_proven(source: &str, function: &str, list: &str) -> Result<bool, String> {
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let found = non_negative(&program);
+        let proven = found.get(function).cloned().unwrap_or_default();
+        let lowered =
+            program.functions.iter().find(|each| each.name == function).ok_or("no such function")?;
+        let named = |local: &LocalId| {
+            lowered.locals.get(local.0).and_then(|local| local.name.as_deref()) == Some(list)
+        };
+        let mut reads = Vec::new();
+        for (at, block) in lowered.blocks.iter().enumerate() {
+            for (index, inst) in block.insts.iter().enumerate() {
+                if let InstKind::GetIndex { object: Operand::Local(object), .. } = &inst.kind
+                    && named(object)
+                {
+                    reads.push(proven.contains(&(at, index)));
+                }
+            }
+        }
+        if reads.is_empty() {
+            return Err(format!("`{function}` doesn't index `{list}`"));
+        }
+        Ok(reads.iter().all(|read| *read))
     }
 
     const LINKS: &str = "\

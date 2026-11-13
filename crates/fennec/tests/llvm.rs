@@ -21988,6 +21988,64 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Native blocks come from the allocator the runtime they're linked with uses: mimalloc in a plain
+/// build, and the system's under either sanitizer, whose runtime leaves mimalloc out. Under the
+/// thread sanitizer they once still asked for mimalloc, and such a program didn't link. A build's
+/// LLVM text is kept and read, so this holds wherever the sanitized link itself can't run.
+#[test]
+fn native_blocks_come_from_the_allocator_each_sanitizer_links() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native_allocator")?;
+    let program = dir.join("tree.fen");
+    std::fs::write(
+        &program,
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"),
+    )?;
+    for (sanitize, wanted, not) in [
+        (None, "@mi_malloc(", "@malloc("),
+        (Some("address"), "@malloc(", "@mi_malloc("),
+        (Some("thread"), "@malloc(", "@mi_malloc("),
+    ] {
+        let home = dir.join(format!("home-{}", sanitize.unwrap_or("plain")));
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("tree").to_string_lossy()])
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_LLVM_KEEP", "1")
+            .env("FENNEC_NO_CACHE", "1")
+            .env_remove("FENNEC_SANITIZE");
+        if let Some(sanitize) = sanitize {
+            command.env("FENNEC_SANITIZE", sanitize);
+        }
+        // Linking may fail where the sanitizer's runtime isn't there; the text is what's read.
+        command.output_before(FENNEC_DEADLINE)?;
+        let mut declared = String::new();
+        let mut folders = vec![home.join("work")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "ll") {
+                    let text = std::fs::read_to_string(&path)?;
+                    declared.extend(
+                        text.lines()
+                            .filter(|line| line.starts_with("declare"))
+                            .map(|line| format!("{line}\n")),
+                    );
+                }
+            }
+        }
+        let shown = sanitize.unwrap_or("no sanitizer");
+        assert!(declared.contains(wanted), "{shown}: native blocks don't come from {wanted}\n{declared}");
+        assert!(!declared.contains(not), "{shown}: native blocks come from {not}\n{declared}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A recursive enum holding strings, inline and in blocks of their own, is made and freed by
 /// generated code, which lets go of each string as its block goes: built and dropped over and
 /// over, read along the way, in a dev build and with `--release`.

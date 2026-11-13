@@ -48,6 +48,8 @@ struct Launched {
     task: Mutex<Option<TaskId>>,
     end: Mutex<End>,
     ended: Condvar,
+    /// The code that launched it, whose waits its crash cuts short.
+    launcher: Arc<threads::Launcher>,
 }
 
 enum End {
@@ -139,6 +141,7 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
         task: Mutex::new(None),
         end: Mutex::new(End::Running(None)),
         ended: Condvar::new(),
+        launcher: threads::Launcher::here(),
     });
     let number = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
     tasks(|tasks| tasks.insert(number, Arc::clone(&launched)));
@@ -176,6 +179,11 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
         _ => CRASHED,
     };
     let how = if how == CRASHED { crashed(launched) } else { how };
+    // Its launcher may be waiting on it, in a channel, inside the block that launched it: that wait
+    // ends now, rather than for good, and the block's end says how this one did.
+    if how == CRASHED || how == FAILED {
+        launched.launcher.task_crashed();
+    }
     if env != 0 {
         attempt(|state: &mut State| {
             // What it was given was made on the thread that launched it.
@@ -266,6 +274,9 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
         }
     });
     *failure = i64::try_from(outcome.failure).unwrap_or(0);
+    if outcome.how == CRASHED || outcome.how == FAILED {
+        launched.launcher.crash_said();
+    }
     outcome.how
 }
 

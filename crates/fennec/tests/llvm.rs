@@ -6494,6 +6494,95 @@ def main(stdout: Stdout) fails Crashed:
     )
 }
 
+/// A task that crashes while the code that launched it waits on a channel inside the `with launch`
+/// block ends that wait, so the block ends and says `Crashed`, rather than leaving its launcher
+/// waiting for good: a `receive` gives nothing, as from a closed channel, and a `send` fails with
+/// `Closed`. On the main thread, and in a task that launched one, on one thread and on many.
+#[test]
+fn a_task_s_crash_ends_its_launcher_s_wait_on_a_channel() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_ends_launcher_wait")?;
+    let program = dir.join("crash_ends_wait.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, channel
+
+# Crashes before it sends its answer.
+def worker(out: Sender[int], n: int) fails Closed:
+    short = [1, 2]
+    out.send(short[n])?
+    return
+
+def waited(back: Sender[int], results: Channel[int]) -> int fails Closed | Crashed:
+    mut got = 0
+    with launch(() => worker(back, n=5)?)?:
+        got = results.receive() else -1
+    return got
+
+def receives() -> str:
+    with channel[int](size=1) as results:
+        got = waited(results.sender(), results) except Crashed() | Closed():
+            return "receive: crashed"
+        return f"receive: {got}"
+
+# Crashes at its first message, leaving its inbox full.
+def reader(inbox: Inbox[int]) fails Closed:
+    short = [1, 2]
+    for n in inbox:
+        _ = short[n + 5]
+    return
+
+def sent_until_closed() -> int fails Closed | Crashed:
+    mut sent = 0
+    with launch((inbox) => reader(inbox)?, inbox_size=1)? as to_reader:
+        for n in range(100):
+            to_reader.send(n) except Closed():
+                break
+            sent += 1
+    return sent
+
+def sends() -> str:
+    _ = sent_until_closed() except Crashed() | Closed():
+        return "send: crashed"
+    return "send: ended"
+
+# A task that launches the worker, and waits on it in its turn.
+def middle(out: Sender[str]) fails Closed:
+    out.send(receives())?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    stdout.print(receives())
+    stdout.print(sends())
+    with channel[str](size=1) as said:
+        with launch(() => middle(said.sender())?)?:
+            stdout.print("in a task:", said.receive() else "nothing")
+    return
+"#,
+    )?;
+    let wanted = "receive: crashed\nsend: crashed\nin a task: receive: crashed\n";
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("crash_ends_wait"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+            assert!(ran.status.success(), "{how:?} on {threads} threads: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
 /// `parallel`'s loops do, so a program that launches one and is built for the plain runtime is
 /// refused when it's built, saying why, rather than failing at line 1 when it's run.

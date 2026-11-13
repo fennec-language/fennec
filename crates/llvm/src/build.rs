@@ -162,7 +162,7 @@ fn huge(text: &str) -> bool {
 /// only memory they own, or `thread`, that their threads don't race. Every function with
 /// attributes is instrumented, after the rest of the pipeline, as Clang does it, and the link
 /// takes what [`sanitize_flag`] gives.
-fn sanitizer() -> Option<&'static str> {
+pub(crate) fn sanitizer() -> Option<&'static str> {
     match std::env::var("FENNEC_SANITIZE").as_deref() {
         Ok("address") => Some("address"),
         Ok("thread") => Some("thread"),

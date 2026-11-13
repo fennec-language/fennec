@@ -66,7 +66,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The block a header holds, or null for an inline one.
-    fn header_block(&mut self, header: &str) -> String {
+    pub(crate) fn header_block(&mut self, header: &str) -> String {
         let in_block = self.header_in_block(header);
         let first = self.header_word(header, 0);
         let (word, block) = (self.temp(), self.temp());
@@ -161,6 +161,24 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("call void @fennec_text_of(ptr sret({HEADER}) align 8 {place}, ptr {block})"));
         let header = self.temp();
         self.line(&format!("{header} = load {HEADER}, ptr {place}"));
+        header
+    }
+
+    /// The header of a string's block of `bytes` bytes, more than 23, taking over the owner
+    /// given: its address and length, as `fennec_text_of` gives for such a block, with nothing
+    /// looked up.
+    pub(crate) fn text_of_long_block(&mut self, block: &str, bytes: &str) -> String {
+        // A build that checks proofs checks it's past 23 bytes, which a header would hold inline.
+        if self.checks_proofs() {
+            let short = self.temp();
+            self.line(&format!("{short} = icmp ule i64 {bytes}, 23"));
+            let span = self.here_span();
+            self.proof_held_here(&short, "a text joined in a block is past 23 bytes", span);
+        }
+        let (address, first, header) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("{first} = insertvalue {HEADER} zeroinitializer, i64 {address}, 0"));
+        self.line(&format!("{header} = insertvalue {HEADER} {first}, i64 {bytes}, 1"));
         header
     }
 

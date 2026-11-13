@@ -2,15 +2,21 @@
 # Written by `fennec-bench ops --pin`: instructions for one operation, Fennec's and its
 # Rust twin's, and a hash of what both print.
 # operation fennec rust output
-concat 644 252 358fcc8fde8e6ef5
-dict_get 117 220 81d02fe2c588940a
+concat 426 252 358fcc8fde8e6ef5
+dict_get 115 220 81d02fe2c588940a
 dict_put 107 218 ab39a7ea05ce9935
 find 236 244 4e050ac418a81c6a
-fstring 140 490 39ea2f884cc5e6b7
-json_dumps 3148 1861 61c1c49ae8b00250
-json_loads 12120 2125 31892504485fcc05
-parse_int 468 52 b6183ab1f49e0410
-removesuffix 121 44 c681687395f67e8b
-slice 72 57 8d902c28b52fde04
-split 1155 441 26cc9da55878ca96
+fstring 144 490 39ea2f884cc5e6b7
+item_append 577 3024 3c7a1d5a1060105c
+item_copy_change 114 1612 e5c4517945d7d51f
+item_dict_set 125 1726 cf8002fe848b737e
+item_put_back 102 1605 b682349c0503b22b
+item_reverse 953 402 adf72e6a83cfef86
+item_sort 5030 3587 c850c0d83e882bc0
+json_dumps 2263 1861 61c1c49ae8b00250
+json_loads 2808 2125 31892504485fcc05
+parse_int 58 52 b6183ab1f49e0410
+removesuffix 120 44 c681687395f67e8b
+slice 70 57 8d902c28b52fde04
+split 1163 441 26cc9da55878ca96
 struct_new 47 20 6d31aee4c54b4aa0

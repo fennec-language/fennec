@@ -296,6 +296,83 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Marks each block a constant held in place holds as living for the whole run, as a constant
+    /// held in a block is, so a task anywhere can read it and it's never counted as left over.
+    pub(crate) fn keep_inline(&mut self, kind: &Kind, at: &str) {
+        for part in self.inline_parts(kind) {
+            self.keep_part(part, at);
+        }
+    }
+
+    fn keep_part(&mut self, part: InlinePart, at: &str) {
+        match part {
+            InlinePart::Block(offset, held) => {
+                let place = self.offset(at, offset);
+                let block = match &held {
+                    // A string's block, when its header holds one: null when it's inline or `None`.
+                    Kind::Str | Kind::MaybeText if self.headers() => {
+                        let header = self.temp();
+                        self.line(&format!("{header} = load {}, ptr {place}", crate::headers::HEADER));
+                        self.header_block(&header)
+                    }
+                    Kind::Str
+                    | Kind::List(_)
+                    | Kind::Dict(..)
+                    | Kind::Boxed(_)
+                    | Kind::Bytes
+                    | Kind::Maybe(_) => {
+                        let block = self.temp();
+                        self.line(&format!("{block} = load ptr, ptr {place}"));
+                        block
+                    }
+                    // A closure, a generator or a capability: never a constant's.
+                    _ => return,
+                };
+                let none = self.temp();
+                self.line(&format!("{none} = icmp eq ptr {block}, null"));
+                let (keep, done) = (self.label("keep_block"), self.label("kept_block"));
+                self.line(&format!("br i1 {none}, label %{done}, label %{keep}"));
+                self.start_block(&keep);
+                self.declare("declare void @fennec_constant_kept(ptr) nounwind");
+                self.line(&format!("call void @fennec_constant_kept(ptr {block})"));
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+            }
+            InlinePart::Enum(offset, id) => {
+                let (base, tag, done) = (self.offset(at, offset), self.temp(), self.label("kept_case"));
+                self.line(&format!("{tag} = load i64, ptr {base}"));
+                for (number, parts) in self.case_parts(id) {
+                    let (this, next, same) =
+                        (self.label("keep_case"), self.label("not_kept_case"), self.temp());
+                    self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+                    self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+                    self.start_block(&this);
+                    for part in parts {
+                        self.keep_part(part, &base);
+                    }
+                    self.line(&format!("br label %{done}"));
+                    self.start_block(&next);
+                }
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+            }
+            InlinePart::Items(offset, count, stride, parts) => {
+                let base = self.offset(at, offset);
+                self.each_position(&count.to_string(), |emit, position| {
+                    let item = emit.temp();
+                    emit.line(&format!(
+                        "{item} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                    ));
+                    for part in parts.clone() {
+                        emit.keep_part(part, &item);
+                    }
+                    Ok(())
+                })
+                .unwrap_or_default();
+            }
+        }
+    }
+
     /// One more owner for each block an inline struct or enum at `at` holds.
     pub(crate) fn retain_inline(&mut self, kind: &Kind, at: &str) {
         for part in self.inline_parts(kind) {

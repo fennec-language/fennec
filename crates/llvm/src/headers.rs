@@ -164,6 +164,17 @@ impl Emit<'_, '_, '_> {
         header
     }
 
+    /// The header of a string's block of `bytes` bytes, more than 23, taking over the owner
+    /// given: its address and length, as `fennec_text_of` gives for such a block, with nothing
+    /// looked up.
+    pub(crate) fn text_of_long_block(&mut self, block: &str, bytes: &str) -> String {
+        let (address, first, header) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("{first} = insertvalue {HEADER} zeroinitializer, i64 {address}, 0"));
+        self.line(&format!("{header} = insertvalue {HEADER} {first}, i64 {bytes}, 1"));
+        header
+    }
+
     /// The header for a string's block, which keeps its own owner.
     pub(crate) fn text_from_borrowed_block(&mut self, block: &str) -> String {
         self.retain(block);

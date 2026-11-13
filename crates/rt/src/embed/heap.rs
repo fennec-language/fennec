@@ -941,17 +941,27 @@ impl Heap {
     /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
     /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
     /// `None`, having taken nothing, for any other block.
-    pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
+    pub(super) fn take_plain_list(
+        &mut self,
+        at: usize,
+        first_list: u64,
+        str_shape: u64,
+    ) -> Option<Box<[u64]>> {
         let empty_items = &self.empty_items;
         self.blocks.take_if(at, |block| {
-            // A list of a kind whose items hold nothing, or one with no items at all, as a list
-            // made empty and never added to is. Only a kind of list's shape is looked at: past
-            // them are other blocks, like cells, whose third word means something else.
+            // A string, which holds no other block, or a list of a kind whose items hold nothing,
+            // or one with no items at all, as a list made empty and never added to is. Only a kind
+            // of list's shape is looked at: past them are other blocks, like cells, whose third
+            // word means something else.
             !is_handle_block(block)
-                && shape_word(block)
-                    .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
-                    .and_then(|number| empty_items.get(number))
-                    .is_some_and(|empty| *empty || block.get(2) == Some(&0))
+                && shape_word(block).is_some_and(|shape| {
+                    shape == str_shape
+                        || shape
+                            .checked_sub(first_list)
+                            .and_then(|number| usize::try_from(number).ok())
+                            .and_then(|number| empty_items.get(number))
+                            .is_some_and(|empty| *empty || block.get(2) == Some(&0))
+                })
         })
     }
 

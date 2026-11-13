@@ -366,6 +366,97 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &result)
     }
 
+    /// `list.sort()`: the list made its caller's alone, then sorted where its items lie, so no item
+    /// gains or loses an owner, where a sorted copy would count every one twice.
+    pub(crate) fn sort_in_place(&mut self, list: LocalId) -> Result<(), String> {
+        let held = self.items_held(list)?;
+        let compare =
+            if matches!(held, Kind::Struct(_) | Kind::Boxed(_)) { Some(self.tuple_comparison(&held)?) } else { None };
+        let how = if compare.is_none() { Self::sort_kind(&held)? } else { 0 };
+        let owned = self.unshared(list);
+        if let Some(compare) = compare {
+            self.declare("declare void @fennec_list_sort_with(ptr, ptr) nounwind");
+            self.line(&format!("call void @fennec_list_sort_with(ptr {owned}, ptr {compare})"));
+            self.leave_if_failed();
+            return Ok(());
+        }
+        self.declare("declare void @fennec_list_sort(ptr, i64) nounwind");
+        self.line(&format!("call void @fennec_list_sort(ptr {owned}, i64 {how})"));
+        Ok(())
+    }
+
+    /// `list.sort(key=f)`: as `sort_in_place`, in the order of the keys `f` gives.
+    pub(crate) fn sort_by_in_place(&mut self, list: LocalId, key: &Operand, span: Span) -> Result<(), String> {
+        let held = self.items_held(list)?;
+        let owned = self.unshared(list);
+        let (keys, kind) = self.keys_of(&owned, &held, key, span)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            let compare = self.tuple_comparison(&kind)?;
+            self.declare("declare void @fennec_list_sort_by_keys_with(ptr, ptr, ptr) nounwind");
+            self.line(&format!("call void @fennec_list_sort_by_keys_with(ptr {owned}, ptr {keys}, ptr {compare})"));
+            self.release(&keys);
+            self.leave_if_failed();
+            return Ok(());
+        }
+        let how = Self::sort_kind(&kind)?;
+        self.declare("declare void @fennec_list_sort_by(ptr, ptr, i64) nounwind");
+        self.line(&format!("call void @fennec_list_sort_by(ptr {owned}, ptr {keys}, i64 {how})"));
+        self.release(&keys);
+        Ok(())
+    }
+
+    /// The standard library's `list.reverse()` and `list.swap(i, j)`, done where the items lie: an
+    /// item that moves keeps its owners, so nothing is counted, where the library's code copies an
+    /// item out and writes two back, counting each block it holds four times. `None` for any other
+    /// call, or one this doesn't take, which is called as written.
+    pub(crate) fn moving_list_method(
+        &mut self,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) -> Option<Result<(), String>> {
+        let named = |method: &str| name.strip_prefix(method).is_some_and(|rest| rest.is_empty() || rest.starts_with('['));
+        let list = match args.first() {
+            Some(Operand::Local(list)) if matches!(self.kind_of(*list), Ok(Kind::List(_))) => *list,
+            _ => return None,
+        };
+        match args {
+            [_] if named("list.reverse") => {
+                let owned = self.unshared(list);
+                self.declare("declare void @fennec_list_reverse(ptr) nounwind");
+                self.line(&format!("call void @fennec_list_reverse(ptr {owned})"));
+                Some(Ok(()))
+            }
+            [_, first, second] if named("list.swap") => Some(self.swap_items(list, first, second, span)),
+            _ => None,
+        }
+    }
+
+    /// `list.swap(i, j)`: each index checked as `list[i]` checks it, then the two items' words
+    /// swapped in the list made its caller's alone.
+    fn swap_items(&mut self, list: LocalId, first: &Operand, second: &Operand, span: Span) -> Result<(), String> {
+        let held = self.items_held(list)?;
+        let memory = held.memory(self.module.layouts);
+        let (shared, _) = self.operand(&Operand::Local(list))?;
+        let ((first, _), (second, _)) = (self.operand(first)?, self.operand(second)?);
+        let first = self.position(&shared, &first, span);
+        let second = self.position(&shared, &second, span);
+        let owned = self.unshared(list);
+        let (a, b) = (self.item_address(&owned, &memory, &first), self.item_address(&owned, &memory, &second));
+        let (x, y) = (self.temp(), self.temp());
+        self.line(&format!("{x} = load {memory}, ptr {a}"));
+        self.line(&format!("{y} = load {memory}, ptr {b}"));
+        self.line(&format!("store {memory} {y}, ptr {a}"));
+        self.line(&format!("store {memory} {x}, ptr {b}"));
+        Ok(())
+    }
+
+    /// How a list local's items are held.
+    fn items_held(&self, list: LocalId) -> Result<Kind, String> {
+        let Kind::List(item) = self.kind_of(list)? else { return Err("it sorts something that isn't a list".to_owned()) };
+        self.item_kind(*item)
+    }
+
     /// A new list of what a key function gives for each of a list's items, and what those are.
     pub(crate) fn keys_of(
         &mut self,

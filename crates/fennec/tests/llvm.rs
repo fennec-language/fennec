@@ -17956,6 +17956,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A tuple of plainer items written or kept where one with optional items goes, as
+/// `(1, Parcel(name="x"))` where `(int, Parcel?)` goes: alone, in a list, in a list in a dict's
+/// value, in a list of lists, and a tuple kept in a name first. Each item becomes the optional it
+/// goes to, in both builds, with nothing left held.
+#[test]
+fn a_tuple_widens_to_its_optional_items_wherever_it_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "tuples_widened",
+        r#"struct Parcel:
+    name: str
+
+def main(stdout: Stdout):
+    batch: dict[str, list[(int, Parcel?)]] = {"a": [(1, Parcel(name="x")), (2, None)]}
+    pairs: list[(int, Parcel?)] = [(3, Parcel(name="y"))]
+    one: (int, Parcel?) = (4, Parcel(name="z"))
+    nested: list[list[(str, int?)]] = [[("a", 1)], [("b", None)]]
+    numbers: dict[str, list[int?]] = {"n": [1]}
+    kept = (5, Parcel(name="w"))
+    widened: (int, Parcel?) = kept
+    stdout.print(batch, pairs, one)
+    stdout.print(nested, numbers, widened, kept)
+    return
+"#,
+        "{\"a\": [(1, Parcel(name=\"x\")), (2, None)]} [(3, Parcel(name=\"y\"))] (4, Parcel(name=\"z\"))\n\
+         [[(\"a\", 1)], [(\"b\", None)]] {\"n\": [1]} (5, Parcel(name=\"w\")) (5, Parcel(name=\"w\"))\n",
+    )
+}
+
 #[test]
 fn tuples_and_structs_compare_as_pinned() -> std::io::Result<()> {
     if !ready() {

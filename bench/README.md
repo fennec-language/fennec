@@ -22,7 +22,14 @@ cargo build --release -p fennec -p fennec-bench
 | Object-heavy code with dispatch | `richards`, `deltablue` |
 | Shared state under a lock | `locks`, a counter and a dict changed under `lock ... as ref` in a loop |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
+| A game server's tick | `game_tick`: a `Table` of entities with inventory dicts, commands through a channel, a grid lookup with `parallel` over its cells, and a `pack` snapshot |
+| Game AI | `pathfind`: A* on a 512 by 512 map for many units, with a `Heap` of structs ordered by `<` and a dict of the cells visited |
+| Physics | `physics`: balls in a box as lists of `std.math`'s `Vec3`, filed in a grid by a counting sort for the broad phase, and pushed apart and bounced |
+| A developer's tool | `grep_tool`: a tree of source files written and walked through an `Fs` narrowed with `only`, read in chunks and matched line by line with `std.re` |
+| A chat server | `chat_server`: a hub task owning the rooms fans each message out over channels to four shard tasks owning the users' mailboxes, which send back what each user got |
+| A nightly job | `data_pipeline`: CSV parsed by `std.csv` into structs, totalled, and every order through `std.pack` and `std.json` and back |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
+| A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |
 
 These are what languages have historically been judged on: most of the Computer Language Benchmarks Game, and `richards` and `deltablue` from Are We Fast Yet. **The suite is locked.** Each target records a hash of its kernel and twin, and a run fails if they've changed, or if a kernel has come or gone. Changing one means pinning it again, and the pull request has to say why. The fix for a slow kernel goes in the compiler.
 
@@ -44,6 +51,8 @@ Instructions aren't time, though. They can disagree by a lot, in either directio
 The table also counts the functions in each kernel that LLVM doesn't take yet, from `fennec dev fallbacks --llvm`, and the run warns about them. A kernel with any doesn't build, so the run fails on it too. `fallbacks.txt` holds those counts, which are all zero, and a test keeps them so. CI's "Every example and kernel built natively" job also builds every kernel natively and checks that it links and prints what it should.
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
+
+`copies.txt` holds how many copies each kernel's run makes: values changed while something else still held them, so the change went to a copy. A test builds each kernel for release, runs it on one thread under `FENNEC_COUNTS` and keeps the counts exact. They don't move with the machine or its load, so a copy the code generator starts making fails there, however small its cost in time.
 
 Targets come from twins built with overflow checks on, because Fennec always checks and that's the work being compared. The run's last column shows the percentage against the same twins without those checks, from `targets/unchecked/`. It's for reference only: nothing is judged on it.
 
@@ -128,6 +137,14 @@ The twins beside the kernels are idiomatic code for the same work, in Rust, full
 Everyday runs don't build or run the twins. They only read the targets.
 
 Re-pin only when a kernel's work or a twin changes, by running the **Pin benchmark targets** workflow, which pins each architecture the same way, then copying what it prints into `targets/`.
+
+## Single operations
+
+`fennec-bench ops` measures what one call of an everyday operation costs, in instructions: `find`, `split`, a slice, `+`, `int.parse`, `removesuffix`, an f-string, `json.loads` and `json.dumps` of a small struct, a dict's `get` and set with `str` keys, and making a struct. Each is a program in `bench/ops` that does its operation `OPS` times on inputs that vary, beside a Rust twin doing the same the idiomatic way.
+
+- Each is built twice, as it is and with `OPS = 0`, and the difference over `OPS` is one operation's cost, with setup, startup and printing left out.
+- Each operation's cost is pinned per architecture in `bench/ops/<architecture>.txt`, with its twin's and a hash of what both print. CI's bench job fails when an operation takes more than its pin, by more than 5% and 10 instructions. So a slow path fails the day it's added, and an improvement shows as a lower count until it's pinned again.
+- The **Pin benchmark targets** workflow pins them with the suite's targets, checking that each prints what its twin prints. Copy what it prints into `bench/ops/`.
 
 ## Adding a kernel
 

@@ -203,7 +203,10 @@ pub(super) fn share_statics(state: &mut State) {
     let mut kept = super::table::Table::default();
     let mut moved = 0;
     for block in std::mem::take(&mut state.heap.blocks).into_blocks() {
-        if block.first().is_some_and(|count| *count >= IMMORTAL) {
+        // Never freed by its count, or by its owner, whatever its count has come to.
+        if block.first().is_some_and(|count| *count >= IMMORTAL)
+            || block.get(1).is_some_and(|shape| *shape >> OWNER_SHIFT == NEVER_FREED_OWNER)
+        {
             shared.insert(block);
             moved += 1;
         } else {
@@ -244,8 +247,8 @@ pub extern "C" fn constant_kept(address: i64) {
             if *count >= IMMORTAL {
                 continue;
             }
-            // Its owners now stay above the mark, so letting one go doesn't take it below.
-            *count = count.saturating_add(IMMORTAL);
+            // Its owners now stay far above the mark, so letting one go doesn't take it below.
+            *count = count.saturating_add(NEVER_FREED_COUNT);
             mark_never_freed(block);
             if let Some(block) = state.heap.block(at) {
                 waiting.extend(children(state, block));
@@ -463,6 +466,13 @@ const FINISHED: u64 = u64::MAX;
 /// The owner count of a block that's never freed: retaining and releasing it never get
 /// near zero.
 pub const IMMORTAL: u64 = 1 << 48;
+
+/// Where a block that's never freed starts counting: 2^62, 2^14 times [`IMMORTAL`], as a shared
+/// enum case's does. Its count isn't kept exactly: native code that may run on a worker leaves a
+/// never-freed block's count alone wherever it runs, while code that runs only on the main thread
+/// counts it, so one taking an owner and the other giving it back moves the count a little each
+/// time. Starting this far above the mark, no run moves it below, or near the top.
+pub const NEVER_FREED_COUNT: u64 = IMMORTAL << 14;
 
 /// Whether this thread leaves `block`'s count alone: a block that's never freed, on a worker
 /// thread. Native code on a worker doesn't count one, since it's no thread's, so the runtime there
@@ -933,10 +943,14 @@ impl Heap {
     pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
         let empty_items = &self.empty_items;
         self.blocks.take_if(at, |block| {
+            // A list of a kind whose items hold nothing, or one with no items at all, as a list
+            // made empty and never added to is. Only a kind of list's shape is looked at: past
+            // them are other blocks, like cells, whose third word means something else.
             !is_handle_block(block)
                 && shape_word(block)
                     .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
-                    .is_some_and(|number| empty_items.get(number).copied().unwrap_or(false))
+                    .and_then(|number| empty_items.get(number))
+                    .is_some_and(|empty| *empty || block.get(2) == Some(&0))
         })
     }
 
@@ -1099,13 +1113,12 @@ pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> 
 /// A string's text, from its block.
 pub(crate) fn block_text(block: &[u64]) -> String {
     let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-    let bytes: Vec<u8> = block
-        .get(TEXT_HEADER_WORDS..)
-        .unwrap_or_default()
-        .iter()
-        .flat_map(|word| word.to_le_bytes())
-        .take(length)
-        .collect();
+    // Copied a word at a time, then cut to its length.
+    let mut bytes = Vec::with_capacity(length.div_ceil(8) * 8);
+    for word in block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8)) {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
     String::from_utf8(bytes).unwrap_or_default()
 }
 
@@ -1115,7 +1128,7 @@ pub fn literal(tables: &mut Tables, text: &str) -> i64 {
     if let Some(address) = tables.literals.get(text) {
         return *address;
     }
-    let block = text_block(tables.str_shape, text, IMMORTAL);
+    let block = text_block(tables.str_shape, text, NEVER_FREED_COUNT);
     let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
     tables.statics.push(block);
     tables.literals.insert(text.to_owned(), address);

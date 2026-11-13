@@ -202,6 +202,17 @@ fn next_abandoned(state: &mut State) -> Option<(u64, extern "C" fn(i64))> {
     Some((address, *state.tables.abandons.get(&shape)?))
 }
 
+/// Whether a list or a dict holds nothing to let go of as it is now, whatever its kind: a list with
+/// no items, or a dict with no entries used, which a struct's empty fields mostly are. `number` is
+/// the list's kind, which a dict has none of.
+fn holds_nothing_now(state: &State, block: &[u64], number: Option<usize>) -> bool {
+    match number {
+        // Past the kinds of list are other blocks, like cells, whose third word means something else.
+        Some(number) => number < state.tables.elements.len() && block.get(2) == Some(&0),
+        None => crate::embed::dicts::is_dict(state, block) && block.get(3) == Some(&0),
+    }
+}
+
 /// Whether a block being freed is a generator stopped at a `yield` with something to close.
 fn is_abandoned(state: &State, block: &[u64]) -> bool {
     !state.tables.abandons.is_empty()
@@ -240,7 +251,9 @@ fn free_block(state: &mut State, address: u64) {
         } else if shape >= state.tables.str_shape {
             // A list of numbers, the most usual kind, has nothing to look through.
             let number = crate::embed::lists::element_number(state, &block);
-            if !number.is_some_and(|number| state.heap.items_hold_nothing(number)) {
+            if !number.is_some_and(|number| state.heap.items_hold_nothing(number))
+                && !holds_nothing_now(state, &block, number)
+            {
                 free_unplanned(state, &block, &mut pending, &mut taken);
             }
         } else if !release_planned(&mut state.heap, &block, &mut pending, &mut taken) {
@@ -704,6 +717,28 @@ mod tests {
         let other = crate::embed::lists::new(0, 1);
         crate::embed::heap::free(other);
         with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));
+        finish();
+    }
+
+    /// A constant kept on the main thread is let go of there more often than it's taken, as code
+    /// that runs only on the main thread counts it and code that may run on a worker doesn't. It
+    /// still lives, still reads as never freed by its count, and is still among the blocks every
+    /// thread can read once a task starts: one that fell below the mark stayed in this thread's
+    /// table, where a task's push to a struct field holding it was lost.
+    #[test]
+    fn a_constant_let_go_of_more_than_taken_still_lives_and_is_shared() {
+        let elements = vec![Rc::new(Element::Int)];
+        start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
+        let kept = crate::embed::lists::new(0, 0);
+        super::super::constant_kept(kept);
+        let at = kept.cast_unsigned();
+        for _ in 0..1_000 {
+            with(|state| super::super::release(state, at));
+        }
+        let count = with(|state| state.heap.block(at).and_then(|block| block.first().copied())).unwrap();
+        assert!(count >= super::super::IMMORTAL, "its count fell to {count}");
+        with(super::super::share_statics);
+        assert!(super::super::shared_static(at), "a task can't read it");
         finish();
     }
 

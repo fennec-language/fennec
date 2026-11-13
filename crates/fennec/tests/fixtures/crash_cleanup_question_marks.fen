@@ -1,5 +1,5 @@
-## A crash runs a `lend x else:` cleanup however it passes failures up: a `?` that fails anywhere in
-## a line, or a `fail`, ends it there, as for a failed block, and the crash goes on. A `?` in a
+## A crash runs a `lend x except:` cleanup however it passes failures up: a `?` that fails anywhere
+## in a line, or a `fail`, ends it there, as for a failed block, and the crash goes on. A `?` in a
 ## function written in the cleanup passes up from that function. Run with the code the block
 ## crashes at, which decides where its cleanup ends.
 error Refused:

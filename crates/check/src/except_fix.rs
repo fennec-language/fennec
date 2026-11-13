@@ -787,6 +787,11 @@ impl<'a> Text<'a> {
     }
 }
 
+/// Whether a local can't take `name`: a builtin's, a built-in type's, or `case`.
+pub fn reserved_name(name: &str) -> bool {
+    RESERVED.contains(&name)
+}
+
 /// The names a local can't take: the builtins and the built-in types, and `case`, which starts an
 /// arm under `except why:`.
 const RESERVED: [&str; 29] = [
@@ -839,6 +844,34 @@ pub(crate) fn old_forms(module: &Module, checked: &crate::Checked) -> Vec<Diagno
     }
     found.sort_by_key(|diagnostic| (diagnostic.span.start, diagnostic.span.end));
     found.dedup_by_key(|diagnostic| (diagnostic.span.start, diagnostic.span.end));
+    found
+}
+
+/// Each top-level function, type or constant a program names after a builtin, as `def len` or
+/// `struct range`: it would hide the language's everywhere it's seen, a dependency's code
+/// included. A method or a field may take the name, as `len(x)` calls `x.len()`.
+pub(crate) fn reserved_definitions(module: &Module) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    for item in &module.items {
+        let (name, span, what) = match item {
+            Item::Function(def) => (&def.name, def.span, "a function"),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => (&def.name, def.span, "a type"),
+            Item::Interface(interface) => (&interface.name, interface.span, "an interface"),
+            Item::TypeAlias { name, span, .. } => (name, *span, "a type"),
+            Item::Const { name, span, .. } => (name, *span, "a constant"),
+            Item::Extend(_) | Item::Import(_) | Item::Test(_) | Item::Stmt(_) => continue,
+        };
+        // A dependency's names have its kit's name in front of them in a merged module.
+        let written = name.rsplit(fennec_syntax::KIT_MARK).next().unwrap_or(name);
+        if RESERVED.contains(&written) && by_hand(span) {
+            found.push(
+                Diagnostic::new(format!("`{written}` is a builtin's name, which {what} can't take"), span)
+                    .with_help(format!(
+                        "name it for what it does, so `{written}` stays the language's everywhere"
+                    )),
+            );
+        }
+    }
     found
 }
 

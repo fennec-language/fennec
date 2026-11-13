@@ -338,11 +338,20 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             "Table.at_slot" => {
+                let dest = dest.ok_or("no result")?;
                 let (at, _) = self.operand(args.get(1).ok_or("no slot")?)?;
-                let (block, _) = self.operand(&Operand::Local(*map))?;
-                let (_, items) = self.part(&block, parts.items, false);
+                // An item taken out to change in place comes from a `Table` that's alone, so the
+                // change can't show through another copy of it.
+                let (block, alone) = match self.known.slot_home(dest).cloned() {
+                    Some((root, path)) => {
+                        let place = self.place_of(root, &path)?;
+                        (self.alone_at(&place, "fennec_unshare"), true)
+                    }
+                    None => (self.operand(&Operand::Local(*map))?.0, false),
+                };
+                let (_, items) = self.part(&block, parts.items, alone);
                 let place = self.item_address(&items, &memory, &at);
-                self.read_into(dest.ok_or("no result")?, &held, &place, ITEM_ACCESS)
+                self.read_into(dest, &held, &place, ITEM_ACCESS)
             }
             "Table.get" => {
                 let dest = dest.ok_or("no result")?;
@@ -722,6 +731,10 @@ impl Emit<'_, '_, '_> {
     /// How many items a map being walked has, which is how many times its loop goes round.
     pub(crate) fn walked_live(&mut self, map: LocalId) -> Result<String, String> {
         let kind = self.kind_of(map)?.clone();
+        if matches!(kind, Kind::Dict(..)) {
+            let (block, _) = self.operand(&Operand::Local(map))?;
+            return Ok(self.dict_length(&block));
+        }
         let parts = self.parts(&kind)?;
         let (block, _) = self.operand(&Operand::Local(map))?;
         let fields = self.offset(&block, FIELDS_OFFSET);
@@ -791,6 +804,9 @@ impl Emit<'_, '_, '_> {
     /// A part of the pair a walk is on: its `Id`, or its item.
     pub(crate) fn walked_part(&mut self, dest: LocalId, pair: LocalId, part: usize) -> Result<(), String> {
         let (map, _) = self.known.walk_items.get(&pair.0).copied().ok_or("a walk with no map")?;
+        if matches!(self.kind_of(map)?, Kind::Dict(..)) {
+            return self.dict_walked_part(dest, pair, map, part);
+        }
         let (slot_place, generation_place) =
             self.walks.get(&pair.0).cloned().ok_or("a pair read before it's made")?;
         let (at, generation) = (self.temp(), self.temp());
@@ -932,6 +948,16 @@ impl Emit<'_, '_, '_> {
         let parts = self.parts(&kind)?;
         let held = parts.held.clone();
         let memory = held.memory(self.module.layouts);
+        // An item taken out to change and put back comes from a `Table` that's alone, so the
+        // change can't show through another copy of it.
+        let taken = self.known.is_taken(dest).then(|| self.known.item_home(dest).cloned()).flatten();
+        let (block, alone) = match taken {
+            Some((root, path)) => {
+                let place = self.place_of(root, &path)?;
+                (self.alone_at(&place, "fennec_unshare"), true)
+            }
+            None => (block, false),
+        };
         let id = self.id_parts(id)?;
         let found = self.finds(&block, &parts, &id);
         let (yes, no) = (self.label("indexed"), self.label("stale"));
@@ -939,9 +965,52 @@ impl Emit<'_, '_, '_> {
         self.start_block(&no);
         self.stop_missing(&block, &parts, &id, span);
         self.start_block(&yes);
-        let (_, items) = self.part(&block, parts.items, false);
+        let (_, items) = self.part(&block, parts.items, alone);
         let at = self.item_address(&items, &memory, &id.0);
         self.read_into(dest, &held, &at, ITEM_ACCESS)
+    }
+
+    /// `root.table[id].field` or `table[id].field`, taken out to change and put back: the `Table`,
+    /// its items and the item are each made alone first, so the field's one owner is the item it
+    /// goes back to. The item was read at this `Id` just before, so it's still there; a build
+    /// checks it anyway, as a read by `Id` does.
+    pub(crate) fn take_from_table_item(
+        &mut self,
+        dest: LocalId,
+        (root, path, id): (LocalId, &[String], &Operand),
+        field: &str,
+        span: Span,
+    ) -> Result<(), String> {
+        let place = self.place_of(root, path)?;
+        let kind = self.place_kind(root, path)?;
+        let parts = self.parts(&kind)?;
+        let held = parts.held.clone();
+        if !matches!(held, Kind::Boxed(_) | Kind::Struct(_)) {
+            return Err(format!("it takes a field of a {held:?} item, which this backend doesn't take yet"));
+        }
+        let block = self.alone_at(&place, "fennec_unshare");
+        let id = self.id_parts(id)?;
+        let found = self.finds(&block, &parts, &id);
+        let (yes, no) = (self.label("taken"), self.label("stale"));
+        self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
+        self.start_block(&no);
+        self.stop_missing(&block, &parts, &id, span);
+        self.start_block(&yes);
+        let (_, items) = self.part(&block, parts.items, true);
+        let memory = held.memory(self.module.layouts);
+        let at = self.item_address(&items, &memory, &id.0);
+        let (offset, inner) = self.field(&held, field)?;
+        // An item in place: its field is right there in the items, which are alone.
+        if matches!(held, Kind::Struct(_)) {
+            let at = self.offset(&at, offset);
+            let value = self.load_field(&inner, &at, ITEM_ACCESS);
+            return self.assign(dest, &value);
+        }
+        let item = self.alone_at(&at, "fennec_unshare");
+        let fields = self.fields_at(&item, &held);
+        let at = self.offset(&fields, offset);
+        let value = self.load_field(&inner, &at, crate::emit::FIELD_ACCESS);
+        self.assign(dest, &value)
     }
 
     /// `map[id] = value`, with the map made alone first.
@@ -956,6 +1025,10 @@ impl Emit<'_, '_, '_> {
         let parts = self.parts(kind)?;
         let held = parts.held.clone();
         let memory = held.memory(self.module.layouts);
+        // A `for ref` item taken out of its slot coming home: the slot still points at what was
+        // taken, which the item owned meanwhile, so it's moved back with nothing let go of.
+        let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
+        let value_operand = value;
         let (value, fresh) = self.value_for(value, &held)?;
         let id = self.id_parts(id)?;
         let block = self.alone_at(place, "fennec_unshare");
@@ -967,7 +1040,14 @@ impl Emit<'_, '_, '_> {
         self.start_block(&yes);
         let (_, items) = self.part(&block, parts.items, true);
         let at = self.item_address(&items, &memory, &id.0);
-        if held.counted() {
+        if put_back && held.counted() {
+            self.proof_goes_back(value_operand, &at);
+            let text = self.text_of(&held);
+            self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
+        } else if put_back {
+            self.proof_goes_back(value_operand, &at);
+            self.store_field(&held, &value, &at, ITEM_ACCESS);
+        } else if held.counted() {
             if !fresh {
                 self.retain_value(&value, &held);
             }

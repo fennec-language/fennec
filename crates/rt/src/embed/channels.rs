@@ -184,6 +184,11 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
                 let_go(message);
                 return DONE;
             }
+            Waited::CutShort => {
+                met(&channel, "send", CLOSED);
+                let_go(message);
+                return CLOSED;
+            }
         }
     }
 }
@@ -226,6 +231,10 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
                 return TIMED_OUT;
             }
             Waited::Stopped => return DONE,
+            Waited::CutShort => {
+                met(&channel, "receive", CLOSED);
+                return CLOSED;
+            }
         }
     }
 }
@@ -339,13 +348,26 @@ enum Waited {
     /// A stop cut it short: the task's failing.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are stopped"))]
     Stopped,
+    /// A task this code launched crashed or failed, so nothing may ever come: it's over as if the
+    /// channel were closed, and the `with launch` block's end says how the task did.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks crash"))]
+    CutShort,
 }
 
 /// Waits for the channel to change, with `queue` held to see that it hasn't: parked, in a task that
 /// can, and otherwise blocking.
-fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instant>, side: Side) -> Waited {
+fn wait(
+    channel: &Arc<Channel>,
+    queue: MutexGuard<'_, Queue>,
+    deadline: Option<Instant>,
+    side: Side,
+) -> Waited {
     if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
         return Waited::TimedOut;
+    }
+    #[cfg(any(test, feature = "threads"))]
+    if super::threads::Launcher::cut_short_here() {
+        return Waited::CutShort;
     }
     #[cfg(any(test, feature = "threads"))]
     if super::serve::can_park()
@@ -353,13 +375,23 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
     {
         let mut queue = queue;
         let token = super::serve::next_token();
+        // A crash of a task this one launched wakes it, said before its last look.
+        super::threads::Launcher::waiting_here(Box::new(move || {
+            pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
+        }));
+        if super::threads::Launcher::cut_short_here() {
+            super::threads::Launcher::waited_here();
+            return Waited::CutShort;
+        }
         let waiter = Waiter { pool, at, token };
         match side {
             Side::Sending => queue.senders.push(waiter),
             Side::Receiving => queue.receivers.push(waiter),
         }
         drop(queue);
-        return match super::serve::park_on(token, deadline) {
+        let parked = super::serve::park_on(token, deadline);
+        super::threads::Launcher::waited_here();
+        return match parked {
             // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
             // and ends here: it'd never be parked again, and nothing would ever change what it saw.
             super::serve::Parked::Cancelled => {
@@ -373,6 +405,22 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
         };
     }
     let _ = side;
+    // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
+    // come between this last look and the wait.
+    #[cfg(any(test, feature = "threads"))]
+    {
+        let changed = Arc::downgrade(channel);
+        super::threads::Launcher::waiting_here(Box::new(move || {
+            if let Some(channel) = changed.upgrade() {
+                let _queue = channel.queue();
+                channel.changed.notify_all();
+            }
+        }));
+        if super::threads::Launcher::cut_short_here() {
+            super::threads::Launcher::waited_here();
+            return Waited::CutShort;
+        }
+    }
     // What this thread printed comes out first, as before anything else that waits. The queue stays
     // held, so no change is missed before the wait.
     super::write_kept_output();
@@ -385,6 +433,8 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
         }
         None => (channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false),
     };
+    #[cfg(any(test, feature = "threads"))]
+    super::threads::Launcher::waited_here();
     if timed_out { Waited::TimedOut } else { Waited::Again }
 }
 

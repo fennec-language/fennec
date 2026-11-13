@@ -391,6 +391,7 @@ pub(crate) fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax
 
 /// A problem, saying which file has a missing method when a file the run didn't load has it. A run
 /// loads `main` and what it imports, so nothing else brings in a file that only extends a type.
+/// One in a dependency offers no fix: no tool changes another kit.
 pub(crate) fn with_extension(
     program: &fennec_kit::Program,
     diagnostic: &fennec_syntax::Diagnostic,
@@ -401,10 +402,12 @@ pub(crate) fn with_extension(
             "`{method}` is in an `extend` in {shown}, which this program doesn't import: add `import {module}`"
         ))
     });
-    match found {
+    let mut told = match found {
         Some(help) => diagnostic.clone().with_help(help),
         None => diagnostic.clone(),
-    }
+    };
+    program.no_fixes_in_dependencies(std::slice::from_mut(&mut told));
+    told
 }
 
 #[cfg(all(test, unix))]

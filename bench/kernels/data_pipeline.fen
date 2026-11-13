@@ -1,0 +1,123 @@
+# A data pipeline, as a nightly job runs one over a shop's orders. The orders come in as CSV text,
+# made from one seed, with a header, some notes in quotes holding commas and quotes of their own,
+# and a few rows whose quantity isn't a number. `std.csv` reads the text, and each row is parsed
+# into an `Order`, the bad ones counted and skipped. The orders are totalled by region and
+# product and by customer. Then everything goes out and comes back: every order through
+# `std.pack` and through `std.json`, and the totals as JSON. The checksum covers the bytes each
+# format wrote and what was read back.
+
+from std import csv, json, pack
+
+ROWS = 5_000
+CUSTOMERS = 1_500
+REGIONS = ["north", "south", "east", "west", "online"]
+PRODUCTS = ["tea", "coffee", "cocoa", "mugs", "kettles", "filters", "beans"]
+# Each note as a CSV field: in quotes, with its quotes doubled, when it holds a comma or a quote.
+FIELDS = ["", "gift", "\"rush, please\"", "\"leave at \"\"door\"\"\"", "call first", ""]
+
+struct Order:
+    id: int
+    region: str
+    product: str
+    quantity: int
+    cents: int
+    customer: str
+    note: str
+
+struct Total:
+    key: str
+    orders: int
+    units: int
+    revenue: int
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# The orders as CSV text.
+def orders_csv(seed: int) -> str:
+    mut state = seed
+    mut lines = ["id,region,product,quantity,unit_cents,customer,note"]
+    for id in range(ROWS):
+        state = next(state)
+        roll = below(state, top=1_000)
+        state = next(state)
+        region = REGIONS[below(state, top=len(REGIONS))]
+        product = PRODUCTS[below(state, top=len(PRODUCTS) * 11) % len(PRODUCTS)]
+        state = next(state)
+        quantity = "n/a" if roll < 7 else str(1 + below(state, top=12))
+        cents = 150 + below(state, top=4_000)
+        state = next(state)
+        customer = below(state, top=CUSTOMERS)
+        note = FIELDS[roll % len(FIELDS)]
+        lines.append(f"{id},{region},{product},{quantity},{cents},cust-{customer},{note}")
+    return "\n".join(lines) + "\n"
+
+# A hash of some bytes, from `start` on.
+def hashed(data: bytes, start: int) -> int:
+    mut hash = len(data) - start
+    for at in range(start, len(data)):
+        hash = (hash * 31 + data[at]) % 1_000_000_007
+    return hash
+
+def main(stdout: Stdout) fails ParseError | InvalidValue:
+    text = orders_csv(31)
+    rows = csv.loads(text)?
+    mut orders = list[Order]()
+    mut bad = 0
+    for row in rows[1:]:
+        quantity = int.parse(row[3]) except InvalidValue():
+            bad += 1
+            continue
+        orders.append(
+            Order(
+                id=int.parse(row[0])?,
+                region=row[1],
+                product=row[2],
+                quantity=quantity,
+                cents=int.parse(row[4])?,
+                customer=row[5],
+                note=row[6],
+            ),
+        )
+    mut totals = dict[str, Total]()
+    mut customers = dict[str, int]()
+    for order in orders:
+        key = f"{order.region}/{order.product}"
+        revenue = order.quantity * order.cents
+        if key not in totals:
+            totals[key] = Total(key=key, orders=0, units=0, revenue=0)
+        totals[key].orders += 1
+        totals[key].units += order.quantity
+        totals[key].revenue += revenue
+        customers[order.customer] = (customers.get(order.customer) else 0) + revenue
+    report = [totals[key] for key in sorted(totals.keys())]
+    best = sorted([(-revenue, customer) for customer, revenue in customers.items()])
+
+    # Every order through `std.pack` and back. The header, which holds the type's layout, is
+    # left out of the hash.
+    head = len(pack.dumps(list[Order]())) - 1
+    packed = pack.dumps(orders)
+    unpacked = pack.loads[list[Order]](packed)?
+    # Every order through JSON and back, and the totals as JSON.
+    written = json.dumps(orders)
+    read = json.loads[list[Order]](written)?
+    summary = json.dumps(report)
+
+    stdout.print(len(rows) - 1, "rows", bad, "bad", len(orders), "orders", len(totals), "totals")
+    stdout.print("pack", len(packed) - head, hashed(packed, start=head))
+    stdout.print("json", len(written), hashed(written.encode(), start=0))
+    stdout.print("summary", len(summary), hashed(summary.encode(), start=0))
+    stdout.print(
+        "back",
+        sum(order.quantity * order.cents for order in unpacked),
+        sum(len(order.note) + order.id for order in read),
+    )
+    for at in range(3):
+        stdout.print("best", best[at][1], -best[at][0])
+    stdout.print(summary[:120])
+    return

@@ -1,0 +1,145 @@
+# A particle simulation, as a game's physics step runs one: balls of a few sizes in a box, under
+# gravity, bouncing off the walls and off each other. Positions and velocities are lists of
+# `std.math`'s `Vec3`, and the radii a list of floats. Each step moves everything, then files
+# every ball in a grid of cells by a counting sort, and checks each ball only against those in
+# the cells around its own: the broad phase. Balls that overlap are pushed apart and bounce. The
+# checksum covers the energy left, where everything ended up, and how many times balls touched.
+
+from std import math
+from std.math import Vec3
+
+BALLS = 5_000
+STEPS = 50
+SIDE = 24
+BOX = 24.0
+STEP = 0.01
+PULL = 9.8
+BOUNCE = 0.8
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A float from 0 up to 1 taken from a generator's state.
+def fraction(seed: int) -> float:
+    return float(seed // 64 % 1_000_000) / 1_000_000.0
+
+# Which cell of the grid a point is in.
+def cell_of(at: Vec3) -> int:
+    x = min(int(at.x), SIDE - 1)
+    y = min(int(at.y), SIDE - 1)
+    z = min(int(at.z), SIDE - 1)
+    return (z * SIDE + y) * SIDE + x
+
+# Keeps one coordinate inside the box, bouncing its speed back if it was going out.
+def kept(at: float, speed: float, radius: float) -> (float, float):
+    if at < radius: return (radius, -speed * BOUNCE if speed < 0.0 else speed)
+    if at > BOX - radius: return (BOX - radius, -speed * BOUNCE if speed > 0.0 else speed)
+    return (at, speed)
+
+# Moves every ball for one step, under gravity, and keeps it in the box.
+def integrate(ref positions: list[Vec3], ref velocities: list[Vec3], radii: list[float]):
+    pull = Vec3(x=0.0, y=0.0, z=-PULL * STEP)
+    for ball in range(len(positions)):
+        velocity = velocities[ball] + pull
+        at = positions[ball] + velocity * STEP
+        radius = radii[ball]
+        x, vx = kept(at.x, speed=velocity.x, radius=radius)
+        y, vy = kept(at.y, speed=velocity.y, radius=radius)
+        z, vz = kept(at.z, speed=velocity.z, radius=radius)
+        positions[ball] = Vec3(x=x, y=y, z=z)
+        velocities[ball] = Vec3(x=vx, y=vy, z=vz)
+    return
+
+# Files every ball by its cell: `order` holds the balls cell by cell, and the balls of cell `c`
+# are at `starts[c]` up to `starts[c + 1]` in it.
+def file(cells: list[int], ref starts: list[int], ref order: list[int]):
+    for at in range(len(starts)):
+        starts[at] = 0
+    for cell in cells:
+        starts[cell + 1] += 1
+    for at in range(1, len(starts)):
+        starts[at] += starts[at - 1]
+    mut filled = starts
+    for ball, cell in enumerate(cells):
+        order[filled[cell]] = ball
+        filled[cell] += 1
+    return
+
+# Pushes apart and bounces every pair of balls that overlap, each pair once, and gives how many
+# pairs touched.
+def collide(
+    ref positions: list[Vec3],
+    ref velocities: list[Vec3],
+    radii: list[float],
+    cells: list[int],
+    starts: list[int],
+    order: list[int],
+) -> int:
+    mut touched = 0
+    for ball in range(len(positions)):
+        cell = cells[ball]
+        cx = cell % SIDE
+        cy = cell // SIDE % SIDE
+        cz = cell // (SIDE * SIDE)
+        for z in range(max(cz - 1, 0), min(cz + 2, SIDE)):
+            for y in range(max(cy - 1, 0), min(cy + 2, SIDE)):
+                for x in range(max(cx - 1, 0), min(cx + 2, SIDE)):
+                    near = (z * SIDE + y) * SIDE + x
+                    for at in range(starts[near], starts[near + 1]):
+                        other = order[at]
+                        if other <= ball: continue
+                        apart = positions[other] - positions[ball]
+                        squared = apart.length_squared()
+                        reach = radii[ball] + radii[other]
+                        if squared >= reach * reach or squared == 0.0: continue
+                        gap = math.sqrt(squared)
+                        normal = apart * (1.0 / gap)
+                        push = normal * ((reach - gap) * 0.5)
+                        positions[ball] = positions[ball] - push
+                        positions[other] = positions[other] + push
+                        closing = (velocities[other] - velocities[ball]).dot(normal)
+                        if closing < 0.0:
+                            kick = normal * (closing * 0.95)
+                            velocities[ball] = velocities[ball] + kick
+                            velocities[other] = velocities[other] - kick
+                        touched += 1
+    return touched
+
+def main(stdout: Stdout):
+    mut positions = list[Vec3]()
+    mut velocities = list[Vec3]()
+    mut radii = list[float]()
+    mut state = 5
+    for ball in range(BALLS):
+        radius = 0.25 + 0.05 * float(ball % 5)
+        state = next(state)
+        x = radius + fraction(state) * (BOX - 2.0 * radius)
+        state = next(state)
+        y = radius + fraction(state) * (BOX - 2.0 * radius)
+        state = next(state)
+        z = radius + fraction(state) * (BOX - 2.0 * radius)
+        state = next(state)
+        vx = fraction(state) * 4.0 - 2.0
+        state = next(state)
+        vy = fraction(state) * 4.0 - 2.0
+        state = next(state)
+        vz = fraction(state) * 4.0 - 2.0
+        positions.append(Vec3(x=x, y=y, z=z))
+        velocities.append(Vec3(x=vx, y=vy, z=vz))
+        radii.append(radius)
+    mut starts = [0 for _ in range(SIDE * SIDE * SIDE + 1)]
+    mut order = [0 for _ in range(BALLS)]
+    mut touched = 0
+    for _ in range(STEPS):
+        integrate(ref positions, ref velocities, radii)
+        cells = [cell_of(at) for at in positions]
+        file(cells, ref starts, ref order)
+        touched += collide(ref positions, ref velocities, radii, cells, starts, order)
+    mut energy = 0.0
+    mut spread = 0.0
+    for ball in range(BALLS):
+        energy += 0.5 * velocities[ball].length_squared() + PULL * positions[ball].z
+        spread += positions[ball].x + 2.0 * positions[ball].y
+    stdout.print(int(energy * 1000.0), int(spread * 1000.0), touched)
+    return

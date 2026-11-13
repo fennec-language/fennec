@@ -10,7 +10,9 @@
 # - each example that runs `parallel`, launches a task, or uses `shared` or a lock, but not the
 #   network, which needs a client, and the runtime's server tests have under ThreadSanitizer;
 # - the workers' fixtures;
-# - the real programs: `bench/realworld`, and the four real-shaped kernels.
+# - the scoreboard's real programs in `bench/kernels`, `game_tick` and `chat_server` above all,
+#   which are threaded: heavy `parallel`, and a hub and shards over channels;
+# - `bench/realworld`'s programs.
 #
 # Each runs at 4 and 16 threads, and with every call forced onto the pool, and has to print what
 # its `.out` says, sorted, where it has one, and end with no report. Then random programs from the
@@ -43,7 +45,11 @@ wanted() {
 }
 
 programs=$(grep -lE 'parallel\(|launch\(|Inbox\[|\bshared\b|\block\(' examples/*.fen | xargs grep -LE '\bNet\b')
-real="bench/realworld/*.fen bench/kernels/pathfind.fen bench/kernels/physics.fen bench/kernels/grep_tool.fen bench/kernels/data_pipeline.fen"
+real=""
+for name in game_tick chat_server api_handler log_crunch pathfind physics grep_tool data_pipeline; do
+  real="$real bench/kernels/$name.fen"
+done
+real="$real bench/realworld/*.fen"
 # shellcheck disable=SC2086 # the globs in `$real` are meant to spread
 for program in $programs crates/fennec/tests/fixtures/workers/*.fen $real; do
   # A fixture with neither an `.out` nor a pinned hash is driven by its own test.

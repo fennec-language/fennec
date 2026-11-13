@@ -247,6 +247,7 @@ impl Layouts {
             .into_iter()
             .collect();
         let block_ids = numbered(&mut blocks.into_iter(), first + order.len());
+        let reaching_themselves = reaching_themselves(&candidates);
         for name in &order {
             let Some(def) = candidates.get(name) else { continue };
             let layout = self.in_place_layout(name, def, (&place, &block_ids));
@@ -255,7 +256,12 @@ impl Layouts {
                     let Some(id) = place.get(name) else { return };
                     self.all.push(layout);
                     self.by_name.insert(name.clone(), *id);
-                    self.through_lists.push(*id);
+                    // Only a type that reaches itself through a list or a dict needs a number for a
+                    // list's description to name it by; any other is described in full, so the
+                    // program's image describes only what it uses.
+                    if reaching_themselves.contains(name) {
+                        self.through_lists.push(*id);
+                    }
                 }
                 Err(field) => {
                     self.problem = Some(match field {
@@ -1080,6 +1086,71 @@ fn natively_held(ty: &Type, defined: &BTreeMap<&str, &Written>, boxed: &BTreeSet
         Type::Set(item) => keyed(item),
         Type::Dict(key, value) => keyed(key) && natively_held(value, defined, boxed),
         _ => false,
+    }
+}
+
+/// The types among these that reach themselves however they're held, through a list, a dict or an
+/// optional included: those a description has to name by number rather than write out in full.
+fn reaching_themselves(candidates: &BTreeMap<String, Written>) -> BTreeSet<String> {
+    let names: Vec<&str> = candidates.keys().map(String::as_str).collect();
+    let number: HashMap<&str, usize> = names.iter().enumerate().map(|(at, name)| (*name, at)).collect();
+    let edges: Vec<Vec<usize>> = names
+        .iter()
+        .map(|name| {
+            let mut found = Vec::new();
+            if let Some(def) = candidates.get(*name) {
+                for (_, ty, _) in written_fields(def) {
+                    named_inside(ty, &mut |inner| found.extend(number.get(inner).copied()));
+                }
+            }
+            found
+        })
+        .collect();
+    let mut walk = Walk {
+        edges: &edges,
+        index: vec![None; names.len()],
+        low: vec![0; names.len()],
+        stack: Vec::new(),
+        on_stack: vec![false; names.len()],
+        next: 0,
+        found: Vec::new(),
+    };
+    for at in 0..names.len() {
+        if walk.index.get(at).is_some_and(Option::is_none) {
+            walk.visit(at);
+        }
+    }
+    walk.found.into_iter().flatten().filter_map(|at| names.get(at).map(|name| (*name).to_owned())).collect()
+}
+
+/// Calls `found` with each type a type names, however deep inside it.
+fn named_inside(ty: &Type, found: &mut dyn FnMut(&str)) {
+    match ty {
+        Type::Named(name) => found(name),
+        Type::List(inner)
+        | Type::Buffer(inner)
+        | Type::Set(inner)
+        | Type::Optional(inner)
+        | Type::Iterator(inner)
+        | Type::Id(inner)
+        | Type::Table(inner)
+        | Type::Array(inner, _) => named_inside(inner, found),
+        Type::Dict(a, b) | Type::Result(a, b) => {
+            named_inside(a, found);
+            named_inside(b, found);
+        }
+        Type::Tuple(items) | Type::Union(items) | Type::Generic(_, items) => {
+            for item in items {
+                named_inside(item, found);
+            }
+        }
+        Type::Arrow(params, returns) => {
+            for param in params {
+                named_inside(param, found);
+            }
+            named_inside(returns, found);
+        }
+        _ => {}
     }
 }
 

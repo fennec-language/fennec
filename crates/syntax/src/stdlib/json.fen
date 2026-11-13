@@ -1232,7 +1232,7 @@ struct JsonReader:
             if at >= 0:
                 self._place = at
                 self._hint = at + 1
-                self._once(at, fields)?
+                if self._seen_again(at): fail self._twice(at, fields)
                 return True
         key = self.text()?
         if self._space() != 58: fail no_reason()
@@ -1271,26 +1271,27 @@ struct JsonReader:
             tries += 1
         return -1
 
-    ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
-    ## Fails if field `at` of a struct has come before: which one to believe would be a guess.
-    ## A struct of more fields than a word has bits doesn't check past those.
-    def _once(ref self, at: int, fields: list[(str, str)]) fails ParseError:
-        if at >= 62: return
+    ## Notes that field `at` of a struct has come, and says whether it had come before: which one
+    ## to believe would be a guess, so the caller fails with `_twice`. It can't fail itself, so the
+    ## usual read, of each field once, makes no failure's room. A struct of more fields than a
+    ## word has bits doesn't check past those.
+    def _seen_again(ref self, at: int) -> bool:
+        if at >= 62: return False
         bit = 1 << at
-        if self._seen & bit != 0:
-            if not self._explain: fail no_reason()
-            fail ParseError(
-                message=f"{self._where()} has `{fields[at][0]}` twice",
-                line=0,
-                column=0,
-            )
+        if self._seen & bit != 0: return True
         self._seen = self._seen | bit
+        return False
+
+    ## The failure for field `at` of a struct coming twice.
+    def _twice(self, at: int, fields: list[(str, str)]) -> ParseError:
+        if not self._explain: return no_reason()
+        return ParseError(message=f"{self._where()} has `{fields[at][0]}` twice", line=0, column=0)
 
     def _named(ref self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
         at = self._place_of(key, fields)
         if at >= 0:
             self._place = at
-            self._once(at, fields)?
+            if self._seen_again(at): fail self._twice(at, fields)
             if self._explain:
                 self._path.append(key)
             return True
